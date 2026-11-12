@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -27,9 +27,9 @@ const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((l
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/job.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("jobs", () => {
-  test("a job's end steers a letter with its exit, log tail and note into the idle session; a killed job wakes nobody", async () => {
-    using held = scratch("job-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "job-")
+  test("a job's end steers a letter with its exit, log tail and note into the idle session; a killed job wakes nobody", kept.test(async () => {
+    const out = kept.dir("job-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/job.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -62,5 +62,5 @@ describe.skipIf(!fork)("jobs", () => {
     const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
     const letters = sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.kind === "job" && message.metadata.progress !== true))
     expect(letters.map((message) => message.metadata?.exitCode)).toEqual([4])
-  }, 240_000)
+  }), 240_000)
 })

@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-idle-send.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -46,9 +46,9 @@ const where = (frame: string, prompt: string) => {
 const rows = (frame: string) => frame.split("\n").filter((line) => ROW.test(line))
 
 describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-idle-send-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-idle-send-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-idle-send-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-idle-send.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -62,7 +62,7 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = JSON.parse(readFileSync(join(out, `${name}.json`), "utf8"))
-  }, 300_000)
+  }), 300_000)
 
   test.each([
     ["first", FIRST],
@@ -77,7 +77,7 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
     expect(shown.slice(at).every((frame) => where(frame, prompt).transcript)).toBe(true)
   })
 
-  test("while a turn runs a steer and a queued prompt show as rows, and each moves to the transcript without a frame in both", () => {
+  test("while a turn runs a steer and a queued prompt show as rows, and each moves to the transcript without a frame in both", kept.test(() => {
     const shown = frames.busy
     for (const prompt of [STEER, LATER]) {
       const states = shown.map((frame) => where(frame, prompt))
@@ -89,5 +89,5 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
       expect(states.slice(entered).every((state) => state.transcript && !state.row)).toBe(true)
     }
     expect(shown.at(-1)).not.toMatch(ROW)
-  })
+  }))
 })

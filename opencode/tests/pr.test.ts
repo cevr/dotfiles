@@ -7,14 +7,14 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/pr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the pr tool and its watcher", () => {
-  test("a watch set in a turn sends its notice into the idle session when the checks pass", async () => {
-    using held = scratch("pr-tool-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "pr-")
+  test("a watch set in a turn sends its notice into the idle session when the checks pass", kept.test(async () => {
+    const out = kept.dir("pr-tool-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/pr.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -40,5 +40,5 @@ describe.skipIf(!fork)("the pr tool and its watcher", () => {
     const calls = JSON.parse(readFileSync(join(out, "gh-calls.json"), "utf8")) as ReadonlyArray<ReadonlyArray<string>>
     expect(calls.some((call) => call[0] === "api" && call[1] === "graphql")).toBe(true)
     expect(calls.filter((call) => call[0] === "api" && call[1] === "--include").every((call) => call.includes("--silent"))).toBe(true)
-  }, 150_000)
+  }), 150_000)
 })

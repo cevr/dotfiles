@@ -13,7 +13,7 @@ import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -45,12 +45,13 @@ const logsUnder = (dir: string): string =>
     .join("\n")
 
 describe.skipIf(!ready)("a gent account whose refresh is rate-limited does not end the turn (real OpenCode, fake Anthropic)", () => {
-  const root = scratchWhen(ready, "pool-gent-refresh-")
-  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  const kept = keptScratch(ready, "pool-gent-refresh-", true)
+  const root = kept.path
+  afterAll(() => kept.done())
 
   test(
     "the turn completes on the second account, with no error row",
-    async () => {
+    kept.test(async () => {
       const accounts = { alpha: fakeAccount(), beta: fakeAccount() }
       const store = join(root, "gent-auth")
       const gent = await openGentStore(store)
@@ -136,7 +137,7 @@ describe.skipIf(!ready)("a gent account whose refresh is rate-limited does not e
       } finally {
         await fake.stop()
       }
-    },
+    }),
     RUN_TIMEOUT_MS + 30_000,
   )
 })

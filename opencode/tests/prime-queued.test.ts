@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-queued.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -34,9 +34,9 @@ const LOADER = (label: string) => new RegExp(`^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇�
 const LATER = "  ◌ after the turn · Afterwards tag the release."
 
 describe.skipIf(!fork)("prompts sent during a compaction wait above the composer as one list, in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-queued-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-queued-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-queued-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-queued.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -50,9 +50,9 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-  }, 300_000)
+  }), 300_000)
 
-  test("while the compaction runs: no prompt in the transcript, one list of all three, and the compaction's one timed row", () => {
+  test("while the compaction runs: no prompt in the transcript, one list of all three, and the compaction's one timed row", kept.test(() => {
     const shown = above(frames.queued)
     expect(shown.slice(-6)).toEqual([
       "  ● Ran true",
@@ -74,9 +74,9 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
       expect(shown.some((line) => line.includes(`┃ ${prompt}`))).toBe(false)
     // The host's own queued box is replaced, not drawn beside the list.
     expect(frames.queued.join("\n")).not.toMatch(/\d+ queued/)
-  })
+  }))
 
-  test("once the runner takes the steers: both in the transcript in order under `Executing` from the turn's start, the queued prompt still listed", () => {
+  test("once the runner takes the steers: both in the transcript in order under `Executing` from the turn's start, the queued prompt still listed", kept.test(() => {
     const shown = above(frames.taken)
     const at = shown.indexOf(" ┃ Also update the docs.")
     expect(at).toBeGreaterThan(shown.findIndex((line) => line.includes("◇ Compacted automatically")))
@@ -91,9 +91,9 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     // The turn started before the nine-second compaction; the prompts that waited behind it do not restart the clock.
     const seconds = Number(LOADER("Executing").exec(shown.at(-2) ?? "")?.[1])
     expect(seconds).toBeGreaterThanOrEqual(5)
-  })
+  }))
 
-  test("once that turn ends: the queued prompt in the transcript after the steers, and the list empty", () => {
+  test("once that turn ends: the queued prompt in the transcript after the steers, and the list empty", kept.test(() => {
     const shown = above(frames.after)
     const order = ["Also update the docs.", "Then bump the version.", "Afterwards tag the release."].map((prompt) =>
       shown.indexOf(` ┃ ${prompt}`),
@@ -102,5 +102,5 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     expect(order).toEqual(order.toSorted((a, b) => a - b))
     expect(shown.slice(order[2]! + 1)[0]).toBe("  Release tagged.")
     expect(frames.after.join("\n")).not.toContain("◌")
-  })
+  }))
 })

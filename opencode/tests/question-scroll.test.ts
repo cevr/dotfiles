@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 /** The frame's lines, trimmed, without the form's left border or its scrollbar's column. */
 const lines = (frame: string): ReadonlyArray<string> =>
@@ -18,10 +18,10 @@ const lines = (frame: string): ReadonlyArray<string> =>
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/question-scroll.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("a question taller than a phone's pane", () => {
+  const kept = keptScratch(Boolean(fork), "question-scroll-")
   for (const via of ["builtin", "async"] as const)
-    test(`asked ${via === "builtin" ? "through the question tool" : "through ask_user_async, answered from /answer"}: it scrolls from its first line to its options, and the pick reaches the session`, async () => {
-      using held = scratch(`question-scroll-${via}-`)
-      const out = held.path
+    test(`asked ${via === "builtin" ? "through the question tool" : "through ask_user_async, answered from /answer"}: it scrolls from its first line to its options, and the pick reaches the session`, kept.test(async () => {
+      const out = kept.dir(`question-scroll-${via}-`)
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/question-scroll.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUESTION_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -54,5 +54,5 @@ describe.skipIf(!fork)("a question taller than a phone's pane", () => {
 
       // ↓ and Enter picked the second option, and the model read it.
       expect(lines(read("done"))).toContain("Root read Drop it")
-    }, 300_000)
+    }), 300_000)
 })

@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-waiting.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -41,9 +41,9 @@ function panel(frame: ReadonlyArray<string>) {
 }
 
 describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-waiting-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-waiting-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-waiting-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-waiting.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -54,26 +54,26 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, "prime-waiting-requests.json"), "utf8"))
-  }, 300_000)
+  }), 300_000)
 
-  test("while its shells run, its row waits and the dock counts it", () => {
+  test("while its shells run, its row waits and the dock counts it", kept.test(() => {
     expect(dock(frames["waiting-rows"])).toEqual({
       count: "◆ 1 subagent  ·  0 shells",
       rows: [expect.stringMatching(/^◈ worker gpt  Run the proof  Waiting for the proof\. · \d+s$/)],
     })
-  })
+  }))
 
-  test("the host's Subagents panel lists it as active, waiting, as the dock counts it", () => {
+  test("the host's Subagents panel lists it as active, waiting, as the dock counts it", kept.test(() => {
     expect(panel(frames["waiting-panel"])).toEqual([expect.stringMatching(/^Worker: Run the proof +Waiting$/)])
-  })
+  }))
 
-  test("killed through its handle, the proof wait sends no notice: the worker only ever heard of the short shell", () => {
+  test("killed through its handle, the proof wait sends no notice: the worker only ever heard of the short shell", kept.test(() => {
     const last = requests.findLast((request) => request.includes("Worker brief P.") && request.includes("call_kill")) ?? ""
     expect(last.match(/<shell id=/g)?.length).toBe(1)
-  })
+  }))
 
-  test("once it stopped, its row is no longer live, the dock's count line goes and the panel lists none: both agree", () => {
+  test("once it stopped, its row is no longer live, the dock's count line goes and the panel lists none: both agree", kept.test(() => {
     expect(dock(frames["ended-rows"])).toEqual({ count: undefined, rows: ["◆ worker gpt  Run the proof  5 steps"] })
     expect(panel(frames["ended-panel"])).toEqual(["No active subagents"])
-  })
+  }))
 })

@@ -26,7 +26,7 @@ import { ROOT } from "../scripts/agents.ts"
 import { claimEffect, type FakeAccount, fakeAccount, type FakeGrant, startFakeAnthropic, type FakeQuota } from "./fake-anthropic.ts"
 import { spentAccount, startFakeChatGPT } from "./fake-chatgpt.ts"
 import { owned } from "./owned.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -94,11 +94,12 @@ interface Resets {
 }
 
 describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake ChatGPT)", () => {
-  const root = scratchWhen(ready, "pool-resets-")
+  const kept = keptScratch(ready, "pool-resets-", true)
+  const root = kept.path
   const stops: Array<() => Promise<void>> = []
   afterAll(async () => {
     for (const stop of stops.reverse()) await stop()
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   /**
@@ -205,7 +206,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
 
   test(
     "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
-    async () => {
+    kept.test(async () => {
       const now = Date.now()
       // ── The fakes ──
       const chatgpt = startFakeChatGPT()
@@ -301,13 +302,13 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       // No token ever shows in what the pool answers or logs.
       const shown = JSON.stringify(settled) + stderr()
       for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, "chatgpt-access-1", "chatgpt-refresh-1"]) expect(shown).not.toContain(token)
-    },
+    }),
     TIMEOUT_MS,
   )
 
   test(
     "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
-    async () => {
+    kept.test(async () => {
       const now = Date.now()
       const accounts = { c: fakeAccount(), d: fakeAccount() }
       // Day one of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used.
@@ -407,13 +408,13 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       // Each claim once.
       await Bun.sleep(7000)
       expect(anthropic.claims).toHaveLength(2)
-    },
+    }),
     TIMEOUT_MS,
   )
 
   test(
     "one spent week with two weekly resets about to expire spends one: the reading after it shows the week back, so the second is kept",
-    async () => {
+    kept.test(async () => {
       const now = Date.now()
       const accounts = { e: fakeAccount() }
       // The round-1 verifier's case: the week spent, resetting in three days; two weekly grants ending in two hours.
@@ -452,7 +453,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       const settled = (await pool("resets")) as Resets
       expect(settled.claims).toHaveLength(1)
       expect(settled.claims[0]?.after?.find((window) => window.name === "7d")?.utilization).toBe(0)
-    },
+    }),
     TIMEOUT_MS,
   )
 })

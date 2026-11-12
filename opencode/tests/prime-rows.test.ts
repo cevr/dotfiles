@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-rows.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -65,9 +65,9 @@ function lead(frame: Styled | undefined, unit: string): string {
 }
 
 describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-rows-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-rows-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-rows-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-rows.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -82,9 +82,9 @@ describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)"
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `rows-${name}.txt`), "utf8").split("\n")
     for (const name of ["thinking", "shell", "done"] as const) styled[name] = JSON.parse(readFileSync(join(out, `rows-${name}.json`), "utf8"))
-  }, 300_000)
+  }), 300_000)
 
-  test("each working worker has a row: its turning diamond, its role from orchestrate, its model, its unit, its first thought and its time working; no state word", () => {
+  test("each working worker has a row: its turning diamond, its role from orchestrate, its model, its unit, its first thought and its time working; no state word", kept.test(() => {
     const shown = rows(frames.thinking)
     expect(shown).toHaveLength(2)
     expect(shown[0]).toMatch(new RegExp(`^${SPIN} worker gpt  Fix money parsing  Check the money parser first\\. · \\d+s$`))
@@ -93,9 +93,9 @@ describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)"
     // Working is told by the diamond's colour: whichever frame it is on, it is the success colour.
     expect(lead(styled.thinking, "Fix money parsing")).toMatch(new RegExp(`^${SPIN} ${SUCCESS}$`))
     expect(lead(styled.thinking, "Fix CSV quoting")).toMatch(new RegExp(`^${SPIN} ${SUCCESS}$`))
-  })
+  }))
 
-  test("side by side: the worker running a command works, by the command's description; the one polling a file waits, still, by what it polls", () => {
+  test("side by side: the worker running a command works, by the command's description; the one polling a file waits, still, by what it polls", kept.test(() => {
     const shown = rows(frames.shell)
     expect(shown).toHaveLength(2)
     expect(shown[0]).toMatch(new RegExp(`^${SPIN} worker gpt  Fix money parsing  Run the money tests · \\d+s$`))
@@ -103,24 +103,24 @@ describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)"
     for (const line of shown) expect(line).not.toMatch(WORDS)
     // Never the one-liner itself.
     expect(frames.shell.join("\n")).not.toContain("[ -f out/csv.done ]")
-  })
+  }))
 
-  test("the diamond's colour carries the state: working in the success colour, waiting a still ◈ in the warning colour, its words in neither", () => {
+  test("the diamond's colour carries the state: working in the success colour, waiting a still ◈ in the warning colour, its words in neither", kept.test(() => {
     expect(lead(styled.shell, "Fix money parsing")).toMatch(new RegExp(`^${SPIN} ${SUCCESS}$`))
     expect(lead(styled.shell, "Fix CSV quoting")).toBe(`◈ ${WARNING}`)
     expect(colour(styled.shell, "◈ worker gpt  Fix CSV", "polling")).not.toBe(WARNING)
-  })
+  }))
 
-  test("a finished worker reads done by a muted ◆, with its steps, beside the one still going", () => {
+  test("a finished worker reads done by a muted ◆, with its steps, beside the one still going", kept.test(() => {
     const shown = rows(frames.done)
     expect(shown).toContain("◆ worker gpt  Fix money parsing  2 steps")
     expect(lead(styled.done, "Fix money parsing")).toBe(`◆ ${MUTED}`)
     expect(shown.find((line) => line.includes("Fix CSV quoting"))).toMatch(new RegExp(`^${SPIN} worker gpt  Fix CSV quoting  .+ · \\d+s$`))
-  })
+  }))
 
-  test("past its linger, the finished worker's row drops and the working one stays", () => {
+  test("past its linger, the finished worker's row drops and the working one stays", kept.test(() => {
     const shown = rows(frames.dropped)
     expect(shown).toHaveLength(1)
     expect(shown[0]).toMatch(new RegExp(`^${SPIN} worker gpt  Fix CSV quoting  .+ · \\d+s$`))
-  })
+  }))
 })

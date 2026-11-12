@@ -8,7 +8,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 type Rgba = readonly [number, number, number, number]
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba }> }> }
@@ -44,9 +44,9 @@ function fg(saved: Saved, needle: string, on: string | RegExp = needle) {
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-goal.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("Prime's dock and goal line", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-goal-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-goal-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-goal-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-goal.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -62,18 +62,18 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
         lines: readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n"),
         frame: JSON.parse(readFileSync(join(out, `${label}-${name}.json`), "utf8")),
       }
-  }, 240_000)
+  }), 240_000)
 
-  test("the dock: shells, then the wakes in the success colour; no goal before one is set", () => {
+  test("the dock: shells, then the wakes in the success colour; no goal before one is set", kept.test(() => {
     const dock = frames.dock
     expect(lineOf(dock, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
     expect(fg(dock, "1 wake", DOCK)).toBe(SUCCESS)
     expect(fg(dock, "1 shell", DOCK)).toBe(SUCCESS)
     // (The session's title, "Goal dock fixture", is the only goal-ish text.)
     expect(dock.lines.some((line) => /[●‖✓◎] goal|\/goal/i.test(line))).toBe(false)
-  })
+  }))
 
-  test("active: the goal line above the composer, its rounds and commands, in the success colour; the dock shows no goal", () => {
+  test("active: the goal line above the composer, its rounds and commands, in the success colour; the dock shows no goal", kept.test(() => {
     const active = frames.active
     expect(lineOf(active, "● goal")).toBe("● goal · ship the goal dock · 2↻ · /goal pause · /goal cancel")
     // Directly above the composer's rail.
@@ -82,33 +82,33 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
     expect(fg(active, "● goal")).toBe(SUCCESS)
     expect(fg(active, "ship the goal dock", "● goal")).toBe(TEXT)
     expect(lineOf(active, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
-  })
+  }))
 
-  test("paused: the reason and how to resume or cancel, in the warning colour", () => {
+  test("paused: the reason and how to resume or cancel, in the warning colour", kept.test(() => {
     const paused = frames.paused
     expect(lineOf(paused, "goal paused")).toBe("‖ goal paused · Paused by the user · /goal resume · /goal cancel")
     expect(lineOf(paused, "● goal")).toBeUndefined()
     expect(fg(paused, "‖ goal paused")).toBe(WARNING)
     expect(lineOf(paused, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
-  })
+  }))
 
-  test("resumed: active again, the round count from the resume", () => {
+  test("resumed: active again, the round count from the resume", kept.test(() => {
     const resumed = frames.resumed
     expect(lineOf(resumed, "● goal")).toBe("● goal · ship the goal dock · 1↻ · /goal pause · /goal cancel")
     expect(lineOf(resumed, "goal paused")).toBeUndefined()
     expect(fg(resumed, "● goal")).toBe(SUCCESS)
-  })
+  }))
 
-  test("cancelled: the goal line is gone; the dock is unchanged", () => {
+  test("cancelled: the goal line is gone; the dock is unchanged", kept.test(() => {
     const cancelled = frames.cancelled
     expect(lineOf(cancelled, /^[●‖✓] goal/)).toBeUndefined()
     expect(lineOf(cancelled, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
-  })
+  }))
 
-  test("goal continuations draw no rows: one row per round's command and answer, no continuation text", () => {
+  test("goal continuations draw no rows: one row per round's command and answer, no continuation text", kept.test(() => {
     const resumed = frames.resumed.lines.join("\n")
     for (const round of [0, 1, 2, 3]) expect(resumed).toContain(`Round ${round} ran.`)
     expect(resumed).not.toContain("continue")
     expect(resumed).not.toContain("untrusted_objective")
-  })
+  }))
 })

@@ -8,7 +8,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-states.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -27,9 +27,9 @@ function split(name: string) {
 }
 
 describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("escape-states-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "escape-states-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("escape-states-")
     for (const which of cases) {
       const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-states.ts"], {
         cwd: root,
@@ -41,31 +41,31 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
       if (code !== 0) throw new Error(`the ${which} case exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     }
     for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
-  }, 400_000)
+  }), 400_000)
 
   for (const which of ["steer", "queue"] as const)
-    test(`a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`, () => {
+    test(`a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`, kept.test(() => {
       expect(split(`${which}-before`).transcript.join("\n")).toContain("Executing")
       const { transcript, composer } = split(`${which}-after`)
       expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
       expect(composer).toBe(" ┃ Also update the docs.")
       // The second Escape finds an idle session; the prompt stays in the composer.
       expect(split(`${which}-again`).composer).toBe(" ┃ Also update the docs.")
-    })
+    }))
 
-  test("a running shell call: one Escape cancels it and interrupts", () => {
+  test("a running shell call: one Escape cancels it and interrupts", kept.test(() => {
     expect(frame("tool-tool")).toBe("interrupted")
     expect(split("tool-after").transcript.slice(-2)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted"])
-  })
+  }))
 
-  test("a draft in the composer: one Escape interrupts and the draft stays", () => {
+  test("a draft in the composer: one Escape interrupts and the draft stays", kept.test(() => {
     const { transcript, composer } = split("draft-after")
     expect(transcript.at(-1)).toBe("  ■ Interrupted")
     expect(composer).toBe(" ┃ half a thought")
-  })
+  }))
 
-  test("the server does not answer: the TUI says so instead of doing nothing", () => {
+  test("the server does not answer: the TUI says so instead of doing nothing", kept.test(() => {
     expect(frame("offline-before")).not.toContain("Still running")
     expect(frame("offline-after").replace(/\s*┃\s*/g, " ")).toContain("Still running 5 s after Escape: the server has not")
-  })
+  }))
 })

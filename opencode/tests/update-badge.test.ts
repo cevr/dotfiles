@@ -29,7 +29,7 @@ import { upstreamFile } from "../mods/prime/update.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/update-badge.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -63,7 +63,8 @@ const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean,
 }
 
 describe.skipIf(!fork)("the update notice", () => {
-  const root = scratchWhen(Boolean(fork), "update-badge-")
+  const kept = keptScratch(Boolean(fork), "update-badge-", true)
+  const root = kept.path
   const home = join(root, "home")
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)
@@ -168,7 +169,7 @@ describe.skipIf(!fork)("the update notice", () => {
     for (const host of hosts) await host.stop()
     if (existsSync(serviceFile)) await opencode("service", "stop")
     proxyServer.stop(true)
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   /** What `bun run daily` writes for the TUI's corner: `commits` of upstream/dev past the build, the merge `blocked` or not. */
@@ -212,7 +213,7 @@ describe.skipIf(!fork)("the update notice", () => {
 
   test(
     "a TUI on its service's build shows nothing, and the notice once the service restarts onto a newer build",
-    async () => {
+    kept.test(async () => {
       await boot()
       const service = await ready(serviceFile, () => "the service")
       const title = "Update badge session"
@@ -254,13 +255,13 @@ describe.skipIf(!fork)("the update notice", () => {
       } finally {
         await host.stop()
       }
-    },
+    }),
     TIMEOUT_MS,
   )
 
   test(
     "a TUI started against a newer service shows the notice on the home screen",
-    async () => {
+    kept.test(async () => {
       await boot()
       const service = await ready(serviceFile, () => "the service")
       served = NEWER
@@ -273,13 +274,13 @@ describe.skipIf(!fork)("the update notice", () => {
       } finally {
         await host.stop()
       }
-    },
+    }),
     TIMEOUT_MS,
   )
 
   test(
     "a TUI on its service's build shows only how far upstream is ahead, once it is",
-    async () => {
+    kept.test(async () => {
       await boot()
       const service = await ready(serviceFile, () => "the service")
       served = undefined
@@ -292,7 +293,7 @@ describe.skipIf(!fork)("the update notice", () => {
       } finally {
         await host.stop()
       }
-    },
+    }),
     TIMEOUT_MS,
   )
 })

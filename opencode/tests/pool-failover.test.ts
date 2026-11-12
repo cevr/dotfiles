@@ -16,7 +16,7 @@ import {
   type FakeRequestInfo,
 } from "./fake-anthropic.ts"
 import { owned } from "./owned.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -45,11 +45,12 @@ interface Run {
 }
 
 describe.skipIf(!ready)("the pool fails a refused run over to the next login (real OpenCode, fake Anthropic)", () => {
-  const root = scratchWhen(ready, "pool-failover-")
+  const kept = keptScratch(ready, "pool-failover-", true)
+  const root = kept.path
   let fake: FakeAnthropic | undefined
   afterAll(async () => {
     await fake?.stop()
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   const runOpenCode = async (
@@ -117,7 +118,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
 
   test(
     "without the pool, the same refusal ends the run: the host does not retry a plan limit",
-    async () => {
+    kept.test(async () => {
       const accounts = { first: fakeAccount(), second: fakeAccount() }
       const control = startFakeAnthropic({ accounts, script: firstRefused(Date.now() + 3 * HOUR) })
       try {
@@ -128,13 +129,13 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       } finally {
         await control.stop()
       }
-    },
+    }),
     RUN_TIMEOUT_MS + 30_000,
   )
 
   test(
     "the first login's plan-limit 429 holds it, and the run goes out on the second",
-    async () => {
+    kept.test(async () => {
       const accounts = { first: fakeAccount(), second: fakeAccount() }
       const resetAt = Date.now() + 3 * HOUR
       fake = startFakeAnthropic({ accounts, script: firstRefused(resetAt) })
@@ -165,7 +166,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         expect(run.stdout + run.stderr).not.toContain(account.access)
         expect(run.stdout + run.stderr).not.toContain(account.refresh)
       }
-    },
+    }),
     RUN_TIMEOUT_MS + 30_000,
   )
 })

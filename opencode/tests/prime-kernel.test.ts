@@ -8,7 +8,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-kernel.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -47,9 +47,9 @@ function fg(needle: string, offset = 0) {
 }
 
 describe.skipIf(!fork)("a kernel cell's description in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-kernel-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-kernel-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-kernel-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-kernel.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -60,9 +60,9 @@ describe.skipIf(!fork)("a kernel cell's description in the Prime look (OPENCODE_
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     lines = readFileSync(join(out, "kernel.txt"), "utf8").split("\n")
     frame = JSON.parse(readFileSync(join(out, "kernel.json"), "utf8"))
-  }, 300_000)
+  }), 300_000)
 
-  test("Details: the described cell's header is its description over its nested rows; the others count what they ran", () => {
+  test("Details: the described cell's header is its description over its nested rows; the others count what they ran", kept.test(() => {
     expect(transcript()).toEqual([
       " ┃ Merge the worker and check the notes.",
       "  ● Merge the skill-dollar worker",
@@ -75,12 +75,12 @@ describe.skipIf(!fork)("a kernel cell's description in the Prime look (OPENCODE_
       "    │ clean",
       "  Merged; the notes say ship it.",
     ])
-  })
+  }))
 
-  test("the description is in the normal text colour; the rows beneath stay muted", () => {
+  test("the description is in the normal text colour; the rows beneath stay muted", kept.test(() => {
     expect(fg("Merge the skill-dollar worker")).toBe(TEXT)
     expect(fg("├ Ran printf 'merged")).toBe(MUTED)
     expect(fg("└ Read notes.md")).toBe(MUTED)
     expect(fg("● Ran printf 'lint ok", 2)).toBe(MUTED)
-  })
+  }))
 })

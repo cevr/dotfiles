@@ -8,14 +8,14 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { PULL_REQUEST_FIELDS } from "../mods/git/pull-request.ts"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/git.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the Git sidebar section and /git", () => {
-  test("show the branch against its upstream, the totals and the pull request, and review a file with hunk", async () => {
-    using held = scratch("git-pane-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "git-")
+  test("show the branch against its upstream, the totals and the pull request, and review a file with hunk", kept.test(async () => {
+    const out = kept.dir("git-pane-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/git.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -48,5 +48,5 @@ describe.skipIf(!fork)("the Git sidebar section and /git", () => {
     const after = readFileSync(join(out, "git-after-review.txt"), "utf8")
     expect(after).toContain("▸ M  a.ts  +3 −1")
     expect(after).not.toContain("hunk not found")
-  }, 150_000)
+  }), 150_000)
 })

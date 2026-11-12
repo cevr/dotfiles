@@ -9,7 +9,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-indent.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -17,10 +17,10 @@ if (!fork) console.warn("tests/prime-indent.test.ts: skipped. Set OPENCODE_DEV t
 const root = join(import.meta.dir, "..")
 const NOTICE = "rift land · accept passed"
 const frames: Record<string, ReadonlyArray<string>> = {}
+const kept = keptScratch(Boolean(fork), "prime-indent-")
 
 const run = async (verbosity: "low" | "medium") => {
-  using held = scratch(`prime-indent-${verbosity}-`)
-  const out = held.path
+  const out = kept.dir(`prime-indent-${verbosity}-`)
   const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-indent.ts"], {
     cwd: root,
     env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), INDENT_VERBOSITY: verbosity },
@@ -57,40 +57,40 @@ const TURN = {
 }
 
 describe.skipIf(!fork)("every transcript row starts in one column in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
+  beforeAll(kept.setup(async () => {
     await run("medium")
     await run("low")
-  }, 600_000)
+  }), 600_000)
 
-  test("medium: each call, the grouped run, the inline tool, the prose and the notice start in the call rows' column", () => {
+  test("medium: each call, the grouped run, the inline tool, the prose and the notice start in the call rows' column", kept.test(() => {
     const frame = frames["indent-medium"]!
     const call = row(frame, TURN.call).column
     expect(columns(frame, TURN)).toEqual(Object.fromEntries(Object.keys(TURN).map((kind) => [kind, call])))
-  })
+  }))
 
-  test("low, folded: the host's `+ N commands` summary row and the notice start where the prose does", () => {
+  test("low, folded: the host's `+ N commands` summary row and the notice start where the prose does", kept.test(() => {
     const frame = frames["indent-low-folded"]!
     const kinds = { summary: /^\+ \d+ commands?/, prose: TURN.prose, notice: TURN.notice }
     const prose = row(frame, TURN.prose).column
     expect(columns(frame, kinds)).toEqual({ summary: prose, prose, notice: prose })
-  })
+  }))
 
-  test("low, unfolded: the summary row, the calls it holds, the prose and the notice start in the call rows' column", () => {
+  test("low, unfolded: the summary row, the calls it holds, the prose and the notice start in the call rows' column", kept.test(() => {
     const frame = frames["indent-low"]!
     const kinds = { summary: /^− \d+ commands?/, ...TURN }
     const call = row(frame, TURN.call).column
     expect(columns(frame, kinds)).toEqual(Object.fromEntries(Object.keys(kinds).map((kind) => [kind, call])))
-  })
+  }))
 
-  test("low, unfolded: the first call sits on the row right under `− N commands`, no blank row between (the owner's pick)", () => {
+  test("low, unfolded: the first call sits on the row right under `− N commands`, no blank row between (the owner's pick)", kept.test(() => {
     const frame = frames["indent-low"]!
     const summary = frame.indexOf(row(frame, /^− \d+ commands?/).line)
     expect(frame.slice(summary, summary + 2).map((line) => line.trim())).toEqual(["− 3 commands, 1 tool", TURN.call])
-  })
+  }))
 
-  test("low, unfolded: the calls it holds sit on medium's rails and gaps, row for row, up to the notice", () => {
+  test("low, unfolded: the calls it holds sit on medium's rails and gaps, row for row, up to the notice", kept.test(() => {
     expect(turn(frames["indent-low"]!)).toEqual(turn(frames["indent-medium"]!))
-  })
+  }))
 })
 
 /** The turn's rows from its first call through the notice, blank rows included. */

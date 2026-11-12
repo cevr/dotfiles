@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-fallback.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -32,9 +32,9 @@ const jsonl = <A = Record<string, unknown>>(path: string) =>
 const NOTE = "orchestrate: this agent runs on codex/gpt-6.1-sol#high, the Codex fallback (simulation/gpt-sim-model#medium held: scripted 5h window is full)."
 
 describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-fallback-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-fallback-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-fallback-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-fallback.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -48,17 +48,17 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
     paces = jsonl(join(out, "pace.jsonl"))
     admits = jsonl<ReadonlyArray<string>>(join(out, "admit.jsonl"))
     requests = JSON.parse(readFileSync(join(out, "fallback-requests.json"), "utf8")) as typeof requests
-  }, 300_000)
+  }), 300_000)
 
-  test("the pool holds the first model, and the admission script is asked about the newest sol for the role", () => {
+  test("the pool holds the first model, and the admission script is asked about the newest sol for the role", kept.test(() => {
     expect(paces.map((line) => (line.started === true ? `started ${line.providerID}` : `${line.ok === true ? "ok" : "held"} ${line.providerID}`))).toEqual([
       "held simulation",
       "started codex",
     ])
     expect(admits).toEqual([["--codex", "--admit", "--model", "gpt-6.1-sol", "--role", "planner"]])
-  })
+  }))
 
-  test("it starts at once on sol, never latched, and the call log says why", () => {
+  test("it starts at once on sol, never latched, and the call log says why", kept.test(() => {
     expect(calls.map((line) => line.kind)).toEqual(["call", "done"])
     expect(calls[0]).toMatchObject({
       agent: "planner",
@@ -67,16 +67,16 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
     })
     // OpenCode runs every subagent in the background: the call ends as the worker starts.
     expect(calls[1]).toMatchObject({ status: "running" })
-  })
+  }))
 
-  test("the worker's request goes to sol", () => {
+  test("the worker's request goes to sol", kept.test(() => {
     expect(requests.worker).toContain('"model":"gpt-6.1-sol"')
-  })
+  }))
 
-  test("the parent reads where it ran and why, first in the call's result, then the answer, and its row shows sol", () => {
+  test("the parent reads where it ran and why, first in the call's result, then the answer, and its row shows sol", kept.test(() => {
     expect(requests.parent).toContain(JSON.stringify(`${NOTE}\nThe subagent is working in the background`).slice(1, -1))
     expect(requests.parent).toContain(JSON.stringify(`state="completed" description="Check the export">\nThe export check passed.`).slice(1, -1))
     expect(frame.join("\n")).toContain("Root heard: the export check passed.")
     expect(frame.map((line) => line.trim())).toContainEqual(expect.stringMatching(/^◆ planner sol 6\.1  Check the export  /))
-  })
+  }))
 })

@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-sidebar.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -28,9 +28,9 @@ function composer(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 const sidebar = (frame: ReadonlyArray<string>) => frame.map((line) => line.slice(WIDE - SIDEBAR)).join("\n")
 
 describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-sidebar-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-sidebar-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-sidebar-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-sidebar.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -44,23 +44,23 @@ describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `sidebar-${name}.txt`), "utf8").split("\n")
-  }, 300_000)
+  }), 300_000)
 
-  test("wide, the sidebar holds the session and the dock counts the worker", () => {
+  test("wide, the sidebar holds the session and the dock counts the worker", kept.test(() => {
     for (const frame of [frames.wide, frames["wide-again"]]) {
       expect(sidebar(frame)).toContain("money worker")
       expect(composer(frame)[0]).toStartWith(" ◆ 1 subagent  ·")
     }
-  })
+  }))
 
-  test("wide, with the sidebar open, the worker's row stays beneath the composer", () => {
+  test("wide, with the sidebar open, the worker's row stays beneath the composer", kept.test(() => {
     for (const frame of [frames.wide, frames["wide-again"]])
       expect(composer(frame)[1]?.trimEnd()).toMatch(new RegExp(`${ROW.source}Check the money parser first\\. · \\d+s$`))
-  })
+  }))
 
-  test("narrow, there is no sidebar and the worker's row is back under the count", () => {
+  test("narrow, there is no sidebar and the worker's row is back under the count", kept.test(() => {
     const shown = composer(frames.narrow)
     expect(shown[0]).toStartWith(" ◆ 1 subagent  ·")
     expect(shown[1]).toMatch(new RegExp(`${ROW.source}Check the money parser first\\. · \\d+s$`))
-  })
+  }))
 })

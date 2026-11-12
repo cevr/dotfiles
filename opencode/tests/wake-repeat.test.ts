@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -44,9 +44,10 @@ const run = async (out: string) => {
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/wake-repeat.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("with OpenCode's schedules on", () => {
-  test("the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice", async () => {
-    using out = scratch(`${label}-`)
-    const { read } = await run(out.path)
+  const kept = keptScratch(Boolean(fork), "wake-repeat-")
+  test("the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice", kept.test(async () => {
+    const out = kept.dir(`${label}-`)
+    const { read } = await run(out)
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root")
 
@@ -79,5 +80,5 @@ describe.skipIf(!fork)("with OpenCode's schedules on", () => {
     for (const message of fired) expect((message.text ?? "").length).toBeLessThan(600)
     // No user message carries the note: the only user prompts are the three steps typed.
     expect(messages.filter((message) => message.type === "user" && (message.text ?? "").includes("WATCH"))).toEqual([])
-  }, 180_000)
+  }), 180_000)
 })

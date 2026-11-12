@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-thoughts.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -53,9 +53,9 @@ function slice(saved: Saved, first: string, count: number) {
 }
 
 describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-thoughts-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-thoughts-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-thoughts-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-thoughts.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, SCENARIO_LABEL: "thoughts", OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -78,16 +78,16 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     frames.details = load("thoughts")
     frames.all = load("thoughts-all")
     frames.overview = load("thoughts-overview")
-  }, 300_000)
+  }), 300_000)
 
-  test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", () => {
+  test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", kept.test(() => {
     // The glyph blinks ● / ○; the frame may catch either.
     const lead = frames.streaming.lines.some((line) => line.startsWith("  ○ Thinking")) ? "  ○ Thinking" : "  ● Thinking"
     expect(slice(frames.streaming, lead, 2)).toEqual([lead, "  └ thinking  Planning the check"])
     expect(fg(frames.streaming, lead, 2)).toBe(ACCENT)
-  })
+  }))
 
-  test("a step that thinks, then makes two calls, is one tree: the thought is its first node", () => {
+  test("a step that thinks, then makes two calls, is one tree: the thought is its first node", kept.test(() => {
     expect(slice(frames.details, "  ● Read 1 file · ran 1 command", 5)).toEqual([
       "  ● Read 1 file · ran 1 command",
       "  ├ thinking  Planning the check",
@@ -99,9 +99,9 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     const node = "  ├ thinking  Planning the check"
     expect(fg(frames.details, node, 4)).toBe(MUTED)
     expect(fg(frames.details, node, 14)).toBe(FAINT)
-  })
+  }))
 
-  test("a step that only thinks is a one-node tree headed Thought, then its answer", () => {
+  test("a step that only thinks is a one-node tree headed Thought, then its answer", kept.test(() => {
     expect(slice(frames.details, "  ● Thought", 4)).toEqual([
       "  ● Thought",
       `  └ thinking  ${SETTLED}`,
@@ -109,9 +109,9 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
       `  ${STARTED}`,
     ])
     expect(fg(frames.details, "  ● Thought", 2)).toBe(MUTED)
-  })
+  }))
 
-  test("a finished worker's notice is a group like the ordinary tool group below it", () => {
+  test("a finished worker's notice is a group like the ordinary tool group below it", kept.test(() => {
     expect(slice(frames.details, "  ● General finished · Fix CSV quoting", 8)).toEqual([
       "  ● General finished · Fix CSV quoting",
       "  └ CSV quoting fixed.",
@@ -131,9 +131,9 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     expect(fg(frames.details, "  └ CSV quoting fixed.", 4)).toBe(MUTED)
     // The old `↳` line is gone.
     expect(frames.details.lines.join("\n")).not.toContain("↳")
-  })
+  }))
 
-  test("at All the whole thought hangs under its node, and the notice keeps its group", () => {
+  test("at All the whole thought hangs under its node, and the notice keeps its group", kept.test(() => {
     expect(slice(frames.all, "  ● Read 1 file · ran 1 command", 6)).toEqual([
       "  ● Read 1 file · ran 1 command",
       "  ├ thinking",
@@ -149,9 +149,9 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
       "    Quoted fields keep their commas.",
       "    All 12 tests pass.",
     ])
-  })
+  }))
 
-  test("the Overview shows no thoughts: a thought-only step draws nothing, a notice only its header", () => {
+  test("the Overview shows no thoughts: a thought-only step draws nothing, a notice only its header", kept.test(() => {
     const text = frames.overview.lines.join("\n")
     expect(text).not.toContain("thinking")
     expect(text).not.toContain("Thought")
@@ -165,5 +165,5 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
       "  ● Ran 1 command",
       `  ${NOTED}`,
     ])
-  })
+  }))
 })

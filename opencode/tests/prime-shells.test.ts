@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const label = "prime-shells"
 const names = ["moved", "list", "killed", "blocking", "user", "user-list", "user-killed"] as const
@@ -39,9 +39,9 @@ const results = () =>
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-shells.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("background shells in Prime", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-shells-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-shells-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-shells-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-shells.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -54,27 +54,27 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     if (code !== 0) throw new Error(`prime-shells scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, `${label}-requests.json`), "utf8"))
-  }, 240_000)
+  }), 240_000)
 
-  test("past its limit, a foreground call moves to the background: its row says so, and the dock counts it", () => {
+  test("past its limit, a foreground call moves to the background: its row says so, and the dock counts it", kept.test(() => {
     const moved = frames.moved
     expect(lineOf(moved, "Ran printf")).toBe("● Ran printf 'tick 1\\n'; sleep 600 · moved to the background")
     // The row's body is the handle's output, without the header the row already says.
     expect(transcript(moved).join("\n")).toMatch(/moved to the background\n\s*│ tick 1\n\s*│ PID: \d+\n\s*│\n\s*│ Do not start another copy while it is running\.\n/)
     expect(lineOf(moved, "Started printf")).toBe("● Started printf 'bg\\n'; sleep 600 in the background")
     expect(lineOf(moved, DOCK)).toBe("◆ 0 subagents  ·  2 shells")
-  })
+  }))
 
-  test("the agent gets the shell's handle at the move: its header, its output so far and how to act on it", () => {
+  test("the agent gets the shell's handle at the move: its header, its output so far and how to act on it", kept.test(() => {
     const [moved] = results()
     expect(moved).toMatch(/^(sh_\w+) · running · \d+(?:\.\d)? s · moved to the background at its 2 s limit\ntick 1\nPID: \d+\n\nDo not start another copy while it is running\.\n\nIt keeps running, and you will be notified when it ends\. /)
     expect(moved).toMatch(/shell\(\{ action: "check", id: "sh_\w+" \}\) checks it, shell\(\{ action: "wait", id: "sh_\w+", ms: <ms> \}\) waits for it to end, shell\(\{ action: "kill", id: "sh_\w+" \}\) stops it\./)
     const started = results()[4]
     // Its `bg` line may or may not have been written by the time the handle is taken.
     expect(started).toMatch(/^sh_\w+ · running · \d+(?:\.\d)? s · started in the background\n(\(no output yet\)|bg)\nPID: \d+\n\nIt keeps running/)
-  })
+  }))
 
-  test("the agent lists, checks, waits on and kills through the handle; a kill it asked for sends it no stop notice", () => {
+  test("the agent lists, checks, waits on and kills through the handle; a kill it asked for sends it no stop notice", kept.test(() => {
     const [moved, listed, checked, waited, started, killedLong, killedBg] = results()
     const long = /^(sh_\w+) · /.exec(moved ?? "")?.[1]
     const bg = /^(sh_\w+) · /.exec(started ?? "")?.[1]
@@ -99,26 +99,26 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(requests.some((request) => request.includes(`<shell id=\\"${long}\\"`) || request.includes(`<shell id=\\"${bg}\\"`))).toBe(false)
     // The reader's kill later does send one: the check above can see a notice.
     expect(requests.some((request) => request.includes(`<shell id=\\"`))).toBe(true)
-  })
+  }))
 
-  test("a click on the dock's count lists the session's shells: state, runtime and last line, and the kill key", () => {
+  test("a click on the dock's count lists the session's shells: state, runtime and last line, and the kill key", kept.test(() => {
     const list = transcript(frames.list).join("\n")
     expect(list).toContain("Shells")
     expect(list).toMatch(/Running\s*\n(.*\n)*.*Long sleeper running · \d+s · tick 1/)
     expect(list).toMatch(/Background sleeper running · \d+s · bg/)
     expect(list).toContain("kill ctrl+k")
-  })
+  }))
 
-  test("a blocking call has no limit; ctrl+b moves it, and the agent hears the reader did", () => {
+  test("a blocking call has no limit; ctrl+b moves it, and the agent hears the reader did", kept.test(() => {
     expect(lineOf(frames.blocking, "Press ctrl+b")).toBe("Press ctrl+b to move running work to the background")
     const user = frames.user
     expect(lineOf(user, "Ran sleep 300")).toBe("● Ran sleep 300 · moved to the background")
     expect(transcript(user).join("\n")).toMatch(/Ran sleep 300 · moved to the background\n\s*│ \(no output yet\)\n/)
     expect(results().at(-1)).toMatch(/^sh_\w+ · running · \d+(?:\.\d)? s · moved to the background by the user\n\(no output yet\)\n/)
     expect(lineOf(user, DOCK)).toBe("◆ 0 subagents  ·  1 shell")
-  })
+  }))
 
-  test("ctrl+k in the list kills the shell; the list shows it ended; the agent is told with its final handle; the dock's count line goes", () => {
+  test("ctrl+k in the list kills the shell; the list shows it ended; the agent is told with its final handle; the dock's count line goes", kept.test(() => {
     const list = transcript(frames["user-list"]).join("\n")
     expect(list).toMatch(/Ended\s*\n(.*\n)*.*Blocking sleeper killed · \d+s · no output/)
     expect(list).toMatch(/Long sleeper killed · \d+s · tick 1/)
@@ -126,5 +126,5 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(lineOf(frames["user-killed"], "Heard the blocking sleeper was killed.")).toBeDefined()
     expect(requests.some((request) => /<shell id=\\"sh_\w+\\" [^>]*command=\\"sleep 300\\">\\nsh_\w+ · killed SIGTERM · /.test(request))).toBe(true)
     expect(lineOf(frames["user-killed"], DOCK)).toBeUndefined()
-  })
+  }))
 })

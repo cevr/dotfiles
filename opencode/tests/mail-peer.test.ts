@@ -15,7 +15,7 @@ import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { owned } from "./owned.ts"
 import { ready, type Service } from "./service.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -127,12 +127,13 @@ const readJson = (file: string): unknown => {
 }
 
 describe.skipIf(!fork)("session mail between two paired OpenCode servers (real pair command, scripted model)", () => {
-  const root = scratchWhen(Boolean(fork), "mail-peer-")
+  const kept = keptScratch(Boolean(fork), "mail-peer-", true)
+  const root = kept.path
   const hosts: Array<Host> = []
   afterAll(async () => {
     await Promise.all(hosts.map((host) => host.stop()))
     sim.stop(true)
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   /** Start the fork's service in a scratch HOME with the mail plugin listening on a loopback port, and wait for its service file and its listener. */
@@ -207,7 +208,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
 
   test(
     "paired once, a message reaches the other host's session as mail, and its answer comes back the same way",
-    async () => {
+    kept.test(async () => {
       const [mac, workbox] = await Promise.all([start("mac"), start("workbox")])
       const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
       const client = (host: Host) => OpenCode.make({ baseUrl: host.service.url, headers: { authorization: `Basic ${btoa(`opencode:${host.service.password}`)}` } })
@@ -267,7 +268,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       const secret = (readJson(mac.pairs) as { peers: Record<string, { secret: string }> }).peers.workbox?.secret ?? ""
       expect(secret.length).toBeGreaterThan(20)
       for (const hidden of [secret, mac.service.password, workbox.service.password]) expect(seen.join("\n")).not.toContain(hidden)
-    },
+    }),
     TIMEOUT_MS,
   )
 })

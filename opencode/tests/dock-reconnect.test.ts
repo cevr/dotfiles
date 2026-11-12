@@ -25,7 +25,7 @@ import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -132,7 +132,8 @@ const liveRow = (screen: string, title: string) =>
   screen.split("\n").some((line) => line.includes(title) && /· (\d+h \d+m|\d+m( \d+s)?|\d+s)( · updated .*)?\s*$/.test(line))
 
 describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn", () => {
-  const root = scratchWhen(Boolean(fork), "dock-reconnect-")
+  const kept = keptScratch(Boolean(fork), "dock-reconnect-", true)
+  const root = kept.path
   const home = join(root, "home")
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)
@@ -241,7 +242,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
     if (existsSync(serviceFile)) await opencode("service", "stop")
     sim.stop(true)
     proxyServer.stop(true)
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   const auth = (service: Service) => ({ authorization: `Basic ${btoa(`opencode:${service.password}`)}` })
@@ -351,9 +352,9 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
     }
   }
 
-  test("rows of turns that ended while the TUI was away leave the dock once it reconnects", () => scenario("reconnect"), TIMEOUT_MS)
+  test("rows of turns that ended while the TUI was away leave the dock once it reconnects", kept.test(() => scenario("reconnect")), TIMEOUT_MS)
 
-  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", () => scenario("booting", { refuseActiveMs: 3_000 }), TIMEOUT_MS)
+  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", kept.test(() => scenario("booting", { refuseActiveMs: 3_000 })), TIMEOUT_MS)
 
-  test("they leave it when the TUI's first read of what runs after the reconnect fails", () => scenario("failed-read", { failActiveReads: 1 }), TIMEOUT_MS)
+  test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), TIMEOUT_MS)
 })

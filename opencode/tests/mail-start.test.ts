@@ -14,7 +14,7 @@ import { keyed, token } from "../mods/mail/node/keyed.ts"
 import { launcher, residentConfig, residentDir } from "../scripts/daily.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { freePort } from "./service.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-start.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -42,7 +42,8 @@ const until = async <A>(read: () => A, done: (value: A) => boolean, label: () =>
 }
 
 describe.skipIf(!fork)("the mail listener from the service's start", () => {
-  const root = scratchWhen(Boolean(fork), "mail-start-")
+  const kept = keptScratch(Boolean(fork), "mail-start-", true)
+  const root = kept.path
   const home = join(root, "home")
   const work = join(root, "work")
   const link = join(root, "bin/opencode")
@@ -67,12 +68,12 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
   }
   afterAll(async () => {
     await opencode("service", "stop")
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   test(
     "a fresh service, with no client, session or turn, accepts a signed delivery from a paired host",
-    async () => {
+    kept.test(async () => {
       for (const dir of [work, join(root, "bin"), join(home, ".config/opencode"), join(home, ".local/state/opencode-mail"), residentDir(home)]) mkdirSync(dir, { recursive: true })
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),
@@ -104,7 +105,7 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
       const response = await fetch(new URL(ROUTES.receive, url ?? ""), { method: "POST", headers: { "content-type": "application/json", ...headers }, body })
       // Authenticated and handled: a session this server lacks is `unknown`, not a refusal.
       expect([response.status, await response.json()]).toEqual([200, { outcome: "unknown" }])
-    },
+    }),
     TIMEOUT_MS,
   )
 })

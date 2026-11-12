@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 /** The frame's lines, without the sidebar's column. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.slice(0, 108).trim())
@@ -59,9 +59,10 @@ const scenario = async (out: string, args: ReadonlyArray<string>, label: string,
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/wake.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("wakes", () => {
-  test("an alarm wakes the idle session, a notice waits for the next turn, a monitor wakes on its match, a cancel holds, and a reload fires once", async () => {
-    using out = scratch("wake-")
-    const { stdout, read } = await scenario(out.path, ["run", "scenarios/wake.ts"], "wake")
+  const kept = keptScratch(Boolean(fork), "wake-")
+  test("an alarm wakes the idle session, a notice waits for the next turn, a monitor wakes on its match, a cancel holds, and a reload fires once", kept.test(async () => {
+    const out = kept.dir("wake-")
+    const { stdout, read } = await scenario(out, ["run", "scenarios/wake.ts"], "wake")
     expect(stdout).toMatch(/screenshot: .*wake-pending\.png/)
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root").map((request) => ({ ...request, text: unescaped(request.request) }))
@@ -104,7 +105,7 @@ describe.skipIf(!fork)("wakes", () => {
 
     // The reload: the plugin activated twice, the second time before the alarm was due, and the alarm fired once, from the second.
     expect(trayOf(read("reload-pending.txt"))).toMatch(/^1 wake$/)
-    const revisions = readFileSync(join(out.path, "wake-plugin.log"), "utf8").trim().split("\n")
+    const revisions = readFileSync(join(out, "wake-plugin.log"), "utf8").trim().split("\n")
     expect(revisions.map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual(["rev 1", "rev 2"])
     const reloadedAt = Number(revisions[1]?.split(" ")[2])
     const epsilon = fired.filter((message) => textOf(message).includes("EPSILON"))
@@ -115,12 +116,12 @@ describe.skipIf(!fork)("wakes", () => {
 
     // One message per fire, each a wake or a notice as set.
     expect(fired.map((message) => `${message.metadata?.kind}/${message.metadata?.mode}`)).toEqual(["alarm/wake", "alarm/notify", "monitor/wake", "alarm/wake"])
-  }, 240_000)
+  }), 240_000)
 
-  test("an alarm due while no server ran fires when one starts, and says it went late", async () => {
+  test("an alarm due while no server ran fires when one starts, and says it went late", kept.test(async () => {
     const fork = process.env.OPENCODE_DEV ?? ""
-    using out = scratch("wake-downtime-")
-    const { stdout, read } = await scenario(out.path, ["start", "--name", `wake-downtime-${process.pid}`, "--dev", fork, "--script", "scenarios/wake-downtime.ts"], "wake-downtime", (out) => ({
+    const out = kept.dir("wake-downtime-")
+    const { stdout, read } = await scenario(out, ["start", "--name", `wake-downtime-${process.pid}`, "--dev", fork, "--script", "scenarios/wake-downtime.ts"], "wake-downtime", (out) => ({
       // A file, so the restarted server finds the session and its wake.
       OPENCODE_DRIVE_DB: join(out, "opencode.db"),
     }))
@@ -145,5 +146,5 @@ describe.skipIf(!fork)("wakes", () => {
     const fired = wakes(sessions)
     expect(fired).toHaveLength(1)
     expect(fired[0]?.metadata?.lateMs ?? 0).toBeGreaterThanOrEqual(60_000)
-  }, 300_000)
+  }), 300_000)
 })

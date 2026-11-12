@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-subagents.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -51,9 +51,9 @@ function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[n
 }
 
 describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-subagents-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-subagents-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-subagents-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-subagents.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, SCENARIO_LABEL: "subagents", OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -67,57 +67,57 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `subagents-${name}.txt`), "utf8").split("\n")
-  }, 300_000)
+  }), 300_000)
 
-  test("while subagents run, the main session says Down reaches them", () => {
+  test("while subagents run, the main session says Down reaches them", kept.test(() => {
     expect(frames.started[0]).not.toContain("›")
     expect(hint(frames.started)).toStartWith(DOWN)
     expect(frames.started.join("\n")).toContain("◆ 3 subagents")
-  })
+  }))
 
-  test("beneath the dock, each running subagent has a live row in the order they started", () => {
+  test("beneath the dock, each running subagent has a live row in the order they started", kept.test(() => {
     const dock = frames.started.findIndex((line) => line.includes("◆ 3 subagents"))
     const rows = frames.started.slice(dock + 1, dock + 4).map((line) => line.trim())
     WORKERS.forEach((worker, index) =>
       expect(rows[index]).toMatch(new RegExp(`^[◇◈◆] general gpt  ${worker.title} +.+ · \\d+s$`)),
     )
-  })
+  }))
 
-  test("inside a subagent the rows sit above the picker and mark the one shown", () => {
+  test("inside a subagent the rows sit above the picker and mark the one shown", kept.test(() => {
     for (const frame of [frames.clicked, frames.child, frames.sibling]) {
       const worker = shown(frame)
       const rows = frame.filter((line) => /^ (›| ) \S general gpt  /.test(line))
       expect(rows).toHaveLength(WORKERS.length)
       expect(rows.filter((line) => line.startsWith(" › "))).toEqual([expect.stringContaining(`general gpt  ${worker?.title ?? "?"}`)])
     }
-  })
+  }))
 
-  test("a click on a subagent's Started row opens that subagent", () => {
+  test("a click on a subagent's Started row opens that subagent", kept.test(() => {
     expect(shown(frames.clicked)?.title).toBe("Fix money parsing")
     expectSubagent(frames.clicked, WORKERS[0]!)
-  })
+  }))
 
-  test("Up in a subagent returns to the main session", () => {
+  test("Up in a subagent returns to the main session", kept.test(() => {
     for (const frame of [frames.returned, frames.parent]) {
       expect(frame[0]).not.toContain("›")
       expect(frame).toContain("  ● Started 3 agents")
       expect(hint(frame)).toStartWith(DOWN)
     }
-  })
+  }))
 
-  test("Down on the empty prompt opens the Subagents picker, listing the running workers", () => {
+  test("Down on the empty prompt opens the Subagents picker, listing the running workers", kept.test(() => {
     const text = frames.picker.join("\n")
     expect(text).toContain("Subagents")
     for (const worker of WORKERS) expect(text).toMatch(new RegExp(`General: ${worker.title} +Running`))
-  })
+  }))
 
-  test("Enter in the picker opens a subagent, with its brief and its loader", () => {
+  test("Enter in the picker opens a subagent, with its brief and its loader", kept.test(() => {
     const worker = shown(frames.child)
     expect(worker).toBeDefined()
     if (worker) expectSubagent(frames.child, worker)
-  })
+  }))
 
-  test("Right in a subagent moves to the next running one, in the order they started", () => {
+  test("Right in a subagent moves to the next running one, in the order they started", kept.test(() => {
     const from = shown(frames.child)
     const to = shown(frames.sibling)
     expect(from).toBeDefined()
@@ -125,11 +125,11 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     if (!from || !to) return
     expect(WORKERS.indexOf(to)).toBe((WORKERS.indexOf(from) + 1) % WORKERS.length)
     expectSubagent(frames.sibling, to)
-  })
+  }))
 
-  test("a click on the dock's subagent count opens the Subagents picker", () => {
+  test("a click on the dock's subagent count opens the Subagents picker", kept.test(() => {
     const text = frames.dock.join("\n")
     expect(frames.dock[0]).not.toContain("›")
     for (const worker of WORKERS) expect(text).toMatch(new RegExp(`General: ${worker.title} +Running`))
-  })
+  }))
 })

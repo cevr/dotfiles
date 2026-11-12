@@ -175,6 +175,9 @@
         "tests/scratch.ts"
       ],
       "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
     },

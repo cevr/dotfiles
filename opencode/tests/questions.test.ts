@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const RECEIPT = [
   "Asked in the background; nobody has answered yet:",
@@ -59,10 +59,10 @@ const unescaped = (request: string) => request.replaceAll("\\n", "\n").replaceAl
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/questions.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("background questions", () => {
+  const kept = keptScratch(Boolean(fork), "questions-")
   for (const via of ["direct", "kernel"] as const)
-    test(`asked ${via === "direct" ? "through ask_user_async" : "from a kernel cell"}: the tray, /answer's form, one letter per submit, a form closed unanswered`, async () => {
-      using held = scratch(`questions-${via}-`)
-      const out = held.path
+    test(`asked ${via === "direct" ? "through ask_user_async" : "from a kernel cell"}: the tray, /answer's form, one letter per submit, a form closed unanswered`, kept.test(async () => {
+      const out = kept.dir(`questions-${via}-`)
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/questions.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUESTIONS_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -165,5 +165,5 @@ describe.skipIf(!fork)("background questions", () => {
       )
       if (via === "kernel") expect(tools).not.toContain("ask_user_async")
       else expect(tools.filter((name) => name === "ask_user_async")).toHaveLength(3)
-    }, 150_000)
+    }), 150_000)
 })

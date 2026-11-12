@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork)
@@ -77,9 +77,9 @@ function load(out: string, name: string): Saved {
 }
 
 describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-scenario-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-scenario-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
       env: {
@@ -104,15 +104,15 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     frames.details = load(out, label)
     frames.all = load(out, `${label}-all`)
     frames.overview = load(out, `${label}-overview`)
-  }, 300_000)
+  }), 300_000)
 
-  test("the top bar centres the title and the cost", () => {
+  test("the top bar centres the title and the cost", kept.test(() => {
     for (const saved of Object.values(frames)) {
       expect(saved.lines[0]).toMatch(/^ {30,}fix flaky retry test  \$\d+\.\d\d$/)
     }
-  })
+  }))
 
-  test("the user prompt is fx's user card: a heavy rail on every row, bold text, no band", () => {
+  test("the user prompt is fx's user card: a heavy rail on every row, bold text, no band", kept.test(() => {
     for (const saved of Object.values(frames)) {
       const first = indexOf(saved, /^ ┃ Fix the flaky retry test in src\/net\.py and have a reviewer check it\. It fails/)
       expect(first).toBeGreaterThan(0)
@@ -132,9 +132,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     const y = indexOf(frames.details, /^ ┃ Fix the flaky/)
     const span = frames.details.frame.lines[y]!.spans.find((item) => item.text.startsWith("Fix the flaky"))
     expect((span?.attributes ?? 0) & 1).toBe(1)
-  })
+  }))
 
-  test("one blank row parts the prompt from what follows, at every level but Overview", () => {
+  test("one blank row parts the prompt from what follows, at every level but Overview", kept.test(() => {
     const prompt = (saved: Saved) => indexOf(saved, /^ ┃ \S.*always on the last attempt\.$/)
     // The first step thought, then answered: its thought is a one-node group under the prompt.
     expect(frames.details.lines.slice(prompt(frames.details) + 1, prompt(frames.details) + 3)).toEqual([
@@ -146,9 +146,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  ● Thought",
     ])
     expect(frames.overview.lines[prompt(frames.overview) + 1]).toBe("  Reading the retry test and its helper.")
-  })
+  }))
 
-  test("Details: each model step is a group of its own; a step's calls share its header; a lone call is one line", () => {
+  test("Details: each model step is a group of its own; a step's calls share its header; a lone call is one line", kept.test(() => {
     const details = frames.details
     const rows = [
       // A step that thought, then answered: a one-node tree, its thought folded to a line, faint.
@@ -201,9 +201,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     // Details keeps the diff's far context collapsed, and the call's background-start answer.
     expect(details.text).not.toContain("backoff(i)")
     expect(details.text).not.toContain("working in the background")
-  })
+  }))
 
-  test("the dock: an empty hint line, fx rail composer, tray with context use, rule, and no activity counts with nothing active", () => {
+  test("the dock: an empty hint line, fx rail composer, tray with context use, rule, and no activity counts with nothing active", kept.test(() => {
     const details = frames.details
     // The hint line keeps its row but stands empty: no subagent to move to, no standing Ctrl+O hint, and no update
     // notice (opencode-drive's scratch XDG state dir holds no upstream reading, update.ts `upstreamFile`).
@@ -222,9 +222,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     // The composer is fx's bare rail: drawn in the text colour, with no fill behind it.
     expect(cellAt(details, hint + 1, 1).fg).toBe(TEXT)
     expect(cellAt(details, hint + 1, 3).bg).not.toBe(BAND)
-  })
+  }))
 
-  test("while the reviewer runs: its call has returned, the parent waits idle, and the dock counts one subagent", () => {
+  test("while the reviewer runs: its call has returned, the parent waits idle, and the dock counts one subagent", kept.test(() => {
     const running = frames.running
     // OpenCode runs every subagent in the background: the call ends as the reviewer starts, a group of its own
     // under the edit's, and the parent's turn ends with no loader while the reviewer works.
@@ -238,9 +238,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(running.text).not.toContain("General finished")
     expect(running.text).not.toContain("reviewer approved")
     expect(cell(running, "◆ 1 subagent").fg).toBe(SUCCESS)
-  })
+  }))
 
-  test("All: a row per call with Prime's counts, the whole diff, output and the agent's reply", () => {
+  test("All: a row per call with Prime's counts, the whole diff, output and the agent's reply", kept.test(() => {
     const all = frames.all
     expect(all.text).not.toContain("Ctrl+O to")
     const lines = [
@@ -283,9 +283,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     ])
     // The subagent's result envelope never shows.
     expect(all.text).not.toContain("<subagent")
-  })
+  }))
 
-  test("Overview: each group is its header, plus a row per failure; no thinking, no diffs, no blank rows", () => {
+  test("Overview: each group is its header, plus a row per failure; no thinking, no diffs, no blank rows", kept.test(() => {
     const overview = frames.overview
     expect(overview.text).not.toContain("Ctrl+O to")
     expect(overview.text).not.toContain("Look at the test first")
@@ -306,15 +306,15 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     const first = indexOf(overview, row(rows[0]!))
     expect(first).toBeGreaterThan(0)
     rows.forEach((line, index) => expect(overview.lines[first + index]).toMatch(row(line)))
-  })
+  }))
 
-  test("the splash stays on screen in every mode", () => {
+  test("the splash stays on screen in every mode", kept.test(() => {
     for (const saved of Object.values(frames)) {
       expect(saved.text).toMatch(/^ {2}opencode \S+\n {2}model simulation\/gpt-sim-model\n {2}cwd \S+$/m)
     }
-  })
+  }))
 
-  test("key cells carry Prime's colours", () => {
+  test("key cells carry Prime's colours", kept.test(() => {
     const details = frames.details
     expect(cell(details, "Reading the retry test").fg).toBe(PROSE)
     // A settled group's glyph is muted; a failed one is the error colour, as is its failure count and reason.
@@ -336,5 +336,5 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(cell(details, "2 -     for", 8)).toEqual({ fg: KEYWORD, bg: DIFF.removedBg })
     expect(cell(details, "for i in range(retries - 1)").bg).toBe(DIFF.removedBg)
     expect(cell(details, "for i in range(retries):").bg).toBe(DIFF.addedBg)
-  })
+  }))
 })

@@ -13,7 +13,7 @@ import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -27,12 +27,13 @@ const HOUR = 3_600_000
 const RUN_TIMEOUT_MS = 120_000
 
 describe.skipIf(!ready)("OpenCode runs on gent's Claude accounts through the pool (real OpenCode, fake Anthropic)", () => {
-  const root = scratchWhen(ready, "pool-gent-opencode-")
-  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  const kept = keptScratch(ready, "pool-gent-opencode-", true)
+  const root = kept.path
+  afterAll(() => kept.done())
 
   test(
     "the turn goes out on the gent slot the pool picked, and fails over to the next gent slot",
-    async () => {
+    kept.test(async () => {
       const accounts = { alpha: fakeAccount(), beta: fakeAccount() }
       const store = join(root, "gent-auth")
       const gent = await openGentStore(store)
@@ -121,7 +122,7 @@ describe.skipIf(!ready)("OpenCode runs on gent's Claude accounts through the poo
       } finally {
         await fake.stop()
       }
-    },
+    }),
     RUN_TIMEOUT_MS + 30_000,
   )
 })

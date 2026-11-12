@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/tui-cpu.test.ts: skipped. Set OPENCODE_DEV to an OpenCode checkout to run it.")
@@ -25,9 +25,9 @@ let result: Result
 let busy: string
 
 describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents stream (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("tui-cpu-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "tui-cpu-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("tui-cpu-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/tui-cpu.ts"], {
       cwd: root,
       env: {
@@ -44,15 +44,15 @@ describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents str
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     result = JSON.parse(readFileSync(join(out, "cpu.json"), "utf8"))
     busy = readFileSync(join(out, "busy.txt"), "utf8")
-  }, 300_000)
+  }), 300_000)
 
-  test("the measured window is the working session: its answer streams and three subagent rows work", () => {
+  test("the measured window is the working session: its answer streams and three subagent rows work", kept.test(() => {
     expect(busy).toContain("main word")
     expect(busy.split("\n").filter((line) => /◆|◇/.test(line) && /Fix module \d/.test(line))).toHaveLength(3)
     expect(result.busy).toHaveLength(1)
-  })
+  }))
 
-  test(`the TUI stays under ${BUDGET} of a core while it works`, () => {
+  test(`the TUI stays under ${BUDGET} of a core while it works`, kept.test(() => {
     expect(result.busy[0]!.share).toBeLessThan(BUDGET)
-  })
+  }))
 })

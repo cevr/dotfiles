@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-send.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -28,15 +28,15 @@ const ANSWER = "Shipped and tagged."
 const count = (text: string, needle: string) => text.split(needle).length - 1
 
 describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuck in a shell call and sends what waits (OPENCODE_DEV)", (chord) => {
+  const kept = keptScratch(Boolean(fork), "escape-send-")
   let before = ""
   let after = ""
   let checked = ""
   let tool = ""
   let requests: ReadonlyArray<ReadonlyArray<string>> = []
 
-  beforeAll(async () => {
-    using held = scratch(`escape-send-${chord}-`)
-    const out = held.path
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir(`escape-send-${chord}-`)
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-send.ts"], {
       cwd: root,
       env: { ...process.env, CHORD: chord, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -50,9 +50,9 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     checked = readFileSync(join(out, "checked.txt"), "utf8")
     tool = readFileSync(join(out, "tool.txt"), "utf8")
     requests = JSON.parse(readFileSync(join(out, "requests.json"), "utf8"))
-  }, 300_000)
+  }), 300_000)
 
-  test("before the press: the shell runs, one prompt is queued, the draft is in the composer and the hint names the key", () => {
+  test("before the press: the shell runs, one prompt is queued, the draft is in the composer and the hint names the key", kept.test(() => {
     // The running call's dot pulses.
     expect(before).toMatch(/[●○] Running sleep 600/)
     expect(before).toContain(`◌ after the turn · ${LATER}`)
@@ -60,15 +60,15 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     // The hint stands alone on its line: no standing Ctrl+O hint, and no update notice in the scenario's scratch state.
     expect(before).toMatch(/^ Ctrl\+Enter interrupt and send$/m)
     expect(before).not.toContain("Ctrl+O to")
-  })
+  }))
 
-  test("the press cuts the shell call, as Escape does, and the turn reads interrupted once", () => {
+  test("the press cuts the shell call, as Escape does, and the turn reads interrupted once", kept.test(() => {
     expect(tool).toBe("interrupted")
     expect(after).toContain("● Ran sleep 600 · cancelled")
     expect(count(after, "■ Interrupted")).toBe(1)
-  })
+  }))
 
-  test("both prompts go out after the interrupt, the queued one first, each once, and the answer comes", () => {
+  test("both prompts go out after the interrupt, the queued one first, each once, and the answer comes", kept.test(() => {
     const order = [ASK, "■ Interrupted", LATER, DRAFT].map((line) => after.indexOf(line))
     expect(order.every((index) => index >= 0)).toBe(true)
     expect(order).toEqual(order.toSorted((a, b) => a - b))
@@ -82,12 +82,12 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     expect(after).not.toContain("◌")
     expect(after).toMatch(/^ ┃$/m)
     expect(after).not.toContain("interrupt and send")
-  })
+  }))
 
-  test("the model is sent each prompt once, the queued one first; the draft in the same request or the turn's next step", () => {
+  test("the model is sent each prompt once, the queued one first; the draft in the same request or the turn's next step", kept.test(() => {
     expect(requests.length).toBeGreaterThanOrEqual(1)
     expect(requests.length).toBeLessThanOrEqual(2)
     expect(requests[0]?.slice(0, 2)).toEqual([ASK, LATER])
     expect(requests.at(-1)).toEqual([ASK, LATER, DRAFT])
-  })
+  }))
 })

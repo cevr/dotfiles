@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-escape.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -31,9 +31,9 @@ const dock = (frame: ReadonlyArray<string>) => {
 }
 
 describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it, in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-escape-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-escape-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-escape-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-escape.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -47,30 +47,30 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-  }, 300_000)
+  }), 300_000)
 
-  test("just after sending, the Dock shows no Escape hint", () => {
+  test("just after sending, the Dock shows no Escape hint", kept.test(() => {
     // The Dock is drawn (its tray row is there), and its top row carries no hint.
     expect(dock(frames["cancel-hint"])).toMatch(/\S/)
     expect(dock(frames["cancel-hint"])).not.toContain("esc ")
-  })
+  }))
 
-  test("Escape at 1 s: the prompt leaves the transcript and is back in the composer", () => {
+  test("Escape at 1 s: the prompt leaves the transcript and is back in the composer", kept.test(() => {
     const { transcript, composer } = split(frames.cancelled)
     expect(transcript.join("\n")).not.toContain("Rename the helper.")
     expect(transcript.join("\n")).not.toContain("Working on it")
     expect(composer).toBe(" ┃ Rename the helper.")
     // An idle session with an empty Escape: no hint.
     expect(dock(frames.cancelled)).not.toContain("esc ")
-  })
+  }))
 
-  test("7 s after sending, the Dock still shows no Escape hint", () => {
+  test("7 s after sending, the Dock still shows no Escape hint", kept.test(() => {
     expect(dock(frames["interrupt-hint"])).not.toContain("esc ")
-  })
+  }))
 
-  test("Escape at 7 s interrupts: the prompt and its partial answer stay", () => {
+  test("Escape at 7 s interrupts: the prompt and its partial answer stay", kept.test(() => {
     const { transcript, composer } = split(frames.interrupted)
     expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
     expect(composer).toBe(" ┃")
-  })
+  }))
 })

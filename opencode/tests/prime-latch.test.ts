@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-latch.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -40,9 +40,9 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 }
 
 describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
-  beforeAll(async () => {
-    using held = scratch("prime-latch-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "prime-latch-")
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-latch-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-latch.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -55,23 +55,23 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     listing = (JSON.parse(readFileSync(join(out, "latch-wakes.json"), "utf8")) as { request: string }).request
     calls = jsonl(join(out, "agents.jsonl"))
     paces = jsonl(join(out, "pace.jsonl"))
-  }, 300_000)
+  }), 300_000)
 
-  test("the held foreground call answers latched at once, and the parent goes on", () => {
+  test("the held foreground call answers latched at once, and the parent goes on", kept.test(() => {
     expect(frames["latch-latched"].join("\n")).toContain("Latched; I will hear back.")
-  })
+  }))
 
-  test("its row reads latched, with the hold and when it opens, and the dock counts it", () => {
+  test("its row reads latched, with the hold and when it opens, and the dock counts it", kept.test(() => {
     expect(rows(frames["latch-latched"])).toEqual([expect.stringMatching(/^◇ worker gpt  Check the export  pace · opens \d\d:\d\d · \d+s$/)])
     expect(frames["latch-latched"].some((line) => line.includes("◆ 1 subagent  ·"))).toBe(true)
-  })
+  }))
 
-  test("wake_list shows the latch: the subagent, its child, the hold and when it opens", () => {
+  test("wake_list shows the latch: the subagent, its child, the hold and when it opens", kept.test(() => {
     expect(listing).toContain("latch · the worker subagent \\\"Check the export\\\" (sessionID: ses_")
     expect(listing).toContain("held by the pace: scripted 5h window is full · opens ")
-  })
+  }))
 
-  test("decided again while still held it latches again; once admitted it starts in the background on its child", () => {
+  test("decided again while still held it latches again; once admitted it starts in the background on its child", kept.test(() => {
     expect(calls.map((line) => line.kind)).toEqual(["latched", "done", "latched", "call", "done"])
     const child = calls[0]?.child
     expect(typeof child).toBe("string")
@@ -84,11 +84,11 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     const at = paces.map((line) => Number(line.at))
     expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(5_000)
     expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(5_000)
-  })
+  }))
 
-  test("its answer wakes the parent, and its row reads done", () => {
+  test("its answer wakes the parent, and its row reads done", kept.test(() => {
     const frame = frames["latch-done"]
     expect(frame.join("\n")).toContain("Root heard: the export check passed.")
     expect(rows(frame)).toContainEqual(expect.stringMatching(/^◆ worker gpt  Check the export  /))
-  })
+  }))
 })

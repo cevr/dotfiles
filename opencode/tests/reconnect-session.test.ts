@@ -34,7 +34,7 @@ import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/reconnect-session.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -152,7 +152,8 @@ const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean,
 }
 
 describe.skipIf(!fork)("a TUI on the background service across a service restart", () => {
-  const root = scratchWhen(Boolean(fork), "reconnect-session-")
+  const kept = keptScratch(Boolean(fork), "reconnect-session-", true)
+  const root = kept.path
   const home = join(root, "home")
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)
@@ -196,7 +197,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
     if (existsSync(serviceFile)) await opencode("service", "stop")
     sim.stop(true)
     proxyServer.stop(true)
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   /**
@@ -281,7 +282,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   let parent: { readonly id: string }
   let child: { readonly id: string }
   beforeAll(
-    async () => {
+    kept.setup(async () => {
       for (const dir of [work, join(home, ".config/opencode")]) mkdirSync(dir, { recursive: true })
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),
@@ -318,13 +319,13 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       child = await client.session.create({ parentID: parent.id, title: "Reconnect child" })
       await client.session.prompt({ sessionID: child.id, text: "say child-transcript-marker" })
       await client.experimental.session.wait({ sessionID: child.id })
-    },
+    }),
     60_000,
   )
 
   test(
     "after `service restart` the TUI keeps its root/subagent session without an error toast in any frame",
-    async () => {
+    kept.test(async () => {
       type Case = { readonly busy?: boolean; readonly gone?: string; readonly booting?: boolean; readonly bootingAll?: boolean; readonly draft?: boolean; readonly starting?: boolean }
       const run = async (name: string, sessionID: string, marker: string, { busy = false, gone, booting = false, bootingAll = false, draft = false, starting = false }: Case = {}) => {
         const socket = join(root, `${name}.sock`)
@@ -424,13 +425,13 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       await client.session.prompt({ sessionID: worker.id, text: "say worker-transcript-marker" })
       await client.experimental.session.wait({ sessionID: worker.id })
       await run("gone", worker.id, "worker-transcript-marker", { gone: rift })
-    },
+    }),
     TIMEOUT_MS,
   )
 
   test(
     "a TUI opened while the service is down or booting waits for it, says so, and opens its session",
-    async () => {
+    kept.test(async () => {
       refused.clear()
       unavailableUntil = 0
       proxy.up()
@@ -490,13 +491,13 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
             unavailableUntil = 0
           })
       expect(failures).toEqual([])
-    },
+    }),
     TIMEOUT_MS,
   )
 
   test(
     "a TUI opened on the background service while it is stopped or restarting opens its session",
-    async () => {
+    kept.test(async () => {
       refused.clear()
       unavailableUntil = 0
       proxy.up()
@@ -533,7 +534,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       // Restarting: opened while `service restart` stops the service and starts the next one.
       await open("managed-restarting", async () => expect(await opencode("service", "restart")).toMatchObject({ code: 0 }))
       service = await ready(serviceFile, () => "the restarted service")
-    },
+    }),
     TIMEOUT_MS,
   )
 

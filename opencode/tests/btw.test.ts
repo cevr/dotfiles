@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 interface Message {
   readonly role: string
@@ -30,9 +30,9 @@ const textOf = (message: Message) =>
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/btw.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("/btw", () => {
-  test("answers a side question in a pane while the session works, follows up, reopens, and brings the answer back once", async () => {
-    using held = scratch("btw-pane-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "btw-")
+  test("answers a side question in a pane while the session works, follows up, reopens, and brings the answer back once", kept.test(async () => {
+    const out = kept.dir("btw-pane-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/btw.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -101,5 +101,5 @@ describe.skipIf(!fork)("/btw", () => {
     expect(textOf(notices[0] ?? { role: "user" })).toContain("Question:\nWhich command?\n\nAnswer:\nThe sleep in the shell call.")
     expect(back.map(textOf)).toContain("The check passed.")
     for (const message of back) expect(textOf(message)).not.toBe(note)
-  }, 150_000)
+  }), 150_000)
 })

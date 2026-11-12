@@ -14,7 +14,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-window.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -22,11 +22,11 @@ if (!fork) console.warn("tests/prime-window.test.ts: skipped. Set OPENCODE_DEV t
 const root = join(import.meta.dir, "..")
 
 describe.skipIf(!fork)("the tray's context share under an agent's compaction window (OPENCODE_DEV)", () => {
+  const kept = keptScratch(Boolean(fork), "prime-window-")
   let frame = ""
 
-  beforeAll(async () => {
-    using held = scratch("prime-window-")
-    const out = held.path
+  beforeAll(kept.setup(async () => {
+    const out = kept.dir("prime-window-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
       env: {
@@ -45,11 +45,11 @@ describe.skipIf(!fork)("the tray's context share under an agent's compaction win
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     frame = readFileSync(join(out, "window.txt"), "utf8")
-  }, 300_000)
+  }), 300_000)
 
-  test("64k on a 262k model whose agent compacts at 128k reads 50%, then the turn's cache share", () => {
+  test("64k on a 262k model whose agent compacts at 128k reads 50%, then the turn's cache share", kept.test(() => {
     // The turn's one metered step read 60k of its 63k prompt tokens from the cache: 95%, after the context share, right-aligned.
     expect(frame).toMatch(/^ {20,}gpt-sim-model · 64k \(50%\) · cache 95%$/m)
     expect(frame).not.toContain("(24%)")
-  })
+  }))
 })

@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const LINE = "idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on."
 
@@ -17,9 +17,9 @@ const count = (text: string, part: string) => text.split(part).length - 1
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-root.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("an idle root with units to move", () => {
-  test("is steered once, after its planner ends and the owner's draft clears, and names its wait", async () => {
-    using held = scratch("idle-root-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "idle-root-")
+  test("is steered once, after its planner ends and the owner's draft clears, and names its wait", kept.test(async () => {
+    const out = kept.dir("idle-root-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/idle-root.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -55,5 +55,5 @@ describe.skipIf(!fork)("an idle root with units to move", () => {
     expect(count(final, LINE)).toBe(1)
     const requests: ReadonlyArray<string> = JSON.parse(readFileSync(join(out, "idle-root-requests.json"), "utf8"))
     expect(requests.filter((last) => last.includes(LINE))).toHaveLength(1)
-  }, 200_000)
+  }), 200_000)
 })

@@ -20,7 +20,7 @@ import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
-import { scratchWhen } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -86,11 +86,12 @@ const until = async <A>(read: () => Promise<A>, done: (value: A) => boolean, lab
 }
 
 describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report.ts, fake Anthropic, scripted model)", () => {
-  const root = scratchWhen(ready, "pool-fleet-")
+  const kept = keptScratch(ready, "pool-fleet-", true)
+  const root = kept.path
   const hosts: Array<Host> = []
   afterAll(async () => {
     await Promise.all(hosts.map((host) => host.stop()))
-    rmSync(root, { recursive: true, force: true })
+    kept.done()
   })
 
   /** Start the fork's service in a scratch HOME with `config` as its global config, and wait for its service file. */
@@ -156,7 +157,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
 
   test(
     "a wave admitted on one host holds the other's pace before any reading shows it, and a down peer is named",
-    async () => {
+    kept.test(async () => {
       const sim = serve()
       const now = Date.now()
       // Two accounts at half a week's use with half the week left: within the pace on their own.
@@ -299,7 +300,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         await fake.stop()
         sim.server.stop(true)
       }
-    },
+    }),
     TIMEOUT_MS,
   )
 })

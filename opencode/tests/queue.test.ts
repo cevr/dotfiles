@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 /** The rows the sidebar shows after the set, in its order: grouped, the linked item running, no row for the unnamed worker. */
 const SET_ROWS = [
@@ -46,10 +46,10 @@ const toolNames = (transcript: ReadonlyArray<ReadonlyArray<Message>>): ReadonlyA
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/queue.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the Queue section of the sidebar", () => {
+  const kept = keptScratch(Boolean(fork), "queue-")
   for (const via of ["direct", "kernel"] as const)
-    test(`shows the queue kept ${via === "direct" ? "through the queue tool" : "from a kernel cell"}, a linked item's live state, and follows a patch`, async () => {
-      using held = scratch(`queue-${via}-`)
-      const out = held.path
+    test(`shows the queue kept ${via === "direct" ? "through the queue tool" : "from a kernel cell"}, a linked item's live state, and follows a patch`, kept.test(async () => {
+      const out = kept.dir(`queue-${via}-`)
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/queue.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUEUE_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -91,5 +91,5 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
         expect(tools).not.toContain("queue")
         expect(tools).toContain("kernel")
       } else expect(tools.filter((name) => name === "queue")).toHaveLength(2)
-    }, 150_000)
+    }), 150_000)
 })

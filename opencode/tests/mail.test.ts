@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
-import { scratch } from "./scratch.ts"
+import { keptScratch } from "./scratch.ts"
 
 interface Request {
   readonly session: "A" | "B" | "C" | "title"
@@ -45,9 +45,9 @@ const letters = (transcript: Transcript): ReadonlyArray<Message> => transcript.m
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("session mail", () => {
-  test("a message wakes an idle session, which answers its sender, and a running session reads one at its next step", async () => {
-    using held = scratch("mail-")
-    const out = held.path
+  const kept = keptScratch(Boolean(fork), "mail-")
+  test("a message wakes an idle session, which answers its sender, and a running session reads one at its next step", kept.test(async () => {
+    const out = kept.dir("mail-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/mail.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -106,5 +106,5 @@ describe.skipIf(!fork)("session mail", () => {
     expect(cNext).toContain(`✉ Message from session \\"Mail A\\" (${a.id})`)
     expect(of("C")).toHaveLength(2)
     expect(JSON.stringify(c.messages)).toContain("C read the steer")
-  }, 150_000)
+  }), 150_000)
 })
