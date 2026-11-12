@@ -141,7 +141,7 @@ describe("stale ledger state", () => {
     expect(departureLines(drift)).toEqual(["2027-01-15T08:11Z FindingUnfolded (stale): stale ledger: tui/B1 was accepted in batch l"])
   })
 
-  test("a departure with no refusal to decide again is judged by its rule: a finding folded into an ended unit still held it", () => {
+  test("a departure with no refusal to decide again is judged by its rule: a finding folded into an ended unit is settled, so it held nothing", () => {
     const lines = [
       ...written.slice(0, 9),
       line(8 * MIN, "VerifierStarted", { batch: "batch-m", units: [] }),
@@ -153,8 +153,8 @@ describe("stale ledger state", () => {
       line(11 * MIN, "UnitHandedBack", { unit: "push", ready: true }),
       line(12 * MIN, "Departed", { rule: "FindingUnfolded", why: "stale ledger: up/M1 rides with up" }),
     ]
-    expect(driftOf(DEFAULT_CADENCE, lines).counts).toEqual({ ...CLEAN.counts, departed: 1 })
-    // While up still implements, the finding rides with it: the same departure broke nothing.
+    expect(driftOf(DEFAULT_CADENCE, lines).counts).toEqual({ ...CLEAN.counts, stale: 1 })
+    // While up still implements, the finding rides with it: the same departure broke nothing either.
     expect(driftOf(DEFAULT_CADENCE, lines.filter((each) => !(each.kind === "UnitHandedBack" && each.unit === "up"))).counts).toEqual({ ...CLEAN.counts, stale: 1 })
   })
 
@@ -196,8 +196,8 @@ describe("stale ledger state", () => {
   })
 
   test("property: over the folded unit's state, a refused call or none, and a verifier start between or none, the departure's kind is the reference's", () => {
-    const heldByTheCall: Readonly<Record<UpState, boolean>> = { implement: false, ready: true, ended: true }
-    const heldAlone: Readonly<Record<UpState, boolean>> = { implement: false, ready: false, ended: true }
+    const heldByTheCall: Readonly<Record<UpState, boolean>> = { implement: false, ready: true, ended: false }
+    const heldAlone: Readonly<Record<UpState, boolean>> = { implement: false, ready: false, ended: false }
     const cases = UP_STATES.flatMap((up) => [false, true].flatMap((refused) => [false, true].map((between) => ({ up, refused, between }))))
     const judged = cases.map(({ up, refused, between }) => {
       const answered = refused && !between

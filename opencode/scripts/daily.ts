@@ -33,7 +33,7 @@ import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } f
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
-import { registerMergeDriver } from "./effect-debt.ts"
+import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
 import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
@@ -287,6 +287,51 @@ export const moveFork = <I>(
     ),
   )
 
+/** The land locks daily's fork steps take: `move` (the checks lock) to change prime-look, `tests` (the accept lock) to test it. */
+export interface ForkLocks {
+  readonly move: <A>(step: () => Promise<A>) => Promise<A>
+  readonly tests: <A>(step: () => Promise<A>) => Promise<A>
+}
+
+/** What daily does to prime-look, each step unlocked; `forkSteps` puts each inside its lock. */
+export interface ForkWork<I, C> {
+  readonly sync: () => SyncOutcome
+  readonly head: Effect.Effect<string>
+  readonly install: Effect.Effect<I>
+  readonly checks: (dir: string) => Effect.Effect<C>
+  readonly log: (line: string) => void
+}
+
+/**
+ * daily's steps that change or test prime-look, each run whole inside its land lock, since a land's gate
+ * and accept read the checkout: the move to origin and its install (`move`), the upstream merge's fork
+ * tests (`checks`, under the accept lock), and the install after a merge (`reinstall`).
+ */
+export const forkSteps = <I, C>(locks: ForkLocks, work: ForkWork<I, C>) => ({
+  move: () => moveFork(locks.move, work.sync, work.head, work.install, work.log),
+  checks: (dir: string) => locks.tests(() => Effect.runPromise(work.checks(dir))),
+  reinstall: () => locks.move(() => Effect.runPromise(work.install)),
+})
+
+/** The dotfiles checkout daily runs from: its git config gets the merge driver, its workspace the install. */
+export const DOTFILES = resolve(MODS, "../..")
+
+/**
+ * Registers the merge driver in `checkout`, daily's own dotfiles checkout, then runs `install`. A checkout
+ * whose .gitattributes routes no file to the driver is not the dotfiles root: daily fails there, before the
+ * install, rather than leave the policy to git's line merge without a word.
+ */
+export const installDotfiles = <I>(checkout: string, install: Effect.Effect<I>): Promise<I> =>
+  Effect.runPromise(
+    registerMergeDriver(checkout).pipe(
+      Effect.filterOrFail(
+        (registered) => registered !== "unrouted",
+        () => new MergeDriverError({ message: `${checkout}'s .gitattributes routes no file to the merge driver effect-debt; daily registers it in its own dotfiles checkout` }),
+      ),
+      Effect.andThen(install),
+    ),
+  )
+
 if (import.meta.main) {
   const home = homedir()
   const args = new Set(process.argv)
@@ -301,6 +346,13 @@ if (import.meta.main) {
   // Step 0 (the Mac only): merge upstream OpenCode into prime-look (scripts/upstream.ts).
   const state = join(home, ".local/state/opencode-daily")
   const locks = hostLocks(env)
+  const steps = forkSteps(locks, {
+    sync: () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log }),
+    head: Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()),
+    install: Effect.promise(() => $`bun install --frozen-lockfile`.cwd(fork).quiet()),
+    checks: (dir) => Effect.promise(() => forkChecks(resolve(MODS, ".."), fork, env.GENT_SOURCE || "")(dir)),
+    log: console.log,
+  })
   const upstream = (dryRun: boolean) =>
     mergeUpstream({
       fork,
@@ -308,19 +360,13 @@ if (import.meta.main) {
       skip: args.has("--no-upstream"),
       dryRun,
       landing: locks.moveSync,
-      checks: (dir) => locks.tests(() => forkChecks(resolve(import.meta.dir, ".."), fork, env.GENT_SOURCE || "")(dir)),
+      checks: steps.checks,
       worktree: join(state, "upstream-merge"),
       report: join(state, "upstream-conflict.md"),
       log: console.log,
     })
   // Before the merge and the build, so neither starts from a prime-look origin has moved past.
-  await moveFork(
-    locks.move,
-    () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log }),
-    Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()),
-    Effect.promise(() => $`bun install --frozen-lockfile`.cwd(fork).quiet()),
-    console.log,
-  )
+  await steps.move()
   if (args.has("--dry-run")) {
     const outcome = await upstream(true)
     if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
@@ -335,7 +381,7 @@ if (import.meta.main) {
   // through those links at load time (scripts/link-fork.ts).
   const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...env, OPENCODE_DEV: fork }).quiet()
   await linkFork()
-  await Effect.runPromise(registerMergeDriver(resolve(MODS, "../..")).pipe(Effect.andThen(Effect.promise(() => $`bun install --frozen-lockfile`.cwd(resolve(MODS, "..")).quiet()))))
+  await installDotfiles(DOTFILES, Effect.promise(() => $`bun install --frozen-lockfile`.cwd(resolve(MODS, "..")).quiet()))
   await linkFork()
 
   // After the links, since the merge's acceptance tests load the mods through them.
@@ -345,7 +391,7 @@ if (import.meta.main) {
   if (outcome.kind === "merged") {
     if ((await $`git -C ${fork} rev-parse HEAD`.text()).trim() === outcome.merge) {
       // The build skips its install; the merge may have changed the fork's dependencies.
-      await locks.move(() => $`bun install --frozen-lockfile`.cwd(fork).quiet())
+      await steps.reinstall()
       await linkFork()
     } else console.log(`upstream: ${fork} does not have prime-look checked out, so this build leaves the merge out`)
   }

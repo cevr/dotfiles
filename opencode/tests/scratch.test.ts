@@ -86,44 +86,24 @@ const runCases = async (tmp: string, ...args: ReadonlyArray<string>) => {
 /** How long a child run of the cases gets: they hang for 50 ms at most. */
 const CASES_MS = 60_000
 
-describe("an e2e suite's kept directory", () => {
+/** The cases that fail, by the full names Bun reports: a test, a setup, a timeout or a late setup each. */
+const FAILING_CASES = [
+  "failing > first",
+  "setup-failing > setup",
+  "timing-out > hangs",
+  "setup-timing-out > setup",
+  "closing-after-timeout > hangs",
+  "closing-after-late-setup > setup",
+]
+
+describe("an e2e suite's directory", () => {
   test(
-    "goes when the suite passes, and stays, named in its output, when a test or setup fails or runs out of time",
+    "goes at the suite's end whether the suite passed, failed, or ran out of time, and no output names it as kept",
     async () => {
       using tmp = scratch("scratch-cases-")
       const { code, output, left } = await runCases(tmp.path)
-      const kept = (prefix: string) => left.filter((name) => name.startsWith(prefix))
-      const named = (prefix: string) =>
-        kept(prefix).map((name) => ({
-          name,
-          inError: output.includes(`(its frames and logs, kept: ${tmp.path}/${name})`),
-          atEnd: output.includes(`kept the failed suite's frames and logs: ${tmp.path}/${name}`),
-        }))
-      const keptAndNamed = (prefix: string) => [{ name: expect.stringMatching(new RegExp(`^${prefix}`)), inError: true, atEnd: true }]
-      expect(code).toBe(1)
-      expect({
-        passing: kept("kept-passing-"),
-        setupPassing: kept("kept-setup-passing-"),
-        closing: kept("kept-closes-"),
-        skipped: kept("kept-skipped-"),
-        failing: named("kept-failing-"),
-        setupFailing: named("kept-setup-failing-"),
-        timingOut: named("kept-timing-out-"),
-        setupTimingOut: named("kept-setup-timing-out-"),
-        closingAfterTimeout: named("kept-closing-after-timeout-"),
-        closingAfterLateSetup: named("kept-closing-after-late-setup-"),
-      }).toEqual({
-        passing: [],
-        setupPassing: [],
-        closing: [],
-        skipped: [],
-        failing: keptAndNamed("kept-failing-"),
-        setupFailing: keptAndNamed("kept-setup-failing-"),
-        timingOut: keptAndNamed("kept-timing-out-"),
-        setupTimingOut: [{ name: expect.stringMatching(/^kept-setup-timing-out-/), inError: false, atEnd: true }],
-        closingAfterTimeout: keptAndNamed("kept-closing-after-timeout-"),
-        closingAfterLateSetup: keptAndNamed("kept-closing-after-late-setup-"),
-      })
+      const failed = FAILING_CASES.filter((name) => output.includes(`(fail) ${name}`))
+      expect({ code, failed, left, namedKept: /kept: |kept the failed/.test(output) }).toEqual({ code: 1, failed: FAILING_CASES, left: [], namedKept: false })
     },
     CASES_MS,
   )

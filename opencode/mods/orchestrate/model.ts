@@ -833,16 +833,28 @@ export const machineLayer = (config: MachineConfig) =>
           return (yield* liveness.alive(child)) || (yield* sessions.latchOf(child)) !== undefined
         })
 
+      /** The verdict an implementor's session hands `name` back with in its last words; `none` when they hand back no such step. */
+      const lastVerdictOf = (name: string, child: Option.Option<string>) =>
+        Effect.map(Effect.forEach(Option.toArray(child), (id) => sessions.lastWordsOf(id)), (words) =>
+          Option.fromNullishOr(stepHandBackOf("implementor", words.join("\n"))).pipe(
+            Option.filter((back) => back.name === name),
+            Option.map((back) => back.verdict),
+            Option.getOrElse((): HandBack["verdict"] => "none"),
+          ),
+        )
+
       /**
        * The ledger can miss an end (a restart, a cancelled latch, a child that never handed back): each
        * implementor and the verifier that no longer works is handed back as `none` before a decision reads them.
+       * An implementor whose session's last words hand its unit back says so first: a land made the moment it
+       * handed back would otherwise end it ahead of its own hand-back (the ledger of 2026-11-12, batch af).
        */
       const reconcile = (root: string, state: MachineState) =>
         Effect.gen(function* () {
           const dead: Array<MachineCommand> = []
           for (const [name, unit] of Object.entries(state.units)) {
-            if (unit.state === "implement" && !(yield* working(root, "implementor", name, unit.child)))
-              dead.push(HandBack.make({ role: "implementor", name, verdict: "none" }))
+            if (unit.state !== "implement" || (yield* working(root, "implementor", name, unit.child))) continue
+            dead.push(HandBack.make({ role: "implementor", name, verdict: yield* lastVerdictOf(name, Option.fromNullishOr(unit.child)) }))
           }
           const verifier = state.verifier
           if (verifier !== undefined && !(yield* working(root, "verifier", verifier.batch, verifier.child)))

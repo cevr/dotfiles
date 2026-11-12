@@ -2,8 +2,8 @@
  * `bun scripts/effect-debt.ts`: the ratchet over oxlint-plugin-effect's recommended rules.
  *
  * `.oxlintrc.json` holds the rules the workspace already keeps as hard errors. Every other
- * recommended rule is debt: `.oxlintrc.effect-debt.json` runs the pinned preset over every
- * source file git tracks or would track, and `effect-debt.json` holds a budget per exact file
+ * recommended rule but the `DROPPED` ones (`noComments`) is debt: `.oxlintrc.effect-debt.json`
+ * runs the pinned preset, less those, over every source file git tracks or would track, and `effect-debt.json` holds a budget per exact file
  * and rule. `--check` fails unless each count equals its own budget (a missing budget is
  * zero), so new debt fails and removed debt must be taken out of the policy in the same
  * change. A failed oxlint run, a parse error, a missing file, an unknown rule or a drifted
@@ -44,6 +44,13 @@ const MEASURE_CONFIG = "node_modules/.cache/effect-debt/measure.json"
 
 /** The pseudo-rule counting lint suppression directives per file, so a new one cannot hide debt. */
 export const SUPPRESSION = "directive/suppression"
+
+/**
+ * Rules of the preset the ratchet does not count, by the owner's ruling: `noComments` is a
+ * style preference, not an error class, so neither the enforcing config nor the policy lists it.
+ */
+export const DROPPED: ReadonlyArray<string> = ["effect/noComments"]
+
 
 /** Rules a host contract may switch off for one exact file; anything else stays budgeted. */
 export const EXEMPTABLE = ["effect/noGlobals", "effect/noNodeBuiltinImport", "effect/noAsyncFunction", "effect/noEffectRunInTests"]
@@ -171,6 +178,9 @@ const DebtConfig = Schema.Struct({
 export type DebtConfig = typeof DebtConfig.Type
 const HardConfig = Schema.Struct({ ignorePatterns: Strings, settings: Settings })
 const Preset = Schema.Struct({ plugins: Schema.Tuple([]), jsPlugins: Strings, rules: Rules })
+
+/** The rules the ratchet counts: the installed preset's, less the dropped ones. */
+export const ratchetRules = (preset: typeof Preset.Type) => Arr.filter(Object.keys(preset.rules), (rule) => !DROPPED.includes(rule))
 const Manifest = Schema.Struct({
   devDependencies: Schema.Struct({ oxlint: Schema.String, [PLUGIN]: Schema.optionalKey(Schema.String) }),
   dependencies: Schema.optionalKey(Schema.Struct({ [PLUGIN]: Schema.optionalKey(Schema.String) })),
@@ -386,11 +396,11 @@ const versionProblems = (inputs: Inputs) => {
 }
 
 const ruleProblems = (inputs: Inputs) => {
-  const preset = Object.keys(inputs.preset.rules)
+  const preset = ratchetRules(inputs.preset)
   const problems = Arr.flatMap(
     [
-      [sameSet(preset, inputs.policy.rules), `the policy's rules differ from the installed preset's`],
-      [sameSet(preset, Object.keys(inputs.debt.rules)), `${DEBT_CONFIG}'s rules differ from the installed preset's`],
+      [sameSet(preset, inputs.policy.rules), `the policy's rules differ from the installed preset's less ${DROPPED.join(", ")}`],
+      [sameSet(preset, Object.keys(inputs.debt.rules)), `${DEBT_CONFIG}'s rules differ from the installed preset's less ${DROPPED.join(", ")}`],
       [same(inputs.preset.jsPlugins, [`${PLUGIN}/plugin`]), `the installed preset loads ${inputs.preset.jsPlugins.join(", ")}`],
     ] as const,
     unless,
@@ -449,6 +459,7 @@ const budgetProblems = (policy: Policy) => {
   const known = knownRules(policy)
   return Arr.flatMap(Object.entries(policy.budgets), ([file, rules]) =>
     Arr.flatMap(Object.entries(rules), ([rule, budget]) => {
+      if (DROPPED.includes(rule)) return [`${rule} is dropped from the ratchet: remove its budget in ${file}`]
       if (!known.has(rule)) return [`unknown rule ${rule}: budgeted in ${file}, not in the pinned preset`]
       if (budget > 0) return []
       return [`the budget of ${rule} in ${file} is ${budget}; budgets are positive, a missing one is zero`]
@@ -648,7 +659,7 @@ const bootstrap = Effect.fn("EffectDebt.bootstrap")(function* (options: Options)
   const installed = yield* readInstalled(options.root)
   const files = yield* sourceFiles(options.root, installed.debt.ignorePatterns, options.timeoutMs)
   const config = path.join(options.root, DEBT_CONFIG)
-  const found = yield* scan({ root: options.root, oxlint: options.oxlint, config, files, rules: Object.keys(installed.preset.rules).length, timeoutMs: options.timeoutMs })
+  const found = yield* scan({ root: options.root, oxlint: options.oxlint, config, files, rules: ratchetRules(installed.preset).length, timeoutMs: options.timeoutMs })
   const all = yield* countsOf(options.root, files, found)
   const tracked = yield* trackedAtHead(options.root, options.timeoutMs)
   const commit = yield* head(options.root, options.timeoutMs)
@@ -657,7 +668,7 @@ const bootstrap = Effect.fn("EffectDebt.bootstrap")(function* (options: Options)
     plugin: installed.plugin,
     oxlint: installed.oxlint,
     provenance: `bun scripts/effect-debt.ts --bootstrap at ${commit}: ${DEBT_CONFIG} over ${files.length} source files with ${PLUGIN} ${installed.plugin} and oxlint ${installed.oxlint}; budgets only for files tracked at that commit`,
-    rules: sorted(Object.keys(installed.preset.rules)),
+    rules: sorted(ratchetRules(installed.preset)),
     ignorePatterns: installed.debt.ignorePatterns,
     testFiles: installed.debt.settings.effect.testFiles,
     exemptions: Arr.map(overridePairs(installed.debt.overrides ?? []).pairs, (pair) => {
@@ -706,40 +717,6 @@ const mergeFiles = Effect.fn("EffectDebt.mergeFiles")(function* (argv: ReadonlyA
   const text = yield* merge.value[1]()
   yield* Effect.try({ try: () => writeFileSync(ours, text), catch: () => new DebtError({ problems: [`cannot write ${ours}`] }) })
   yield* Console.log(`effect-debt: merged ${target} by key`)
-})
-
-/** The merge drivers' one definition, from the dotfiles checkout's root: install.sh reads it too. */
-export const MERGE_DRIVERS = "opencode/merge-drivers.gitconfig"
-
-/** The files `.gitattributes` routes to the driver, from the dotfiles checkout's root. */
-const ROUTED = [`opencode/${POLICY}`, `opencode/${DEBT_CONFIG}`]
-
-const gitIn = (checkout: string, ...argv: ReadonlyArray<string>) => spawn(["git", "-C", checkout, ...argv], checkout, 30_000)
-
-/** A git command that must succeed: its output, or a DebtError naming it. */
-const gitOk = (checkout: string, ...argv: ReadonlyArray<string>) =>
-  gitIn(checkout, ...argv).pipe(
-    Effect.filterOrFail(
-      (answer) => answer.code === 0,
-      (answer) => new DebtError({ problems: [`git ${argv.join(" ")} in ${checkout} exited ${answer.code}: ${answer.stderr.trim()}`] }),
-    ),
-    Effect.map((answer) => answer.stdout.trim()),
-  )
-
-/**
- * Registers the merge driver `effect-debt` in the dotfiles `checkout`'s git config, as install.sh
- * does, when its `.gitattributes` routes a file to it and the config names no such driver: the
- * update plugin never runs install.sh, and a checkout without the driver merges the policy by line.
- * A driver the config already names stays as it is.
- */
-export const registerMergeDriver = Effect.fn("EffectDebt.registerMergeDriver")(function* (checkout: string) {
-  const attributes = yield* gitOk(checkout, "check-attr", "merge", "--", ...ROUTED)
-  if (!attributes.split("\n").some((line) => line.endsWith(": merge: effect-debt"))) return "unrouted" as const
-  const named = yield* Effect.forEach(["name", "driver"], (key) => gitIn(checkout, "config", "--get", `merge.effect-debt.${key}`))
-  if (named.every((answer) => answer.code === 0)) return "present" as const
-  for (const key of ["name", "driver"]) yield* gitOk(checkout, "config", `merge.effect-debt.${key}`, yield* gitOk(checkout, "config", "-f", MERGE_DRIVERS, "--get", `merge.effect-debt.${key}`))
-  yield* Console.log(`effect-debt: registered the merge driver effect-debt in ${checkout}`)
-  return "registered" as const
 })
 
 const MODE_RUNS = {

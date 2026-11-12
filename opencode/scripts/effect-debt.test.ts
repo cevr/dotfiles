@@ -10,25 +10,25 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Order, Result, Schema, type Scope } from "effect"
 import { mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
+import { MERGE_DRIVERS, registerMergeDriver } from "./merge-driver.ts"
 import {
   compare,
   type Counts,
   countsJson,
   DEBT_CONFIG,
   type DebtConfig,
+  DROPPED,
   EXEMPTABLE,
   HARD_CONFIG,
   HOST_BRIDGES,
   type Inputs,
   LINT_MANIFEST,
-  MERGE_DRIVERS,
   overridePairs,
   parseOptions,
   POLICY,
   Policy,
   policyProblems,
   readInstalled,
-  registerMergeDriver,
   serialize,
   serializeConfig,
   spawn,
@@ -314,8 +314,27 @@ describe("the exemption fence: only an exact file, an exemptable rule, a reason 
         const loosened = { ...real.debt.rules, [rule]: ["error", { max: 1 }] as const }
         expect(policyProblems({ ...real, debt: { ...real.debt, rules: loosened } })).toEqual([`${DEBT_CONFIG} sets ${rule} differently from the preset`])
         const fewer = Object.fromEntries(Arr.filter(Object.entries(real.debt.rules), ([each]) => each !== rule))
-        expect(policyProblems({ ...real, debt: { ...real.debt, rules: fewer } })).toContain(`${DEBT_CONFIG}'s rules differ from the installed preset's`)
-        expect(policyProblems({ ...real, policy: { ...realPolicy, rules: Arr.filter(RULES, (each) => each !== rule) } })).toContain(`the policy's rules differ from the installed preset's`)
+        expect(policyProblems({ ...real, debt: { ...real.debt, rules: fewer } })).toContain(`${DEBT_CONFIG}'s rules differ from the installed preset's less effect/noComments`)
+        expect(policyProblems({ ...real, policy: { ...realPolicy, rules: Arr.filter(RULES, (each) => each !== rule) } })).toContain(
+          `the policy's rules differ from the installed preset's less effect/noComments`,
+        )
+      }),
+    ))
+
+  test("noComments stays out of the ratchet: the preset has it, the config, the policy and every budget do not, and putting it back fails", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        const rule = "effect/noComments"
+        expect(DROPPED).toEqual([rule])
+        expect(real.preset.rules[rule]).toBe("error")
+        expect({ config: Object.keys(real.debt.rules).includes(rule), policy: RULES.includes(rule) }).toEqual({ config: false, policy: false })
+        expect(Arr.filter(Object.entries(realPolicy.budgets), ([, rules]) => rule in rules)).toEqual([])
+        const back = { ...real.debt.rules, [rule]: "error" as const }
+        expect(policyProblems({ ...real, debt: { ...real.debt, rules: back } })).toEqual([`${DEBT_CONFIG}'s rules differ from the installed preset's less ${rule}`])
+        expect(policyProblems({ ...real, policy: { ...realPolicy, rules: [...RULES, rule] } })).toEqual([`the policy's rules differ from the installed preset's less ${rule}`])
+        const budgeted = { ...realPolicy.budgets, "mods/demo/model.ts": { [rule]: 3 } }
+        expect(policyProblems({ ...real, policy: { ...realPolicy, budgets: budgeted } })).toEqual([`${rule} is dropped from the ratchet: remove its budget in mods/demo/model.ts`])
       }),
     ))
 })

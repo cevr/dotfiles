@@ -33,7 +33,7 @@
 // before it.
 import { Effect, Option, Predicate, Schema } from "effect"
 import { checkpointOf, eventOf, isRecord, type Line } from "./line.ts"
-import { type Cadence, Command, machine, type MachineState, riding, type Rule, unresolvedOf } from "./machine.ts"
+import { type Cadence, Command, holdsNoLand, machine, type MachineState, type Rule, unresolvedOf } from "./machine.ts"
 
 export const KINDS = ["unfoldedLand", "departed", "verifierPerUnit", "offCadence", "refused", "stale"] as const
 export type Kind = (typeof KINDS)[number]
@@ -119,7 +119,7 @@ const heldAlone = (state: MachineState, rule: Rule): boolean => {
   if (rule !== "FindingUnfolded") return true
   if (unresolvedOf(state).length > 0) return true
   return Object.values(state.findings ?? {}).some((finding) => {
-    if (riding(state, finding)) return false
+    if (holdsNoLand(state, finding)) return false
     if (finding.into === undefined) return true
     const unit = state.units[finding.into]
     // Folded into a unit no longer in the state: a verdict checked it already; into a ready one: the land takes it.

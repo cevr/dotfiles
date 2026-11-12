@@ -710,9 +710,10 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   implementor still runs (BatchNotDue), a land while a landed batch has no
   verdict, its verifier not started or still running, whatever round its
   units have moved on to (VerdictPending), a land with a finding of the last
-  verdict folded into no unit, or into one the land does not take that is not
-  still implementing (a finding folded into a running implementor holds no
-  land: it rides with that unit's later land, whose verifier is told it), or with a `changes` whose
+  verdict folded into no unit, or into a ready unit the land does not take
+  (a finding folded into a running implementor holds no land: it rides with
+  that unit's later land, whose verifier is told it; one folded into a unit
+  that ended is settled, never open again, and the next land drops it), or with a `changes` whose
   report did not read (FindingUnfolded: an unread report is never an empty
   set; the plugin reads it again before each start and land), a land that leaves a ready unit out
   (LandPartial). No rule holds an implementor's start. A refused call
@@ -747,7 +748,10 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
 - **Dead steps hold nothing.** Before a verifier start or a land, each
   implementor or verifier whose session neither runs a turn, nor is latched,
   nor keeps background work of its own (as its last idle listed it), and
-  whose call is not in flight, is handed back as `none`.
+  whose call is not in flight, is handed back as `none`; an implementor
+  whose last words hand its unit back is handed back with that verdict. A
+  `ready` read after such an end, or a land that names an ended unit, takes
+  the unit on as ready.
 - **Notes.** A planner's or implementor's start answers first with a due
   batch, a landed batch with no verifier, the findings it folds, the ones
   still unfolded, a `folds` that names no open finding, or a fourth round.
@@ -2912,11 +2916,15 @@ advice. `settings.effect.testFiles` names the test code beyond `*.test.*`
 (`tests/`, `scenarios/`, `laws.ts`, benchmarks, fakes), for the rules that
 treat tests apart.
 
-Every other recommended rule is debt, held by `scripts/effect-debt.ts`
-(`bun run debt`, also the gate's `debt` leg). `.oxlintrc.effect-debt.json`
-runs the pinned preset, unchanged, over every source file git tracks or would
-track, and `effect-debt.json` is the reviewed policy: the plugin and oxlint
-versions, the preset's rules, the ignores and test globs it was measured with,
+Every other recommended rule but `noComments` is debt, held by
+`scripts/effect-debt.ts` (`bun run debt`, also the gate's `debt` leg).
+`noComments` is not counted: it is a style preference, not an error class, so
+the ratchet drops it (`DROPPED` in `scripts/effect-debt.ts`), and `--check`
+fails when the config, the policy or a budget names it again.
+`.oxlintrc.effect-debt.json` runs the pinned preset less `noComments`, every
+other setting unchanged, over every source file git tracks or would track, and
+`effect-debt.json` is the reviewed policy: the plugin and oxlint versions, the
+rules it counts, the ignores and test globs it was measured with,
 the host exemptions, and a budget per exact file and rule (plus
 `directive/suppression`, each file's count of lint suppressions, so a new one
 cannot hide debt). `--check` fails unless every count equals its own budget: a
