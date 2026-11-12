@@ -1800,6 +1800,18 @@ describe("the batch machine", () => {
       }),
     ))
 
+  test("ledger-stale: a land made before an idle implementor's hand-back is read (no idle seen yet) takes the hand-back its last words say, not none", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready /u/alpha/round-1-request.md" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: true }))
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "BatchLanded", units: ["alpha"] }))
+      }),
+    ))
+
   test("an implementor idle with its own shell still running has not ended: the batch still waits for it", () =>
     scenario(
       Effect.gen(function* () {
