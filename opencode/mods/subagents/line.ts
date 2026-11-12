@@ -24,14 +24,21 @@ import { live, type Row, type State } from "./subagent-row.ts"
 export type Kind = "mark" | "lead" | "role" | "model" | "unit" | "update" | "time" | "stale" | "faint"
 export type Segment = { readonly text: string; readonly kind: Kind }
 
+/** Whether two drawings of a row are the same segments: a view keeps the old ones, and draws nothing. */
+export const sameSegments = (a: ReadonlyArray<Segment>, b: ReadonlyArray<Segment>): boolean =>
+  a.length === b.length && a.every((segment, index) => segment.text === b[index]?.text && segment.kind === b[index]?.kind)
+
 /**
  * The frames a working row's diamond turns through, one each `SPIN_MS`: full,
  * then empty, a slow pulse. Each is one cell, from the Geometric Shapes block.
  */
 export const SPINNER = "◆◇"
 
-/** How long each spinner frame holds: a 1.2 s pulse, calm beside the 100 ms clock. */
-export const SPIN_MS = 600
+/**
+ * How long each spinner frame holds: a 2 s pulse. A second, the unit a row's
+ * time shows, so a row's diamond and time turn on the same tick, once a second.
+ */
+export const SPIN_MS = 1000
 
 /**
  * The diamond each state leads with when it stands still, one cell wide,

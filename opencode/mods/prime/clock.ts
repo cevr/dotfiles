@@ -1,8 +1,17 @@
 // Time as the running rows read it, without a timer: how often the shared
 // clock ticks, the blink of a running group's glyph and elapsed time in words.
 
-/** How often the shared clock ticks while something runs (tui/clock.ts). */
-export const TICK_MS = 250
+/**
+ * How often the shared clock ticks while something runs (tui/clock.ts): twice
+ * a second, as often as a running group's glyph blinks. Each tick that
+ * changes what shows costs a frame, so nothing reads the clock finer.
+ */
+export const TICK_MS = 500
+
+/** `ms` down to its whole second: a reader that shows seconds changes once a second, whatever the clock's rate. */
+export function wholeSecond(ms: number) {
+  return Math.floor(ms / 1000) * 1000
+}
 
 /** Whether a running group's glyph shows hollow (`○`) at `now`: it blinks every half second. */
 export function blink(now: number) {

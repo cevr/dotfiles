@@ -4,8 +4,10 @@
 // the tray, rule, dock line (subagents, shells, wakes; drawn only while one
 // is active) and a live row per subagent under it. The words are
 // chrome.ts's; this file draws them.
+import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import type { BoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
+import { Option } from "effect"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js"
 import {
   cost,
@@ -21,18 +23,20 @@ import {
 import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
-import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
+import { navigationHint, neighbour, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
-import { wakeItem } from "../wakes.ts"
+import { sameWakeItem, wakeItem } from "../wakes.ts"
+import { useOthers, working } from "./family.ts"
 import type { Host } from "./host.ts"
-import { SubagentRows, working } from "./live.tsx"
+import { SubagentRows } from "./live.tsx"
 import { toneColor } from "./tone.ts"
 import { GUTTER } from "./transcript.tsx"
 
 /**
  * Where a session sits among its subagents: whether it is one, its parent,
- * the subagent ←/→ moves to, and how many others run. Plain reads, so a
- * keymap can use them outside a component; reactive inside one.
+ * and the subagent ←/→ moves to. Plain reads, so a keymap can use them
+ * outside a component; reactive inside one. How many others run is
+ * family.ts `useOthers`, a memo.
  */
 export function useFamily(host: Host, sessionID: () => string | undefined) {
   const parentID = () => {
@@ -51,8 +55,6 @@ export function useFamily(host: Host, sessionID: () => string | undefined) {
   return {
     parentID,
     child: () => parentID() !== undefined,
-    /** In a subagent, the other subagents running; in a session, its running subagents. */
-    others: () => othersWorking(order(), sessionID(), running()),
     step: (by: 1 | -1) => {
       const id = sessionID()
       return id ? neighbour(order(), id, by, running()) : undefined
@@ -117,6 +119,7 @@ export function Splash(props: { host: Host; sessionID: string }) {
  */
 export function HintLine(props: { host: Host; sessionID: string }) {
   const family = useFamily(props.host, () => props.sessionID)
+  const others = useOthers(props.host, () => Option.some(props.sessionID))
   const send = createMemo(() =>
     sendHint({
       shortcut: props.host.shortcut(SEND_COMMAND),
@@ -125,7 +128,7 @@ export function HintLine(props: { host: Host; sessionID: string }) {
     }),
   )
   const navigation = createMemo(() =>
-    [navigationHint({ child: family.child(), others: family.others() }), send()].filter(Boolean).join(" · "),
+    [navigationHint({ child: family.child(), others: others() }), send()].filter(Boolean).join(" · "),
   )
   return (
     <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
@@ -201,25 +204,22 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const theme = () => props.host.theme()
   const usage = createMemo(() => (props.sessionID ? usageLabel(props.host.usage(props.sessionID)) : undefined))
   const model = createMemo(() => trayModel(props.host.model()))
-  const subagents = createMemo(() => {
-    if (!props.sessionID) return 0
-    const id = props.sessionID
-    // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
-    return othersWorking(props.host.familyIDs(id), id, working(props.host, id))
-  })
+  // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
+  const subagents = useOthers(props.host, () => Option.fromNullishOr(props.sessionID))
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))
   const wakes = props.host.wakes(() => props.sessionID)
   const terminal = useTerminalDimensions()
   const [measured, setMeasured] = createSignal<number>()
   const subagentText = () => `◆ ${plural(subagents(), "subagent")}`
   const shellText = () => plural(shells(), "shell")
-  // The wake item takes what the row has left after the other items.
-  const wake = createMemo(() => {
+  // The wake item takes what the row has left after the other items. The wakes are read
+  // again every 2 seconds; a reading that says the same keeps the item, and draws nothing.
+  const wake = keptMemo(() => {
     const reading = wakes()
     if (!reading) return undefined
     const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText())
     return wakeItem(reading, (measured() ?? terminal().width - 2) - others)
-  })
+  }, sameWakeItem)
   // The count opens the host's Subagents picker, as Down on an empty prompt does.
   const [pickerHover, setPickerHover] = createSignal(false)
   // The shells count opens the session's shell list, where one can be read or killed.

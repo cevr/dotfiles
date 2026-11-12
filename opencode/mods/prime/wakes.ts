@@ -38,12 +38,18 @@ export type Wakes = {
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
+/** The dock's wake item: its words and their tone. */
+export type WakeItem = { readonly text: string; readonly tone: "success" | "warning" }
+
+/** Whether two wake items (`wakeItem`'s answers) draw the same: the dock keeps its item while a new reading says the same. */
+export const sameWakeItem = (a: ReturnType<typeof wakeItem>, b: ReturnType<typeof wakeItem>): boolean => a?.text === b?.text && a?.tone === b?.tone
+
 /**
  * The wake item, in at most `max` cells (the first part always
  * shows): `success` while anything is pending, `warning` with only notices
  * unread. Undefined when nothing is pending or unread.
  */
-export const wakeItem = (wakes: Wakes, max: number): { readonly text: string; readonly tone: "success" | "warning" } | undefined => {
+export const wakeItem = (wakes: Wakes, max: number): WakeItem | undefined => {
   const alarms = wakes.entries.filter((entry) => entry.kind === "alarm")
   const monitors = wakes.entries.filter((entry) => entry.kind === "monitor")
   if (alarms.length === 0 && monitors.length === 0 && wakes.notices === 0) return undefined

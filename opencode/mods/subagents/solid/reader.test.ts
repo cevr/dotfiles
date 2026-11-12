@@ -4,6 +4,7 @@
 // which never re-runs a computation, so this file takes the reactive build
 // OpenCode loads.
 import { expect, mock, test } from "bun:test"
+import type { Session } from "../family.ts"
 import { message, read, type Reads } from "../opencode/view.ts"
 
 // The builds' files carry no types of their own; the imports below take solid-js's.
@@ -12,7 +13,7 @@ mock.module("solid-js", () => import(REACTIVE.core))
 mock.module("solid-js/store", () => import(REACTIVE.store))
 const { createMemo, createRoot } = await import("solid-js")
 const { createStore, produce } = await import("solid-js/store")
-const { familyReader, perItem } = await import("./reader.ts")
+const { familyReader, perItem, sameSession } = await import("./reader.ts")
 
 type Item = { type: string; id: string; content: Array<{ type: string; text: string }> }
 
@@ -184,4 +185,60 @@ test("the rows of a family are worked out once, however many views read them", a
   expect(rows[0]!()).toBe(rows[1]!())
   expect(rows[0]!()).not.toBe(before)
   expect(rows[0]!().map((row) => row.update)).toEqual(["child0 step 1", "child1 step 1", "child2 step 1 more", "child3 step 1"])
+})
+
+test("two readings of a session are the same while every field it carries is, and its messages are the same array", () => {
+  const messages: Session["messages"] = []
+  const base: Session = { id: "a", parentID: "root", time: { created: 1 }, running: true, shells: [{ id: "sh1", command: "bun test" }], permissions: [], questions: [], messages }
+  expect(sameSession(base, { ...base, time: { created: 1 }, shells: [{ id: "sh1", command: "bun test" }], permissions: [] })).toBe(true)
+  const changed: ReadonlyArray<Session> = [
+    { ...base, title: "Fix it" },
+    { ...base, agent: "general" },
+    { ...base, model: "claude-opus-5-5" },
+    { ...base, outcome: "failed" },
+    { ...base, running: false },
+    { ...base, time: { created: 1, busy: 2 } },
+    { ...base, time: { created: 1, updated: 3 } },
+    { ...base, latch: { hold: "pace", reason: "too many", opensAt: 5, at: 4 } },
+    { ...base, shells: [{ id: "sh1", command: "bun test", description: "the suite" }] },
+    { ...base, shells: [] },
+    { ...base, permissions: ["edit a.ts"] },
+    { ...base, questions: ["Which?"] },
+    { ...base, messages: [] },
+  ]
+  expect(changed.filter((session) => sameSession(base, session))).toEqual([])
+})
+
+test("a session update that changes nothing the family carries keeps the family, and nothing that reads it runs", () => {
+  // The root's parent is "": no parent, as `sessionOf` reads it.
+  type Info = { id: string; parentID: string; title: string; time: { created: number }; cost: number }
+  const info = (id: string, title: string, cost = 0): Info => ({ id, parentID: "root", title, time: { created: 0 }, cost })
+  const [store, setStore] = createStore<{ sessions: Record<string, Info> }>({
+    sessions: { root: { ...info("root", "Root"), parentID: "" }, child: info("child", "Fix it") },
+  })
+  const reads: Reads<string> = {
+    session: {
+      get: (id) => store.sessions[id],
+      root: () => "root",
+      family: () => ["root", "child"],
+      status: () => "running",
+      permission: { list: () => [] },
+      form: { list: () => [] },
+      message: { list: () => [] },
+    },
+    shell: { list: () => [{ id: "sh1", status: "running", command: "bun test", metadata: { sessionID: "child" } }] },
+  }
+  const reader = familyReader()
+  let runs = 0
+  const view = createRoot(() => createMemo(() => (runs++, reader(reads, "root"))))
+  const before = view()
+  // A step's cost lands on the session: the host replaces its record.
+  setStore("sessions", "child", info("child", "Fix it", 0.42))
+  expect(view()).toBe(before)
+  expect(runs).toBe(1)
+  // A new title is something the family carries.
+  setStore("sessions", "child", info("child", "Fix it well", 0.42))
+  expect(view()).not.toBe(before)
+  expect(view().sessions[1]).toMatchObject({ title: "Fix it well", shells: [{ id: "sh1", command: "bun test" }] })
+  expect(runs).toBe(2)
 })

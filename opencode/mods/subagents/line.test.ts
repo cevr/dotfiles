@@ -1,6 +1,6 @@
 // A subagent row drawn as one line.
 import { describe, expect, test } from "bun:test"
-import { columns, duration, fit, format, glyph, SPINNER, STALE_MS, stateTone, SYMBOLS, type FormatOptions } from "./line.ts"
+import { columns, duration, fit, format, glyph, sameSegments, SPINNER, STALE_MS, stateTone, SYMBOLS, type FormatOptions } from "./line.ts"
 import type { Row, State } from "./subagent-row.ts"
 
 const OPUS = { name: "opus", version: "5.5" }
@@ -61,11 +61,23 @@ describe("the state diamonds", () => {
     })
   })
 
-  test("the diamond pulses full then empty, 600 ms each, only for a working row", () => {
+  test("the diamond pulses full then empty, a second each (the unit its time shows), only for a working row", () => {
     expect(glyph("working", "◇")).toBe("◇")
     expect(glyph("waiting", "◇")).toBe(SYMBOLS.waiting)
-    expect([0, 599, 600, 1199, 1200].map((ms) => format(row({ elapsed: ms }), 80)[0]?.text)).toEqual(["◆ ", "◆ ", "◇ ", "◇ ", "◆ "])
+    expect([0, 999, 1000, 1999, 2000].map((ms) => format(row({ elapsed: ms }), 80)[0]?.text)).toEqual(["◆ ", "◆ ", "◇ ", "◇ ", "◆ "])
     expect(format(row({ state: "waiting", elapsed: 250 }), 80)[0]?.text).toBe("◈ ")
+  })
+})
+
+describe("two drawings of a row", () => {
+  test("are the same while the words and their kinds are, whatever the objects", () => {
+    const at = (elapsed: number) => format(row({ elapsed }), 80, { spinner: "◆" })
+    // The clock moved within a second: the row draws the same, so a view keeps what it drew.
+    expect(sameSegments(at(72_000), at(72_400))).toBe(true)
+    // The next second changes its time.
+    expect(sameSegments(at(72_000), at(73_000))).toBe(false)
+    expect(sameSegments(at(72_000), format(row({ elapsed: 72_000, state: "waiting" }), 80, { spinner: "◆" }))).toBe(false)
+    expect(sameSegments(at(72_000), at(72_000).slice(1))).toBe(false)
   })
 })
 

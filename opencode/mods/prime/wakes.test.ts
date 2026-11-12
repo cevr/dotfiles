@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { EMPTY, span, tabEntries, wakeDetail, wakeItem, wakeRow, type WakeEntry, type Wakes } from "./wakes.ts"
+import { EMPTY, sameWakeItem, span, tabEntries, wakeDetail, wakeItem, wakeRow, type WakeEntry, type Wakes } from "./wakes.ts"
 
 const NOW = new Date(2026, 10, 5, 13, 0).getTime()
 /** An entry with a placeholder id, note and mode: the dock's item reads only the kind. */
@@ -42,6 +42,20 @@ describe("the dock's wake item", () => {
     expect(wakeItem(pending, 18)?.text).toBe("1 wake · 1 monitor")
     expect(wakeItem(pending, 17)?.text).toBe("1 wake")
     expect(wakeItem(pending, 1)?.text).toBe("1 wake")
+  })
+
+  test("a reading that says the same draws the same item, so the dock keeps it on its 2-second read", () => {
+    const first = wakeItem(wakes([{ kind: "alarm", dueAt: NOW + 3_600_000 }]), 80)
+    // Two seconds on, the server's clock moved and the entry is the same.
+    const again = wakeItem({ ...wakes([{ kind: "alarm", dueAt: NOW + 3_600_000 }]), now: NOW + 2000 }, 80)
+    expect(again).not.toBe(first)
+    expect(sameWakeItem(first, again)).toBe(true)
+    expect(sameWakeItem(first, wakeItem(wakes([{ kind: "alarm", dueAt: NOW }, { kind: "alarm", dueAt: NOW }]), 80))).toBe(false)
+    expect(sameWakeItem(first, wakeItem(wakes([], 1), 80))).toBe(false)
+    // Nothing pending draws no item, the same each time.
+    const none = wakeItem(wakes([]), 80)
+    expect(sameWakeItem(none, wakeItem({ ...wakes([]), now: NOW + 2000 }, 80))).toBe(true)
+    expect(sameWakeItem(first, none)).toBe(false)
   })
 })
 
