@@ -5,19 +5,25 @@
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 
-type Env = Readonly<Record<string, string | undefined>>
+/** The environment the gent suites read `GENT_SOURCE` from. */
+export type Env = Readonly<Partial<Record<string, string>>>
 
-/** gent's checkout: `GENT_SOURCE`, and none when it is unset. No path is assumed. */
-export const gentSource = (env: Env = process.env): string | undefined =>
-  env.GENT_SOURCE ? resolve(env.GENT_SOURCE) : undefined
+/** This process's environment. */
+const hostEnv = (): Env => process.env
+
+/** gent's checkout: `GENT_SOURCE`, resolved, and empty when it is unset. No path is assumed. */
+export const gentSource = (env: Env = hostEnv()): string => {
+  const named = env.GENT_SOURCE || ""
+  return named && resolve(named)
+}
 
 /**
  * Whether the gent suites can run: `GENT_SOURCE` names a directory. A directory that is not
  * gent's checkout fails the suites rather than skipping them.
  */
-export const gentAvailable = (env: Env = process.env): boolean => {
+export const gentAvailable = (env: Env = hostEnv()): boolean => {
   const source = gentSource(env)
-  return source !== undefined && existsSync(source)
+  return source !== "" && existsSync(source)
 }
 
 /** The acceptance suites that need gent's checkout, each skipped without it. */
@@ -30,22 +36,18 @@ export const GENT_SUITES: ReadonlyArray<string> = [
 
 /**
  * The one line a run of `files` prints when gent's suites among them skip for lack of gent's
- * checkout; none when gent is there or no file of the run needs it.
+ * checkout, and empty when gent is there or no file of the run needs it.
  */
-export const gentSkipped = (files: ReadonlyArray<string>, env: Env = process.env): string | undefined => {
-  if (gentAvailable(env)) return undefined
+export const gentSkipped = (files: ReadonlyArray<string>, env: Env = hostEnv()): string => {
   const suites = GENT_SUITES.filter((suite) => files.some((file) => file === suite || file.endsWith(`/${suite}`)))
-  if (suites.length === 0) return undefined
+  if (gentAvailable(env) || suites.length === 0) return ""
   const source = gentSource(env)
-  const why = source === undefined ? "GENT_SOURCE is not set" : `GENT_SOURCE=${source} does not exist`
-  return `SKIPPED: gent suites (${suites.length} ${suites.length === 1 ? "file" : "files"}: ${suites.join(", ")}): no gent checkout (${why})`
+  const why = (source && `GENT_SOURCE=${source} does not exist`) || "GENT_SOURCE is not set"
+  return `SKIPPED: gent suites (${suites.length}: ${suites.join(", ")}): no gent checkout (${why})`
 }
 
-const core = () => {
-  const source = gentSource()
-  if (source === undefined) throw new Error("GENT_SOURCE is not set: the gent suites need gent's checkout")
-  return join(source, "packages/core")
-}
+/** gent's core package, where the suites load gent's store from. */
+const core = () => join(gentSource(), "packages/core")
 
 export interface Tokens {
   readonly access: string

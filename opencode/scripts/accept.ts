@@ -68,12 +68,14 @@ if (affected) {
   }
   if (files.length === 0) process.exit(0)
 }
-// gent's suites skip without gent's checkout; the run says so in one line at its end, not in a
-// warning among the passes (stderr under --list, which prints only files on stdout).
-const skipped = gentSkipped(files)
+/**
+ * The run's closing lines: gent's suites skip without gent's checkout, and the run says so in
+ * one line at its end (after the files, under --list), not in a warning among the passes.
+ */
+const summary = [gentSkipped(files)].filter((line) => line !== "")
+const print = console.log
 if (own.includes("--list")) {
-  for (const file of files) console.log(file)
-  if (skipped !== undefined) console.error(skipped)
+  for (const line of [...files, ...summary]) print(line)
   process.exit(0)
 }
 
@@ -154,7 +156,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   })
 const code = await child.exited
 if (stopping) await new Promise(() => {})
-if (skipped !== undefined) console.log(`\n${skipped}`)
+for (const line of summary) print(`\n${line}`)
 process.exit((await leaked(watching.stop())) ? code || 1 : code)
 
 /** Whether the run left a server or drive behind; stops those and names every survivor. */
