@@ -7,7 +7,10 @@
 // the cores, or the oldest unpaid land has waited the max wait; that a run's report says the land ran it
 // whatever the load exactly when such a reading was in that window; and, once the load is calm long enough, that
 // the newest land's step ran exactly once and nothing is owed. A restart keeps the owed steps: the same
-// memory World serves the next tool, as the file does a restarted server.
+// memory World serves the next tool, as the file does a restarted server. A server runs INSTANCES tools at
+// once over the one World, as OpenCode loads the rift plugin once per directory it serves, each with its own
+// minute check: every Git step in the post-land Rift runs under the host's post-land claim, and each run
+// wakes the root once.
 import { describe, expect, test } from "bun:test"
 import { Clock, Context, Data, Deferred, Duration, Effect, Exit, Layer, Option, Scope } from "effect"
 import { TestClock } from "effect/testing"
@@ -18,11 +21,14 @@ import * as MemoryRifts from "./rifts.ts"
 import * as MemorySessionDirectories from "./session-directories.ts"
 import * as MemoryWorkbox from "./workbox.ts"
 import * as Model from "../model.ts"
+import { Landing } from "../service.ts"
 import { CHECK_EVERY, MAX_WAIT, SETTLE } from "../owed.ts"
 
 const SOURCE = "/code/app"
 const POST_LAND = "/code/.rifts/app/post-land"
 const CORES = 12
+/** The rift plugin instances one server runs at once. */
+const INSTANCES = 3
 const MINUTE = Duration.toMillis(Duration.minutes(1))
 
 /** What the generated sequence does next. */
@@ -136,13 +142,33 @@ const worldOf = (next: () => number) => {
 }
 type World = ReturnType<typeof worldOf>
 
+/** The memory Landing, where each Git step in the post-land Rift is a violation unless its caller holds the post-land claim. */
+const claimedLanding = (world: World) =>
+  Layer.effect(
+    Landing,
+    Effect.map(Effect.gen(function* () {
+      return yield* Landing
+    }), (landing) => {
+      const inClaim = (step: string, path: string) =>
+        Effect.sync(() => {
+          if (path === POST_LAND && world.debts.held !== 1) world.seen.violations.push(`${step} in the post-land Rift outside the claim`)
+        })
+      return Landing.of({
+        ...landing,
+        start: (path, main) => Effect.andThen(inClaim("start", path), landing.start(path, main)),
+        install: (path, previous) => Effect.andThen(inClaim("install", path), landing.install(path, previous)),
+        postLand: (path, command, env) => Effect.andThen(inClaim("post-land", path), landing.postLand(path, command, env)),
+      })
+    }),
+  ).pipe(Layer.provide(MemoryLanding.layer(world.landing)))
+
 const toolLayer = (world: World) =>
   Model.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         MemoryRifts.layer(world.rifts),
         MemorySessionDirectories.layer({ ses_1: `${SOURCE}/src` }),
-        MemoryLanding.layer(world.landing),
+        claimedLanding(world),
         MemoryNotices.layer(world.woken),
         MemoryWorkbox.layer(false, []),
         MemoryDebts.layer(world.debts),
@@ -153,12 +179,14 @@ const toolLayer = (world: World) =>
 /** Lets the tool's fibers run as far as they can without the clock. */
 const settle = Effect.forEach(Array.from({ length: 30 }), () => Effect.yieldNow, { discard: true })
 
-/** A tool's life: its scope, closed by a restart, and the tool. */
+/** A server's life: its scope, closed by a restart, and its INSTANCES tools, each with its own minute check. */
 const boot = (world: World) =>
   Effect.gen(function* () {
     const scope = yield* Scope.make()
-    const services = yield* Layer.buildWithScope(toolLayer(world), scope)
-    return { scope, tool: Context.get(services, Model.RiftTool) }
+    const tools = yield* Effect.forEach(Array.from({ length: INSTANCES }), () =>
+      Effect.map(Layer.buildWithScope(toolLayer(world), scope), (services) => Context.get(services, Model.RiftTool)),
+    )
+    return { scope, tools }
   })
 
 /** One minute at a time: the clock, then every run whose time is up ends. */
@@ -189,7 +217,9 @@ const play = (seed: number, ops: ReadonlyArray<Op>) =>
         case "Land": {
           const name = `l${world.seen.landed.length + 1}`
           world.rifts.rifts.set(MemoryRifts.pathOf(SOURCE, name), MemoryRifts.clean(MemoryRifts.pathOf(SOURCE, name), `l/${name}`))
-          const answer = yield* life.current.tool.run("ses_1", { action: "land", rifts: [name] }).pipe(Effect.map((done) => done.text))
+          // Each land through the next instance in turn.
+          const tool = life.current.tools[world.seen.landed.length % INSTANCES]!
+          const answer = yield* tool.run("ses_1", { action: "land", rifts: [name] }).pipe(Effect.map((done) => done.text))
           expect(answer).toStartWith("Landed 1 Rift(s) as one push")
           world.seen.landed.push({ head: `h${world.landing.pushes}`, at: yield* Clock.currentTimeMillis })
           yield* settle
@@ -225,15 +255,23 @@ const judge = (seed: number, world: World) => {
     owed: world.debts.debts.owed.length,
     running: world.seen.running,
     saidForced: saidForced(world),
+    notRun: described(world, "rift land · post-land did not run"),
+    deferredPastLands: described(world, "rift land · post-land owed (load)") > world.seen.landed.length,
   }).toEqual({
     seed,
     violations: [],
     newestRuns: 1,
     owed: 0,
     running: 0,
+    // One report per run that ended, from the one instance that ran it.
     saidForced: world.seen.completedForced,
+    notRun: 0,
+    deferredPastLands: false,
   })
 }
+
+/** How many wakes said `description`. */
+const described = (world: World, description: string): number => world.woken.filter((woken) => woken.notice.description === description).length
 
 /** The forced report's first words: a land ran the step past the max wait, whatever the load. */
 const FORCED = "rift land: the post-land step was owed for "
@@ -262,7 +300,10 @@ describe("an owed post-land step", () => {
         expect(totals.restarts).toBeGreaterThan(0)
         expect(totals.lands).toBeGreaterThan(100)
       }),
-    ))
+    ),
+    // 200 sequences, each over INSTANCES tools: a few seconds, past bun's 5-second default under a busy host.
+    60_000,
+  )
 
   test("a step owed under load runs once the load has stayed calm for the settle window, read every minute, and survives a restart", () =>
     Effect.runPromise(
@@ -341,7 +382,7 @@ describe("an owed post-land step", () => {
         expect(world.seen.started).toEqual(["h3"])
         expect(world.seen.forced).toBe(1)
         expect(world.woken.map((woken) => woken.notice.text.split("\n").slice(0, 2)).at(-1)).toEqual([
-          "rift land: the post-land step was owed for 370 minutes, past the 6-hour wait, so this land ran it whatever the load (40.0 on 12 cores), nice'd like every check.",
+          "rift land: the post-land step was owed for 370 minutes, past the 6-hour wait, so this land ran it whatever the load (the 1-minute load is 40.0, at or past the host's 12 cores), nice'd like every check.",
           "rift land: the post-land step after l/l1, l/l2, l/l3 ran in 4s. Log: /logs/post-land.log",
         ])
         judge(2, world)
@@ -366,6 +407,42 @@ describe("an owed post-land step", () => {
         expect(world.seen.forced).toBe(0)
         expect(world.woken.map((woken) => woken.notice.text.split("\n")[0]).at(-1)).toEqual("rift land: the post-land step after l/l1, l/l2 ran in 4s. Log: /logs/post-land.log")
         judge(3, world)
+      }),
+    ))
+
+  test("a land past the max wait whose own reading is calm, after a reading at or past the cores, names that earlier reading (postland-order M1)", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const ops: ReadonlyArray<Op> = [
+          Op.Load({ load: 40 }),
+          Op.Land(), // minute 0: owed (h1)
+          Op.Wait({ minutes: 366 }), // loaded the whole time; the minute checks read 40 up to minute 366
+          Op.Load({ load: 2 }),
+          Op.Wait({ minutes: 2 }), // the checks at 367 and 368 read 2.0
+          Op.Land(), // minute 368: its own reading is 2.0, the last at or past the cores 2 minutes ago
+        ]
+        const world = yield* play(4, ops)
+        expect(world.seen.started).toEqual(["h2"])
+        expect(world.seen.forced).toBe(1)
+        expect(world.woken.map((woken) => woken.notice.text.split("\n")[0]).at(-1)).toEqual(
+          "rift land: the post-land step was owed for 368 minutes, past the 6-hour wait, so this land ran it whatever the load (the 1-minute load is 2.0, but it was at or past the host's 12 cores 2 min ago), nice'd like every check.",
+        )
+        judge(4, world)
+      }),
+    ))
+
+  test(`one owed step and ${INSTANCES} plugin instances, each with its minute check: one run, every Git step in the post-land Rift under the claim, one report`, () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const ops: ReadonlyArray<Op> = [Op.Load({ load: 30 }), Op.Land(), Op.Load({ load: 2 }), Op.Wait({ minutes: 10 })]
+        const world = yield* play(5, ops)
+        expect(world.seen.started).toEqual(["h1"])
+        expect(world.landing.steps.filter((step) => step.includes(POST_LAND))).toEqual([`start ${POST_LAND} main`, `post-land ${POST_LAND} base0 h1`, `ended post-land ${POST_LAND}`])
+        expect(world.woken.map((woken) => woken.notice.description).filter((description) => description.includes("post-land"))).toEqual([
+          "rift land · post-land owed (load)",
+          "rift land · post-land ran",
+        ])
+        judge(5, world)
       }),
     ))
 })

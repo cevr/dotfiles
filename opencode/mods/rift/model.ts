@@ -44,7 +44,7 @@ import {
   type InputRefused,
   type RiftInput,
 } from "./rift.ts"
-import { Landing, Notices, PostLandDebts, Rifts, SessionDirectories, Workbox, type NotOnWorkbox, type RiftFailed, type SessionUnreadable, type WorkboxCommand } from "./service.ts"
+import { Landing, Notices, PostLandClaim, PostLandDebts, Rifts, SessionDirectories, Workbox, type NotOnWorkbox, type RiftFailed, type SessionUnreadable, type WorkboxCommand } from "./service.ts"
 import { explainRefusal, removal, StepRunning, type RemoveRefused, type Workspace } from "./workspace.ts"
 
 export { resolvePath }
@@ -104,11 +104,10 @@ export const layer = Layer.effect(
     const notices = yield* Notices
     const workbox = yield* Workbox
     const debts = yield* PostLandDebts
+    const claim = yield* PostLandClaim
     const scope = yield* Scope.Scope
     // One accept check at a time: each one fills the machine.
     const accepts = yield* Semaphore.make(1)
-    /** One post-land step at a time, in the post-land Rifts, apart from the integration Rifts' work. */
-    const postLands = yield* Semaphore.make(1)
     /** Finding a kept Rift and marking it busy, and a removal from its check to its trashing, one at a time: neither sees the other half done. */
     const claims = yield* Semaphore.make(1)
     const claimed = claims.withPermits(1)
@@ -208,70 +207,75 @@ export const layer = Layer.effect(
       description: "rift land · post-land did not run",
     })
 
-    /** Read-modify-writes of the owed post-land steps, one at a time. */
-    const owing = (yield* Semaphore.make(1)).withPermits(1)
     /** The source's owed post-land step, if any. */
     const owedOf = (source: string) => Effect.map(debts.read, (kept) => Option.fromNullishOr(kept.owed.find((owed) => owed.source === source)))
-    /** Changes the owed steps, one change at a time. */
-    const changeOwed = (change: (owed: Debts["owed"]) => Debts["owed"]) => owing(Effect.flatMap(debts.read, (kept) => debts.write({ ...kept, owed: change(kept.owed) })))
+    /** Changes the owed steps, as one step against every other writer on the host. */
+    const changeOwed = (change: (owed: Debts["owed"]) => Debts["owed"]) => debts.update((kept) => ({ ...kept, owed: change(kept.owed) }))
 
-    /** The start of this server's unbroken run of load readings under the cores; the newest reading at or past them is kept with the owed steps. */
+    /** This instance's readings, one at a time, so its own settle window moves in order. */
+    const readOne = (yield* Semaphore.make(1)).withPermits(1)
+    /** The start of this instance's unbroken run of load readings under the cores; the newest reading at or past them, by any reader on the host, is kept with the owed steps. */
     let calmSince = Option.none<number>()
     /**
      * One load reading, from any reader (a land's step, the minute check), into the one settle window
-     * (`observe`, owed.ts): a reading at or past the cores restarts it, and is kept so a restart keeps it too.
+     * (`observe`, owed.ts): a reading at or past the cores restarts it, and is kept so a restart and every
+     * other plugin instance on the host see it too.
      */
-    const reading = owing(
+    const reading = readOne(
       Effect.gen(function* () {
         const load = yield* landing.hostLoad
         const now = yield* Clock.currentTimeMillis
-        const kept = yield* debts.read
+        // A reading at or past the cores is kept for every reader on the host; a calm one changes nothing kept.
+        let kept = yield* debts.read
+        if (overloaded(load)) kept = yield* debts.update((before) => ({ ...before, loadedAt: Option.some(now) }))
         const readings = observe({ calmSince, loadedAt: kept.loadedAt }, load, now)
         calmSince = readings.calmSince
-        if (overloaded(load)) yield* debts.write({ ...kept, loadedAt: readings.loadedAt })
         return { load, readings, now }
       }),
     )
 
     /**
      * The source's owed post-land step, if one is still owed, in its post-land Rift (POST_LAND), put at
-     * origin's newest `main` first, then the wake with its report. It holds its own lock, never the
-     * integration Rift: the next land goes on while it runs, and two post-land steps never overlap. It reads
-     * the owed step once it holds the lock, so a land that waited behind a newer land's run finds nothing
-     * left to run. On a host loaded past its cores it stays owed (`verdict`, owed.ts), and a land says so;
-     * once it ran, it is paid unless a newer land owes one meanwhile.
+     * origin's newest `main` first, then the wake with its report. It runs under the host's post-land claim
+     * (PostLandClaim), never the integration Rift: the next land goes on while it runs, and two post-land
+     * steps never overlap, from any plugin instance on the host. A land waits for the claim; the minute check
+     * (`holdIfFree`) leaves it to whoever holds it. It reads the owed step once it holds the claim, so a
+     * claimer that waited behind another's run finds nothing left to run, and every Git step in the
+     * post-land Rift runs under it. On a host loaded past its cores it stays owed (`verdict`, owed.ts), and a
+     * land says so; once it ran, it is paid unless a newer land owes one meanwhile.
      */
-    const runOwed = (source: string, trigger: Trigger) =>
-      postLands.withPermits(1)(
-        Effect.gen(function* () {
-          const found = yield* owedOf(source)
-          if (Option.isNone(found)) return
-          const owed = found.value
-          const { load, readings, now } = yield* reading
-          const decided = verdict(owed, readings, now, trigger)
-          if (decided === "defer") {
-            if (trigger === "land") yield* notices.wake(owed.sessionID, { text: deferredText(owed, load, readings, now), description: "rift land · post-land owed (load)" })
-            return
-          }
-          const result = yield* Effect.result(
-            Effect.gen(function* () {
-              const path = yield* claimed(Effect.tap(keptRift(source, POST_LAND), (kept) => Effect.sync(() => busy.set(kept, `the post-land step of ${branchList(unitsOf(owed))} runs there`))))
-              return yield* Effect.gen(function* () {
-                const started = yield* landing.start(path, owed.main)
-                yield* landing.install(path, started.previous)
-                return yield* landing.postLand(path, owed.command, { RIFT_LAND_BASE: baseOf(owed), RIFT_LAND_HEAD: headOf(owed) })
-              }).pipe(Effect.ensuring(Effect.sync(() => busy.delete(path))))
-            }),
-          )
-          // Paid once it ran, red or not: a failed run would fail the same at the next check.
-          yield* changeOwed((all) => pay(all, source, headOf(owed)))
-          if (result._tag === "Failure") return yield* notices.wake(owed.sessionID, notRun(unitsOf(owed), result.failure))
-          const ran = result.success
-          const lines = [postLandedText(unitsOf(owed), ran)]
-          if (decided === "forced") lines.unshift(forcedLine(owed, load, now))
-          yield* notices.wake(owed.sessionID, { text: lines.join("\n"), description: `rift land · post-land ${ran.code === 0 ? "ran" : "failed"}` })
-        }),
-      )
+    const runOwed = (source: string, trigger: Trigger) => {
+      const step = Effect.gen(function* () {
+        const found = yield* owedOf(source)
+        if (Option.isNone(found)) return
+        const owed = found.value
+        const { load, readings, now } = yield* reading
+        const decided = verdict(owed, readings, now, trigger)
+        if (decided === "defer") {
+          if (trigger === "land") yield* notices.wake(owed.sessionID, { text: deferredText(owed, load, readings, now), description: "rift land · post-land owed (load)" })
+          return
+        }
+        const result = yield* Effect.result(
+          Effect.gen(function* () {
+            const path = yield* claimed(Effect.tap(keptRift(source, POST_LAND), (kept) => Effect.sync(() => busy.set(kept, `the post-land step of ${branchList(unitsOf(owed))} runs there`))))
+            return yield* Effect.gen(function* () {
+              const started = yield* landing.start(path, owed.main)
+              yield* landing.install(path, started.previous)
+              return yield* landing.postLand(path, owed.command, { RIFT_LAND_BASE: baseOf(owed), RIFT_LAND_HEAD: headOf(owed) })
+            }).pipe(Effect.ensuring(Effect.sync(() => busy.delete(path))))
+          }),
+        )
+        // Paid once it ran, red or not: a failed run would fail the same at the next check.
+        yield* changeOwed((all) => pay(all, source, headOf(owed)))
+        if (result._tag === "Failure") return yield* notices.wake(owed.sessionID, notRun(unitsOf(owed), result.failure))
+        const ran = result.success
+        const lines = [postLandedText(unitsOf(owed), ran)]
+        if (decided === "forced") lines.unshift(forcedLine(owed, load, readings, now))
+        yield* notices.wake(owed.sessionID, { text: lines.join("\n"), description: `rift land · post-land ${ran.code === 0 ? "ran" : "failed"}` })
+      })
+      if (trigger === "land") return claim.hold(step)
+      return Effect.asVoid(claim.holdIfFree(step))
+    }
 
     /**
      * After a pushed batch: the batch's post-land step becomes the source's owed one (replacing an older one),

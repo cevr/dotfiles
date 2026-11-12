@@ -114,6 +114,29 @@ export const exclusivelySync =
         ),
     })
 
+/**
+ * Runs `effect` holding the lock on `file` exclusively when no other holder (another process, or another
+ * open of it in this one) has it, answering its result; answers none at once, running nothing, when one has.
+ */
+export const holdingIfFree = <A, E, R>(file: string, effect: Effect.Effect<A, E, R>): Effect.Effect<Option.Option<A>, E | RiftFailed, R> =>
+  Effect.scoped(
+    Effect.acquireRelease(
+      Effect.try({
+        try: () => {
+          mkdirSync(dirname(file), { recursive: true })
+          return openSync(file, "a+")
+        },
+        catch: (cause) => new RiftFailed({ operation: "open lock", message: `${file}: ${String(cause)}` }),
+      }),
+      (descriptor) => Effect.sync(() => closeSync(descriptor)),
+    ).pipe(
+      Effect.flatMap((descriptor) => {
+        if (flock(descriptor, OPERATIONS.exclusive | NON_BLOCKING) !== 0) return Effect.succeed(Option.none<A>())
+        return Effect.map(effect, Option.some)
+      }),
+    ),
+  )
+
 /** Runs `effect` holding each lock of `locks`, taken in order. */
 export const holding = <A, E, R>(locks: ReadonlyArray<readonly [string, LockMode]>, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | RiftFailed, R> =>
   Effect.scoped(Effect.andThen(Effect.forEach(locks, ([file, mode]) => hold(file, mode), { discard: true }), effect))
