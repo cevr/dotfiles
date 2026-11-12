@@ -66,7 +66,7 @@ export default OpenCodeDriver.use(
       session: { verbosity: "medium" },
     },
     // Tall enough that the splash stays on screen in every Ctrl+O mode.
-    tui: { viewport: { cols: 106, rows: 56 } },
+    tui: { viewport: { cols: 106, rows: 64 } },
     project: {
       git: true,
       files: {
@@ -133,6 +133,8 @@ export default OpenCodeDriver.use(
             }),
             Llm.finish("tool-calls"),
           )
+        // OpenCode runs every subagent in the background: the parent waits for the reviewer's report, then goes on.
+        if (!s.includes("Approved: the loop")) return Stream.make(Llm.finish())
         if (!s.includes("call_read"))
           return Stream.make(
             Llm.toolCall({ index: 0, id: "call_grep", name: "grep", input: { pattern: "retries", path: "src" } }),

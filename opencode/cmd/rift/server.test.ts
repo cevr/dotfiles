@@ -4,7 +4,7 @@
 // sees: the tools offered, the rift tool's answers and refusals, the options.
 // tests/rift.test.ts runs it in OpenCode on the scripted model and real Rift.
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Layer, type Scope } from "effect"
+import { Cause, Effect, Exit, Layer, Schema, type Scope } from "effect"
 import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
 import * as MemoryRifts from "@dotfiles/opencode-rift/memory/rifts"
@@ -17,6 +17,8 @@ type Host = Parameters<(typeof Rift)["effect"]>[0]
 interface Registered {
   readonly name: string
   readonly options?: { readonly codemode?: boolean }
+  /** The input schema the host decodes a call with before `execute`. */
+  readonly input: Schema.Decoder<unknown>
   readonly execute: (input: unknown, context: { readonly sessionID: string }) => Effect.Effect<{ readonly content: ReadonlyArray<{ readonly text: string }> }, { readonly message: string }>
 }
 type Editor = { add: (tool: Registered) => void; remove: (id: string) => void }
@@ -52,7 +54,10 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
     const call = Effect.fn(function* (input: Record<string, unknown>) {
       const tool = tools.get("rift")
       if (tool === undefined || tool === "builtin") return "no rift tool"
-      const exit = yield* Effect.exit(tool.execute(input, { sessionID: "ses_1" }))
+      // The input is decoded with the tool's own schema first, as the host does before it calls the tool.
+      const decoded = yield* Effect.exit(Schema.decodeUnknownEffect(tool.input)(input))
+      if (Exit.isFailure(decoded)) return `refused input: ${String(Cause.squash(decoded.cause))}`
+      const exit = yield* Effect.exit(tool.execute(decoded.value, { sessionID: "ses_1" }))
       if (Exit.isSuccess(exit)) return exit.value.content.map((item) => item.text).join("\n")
       const reason = exit.cause.reasons.find((item) => item._tag === "Fail")
       return reason?._tag === "Fail" ? `error: ${reason.error.message}` : "defect"
@@ -98,6 +103,14 @@ describe("the rift plugin", () => {
         yield* Effect.sleep("20 millis")
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
         expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The warm source /code/app has no Rift named nope.")
+        // An orchestrate run names each Rift with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
+        const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
+        state.rifts.set(named.path, named)
+        expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2", unit: "db" }] })).toStartWith("Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged p5/db-2;")
+        yield* Effect.sleep("20 millis")
+        state.rifts.set(named.path, named)
+        expect(yield* call({ action: "land", rifts: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2" }] })).toStartWith("refused input:")
         expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here the rift tool offers create, list, remove and land.")
       }),
     ))

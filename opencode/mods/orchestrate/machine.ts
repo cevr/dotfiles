@@ -106,6 +106,8 @@ export const Start = Schema.TaggedStruct("Start", {
   direct: Schema.Boolean,
   folds: Schema.optionalKey(Schema.Array(Schema.String)),
   departs: Schema.optionalKey(Schema.String),
+  /** An implementor's Rift, as its description names it: `(rift: <path>)`. A land of that path is its unit's. */
+  rift: Schema.optionalKey(Schema.String),
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
 
@@ -170,7 +172,14 @@ export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead
 
 // ── The events ──
 
-export const UnitStarted = Schema.TaggedStruct("UnitStarted", { unit: Schema.String, round: Schema.Number, direct: Schema.Boolean, at: Schema.Number })
+/** A unit's round started; `rift`, the Rift its description named, is the unit's as well as those it had. */
+export const UnitStarted = Schema.TaggedStruct("UnitStarted", {
+  unit: Schema.String,
+  round: Schema.Number,
+  direct: Schema.Boolean,
+  rift: Schema.optionalKey(Schema.String),
+  at: Schema.Number,
+})
 export interface UnitStarted extends Schema.Schema.Type<typeof UnitStarted> {}
 
 export const UnitHandedBack = Schema.TaggedStruct("UnitHandedBack", { unit: Schema.String, ready: Schema.Boolean, at: Schema.Number })
@@ -232,6 +241,8 @@ export interface Unit {
   readonly direct: boolean
   /** Its implementor's session, once known. */
   readonly child?: string
+  /** The Rifts its implementors were started on, by `(rift: <path>)` in their descriptions; absent when none named one. */
+  readonly rifts?: ReadonlyArray<string>
 }
 
 /** A finding of a verdict: the verifier's batch, and the unit it was folded into, once it was. */
@@ -325,45 +336,61 @@ const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier
 // ── A land's Rifts and their units ──
 //
 // A unit is named by its role call's description (`implementor <unit> rN`). A Rift a land names is a unit's
-// by what the land's input and the Rift itself say, never by a brief: an implementor's prompt may name any
-// Rift (a "do not touch" line, another unit's), so no prompt is read for workspaces. In order:
+// by what the land's input, the ledger and the Rift itself say, never by a brief: an implementor's prompt may
+// name any Rift (a "do not touch" line, another unit's), so no prompt is read for workspaces. In order:
 //
 // 1. the unit the input names it for (`{ path, unit }`), when that is a unit; any other is no unit;
-// 2. else its branch, when the plugin read it from the Rift: `feat/<unit>`, or a later round's
+// 2. else the unit whose implementor was started on that Rift (`(rift: <path>)` in its description, kept
+//    in the ledger across rounds): the entry is that path, or its last segment; two units on it is none;
+// 3. else its branch, when the plugin read it from the Rift: `feat/<unit>`, or a later round's
 //    `feat/<unit>-<n>` (any prefix: `<run>/<unit>` too), by the name rule on its last segment;
-// 3. else the entry itself, by the name rule on its last segment: a unit's name, a branch, or a Rift's
+// 4. else the entry itself, by the name rule on its last segment: a unit's name, a branch, or a Rift's
 //    path or name (`<unit>`, `<unit>-<n>`, workrift's `feat-<unit>`).
 //
-// The name rule: a unit's exact name wins. Otherwise `<name>-<n>` is unit `<name>`'s when `<name>` is a unit
-// (and `feat-<name>…` read as `<name>…` too); two readings that name different units, or none, are no unit.
-// An entry that names no unit lands as none of the machine's: never another unit's.
+// The name rule reads a name every way it can: as a unit's exact name, and as `<name>-<n>`, unit `<name>`'s
+// round (`feat-<name>…` read as `<name>…` too). Exactly one unit among the readings is that unit; none, or
+// two (`db-2` when both `db` and `db-2` are units), is no unit. An entry that names no unit lands as none of
+// the machine's: never another unit's.
 
 /** A land's target as an entry. */
 export const entryOf = (target: LandTarget): LandEntry => (typeof target === "string" ? { rift: target } : target)
 
+/** A path or name with its trailing slashes dropped. */
+const trimmed = (text: string) => text.trim().replace(/\/+$/, "")
+
 /** The last `/` segment of a path or branch, trailing slashes dropped. */
-const lastSegment = (text: string) => text.trim().replace(/\/+$/, "").split("/").at(-1) ?? ""
+const lastSegment = (text: string) => trimmed(text).split("/").at(-1) ?? ""
 
 /** The unit `name` (a Rift's name, a branch's last segment) is, by the name rule; none when no reading or two disagree. */
 export const unitOfName = (name: string, units: ReadonlyArray<string>): string | undefined => {
-  if (units.includes(name)) return name
   const readings = name.startsWith("feat-") ? [name, name.slice("feat-".length)] : [name]
   const found = new Set(
     readings.flatMap((reading) => {
-      if (units.includes(reading)) return [reading]
       const base = /^(.+)-\d+$/.exec(reading)?.[1]
-      return base !== undefined && units.includes(base) ? [base] : []
+      return [...(units.includes(reading) ? [reading] : []), ...(base !== undefined && units.includes(base) ? [base] : [])]
     }),
   )
   return found.size === 1 ? [...found][0] : undefined
 }
 
-/** The unit a land's entry is: by the unit the input names, else its branch, else its own name; none, never a wrong one. */
-export const unitOfEntry = (target: LandTarget, units: ReadonlyArray<string>): string | undefined => {
+/** Whether a land's entry names the Rift at `path`: the path itself, or a name that is its last segment. */
+const namesRift = (entry: string, path: string) => entry === trimmed(path) || (!entry.includes("/") && lastSegment(path) === entry)
+
+/**
+ * The unit a land's entry is: by the unit the input names, else the Rift a unit's implementor was started on
+ * (`rifts`: each unit's, from the ledger), else its branch, else its own name; none, never a wrong one.
+ */
+export const unitOfEntry = (target: LandTarget, units: ReadonlyArray<string>, rifts: Readonly<Record<string, ReadonlyArray<string>>> = {}): string | undefined => {
   const entry = entryOf(target)
   if (entry.unit !== undefined) return units.includes(entry.unit) ? entry.unit : undefined
+  const owners = units.filter((unit) => (rifts[unit] ?? []).some((path) => namesRift(trimmed(entry.rift), path)))
+  if (owners.length > 0) return owners.length === 1 ? owners[0] : undefined
   return unitOfName(lastSegment(entry.branch ?? entry.rift), units)
 }
+
+/** Each unit's Rifts, as its implementors' starts named them. */
+const riftsIn = (state: MachineState): Readonly<Record<string, ReadonlyArray<string>>> =>
+  Object.fromEntries(Object.entries(state.units).flatMap(([name, unit]) => (unit.rifts === undefined ? [] : [[name, unit.rifts]])))
 
 /** A land's target as the root wrote it in the land's input: its entry, or `{ path, unit }`. */
 const inputOf = (target: LandTarget): string => {
@@ -374,7 +401,8 @@ const inputOf = (target: LandTarget): string => {
 /** The ready units a land's `rifts` name. */
 const named = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
   const all = Object.keys(state.units)
-  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all) === unit))
+  const recorded = riftsIn(state)
+  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all, recorded) === unit))
 }
 
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
@@ -442,7 +470,9 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
       ].join(" ")
     }
     case "LandPartial":
-      return `Land every ready unit in one call: rift({ action: "land", rifts: [${ready.map((unit) => JSON.stringify(unit)).join(", ")}] }) (each by its Rift's path, name or branch; one whose branch is not \`feat/<unit>\` as { path, unit: "<unit>" }).`
+      return `Land every ready unit in one call, each Rift as { path, unit }: rift({ action: "land", rifts: [${ready
+        .map((unit) => `{ path: ${JSON.stringify(state.units[unit]?.rifts?.at(-1) ?? "<its Rift>")}, unit: ${JSON.stringify(unit)} }`)
+        .join(", ")}] }).`
   }
 }
 
@@ -482,7 +512,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           // No rule holds an implementor: the next batch fans out while a verifier runs.
           if (command.role === "implementor")
             return [
-              UnitStarted.make({ unit: command.name, round: command.round, direct: command.direct, at: now }),
+              UnitStarted.make({ unit: command.name, round: command.round, direct: command.direct, ...(command.rift === undefined ? {} : { rift: command.rift }), at: now }),
               ...foldsOf(state, command).map((finding) => FindingFolded.make({ finding, into: command.name, at: now })),
             ]
           const batch = BATCH.test(command.name)
@@ -551,7 +581,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         const prior = state.units[event.unit]?.state
         const verifier = prior === "verify" && state.verifier !== undefined && state.verifier.units === undefined ? { ...state.verifier, units: coveredOf(state) } : state.verifier
         const unverified = prior === "landed" ? [...new Set([...(state.unverified ?? []), event.unit])] : state.unverified
-        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct }
+        // The unit keeps the Rifts of its earlier rounds: a land may name any of them.
+        const rifts = [...new Set([...(state.units[event.unit]?.rifts ?? []), ...(event.rift === undefined ? [] : [event.rift])])]
+        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct, ...(rifts.length === 0 ? {} : { rifts }) }
         return tidy({ ...state, units, ...(verifier === undefined ? {} : { verifier }), ...(unverified === undefined ? {} : { unverified }) })
       }
       case "UnitHandedBack": {
@@ -738,14 +770,16 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
 
 const DEPARTS = /\(departs:\s*([^()]*?)\s*\)/i
 const FOLDS = /\(folds:\s*([^()]*?)\s*\)/i
+const RIFT = /\(rift:\s*([^()\s]+?)\/*\s*\)/i
 const DIRECT = /\(direct\)/i
 const ROUND = /^r(\d+)$/i
 
 /**
  * The machine's command for a role agent's call: `agent` is the role it runs
  * as, `description` names the step (`<role> <unit> r<N>`, described.ts), and
- * may end `(direct)`, `(folds: <finding>, …)` or `(departs: <why>)`. None for
- * a call that is no step of `agent`'s role.
+ * may end `(direct)`, `(folds: <finding>, …)`, `(rift: <path>)` (an
+ * implementor's Rift, which a land then knows as its unit's) or
+ * `(departs: <why>)`. None for a call that is no step of `agent`'s role.
  */
 export const startOf = (agent: string, description: string | undefined): Start | undefined => {
   const text = description ?? ""
@@ -753,7 +787,8 @@ export const startOf = (agent: string, description: string | undefined): Start |
   // The departure is read first and set aside: its words may hold anything.
   const rest = text.replace(DEPARTS, "")
   const folds = (FOLDS.exec(rest)?.[1] ?? "").split(/[\s,]+/).filter((ref) => ref !== "")
-  const step = described(rest.replace(FOLDS, "").trim())
+  const rift = RIFT.exec(rest)?.[1]
+  const step = described(rest.replace(FOLDS, "").replace(RIFT, "").trim())
   if (step === undefined || step.role !== agent) return undefined
   const [name, ...words] = step.rest.split(" ")
   if (name === undefined || name === "" || ROUND.test(name)) return undefined
@@ -765,6 +800,7 @@ export const startOf = (agent: string, description: string | undefined): Start |
     direct: DIRECT.test(text),
     ...(folds.length === 0 ? {} : { folds }),
     ...(departs === undefined || departs === "" ? {} : { departs }),
+    ...(rift === undefined || step.role !== "implementor" ? {} : { rift }),
   })
 }
 
