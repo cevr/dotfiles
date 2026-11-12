@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@dotfiles/opencode-pool": "workspace:*",
-    "@dotfiles/opencode-questions": "workspace:*"
+    "@dotfiles/opencode-questions": "workspace:*",
+    "@dotfiles/opencode-status": "workspace:*"
   }
 }
