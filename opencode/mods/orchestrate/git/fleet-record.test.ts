@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
+import { tagObject, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
 import { spawnSync, write } from "bun"
 import { Effect, Option } from "effect"
 import { FleetOutcome } from "../fleet.ts"
@@ -34,10 +34,10 @@ const repository = (root: string, name: string, count: number) => {
 /** The target the dotfiles origin's verified ref names. */
 const recorded = (root: string) => targetOfTag(sh(root, ["git", "--git-dir", `${root}/dotfiles.git`, "cat-file", "tag", VERIFIED_REF]))
 
-const record = (root: string, batch: string, header: string) =>
+const record = (root: string, batch: string, header: string, program = "git") =>
   Effect.gen(function* () {
     yield* Effect.promise(() => write(`${root}/run/${batch}.md`, `# ${batch}\n\n${header}\n\nVerify the units below.\n`, { createPath: true }))
-    return yield* recordOnce({ dotfiles: `${root}/dotfiles`, fork: `${root}/fork` }, `${root}/run/${batch}-findings.md`, batch)
+    return yield* recordOnce({ dotfiles: `${root}/dotfiles`, fork: `${root}/fork` }, `${root}/run/${batch}-findings.md`, batch, program)
   })
 
 /** A batch header naming both heads, short, as the orchestrator writes it. */
@@ -105,6 +105,94 @@ describe("the fleet's record over real git", () => {
           expect(refused(yield* record(root, "batch-v", both(d1, f3)))).toContain("do not both descend")
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f2, batch: "batch-y" }))
           expect(yield* record(root, "batch-z", both(d3, f3))).toEqual(FleetOutcome.Recorded({ target: { dotfiles: d3, fork: f3, batch: "batch-z" } }))
+        }),
+      ),
+    60_000,
+  )
+})
+
+/** The git this test runs, as the wrapper below calls it. */
+const REAL_GIT = spawnSync(["sh", "-c", "command -v git"]).stdout.toString().trim()
+
+/**
+ * A git for this host under which another host, `root/other` (a clone of the dotfiles origin),
+ * publishes `targets` over the verified ref, one each time this host builds its tag object: after
+ * this host read the ref and checked the target, before it pushes, the window two hosts accepting
+ * batches at once share (the verifier's race probe). It answers the wrapper's path; the wrapper runs
+ * the real git for every call.
+ */
+const otherHostPublishes = (root: string, targets: ReadonlyArray<{ readonly dotfiles: string; readonly fork: string; readonly batch: string }>) =>
+  Effect.gen(function* () {
+    sh(root, ["git", "clone", "-q", `${root}/dotfiles.git`, "other"])
+    const tags = yield* Effect.forEach(targets, (target, at) =>
+      Effect.promise(() => write(`${root}/other/.git/tag-${at}`, tagObject(target, { name: "other", email: "other@example.invalid", at: 1_794_416_400 + at }))).pipe(
+        Effect.map(() => sh(`${root}/other`, ["git", "hash-object", "-t", "tag", "-w", `${root}/other/.git/tag-${at}`])),
+      ),
+    )
+    yield* Effect.promise(() => write(`${root}/tags`, tags.map((oid) => `${oid}\n`).join("")))
+    yield* Effect.promise(() =>
+      write(
+        `${root}/bin/git`,
+        [
+          "#!/bin/sh",
+          `if [ "$1" = "-C" ] && [ "$2" = '${root}/dotfiles' ] && [ "$3" = "hash-object" ]; then`,
+          `  n=$(cat '${root}/pushes' 2>/dev/null || echo 0)`,
+          `  echo $((n + 1)) > '${root}/pushes'`,
+          `  oid=$(sed -n "$((n + 1))p" '${root}/tags')`,
+          `  if [ -n "$oid" ]; then '${REAL_GIT}' -C '${root}/other' push --quiet origin "+$oid:${VERIFIED_REF}"; fi`,
+          "fi",
+          `exec '${REAL_GIT}' "$@"`,
+          "",
+        ].join("\n"),
+        { createPath: true },
+      ),
+    )
+    sh(root, ["chmod", "755", `${root}/bin/git`])
+    return `${root}/bin/git`
+  })
+
+describe("two hosts recording at once (the lease)", () => {
+  test(
+    "a host whose read target another host replaced before its push re-reads it: a batch behind the new target is refused, and the fleet never moves back",
+    () =>
+      onRepositories(3, (root, [d1, d2, d3], [f1]) =>
+        Effect.gen(function* () {
+          yield* record(root, "batch-x", both(d1, f1))
+          const said = refused(yield* record(root, "batch-o", both(d2, f1), yield* otherHostPublishes(root, [{ dotfiles: d3, fork: f1, batch: "batch-n" }])))
+          expect(said).toContain(`do not both descend from the current target (dotfiles ${d3.slice(0, 10)}, fork ${f1.slice(0, 10)}, batch-n)`)
+          expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f1, batch: "batch-n" }))
+        }),
+      ),
+    60_000,
+  )
+
+  test(
+    "a batch ahead of the target another host published meanwhile is published on the second push",
+    () =>
+      onRepositories(3, (root, [d1, d2, d3], [f1]) =>
+        Effect.gen(function* () {
+          yield* record(root, "batch-x", both(d1, f1))
+          expect(yield* record(root, "batch-n", both(d3, f1), yield* otherHostPublishes(root, [{ dotfiles: d2, fork: f1, batch: "batch-o" }]))).toEqual(FleetOutcome.Recorded({ target: { dotfiles: d3, fork: f1, batch: "batch-n" } }))
+          expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f1, batch: "batch-n" }))
+        }),
+      ),
+    60_000,
+  )
+
+  test(
+    "a target that moves under both pushes is refused, saying so, and the other host's stands",
+    () =>
+      onRepositories(3, (root, [d1, d2, d3], [f1]) =>
+        Effect.gen(function* () {
+          yield* record(root, "batch-x", both(d1, f1))
+          const twice = [
+            { dotfiles: d2, fork: f1, batch: "batch-p" },
+            { dotfiles: d2, fork: f1, batch: "batch-q" },
+          ]
+          expect(refused(yield* record(root, "batch-n", both(d3, f1), yield* otherHostPublishes(root, twice)))).toBe(
+            `pushing ${VERIFIED_REF} was refused 2 times: another host published a target while this one recorded, or origin refused the push`,
+          )
+          expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f1, batch: "batch-q" }))
         }),
       ),
     60_000,

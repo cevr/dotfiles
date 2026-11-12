@@ -72,9 +72,9 @@ interface Ran {
   readonly text: string
 }
 
-/** One git command in `cwd`; none when it does not start. */
-const run = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<Ran>> =>
-  Effect.try(() => spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
+/** One command of `program` (git) in `cwd`; none when it does not start. */
+const run = (program: string, cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<Ran>> =>
+  Effect.try(() => spawn([program, "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
     Effect.flatMap((child) =>
       Effect.all({ code: Effect.tryPromise(() => child.exited), text: Effect.tryPromise(() => readableStreamToText(child.stdout)) }, { concurrency: 2 }),
     ),
@@ -83,22 +83,63 @@ const run = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Opt
   )
 
 /** One git command in `cwd`: its output, trimmed; none when it fails. */
-const git = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<string>> =>
-  run(cwd, args).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
+const git = (program: string, cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<string>> =>
+  run(program, cwd, args).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
 
 /** A full commit name read in `cwd`. */
-const commitAt = (cwd: string, revision: string) => git(cwd, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`])
+const commitAt = (program: string, cwd: string, revision: string) => git(program, cwd, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`])
 
 /** Whether one of origin's branches, as `cwd` last fetched them, holds `commit`. */
-const onOrigin = (cwd: string, commit: string) =>
-  git(cwd, ["branch", "--remotes", "--contains", commit]).pipe(Effect.map((text) => Option.exists(text, (each) => /^\s*origin\//m.test(each))))
+const onOrigin = (program: string, cwd: string, commit: string) =>
+  git(program, cwd, ["branch", "--remotes", "--contains", commit]).pipe(Effect.map((text) => Option.exists(text, (each) => /^\s*origin\//m.test(each))))
 
 /** Whether `commit` is `current` or descends from it, in `cwd`: the fleet only moves forward. */
-const descends = (cwd: string, current: string, commit: string) =>
-  run(cwd, ["merge-base", "--is-ancestor", current, commit]).pipe(Effect.map((ran) => Option.exists(ran, (each) => each.code === 0)))
+const descends = (program: string, cwd: string, current: string, commit: string) =>
+  run(program, cwd, ["merge-base", "--is-ancestor", current, commit]).pipe(Effect.map((ran) => Option.exists(ran, (each) => each.code === 0)))
+
+/** How many times a record pushes when the verified ref moves under it: once, and once more after reading it again. */
+const PUSHES = 2
+
+/**
+ * Publishes `wanted` over the verified ref as this checkout reads it, leased: the push names the
+ * tag it read (`--force-with-lease=<ref>:<tag>`, empty when there is none), so a target another
+ * host published since is never overwritten. A push the lease refuses reads the ref again and runs
+ * the checks again (the same commits, forward only) before it pushes once more.
+ */
+const publish = (program: string, checkouts: Checkouts, wanted: Target, pushes: number): Effect.Effect<FleetOutcome> =>
+  Effect.gen(function* () {
+    yield* git(program, checkouts.dotfiles, ["fetch", "--quiet", "origin", `+${VERIFIED_REF}:${VERIFIED_REF}`])
+    const lease = Option.getOrElse(yield* git(program, checkouts.dotfiles, ["rev-parse", "--verify", "--quiet", VERIFIED_REF]), () => "")
+    const current = Option.flatMap(yield* git(program, checkouts.dotfiles, ["cat-file", "tag", VERIFIED_REF]), targetOfTag)
+    if (sameAs(wanted, current)) return FleetOutcome.Unchanged({ target: wanted })
+    if (Option.isSome(current)) {
+      const was = current.value
+      const forward = yield* Effect.all([descends(program, checkouts.dotfiles, was.dotfiles, wanted.dotfiles), descends(program, checkouts.fork, was.fork, wanted.fork)])
+      if (!forward.every(Boolean))
+        return FleetOutcome.Refused({
+          reason: `dotfiles ${wanted.dotfiles.slice(0, 10)} and fork ${wanted.fork.slice(0, 10)} do not both descend from the current target (dotfiles ${was.dotfiles.slice(0, 10)}, fork ${was.fork.slice(0, 10)}, ${was.batch}): a batch behind it never moves the fleet back`,
+        })
+    }
+    const gitDir = yield* git(program, checkouts.dotfiles, ["rev-parse", "--absolute-git-dir"])
+    if (Option.isNone(gitDir)) return FleetOutcome.Refused({ reason: "the dotfiles checkout has no git directory" })
+    const tagFile = `${gitDir.value}/fleet-verified.tag`
+    const at = (yield* Clock.currentTimeMillis) / 1000
+    yield* Effect.tryPromise(() => write(tagFile, tagObject(wanted, { ...TAGGER, at }))).pipe(Effect.ignore)
+    const tag = yield* git(program, checkouts.dotfiles, ["hash-object", "-t", "tag", "-w", tagFile])
+    if (Option.isNone(tag)) return FleetOutcome.Refused({ reason: "git refused the tag object" })
+    const done = yield* git(program, checkouts.dotfiles, ["push", "--quiet", `--force-with-lease=${VERIFIED_REF}:${lease}`, "origin", `${tag.value}:${VERIFIED_REF}`])
+    if (Option.isSome(done)) {
+      yield* git(program, checkouts.dotfiles, ["update-ref", VERIFIED_REF, tag.value])
+      return FleetOutcome.Recorded({ target: wanted })
+    }
+    if (pushes > 1) return yield* publish(program, checkouts, wanted, pushes - 1)
+    return FleetOutcome.Refused({
+      reason: `pushing ${VERIFIED_REF} was refused ${PUSHES} times: another host published a target while this one recorded, or origin refused the push`,
+    })
+  })
 
 /** The target the batch file beside `report` names, recorded on the dotfiles origin as `VERIFIED_REF`, through the dotfiles checkout. */
-const recordTarget = Effect.fn("Fleet.recordTarget")(function* (checkouts: Checkouts, report: string, batch: string) {
+const recordTarget = Effect.fn("Fleet.recordTarget")(function* (program: string, checkouts: Checkouts, report: string, batch: string) {
   const path = batchFileOf(report, batch)
   const text = yield* Effect.tryPromise(() => file(path).text()).pipe(Effect.map(Option.some), Effect.orElseSucceed(() => Option.none<string>()))
   if (Option.isNone(text)) return FleetOutcome.Refused({ reason: `the batch file ${path} does not read` })
@@ -106,40 +147,19 @@ const recordTarget = Effect.fn("Fleet.recordTarget")(function* (checkouts: Check
   const both = Option.all({ dotfiles: named.dotfiles, fork: named.fork })
   if (Option.isNone(both)) return FleetOutcome.Refused({ reason: `the batch file ${path} lacks ${missingOf(named).join(" and ")}` })
   const short = both.value
-  yield* Effect.all([git(checkouts.dotfiles, ["fetch", "--quiet", "origin"]), git(checkouts.fork, ["fetch", "--quiet", "origin"])], { concurrency: 2 })
-  yield* git(checkouts.dotfiles, ["fetch", "--quiet", "origin", `+${VERIFIED_REF}:${VERIFIED_REF}`])
-  const current = Option.flatMap(yield* git(checkouts.dotfiles, ["cat-file", "tag", VERIFIED_REF]), targetOfTag)
-  const full = yield* Effect.all({ dotfiles: commitAt(checkouts.dotfiles, short.dotfiles), fork: commitAt(checkouts.fork, short.fork) })
+  yield* Effect.all([git(program, checkouts.dotfiles, ["fetch", "--quiet", "origin"]), git(program, checkouts.fork, ["fetch", "--quiet", "origin"])], { concurrency: 2 })
+  const full = yield* Effect.all({ dotfiles: commitAt(program, checkouts.dotfiles, short.dotfiles), fork: commitAt(program, checkouts.fork, short.fork) })
   if (Option.isNone(full.dotfiles) || Option.isNone(full.fork))
     return FleetOutcome.Refused({ reason: `the batch file names a head the checkouts do not know (dotfiles ${short.dotfiles}, fork ${short.fork})` })
   const wanted: Target = { dotfiles: full.dotfiles.value, fork: full.fork.value, batch }
-  if (sameAs(wanted, current)) return FleetOutcome.Unchanged({ target: wanted })
-  const pushed = yield* Effect.all([onOrigin(checkouts.dotfiles, wanted.dotfiles), onOrigin(checkouts.fork, wanted.fork)])
+  const pushed = yield* Effect.all([onOrigin(program, checkouts.dotfiles, wanted.dotfiles), onOrigin(program, checkouts.fork, wanted.fork)])
   if (!pushed.every(Boolean)) return FleetOutcome.Refused({ reason: `origin lacks dotfiles ${wanted.dotfiles.slice(0, 10)} or fork ${wanted.fork.slice(0, 10)}` })
-  if (Option.isSome(current)) {
-    const was = current.value
-    const forward = yield* Effect.all([descends(checkouts.dotfiles, was.dotfiles, wanted.dotfiles), descends(checkouts.fork, was.fork, wanted.fork)])
-    if (!forward.every(Boolean))
-      return FleetOutcome.Refused({
-        reason: `dotfiles ${wanted.dotfiles.slice(0, 10)} and fork ${wanted.fork.slice(0, 10)} do not both descend from the current target (dotfiles ${was.dotfiles.slice(0, 10)}, fork ${was.fork.slice(0, 10)}, ${was.batch}): a batch behind it never moves the fleet back`,
-      })
-  }
-  const gitDir = yield* git(checkouts.dotfiles, ["rev-parse", "--absolute-git-dir"])
-  if (Option.isNone(gitDir)) return FleetOutcome.Refused({ reason: "the dotfiles checkout has no git directory" })
-  const tagFile = `${gitDir.value}/fleet-verified.tag`
-  const at = (yield* Clock.currentTimeMillis) / 1000
-  yield* Effect.tryPromise(() => write(tagFile, tagObject(wanted, { ...TAGGER, at })))
-  const tag = yield* git(checkouts.dotfiles, ["hash-object", "-t", "tag", "-w", tagFile])
-  if (Option.isNone(tag)) return FleetOutcome.Refused({ reason: "git refused the tag object" })
-  const done = yield* git(checkouts.dotfiles, ["push", "--quiet", "origin", `+${tag.value}:${VERIFIED_REF}`])
-  if (Option.isNone(done)) return FleetOutcome.Refused({ reason: `pushing ${VERIFIED_REF} was refused` })
-  yield* git(checkouts.dotfiles, ["update-ref", VERIFIED_REF, tag.value])
-  return FleetOutcome.Recorded({ target: wanted })
+  return yield* publish(program, checkouts, wanted, PUSHES)
 })
 
-/** Records the target one accepted batch names, and answers the outcome. */
-export const recordOnce = (checkouts: Checkouts, report: string, batch: string): Effect.Effect<FleetOutcome> =>
-  recordTarget(checkouts, report, batch).pipe(Effect.orElseSucceed(() => FleetOutcome.Refused({ reason: "recording the verified target failed" })))
+/** Records the target one accepted batch names, and answers the outcome; `program` is the git it runs (a test's may stand in another host). */
+export const recordOnce = (checkouts: Checkouts, report: string, batch: string, program = "git"): Effect.Effect<FleetOutcome> =>
+  recordTarget(program, checkouts, report, batch).pipe(Effect.orElseSucceed(() => FleetOutcome.Refused({ reason: "recording the verified target failed" })))
 
 /**
  * Fleet over git: the dotfiles and fork checkouts daily wrote into the plugin's options. Without
