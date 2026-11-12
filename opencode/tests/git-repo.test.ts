@@ -3,14 +3,26 @@
 // "the upstream reading" failed copying `.git/objects/maintenance.lock`). Every test makes its
 // repositories through gitInit and gitClone, which quiet each one; a call in test code that runs
 // git's own `init` or `clone` is refused, so no repository is left loud. The guard reads each
-// file's syntax tree, so a string that only names a git command (an expected log line) is no site.
+// file's syntax tree, so a string that only names a git command (an expected log line) is no site,
+// and it reads git's argv with the guard's own reader (mods/guard/verdict.ts), global options and all.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Option, Predicate } from "effect"
+import { Array as Arr, Option, Order, Predicate } from "effect"
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { type Argument, type ArrayExpressionElement, type CallExpression, type Function, type ArrowFunctionExpression, type ParamPattern, parseSync, Visitor } from "oxc-parser"
+import {
+  type Argument,
+  type ArrayExpressionElement,
+  type ArrowFunctionExpression,
+  type CallExpression,
+  type Function,
+  type ObjectPropertyKind,
+  type ParamPattern,
+  parseSync,
+  Visitor,
+} from "oxc-parser"
+import { GIT_VALUE_OPTIONS, gitSubcommand } from "../mods/guard/verdict.ts"
 import { gitClone, gitInit, QUIET_GIT } from "./git-repo.ts"
 import { scratch } from "./scratch.ts"
 
@@ -22,59 +34,85 @@ const settings = (dir: string) =>
 
 const QUIET = { "gc.auto": "0", "maintenance.auto": "false" }
 
-/** One argument of a call, flattened through array literals and spreads: a string literal, a name, or anything else. */
-interface Item {
-  readonly kind: "literal" | "name" | "other"
-  readonly text: string
-}
+/**
+ * One word of a git argv as test code writes it: a string literal, a name, a spread of a name, or
+ * anything else; in a wrapper's template, also the wrapper's own parameter (`param`, one argument)
+ * or rest parameter (`rest`, every argument from there on), by position.
+ */
+type Item =
+  | { readonly kind: "literal" | "name" | "spread"; readonly text: string }
+  | { readonly kind: "other" }
+  | { readonly kind: "param" | "rest"; readonly index: number }
 
-const OTHER: Item = { kind: "other", text: "" }
+const OTHER: Item = { kind: "other" }
 
+/** The words of `Bun.spawn({ cmd: [...] })`'s options: its `cmd`. */
+const cmdOf = (properties: ReadonlyArray<ObjectPropertyKind>): ReadonlyArray<Item> =>
+  properties.flatMap((property) => {
+    if (property.type !== "Property" || property.key.type !== "Identifier" || property.key.name !== "cmd") return []
+    return items(property.value)
+  })
+
+/** The words one argument stands for: an array literal's elements, a spread array's, one word else. */
 const items = (node: Argument | ArrayExpressionElement): ReadonlyArray<Item> => {
   if (Predicate.isNull(node)) return [OTHER]
   if (node.type === "ArrayExpression") return node.elements.flatMap(items)
-  if (node.type === "SpreadElement") return items(node.argument)
+  if (node.type === "ObjectExpression") return cmdOf(node.properties)
+  if (node.type === "SpreadElement" && node.argument.type === "ArrayExpression") return items(node.argument)
+  if (node.type === "SpreadElement" && node.argument.type === "Identifier") return [{ kind: "spread", text: node.argument.name }]
+  if (node.type === "SpreadElement") return [OTHER]
   if (node.type === "Literal" && Predicate.isString(node.value)) return [{ kind: "literal", text: node.value }]
   if (node.type === "Identifier") return [{ kind: "name", text: node.name }]
   return [OTHER]
 }
 
-const isOption = (item: Item) => item.kind === "literal" && item.text.startsWith("-")
+/**
+ * How a wrapper turns its call's arguments into git's argv (the words after `git`): a template of
+ * words and parameter slots, or `lenient` for a `git` the file calls without defining (an import,
+ * `repo.git(…)`), whose leading non-literal arguments (a directory, an env) are taken as its own.
+ */
+type Template = { readonly kind: "argv"; readonly words: ReadonlyArray<Item> } | { readonly kind: "lenient" }
 
-/** Git's options before its subcommand that take the next argument as their value. */
-const VALUED = new Set(["-c", "-C"])
+/** The name a call's callee goes by: `f(…)`, or `x.git(…)`, the one method read as a wrapper. */
+const calleeName = (call: CallExpression): Option.Option<string> => {
+  const { callee } = call
+  if (callee.type === "Identifier") return Option.some(callee.name)
+  if (callee.type === "MemberExpression" && !callee.computed && callee.property.type === "Identifier" && callee.property.name === "git") return Option.some("git")
+  return Option.none()
+}
 
-/** `list` past git's leading options: `-q`, and `-c x`, `-C dir` with their values. */
-const pastOptions = (list: ReadonlyArray<Item>): ReadonlyArray<Item> =>
-  Option.match(Arr.head(list), {
-    onNone: () => list,
-    onSome: (first) => {
-      if (!isOption(first)) return list
-      return pastOptions(list.slice(1 + Number(VALUED.has(first.text))))
-    },
+/** A wrapper's template with the call's arguments in its slots. */
+const fill = (template: Template, args: ReadonlyArray<ReadonlyArray<Item>>): ReadonlyArray<Item> => {
+  if (template.kind === "lenient") return Arr.dropWhile(args.flat(), (word) => word.kind !== "literal")
+  return template.words.flatMap((word) => {
+    if (word.kind === "param") return Option.getOrElse(Arr.get(args, word.index), () => [])
+    if (word.kind === "rest") return args.slice(word.index).flat()
+    return [word]
   })
+}
 
 /**
- * What a call runs as git's subcommand, when it runs git:
- * - a call that spawns git names "git" in its argv (`Bun.spawnSync(["git", "-C", dir, ...args])`,
- *   `sh(dir, env, "git", "init")`), and the subcommand comes right after it and its options;
- * - a call to a git wrapper (`git(dir, "init")`) names the wrapper's own arguments first (a
- *   directory, an env), so its subcommand is its first literal that is no option or option value.
- * None when the call runs no git; a name or other item when the subcommand is not written there
- * (a wrapper forwarding its own arguments).
+ * The git argv a call runs, when it runs git: a call to a wrapper fills the wrapper's template; a
+ * call that spawns git itself names "git" in its argv (`Bun.spawnSync(["git", …])`,
+ * `execFileSync("git", […])`, `run(cwd, "git", …)`), and the words after it are git's.
  */
-const subcommand = (call: CallExpression, wrappers: ReadonlySet<string>): Option.Option<Item> => {
-  const list = call.arguments.flatMap(items)
-  if (call.callee.type === "Identifier" && wrappers.has(call.callee.name)) {
-    const values = new Set(list.flatMap((each, index) => Arr.filter([index + 1], () => each.kind === "literal" && VALUED.has(each.text))))
-    return Option.orElse(
-      Arr.findFirst(list, (each, index) => each.kind === "literal" && !isOption(each) && !values.has(index)),
-      () => Option.some(OTHER),
-    )
-  }
-  const git = list.findIndex((each) => each.kind === "literal" && each.text === "git")
+const argvOf = (call: CallExpression, wrappers: ReadonlyMap<string, Template>): Option.Option<ReadonlyArray<Item>> => {
+  const args = call.arguments.map(items)
+  const wrapper = Option.flatMap(calleeName(call), (name) => Option.fromNullishOr(wrappers.get(name)))
+  if (Option.isSome(wrapper)) return Option.some(fill(wrapper.value, args))
+  const flat = args.flat()
+  const git = flat.findIndex((word) => word.kind === "literal" && word.text === "git")
   if (git < 0) return Option.none()
-  return Option.orElse(Arr.head(pastOptions(list.slice(git + 1))), () => Option.some(OTHER))
+  return Option.some(flat.slice(git + 1))
+}
+
+/** Git's subcommand in `argv`, read by mods/guard/verdict.ts's reader; a word not written as a literal is none. */
+const subcommandOf = (argv: ReadonlyArray<Item>): Option.Option<string> => {
+  const words = argv.map((word) => {
+    if (word.kind === "literal") return word.text
+    return "\u0000"
+  })
+  return Option.filter(Option.fromNullishOr(gitSubcommand(words).name), (name) => name !== "\u0000")
 }
 
 /** A function a file names: `const f = (…) => …`, `const f = function …`, `function f …`. */
@@ -83,7 +121,7 @@ interface Named {
   readonly fn: Function | ArrowFunctionExpression
 }
 
-/** A file's calls and named functions. */
+/** A file's calls, in source order, and its named functions. */
 interface Parsed {
   readonly calls: ReadonlyArray<CallExpression>
   readonly functions: ReadonlyArray<Named>
@@ -101,39 +139,51 @@ const parse = (file: string, text: string): Parsed => {
       if (init.type === "ArrowFunctionExpression" || init.type === "FunctionExpression") functions.push({ name: id.name, fn: init })
     },
   }).visit(parseSync(file, text).program)
-  return { calls, functions }
+  return { calls: Arr.sort(calls, Order.mapInput(Order.Number, (call: CallExpression) => call.start)), functions }
 }
 
-/** The names a parameter binds directly: itself, a rest parameter's, a defaulted one's. */
-const paramName = (param: ParamPattern): ReadonlyArray<string> => {
-  if (param.type === "Identifier") return [param.name]
-  if (param.type === "RestElement" && param.argument.type === "Identifier") return [param.argument.name]
-  if (param.type === "AssignmentPattern" && param.left.type === "Identifier") return [param.left.name]
+/** What a parameter at `index` stands for in a template: its name, and its slot. */
+const slotOf = (param: ParamPattern, index: number): ReadonlyArray<readonly [string, Item]> => {
+  if (param.type === "Identifier") return [[param.name, { kind: "param", index }]]
+  if (param.type === "AssignmentPattern" && param.left.type === "Identifier") return [[param.left.name, { kind: "param", index }]]
+  if (param.type === "RestElement" && param.argument.type === "Identifier") return [[param.argument.name, { kind: "rest", index }]]
   return []
 }
 
 /**
- * The file's git wrappers: `git`, and each function with a call in it that runs git (spawns it, or
- * calls a wrapper) on a subcommand the function was handed, not one written there. Found to a
- * fixpoint, so `at = (...args) => git(dir, ...args)` counts once `git` does.
+ * `fn`'s template, when a call in it runs git on a subcommand its parameters hand it: the first
+ * such call's argv, each parameter (or a spread of one) put back as its slot. A call whose
+ * subcommand is written there (`commitTo = (remote, …) => git(dir, "clone", …, remote)`) makes
+ * no wrapper: that call is the site, judged where it stands.
  */
-const gitWrappers = ({ calls, functions }: Parsed): ReadonlySet<string> => {
-  const grow = (known: ReadonlySet<string>): ReadonlySet<string> => {
-    const found = functions.filter(({ fn }) => {
-      const own = new Set(fn.params.flatMap(paramName))
-      return calls.some(
-        (call) =>
-          call.start >= fn.start &&
-          call.end <= fn.end &&
-          Option.exists(subcommand(call, known), (sub) => sub.kind !== "literal") &&
-          call.arguments.flatMap(items).some((each) => each.kind === "name" && own.has(each.text)),
-      )
-    })
-    const next = new Set([...known, ...found.map(({ name }) => name)])
-    if (next.size === known.size) return known
-    return grow(next)
+const templateOf = (fn: Function | ArrowFunctionExpression, calls: ReadonlyArray<CallExpression>, known: ReadonlyMap<string, Template>): Option.Option<Template> => {
+  const slots = new Map(fn.params.flatMap(slotOf))
+  const slot = (word: Item): Option.Option<Item> => {
+    if (word.kind !== "name" && word.kind !== "spread") return Option.none()
+    return Option.fromNullishOr(slots.get(word.text))
   }
-  return grow(new Set(["git"]))
+  return Arr.findFirst(
+    calls.filter((call) => call.start >= fn.start && call.end <= fn.end),
+    (call) =>
+      Option.flatMap(
+        Option.filter(argvOf(call, known), (argv) => Option.isNone(subcommandOf(argv)) && argv.some((word) => Option.isSome(slot(word)))),
+        (argv): Option.Option<Template> => Option.some({ kind: "argv", words: argv.map((word) => Option.getOrElse(slot(word), () => word)) }),
+      ),
+  )
+}
+
+/**
+ * The file's git wrappers and their templates, found to a fixpoint, so `at = (...args) =>
+ * git(dir, ...args)` counts once `git` does. A `git` the file calls but does not define is lenient.
+ */
+const gitWrappers = ({ calls, functions }: Parsed): ReadonlyMap<string, Template> => {
+  const grow = (known: ReadonlyMap<string, Template>): ReadonlyMap<string, Template> => {
+    const found = functions.flatMap(({ name, fn }) => Arr.filter(Option.toArray(templateOf(fn, calls, known)).map((template) => [name, template] as const), () => !known.has(name)))
+    if (found.length === 0) return known
+    return grow(new Map([...known, ...found]))
+  }
+  const defined = functions.some(({ name }) => name === "git")
+  return grow(new Map(Arr.filter([["git", { kind: "lenient" } as const] as const], () => !defined)))
 }
 
 /** Git's subcommands that make a repository. */
@@ -149,7 +199,7 @@ const rawSites = (file: string, text: string): ReadonlyArray<string> => {
   const lines = text.split("\n")
   return Arr.dedupe(
     parsed.calls
-      .filter((call) => Option.exists(subcommand(call, wrappers), (sub) => sub.kind === "literal" && MAKES_REPOSITORY.has(sub.text)))
+      .filter((call) => Option.exists(Option.flatMap(argvOf(call, wrappers), subcommandOf), (name) => MAKES_REPOSITORY.has(name)))
       .map((call) => text.slice(0, call.start).split("\n").length),
   ).map((line) => `${line}: ${Option.getOrElse(Arr.get(lines, line - 1), () => "").trim()}`)
 }
@@ -166,20 +216,79 @@ const SAMPLE = [
   "const at = (...args: ReadonlyArray<string>) => git(repository, ...args)",
   "const logged = (...argv: ReadonlyArray<string>) => run(dir, \"workrift\", ...argv)",
   "const commit = (dir: string, message: string) => git(dir, \"commit\", \"-q\", \"-m\", message)",
+  "const gx = (cwd: string, ...args: ReadonlyArray<string>) => Bun.spawnSync([\"git\", ...args], { cwd })",
   "git(root, \"init\", \"-q\")",
   "sh(dir, \"init\", \"-q\", \"-b\", \"dev\")",
   "run(root, \"git\", \"clone\", \"-q\", origin, \"other\")",
   "run(root, [\"git\", \"-C\", root, \"clone\", origin])",
   "at(\"init\", \"-q\", \"-b\", \"main\")",
   "execFileSync(\"git\", [\"init\", \"-q\", work])",
+  "gx(\"/nonexistent/loop-probe-x\", \"clone\", source)",
+  "Bun.spawnSync([\"git\", \"--git-dir\", `${root}/dotfiles.git`, \"init\", \"--bare\"])",
+  "Bun.spawnSync({ cmd: [\"git\", \"--work-tree\", root, \"init\", root] })",
   "run(source, \"rift\", \"init\", \"--here\")",
   "git(dir, \"commit\", \"-q\", \"-m\", \"init\")",
   "git(dir, \"-c\", \"init.defaultBranch=main\", \"commit\")",
   "commit(dir, \"init\")",
+  "Bun.spawnSync([\"git\", \"-C\", \"init\", \"status\"])",
   "const action = { action: \"init\", repository }",
   "expect(logged(\"init\", \"/nonexistent/loop-probe-x/repo.git\")).toEqual([\"ionice -c3\", `git clone ${lowered}`])",
   "expect(log).toEqual([\"git clone x\", \"git init y\"])",
+  "const commitTo = (remote: string, branch: string) => git(scratch, \"clone\", \"--branch\", branch, remote, \".\")",
+  "commitTo(upstream, \"dev\")",
 ].join("\n")
+
+/** A seeded generator (mulberry32), so a failing case names its seed and replays. */
+const generator = (seed: number) => {
+  const state = { value: seed >>> 0 }
+  const next = () => {
+    state.value = (state.value + 0x6d2b79f5) >>> 0
+    const mixed = Math.imul(state.value ^ (state.value >>> 15), 1 | state.value)
+    const spread = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed
+    return ((spread ^ (spread >>> 14)) >>> 0) / 4294967296
+  }
+  const pick = <A,>(list: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(list, Math.floor(next() * list.length)))
+  return { pick, count: (below: number) => Math.floor(next() * below) }
+}
+
+/** Git's global options that take no value, from git 2.56's `git --help`, and the `=` forms of valued ones. */
+const BARE_OPTIONS = ["-p", "-P", "--paginate", "--no-pager", "--bare", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks", "--no-advice", "--literal-pathspecs", "--git-dir=/nonexistent/loop-probe-x"]
+
+/** Words a case puts where a value, a subcommand's argument or a wrapper's leading argument goes; the decoys are git's own subcommand names. */
+const WORDS = ["init", "clone", "/nonexistent/loop-probe-x", "core.pager=cat", "-q"]
+
+/** The subcommands a case runs: the two that make a repository, and others. */
+const SUBCOMMANDS = ["init", "clone", "status", "commit", "fetch", "rev-parse"]
+
+/** A generated case: test code with one call that runs git, and whether git's subcommand there makes a repository. */
+interface Case {
+  readonly code: string
+  readonly makes: boolean
+}
+
+const quoted = (words: ReadonlyArray<string>) => words.map((word) => JSON.stringify(word)).join(", ")
+
+/** A case with git's global options in any order (each valued one with its value), a subcommand, its arguments, in one of the call shapes test code writes. */
+const generate = (random: ReturnType<typeof generator>): Case => {
+  const globals = Array.from({ length: random.count(4) }, () => {
+    const valued = random.pick([...GIT_VALUE_OPTIONS])
+    return random.pick([[random.pick(BARE_OPTIONS)], [valued, random.pick(WORDS)]])
+  }).flat()
+  const sub = random.pick(SUBCOMMANDS)
+  const after = Array.from({ length: random.count(3) }, () => random.pick(WORDS))
+  const argv = [...globals, sub, ...after]
+  const lead = random.pick(["\"/nonexistent/loop-probe-x\"", "\"init\"", "dir"])
+  const forms = [
+    `Bun.spawnSync([${quoted(["git", ...argv])}])`,
+    `execFileSync("git", [${quoted(argv)}])`,
+    `const run = (cwd: string, ...words: ReadonlyArray<string>) => Bun.spawnSync([...words], { cwd })\nrun(${lead}, ${quoted(["git", ...argv])})`,
+    `const gx = (cwd: string, ...args: ReadonlyArray<string>) => Bun.spawnSync(["git", ...args], { cwd })\ngx(${lead}, ${quoted(argv)})`,
+    `const git = (dir: string, ...args: ReadonlyArray<string>) => Bun.spawnSync(["git", "-C", dir, ...args])\ngit(${lead}, ${quoted(argv)})`,
+    `const named = (sub: string, target: string) => Bun.spawnSync(["git", ${[...globals.map((word) => JSON.stringify(word)), "sub", "target"].join(", ")}])\nnamed(${JSON.stringify(sub)}, ${lead})`,
+    `const gx = (cwd: string, ...args: ReadonlyArray<string>) => Bun.spawnSync(["git", ...args], { cwd })\nconst at = (...args: ReadonlyArray<string>) => gx(dir, ...args)\nat(${quoted(argv)})`,
+  ]
+  return { code: random.pick(forms), makes: MAKES_REPOSITORY.has(sub) }
+}
 
 describe("a test's temp git repository", () => {
   test("gitInit makes a quiet work tree and a quiet bare repository, and gitClone a quiet clone", () => {
@@ -194,7 +303,14 @@ describe("a test's temp git repository", () => {
   })
 
   test("a call that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
-    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([7, 8, 9, 10, 11, 12])
+    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25])
+  })
+
+  test("over generated git argv in every call shape, a call is a site exactly when git's subcommand there is init or clone", () => {
+    for (const seed of Arr.range(1, 400)) {
+      const { code, makes } = generate(generator(seed))
+      expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
+    }
   })
 
   test("no test file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {

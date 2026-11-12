@@ -39,7 +39,7 @@ describe("the verdict denies", () => {
 
   test("git reset --hard, whatever global options come before it", () => {
     expect(reasonOf("git reset --hard")).toBe("`git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first")
-    for (const command of ["git reset --hard HEAD~1", "git -C repo reset --hard", "git -c core.pager=cat reset --hard", "git --git-dir repo/.git --work-tree repo reset --hard"])
+    for (const command of ["git reset --hard HEAD~1", "git -C repo reset --hard", "git -c core.pager=cat reset --hard", "git --git-dir repo/.git --work-tree repo reset --hard", "git --config-env core.pager=PAGER reset --hard"])
       expect([command, judge(command)._tag]).toEqual([command, "Deny"])
   })
 
