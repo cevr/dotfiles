@@ -96,9 +96,9 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
 
   /** Start the fork's service in a scratch HOME with `config` as its global config, and wait for its service file. */
   const start = async (name: string, config: unknown, extra: Record<string, string> = {}): Promise<Host> => {
-    const base = join(root, name)
+    const base = kept.dir(`${name}-`)
     const home = join(base, "home")
-    for (const dir of ["work", ".config/opencode", ".local/state"]) mkdirSync(join(dir === "work" ? base : home, dir), { recursive: true })
+    for (const dir of ["work", "home", "home/.config", "home/.config/opencode", "home/.local", "home/.local/state"]) mkdirSync(join(base, dir))
     writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify(config))
     const launch = forkLaunch(fork ?? "", process.execPath)
     const child = owned([...launch.base, "serve", "--service", "--port", "0"], {
@@ -169,7 +169,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         script: () => ({ kind: "ok", text: "unused" }),
       })
       try {
-        const store = join(root, "gent-auth")
+        const store = kept.dir("gent-auth-")
         const gent = await openGentStore(store)
         await gent.signIn("alpha", { ...accounts.alpha, expires: now + 8 * HOUR })
         await gent.signIn("beta", { ...accounts.beta, expires: now + 8 * HOUR })

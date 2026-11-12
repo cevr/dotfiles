@@ -302,7 +302,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   beforeAll(
     ...kept.setup(async () => {
       if (binary) cpSync(binary, scratchBinary)
-      for (const dir of [work, join(home, ".config/opencode")]) mkdirSync(dir, { recursive: true })
+      for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode")]) mkdirSync(dir)
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),
         JSON.stringify({
@@ -343,7 +343,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
 
   /** A session of its own with `marker` in its transcript, so no other case's turns scroll it away. */
   const transcript = async (title: string, marker: string, directory = work) => {
-    mkdirSync(directory, { recursive: true })
+    if (!existsSync(directory)) mkdirSync(directory)
     const made = await client.session.create({ location: { directory }, title })
     await client.session.prompt({ sessionID: made.id, text: `say ${marker}` })
     await client.experimental.session.wait({ sessionID: made.id })
@@ -457,7 +457,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       await client.experimental.session.wait({ sessionID: target.id })
       // A directory with no session: --continue has none to open there.
       const empty = join(root, "empty")
-      mkdirSync(empty, { recursive: true })
+      mkdirSync(empty)
       type Open = { readonly name: string; readonly args: ReadonlyArray<string>; readonly mode: "down" | "booting" | "ready"; readonly cwd?: string; readonly shows?: RegExp }
       const open = async ({ name, args, mode, cwd = opened, shows = /opened-transcript-marker/ }: Open) => {
         if (mode === "down") proxy.down()

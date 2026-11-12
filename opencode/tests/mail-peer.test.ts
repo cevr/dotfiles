@@ -128,7 +128,6 @@ const readJson = (file: string): unknown => {
 
 describe.skipIf(!fork)("session mail between two paired OpenCode servers (real pair command, scripted model)", () => {
   const kept = keptScratch(Boolean(fork), "mail-peer-", true)
-  const root = kept.path
   const hosts: Array<Host> = []
   afterAll(async () => {
     await Promise.all(hosts.map((host) => host.stop()))
@@ -138,9 +137,9 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
 
   /** Start the fork's service in a scratch HOME with the mail plugin listening on a loopback port, and wait for its service file and its listener. */
   const start = async (name: string): Promise<Host> => {
-    const base = join(root, name)
+    const base = kept.dir(`${name}-`)
     const home = join(base, "home")
-    for (const dir of ["work", ".config/opencode", ".local/state"]) mkdirSync(join(dir === "work" ? base : home, dir), { recursive: true })
+    for (const dir of ["work", "home", "home/.config", "home/.config/opencode", "home/.local", "home/.local/state"]) mkdirSync(join(base, dir))
     writeFileSync(
       join(home, ".config/opencode/opencode.json"),
       JSON.stringify({

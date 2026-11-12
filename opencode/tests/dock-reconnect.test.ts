@@ -268,7 +268,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   /** The service, started once for every case, and the fork's client. */
   const boot = () =>
     (booted ??= (async () => {
-      for (const dir of [work, join(home, ".config/opencode")]) mkdirSync(dir, { recursive: true })
+      for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode")]) mkdirSync(dir)
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),
         JSON.stringify({

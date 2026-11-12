@@ -21,6 +21,10 @@
 //
 // lint/test-env.test.ts holds a case for each of these, so removing any one's
 // handling turns a case red.
+//
+// `dotfiles/kept-suite-folders` lives in lint/kept-scratch.ts.
+
+import keptSuiteFolders from "./kept-scratch.ts"
 
 interface Node {
   readonly type: string
@@ -160,5 +164,5 @@ const noModuleEnvInTests = {
 
 export default {
   meta: { name: "dotfiles" },
-  rules: { "no-module-env-in-tests": noModuleEnvInTests },
+  rules: { "no-module-env-in-tests": noModuleEnvInTests, "kept-suite-folders": keptSuiteFolders },
 }

@@ -74,7 +74,8 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
   test(
     "a fresh service, with no client, session or turn, accepts a signed delivery from a paired host",
     kept.test(async () => {
-      for (const dir of [work, join(root, "bin"), join(home, ".config/opencode"), join(home, ".local/state/opencode-mail"), residentDir(home)]) mkdirSync(dir, { recursive: true })
+      const state = join(home, ".local/state")
+      for (const dir of [work, join(root, "bin"), home, join(home, ".config"), join(home, ".config/opencode"), join(home, ".local"), state, join(state, "opencode-mail"), join(state, "opencode-prime"), residentDir(home)]) mkdirSync(dir)
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),
         JSON.stringify({ plugins: [{ package: join(ROOT, "cmd/mail"), options: { listen: { hostname: "127.0.0.1", port: 0 } } }] }),
