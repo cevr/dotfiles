@@ -13,6 +13,7 @@ import {
   rowKey,
   tally,
   restates,
+  usable,
   weeklyRatios,
   takePeer,
   weightedOf,
@@ -317,6 +318,26 @@ describe("a model's reported part of the weekly window", () => {
     expect(limitsLine(answer)).toContain("weekly/own 0.67 measured 0.")
   })
 
+  test("parts that restate the own week in some periods and not in others: the ratio is measured, not the provider's share", () => {
+    const resetAt = T0 + 7 * DAY
+    let state = emptyState(T0 - 7 * DAY)
+    const uses: Array<Use> = []
+    const restatesHalf = ["a", 100, 4, 12, 6] as const
+    const measuresItsOwn = ["b", 50, 2, 6, 5] as const
+    const restatesHalfAgain = ["c", 80, 1, 4, 2] as const
+    for (const [id, opus, fable, own, part] of [restatesHalf, measuresItsOwn, restatesHalfAgain]) {
+      uses.push(use(T0 + HOUR / 2, id, "claude-opus-5-5", opus * 1e6), use(T0 + HOUR / 2, id, "claude-fable-5-2", fable * 1e6))
+      state = observe(state, "anthropic", id, reading(T0 + HOUR, [
+        { name: "7d", utilization: (opus * 0.1 + part) / 100, resetAt },
+        { name: "7d:Fable", utilization: own / 100, resetAt, ofWeekly: 0.5, weeklyUsed: part / 100 },
+      ]))
+    }
+    const answer = tally(recount(state, uses, T0 + HOUR), T0 + HOUR)
+    expect(answer.recent.find((w) => w.window === "7d")!.families.find((f) => f.family === "Fable")!.share).toBeUndefined()
+    expect(weeklyRatios(answer, "anthropic")["7d:Fable"]!.source).toBe("tally")
+    expect(limitsLine(answer)).toMatch(/weekly\/own [\d.]+ measured/)
+  })
+
   test("a part restates the own week when it is the use times the share, as is or rounded half up", () => {
     expect(restates(6, 11, 0.5)).toBe(true)
     expect(restates(3, 5, 0.5)).toBe(true)
@@ -378,6 +399,13 @@ describe("a model's own week in the line, whatever the periods' ages", () => {
     for (let run = 0; run < 300; run++) {
       // The store began somewhere around the first week; each account runs 1 to 3 weeks, each with or without Opus and Fable.
       let state = emptyState(T0 + pick([-DAY, 0, 2 * DAY, 9 * DAY]))
+      const restateAtHalf = (own: number) => Math.round(own * 0.5) / 100
+      const measureOnItsOwn = (own: number) => Math.round(own * 0.7 + 1) / 100
+      const weeklyUsed = pick([restateAtHalf, measureOnItsOwn])
+      const ratioLabel = new Map([
+        [restateAtHalf, /weekly\/own 0\.50 provider's share/],
+        [measureOnItsOwn, /weekly\/own [\d.]+ measured/],
+      ]).get(weeklyUsed)!
       const uses: Array<Use> = []
       let end = T0
       for (const id of ["a", "b", "c"].slice(0, 1 + Math.floor(random() * 3))) {
@@ -393,7 +421,7 @@ describe("a model's own week in the line, whatever the periods' ages", () => {
           const own = fable * 2
           state = observe(state, "anthropic", id, reading(at, [
             { name: "7d", utilization: Math.min(opus * 0.2 + fable, 100) / 100, resetAt },
-            { name: "7d:Fable", utilization: own / 100, resetAt, ofWeekly: 0.5, ...(random() < 0.8 ? { weeklyUsed: Math.round(own * 0.5) / 100 } : {}) },
+            { name: "7d:Fable", utilization: own / 100, resetAt, ofWeekly: 0.5, weeklyUsed: weeklyUsed(own) },
           ]))
           // The store counts each period's tokens while it is open, as the pool's sweeps do.
           state = recount(state, uses, at)
@@ -401,9 +429,36 @@ describe("a model's own week in the line, whatever the periods' ages", () => {
         }
       }
       const now = end + pick([HOUR, 6 * DAY, 7 * DAY + HOUR, 8 * DAY, 15 * DAY])
-      const line = limitsLine(tally(recount(state, uses, now), now))
+      state = recount(state, uses, now)
+      const line = limitsLine(tally(state, now))
       const named = Object.values(state.rows).some((row) => row.window === "7d:Fable")
       if (named) expect({ run, line }).toEqual({ run, line: expect.stringMatching(/Fable own week|\(own week/) })
+      if (String(line).includes("weekly/own")) expect({ run, line }).toEqual({ run, line: expect.stringMatching(ratioLabel) })
+      for (const old of String(line).matchAll(/Fable own week [^(]*\((\d+) d old/g)) {
+        const fitted = Object.values(state.rows).filter((row) => row.window === "7d:Fable" && usable(state, row) && Object.keys(row.own).length > 0)
+        const newestFittedAge = Math.floor((now - Math.max(...fitted.map((row) => row.at))) / DAY)
+        expect({ run, age: Number(old[1]) }).toEqual({ run, age: newestFittedAge })
+      }
     }
+  })
+
+  test("the age of an own week fitted in weeks 1 and 2, each read on its sixth day, with Opus alone in week 3, is week 2's reading's on day 22", () => {
+    let state = emptyState(T0 - DAY)
+    const uses: Array<Use> = []
+    for (const [week, fable] of [
+      [0, 2],
+      [1, 2],
+      [2, 0],
+    ] as const) {
+      const start = T0 + week * 7 * DAY
+      uses.push(use(start + HOUR, "a", "claude-opus-5-5", 50e6))
+      if (fable > 0) uses.push(use(start + HOUR, "a", "claude-fable-5-2", fable * 1e6))
+      state = observe(state, "anthropic", "a", reading(start + 6 * DAY, [
+        { name: "7d", utilization: (10 + fable) / 100, resetAt: start + 7 * DAY },
+        { name: "7d:Fable", utilization: (2 * fable) / 100, resetAt: start + 7 * DAY },
+      ]))
+      state = recount(state, uses, start + 6 * DAY)
+    }
+    expect(limitsLine(tally(state, T0 + 22 * DAY))).toContain("Fable own week 2.0% 2.0–2.0 n 2 (9 d old:")
   })
 })
