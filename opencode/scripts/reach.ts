@@ -34,6 +34,7 @@ export const SHARED = [
   "tsconfig.json",
   ".oxlintrc.json",
   ".oxlintrc.effect-debt.json",
+  "lint/package.json",
   "effect-debt.json",
   "scripts/effect-debt.ts",
   "scripts/reach.ts",
