@@ -820,7 +820,7 @@
     "mods/wake/opencode/opener.ts": {"effect/noComments":4,"effect/noTernary":1,"effect/preferServiceOf":1},
     "mods/wake/opencode/store.test.ts": {"effect/noAsyncFunction":2,"effect/noComments":2,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":1,"effect/noNullish":2,"effect/noTernary":1},
     "mods/wake/opencode/store.ts": {"effect/noComments":11,"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":5,"effect/noTernary":1,"effect/preferServiceOf":1},
-    "mods/wake/process/checks.test.ts": {"effect/noAsyncFunction":10,"effect/noComments":3,"effect/noEffectRunInTests":7,"effect/noGlobals":6,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":1},
+    "mods/wake/process/checks.test.ts": {"effect/noComments":3,"effect/noEffectRunInTests":1,"effect/noGlobals":6,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":1},
     "mods/wake/process/checks.ts": {"effect/noAs":1,"effect/noAsyncFunction":3,"effect/noComments":10,"effect/noGlobals":2,"effect/noNewPromise":1,"effect/noNullish":3,"effect/noTernary":5,"effect/noTryCatch":3,"effect/preferServiceOf":1},
     "mods/wake/process/runner.test.ts": {"effect/noComments":17,"effect/noEffectRunInTests":2,"effect/noGlobals":4,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":6,"effect/noTernary":1},
     "mods/wake/process/runner.ts": {"effect/noAs":2,"effect/noComments":8,"effect/noConditionalEmptyObjectSpread":3,"effect/noGlobals":3,"effect/noNodeBuiltinImport":2,"effect/noNullish":18,"effect/noTernary":7,"effect/noTryCatch":5,"effect/preferServiceOf":1},
