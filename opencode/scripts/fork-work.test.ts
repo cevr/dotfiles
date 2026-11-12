@@ -128,6 +128,34 @@ describe("forkWork on a fixture fork", () => {
     expect(forkWorkText(work).at(-1)).toBe("- 7 linked upstream issues or PRs could not be read (gh); their state is unchecked.")
   })
 
+  test("lines shared only in files the fork's .gitattributes marks linguist-generated make no candidate", async () => {
+    const dir = mkdtempSync(join(scratch, "repo-"))
+    sh(dir, "init", "-q", "-b", "dev")
+    const SCHEMA = ['"McpConnected": {', '"type": "object",', '"required": ["server", "status"],', '"$ref": "#/components/schemas/McpStatus"']
+    commit(dir, "init", {
+      ".gitattributes": "packages/protocol/openapi.json linguist-generated\npackages/client/src/promise/generated/** linguist-generated\n",
+      "packages/protocol/openapi.json": "{}\n",
+      "packages/client/src/promise/generated/types.ts": "export {}\n",
+      "src/mcp.ts": "export {}\n",
+    })
+    sh(dir, "checkout", "-q", "-b", "prime-look")
+    commit(dir, "feat: the fork's MCP status route", {
+      "packages/protocol/openapi.json": `${SCHEMA.join("\n")}\n`,
+      "packages/client/src/promise/generated/types.ts": "export type McpConnected = { server: string; status: McpStatus }\n",
+      "src/mcp.ts": "export const forkStatus = (server: Server) => server.status\n",
+    })
+    const before = sh(dir, "rev-parse", "HEAD")
+    sh(dir, "checkout", "-q", "dev")
+    commit(dir, "feat(core): publish MCP events on the bus (#63261)", {
+      "packages/protocol/openapi.json": `${SCHEMA.join("\n")}\n"extra": true\n`,
+      "packages/client/src/promise/generated/types.ts": "export type McpConnected = { server: string; status: McpStatus }\n",
+      "src/mcp.ts": "export const publishOnBus = (event: McpEvent) => bus.publish(event)\n",
+    })
+    sh(dir, "checkout", "-q", "prime-look")
+    const work = await forkWork({ fork: dir, branch: "prime-look", upstream: "dev", before, agents: "# nothing linked", lookup: lookup({}) })
+    expect(work.candidates).toEqual([])
+  })
+
   test("nothing new upstream and no marker: no fork work", async () => {
     const made = fixture()
     sh(made.dir, "merge", "-q", "--no-edit", "-X", "theirs", "dev")
