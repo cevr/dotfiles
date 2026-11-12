@@ -24,6 +24,7 @@
 //    through the update's handoff (mods/update: health check, reinstall, rollback). `--stage` (the
 //    update plugin's build ahead) restarts nothing: the plugin does, once every root session is idle.
 import { $ } from "bun"
+import { Effect } from "effect"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -32,7 +33,7 @@ import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } f
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
-import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
+import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
@@ -261,6 +262,30 @@ const writeJson = (path: string, value: Json) => {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
 }
 
+/**
+ * Moves prime-look to origin (`sync`) and, when it moved and is checked out there (`head`), installs what
+ * the move changed (`install`: the build skips its own install), all in one hold of the land's checks lock
+ * (`move`), since a land's gate and accept read the checkout. A failed install is logged, lets go of the
+ * lock and then fails with its own error: daily stops, as a build on a half-installed fork must not run.
+ */
+export const moveFork = <I>(
+  move: <A>(step: () => Promise<A>) => Promise<A>,
+  sync: () => SyncOutcome,
+  head: Effect.Effect<string>,
+  install: Effect.Effect<I>,
+  log: (line: string) => void,
+): Promise<SyncOutcome> =>
+  move(() =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const synced = sync()
+        if (synced.kind === "fast-forwarded" && (yield* head).trim() === synced.to)
+          yield* install.pipe(Effect.tapDefect(() => Effect.sync(() => log(`daily: the fork's install after its move to ${synced.to} failed; daily stops before the build`))))
+        return synced
+      }),
+    ),
+  )
+
 if (import.meta.main) {
   const home = homedir()
   const args = new Set(process.argv)
@@ -288,13 +313,13 @@ if (import.meta.main) {
       log: console.log,
     })
   // Before the merge and the build, so neither starts from a prime-look origin has moved past.
-  locks.moveSync(() => {
-    const synced = syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log })
-    // The build skips its install; the commits from origin may have changed the fork's dependencies.
-    if (synced.kind !== "fast-forwarded" || Bun.spawnSync(["git", "-C", fork, "rev-parse", "HEAD"]).stdout.toString().trim() !== synced.to) return
-    const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: fork, env, stdout: "pipe", stderr: "pipe" })
-    if (installed.exitCode !== 0) console.log(`daily: bun install in ${fork} failed: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
-  })
+  await moveFork(
+    locks.move,
+    () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log }),
+    Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()),
+    Effect.promise(() => $`bun install --frozen-lockfile`.cwd(fork).quiet()),
+    console.log,
+  )
   if (args.has("--dry-run")) {
     const outcome = await upstream(true)
     if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)

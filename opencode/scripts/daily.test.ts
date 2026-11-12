@@ -1,11 +1,13 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
+import { Effect } from "effect"
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { scratch as scratchDir } from "../tests/scratch.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
+import { hostLocks } from "../mods/rift/process/landing.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -443,6 +445,37 @@ describe("the upstream merge", () => {
     expect(tests).not.toContain("./tests/mail-peer.test.ts")
     expect(tests.every((file) => /\/(prime-[^/]+|tui-cpu|mail|orchestrate)\.test\.ts$/.test(file))).toBe(true)
   })
+})
+
+describe("the fork move", () => {
+  const kept = keptScratch(true, "daily-move-")
+  /** The land's locks of a host whose cache is a fresh scratch folder. */
+  const scratchLocks = () => hostLocks({ XDG_CACHE_HOME: kept.dir("cache-") })
+  const moved = () => ({ kind: "fast-forwarded", from: "a", to: "b", commits: 1 }) as const
+  const none = () => {}
+
+  test(
+    "a failed install after the move to origin is logged, lets go of the land's checks lock, and fails daily with the install's own error (a lock never let go times the test out)",
+    () => {
+      const locks = scratchLocks()
+      const failed = { install: "bun install --frozen-lockfile: exit 1" }
+      const lines: Array<string> = []
+      expect(moveFork(locks.move, moved, Effect.succeed("b\n"), Effect.die(failed), (line) => lines.push(line))).rejects.toBe(failed)
+      expect(lines).toEqual(["daily: the fork's install after its move to b failed; daily stops before the build"])
+      return moveFork(locks.move, () => ({ kind: "current" }), Effect.succeed("b"), Effect.die("installed"), none)
+    },
+    2000,
+  )
+
+  test(
+    "installs nothing when the fork did not move",
+    kept.test(() => expect(moveFork(scratchLocks().move, () => ({ kind: "current" }), Effect.succeed("b"), Effect.die("installed"), none)).resolves.toEqual({ kind: "current" })),
+  )
+
+  test(
+    "installs nothing when the fork moved but is checked out elsewhere",
+    kept.test(() => expect(moveFork(scratchLocks().move, moved, Effect.succeed("c"), Effect.die("installed"), none)).resolves.toEqual(moved())),
+  )
 })
 
 describe("the installed build's record", () => {
