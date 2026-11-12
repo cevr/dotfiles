@@ -27,9 +27,9 @@ export const RiftInput = toolInput(Schema.Struct({
   path: Schema.optional(Schema.String).annotate({
     description: "remove and deps: the Rift's directory, in place of its name. init: where to clone (default: /workspaces/<repository>).",
   }),
-  rifts: Schema.optional(Schema.Array(Schema.String)).annotate({
+  rifts: Schema.optional(Schema.Array(Schema.Union([Schema.String, Schema.Struct({ path: Schema.String, unit: Schema.String })]))).annotate({
     description:
-      "land: the Rifts to land, in order, each by path (a path starts with / or .), by name, or by its branch (exact, else with / as -); a name two Rifts answer to is refused, naming both.",
+      "land: the Rifts to land, in order, each by path (a path starts with / or .), by name, or by its branch (exact, else with / as -); a name two Rifts answer to is refused, naming both. An orchestrate run may give one as { path, unit }: the land lands its path, and the orchestrate plugin records it as that unit's.",
   }),
   departs: Schema.optional(Schema.String).annotate({
     description: "land: why this land goes against the orchestrate skill's batch rules; the orchestrate plugin records it as the reason. The land does nothing else with it.",

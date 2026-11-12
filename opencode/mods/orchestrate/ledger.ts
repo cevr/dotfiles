@@ -81,7 +81,6 @@ const Unit = Schema.Struct({
   since: Schema.Number,
   direct: Schema.Boolean,
   child: Schema.optionalKey(Schema.String),
-  workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 const State = Schema.Struct({
   units: Schema.Record(Schema.String, Unit),

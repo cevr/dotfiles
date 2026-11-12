@@ -150,11 +150,13 @@ import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
-import { DEFAULT_CADENCE, type Refused } from "@dotfiles/opencode-orchestrate/machine"
+import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused } from "@dotfiles/opencode-orchestrate/machine"
+import * as GitBranches from "@dotfiles/opencode-orchestrate/git/branches"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/restarts"
 import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
+  type Branches,
   type CallLog,
   type CodexAdmission,
   type GuardMode,
@@ -269,6 +271,7 @@ export type Externals =
   | Liveness
   | Remind
   | Findings
+  | Branches
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
@@ -288,6 +291,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
   Layer.mergeAll(
     LedgerLive.layer(options.ledger, options.cadence),
     FindingsLive.layer,
+    GitBranches.layer,
     SteerLive.remindLayer(synthetic(ctx)),
     // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
     // work of its own; a session that cannot be read does not.
@@ -448,10 +452,17 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /** The rift tool, whose `land` the machine decides. */
 const RIFT = "rift"
 
+/** A land input's Rift: its entry (path, name or branch), or `{ path, unit }` naming the unit it is for. */
+const targetOf = (rift: unknown): ReadonlyArray<LandTarget> => {
+  if (typeof rift === "string") return [rift]
+  if (isObject(rift) && typeof rift.path === "string") return [typeof rift.unit === "string" && rift.unit.trim() !== "" ? { rift: rift.path, unit: rift.unit.trim() } : rift.path]
+  return []
+}
+
 /** A `rift` land's Rifts and its stated departure; none for any other call. */
-const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<string>; readonly departs?: string } | undefined => {
+const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string } | undefined => {
   if (tool !== RIFT || !isObject(input) || input.action !== "land" || !Array.isArray(input.rifts)) return undefined
-  const rifts = input.rifts.filter((rift): rift is string => typeof rift === "string")
+  const rifts = input.rifts.flatMap(targetOf)
   return typeof input.departs === "string" && input.departs.trim() !== "" ? { rifts, departs: input.departs.trim() } : { rifts }
 }
 
@@ -491,15 +502,24 @@ const OUTCOME = /^- (\S+) \((.+)\): (green|red|pending)\b/
 
 /**
  * The Rifts a completed land landed: in a checked land (`rift.push` false), each Rift answered green or
- * pending (its gate passed), by its branch and path; in a pushed one, every Rift it was asked to land.
+ * pending (its gate passed), by its path and the branch the land merged, with the unit the input named
+ * for that path; in a pushed one, every Rift it was asked to land.
  */
-export const greenOf = (rifts: ReadonlyArray<string>, text: string): ReadonlyArray<string> => {
+export const greenOf = (rifts: ReadonlyArray<LandEntry>, text: string): ReadonlyArray<LandEntry> => {
   const outcomes = text.split("\n").flatMap((line) => {
     const match = OUTCOME.exec(line.trim())
     return match === null ? [] : [{ branch: match[1]!, path: match[2]!, verdict: match[3]! }]
   })
   if (outcomes.length === 0) return rifts
-  return outcomes.filter((outcome) => outcome.verdict !== "red").flatMap((outcome) => [outcome.branch, outcome.path])
+  return outcomes
+    .filter((outcome) => outcome.verdict !== "red")
+    .map((outcome): LandEntry => {
+      const unit = rifts.find((rift) => {
+        const named = rift.rift.replace(/\/+$/, "")
+        return rift.unit !== undefined && (named === outcome.path || outcome.path.endsWith(`/${named}`))
+      })?.unit
+      return { rift: outcome.path, branch: outcome.branch, ...(unit === undefined ? {} : { unit }) }
+    })
 }
 
 type Execute = Tool.Info["execute"]
@@ -694,6 +714,8 @@ export const make = (
       const notes = new Map<string, string>()
       // A land's note under `warn` (the rule it broke), by its call, put first in the rift tool's answer.
       const landNotes = new Map<string, string>()
+      // A land's Rifts as read before it ran (their branches), by its call, for its answer.
+      const landRifts = new Map<string, ReadonlyArray<LandEntry>>()
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -753,8 +775,11 @@ export const make = (
           const land = landOf(event.tool, event.input)
           if (land === undefined) return used
           // A land is decided on the root's machine before it runs; a refused one never reaches the rift tool.
+          // Its Rifts' branches are read now, for its answer too: a pushed land trashes them.
           return used.pipe(
-            Effect.andThen(machines.land({ root: event.sessionID, ...land }).pipe(Effect.mapError(refusedError))),
+            Effect.andThen(machines.resolve(land.rifts)),
+            Effect.tap((rifts) => Effect.sync(() => landRifts.set(callKey(event.sessionID, event.id), rifts))),
+            Effect.flatMap((rifts) => machines.land({ root: event.sessionID, ...land, rifts }).pipe(Effect.mapError(refusedError))),
             Effect.map((passed) => {
               if (passed.notes.length > 0) landNotes.set(callKey(event.sessionID, event.id), passed.notes.join("\n"))
             }),
@@ -825,9 +850,14 @@ export const make = (
           if (land === undefined) return Effect.void
           const said = landNotes.get(callKey(event.sessionID, event.id))
           landNotes.delete(callKey(event.sessionID, event.id))
+          const resolved = landRifts.get(callKey(event.sessionID, event.id))
+          landRifts.delete(callKey(event.sessionID, event.id))
           if (event.status !== "completed") return Effect.void
           if (said !== undefined) event.result = prepend(event.result, said)
-          return machines.landed({ root: event.sessionID, rifts: greenOf(land.rifts, textOf(event.result)) })
+          const result = event.result
+          return (resolved === undefined ? machines.resolve(land.rifts) : Effect.succeed(resolved)).pipe(
+            Effect.flatMap((rifts) => machines.landed({ root: event.sessionID, rifts: greenOf(rifts, textOf(result)) })),
+          )
         }
         const metadata = event.status === "completed" ? event.result.metadata : undefined
         const child = isObject(metadata) && typeof metadata.sessionID === "string" ? metadata.sessionID : undefined
