@@ -13,10 +13,17 @@
 import { existsSync, readFileSync } from "node:fs"
 
 const decoder = new TextDecoder()
-const git = (dir: string, ...args: ReadonlyArray<string>) => {
-  const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdout: "pipe", stderr: "pipe" })
+/** Runs git with `stdin` as its input (empty for the commands that read none). */
+const gitWith = (stdin: string, dir: string, ...args: ReadonlyArray<string>) => {
+  const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    stdin: new TextEncoder().encode(stdin),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
   return { ok: ran.exitCode === 0, out: decoder.decode(ran.stdout).trim() }
 }
+const git = (dir: string, ...args: ReadonlyArray<string>) => gitWith("", dir, ...args)
 
 /** An upstream issue or PR AGENTS.md links to a fork change. */
 export interface Linked {
@@ -109,14 +116,9 @@ const commits = (dir: string, range: string): ReadonlyArray<Commit> => {
  */
 const generated = (dir: string, source: string, files: ReadonlyArray<string>): ReadonlySet<string> => {
   if (files.length === 0) return new Set()
-  const ran = Bun.spawnSync(["git", "-C", dir, "check-attr", "-z", "--stdin", `--source=${source}`, "linguist-generated"], {
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    stdin: new TextEncoder().encode(files.join("\0")),
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  if (ran.exitCode !== 0) return new Set()
-  const fields = decoder.decode(ran.stdout).split("\0")
+  const ran = gitWith(files.join("\0"), dir, "check-attr", "-z", "--stdin", `--source=${source}`, "linguist-generated")
+  if (!ran.ok) return new Set()
+  const fields = ran.out.split("\0")
   const marked = new Set<string>()
   for (let at = 0; at + 2 < fields.length; at += 3) {
     const [file = "", , value = ""] = fields.slice(at, at + 3)

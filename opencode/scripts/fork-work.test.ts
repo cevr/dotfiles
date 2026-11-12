@@ -128,7 +128,7 @@ describe("forkWork on a fixture fork", () => {
     expect(forkWorkText(work).at(-1)).toBe("- 7 linked upstream issues or PRs could not be read (gh); their state is unchecked.")
   })
 
-  test("lines shared only in files the fork's .gitattributes marks linguist-generated make no candidate", async () => {
+  test("lines shared only in files the fork's .gitattributes marks linguist-generated make no candidate", () => {
     const dir = mkdtempSync(join(scratch, "repo-"))
     sh(dir, "init", "-q", "-b", "dev")
     const SCHEMA = ['"McpConnected": {', '"type": "object",', '"required": ["server", "status"],', '"$ref": "#/components/schemas/McpStatus"']
@@ -152,8 +152,7 @@ describe("forkWork on a fixture fork", () => {
       "src/mcp.ts": "export const publishOnBus = (event: McpEvent) => bus.publish(event)\n",
     })
     sh(dir, "checkout", "-q", "prime-look")
-    const work = await forkWork({ fork: dir, branch: "prime-look", upstream: "dev", before, agents: "# nothing linked", lookup: lookup({}) })
-    expect(work.candidates).toEqual([])
+    return expect(forkWork({ fork: dir, branch: "prime-look", upstream: "dev", before, agents: "# nothing linked", lookup: lookup({}) })).resolves.toMatchObject({ candidates: [] })
   })
 
   test("nothing new upstream and no marker: no fork work", async () => {
