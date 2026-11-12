@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { checkoutsLaws } from "../laws.ts"
 import * as GitCheckouts from "./checkouts.ts"
 
@@ -45,10 +45,8 @@ checkoutsLaws(
     for (const each of [repository, unborn, outside]) mkdirSync(each)
     const at = (...args: ReadonlyArray<string>) => git(env, repository, ...args)
 
-    yield* git(env, dir, "init", "-q", "--bare", "-b", "main", remote)
-    yield* at("init", "-q", "-b", "main")
-    quietRepo(remote)
-    quietRepo(repository)
+    gitInit(remote, ["-q", "--bare", "-b", "main"], env)
+    gitInit(repository, ["-q", "-b", "main"], env)
     writeFileSync(join(repository, "a.txt"), "one\n")
     writeFileSync(join(repository, "old.txt"), "same\nlines\n")
     yield* at("add", ".")
@@ -73,8 +71,7 @@ checkoutsLaws(
     const nested = join(repository, "nested")
     mkdirSync(nested)
 
-    yield* git(env, unborn, "init", "-q", "-b", "main")
-    quietRepo(unborn)
+    gitInit(unborn, ["-q", "-b", "main"], env)
     writeFileSync(join(unborn, "first.txt"), "only line\n")
     yield* git(env, unborn, "add", "first.txt")
 

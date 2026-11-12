@@ -14,7 +14,7 @@ import { OPEN_REQUEST } from "@dotfiles/opencode-git/laws"
 import { PULL_REQUEST_FIELDS } from "@dotfiles/opencode-git/pull-request"
 import { HUNK_MISSING } from "@dotfiles/opencode-git/review"
 import { type FakeWorld, install } from "@dotfiles/opencode-git/process/fake-gh"
-import { quietRepo } from "../../tests/git-repo.ts"
+import { gitInit } from "../../tests/git-repo.ts"
 import Git, { live, make } from "./server.ts"
 
 type Host = Parameters<(typeof Git)["effect"]>[0]
@@ -61,8 +61,7 @@ const world = (programs: { readonly gh: boolean; readonly hunk: boolean }) =>
       const run = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repository, env, stdout: "ignore", stderr: "pipe" })
       return run.exitCode === 0 ? Effect.void : Effect.die(new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`))
     }
-    yield* git("init", "-q", "-b", "feature")
-    quietRepo(repository)
+    gitInit(repository, ["-q", "-b", "feature"], env)
     writeFileSync(join(repository, "a.txt"), "one\ntwo\n")
     yield* git("add", "a.txt")
     yield* git("commit", "-qm", "base")

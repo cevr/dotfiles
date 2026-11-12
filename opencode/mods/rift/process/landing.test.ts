@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { Landing } from "../service.ts"
 import { exclusively, exclusivelySync, hold, type LockMode } from "./flock.ts"
 import * as ProcessLanding from "./landing.ts"
@@ -50,10 +50,8 @@ const bench = () => {
   scratches.push(scratch)
   const origin = join(scratch, "origin.git")
   const source = join(scratch, "app")
-  sh(scratch, "git", "init", "-q", "--bare", "-b", "main", origin)
-  quietRepo(origin)
-  sh(scratch, "git", "clone", "-q", origin, source)
-  quietRepo(source)
+  gitInit(origin, ["-q", "--bare", "-b", "main"])
+  gitClone(origin, source, ["-q"])
   write(source, "package.json", JSON.stringify({ name: "app", private: true, workspaces: ["pkgs/*"] }))
   write(source, ".gitignore", "node_modules\n")
   write(source, "README.md", "app\n")
@@ -62,8 +60,7 @@ const bench = () => {
   sh(source, "git", "remote", "set-head", "origin", "main")
   const clone = (name: string, branch: string) => {
     const path = join(scratch, name)
-    sh(scratch, "git", "clone", "-q", origin, path)
-    quietRepo(path)
+    gitClone(origin, path, ["-q"])
     sh(path, "git", "checkout", "-q", "-b", branch)
     return path
   }

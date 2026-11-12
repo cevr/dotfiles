@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Order, Result, Schema, type Scope } from "effect"
-import { quietRepo } from "../tests/git-repo.ts"
+import { gitInit } from "../tests/git-repo.ts"
 import { mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
 import { MERGE_DRIVERS, registerMergeDriver } from "./merge-driver.ts"
 import {
@@ -389,8 +389,7 @@ const workspace = Effect.fn("EffectDebtTest.workspace")(function* () {
   put(root, DEBT_CONFIG, readReal(DEBT_CONFIG))
   for (const exemption of realPolicy.exemptions) put(root, exemption.file, "export const placeholder = 1\n")
   for (const [file, text] of SOURCES) put(root, file, text)
-  yield* git(root, "init", "-q")
-  quietRepo(root)
+  gitInit(root, ["-q"])
   return root
 })
 
@@ -599,8 +598,7 @@ describe("effect-debt --check over a real workspace", () => {
           const { overrides: _overrides, ...debt } = Schema.decodeUnknownSync(JsonObject)(readReal(DEBT_CONFIG))
           put(root, DEBT_CONFIG, Schema.encodeSync(JsonObject)(debt))
           writePolicy(root, {}, { exemptions: [] })
-          yield* git(root, "init", "-q")
-          quietRepo(root)
+          gitInit(root, ["-q"])
           const checked = yield* cli(root, "--check")
           expect({ code: checked.code, empty: checked.stderr.includes(`no source files under ${root}`) }).toEqual({ code: 1, empty: true })
         }),
@@ -825,8 +823,7 @@ const DRIVER = `${process.execPath} ${path.join(REAL, "scripts/effect-debt.ts")}
 /** A repo whose base commit holds the real policy and config, with the driver registered; `attributes` routes the two files to it. */
 const mergeRepo = Effect.fn("EffectDebtTest.mergeRepo")(function* () {
   const root = yield* scratch
-  yield* git(root, "init", "-q", "-b", "main")
-  quietRepo(root)
+  gitInit(root, ["-q", "-b", "main"])
   yield* git(root, "config", "merge.effect-debt.driver", DRIVER)
   yield* git(root, "config", "commit.gpgSign", "false")
   put(root, POLICY, readReal(POLICY))
@@ -988,8 +985,7 @@ describe("the merge driver's registration (bun run daily, and the update plugin'
   /** A dotfiles checkout with the real driver definition; `routed` writes the real `.gitattributes`. */
   const checkout = Effect.fn("EffectDebtTest.checkout")(function* (routed: boolean) {
     const root = yield* scratch
-    yield* git(root, "init", "-q")
-    quietRepo(root)
+    gitInit(root, ["-q"])
     put(root, MERGE_DRIVERS, readFileSync(path.join(DOTFILES, MERGE_DRIVERS), "utf8"))
     if (routed) put(root, "opencode/.gitattributes", readReal(".gitattributes"))
     return root

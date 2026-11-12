@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { runTablesLaws } from "../laws.ts"
 import type { RunTable } from "../run-table.ts"
 import { RunTables } from "../service.ts"
@@ -39,8 +39,7 @@ const repositoryOf = (tables: ReadonlyArray<RunTable>) =>
     const outside = join(dir, "outside")
     mkdirSync(repository)
     mkdirSync(outside)
-    yield* git(repository, "init", "-q")
-    quietRepo(repository)
+    gitInit(repository, ["-q"])
     const runs = join(repository, "tmp/orchestrate")
     for (const { name, table } of tables) {
       mkdirSync(join(runs, name), { recursive: true })

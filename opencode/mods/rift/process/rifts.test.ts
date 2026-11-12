@@ -8,7 +8,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { check, riftsLaws } from "../laws.ts"
 import { Rifts } from "../service.ts"
 import * as ProcessRifts from "./rifts.ts"
@@ -52,10 +52,8 @@ const bench = (workrift: boolean) =>
       const origin = join(scratch, "origin.git")
       const source = join(scratch, "code/app")
       mkdirSync(join(source, "src"), { recursive: true })
-      sh(scratch, env, "git", "init", "-q", "--bare", "-b", "main", origin)
-      sh(source, env, "git", "init", "-q", "-b", "main")
-      quietRepo(origin)
-      quietRepo(source)
+      gitInit(origin, ["-q", "--bare", "-b", "main"], withProcessEnv(env))
+      gitInit(source, ["-q", "-b", "main"], withProcessEnv(env))
       writeFileSync(join(source, "README.md"), "app\n")
       writeFileSync(join(source, "src/index.ts"), "export {}\n")
       sh(source, env, "git", "add", "README.md", "src/index.ts")
@@ -113,9 +111,8 @@ const droppingBench = Effect.acquireRelease(
     const source = join(scratch, "code/app")
     mkdirSync(source, { recursive: true })
     const base = scratchEnv(scratch, bin)
-    sh(source, base, "git", "init", "-q", "-b", "main")
-    // No background maintenance: it would fold the packs into one while the test reads them.
-    quietRepo(source)
+    // No background maintenance (gitInit turns it off): it would fold the packs into one while the test reads them.
+    gitInit(source, ["-q", "-b", "main"], withProcessEnv(base))
     const packs = () => readdirSync(join(source, ".git/objects/pack")).filter((file) => file.endsWith(".pack"))
     for (const n of [1, 2, 3]) {
       writeFileSync(join(source, `file-${n}.txt`), `${n}\n`)

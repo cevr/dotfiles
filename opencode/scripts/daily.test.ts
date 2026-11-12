@@ -6,7 +6,7 @@ import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
-import { quietRepo } from "../tests/git-repo.ts"
+import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
@@ -237,8 +237,7 @@ describe("the upstream merge", () => {
   const commitTo = (remote: string, branch: string, files: Record<string, string>) => {
     using clone = scratchDir("daily-push-")
     const scratch = realpathSync(clone.path)
-    git(scratch, "clone", "--quiet", "--branch", branch, remote, ".")
-    quietRepo(scratch)
+    gitClone(remote, scratch, ["--quiet", "--branch", branch], env)
     for (const [file, text] of Object.entries(files)) writeFileSync(join(scratch, file), text)
     git(scratch, "add", "-A")
     git(scratch, "commit", "--quiet", "-m", `change ${Object.keys(files).join(" ")}`)
@@ -252,19 +251,16 @@ describe("the upstream merge", () => {
     const upstream = join(root, "upstream.git")
     const origin = join(root, "origin.git")
     const seed = join(root, "seed")
-    for (const dir of [upstream, origin, seed]) mkdirSync(dir)
-    git(upstream, "init", "--quiet", "--bare")
-    git(origin, "init", "--quiet", "--bare")
-    git(seed, "init", "--quiet", "-b", "dev")
-    for (const dir of [upstream, origin, seed]) quietRepo(dir)
+    gitInit(upstream, ["--quiet", "--bare"], env)
+    gitInit(origin, ["--quiet", "--bare"], env)
+    gitInit(seed, ["--quiet", "-b", "dev"], env)
     writeFileSync(join(seed, "a.txt"), "one\n")
     git(seed, "add", "-A")
     git(seed, "commit", "--quiet", "-m", "root")
     git(seed, "push", "--quiet", upstream, "dev")
     git(seed, "push", "--quiet", origin, "dev:prime-look")
     const fork = join(root, "fork")
-    git(root, "clone", "--quiet", "--branch", "prime-look", origin, fork)
-    quietRepo(fork)
+    gitClone(origin, fork, ["--quiet", "--branch", "prime-look"], env)
     git(fork, "remote", "add", "upstream", upstream)
     const calls: string[] = []
     const options = (overrides: Partial<UpstreamOptions> = {}): UpstreamOptions => ({

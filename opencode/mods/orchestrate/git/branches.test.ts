@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { branchAt, expand } from "./branches.ts"
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "orchestrate-branches-")))
@@ -20,8 +20,7 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) => {
 test("the branch checked out at a path; none when detached, no checkout, or nothing there", async () => {
   const rift = join(scratch, ".rifts/app/scratch-17")
   mkdirSync(rift, { recursive: true })
-  git(rift, "init", "-q", "-b", "feat/web-3")
-  quietRepo(rift)
+  gitInit(rift, ["-q", "-b", "feat/web-3"])
   writeFileSync(join(rift, "a"), "a")
   git(rift, "add", "a")
   git(rift, "commit", "-q", "-m", "a")

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { argv, spawnSync, write } from "bun"
 import { Effect, Exit } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { UpdateFailed } from "../service.ts"
 import { dailyBuild, type ForkBuild, stageFork, suffixOf } from "./pin.ts"
 
@@ -31,8 +31,7 @@ const files = (root: string, entries: ReadonlyArray<readonly [string, string]>) 
 const scratch = Effect.gen(function* () {
   const root = sh(".", ["mktemp", "-d", "-t", "update-pin"])
   const fork = `${root}/fork`
-  sh(root, ["git", "init", "-q", "-b", "prime-look", "fork"])
-  quietRepo(fork)
+  gitInit(fork, ["-q", "-b", "prime-look"], GIT_ENV)
   yield* files(fork, [
     [".gitignore", "node_modules\n"],
     ["package.json", `{ "name": "fork", "private": true, "dependencies": {} }`],

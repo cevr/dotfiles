@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { quietRepo } from "../tests/git-repo.ts"
+import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun, upstreamReading } from "./upstream.ts"
 
 /** A host whose load follows `loads`, one reading per check, on a clock that sleeping advances. */
@@ -127,11 +127,9 @@ describe("the upstream reading", () => {
     const root = mkdtempSync(join(tmpdir(), "upstream-reading-"))
     const upstream = join(root, "upstream")
     const fork = join(root, "fork")
-    git(root, "init", "--quiet", "-b", "dev", upstream)
-    quietRepo(upstream)
+    gitInit(upstream, ["--quiet", "-b", "dev"])
     git(upstream, "commit", "--quiet", "--allow-empty", "-m", "base")
-    git(root, "clone", "--quiet", "-o", "upstream", upstream, fork)
-    quietRepo(fork)
+    gitClone(upstream, fork, ["--quiet", "-o", "upstream"])
     for (let i = 0; i < ahead; i++) git(upstream, "commit", "--quiet", "--allow-empty", "-m", `upstream ${i}`)
     if (!stale) git(fork, "fetch", "--quiet", "upstream", "dev")
     return { root, fork, report: join(root, "upstream-conflict.md") }
