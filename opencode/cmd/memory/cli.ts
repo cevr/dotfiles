@@ -120,7 +120,7 @@ export const main = async (argv: ReadonlyArray<string>, context: { readonly db: 
 
   const program = Effect.gen(function* () {
     const store = yield* NoteStore
-    const found = Effect.fn(function* (id: number) {
+    const found = Effect.fn("MemoryCli.found")(function* (id: number) {
       const note = yield* store.get(id)
       if (note === undefined) return yield* new Refused({ code: 1, message: `no note #${id}` })
       return note

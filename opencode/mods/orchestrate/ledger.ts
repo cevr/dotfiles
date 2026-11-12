@@ -22,7 +22,7 @@
 // only the most recently active roots are kept. The next threshold is twice
 // what the compaction kept, and never less than `bytes`, so a compaction runs
 // at most once per that many bytes written.
-import { Effect, Option, Semaphore } from "effect"
+import { Effect, Option, Predicate, Semaphore } from "effect"
 import { type Drift, driftOf, lineOfDrift, scoreOf } from "./drift.ts"
 import { checkpointOf, eventOf, headOf, isRecord, type Line } from "./line.ts"
 import { type Cadence, type Command, type Event, machine, type MachineState, Refused } from "./machine.ts"
@@ -148,7 +148,7 @@ const isOf = (sessionID: string) => (line: unknown) => isRecord(line) && line.se
 
 /** A departure is stated on the call itself, so warn mode decides the same call with one. */
 const departing = (command: Command): Command | undefined =>
-  command._tag === "Start" || command._tag === "Land" ? { ...command, departs: WARNED } : undefined
+  Predicate.isTagged(command, "Start") || Predicate.isTagged(command, "Land") ? { ...command, departs: WARNED } : undefined
 
 /** The ledger's two methods over `store`, deciding with the machine at `cadence`, keeping it within `retention`. */
 export const make = (store: Store, cadence: Cadence, retention: Retention = DEFAULT_RETENTION) =>

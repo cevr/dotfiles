@@ -1038,8 +1038,8 @@ export const driftLayer = (config: Pick<Config, "place" | "now">) =>
       const one = yield* Semaphore.make(1)
       const sabbathNow = config.now === undefined ? Clock.currentTimeMillis : Effect.succeed(config.now)
 
-      const idle = (sessionID: string): Effect.Effect<DriftOutcome> =>
-        Effect.gen(function* () {
+      const idle: (sessionID: string) => Effect.Effect<DriftOutcome> = Effect.fn("SkillDrifts.idle")(
+        function* (sessionID: string) {
           if ((yield* sessions.parentOf(sessionID)) !== undefined) return { _tag: "Quiet", why: "a subagent" } as const
           // No agent works over the Sabbath, so no reconcile is asked for then.
           if (resumesAt(yield* sabbathNow, config.place) !== undefined) return { _tag: "Quiet", why: "the Sabbath" } as const
@@ -1066,7 +1066,9 @@ export const driftLayer = (config: Pick<Config, "place" | "now">) =>
             Effect.as<DriftOutcome>({ _tag: "Told", runs: drifts.map((drift) => drift.run) }),
             Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<DriftOutcome>({ _tag: "Refused", message: refused.message })),
           )
-        }).pipe(one.withPermits(1), Effect.withSpan("SkillDrifts.idle"))
+        },
+        one.withPermits(1),
+      )
 
       return { idle }
     }),

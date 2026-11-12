@@ -8,15 +8,18 @@
 // Number fields take `Schema.Finite` or `Schema.Int`, never `Schema.Number`: the
 // JSON Schema of `Schema.Number` adds a string branch (`"Infinity"`, `"NaN"`) that
 // invites the model to send numbers as strings.
-import { Schema, SchemaAST, SchemaParser, SchemaTransformation } from "effect"
+import { Predicate, Schema, SchemaAST, SchemaParser, SchemaTransformation } from "effect"
 
 const NUMERIC = /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
+
+/** A member that takes no value: `undefined`, `null` or `void`. */
+const isAbsent = (ast: SchemaAST.AST) => Predicate.isTagged(ast, "Undefined") || Predicate.isTagged(ast, "Null") || Predicate.isTagged(ast, "Void")
 
 /** The members a field's encoded side takes, unions flattened, `undefined` and `null` dropped. */
 const kindsOf = (ast: SchemaAST.AST): ReadonlyArray<SchemaAST.AST> =>
   ast._tag === "Union"
     ? ast.types.flatMap(kindsOf)
-    : ast._tag === "Undefined" || ast._tag === "Null" || ast._tag === "Void"
+    : isAbsent(ast)
       ? []
       : [ast]
 

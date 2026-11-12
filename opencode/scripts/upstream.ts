@@ -56,28 +56,39 @@ export interface Options {
   /** The report a conflict or a red check writes, removed once the fork is current again. */
   readonly report: string
   readonly log: (line: string) => void
+  /** The env of every git child (and the pre-push install); the process's when absent. A test hands a hermetic one. */
+  readonly env?: GitEnv
 }
+
+/** An environment for the git children: names to values, unset where undefined. */
+export type GitEnv = Readonly<NodeJS.ProcessEnv>
 
 /** The branch a merge that could not land is kept on, so an agent can start from it. */
 export const HELD_BRANCH = "daily/upstream-merge"
 
 const decoder = new TextDecoder()
-const git = (dir: string, ...args: ReadonlyArray<string>) => {
-  const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_MERGE_AUTOEDIT: "no" },
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  return { ok: ran.exitCode === 0, out: decoder.decode(ran.stdout).trim(), err: decoder.decode(ran.stderr).trim() }
+
+/** git run with `env` (plus no prompts and no merge editor) for every child: the process's env unless a caller hands its own. */
+const runner = (env: GitEnv = process.env) => {
+  const git = (dir: string, ...args: ReadonlyArray<string>) => {
+    const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
+      env: { ...env, GIT_TERMINAL_PROMPT: "0", GIT_MERGE_AUTOEDIT: "no" },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    return { ok: ran.exitCode === 0, out: decoder.decode(ran.stdout).trim(), err: decoder.decode(ran.stderr).trim() }
+  }
+  const must = (dir: string, ...args: ReadonlyArray<string>) => {
+    const ran = git(dir, ...args)
+    if (!ran.ok) throw new Error(`git ${args.join(" ")} in ${dir}: ${ran.err || ran.out}`)
+    return ran.out
+  }
+  return { git, must, env }
 }
-const must = (dir: string, ...args: ReadonlyArray<string>) => {
-  const ran = git(dir, ...args)
-  if (!ran.ok) throw new Error(`git ${args.join(" ")} in ${dir}: ${ran.err || ran.out}`)
-  return ran.out
-}
+type Runner = ReturnType<typeof runner>
 
 /** The worktree that has `refs/heads/<branch>` checked out, if any. */
-const checkedOut = (fork: string, branch: string): string | undefined => {
+const checkedOut = ({ must }: Runner, fork: string, branch: string): string | undefined => {
   let path: string | undefined
   for (const line of must(fork, "worktree", "list", "--porcelain").split("\n")) {
     if (line.startsWith("worktree ")) path = line.slice("worktree ".length)
@@ -87,7 +98,7 @@ const checkedOut = (fork: string, branch: string): string | undefined => {
 }
 
 /** A detached worktree of the fork at `BRANCH`: the one from the last run when it is still there. */
-const prepareWorktree = (fork: string, dir: string) => {
+const prepareWorktree = ({ git, must }: Runner, fork: string, dir: string) => {
   const registered = must(fork, "worktree", "list", "--porcelain")
     .split("\n")
     .some((line) => line === `worktree ${dir}`)
@@ -127,6 +138,8 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   const { fork, log } = options
   if (options.skip) return { kind: "skipped", reason: "--no-upstream" }
   if (!ownsFork(options.host)) return { kind: "skipped", reason: `${options.host} does not own the fork; it pulls origin ${BRANCH}` }
+  const run = runner(options.env)
+  const { git, must } = run
 
   const fetched = git(fork, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
   if (!fetched.ok) {
@@ -148,7 +161,7 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   }
 
   log(`upstream: merging ${commits} commits of ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH} into ${BRANCH} in ${options.worktree}`)
-  prepareWorktree(fork, options.worktree)
+  prepareWorktree(run, fork, options.worktree)
   const merged = git(options.worktree, "merge", "--no-edit", upstream)
   if (!merged.ok) {
     const files = git(options.worktree, "diff", "--name-only", "--diff-filter=U").out.split("\n").filter((file) => file !== "")
@@ -199,7 +212,7 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
 
   // Fast-forward prime-look where it is checked out (the working tree follows), else the ref alone,
   // compared against where the merge started so a branch that moved meanwhile is never overwritten.
-  const holder = checkedOut(fork, BRANCH)
+  const holder = checkedOut(run, fork, BRANCH)
   const moved = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, merge, base) : git(holder, "merge", "--ff-only", merge)
   if (!moved.ok) {
     const reason = `could not fast-forward ${BRANCH}${holder === undefined ? "" : ` in ${holder}`}: ${moved.err || moved.out}`
@@ -211,7 +224,7 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   // The push runs the fork's pre-push check (lint, typecheck) in the checkout, whose packages are
   // still the old merge's: install the merged lockfile first, or a package upstream changed fails it.
   if (holder !== undefined && existsSync(join(holder, "bun.lock"))) {
-    const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, stdout: "pipe", stderr: "pipe" })
+    const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, env: { ...run.env }, stdout: "pipe", stderr: "pipe" })
     if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed before the push: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
   }
   const pushed = git(fork, "push", "--quiet", "origin", BRANCH)
@@ -273,7 +286,8 @@ export const withUpstreamLock = async <A>(state: string, merge: () => Promise<A>
  * merge step fetched nothing) it fetches upstream first, once, if the fork has
  * the remote. None when the fork has no `upstream/dev` to count against.
  */
-export const upstreamReading = (fork: string, report: string, fetch: boolean, now: Date = new Date()): UpstreamReading | undefined => {
+export const upstreamReading = (fork: string, report: string, fetch: boolean, now: Date = new Date(), env?: GitEnv): UpstreamReading | undefined => {
+  const { git, must } = runner(env)
   if (fetch && git(fork, "remote", "get-url", UPSTREAM_REMOTE).ok) git(fork, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
   const upstream = git(fork, "rev-parse", "--verify", "--quiet", `refs/remotes/${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`)
   if (!upstream.ok) return undefined
@@ -299,8 +313,10 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
  * run goes on with it. Untracked files never stop it. With `to` (a commit origin's branch holds:
  * the update's verified fork commit), it goes no further than that commit.
  */
-export const syncFork = (options: { readonly fork: string; readonly dryRun: boolean; readonly to?: string; readonly log: (line: string) => void }): SyncOutcome => {
+export const syncFork = (options: { readonly fork: string; readonly dryRun: boolean; readonly to?: string; readonly log: (line: string) => void; readonly env?: GitEnv }): SyncOutcome => {
   const { fork, log } = options
+  const run = runner(options.env)
+  const { git, must } = run
   const tracking = `refs/remotes/origin/${BRANCH}`
   const fetched = git(fork, "fetch", "--quiet", "origin", `+refs/heads/${BRANCH}:${tracking}`)
   if (!fetched.ok) {
@@ -317,7 +333,7 @@ export const syncFork = (options: { readonly fork: string; readonly dryRun: bool
   }
   const ahead = Number(must(fork, "rev-list", "--count", `${remote}..${local}`))
   if (ahead > 0) return leave(`has ${plural(ahead, "commit")} not on origin`)
-  const holder = checkedOut(fork, BRANCH)
+  const holder = checkedOut(run, fork, BRANCH)
   if (holder !== undefined && git(holder, "status", "--porcelain", "--untracked-files=no").out !== "") return leave(`${holder} has uncommitted changes`)
   if (options.dryRun) {
     log(`fork: would fast-forward ${BRANCH} ${plural(behind, "commit")} to origin (${remote.slice(0, 10)})`)

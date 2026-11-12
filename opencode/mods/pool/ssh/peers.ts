@@ -76,42 +76,42 @@ export const layer = (peers: ReadonlyArray<Peer>, timeoutMs = TIMEOUT_MS) =>
 
       return {
         names: peers.map((peer) => peer.name),
-        report: (name: string) =>
-          Effect.gen(function* () {
-            const peer = byName.get(name)
-            if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
-            const { out, err, code, killed } = yield* run(peer)
-            if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${timeoutMs / 1000}s` })
-            if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
-            const report = decodeReport(out)
-            if (report._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a report" })
-            return report.value
-          }).pipe(Effect.withSpan("Peers.report", { attributes: { peer: name } })),
+        report: Effect.fn("Peers.report")(function* (name: string) {
+          yield* Effect.annotateCurrentSpan("peer", name)
+          const peer = byName.get(name)
+          if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
+          const { out, err, code, killed } = yield* run(peer)
+          if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${timeoutMs / 1000}s` })
+          if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
+          const report = decodeReport(out)
+          if (report._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a report" })
+          return report.value
+        }),
         // The message rides in the program, as a JSON literal on its first line: no argument, no file, no token.
-        lease: (name: string, message: LeaseMessage) =>
-          Effect.gen(function* () {
-            const peer = byName.get(name)
-            if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
-            const text = `globalThis.POOL_LEASE = ${JSON.stringify(message)};\n${leaseProgram}`
-            const { out, err, code, killed } = yield* run(peer, text, LEASE_TIMEOUT_MS)
-            if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${LEASE_TIMEOUT_MS / 1000}s` })
-            if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
-            const answer = decodeAnswer(out)
-            if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a lease's" })
-            return answer.value
-          }).pipe(Effect.withSpan("Peers.lease", { attributes: { peer: name } })),
-        push: (name: string, request: PushRequest) =>
-          Effect.gen(function* () {
-            const peer = byName.get(name)
-            if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
-            const text = `globalThis.POOL_PUSH = ${JSON.stringify(request)};\n${pushProgram}`
-            const { out, err, code, killed } = yield* run(peer, text, PUSH_TIMEOUT_MS)
-            if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${PUSH_TIMEOUT_MS / 1000}s` })
-            if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
-            const answer = decodePush(out)
-            if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a push's" })
-            return answer.value
-          }).pipe(Effect.withSpan("Peers.push", { attributes: { peer: name } })),
+        lease: Effect.fn("Peers.lease")(function* (name: string, message: LeaseMessage) {
+          yield* Effect.annotateCurrentSpan("peer", name)
+          const peer = byName.get(name)
+          if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
+          const text = `globalThis.POOL_LEASE = ${JSON.stringify(message)};\n${leaseProgram}`
+          const { out, err, code, killed } = yield* run(peer, text, LEASE_TIMEOUT_MS)
+          if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${LEASE_TIMEOUT_MS / 1000}s` })
+          if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
+          const answer = decodeAnswer(out)
+          if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a lease's" })
+          return answer.value
+        }),
+        push: Effect.fn("Peers.push")(function* (name: string, request: PushRequest) {
+          yield* Effect.annotateCurrentSpan("peer", name)
+          const peer = byName.get(name)
+          if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
+          const text = `globalThis.POOL_PUSH = ${JSON.stringify(request)};\n${pushProgram}`
+          const { out, err, code, killed } = yield* run(peer, text, PUSH_TIMEOUT_MS)
+          if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${PUSH_TIMEOUT_MS / 1000}s` })
+          if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
+          const answer = decodePush(out)
+          if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a push's" })
+          return answer.value
+        }),
       }
     }),
   )

@@ -102,7 +102,7 @@ const start = (options: Record<string, unknown> = {}, world: World = {}) =>
     for (const transform of toolTransforms) transform({ update: (id, update) => tools[id] !== undefined && update(tools[id]) })
 
     /** A call of a tool: its result, or its failure's message. */
-    const call = Effect.fn(function* (tool: "webfetch" | "websearch", input: Record<string, unknown>) {
+    const call = Effect.fn("WebServerTest.call")(function* (tool: "webfetch" | "websearch", input: Record<string, unknown>) {
       const exit = yield* Effect.exit(tools[tool]!.execute(input, {}))
       if (Exit.isSuccess(exit)) return exit.value as Record<string, unknown>
       const reason = exit.cause.reasons.find((item) => item._tag === "Fail")

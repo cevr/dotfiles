@@ -31,7 +31,7 @@
 // A compaction (ledger.ts) folds a root's lines into one `Drift` line of its
 // tally, so the score survives it: a tally line replaces what was counted
 // before it.
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Predicate, Schema } from "effect"
 import { checkpointOf, eventOf, isRecord, type Line } from "./line.ts"
 import { type Cadence, Command, machine, type MachineState, riding, type Rule, unresolvedOf } from "./machine.ts"
 
@@ -194,7 +194,7 @@ export const driftOf = (cadence: Cadence, lines: ReadonlyArray<unknown>): Drift 
         dropped = [...dropped, ...lost].slice(-KEEP)
       }
     }
-    if (event._tag === "BatchLanded" || event._tag === "VerifierStarted") refusal = undefined
+    if (Predicate.isTagged(event, "BatchLanded") || Predicate.isTagged(event, "VerifierStarted")) refusal = undefined
     state = decider.evolve(state, event)
   }
   close()

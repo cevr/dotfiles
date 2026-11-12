@@ -47,24 +47,23 @@ export const layer = (dir: string) => {
       Effect.map((out) => (out === undefined ? undefined : lines(out)[0])),
       Effect.withSpan("Skill.version"),
     ),
-    relation: (seen, installed) =>
-      Effect.gen(function* () {
-        if (seen === installed) return { _tag: "Same" } as const
-        const known = yield* run(["cat-file", "-e", `${seen}^{commit}`])
-        if (known !== undefined) {
-          const forward = yield* isAncestor(seen, installed)
-          if (forward === undefined) return undefined
-          if (forward) {
-            const subjects = yield* run(["log", "--format=%s", `${seen}..${installed}`, "--", "."])
-            if (subjects === undefined) return undefined
-            const listed = lines(subjects)
-            // A move that touched nothing in the skill reads as the same skill.
-            return listed.length === 0 ? ({ _tag: "Same" } as const) : ({ _tag: "Newer", subjects: listed } as const)
-          }
-          if (yield* isAncestor(installed, seen)) return { _tag: "Older" } as const
+    relation: Effect.fn("Skill.relation")(function* (seen, installed) {
+      if (seen === installed) return { _tag: "Same" } as const
+      const known = yield* run(["cat-file", "-e", `${seen}^{commit}`])
+      if (known !== undefined) {
+        const forward = yield* isAncestor(seen, installed)
+        if (forward === undefined) return undefined
+        if (forward) {
+          const subjects = yield* run(["log", "--format=%s", `${seen}..${installed}`, "--", "."])
+          if (subjects === undefined) return undefined
+          const listed = lines(subjects)
+          // A move that touched nothing in the skill reads as the same skill.
+          return listed.length === 0 ? ({ _tag: "Same" } as const) : ({ _tag: "Newer", subjects: listed } as const)
         }
-        const newest = yield* run(["log", `-${NEWEST}`, "--format=%s", installed, "--", "."])
-        return newest === undefined ? undefined : ({ _tag: "Unrelated", subjects: lines(newest) } as const)
-      }).pipe(Effect.withSpan("Skill.relation")),
+        if (yield* isAncestor(installed, seen)) return { _tag: "Older" } as const
+      }
+      const newest = yield* run(["log", `-${NEWEST}`, "--format=%s", installed, "--", "."])
+      return newest === undefined ? undefined : ({ _tag: "Unrelated", subjects: lines(newest) } as const)
+    }),
   })
 }

@@ -229,6 +229,8 @@ const WATCHED = [
   "XDG_STATE_HOME",
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_SYSTEM",
+  "XDG_CONFIG_HOME",
   "GIT_AUTHOR_NAME",
   "GIT_AUTHOR_EMAIL",
   "GIT_COMMITTER_NAME",
@@ -259,8 +261,13 @@ const SUITES = [
 
 const Snapshot = Schema.fromJsonString(Schema.Struct({ when: Schema.String, registry: Schema.Boolean, env: Schema.Record(Schema.String, Schema.String) }))
 
-/** A git config that breaks every commit, push and receive that reads it: a fixture leaking the parent's git config goes red. */
-const hostileGit = (hooks: string) => `[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/loop-probe-x\n[core]\n\thooksPath = ${hooks}\n`
+/**
+ * A git config that breaks every commit, merge, push and receive that reads it, past the keys a
+ * repository's own config would override (signing, hooks) to the ones only an isolated env keeps
+ * out (`merge.ff=only`, `push.gpgSign`): a fixture leaking the parent's git config goes red.
+ */
+const hostileGit = (hooks: string) =>
+  `[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n[push]\n\tgpgSign = true\n[merge]\n\tff = only\n[pull]\n\trebase = true\n[gpg]\n\tprogram = /nonexistent/loop-probe-x\n[core]\n\thooksPath = ${hooks}\n`
 
 const OUTCOMES = { pass: 0, fail: 1 } as const
 
@@ -271,11 +278,15 @@ const variant = (seed: number, dir: string) => {
   const hooks = path.join(dir, "hooks")
   for (const folder of [home, hooks]) mkdirSync(folder, { recursive: true })
   const hostile = path.join(dir, "hostile.gitconfig")
-  for (const file of [hostile, path.join(home, ".gitconfig")]) writeFileSync(file, hostileGit(hooks))
+  const xdgConfig = path.join(dir, "xdg-config")
+  mkdirSync(path.join(xdgConfig, "git"), { recursive: true })
+  for (const file of [hostile, path.join(home, ".gitconfig"), path.join(xdgConfig, "git/config")]) writeFileSync(file, hostileGit(hooks))
   for (const hook of ["pre-commit", "commit-msg", "pre-push", "pre-receive", "update"]) writeFileSync(path.join(hooks, hook), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
   const optional = [
     ["XDG_STATE_HOME", path.join(dir, "state")],
     ["GIT_CONFIG_GLOBAL", hostile],
+    ["GIT_CONFIG_SYSTEM", hostile],
+    ["XDG_CONFIG_HOME", xdgConfig],
     ["GIT_AUTHOR_NAME", `synthetic-${random.int(1000)}`],
     ["EFFECT_ISOLATION_PROBE", `probe-${random.int(1000)}`],
   ] as const

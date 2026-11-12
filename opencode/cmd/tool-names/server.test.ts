@@ -28,7 +28,7 @@ const start = Effect.gen(function* () {
   } as unknown as Host
   yield* ToolNames.effect(host)
   /** One call through the hooks: the failure's message, or undefined when the call goes on. */
-  return Effect.fn(function* (tool: string) {
+  return Effect.fn("ToolNamesServerTest.call")(function* (tool: string) {
     const event: Record<string, unknown> = { tool, sessionID: "ses_1", agent: "build", messageID: "msg", id: "call", input: { command: "ls" } }
     for (const hook of hooks) {
       const exit = yield* Effect.exit(hook(event))

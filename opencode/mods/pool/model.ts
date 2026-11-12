@@ -385,7 +385,7 @@ export const layer = (config: Config) =>
         Effect.forEach(every, ({ id, pool }) => apply(pool, id, ReleaseRun.make({ sessionID })), { discard: true })
 
       /** The pool that placed the session's newest request, if any did. */
-      const newest = Effect.fn(function* (sessionID: string) {
+      const newest = Effect.fn("Pool.newest")(function* (sessionID: string) {
         let latest: { readonly where: Pooled; readonly at: number } | undefined
         for (const where of every) {
           const at = lastPlacedAt(yield* SynchronizedRef.get(where.pool), sessionID) ?? -1
@@ -399,7 +399,7 @@ export const layer = (config: Config) =>
        * session's primary placement in a placed pool, the login the host named
        * in a pool only paced. Nothing without a message to key it by.
        */
-      const tallyStep = Effect.fn(function* (sessionID: string, messageID: string, usage: StepUsage) {
+      const tallyStep = Effect.fn("Pool.tallyStep")(function* (sessionID: string, messageID: string, usage: StepUsage) {
         if (limits === undefined) return
         const at = yield* Clock.currentTimeMillis
         const placed = pooled(usage.providerID)
@@ -533,7 +533,7 @@ export const layer = (config: Config) =>
       })
 
       /** Each account's spend-evenly line moved by its resets (resets.ts `pacePlans`), for a pool whose resets are worked. */
-      const plansOf = Effect.fn(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
+      const plansOf = Effect.fn("Pool.plansOf")(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
         const provider = config.resets?.[id]
         if (provider === undefined) return {}
         const tally = limits === undefined ? undefined : yield* limits.tally
@@ -1007,7 +1007,7 @@ export const layer = (config: Config) =>
         })
 
       /** A push's text and its plan now. */
-      const describe = Effect.fn(function* (push: PushModel.Push) {
+      const describe = Effect.fn("Pool.describe")(function* (push: PushModel.Push) {
         const now = yield* Clock.currentTimeMillis
         const used = ResetsModel.pushUsed(yield* resetsStore.read, push.id).length
         const load = yield* hostLoad
@@ -1020,8 +1020,8 @@ export const layer = (config: Config) =>
         return `${PushModel.pushText(push, used, now)}\n${PushModel.planText(plan)}`
       })
 
-      const push = (request: PushRequest): Effect.Effect<PushAnswer> =>
-        Effect.gen(function* () {
+      const push: (request: PushRequest) => Effect.Effect<PushAnswer> = Effect.fn("Pool.push")(
+        function* (request: PushRequest) {
           const host = request.host ?? fleetConfig.host
           if (host !== fleetConfig.host) {
             if (!peers.names.includes(host)) return yield* answered(false, `No host ${host}: this is ${fleetConfig.host}, and its peers are ${peers.names.join(", ") || "none"}.`)
@@ -1097,12 +1097,11 @@ export const layer = (config: Config) =>
               return yield* answered(true, yield* describe(started))
             }
           }
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("pool push: a request failed", cause).pipe(Effect.andThen(Effect.succeed({ ok: false, text: "The push request failed; nothing changed.", pushes: [] }))),
-          ),
-          Effect.withSpan("Pool.push"),
-        )
+        },
+        Effect.catchCause((cause) =>
+          Effect.logWarning("pool push: a request failed", cause).pipe(Effect.andThen(Effect.succeed({ ok: false, text: "The push request failed; nothing changed.", pushes: [] }))),
+        ),
+      )
 
       const resetsStatus = Effect.gen(function* () {
         const state = yield* resetsStore.read
@@ -1209,7 +1208,7 @@ export const layer = (config: Config) =>
        * A peer's reading of a login this pool lists, when it is newer than the
        * one held: the accounts are the same, and a reading is account-wide.
        */
-      const merge = Effect.fn(function* (shared: SharedReading) {
+      const merge = Effect.fn("Pool.merge")(function* (shared: SharedReading) {
         const target = poolOf(PoolId.make(shared.pool))
         if (target === undefined) return
         // The list is read again only when it is old: a pool that has not listed its logins yet does now.

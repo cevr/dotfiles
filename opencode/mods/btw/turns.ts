@@ -52,24 +52,29 @@ const joinSteps = (answer: string, step: string): string => (step.length === 0 ?
 export const ownMessages = (messages: ReadonlyArray<unknown>, since: number): ReadonlyArray<unknown> =>
   messages.filter((message) => Option.exists(decodeCreated(message), (created) => created.time.created >= since))
 
-/** Each question asked on the fork, oldest first, with the text that followed it. */
-export const forkTurns = (messages: ReadonlyArray<unknown>, since: number): ReadonlyArray<Turn> =>
-  ownMessages(messages, since).reduce<ReadonlyArray<Turn>>((turns, message) => {
+/** Each question asked on the fork, oldest first, with the text that followed it: a question appends a turn to this call's own list, and a step replaces its newest one. */
+export const forkTurns = (messages: ReadonlyArray<unknown>, since: number): ReadonlyArray<Turn> => {
+  const turns: Array<Turn> = []
+  for (const message of ownMessages(messages, since)) {
     const user = decodeUser(message)
-    if (Option.isSome(user)) return [...turns, { question: user.value.text, answer: "" }]
+    if (Option.isSome(user)) {
+      turns.push({ question: user.value.text, answer: "" })
+      continue
+    }
     const assistant = decodeAssistant(message)
     const last = turns.at(-1)
-    if (Option.isNone(assistant) || last === undefined) return turns
+    if (Option.isNone(assistant) || last === undefined) continue
     const step = assistant.value.content.flatMap((part) => Option.match(decodeText(part), { onNone: () => [], onSome: (text) => [text.text] })).join("")
     const error = assistant.value.error?.message
-    const answered: Turn = {
+    turns[turns.length - 1] = {
       question: last.question,
       answer: joinSteps(last.answer, step),
       replyID: assistant.value.id,
       ...(error === undefined ? {} : { error }),
     }
-    return [...turns.slice(0, -1), answered]
-  }, [])
+  }
+  return turns
+}
 
 /** The newest exchange the fork answered with text, unless it is still replying. */
 export const replyOf = (turns: ReadonlyArray<Turn>, replying: boolean): Option.Option<Reply> => {
