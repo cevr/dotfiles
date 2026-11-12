@@ -10,64 +10,73 @@
 //   or take a fresh one from `kept.dir(prefix)`.
 // - `mkdtempSync`/`mkdtemp` and `tmpdir()`: a folder beside the suite's, which its
 //   end never removes. Take it from `kept.dir(prefix)`.
-// The callee is matched by name, bare (`mkdirSync(…)`) or as a member (`fs.mkdirSync(…)`).
+// The callee is matched by name, bare (`mkdirSync(…)`) or as a member (`fs.mkdirSync(…)`,
+// `fs["mkdirSync"](…)`), through a type assertion, `!` or `?.`.
 //
-// lint/kept-scratch.test.ts holds a case for each form, in a Kept file and out of one.
+// lint/test-env.test.ts holds a case for each form, in a Kept file and out of one.
 
 interface Node {
   readonly type: string
   readonly name?: string
   readonly value?: unknown
   readonly computed?: boolean
-  readonly key?: Node
   readonly property?: Node
   readonly callee?: Node
   readonly expression?: Node
   readonly arguments?: ReadonlyArray<Node>
-  readonly properties?: ReadonlyArray<Node>
+  readonly properties?: ReadonlyArray<Property>
+}
+
+/** An object literal's member: `key: value`, or a spread (whose type is not "Property"). */
+interface Property {
+  readonly type: string
+  readonly computed?: boolean
+  readonly key?: Node
+  readonly value?: Node
 }
 
 interface Context {
   readonly report: (report: { readonly node: Node; readonly message: string }) => void
 }
 
+/** The stand-in for a missing node: it matches no type. */
+const NONE: Node = { type: "" }
+
 const WRAPPERS = new Set(["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion", "ChainExpression"])
 
 /** The node under any type assertion, `!` or optional chain. */
-const bare = (node: Node | undefined): Node | undefined => {
+const bare = (node: Node = NONE): Node => {
   let at = node
-  while (at && WRAPPERS.has(at.type)) at = at.expression
+  while (WRAPPERS.has(at.type)) at = at.expression || NONE
   return at
 }
 
-/** The name a call's callee ends in: `f(…)` → f, `a.f(…)` and `a["f"](…)` → f. */
-const calleeName = (call: Node): string | undefined => {
-  const callee = bare(call.callee)
-  if (callee?.type === "Identifier") return callee.name
-  if (callee?.type !== "MemberExpression") return undefined
-  const property = callee.property
-  if (!callee.computed && property?.type === "Identifier") return property.name
-  if (property?.type === "Literal" && typeof property.value === "string") return property.value
-  return undefined
+/** A name a node spells: an identifier unless `computed`, or a literal; "" for anything else. */
+const nameOf = (node: Node = NONE, computed = false): string => {
+  if (!computed && node.type === "Identifier") return String(node.name)
+  if (node.type === "Literal") return String(node.value)
+  return ""
 }
 
-/** The name of an object property's key: `recursive:` or `"recursive":`. */
-const keyName = (property: Node): string | undefined => {
-  const key = property.key
-  if (!property.computed && key?.type === "Identifier") return key.name
-  if (key?.type === "Literal" && typeof key.value === "string") return key.value
-  return undefined
+/** The name a call's callee ends in: `f(…)` → f, `a.f(…)` and `a["f"](…)` → f. */
+const calleeName = (call: Node): string => {
+  const callee = bare(call.callee)
+  if (callee.type === "Identifier") return nameOf(callee)
+  if (callee.type === "MemberExpression") return nameOf(callee.property, callee.computed)
+  return ""
+}
+
+/** Whether a property's value is the literal `false`. */
+const isFalse = (value: Node = NONE): boolean => {
+  const at = bare(value)
+  return at.type === "Literal" && at.value === false
 }
 
 /** Whether a mkdir call's options ask for its parents: `{ recursive: <anything but false> }`. */
 const recursive = (call: Node): boolean => {
-  const options = bare(call.arguments?.[1])
-  if (options?.type !== "ObjectExpression") return false
-  return (options.properties ?? []).some((property) => {
-    if (property.type !== "Property" || keyName(property) !== "recursive") return false
-    const value = bare(property.value as Node | undefined)
-    return !(value?.type === "Literal" && value.value === false)
-  })
+  const options = bare((call.arguments || [])[1])
+  if (options.type !== "ObjectExpression") return false
+  return (options.properties || []).some((property) => property.type === "Property" && nameOf(property.key, property.computed) === "recursive" && !isFalse(property.value))
 }
 
 const MKDIR = new Set(["mkdirSync", "mkdir"])
@@ -78,6 +87,13 @@ const RECURSIVE =
 const OUTSIDE =
   "A Kept suite makes no folder beside its own (mkdtemp, tmpdir()): the suite's end never removes it. Take a fresh folder from kept.dir(prefix)."
 
+/** The message a call earns in a Kept file; "" for none. */
+const refusal = (call: Node, name: string): string => {
+  if (MKDIR.has(name) && recursive(call)) return RECURSIVE
+  if (TEMP.has(name)) return OUTSIDE
+  return ""
+}
+
 const keptSuiteFolders = {
   create: (context: Context) => {
     const refused: Array<{ readonly node: Node; readonly message: string }> = []
@@ -86,9 +102,10 @@ const keptSuiteFolders = {
       CallExpression: (node: Node) => {
         const name = calleeName(node)
         if (name === "keptScratch") kept.held = true
-        else if (name !== undefined && MKDIR.has(name) && recursive(node)) refused.push({ node, message: RECURSIVE })
-        else if (name !== undefined && TEMP.has(name)) refused.push({ node, message: OUTSIDE })
+        const message = refusal(node, name)
+        if (message !== "") refused.push({ node, message })
       },
+      // A file's Kept may come after its first mkdir, so the verdict waits for the file's end.
       "Program:exit": () => {
         if (kept.held) for (const each of refused) context.report(each)
       },
