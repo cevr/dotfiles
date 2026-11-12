@@ -36,6 +36,8 @@ const SERVER_PLUGINS = ["orchestrate", "status", "queue", "git", "idle-compact",
 const TIMEOUT_MS = 180_000
 /** How long the dock has, once the TUI can read what runs on the new service, to drop the rows whose turns ended. */
 const SETTLE_MS = 20_000
+/** How long a TUI on a loaded host has to reconnect and make its first read. */
+const START_MS = 60_000
 const CHILDREN = ["Streaming child one", "Streaming child two"]
 
 interface Client {
@@ -116,6 +118,9 @@ const sim = Bun.serve({
   },
 })
 
+/** The proxy's and the test's clock, in epoch ms. */
+const now = () => Date.now()
+
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: (last: A) => string, ms: number): Promise<A> => {
   const deadline = Date.now() + ms
   let last = await read()
@@ -169,7 +174,12 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
    */
   let held = false
   let refuseActiveUntil = 0
+  /** The refusal window, opened at the TUI's first read of what runs once the stream is back, not on the clock before it. */
+  let refuseActiveFor = 0
   let failActive = 0
+  /** The TUI's reads of what runs turned away (refused or failed), and when the service first answered one: SETTLE_MS runs from then. */
+  let activeTurnedAway = 0
+  let activeServedAt = 0
   const streams = new Set<AbortController>()
   const proxyServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -179,13 +189,21 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const url = new URL(request.url)
       const event = url.pathname === "/api/event"
       if (event && held) return unavailable()
-      if (url.pathname === "/api/session/active") {
-        if (Date.now() < refuseActiveUntil) return unavailable()
-        if (failActive > 0) {
-          failActive--
-          return Response.json({ code: "internal" }, { status: 500 })
-        }
+      const reading = url.pathname === "/api/session/active"
+      if (reading && refuseActiveFor > 0) {
+        refuseActiveUntil = now() + refuseActiveFor
+        refuseActiveFor = 0
       }
+      if (reading && now() < refuseActiveUntil) {
+        activeTurnedAway++
+        return unavailable()
+      }
+      if (reading && failActive > 0) {
+        failActive--
+        activeTurnedAway++
+        return Response.json({ code: "internal" }, { status: 500 })
+      }
+      if (reading && activeServedAt === 0) activeServedAt = now()
       const target = await ready(serviceFile, () => "the service behind the proxy")
       const headers = new Headers(request.headers)
       headers.delete("host")
@@ -331,21 +349,26 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const running = await active(after)
       expect(children.filter((child) => child.id in running)).toEqual([])
 
-      refuseActiveUntil = Date.now() + refuseActiveMs
+      refuseActiveFor = refuseActiveMs
       failActive = failActiveReads
+      activeTurnedAway = 0
+      activeServedAt = 0
       held = false
       const stale = (text: string) => CHILDREN.filter((child) => liveRow(text, child))
       // The TUI still draws the parent: an empty screen has no rows either.
       const settled = (text: string) => text.includes(title) && stale(text).length === 0 && !/◆ \d+ subagents?/.test(text)
       await until(
         screen,
-        settled,
-        (last) => `${name}: ${SETTLE_MS / 1000}s after the TUI could read what runs, the dock still shows ${stale(last).join(", ") || "a subagent count"}:\n${last}`,
-        refuseActiveMs + SETTLE_MS,
+        (text) => activeServedAt > 0 && settled(text),
+        (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (the new service answered the TUI's read of what runs at ${activeServedAt}, 0 for never; ${activeTurnedAway} reads turned away):\n${last}`,
+        START_MS + SETTLE_MS,
       )
+      expect(now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)
+      if (refuseActiveMs > 0 || failActiveReads > 0) expect(activeTurnedAway, `${name}: reads of what runs turned away`).toBeGreaterThan(0)
     } finally {
       held = false
       refuseActiveUntil = 0
+      refuseActiveFor = 0
       failActive = 0
       await host.stop()
     }
