@@ -78,7 +78,11 @@ only the resident location's copy acts, so a host runs one updater.
   It pushes an annotated tag to the dotfiles origin as `refs/fleet/verified`
   (`mods/orchestrate/git/fleet.ts`). The tag points at the verified dotfiles
   commit; its message is `{dotfiles, fork, batch}`. One ref, written whole,
-  read with one fetch, and recorded only when origin holds both commits.
+  read with one fetch, and recorded only when origin holds both commits. The
+  push is leased on the tag it read (`--force-with-lease=refs/fleet/verified:<tag>`):
+  when another host published meanwhile, it reads the ref again, checks again
+  (the same commits, forward only) and pushes once more; refused again, it
+  says `NOT published` like any other refusal.
 - **The check.** At start, every ten minutes and when asked (RPC
   `dotfiles-opencode.update` `check`), the plugin fetches the ref and compares
   it with `installed.json`. A host on a proven build of the target does
