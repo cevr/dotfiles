@@ -3,7 +3,7 @@
 // origin. With `workrift: true` it runs the workbox's own script
 // (workbox/bin/workrift) with a no-op `flock`, which macOS lacks. Rift needs
 // copy-on-write (APFS here), so these run on macOS only.
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, test } from "bun:test"
@@ -150,6 +150,48 @@ const droppingBench = (repack: boolean) => Effect.acquireRelease(
   }),
   (made) => Effect.sync(() => rmSync(made.scratch, { recursive: true, force: true })),
 )
+
+/**
+ * A scratch HOME whose PATH holds the workbox's `workrift` and stubs: a `git` that logs the nice it runs
+ * at and fails, so each command stops at its first Git call; an `ionice` that logs its class and runs the
+ * rest; a `rift` that fails. No Rift and no network, so it runs on any host.
+ */
+const priorityBench = () =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const scratch = mkdtempSync(join(tmpdir(), "workrift-priority-"))
+      const bin = join(scratch, "bin")
+      mkdirSync(bin)
+      symlinkSync(WORKRIFT, join(bin, "workrift"))
+      const log = join(scratch, "log")
+      writeFileSync(join(bin, "ionice"), `#!/bin/sh\nprintf 'ionice %s\\n' "$1" >>'${log}'\nshift\nexec "$@"\n`)
+      writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf 'git %s %s\\n' "$1" "$(ps -o nice= -p $$ | tr -d ' ')" >>'${log}'\nexit 3\n`)
+      writeFileSync(join(bin, "rift"), "#!/bin/sh\nexit 4\n")
+      for (const stub of ["ionice", "git", "rift"]) chmodSync(join(bin, stub), 0o755)
+      // Empty is unset to workrift: the test's own environment may carry either.
+      const env = { ...scratchEnv(scratch, bin), WORKRIFT_LOWERED: "", WORKRIFT_SOURCE: "" }
+      return { scratch, env, log, workrift: join(bin, "workrift"), layer: ProcessRifts.layer({ workrift: true, env }) }
+    }),
+    (made) => Effect.sync(() => rmSync(made.scratch, { recursive: true, force: true })),
+  )
+
+test("workrift's init, create, refresh and deps run at nice 10 and in the idle I/O class; list runs as called", () =>
+  check(priorityBench, (made) =>
+    Effect.sync(() => {
+      /** What the stubs logged while `workrift <argv>` ran to its failing Git call. */
+      const logged = (...argv: ReadonlyArray<string>) => {
+        writeFileSync(made.log, "")
+        expect(() => sh(made.scratch, made.env, made.workrift, ...argv)).toThrow()
+        return readFileSync(made.log, "utf8").trim().split("\n")
+      }
+      // As `ps` reads it here, the Mac's ceiling 20 and Linux's 19 included.
+      const niceUnder = (...prefix: ReadonlyArray<string>) => sh(made.scratch, made.env, ...prefix, "/bin/sh", "-c", "ps -o nice= -p $$").trim()
+      const lowered = niceUnder("nice", "-n", "10")
+      expect(logged("init", "/nonexistent/loop-probe-x/repo.git", join(made.scratch, "source"))).toEqual(["ionice -c3", `git clone ${lowered}`])
+      for (const argv of [["create", "feat/x"], ["refresh"], ["deps"]]) expect(logged(...argv)).toEqual(["ionice -c3", `git rev-parse ${lowered}`])
+      expect(logged("list")).toEqual([`git rev-parse ${niceUnder()}`])
+    }),
+  ))
 
 if (runnable) {
   riftsLaws("process Rifts on rift", () => bench(false), 30_000)

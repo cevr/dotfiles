@@ -544,6 +544,24 @@ check_source() {
   printf 'Warm source checks passed: %s\n' "$source_path"
 }
 
+# init, create, refresh and deps fetch, clone, install and build. They run below
+# the interactive work (the OpenCode service and the TUIs), as the OpenCode
+# guard's heavy launcher runs a test: at nice 10 and, where ionice is, in the
+# idle I/O class. Every child inherits both: the fetch's `git pack-objects`, the
+# install, the warm build. The script runs itself again once under them.
+case "${1:-}" in
+  init | create | refresh | deps)
+    if [ -z "${WORKRIFT_LOWERED:-}" ]; then
+      WORKRIFT_LOWERED=1
+      export WORKRIFT_LOWERED
+      if command -v ionice >/dev/null 2>&1; then
+        exec nice -n 10 ionice -c3 "$0" "$@"
+      fi
+      exec nice -n 10 "$0" "$@"
+    fi
+    ;;
+esac
+
 command=${1:-}
 [ "$#" -gt 0 ] && shift
 case "$command" in
