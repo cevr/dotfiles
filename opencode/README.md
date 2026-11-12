@@ -69,8 +69,13 @@ only the resident location's copy acts, so a host runs one updater.
   takes the heads the batch file beside the verifier's report
   (`<run dir>/<batch>.md`) names as verified (`Dotfiles: base X, head Y`,
   `Fork prime-look: base X, head Y`, `Fork unchanged (Y)`), never a checkout's
-  HEAD; a repository the batch does not name keeps the current target's
-  commit, and with no target yet nothing is recorded. It pushes an annotated tag to the dotfiles origin as `refs/fleet/verified`
+  HEAD. It needs both heads: a batch file that names only one, or none,
+  publishes nothing (no kept commit stands in). It never moves the fleet
+  back: each head must descend from the current target's (`git merge-base
+  --is-ancestor`). A batch it does not publish says so, `fleet: <batch>
+  accepted, but NOT published: <why>`, in the root's context, the run's
+  `log.md` and the server's log; a published one adds its line to `log.md`.
+  It pushes an annotated tag to the dotfiles origin as `refs/fleet/verified`
   (`mods/orchestrate/git/fleet.ts`). The tag points at the verified dotfiles
   commit; its message is `{dotfiles, fork, batch}`. One ref, written whole,
   read with one fetch, and recorded only when origin holds both commits.
@@ -114,6 +119,13 @@ only the resident location's copy acts, so a host runs one updater.
   proven (exit 0, the build recorded good), rolled back (exit 2) or given up
   (exit 1); either failure shows the owner's notice and rejects the target.
   TUIs follow by themselves.
+- **One handoff at a time.** The handoff marks
+  `~/.local/state/opencode-update/handoff.json` with its pid before it
+  names the staged build installed, and drops the mark once the build is
+  proven or rejected. Every check reads the mark first: while its process
+  lives (`ps -p`, no signal) and for at most 20 minutes, nothing builds or
+  restarts, so the restarted service's own check never starts a second
+  handoff. A mark whose process is gone, or older than that, holds nothing.
 
 There is no load gate and no notification (the owner's call). Each step is a
 line in `~/.local/state/opencode-update/update.log`; a failed update also
