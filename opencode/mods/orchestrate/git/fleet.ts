@@ -28,24 +28,46 @@ const PART = /(?:^|\n|[.;]\s+)(?:-\s+)?(Dotfiles|Fork)\b/g
 /** The words that mark the commit after them as a part's head: `head Y`, `X → Y`, `X -> Y`. */
 const HEAD_MARKS = new Set(["head", "→", "->"])
 
-/** A part's words, an arrow standing as a word of its own (`X→Y` reads as `X → Y`). */
-const wordsOf = (part: string): ReadonlyArray<string> => part.replace(/→|->/g, " $& ").split(/[\s,;:.()`]+/)
+/** The words that mark the commit after them as a base: `base X`, `from X`. */
+const BASE_BEFORE = new Set(["base", "from"])
+
+/** The words that mark the commit before them as a base: an arrow or a range (`X → …`, `X..Y`, `X to …`). */
+const BASE_AFTER = new Set(["→", "->", "=>", "⇒", "..", "...", "to"])
+
+/** A spaced word's words: itself when it is an arrow or a range, else its pieces between punctuation. */
+const piecesOf = (word: string): ReadonlyArray<string> => {
+  if (BASE_AFTER.has(word)) return [word]
+  return word.split(/[,;:.()`]+/)
+}
+
+/** A part's words, an arrow or a range glued to the word before it standing as a word of its own (`X→Y`, `X..Y` and `X..` read as `X → Y`, `X .. Y`, `X ..`). */
+const wordsOf = (part: string): ReadonlyArray<string> =>
+  part
+    .replace(/→|->|=>|⇒|(?<=\S)\.{2,3}/g, " $& ")
+    .split(/\s+/)
+    .flatMap(piecesOf)
+    .filter((word) => word.length > 0)
 
 /**
- * The head a part of a batch file's header names, never a base: the commit a head mark names
- * (`head Y`, `X → Y`), else the part's only commit not after `base` (`Fork unchanged (prime-look
- * 13a380890b)`, `Dotfiles: 0eb81d14 (no dotfiles change)`). None when it names no commit
- * (`head origin/main`), and none when it names two or more without one marked head (`X and Y`, two
- * marked heads that differ): the publish refuses rather than guess which is the head.
+ * The head a part of a batch file's header names, never a base. A commit is a base when it stands
+ * after `base`/`from` or before an arrow or a range (`base X`, `X → …`, `X..Y`), and a base is never
+ * returned, even when a mark also names it. The head is the one commit a head mark names (`head Y`,
+ * `X → Y`), else the part's only commit when it is not a base (`Fork unchanged (prime-look
+ * 13a380890b)`, `Dotfiles: 0eb81d14 (no dotfiles change)`). Anything else is none: no commit
+ * (`head origin/main`), only a base (`X → origin/main`), two or more commits without one marked
+ * head (`X and Y`, `X..Y`): the publish refuses rather than guess which is the head.
  */
 const headOfPart = (part: string): Option.Option<string> => {
   const words = wordsOf(part)
-  const commits = words.filter((each) => COMMIT.test(each))
-  const marked = Arr.dedupe(words.filter((each, at) => COMMIT.test(each) && HEAD_MARKS.has(words[at - 1] ?? "")))
-  if (marked.length > 1) return Option.none()
-  if (marked.length === 1) return Arr.head(marked)
-  if (words.some((each, at) => COMMIT.test(each) && words[at - 1] === "base")) return Option.none()
-  return Option.filter(Arr.head(commits), () => commits.length === 1)
+  const isBase = (at: number) => BASE_BEFORE.has((words[at - 1] ?? "").toLowerCase()) || BASE_AFTER.has((words[at + 1] ?? "").toLowerCase())
+  const commits = words.map((commit, at) => ({ commit, at })).filter((each) => COMMIT.test(each.commit))
+  const heads = commits.filter((each) => !isBase(each.at))
+  const marked = Arr.dedupe(heads.filter((each) => HEAD_MARKS.has((words[each.at - 1] ?? "").toLowerCase())).map((each) => each.commit))
+  if (marked.length > 0) return Option.filter(Arr.head(marked), () => marked.length === 1)
+  return Option.map(
+    Option.filter(Arr.head(heads), () => commits.length === 1),
+    (each) => each.commit,
+  )
 }
 
 /**

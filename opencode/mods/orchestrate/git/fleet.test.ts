@@ -51,6 +51,60 @@ describe("the verified target an accepted batch records", () => {
     expect(headsOf("Fork: 5df8da5195 and 0efbe2f0ab. Fork prime-look: base 1111111a, head 2222222b")).toEqual(heads(Option.none(), Option.none()))
   })
 
+  test("M1 (r1): a part whose only commit is a base refuses, whatever follows the arrow", () => {
+    for (const text of ["Fork: 5df8da5195 → origin/main", "Fork: 5df8da5195 -> prime-look", "Fork: 5df8da5195 → 0EFBE2F0AB", "Fork: 5df8da5195 → deadbeefab", "Fork: 5df8da5195..origin/main", "Fork: from 5df8da5195 to prime-look", "Fork: base 5df8da5195, head origin/main"])
+      expect([text, headsOf(text)]).toEqual([text, heads(Option.none(), Option.none())])
+  })
+
+  test("generated: every header gives a commit in head position or nothing, never a base", () => {
+    const X = "5df8da5195"
+    const Y = "0efbe2f0ab"
+    // The base forms X can take, each with whether it marks the commit after it as the head.
+    const lefts: ReadonlyArray<readonly [string, boolean]> = [
+      ["", false],
+      ["base X, ", false],
+      ["X → ", true],
+      ["X→", true],
+      ["X -> ", true],
+      ["X->", true],
+      ["X => ", false],
+      ["X ⇒ ", false],
+      ["X..", false],
+      ["X...", false],
+      ["from X to ", false],
+    ]
+    // What follows: Y marked, Y bare, or no readable commit at all.
+    const rights: ReadonlyArray<readonly [string, "marked" | "bare" | "none"]> = [
+      ["", "none"],
+      ["Y", "bare"],
+      ["head Y", "marked"],
+      ["→ Y", "marked"],
+      ["-> Y", "marked"],
+      ["origin/main", "none"],
+      ["prime-look", "none"],
+      ["0EFBE2F0AB", "none"],
+      ["deadbeefab", "none"],
+      ["head origin/main", "none"],
+    ]
+    const prefixes = ["Fork: ", "Fork prime-look: ", "Fork (anomalyco fork, branch prime-look): ", "Fork unchanged ("]
+    const suffixes = ["", ".", " (upstream merge).", " (…)", "; checkout at it.", ")"]
+    let cases = 0
+    for (const [left, arrow] of lefts)
+      for (const [right, kind] of rights)
+        for (const prefix of prefixes)
+          for (const suffix of suffixes) {
+            const text = `${prefix}${left}${right}${suffix}`.replaceAll("X", X).replaceAll("Y", Y)
+            const marked = kind === "marked" || (kind === "bare" && arrow)
+            const sole = kind === "bare" && left === ""
+            const expected = Option.filter(Option.some(Y), () => marked || sole)
+            const fork = headsOf(text).fork
+            expect([text, Option.getOrUndefined(fork) === X]).toEqual([text, false])
+            expect([text, fork]).toEqual([text, expected])
+            cases += 1
+          }
+    expect(cases).toBe(lefts.length * rights.length * prefixes.length * suffixes.length)
+  })
+
   test("M1: a batch file must name both heads; it says which it lacks, and no kept commit stands in", () => {
     expect(missingOf(heads(Option.some(D2), Option.some(F2)))).toEqual([])
     expect(missingOf(heads(Option.some(D2), Option.none()))).toEqual(["the fork head (`Fork prime-look: base X, head Y` or `Fork unchanged (Y)`)"])
