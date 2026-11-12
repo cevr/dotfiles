@@ -177,6 +177,16 @@
       "rules": {
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "tests/scratch.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }
