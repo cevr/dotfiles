@@ -2,6 +2,8 @@ import { afterAll } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { resolve } from "node:path"
+import { env as processEnv } from "node:process"
 
 /**
  * A test's own directory under the system temp directory. Hold it with `using dir = scratch("name-")`:
@@ -18,6 +20,35 @@ export const removeScratch = (path: string) => rmSync(path, { recursive: true, f
 export const scratch = (prefix: string): Scratch => {
   const path = mkdtempSync(`${tmpdir()}/${prefix}`)
   return { path, [Symbol.dispose]: () => removeScratch(path) }
+}
+
+/** A child process's environment, as `Bun.spawn` takes it. */
+export type ChildEnv = typeof processEnv
+
+/** A child's own temp folder (`path`, "" when the caller chose one) and its environment pointing at it. */
+export interface ChildTemp extends Scratch {
+  readonly env: ChildEnv
+}
+
+/** Whether `env` gives the child a TMPDIR of its caller's choosing, one other than this process's. */
+const choseTemp = (env: ChildEnv) => {
+  const chosen = env["TMPDIR"] || ""
+  return chosen !== "" && resolve(chosen) !== resolve(tmpdir())
+}
+
+/** A caller's own TMPDIR is theirs to remove. */
+const keep = () => {}
+
+/**
+ * A child process's own TMPDIR: `env` (this process's when the spawn names none) with TMPDIR at a
+ * fresh scratch folder, removed when disposed, so what the child and what it starts make under
+ * TMPDIR (opencode-drive's `opencode-drive/`, OpenCode's `opencode/`) goes with it. A TMPDIR the
+ * caller chose (one other than this process's) is kept as it is, and nothing is made or removed.
+ */
+export const childTemp = (env: ChildEnv = processEnv): ChildTemp => {
+  if (choseTemp(env)) return { path: "", env, [Symbol.dispose]: keep }
+  const own = scratch("child-")
+  return { path: own.path, env: { ...env, TMPDIR: own.path }, [Symbol.dispose]: own[Symbol.dispose] }
 }
 
 /** A test or setup body: synchronous, or a promise of its end. */

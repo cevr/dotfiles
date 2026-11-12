@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync, readdirSync } from "node:fs"
+import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { owned } from "./owned.ts"
+import { owned, released } from "./owned.ts"
 import { scratch } from "./scratch.ts"
 
 /**
@@ -96,6 +97,39 @@ const FAILING_CASES = [
   "late-writer > hangs then writes",
   "closing-after-late-setup > setup",
 ]
+
+/** A child that makes the folders opencode-drive and OpenCode leave under TMPDIR, and prints its TMPDIR. */
+const MAKES_TEMP = ["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"']
+
+/** How long an owned child's run and cleanup may take: nothing it started is left to stop. */
+const RELEASE_MS = 20_000
+
+describe("an owned child's TMPDIR", () => {
+  test(
+    "is a folder of its own, removed with what opencode-drive and OpenCode made there once the child has stopped",
+    async () => {
+      const child = owned(MAKES_TEMP, { stdout: "pipe", stderr: "ignore" })
+      const temp = await new Response(child.stdout).text()
+      const code = await child.exited
+      const made = existsSync(join(temp, "opencode-drive"))
+      await released(child.pid)
+      expect({ code, own: basename(temp).startsWith("child-"), made, gone: !existsSync(temp) }).toEqual({ code: 0, own: true, made: true, gone: true })
+    },
+    RELEASE_MS,
+  )
+
+  test(
+    "is the one the test chose for it, kept as it is",
+    async () => {
+      using chosen = scratch("scratch-chosen-")
+      const child = owned(MAKES_TEMP, { env: { ...process.env, TMPDIR: chosen.path }, stdout: "pipe", stderr: "ignore" })
+      const temp = await new Response(child.stdout).text()
+      const code = await child.exited
+      expect({ code, temp, made: existsSync(join(chosen.path, "opencode")) }).toEqual({ code: 0, temp: chosen.path, made: true })
+    },
+    RELEASE_MS,
+  )
+})
 
 describe("an e2e suite's directory", () => {
   test(

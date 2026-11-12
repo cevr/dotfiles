@@ -10,7 +10,13 @@
 // child's descendants are sampled while it runs (scripts/leaks.ts `watch`),
 // which still names them once they are handed to pid 1. scripts/accept.ts
 // checks that no server survives a run.
+//
+// Each child gets a TMPDIR of its own (tests/scratch.ts `childTemp`), removed
+// once it and all it started have stopped: opencode-drive makes
+// `$TMPDIR/opencode-drive` and the driven OpenCode `$TMPDIR/opencode`, and
+// neither removes its folder. A TMPDIR the test chose for the child is kept.
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
+import { type ChildTemp, childTemp } from "./scratch.ts"
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
@@ -20,6 +26,12 @@ const GRACE_MS = 3000
 
 /** The children of this process still running, each with its descendants' watch. */
 const running = new Map<number, Watch>()
+
+/** Each child's own TMPDIR, removed once the child and all it started have stopped. */
+const temps = new Map<number, ChildTemp>()
+
+/** The children `owned` started, each to the end of its cleanup. */
+const releases = new Map<number, Promise<void>>()
 
 const terminate = (procs: ReadonlyArray<Proc>) => {
   for (const proc of procs)
@@ -47,6 +59,7 @@ process.on("exit", () => {
     signalGroup(pid, "SIGTERM")
     terminate(survivors([...watching.stop(), ...descendants(rows, pid)], rows))
   }
+  for (const temp of temps.values()) temp[Symbol.dispose]()
 })
 
 /**
@@ -62,10 +75,12 @@ export const owned = <
   command: ReadonlyArray<string>,
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
-  const child = Bun.spawn([...command], { ...options, detached: true })
+  const temp = childTemp(options?.env)
+  const child = Bun.spawn([...command], { ...options, env: temp.env, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
-  void child.exited.then(async () => {
+  temps.set(child.pid, temp)
+  const release = child.exited.then(async () => {
     running.delete(child.pid)
     const left = survivors(watching.stop(), table())
     if (signalGroup(child.pid, "SIGTERM")) {
@@ -74,6 +89,13 @@ export const owned = <
       signalGroup(child.pid, "SIGKILL")
     }
     await stop(left, GRACE_MS)
+    temp[Symbol.dispose]()
+    temps.delete(child.pid)
+    releases.delete(child.pid)
   })
+  releases.set(child.pid, release)
   return child
 }
+
+/** To await: settles once the owned child `pid`, all it started and its own TMPDIR are gone (nothing to wait for once they are). */
+export const released = (pid: number) => releases.get(pid)
