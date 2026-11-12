@@ -86,8 +86,11 @@ only the resident location's copy acts, so a host runs one updater.
 - **The wait.** The restart waits until no root session on the host runs a
   turn or a compaction, and never in the Sabbath rest
   (`mods/orchestrate/sabbath.ts`). Subagents do not hold it: the restart cuts
-  them and the server resumes them. No timeout: the log says how long it
-  waited. A newer target while it waits is built ahead first.
+  them and the server resumes them. A cut subagent finds OpenCode's note "The
+  server restarted while you were working. Continue from where you left off
+  without repeating completed work." as its newest message and runs its turn
+  again (up to ten times per turn); its parent hears it end as usual. No
+  timeout: the log says how long it waited. A newer target while it waits is built ahead first.
 - **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
   service it restarts: `opencode service restart`, then the health check
   (every configured local plugin loaded in the resident location, and the
@@ -459,7 +462,7 @@ role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, and stops agent work over the Sabbath. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence` and `guard`.
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence`, `guard` and `fleet` (the checkouts an accepted verdict records the verified target from; The update).
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
