@@ -7,8 +7,9 @@
 // file, configs, these scripts) runs them all. A change to the OpenCode
 // checkout itself is outside this repository: run `bun run accept` after one.
 //
-// Usage: bun scripts/accept.ts [--affected [base]] [--list] [--parallel=N] [-- <bun test flags>]
-// --list prints the files it would run and exits.
+// Usage: bun scripts/accept.ts [--affected [base]] [--list] [--parallel=N] [tests/<name>.test.ts ...] [-- <bun test flags>]
+// --list prints the files it would run and exits; named acceptance files narrow the run to them.
+// When gent's suites skip for lack of gent's checkout, the run's last line says so (SKIPPED: …).
 //
 // One run at a time per machine: each run already fills every core, so a second
 // one waits for the lock (ACCEPT_LOCK, default $TMPDIR/opencode-accept.lock)
@@ -68,6 +69,9 @@ if (affected) {
   }
   if (files.length === 0) process.exit(0)
 }
+/** The acceptance files named on the command line (`tests/<name>.test.ts`): the run takes those alone. */
+const chosen = own.filter((arg) => files.includes(arg))
+if (chosen.length > 0) files = files.filter((file) => chosen.includes(file))
 /**
  * The run's closing lines: gent's suites skip without gent's checkout, and the run says so in
  * one line at its end (after the files, under --list), not in a warning among the passes.
