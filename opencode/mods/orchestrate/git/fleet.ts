@@ -1,6 +1,7 @@
 import { tagObject, type Target, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
 import { file, readableStreamToText, spawn, write } from "bun"
 import { Array as Arr, Clock, Effect, Layer, Option, Semaphore } from "effect"
+import { type Commits, FleetOutcome } from "../fleet.ts"
 import { Fleet } from "../service.ts"
 
 /** The checkouts daily installs from: the dotfiles and the OpenCode fork. */
@@ -49,81 +50,101 @@ export const headsOf = (text: string): Heads => {
 }
 
 /**
- * The target an accepted batch verified: the heads its batch file names, each resolved to its full
- * commit, and for a repository it does not name the current target's commit (the batch verified it
- * as it stood). None when a repository has neither: never a checkout's HEAD, which may stand
- * anywhere when the verdict comes.
+ * What the batch file lacks to name a target: both heads, the dotfiles' and the fork's, as the
+ * orchestrator writes them; empty when it names both. No kept commit stands in for a missing head:
+ * the fork moves apart from batches (an upstream merge after a land), so the last recorded fork is
+ * not the one a dotfiles-only batch was verified with.
  */
-export const targetOf = (input: { readonly heads: Heads; readonly current: Option.Option<Target>; readonly batch: string }): Option.Option<Target> =>
-  Option.all({
-    dotfiles: Option.orElse(input.heads.dotfiles, () => Option.map(input.current, (target) => target.dotfiles)),
-    fork: Option.orElse(input.heads.fork, () => Option.map(input.current, (target) => target.fork)),
-  }).pipe(Option.map((commits) => ({ ...commits, batch: input.batch })))
+export const missingOf = (heads: Heads): ReadonlyArray<string> => [
+  ...Option.match(heads.dotfiles, { onNone: () => ["the dotfiles head (`Dotfiles: base X, head Y`)"], onSome: () => [] }),
+  ...Option.match(heads.fork, { onNone: () => ["the fork head (`Fork prime-look: base X, head Y` or `Fork unchanged (Y)`)"], onSome: () => [] }),
+]
 
-/** Whether `target` names other commits than `current`: recording the same ones again moves nothing. */
-export const moves = (target: Target, current: Option.Option<Target>): boolean =>
-  !Option.exists(current, (each) => each.dotfiles === target.dotfiles && each.fork === target.fork)
+/** Whether `target` names the commits `current` names: recording them again moves nothing. */
+export const sameAs = (target: Commits, current: Option.Option<Commits>): boolean => Option.exists(current, (each) => each.dotfiles === target.dotfiles && each.fork === target.fork)
 
 /** The batch file beside a verifier's report: `<run dir>/<batch>.md`, the orchestrator's brief of the batch. */
 export const batchFileOf = (report: string, batch: string): string => `${report.slice(0, report.lastIndexOf("/") + 1)}${batch}.md`
 
-/** One git command in `cwd`: its output, trimmed; none when it fails. */
-const git = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<string>> =>
+/** A finished git command: its exit code and its output, trimmed. */
+interface Ran {
+  readonly code: number
+  readonly text: string
+}
+
+/** One git command in `cwd`; none when it does not start. */
+const run = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<Ran>> =>
   Effect.try(() => spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
     Effect.flatMap((child) =>
       Effect.all({ code: Effect.tryPromise(() => child.exited), text: Effect.tryPromise(() => readableStreamToText(child.stdout)) }, { concurrency: 2 }),
     ),
-    Effect.map(({ code, text }) => Option.filter(Option.some(text.trim()), () => code === 0)),
-    Effect.orElseSucceed(() => Option.none<string>()),
+    Effect.map(({ code, text }) => Option.some({ code, text: text.trim() })),
+    Effect.orElseSucceed(() => Option.none<Ran>()),
   )
+
+/** One git command in `cwd`: its output, trimmed; none when it fails. */
+const git = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<string>> =>
+  run(cwd, args).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
 
 /** A full commit name read in `cwd`. */
 const commitAt = (cwd: string, revision: string) => git(cwd, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`])
-
-/** A head the batch file named, as the full commit `cwd` knows; none when it named none. Some none when `cwd` knows no such commit. */
-const resolved = (cwd: string, head: Option.Option<string>) =>
-  Option.match(head, { onNone: () => Effect.succeed(Option.none<Option.Option<string>>()), onSome: (short) => commitAt(cwd, short).pipe(Effect.map(Option.some)) })
 
 /** Whether one of origin's branches, as `cwd` last fetched them, holds `commit`. */
 const onOrigin = (cwd: string, commit: string) =>
   git(cwd, ["branch", "--remotes", "--contains", commit]).pipe(Effect.map((text) => Option.exists(text, (each) => /^\s*origin\//m.test(each))))
 
-/** Records the target the batch file beside `report` names on the dotfiles origin as `VERIFIED_REF`, through the dotfiles checkout. */
+/** Whether `commit` is `current` or descends from it, in `cwd`: the fleet only moves forward. */
+const descends = (cwd: string, current: string, commit: string) =>
+  run(cwd, ["merge-base", "--is-ancestor", current, commit]).pipe(Effect.map((ran) => Option.exists(ran, (each) => each.code === 0)))
+
+/** The target the batch file beside `report` names, recorded on the dotfiles origin as `VERIFIED_REF`, through the dotfiles checkout. */
 const recordTarget = Effect.fn("Fleet.recordTarget")(function* (checkouts: Checkouts, report: string, batch: string) {
   const path = batchFileOf(report, batch)
   const text = yield* Effect.tryPromise(() => file(path).text()).pipe(Effect.map(Option.some), Effect.orElseSucceed(() => Option.none<string>()))
-  if (Option.isNone(text)) return `the batch file ${path} does not read: nothing recorded`
+  if (Option.isNone(text)) return FleetOutcome.Refused({ reason: `the batch file ${path} does not read` })
   const named = headsOf(text.value)
-  if (Option.isNone(named.dotfiles) && Option.isNone(named.fork)) return `the batch file ${path} names no head: nothing recorded`
+  const both = Option.all({ dotfiles: named.dotfiles, fork: named.fork })
+  if (Option.isNone(both)) return FleetOutcome.Refused({ reason: `the batch file ${path} lacks ${missingOf(named).join(" and ")}` })
+  const short = both.value
   yield* Effect.all([git(checkouts.dotfiles, ["fetch", "--quiet", "origin"]), git(checkouts.fork, ["fetch", "--quiet", "origin"])], { concurrency: 2 })
   yield* git(checkouts.dotfiles, ["fetch", "--quiet", "origin", `+${VERIFIED_REF}:${VERIFIED_REF}`])
   const current = Option.flatMap(yield* git(checkouts.dotfiles, ["cat-file", "tag", VERIFIED_REF]), targetOfTag)
-  const full = yield* Effect.all({ dotfiles: resolved(checkouts.dotfiles, named.dotfiles), fork: resolved(checkouts.fork, named.fork) })
-  const unknown = [Option.exists(full.dotfiles, Option.isNone), Option.exists(full.fork, Option.isNone)]
-  if (unknown.some(Boolean)) return `the batch file names a head the checkouts do not know (dotfiles ${Option.getOrElse(named.dotfiles, () => "-")}, fork ${Option.getOrElse(named.fork, () => "-")}): nothing recorded`
-  const target = targetOf({ heads: { dotfiles: Option.flatten(full.dotfiles), fork: Option.flatten(full.fork) }, current, batch })
-  if (Option.isNone(target)) return `the batch file names one repository's head only (dotfiles ${Option.getOrElse(named.dotfiles, () => "-")}, fork ${Option.getOrElse(named.fork, () => "-")}) and no target is recorded yet for the other: nothing recorded`
-  const wanted = target.value
-  if (!moves(wanted, current)) return `the target is already dotfiles ${wanted.dotfiles.slice(0, 10)}, fork ${wanted.fork.slice(0, 10)}`
+  const full = yield* Effect.all({ dotfiles: commitAt(checkouts.dotfiles, short.dotfiles), fork: commitAt(checkouts.fork, short.fork) })
+  if (Option.isNone(full.dotfiles) || Option.isNone(full.fork))
+    return FleetOutcome.Refused({ reason: `the batch file names a head the checkouts do not know (dotfiles ${short.dotfiles}, fork ${short.fork})` })
+  const wanted: Target = { dotfiles: full.dotfiles.value, fork: full.fork.value, batch }
+  if (sameAs(wanted, current)) return FleetOutcome.Unchanged({ target: wanted })
   const pushed = yield* Effect.all([onOrigin(checkouts.dotfiles, wanted.dotfiles), onOrigin(checkouts.fork, wanted.fork)])
-  if (!pushed.every(Boolean)) return `origin lacks dotfiles ${wanted.dotfiles.slice(0, 10)} or fork ${wanted.fork.slice(0, 10)}: nothing recorded`
+  if (!pushed.every(Boolean)) return FleetOutcome.Refused({ reason: `origin lacks dotfiles ${wanted.dotfiles.slice(0, 10)} or fork ${wanted.fork.slice(0, 10)}` })
+  if (Option.isSome(current)) {
+    const was = current.value
+    const forward = yield* Effect.all([descends(checkouts.dotfiles, was.dotfiles, wanted.dotfiles), descends(checkouts.fork, was.fork, wanted.fork)])
+    if (!forward.every(Boolean))
+      return FleetOutcome.Refused({
+        reason: `dotfiles ${wanted.dotfiles.slice(0, 10)} and fork ${wanted.fork.slice(0, 10)} do not both descend from the current target (dotfiles ${was.dotfiles.slice(0, 10)}, fork ${was.fork.slice(0, 10)}, ${was.batch}): a batch behind it never moves the fleet back`,
+      })
+  }
   const gitDir = yield* git(checkouts.dotfiles, ["rev-parse", "--absolute-git-dir"])
-  if (Option.isNone(gitDir)) return "the dotfiles checkout has no git directory"
+  if (Option.isNone(gitDir)) return FleetOutcome.Refused({ reason: "the dotfiles checkout has no git directory" })
   const tagFile = `${gitDir.value}/fleet-verified.tag`
   const at = (yield* Clock.currentTimeMillis) / 1000
   yield* Effect.tryPromise(() => write(tagFile, tagObject(wanted, { ...TAGGER, at })))
   const tag = yield* git(checkouts.dotfiles, ["hash-object", "-t", "tag", "-w", tagFile])
-  if (Option.isNone(tag)) return "git refused the tag object"
+  if (Option.isNone(tag)) return FleetOutcome.Refused({ reason: "git refused the tag object" })
   const done = yield* git(checkouts.dotfiles, ["push", "--quiet", "origin", `+${tag.value}:${VERIFIED_REF}`])
-  if (Option.isNone(done)) return `pushing ${VERIFIED_REF} was refused`
+  if (Option.isNone(done)) return FleetOutcome.Refused({ reason: `pushing ${VERIFIED_REF} was refused` })
   yield* git(checkouts.dotfiles, ["update-ref", VERIFIED_REF, tag.value])
-  return `recorded the verified target: dotfiles ${wanted.dotfiles.slice(0, 10)}, fork ${wanted.fork.slice(0, 10)} (${batch})`
+  return FleetOutcome.Recorded({ target: wanted })
 })
+
+/** Records the target one accepted batch names, and answers the outcome. */
+export const recordOnce = (checkouts: Checkouts, report: string, batch: string): Effect.Effect<FleetOutcome> =>
+  recordTarget(checkouts, report, batch).pipe(Effect.orElseSucceed(() => FleetOutcome.Refused({ reason: "recording the verified target failed" })))
 
 /**
  * Fleet over git: the dotfiles and fork checkouts daily wrote into the plugin's options. Without
- * them (a test, a host outside the owner's) nothing is recorded. The fetches and the push run
- * apart from the hand-back that asked, one record at a time; every outcome is one log line.
+ * them (a test, a host outside the owner's) nothing is recorded and nothing said (`Off`). One
+ * record at a time.
  */
 export const layer = (checkouts: Option.Option<Checkouts>) =>
   Layer.effect(
@@ -131,15 +152,10 @@ export const layer = (checkouts: Option.Option<Checkouts>) =>
     Effect.gen(function* () {
       const one = yield* Semaphore.make(1)
       const record = Effect.fn("Fleet.record")(function* (input: { readonly report: Option.Option<string>; readonly batch: string }) {
-        if (Option.isNone(checkouts)) return
-        if (Option.isNone(input.report)) return yield* Effect.logInfo(`fleet: ${input.batch} was accepted with no report named, so no batch file: nothing recorded`)
-        const outcome = yield* recordTarget(checkouts.value, input.report.value, input.batch).pipe(Effect.orElseSucceed(() => "recording the verified target failed"))
-        yield* Effect.logInfo(`fleet: ${outcome}`)
+        if (Option.isNone(checkouts)) return FleetOutcome.Off()
+        if (Option.isNone(input.report)) return FleetOutcome.Refused({ reason: "the verifier named no report, so there is no batch file beside it" })
+        return yield* recordOnce(checkouts.value, input.report.value, input.batch)
       })
-      return Fleet.of({ record: (input) => record(input).pipe(one.withPermits(1), Effect.forkDetach, Effect.asVoid) })
+      return Fleet.of({ record: (input) => record(input).pipe(one.withPermits(1)) })
     }),
   )
-
-/** Records the target one accepted batch names, and answers the log line, for a test over real git. */
-export const recordOnce = (checkouts: Checkouts, report: string, batch: string): Effect.Effect<string> =>
-  recordTarget(checkouts, report, batch).pipe(Effect.orElseSucceed(() => "recording the verified target failed"))

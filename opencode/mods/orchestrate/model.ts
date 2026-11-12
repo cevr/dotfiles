@@ -100,6 +100,7 @@ import {
 } from "./service.ts"
 import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
 import { departureLines, driftLine, logLineOf, scoreOf } from "./drift.ts"
+import { FLEET_DESCRIPTION, type FleetOutcome, fleetLineOf } from "./fleet.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
@@ -953,6 +954,20 @@ export const machineLayer = (config: MachineConfig) =>
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
       })
 
+      /**
+       * Says what recording the fleet target did where the orchestrator reads it: the run's log.md,
+       * the server's log, and, when nothing was published, the root's context for its next turn.
+       */
+      const toldFleet = Effect.fn("Machines.toldFleet")(function* (root: string, batch: string, report: Option.Option<string>, directory: Option.Option<string>, outcome: FleetOutcome) {
+        for (const line of fleetLineOf(batch, outcome, yield* now)) {
+          if (outcome._tag === "Refused") yield* Effect.logWarning(line)
+          else yield* Effect.logInfo(line)
+          const entries = Option.toArray(report).map((near) => Option.match(directory, { onNone: () => ({ near, line }), onSome: (dir) => ({ near, line, directory: dir }) }))
+          yield* Effect.forEach(entries, (entry) => records.log(entry), { discard: true })
+          if (outcome._tag === "Refused") yield* remind.remind(root, { text: line, description: FLEET_DESCRIPTION }).pipe(Effect.ignore)
+        }
+      })
+
       const handBack = Effect.fn("Machines.handBack")(function* (sessionID: string) {
         const agent = yield* sessions.agentOf(sessionID)
         if (agent === undefined || !isStep(agent)) return
@@ -967,12 +982,16 @@ export const machineLayer = (config: MachineConfig) =>
         // The session that handed back is the step's: a step started before its session was known gets it here.
         const at = yield* now
         const decided = yield* ledger.decide(root, at, () => Effect.succeed([said])).pipe(Effect.orElseSucceed(() => undefined))
-        // Each verdict adds the root's drift to its run's log.md (its report's run); an accepted one records the fleet target its batch file names.
+        // Each verdict adds the root's drift to its run's log.md (its report's run); an accepted one records the fleet target its batch file names, apart from the hand-back.
         const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
         const report = reportOf(words)
-        if (ended?.verdict === "accepted") yield* fleet.record({ report: Option.fromNullishOr(report), batch: ended.batch })
-        if (ended === undefined || ended.verdict === "none" || report === undefined) return
         const directory = yield* sessions.directoryOf(sessionID)
+        if (ended?.verdict === "accepted")
+          yield* fleet.record({ report: Option.fromNullishOr(report), batch: ended.batch }).pipe(
+            Effect.flatMap((outcome) => toldFleet(root, ended.batch, Option.fromNullishOr(report), Option.fromNullishOr(directory), outcome)),
+            Effect.forkDetach,
+          )
+        if (ended === undefined || ended.verdict === "none" || report === undefined) return
         const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
         yield* records.log({ near: report, line, ...(directory === undefined ? {} : { directory }) })
       })

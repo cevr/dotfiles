@@ -1,19 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Fiber, Layer, Option } from "effect"
+import { Clock, type Duration, Effect, Fiber, Layer, Option } from "effect"
 import { TestClock } from "effect/testing"
 import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import { EXIT_CODES, GATE_POLL, handoff, Updater, updaterLayer } from "./model.ts"
 import { type Build, proven, type Record, stagedRecord } from "./record.ts"
-import { Builder, Configs, Handoff, Log, Notice, Records, Rejections, Service, Sessions, Source, UpdateFailed } from "./service.ts"
+import { Builder, Configs, Handoff, HandoffMark, Log, Notice, Records, Rejections, Service, Sessions, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
-import type { Rejected } from "./update.ts"
+import type { Rejected, Running } from "./update.ts"
 
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
 
 const TARGET: Target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-7" }
 const PRIOR = "c".repeat(40)
+/** The handoff's process, as its mark names it. */
+const HANDOFF_PID = 4242
 const SHORT = `dotfiles ${"d".repeat(10)}, fork ${"f".repeat(10)} (batch-7)`
 
 const build = (version: string, dotfiles: string, fork = "f".repeat(40)): Build => ({ version, command: [`/s/opencode-${version}`], dotfiles, fork })
@@ -33,6 +35,9 @@ interface World {
   views: ReadonlyArray<SessionView>
   record: Option.Option<Record>
   rejected: Option.Option<Rejected>
+  /** The running handoff's mark, and the pids that live. */
+  mark: Option.Option<Running>
+  living: ReadonlyArray<number>
   readonly readings: Array<Reading>
   stageFails: boolean
   sessionsFail: boolean
@@ -49,6 +54,8 @@ const world = (at: Partial<Omit<World, "calls" | "lines">> = {}): World => ({
   views: [],
   record: Option.none(),
   rejected: Option.none(),
+  mark: Option.none(),
+  living: [HANDOFF_PID],
   readings: [],
   stageFails: false,
   sessionsFail: false,
@@ -114,6 +121,17 @@ const fakes = (host: World) =>
     ),
     Layer.succeed(Handoff, Handoff.of({ start: (reason) => Effect.sync(() => void host.calls.push(`handoff ${reason}`)) })),
     Layer.succeed(
+      HandoffMark,
+      HandoffMark.of({
+        hold: Clock.currentTimeMillis.pipe(Effect.map((at) => void (host.mark = Option.some({ pid: HANDOFF_PID, at })))),
+        release: Effect.sync(() => {
+          if (Option.exists(host.mark, (mark) => mark.pid === HANDOFF_PID)) host.mark = Option.none()
+        }),
+        read: Effect.sync(() => host.mark),
+        alive: (pid) => Effect.sync(() => host.living.includes(pid)),
+      }),
+    ),
+    Layer.succeed(
       Records,
       Records.of({
         read: Effect.sync(() => host.record),
@@ -153,7 +171,7 @@ const fakes = (host: World) =>
   )
 
 /** Runs `body` on the fakes under a test clock set to a Wednesday noon. */
-const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Service | Source | Records | Rejections | Configs | Notice | Log>) =>
+const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* TestClock.setTime(WEDNESDAY_NOON)
@@ -427,6 +445,79 @@ describe("the handoff on its seams", () => {
       Effect.gen(function* () {
         expect(yield* handOff).toBe("gave-up")
         expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `notice ${POOL_FAILED}`, "reject health"])
+      }),
+    )
+  })
+})
+
+/** The pool's status not answering yet: a reading that is not final, so the handoff reads again. */
+const poolSilent: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.none() }], accounts: Option.none() }
+
+/**
+ * A handoff on the fakes with the restarted service's own check at `after` into it: the plugin of
+ * the new service, its roots idle, checks while the handoff still reads health.
+ */
+const checkDuring = (after: Duration.Input) =>
+  Effect.gen(function* () {
+    const handing = yield* Effect.forkChild(handoff("batch-7"))
+    yield* settle
+    yield* TestClock.adjust(after)
+    yield* settle
+    yield* check("interval")
+    yield* TestClock.adjust("10 minutes")
+    return yield* Fiber.join(handing)
+  })
+
+describe("one handoff at a time", () => {
+  for (const after of ["0 seconds", "30 seconds", "60 seconds", "90 seconds"] as const)
+    test(`B1, P7: the restarted service's check ${after} into a handoff whose pool answers after 100 s starts no second handoff; once proven, a check does nothing`, () => {
+      const host = world({ record: stagedTarget(), readings: [...Array.from({ length: 50 }, () => poolSilent), healthy] })
+      return run(
+        host,
+        Effect.gen(function* () {
+          expect(yield* checkDuring(after)).toBe("proven")
+          expect(host.calls.filter((call) => call === "restart" || call.startsWith("handoff "))).toEqual(["restart"])
+          expect(host.lines).toContain("check (interval): a handoff runs (pid 4242); nothing builds or restarts until it ends")
+          expect(host.mark).toEqual(Option.none())
+          host.calls.length = 0
+          yield* check("interval")
+          expect(host.calls).toEqual([])
+        }),
+      )
+    })
+
+  test("B1: a check while the handoff rolls back neither builds the failed target nor restarts; after it, the rejection holds", () => {
+    const host = world({ record: stagedTarget(), readings: [failedPool, ...Array.from({ length: 20 }, () => poolSilent), failedPool, ...Array.from({ length: 20 }, () => poolSilent), healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* checkDuring("60 seconds")).toBe("rolled-back")
+        expect(host.calls.filter((call) => call.startsWith("stage") || call.startsWith("handoff ") || call === "advance d")).toEqual([])
+        host.calls.length = 0
+        yield* check("interval")
+        expect(host.calls).toEqual([])
+      }),
+    )
+  })
+
+  test("B1: a mark whose handoff died (its pid gone) holds nothing: the check restarts onto the staged build", () => {
+    const host = world({ record: stagedTarget(), mark: Option.some({ pid: 999, at: WEDNESDAY_NOON }) })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
+      }),
+    )
+  })
+
+  test("B1: a mark older than the handoff's limit holds nothing, even when its pid lives (a reused pid)", () => {
+    const host = world({ record: stagedTarget(), mark: Option.some({ pid: HANDOFF_PID, at: WEDNESDAY_NOON - 21 * 60_000 }) })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
       }),
     )
   })

@@ -61,6 +61,7 @@ export const files = (settings: Settings) => ({
   log: `${settings.state}/update.log`,
   stage: `${settings.state}/stage.log`,
   handoff: `${settings.state}/handoff.log`,
+  mark: `${settings.state}/handoff.json`,
   kept: `${settings.state}/config-kept`,
   rejected: `${settings.state}/rejected.json`,
 })

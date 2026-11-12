@@ -20,7 +20,7 @@
 // agree with the new service: no live row (no time in its state) for a child
 // it does not run, and no subagent count, within SETTLE_MS.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
@@ -36,6 +36,8 @@ const SERVER_PLUGINS = ["orchestrate", "status", "queue", "git", "idle-compact",
 const TIMEOUT_MS = 180_000
 /** How long the dock has, once the TUI can read what runs on the new service, to drop the rows whose turns ended. */
 const SETTLE_MS = 20_000
+/** How long a TUI on a loaded host has to reconnect and make its first read. */
+const START_MS = 60_000
 const CHILDREN = ["Streaming child one", "Streaming child two"]
 
 interface Client {
@@ -163,14 +165,18 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   /**
    * The service as the TUI reaches it: every request passes to the service
    * the service file names now, except the event stream while `held` (503, as
-   * a service between processes answers) and the read of what runs while
-   * `refuseActiveUntil` (503 `service_starting`, as a service still booting
-   * answers) or while `failActive` counts down (500). `drop` ends every open
-   * event stream and holds new ones.
+   * a service between processes answers) and the TUI's next reads of what runs
+   * while `refuseActive` (503 `service_starting`, as a service still booting
+   * answers) or `failActive` (500) counts down. Counted in the TUI's own reads,
+   * never on a clock it may not reach in time. `drop` ends every open event
+   * stream and holds new ones.
    */
   let held = false
-  let refuseActiveUntil = 0
+  let refuseActive = 0
   let failActive = 0
+  /** The TUI's reads of what runs turned away, and when the service first answered one: SETTLE_MS runs from then. */
+  let activeTurnedAway = 0
+  let activeServedAt = 0
   const streams = new Set<AbortController>()
   const proxyServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -180,13 +186,18 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const url = new URL(request.url)
       const event = url.pathname === "/api/event"
       if (event && held) return unavailable()
-      if (url.pathname === "/api/session/active") {
-        if (Date.now() < refuseActiveUntil) return unavailable()
-        if (failActive > 0) {
-          failActive--
-          return Response.json({ code: "internal" }, { status: 500 })
-        }
+      const reading = url.pathname === "/api/session/active"
+      if (reading && refuseActive > 0) {
+        refuseActive--
+        activeTurnedAway++
+        return unavailable()
       }
+      if (reading && failActive > 0) {
+        failActive--
+        activeTurnedAway++
+        return Response.json({ code: "internal" }, { status: 500 })
+      }
+      if (reading && activeServedAt === 0) activeServedAt = Date.now()
       const target = await ready(serviceFile, () => "the service behind the proxy")
       const headers = new Headers(request.headers)
       headers.delete("host")
@@ -290,9 +301,9 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   /**
    * One restart under a TUI that shows a new parent with two working
    * children. After the new service serves, the proxy refuses the TUI's read
-   * of what runs for `refuseActiveMs` and fails the next `failActiveReads`.
+   * of what runs `refuseActiveReads` times and fails the next `failActiveReads`.
    */
-  const scenario = async (name: string, { refuseActiveMs = 0, failActiveReads = 0 }: { readonly refuseActiveMs?: number; readonly failActiveReads?: number } = {}) => {
+  const scenario = async (name: string, { refuseActiveReads = 0, failActiveReads = 0 }: { readonly refuseActiveReads?: number; readonly failActiveReads?: number } = {}) => {
     const OpenCode = await boot()
     const service = await ready(serviceFile, () => "the service")
     const client = OpenCode.make({ baseUrl: service.url, headers: auth(service) })
@@ -332,21 +343,25 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const running = await active(after)
       expect(children.filter((child) => child.id in running)).toEqual([])
 
-      refuseActiveUntil = Date.now() + refuseActiveMs
+      refuseActive = refuseActiveReads
       failActive = failActiveReads
+      activeTurnedAway = 0
+      activeServedAt = 0
       held = false
       const stale = (text: string) => CHILDREN.filter((child) => liveRow(text, child))
       // The TUI still draws the parent: an empty screen has no rows either.
       const settled = (text: string) => text.includes(title) && stale(text).length === 0 && !/◆ \d+ subagents?/.test(text)
       await until(
         screen,
-        settled,
-        (last) => `${name}: ${SETTLE_MS / 1000}s after the TUI could read what runs, the dock still shows ${stale(last).join(", ") || "a subagent count"}:\n${last}`,
-        refuseActiveMs + SETTLE_MS,
+        (text) => activeServedAt > 0 && settled(text),
+        (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (the new service answered the TUI's read of what runs at ${activeServedAt}, 0 for never; ${activeTurnedAway} reads turned away):\n${last}`,
+        START_MS + SETTLE_MS,
       )
+      expect(Date.now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)
+      if (refuseActiveReads > 0 || failActiveReads > 0) expect(activeTurnedAway, `${name}: reads of what runs turned away`).toBeGreaterThan(0)
     } finally {
       held = false
-      refuseActiveUntil = 0
+      refuseActive = 0
       failActive = 0
       await host.stop()
     }
@@ -354,7 +369,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   test("rows of turns that ended while the TUI was away leave the dock once it reconnects", kept.test(() => scenario("reconnect")), TIMEOUT_MS)
 
-  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", kept.test(() => scenario("booting", { refuseActiveMs: 3_000 })), TIMEOUT_MS)
+  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", kept.test(() => scenario("booting", { refuseActiveReads: 3 })), TIMEOUT_MS)
 
   test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), TIMEOUT_MS)
 })
