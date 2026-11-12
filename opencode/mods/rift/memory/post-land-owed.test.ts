@@ -4,7 +4,8 @@
 // two never run at once, that each run is the newest land's (so a superseded step never runs), that no
 // land's step runs twice or after a newer one ran, and that none runs unless every load reading the tool
 // took in the settle window before it (a land's, the minute check's, a server's before a restart) was under
-// the cores, or the oldest unpaid land has waited the max wait; and, once the load is calm long enough, that
+// the cores, or the oldest unpaid land has waited the max wait; that a run's report says the land ran it
+// whatever the load exactly when such a reading was in that window; and, once the load is calm long enough, that
 // the newest land's step ran exactly once and nothing is owed. A restart keeps the owed steps: the same
 // memory World serves the next tool, as the file does a restarted server.
 import { describe, expect, test } from "bun:test"
@@ -86,6 +87,8 @@ interface Seen {
   running: number
   /** The runs started while the load was at or past the cores. */
   forced: number
+  /** For each run that ended, in order: whether a reading in the settle window before its start was at or past the cores. */
+  readonly completedForced: Array<boolean>
   readonly violations: Array<string>
 }
 
@@ -100,7 +103,7 @@ const worldOf = (next: () => number) => {
   landing.headOf = (push) => `h${push}`
   const debts = MemoryDebts.world()
   const woken: Array<MemoryNotices.Woken> = []
-  const seen: Seen = { landed: [], started: [], startedAt: [], completed: [], running: 0, forced: 0, violations: [] }
+  const seen: Seen = { landed: [], started: [], startedAt: [], completed: [], running: 0, forced: 0, completedForced: [], violations: [] }
   /** Each running step's end, which the clock steps release. */
   const holds: Array<{ readonly end: number; readonly done: Deferred.Deferred<void> }> = []
   landing.postLandHold = Effect.gen(function* () {
@@ -127,6 +130,7 @@ const worldOf = (next: () => number) => {
     holds.push({ end: now + between(next, 0, 4) * MINUTE, done })
     yield* Deferred.await(done).pipe(Effect.ensuring(Effect.sync(() => (seen.running -= 1))))
     seen.completed.push(head)
+    seen.completedForced.push(loadedLately)
   })
   return { rifts, landing, debts, woken, seen, holds }
 }
@@ -214,14 +218,31 @@ const play = (seed: number, ops: ReadonlyArray<Op>) =>
 const judge = (seed: number, world: World) => {
   const newest = Option.fromNullishOr(world.seen.landed.at(-1))
   const ranNewest = Option.match(newest, { onNone: () => 1, onSome: (land) => world.seen.completed.filter((head) => head === land.head).length })
-  expect({ seed, violations: world.seen.violations, newestRuns: ranNewest, owed: world.debts.debts.owed.length, running: world.seen.running }).toEqual({
+  expect({
+    seed,
+    violations: world.seen.violations,
+    newestRuns: ranNewest,
+    owed: world.debts.debts.owed.length,
+    running: world.seen.running,
+    saidForced: saidForced(world),
+  }).toEqual({
     seed,
     violations: [],
     newestRuns: 1,
     owed: 0,
     running: 0,
+    saidForced: world.seen.completedForced,
   })
 }
+
+/** The forced report's first words: a land ran the step past the max wait, whatever the load. */
+const FORCED = "rift land: the post-land step was owed for "
+
+/** For each report of a run that ended, in order: whether it says the land ran it whatever the load. */
+const saidForced = (world: World): ReadonlyArray<boolean> =>
+  world.woken
+    .filter((woken) => woken.notice.description === "rift land · post-land ran" || woken.notice.description === "rift land · post-land failed")
+    .map((woken) => woken.notice.text.startsWith(FORCED))
 
 describe("an owed post-land step", () => {
   test("over generated lands, loads, clock steps and restarts: never two at once, only the newest land's, never under load before the max wait, and the newest runs exactly once once calm", () =>
@@ -324,6 +345,27 @@ describe("an owed post-land step", () => {
           "rift land: the post-land step after l/l1, l/l2, l/l3 ran in 4s. Log: /logs/post-land.log",
         ])
         judge(2, world)
+      }),
+    ))
+
+  test("a land past the max wait that finds the settle window calm runs the step as a plain run, and does not say it ran whatever the load", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const ops: ReadonlyArray<Op> = [
+          Op.Load({ load: 40 }),
+          Op.Land(), // minute 0: owed (h1)
+          Op.Wait({ minutes: 366 }), // loaded the whole time: the minute check never runs it
+          Op.Load({ load: 2 }),
+          Op.Wait({ minutes: 3 }), // the last reading at or past the cores was at minute 366
+          Op.Restart(), // the new server's readings start calm from scratch: the minute check waits a whole window
+          Op.Wait({ minutes: 3 }),
+          Op.Land(), // minute 372: owed past the max wait, and no reading in the last 5 minutes at or past the cores
+        ]
+        const world = yield* play(3, ops)
+        expect(world.seen.started).toEqual(["h2"])
+        expect(world.seen.forced).toBe(0)
+        expect(world.woken.map((woken) => woken.notice.text.split("\n")[0]).at(-1)).toEqual("rift land: the post-land step after l/l1, l/l2 ran in 4s. Log: /logs/post-land.log")
+        judge(3, world)
       }),
     ))
 })
