@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { batchFileOf, headsOf, moves, targetOf } from "./fleet.ts"
+import { FleetOutcome, fleetLineOf } from "../fleet.ts"
+import { batchFileOf, headsOf, missingOf, sameAs } from "./fleet.ts"
 
 const D1 = "1".repeat(40)
 const D2 = "2".repeat(40)
@@ -36,12 +37,20 @@ describe("the verified target an accepted batch records", () => {
     )
   })
 
-  test("a repository the batch does not name keeps the current target's commit; with no current target nothing is recorded", () => {
-    const current = Option.some({ dotfiles: D1, fork: F1, batch: "batch-1" })
-    expect(targetOf({ heads: heads(Option.some(D2), Option.some(F2)), current, batch: "batch-2" })).toEqual(Option.some({ dotfiles: D2, fork: F2, batch: "batch-2" }))
-    expect(targetOf({ heads: heads(Option.some(D2), Option.none()), current, batch: "batch-2" })).toEqual(Option.some({ dotfiles: D2, fork: F1, batch: "batch-2" }))
-    expect(targetOf({ heads: heads(Option.none(), Option.some(F2)), current, batch: "batch-3" })).toEqual(Option.some({ dotfiles: D1, fork: F2, batch: "batch-3" }))
-    expect(targetOf({ heads: heads(Option.some(D2), Option.none()), current: Option.none(), batch: "batch-2" })).toEqual(Option.none())
+  test("M1: a batch file must name both heads; it says which it lacks, and no kept commit stands in", () => {
+    expect(missingOf(heads(Option.some(D2), Option.some(F2)))).toEqual([])
+    expect(missingOf(heads(Option.some(D2), Option.none()))).toEqual(["the fork head (`Fork prime-look: base X, head Y` or `Fork unchanged (Y)`)"])
+    expect(missingOf(heads(Option.none(), Option.some(F2)))).toEqual(["the dotfiles head (`Dotfiles: base X, head Y`)"])
+    expect(missingOf(heads(Option.none(), Option.none()))).toHaveLength(2)
+  })
+
+  test("M1, M2: a refusal reads as NOT published, stamped, where the orchestrator reads it; a host with no checkouts says nothing", () => {
+    const at = 1794506700000
+    expect(fleetLineOf("batch-x", FleetOutcome.Refused({ reason: "the batch file lacks the fork head" }), at)).toEqual([
+      "2026-11-12T18:05Z fleet: batch-x accepted, but NOT published: the batch file lacks the fork head. Every host stays on the last published target.",
+    ])
+    expect(fleetLineOf("batch-y", FleetOutcome.Recorded({ target: { dotfiles: D2, fork: F2, batch: "batch-y" } }), at)).toEqual([`2026-11-12T18:05Z fleet: batch-y accepted; published the verified target dotfiles ${D2.slice(0, 10)}, fork ${F2.slice(0, 10)}`])
+    expect(fleetLineOf("batch-z", FleetOutcome.Off(), at)).toEqual([])
   })
 
   test("the batch file sits beside the verifier's report", () => {
@@ -49,9 +58,9 @@ describe("the verified target an accepted batch records", () => {
   })
 
   test("recording the commits already recorded moves nothing", () => {
-    const current = Option.some({ dotfiles: D1, fork: F1, batch: "batch-1" })
-    expect(moves({ dotfiles: D1, fork: F1, batch: "batch-9" }, current)).toBe(false)
-    expect(moves({ dotfiles: D2, fork: F1, batch: "batch-9" }, current)).toBe(true)
-    expect(moves({ dotfiles: D1, fork: F1, batch: "batch-9" }, Option.none())).toBe(true)
+    const current = Option.some({ dotfiles: D1, fork: F1 })
+    expect(sameAs({ dotfiles: D1, fork: F1 }, current)).toBe(true)
+    expect(sameAs({ dotfiles: D2, fork: F1 }, current)).toBe(false)
+    expect(sameAs({ dotfiles: D1, fork: F1 }, Option.none())).toBe(false)
   })
 })
