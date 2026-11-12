@@ -1,6 +1,6 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
@@ -197,9 +197,12 @@ describe("the role models", () => {
 describe("the upstream merge", () => {
   // Real git on local repositories: `upstream` and `origin` are bare repos beside the fork, so
   // nothing touches the network. A scratch git config keeps the owner's hooks and signing out.
-  /** The test's own git env: a scratch config handed to each child, never written to this process's env. */
+  /**
+   * The test's own git env, handed to every git child (its own and `mergeUpstream`'s and `syncFork`'s),
+   * never written to this process's env: no global or system config, no inherited GIT_* variable.
+   */
   const env = {
-    ...process.env,
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_AUTHOR_NAME: "daily test",
@@ -207,9 +210,7 @@ describe("the upstream merge", () => {
     GIT_COMMITTER_NAME: "daily test",
     GIT_COMMITTER_EMAIL: "daily@test.invalid",
   }
-  /** `mergeUpstream` and `syncFork` run git with the process's env, so each repository's own config keeps the owner's identity, signing and hooks out of their commits and pushes. */
-  const repoConfig = (hooks: string) =>
-    `[user]\n\tname = daily test\n\temail = daily@test.invalid\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[core]\n\thooksPath = ${hooks}\n`
+  const sync = (options: Omit<Parameters<typeof syncFork>[0], "env">) => syncFork({ ...options, env })
 
   const git = (dir: string, ...args: string[]) => {
     const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env, stdout: "pipe", stderr: "pipe" })
@@ -244,9 +245,6 @@ describe("the upstream merge", () => {
     const fork = join(root, "fork")
     git(root, "clone", "--quiet", "--branch", "prime-look", origin, fork)
     git(fork, "remote", "add", "upstream", upstream)
-    const hooks = join(root, "no-hooks")
-    mkdirSync(hooks)
-    for (const config of [join(upstream, "config"), join(origin, "config"), join(fork, ".git/config")]) appendFileSync(config, repoConfig(hooks))
     const calls: string[] = []
     const options = (overrides: Partial<UpstreamOptions> = {}): UpstreamOptions => ({
       fork,
@@ -261,6 +259,7 @@ describe("the upstream merge", () => {
       report: join(root, "state/upstream-conflict.md"),
       log: () => {},
       ...overrides,
+      env,
     })
     const head = (dir: string, ref: string) => git(dir, "rev-parse", ref)
     return { root, upstream, origin, fork, calls, options, head }
@@ -360,7 +359,7 @@ describe("the upstream merge", () => {
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
     writeFileSync(join(f.fork, "scratch.txt"), "untracked\n")
     const lines: string[] = []
-    expect(syncFork({ fork: f.fork, dryRun: false, log: (line) => lines.push(line) })).toMatchObject({ kind: "fast-forwarded", from: stale, commits: 1 })
+    expect(sync({ fork: f.fork, dryRun: false, log: (line) => lines.push(line) })).toMatchObject({ kind: "fast-forwarded", from: stale, commits: 1 })
     expect(f.head(f.fork, "prime-look")).toBe(f.head(f.origin, "prime-look"))
     expect(readFileSync(join(f.fork, "c.txt"), "utf8")).toBe("pushed elsewhere\n")
     expect(readFileSync(join(f.fork, "scratch.txt"), "utf8")).toBe("untracked\n")
@@ -371,7 +370,7 @@ describe("the upstream merge", () => {
     expect(await mergeUpstream(f.options())).toMatchObject({ kind: "merged", from: pushed, pushed: true })
     expect(git(f.fork, "rev-parse", "prime-look^1")).toBe(pushed)
     // Current: nothing to do.
-    expect(syncFork({ fork: f.fork, dryRun: false, log: () => {} })).toEqual({ kind: "current" })
+    expect(sync({ fork: f.fork, dryRun: false, log: () => {} })).toEqual({ kind: "current" })
   })
 
   test("a fork with local commits or tracked changes is left alone, and says so", () => {
@@ -382,7 +381,7 @@ describe("the upstream merge", () => {
     git(f.fork, "commit", "--quiet", "-m", "local only")
     const diverged = f.head(f.fork, "prime-look")
     const lines: string[] = []
-    expect(syncFork({ fork: f.fork, dryRun: false, log: (line) => lines.push(line) })).toMatchObject({ kind: "left" })
+    expect(sync({ fork: f.fork, dryRun: false, log: (line) => lines.push(line) })).toMatchObject({ kind: "left" })
     expect(f.head(f.fork, "prime-look")).toBe(diverged)
     expect(lines.join("\n")).toContain("1 commit not on origin")
 
@@ -391,7 +390,7 @@ describe("the upstream merge", () => {
     const before = g.head(g.fork, "prime-look")
     writeFileSync(join(g.fork, "a.txt"), "edited\n")
     const said: string[] = []
-    expect(syncFork({ fork: g.fork, dryRun: false, log: (line) => said.push(line) })).toMatchObject({ kind: "left" })
+    expect(sync({ fork: g.fork, dryRun: false, log: (line) => said.push(line) })).toMatchObject({ kind: "left" })
     expect(g.head(g.fork, "prime-look")).toBe(before)
     expect(readFileSync(join(g.fork, "a.txt"), "utf8")).toBe("edited\n")
     expect(said.join("\n")).toContain("uncommitted changes")
@@ -401,7 +400,7 @@ describe("the upstream merge", () => {
     const f = fixture()
     const before = f.head(f.fork, "prime-look")
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
-    expect(syncFork({ fork: f.fork, dryRun: true, log: () => {} })).toEqual({ kind: "would-fast-forward", commits: 1 })
+    expect(sync({ fork: f.fork, dryRun: true, log: () => {} })).toEqual({ kind: "would-fast-forward", commits: 1 })
     expect(f.head(f.fork, "prime-look")).toBe(before)
   })
 
