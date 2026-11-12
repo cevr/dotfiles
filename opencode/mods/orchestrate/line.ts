@@ -5,34 +5,16 @@
 // with the root's drift tally up to it (drift.ts). `at` is ISO 8601. A line
 // that does not read is none of these.
 import { Option, Schema } from "effect"
-import { Event, type MachineState, Unresolved } from "./machine.ts"
+import { Event, MachineState } from "./machine.ts"
 
 /** One line as written. */
 export type Line = Readonly<Record<string, unknown>> & { readonly at: string; readonly sessionID: string; readonly kind: string }
 
 export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
-const Unit = Schema.Struct({
-  state: Schema.Literals(["implement", "ended", "ready", "landed", "verify"]),
-  round: Schema.Number,
-  since: Schema.Number,
-  direct: Schema.Boolean,
-  child: Schema.optionalKey(Schema.String),
-  rifts: Schema.optionalKey(Schema.Array(Schema.String)),
-})
-const State = Schema.Struct({
-  units: Schema.Record(Schema.String, Unit),
-  verifier: Schema.optionalKey(
-    Schema.Struct({ batch: Schema.String, since: Schema.Number, units: Schema.optionalKey(Schema.Array(Schema.String)), child: Schema.optionalKey(Schema.String) }),
-  ),
-  unverified: Schema.optionalKey(Schema.Array(Schema.String)),
-  findings: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.optionalKey(Schema.String) }))),
-  carried: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.String }))),
-  unresolved: Schema.optionalKey(Schema.Record(Schema.String, Unresolved)),
-})
-
 const decodeEvent = Schema.decodeUnknownOption(Event)
-const decodeState = Schema.decodeUnknownOption(State)
+/** A checkpoint holds the machine's own state schema: whatever the machine keeps, a compaction keeps. */
+const decodeState = Schema.decodeUnknownOption(MachineState)
 
 /** A line's root and time; none for a line that does not read. */
 export const headOf = (line: unknown): { readonly sessionID: string; readonly at: number } | undefined => {
