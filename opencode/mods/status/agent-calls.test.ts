@@ -3,6 +3,7 @@
 // the order they first appeared. The view has no aggregate (its events are
 // another program's log lines), so its cases fold events directly.
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { AgentCalled, AgentCalls, AgentReturned, live, runSession, stepUnit } from "./agent-calls.ts"
 
@@ -69,11 +70,11 @@ describe("AgentCalls", () => {
 
 describe("a run's session", () => {
   test("a step's unit, in both of the skill's forms; prose names none", () => {
-    expect(stepUnit("implementor push r2")).toBe("push")
-    expect(stepUnit("verifier batch-3 r1")).toBe("batch-3")
-    expect(stepUnit("push r2 implementor")).toBe("push")
-    expect(stepUnit("closure-flake verifier r1 (Opus)")).toBe("closure-flake")
-    for (const prose of ["Fix the verifier's timeout", "Ask the planner about X", "Fix verifier", "r2 verifier", undefined]) expect(stepUnit(prose)).toBeUndefined()
+    expect(stepUnit("implementor push r2")).toEqual(Option.some("push"))
+    expect(stepUnit("verifier batch-3 r1")).toEqual(Option.some("batch-3"))
+    expect(stepUnit("push r2 implementor")).toEqual(Option.some("push"))
+    expect(stepUnit("closure-flake verifier r1 (Opus)")).toEqual(Option.some("closure-flake"))
+    for (const prose of ["Fix the verifier's timeout", "Ask the planner about X", "Fix verifier", "r2 verifier", ""]) expect(stepUnit(prose)).toEqual(Option.none())
   })
 
   test("the session that started the latest step of one of the run's units owns it, returned or not; a run with no step has none", () => {
@@ -84,8 +85,8 @@ describe("a run's session", () => {
       called("ses_other", "c", "implementor", { description: "implementor elsewhere r1" }),
       called("ses_new", "d", "worker", { description: "Ask the planner about wake" }),
     ])
-    expect(runSession(state, ["wake", "sleep"])).toBe("ses_new")
-    expect(runSession(state, ["wake"])).toBe("ses_old")
-    expect(runSession(state, ["nothing"])).toBeUndefined()
+    expect(runSession(state, ["wake", "sleep"])).toEqual(Option.some("ses_new"))
+    expect(runSession(state, ["wake"])).toEqual(Option.some("ses_old"))
+    expect(runSession(state, ["nothing"])).toEqual(Option.none())
   })
 })

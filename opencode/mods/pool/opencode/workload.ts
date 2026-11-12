@@ -16,7 +16,8 @@ export type Status = () => Effect.Effect<unknown, unknown>
 /** How long the status plugin has: it runs the status script once per run. */
 const TIMEOUT = "20 seconds"
 
-const Answer = Schema.Struct({
+/** The status method's answer, as much of it as the pool reads. */
+export const Answer = Schema.Struct({
   runs: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -25,7 +26,13 @@ const Answer = Schema.Struct({
     }),
   ),
 })
-const decode = Schema.decodeUnknownOption(Answer)
+export type Answer = typeof Answer.Type
+
+/** The status method's answer read with the pool's schema: none when it is not one. */
+export const decode = Schema.decodeUnknownOption(Answer)
+
+/** The runs an answer names, each with its units' states and the session that owns it; none without an answer. */
+export const runsOf = (answer: Option.Option<Answer>): Answer["runs"] => Option.match(answer, { onNone: () => [], onSome: (value) => value.runs })
 
 /** This host's load now. */
 export const osLoad = (): HostLoad => ({ load: loadavg()[0] ?? 0, cores: cpus().length })
@@ -36,9 +43,7 @@ export const layer = (status: Status, load: () => HostLoad = osLoad) =>
     runs: Effect.suspend(status).pipe(
       Effect.timeoutOption(TIMEOUT),
       Effect.map((answer) => Option.flatMap(answer, decode)),
-      Effect.map((answer) =>
-        Option.isNone(answer) ? [] : answer.value.runs.map((run) => ({ name: run.name, ...(run.session === undefined ? {} : { session: run.session }), units: run.units.map(({ unit, state }) => ({ unit, state })) })),
-      ),
+      Effect.map(runsOf),
       Effect.catchCause(() => Effect.succeed([])),
       Effect.withSpan("Workload.runs"),
     ),

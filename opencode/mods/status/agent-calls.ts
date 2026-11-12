@@ -76,18 +76,24 @@ export const live = (state: AgentCallsState): ReadonlyArray<AgentCall> =>
     .map((entry) => entry.call)
     .filter((call) => call.status !== "completed" && call.status !== "error")
 
+/** `<role> <unit> r<N>`: the hand-back form. */
+const ROLE_FIRST = /^(?:planner|implementor|verifier) (\S+)/
+/** `<unit>[ rN] <role>[ rN][ (note)]`: a one-word lowercase slug, the role, and only a round and a note after it. */
+const ROLE_AFTER = /^([a-z0-9#][a-z0-9._#/-]*)(?: r\d+)? (?:planner|implementor|verifier)(?: r\d+)?(?: \([^()]*\))?$/
+const ROUND = /^r\d+$/
+
+/** The first group `pattern` captures in `text`, if it matches. */
+const captured = (pattern: RegExp, text: string): Option.Option<string> => Option.fromNullishOr(pattern.exec(text)?.[1])
+
 /**
  * The unit an orchestrate step's description names, in the skill's two forms:
  * `<role> <unit> r<N>`, or `<unit>[ rN] <role>[ rN][ (note)]`. The same
  * reading as orchestrate's described.ts, which the status domain may not
  * import; prose that only mentions a role names none.
  */
-export const stepUnit = (description: string | undefined): string | undefined => {
-  const text = (description ?? "").trim().replace(/\s+/g, " ")
-  const first = /^(?:planner|implementor|verifier) (\S+)/.exec(text)?.[1]
-  if (first !== undefined) return first
-  const suffix = /^([a-z0-9#][a-z0-9._#/-]*)(?: r\d+)? (?:planner|implementor|verifier)(?: r\d+)?(?: \([^()]*\))?$/.exec(text)?.[1]
-  return suffix === undefined || /^r\d+$/.test(suffix) ? undefined : suffix
+export const stepUnit = (description: string): Option.Option<string> => {
+  const text = description.trim().replace(/\s+/g, " ")
+  return Option.orElse(captured(ROLE_FIRST, text), () => Option.filter(captured(ROLE_AFTER, text), (unit) => !ROUND.test(unit)))
 }
 
 /**
@@ -96,13 +102,10 @@ export const stepUnit = (description: string | undefined): string | undefined =>
  * orchestrate's idle.ts reads it), over every call the log recorded, live or
  * returned. None when no step of the run was started.
  */
-export const runSession = (state: AgentCallsState, units: ReadonlyArray<string>): string | undefined => {
+export const runSession = (state: AgentCallsState, units: ReadonlyArray<string>): Option.Option<string> => {
   const names = new Set(units)
-  let latest: { readonly order: number; readonly sessionID: string } | undefined
-  for (const { order, call } of HashMap.toValues(state.calls)) {
-    const unit = stepUnit(call.description)
-    if (unit === undefined || !names.has(unit)) continue
-    if (latest === undefined || order > latest.order) latest = { order, sessionID: call.sessionID }
-  }
-  return latest?.sessionID
+  const steps = HashMap.toValues(state.calls)
+    .filter(({ call }) => Option.exists(stepUnit(call.description ?? ""), (unit) => names.has(unit)))
+    .toSorted((left, right) => left.order - right.order)
+  return Option.map(Option.fromNullishOr(steps.at(-1)), ({ call }) => call.sessionID)
 }

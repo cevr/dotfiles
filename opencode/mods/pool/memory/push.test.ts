@@ -283,7 +283,7 @@ describe("proactive push", () => {
       }),
     ))
 
-  // Round 2's Q1: the run names the session that started its steps (the status RPC, from orchestrate's call log), and its push is that session's tree's.
+  /** Round 2's Q1: the run names the session that started its steps (the status RPC, from orchestrate's call log), and its push is that session's tree's. */
   test("Q1 after an unrelated session asks the pace, the run's question is still asked in the run's orchestrator tree, and a yes covers that tree, not the stranger's", () =>
     onTestClock(
       Effect.gen(function* () {
@@ -306,7 +306,7 @@ describe("proactive push", () => {
         for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
         expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orch")).toMatchObject({ ok: true })
         expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_stranger")).toMatchObject({ ok: false, soft: true })
-        // Weeks spent: the stranger's held start claims nothing.
+        /** Weeks spent: the stranger's held start claims nothing. */
         w.readings.set("a", reading(T0 + 2 * MINUTE, 1, 1, weekAt, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
         w.readings.set("b", reading(T0 + 2 * MINUTE, 1, 1, weekAt, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
         yield* TestClock.adjust(MINUTE)
@@ -330,7 +330,7 @@ describe("proactive push", () => {
       }),
     ))
 
-  // A property over askers from several trees: whatever asks the pace, and in what order, a yes to the run's question lifts no hold outside the run's tree.
+  /** A property over askers from several trees: whatever asks the pace, and in what order, a yes to the run's question lifts no hold outside the run's tree. */
   for (const seed of [1, 2, 3, 4, 5, 6]) {
     test(`property, seed ${seed}: a yes to a run's question lifts no hold outside the run's tree`, () =>
       onTestClock(

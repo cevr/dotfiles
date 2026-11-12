@@ -2,7 +2,7 @@
 // own, and answer with what could be read and why the rest could not. Status
 // decides nothing, so it has no aggregate: the call log folds into the
 // AgentCalls view, and the runs' tables parse into units.
-import { Context, Effect, Layer, Result } from "effect"
+import { Context, Effect, Layer, Option, Result } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { AgentCalls, live, runSession } from "./agent-calls.ts"
 import { driftOf, unitsOf } from "./run-table.ts"
@@ -29,19 +29,14 @@ export const layer = Layer.effect(
           { concurrency: "unbounded" },
         )
         const agents = Result.map(calls, live)
-        // A run names its orchestrator when the call log can be read and shows a step of one of its units.
+        /** Each run, naming its orchestrator when the call log can be read and shows a step of one of its units. */
         const runs = Result.map(tables, (list) =>
           list.map((run) => {
             const units = unitsOf(run.table)
-            const session = Result.isSuccess(calls) ? runSession(calls.success, units.map((unit) => unit.unit)) : undefined
             const drift = driftOf(run.table)
-            return {
-              name: run.name,
-              ...(run.dir === undefined ? {} : { dir: run.dir }),
-              ...(session === undefined ? {} : { session }),
-              units,
-              ...(drift === undefined ? {} : { drift }),
-            }
+            const row = { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units, ...(drift === undefined ? {} : { drift }) }
+            const session = Option.flatMap(Result.getSuccess(calls), (state) => runSession(state, units.map((unit) => unit.unit)))
+            return Option.match(session, { onNone: () => row, onSome: (owner) => ({ ...row, session: owner }) })
           }),
         )
         return {
