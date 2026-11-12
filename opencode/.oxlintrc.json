@@ -35,6 +35,7 @@
     "effect/noManagedRuntimeInEffect": "error",
     "effect/noPerCallCacheConstruction": "error",
     "effect/noPointFreeLog": "error",
+    "effect/noReduceAccumulatorCopy": "error",
     "effect/noReflectApply": "error",
     "effect/noRepoTempDirectory": "error",
     "effect/noRunCollectOnUnboundedStream": "error",
@@ -45,7 +46,10 @@
     "effect/noUnknownTypeAliases": "error",
     "effect/noWidenThenAssert": "error",
     "effect/preferCatchTag": "error",
+    "effect/preferEffectFn": "error",
+    "effect/preferPredicateIsTagged": "error",
     "effect/requireForceKillAfter": "error",
+    "effect/requireNamedEffectFn": "error",
     "effect/requireSuppressionReason": "error"
   },
   "overrides": [
