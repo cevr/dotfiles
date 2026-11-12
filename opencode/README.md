@@ -137,6 +137,16 @@ only the resident location's copy acts, so a host runs one updater.
   (exit 1); either failure shows the owner's notice and rejects the target,
   that target alone: a newer one, by either commit, installs as usual.
   TUIs follow by themselves.
+- **Old builds.** Each build in `~/.local/share/opencode-prime/` is about
+  200 MB. A proven handoff, as its last step and still under its mark,
+  deletes the builds nothing needs (`mods/update/builds.ts`): it keeps the
+  installed build, the staged one, the newest three superseded builds in
+  `installed.json`'s `previous` (a TUI on one moves onto the installed build)
+  and the good build, and every build a running process executes (Linux
+  `/proc/<pid>/exe`, `ps` elsewhere). When what runs does not read, it deletes
+  nothing. Only `opencode-<version>` entries are builds: `pool-auth` and the
+  rest stay. Each deletion and its size go to `update.log`. A rollback or a
+  give-up deletes nothing.
 - **How the health check reads.** It reads the registered service over HTTP
   (`~/.local/state/opencode/service.json`), never through `opencode api`:
   that client's `Service.ensure` stops a service that misses three 2 s
