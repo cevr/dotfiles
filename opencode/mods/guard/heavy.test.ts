@@ -43,6 +43,19 @@ describe("a heavy command", () => {
       expect([line, heavy(line)]).toEqual([line, true])
   })
 
+  test("the jobs perf-load H5 found at nice 0 beside the service: a parallel bun test, turbo and du", () => {
+    for (const line of [
+      "bun test --parallel=2",
+      "cd /nonexistent/loop-probe-x && bun test --parallel=2 apps/client",
+      "turbo run compile",
+      "bunx turbo run compile --filter=client",
+      "du -sh /nonexistent/loop-probe-x",
+      "du -xh --max-depth=2 /nonexistent/loop-probe-x | sort -h | tail",
+      "ionice -c3 nice -n 19 du -sh /nonexistent/loop-probe-x",
+    ])
+      expect([line, heavy(line)]).toEqual([line, true])
+  })
+
   test("a Go or Rust build, test, vet or lint", () => {
     for (const line of [
       "go test -count=1 ./internal/sketch/check",

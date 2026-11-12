@@ -181,7 +181,7 @@ describe("the shell policy", () => {
   const LIMITS = { nice: 10, memoryMax: "12G", cpuWeight: 20 }
 
   /** The shell `command` spawns with, the launchers written (name and script) and the scope probes asked. */
-  const shellFor = (shell: string, command: string, world: { scope: boolean; unwritable?: boolean }) => {
+  const shellFor = (shell: string, command: string, world: { scope: boolean; ionice?: boolean; unwritable?: boolean }) => {
     const written: Array<readonly [string, string]> = []
     const probes = { count: 0 }
     const launchers = Layer.succeed(
@@ -196,7 +196,7 @@ describe("the shell policy", () => {
               }),
       }),
     )
-    const scopes = Layer.succeed(Scopes, Scopes.of({ available: Effect.sync(() => (probes.count += 1)).pipe(Effect.as(world.scope)) }))
+    const scopes = Layer.succeed(Scopes, Scopes.of({ available: Effect.sync(() => (probes.count += 1)).pipe(Effect.as(world.scope)), ionice: Effect.succeed(world.ionice === true) }))
     return Effect.runPromise(
       Effect.gen(function* () {
         return yield* (yield* Model.ShellPolicy).shellFor(shell, command)
@@ -207,12 +207,12 @@ describe("the shell policy", () => {
   test("a heavy command spawns a launcher of the shell's name, nice alone off systemd", async () => {
     const { spawned, written } = await shellFor("/bin/zsh", "cd app && bun test", { scope: false })
     expect(spawned).toBe("/cache/launchers/zsh")
-    expect(written).toEqual([["zsh", launcherScript({ shell: "/bin/zsh", limits: LIMITS, scope: false })]])
+    expect(written).toEqual([["zsh", launcherScript({ shell: "/bin/zsh", limits: LIMITS, scope: false, ionice: false })]])
   })
 
-  test("in a scope with its memory cap where systemd can", async () => {
-    const { written } = await shellFor("/usr/bin/bash", "tsc -b", { scope: true })
-    expect(written[0]?.[1]).toContain("systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/usr/bin/bash'")
+  test("in the idle I/O class and a scope with its memory cap where the host has them", async () => {
+    const { written } = await shellFor("/usr/bin/bash", "tsc -b", { scope: true, ionice: true })
+    expect(written[0]?.[1]).toContain("exec nice -n 10 ionice -c3 systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/usr/bin/bash'")
   })
 
   test("any other command spawns its own shell, and neither the probe nor the disk is asked", async () => {

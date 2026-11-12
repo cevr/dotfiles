@@ -9,6 +9,8 @@ export interface World {
   readonly written: Map<string, string>
   readonly unwritable?: boolean
   readonly scope: boolean
+  /** Whether `ionice` is there; none when the test does not say. */
+  readonly ionice?: boolean
 }
 
 export const layer = (world: World) =>
@@ -26,5 +28,5 @@ export const layer = (world: World) =>
           }),
       }),
     ),
-    Layer.succeed(Scopes, Scopes.of({ available: Effect.succeed(world.scope) })),
+    Layer.succeed(Scopes, Scopes.of({ available: Effect.succeed(world.scope), ionice: Effect.succeed(world.ionice === true) })),
   )

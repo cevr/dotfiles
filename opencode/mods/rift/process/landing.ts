@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { availableParallelism, homedir, loadavg } from "node:os"
 import { basename, dirname, join } from "node:path"
-import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
+import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Effect, Layer } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
@@ -31,11 +31,12 @@ export interface Options {
 
 /**
  * The argv a gate or acceptance run runs as: always heavy, through the
- * guard's launcher (`nice`, and on a systemd host a user scope under its
- * memory cap), both streams into `log` in the order they were written.
+ * guard's launcher (`nice`, `ionice -c3` where the host has it, and on a
+ * systemd host a user scope under its memory cap), both streams into `log`
+ * in the order they were written.
  */
-export const checkArgv = (command: string, log: string, scope: boolean): ReadonlyArray<string> =>
-  heavyArgv(["sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", command, log], DEFAULT_LIMITS, scope)
+export const checkArgv = (command: string, log: string, host: Host): ReadonlyArray<string> =>
+  heavyArgv(["sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", command, log], DEFAULT_LIMITS, host)
 
 /**
  * The lock files a land's checks hold, under `logs`, one set per host. `checks`: every gate and accept check
@@ -233,7 +234,7 @@ export const layer = (options: Options) => {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
-    const argv = checkArgv(command, log, yield* scope)
+    const argv = checkArgv(command, log, { scope: yield* scope, ionice: ioniceAvailable(options.platform ?? process.platform) })
     const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, env))
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
     return { code: ran.code, seconds: Math.round((Date.now() - started) / 1000), log, output } satisfies Ran

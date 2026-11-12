@@ -1,6 +1,7 @@
 import { Effect, Layer, Match, Option, Predicate, Schema } from "effect"
 import { readText } from "../filestore/files.ts"
 import type { Listed } from "../health.ts"
+import { Placement } from "../placement.ts"
 import { Service, UpdateFailed } from "../service.ts"
 import type { Settings } from "../settings.ts"
 import { run, spawned } from "./run.ts"
@@ -72,6 +73,11 @@ export const listedOf = (text: string): Option.Option<ReadonlyArray<Listed>> =>
     ),
   )
 
+const decodePlacement = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ output: Placement })))
+
+/** Where the service runs, in the update plugin's `placement` answer; none for text that is not one. */
+export const answeredPlacement = (text: string): Option.Option<Placement> => decodePlacement(text).pipe(Option.map((answer) => answer.output))
+
 /** How many accounts the pool's status answer holds, over every pool. */
 export const accountsOf = (text: string): Option.Option<number> =>
   decodePool(text).pipe(Option.map((status) => Object.values(status.output).reduce((sum, pool) => sum + pool.accounts.length, 0)))
@@ -91,6 +97,10 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
   /** The pool's status answer; none when it does not answer. */
   const pool = spawned("ask the pool", [settings.launcher, "api", "POST", "/api/rpc/dotfiles-opencode.pool/status", "-H", resident, "-d", `{"input":{}}`], place).pipe(
     Effect.map((ran) => Option.map(Option.liftPredicate(ran, (each) => each.code === 0), (each) => each.stdout)),
+  )
+  /** Where the service runs, as its update plugin answers; none when it does not (a build from before the placement). */
+  const placement = spawned("ask where the service runs", [settings.launcher, "api", "POST", "/api/rpc/dotfiles-opencode.update/placement", "-H", resident, "-d", `{"input":{}}`], place).pipe(
+    Effect.map((ran) => Option.flatMap(Option.liftPredicate(ran, (each) => each.code === 0), (each) => answeredPlacement(each.stdout))),
   )
   /** The providers with an account in the pool (its answer) or a stored credential. */
   const loginsWith = Effect.fn("Service.logins")(function* (answer: Option.Option<string>) {
@@ -115,6 +125,7 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
           accounts: Option.flatMap(answer, accountsOf),
           providers: providersOf(config),
           logins: yield* loginsWith(answer),
+          placement: yield* placement,
         }
       }),
       logins: Effect.flatMap(pool, loginsWith),

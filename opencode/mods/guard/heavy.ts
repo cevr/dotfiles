@@ -39,6 +39,9 @@ export const DEFAULT_HEAVY: ReadonlyArray<string> = [
   "jest",
   "playwright test",
   "turbo",
+  // A disk survey walks a whole tree for minutes (perf-load H5 caught two at
+  // nice 0 on the workbox, 5 to 8 minutes each).
+  "du",
   // Go and Rust compile every package they touch on all cores. `go run` and
   // `cargo run` are left out: what they start is usually a server or a tool
   // that lives on, and their build is mostly cached.

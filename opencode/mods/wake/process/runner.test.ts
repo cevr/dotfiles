@@ -11,7 +11,7 @@ import { Context, Effect, Layer, Option, Ref, Schema, type Scope } from "effect"
 import type { JobRecord, JobSpec, Run } from "../job.ts"
 import { Runner } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, FILES, scopeAvailable, writeAtomic } from "./supervise.ts"
+import { argvOf, FILES, hostOf, scopeAvailable, writeAtomic } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
 
@@ -338,17 +338,20 @@ describe("the process runner", () => {
 })
 
 describe("a heavy job's command goes through the guard's launcher", () => {
-  test("on a systemd host it runs niced in a user scope with MemoryMax=12G; a light one runs as is", () => {
-    expect(argvOf({ command: "bun test", heavy: true }, true)).toEqual([
+  test("on a systemd host it runs niced in the idle I/O class and a user scope with MemoryMax=12G; a light one runs as is", () => {
+    const linux = () => ({ scope: true, ionice: true })
+    expect(argvOf({ command: "bun test", heavy: true }, linux)).toEqual([
       "nice", "-n", "10",
+      "ionice", "-c3",
       "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
       "/bin/sh", "-c", "bun test",
     ])
-    expect(argvOf({ command: "bun test", heavy: false }, true)).toEqual(["/bin/sh", "-c", "bun test"])
+    expect(argvOf({ command: "bun test", heavy: false }, () => expect.unreachable("a light job asks no host"))).toEqual(["/bin/sh", "-c", "bun test"])
   })
 
   test("on the Mac it runs niced alone", () => {
-    expect(argvOf({ command: "bun test", heavy: true }, false)).toEqual(["nice", "-n", "10", "/bin/sh", "-c", "bun test"])
+    expect(argvOf({ command: "bun test", heavy: true }, () => ({ scope: false, ionice: false }))).toEqual(["nice", "-n", "10", "/bin/sh", "-c", "bun test"])
+    expect(hostOf("darwin")).toEqual({ scope: false, ionice: false })
   })
 
   test("a scope is available only on Linux, when the probe exits 0", () => {

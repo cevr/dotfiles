@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { spawnSync, write } from "bun"
 import { Effect, Option, Schema } from "effect"
 import { describeHealth, Health, healthOf } from "../health.ts"
+import { Placement } from "../placement.ts"
 import { Service } from "../service.ts"
 import type { Settings } from "../settings.ts"
 import * as ServiceLayer from "./service.ts"
@@ -11,6 +12,8 @@ interface Answers {
   readonly config: unknown
   readonly pool: unknown
   readonly integrations: ReadonlyArray<{ readonly id: string; readonly connections: ReadonlyArray<unknown> }>
+  /** The update plugin's `placement` answer; with none, that RPC fails, as a build from before it does. */
+  readonly placement?: unknown
 }
 
 const POOL = "/d/opencode/cmd/pool"
@@ -26,6 +29,7 @@ const launcherScript = (dir: string) =>
     `  /api/plugin) cat '${dir}/plugin.json' ;;`,
     `  /api/rpc/dotfiles-opencode.pool/status) cat '${dir}/pool.json' ;;`,
     `  /api/integration) cat '${dir}/integration.json' ;;`,
+    `  /api/rpc/dotfiles-opencode.update/placement) cat '${dir}/placement.json' ;;`,
     `  *) echo "unknown $3" >&2; exit 1 ;;`,
     "esac",
     "",
@@ -55,6 +59,7 @@ const lay = (dir: string, answers: Answers) =>
       ["integration.json", json({ location: { directory: dir }, data: answers.integrations.map((each) => ({ ...each, name: each.id, methods: [] })) })],
       ["opencode.json", json(answers.config)],
       ["opencode", launcherScript(dir)],
+      ...Option.toArray(Option.fromUndefinedOr(answers.placement)).map((placement) => ["placement.json", json({ output: placement })] as const),
     ] as const,
     ([name, text]) => Effect.promise(() => write(`${dir}/${name}`, text)),
     { discard: true },
@@ -121,6 +126,39 @@ describe("the service layer's reading of a host's logins (a fake launcher, the r
           expect(reading.logins).toEqual(["openai"])
           expect(reading.accounts).toEqual(Option.some(1))
           expect(healthOf(reading, [])).toEqual(Health.Unsigned({ providers: ["anthropic"] }))
+        }),
+      ),
+    ))
+})
+
+describe("the service layer's reading of where the service runs (the update plugin's placement RPC)", () => {
+  const host = { config: { model: "openai/sol-6", plugins: [POOL] }, pool: { openai: { accounts: [account] } }, integrations: [] }
+  const herdr = "/user.slice/user-1000.slice/user@1000.service/app.slice/herdr-bite.service"
+
+  test("in its own scope it is healthy", () =>
+    onHost(
+      { ...host, placement: Placement.cases.Placed.make({ unit: "opencode-service-4242.scope" }) },
+      read.pipe(
+        Effect.map((reading) => {
+          expect(reading.placement).toEqual(Option.some(Placement.cases.Placed.make({ unit: "opencode-service-4242.scope" })))
+          expect(healthOf(reading, [])).toEqual(Health.Healthy())
+        }),
+      ),
+    ))
+
+  test("outside its scope under a user manager it is sick for good", () =>
+    onHost(
+      { ...host, placement: Placement.cases.Unplaced.make({ cgroup: herdr, cause: "it was not placed" }) },
+      read.pipe(Effect.map((reading) => expect(healthOf(reading, [])).toEqual(Health.Sick({ plugin: "placement", cause: `the service runs outside its scope, in ${herdr}: it was not placed`, final: true })))),
+    ))
+
+  test("a service whose plugin does not answer (a build from before the placement) reads none, and is healthy", () =>
+    onHost(
+      host,
+      read.pipe(
+        Effect.map((reading) => {
+          expect(reading.placement).toEqual(Option.none())
+          expect(healthOf(reading, [])).toEqual(Health.Healthy())
         }),
       ),
     ))

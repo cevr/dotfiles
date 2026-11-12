@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import { describeHealth, final, Health, healthOf, recover, Recovery, type Listed, type Stage } from "./health.ts"
+import { Placement } from "./placement.ts"
 
 const POOL = "/d/opencode/cmd/pool"
 const GUARD = "/d/opencode/cmd/guard"
@@ -10,29 +11,29 @@ const builtin: Listed = { path: Option.none(), failed: Option.none() }
 
 describe("the health check after a restart", () => {
   test("is healthy when every configured plugin runs and the pool answers with accounts", () => {
-    expect(healthOf({ configured: [POOL, GUARD], listed: [builtin, running(POOL), running(GUARD)], accounts: Option.some(3), providers: [], logins: [] }, [])).toEqual(Health.Healthy())
+    expect(healthOf({ configured: [POOL, GUARD], listed: [builtin, running(POOL), running(GUARD)], accounts: Option.some(3), providers: [], logins: [], placement: Option.none<Placement>() }, [])).toEqual(Health.Healthy())
   })
 
   test("names a configured plugin that failed to load, with its error", () => {
     const failed: Listed = { path: Option.some(POOL), failed: Option.some("Cannot find package '@dotfiles/opencode-status'") }
-    expect(healthOf({ configured: [POOL, GUARD], listed: [failed, running(GUARD)], accounts: Option.none(), providers: [], logins: [] }, [])).toEqual(
+    expect(healthOf({ configured: [POOL, GUARD], listed: [failed, running(GUARD)], accounts: Option.none(), providers: [], logins: [], placement: Option.none<Placement>() }, [])).toEqual(
       Health.Sick({ plugin: "pool", cause: "Cannot find package '@dotfiles/opencode-status'", final: true }),
     )
   })
 
   test("names a configured plugin the service does not list", () => {
-    expect(healthOf({ configured: [POOL, GUARD], listed: [running(POOL)], accounts: Option.some(1), providers: [], logins: [] }, [])).toEqual(Health.Sick({ plugin: "guard", cause: "not loaded", final: false }))
+    expect(healthOf({ configured: [POOL, GUARD], listed: [running(POOL)], accounts: Option.some(1), providers: [], logins: [], placement: Option.none<Placement>() }, [])).toEqual(Health.Sick({ plugin: "guard", cause: "not loaded", final: false }))
   })
 
   test("is sick when the pool's status RPC does not answer, or answers with no accounts", () => {
-    expect(healthOf({ configured: [POOL], listed: [running(POOL)], accounts: Option.none(), providers: [], logins: [] }, [])).toEqual(Health.Sick({ plugin: "pool", cause: "the status RPC did not answer", final: false }))
-    expect(healthOf({ configured: [POOL], listed: [running(POOL)], accounts: Option.some(0), providers: [], logins: [] }, [])).toEqual(Health.Sick({ plugin: "pool", cause: "the status RPC answered with no accounts", final: false }))
+    expect(healthOf({ configured: [POOL], listed: [running(POOL)], accounts: Option.none(), providers: [], logins: [], placement: Option.none<Placement>() }, [])).toEqual(Health.Sick({ plugin: "pool", cause: "the status RPC did not answer", final: false }))
+    expect(healthOf({ configured: [POOL], listed: [running(POOL)], accounts: Option.some(0), providers: [], logins: [], placement: Option.none<Placement>() }, [])).toEqual(Health.Sick({ plugin: "pool", cause: "the status RPC answered with no accounts", final: false }))
   })
 })
 
 describe("the logins the configured models need, after a restart", () => {
   /** The workbox on 2026-11-12: every plugin runs, the pool lists OpenAI only, and the models are Anthropic's. */
-  const openaiOnly = { configured: [POOL], listed: [running(POOL)], accounts: Option.some(1), providers: ["anthropic", "openai"], logins: ["openai", "opencode-go"] }
+  const openaiOnly = { configured: [POOL], listed: [running(POOL)], accounts: Option.some(1), providers: ["anthropic", "openai"], logins: ["openai", "opencode-go"], placement: Option.none<Placement>() }
 
   test("a provider the configured models use that lost its login in the restart is sick, naming the provider, and reads again", () => {
     const health = healthOf(openaiOnly, ["anthropic", "openai"])
@@ -60,6 +61,27 @@ describe("the logins the configured models need, after a restart", () => {
   test("a plugin that failed to load is named before any login", () => {
     const failed: Listed = { path: Option.some(POOL), failed: Option.some("boom") }
     expect(healthOf({ ...openaiOnly, listed: [failed] }, ["anthropic"])).toEqual(Health.Sick({ plugin: "pool", cause: "boom", final: true }))
+  })
+})
+
+describe("where the restarted service runs", () => {
+  const ready = { configured: [POOL], listed: [running(POOL)], accounts: Option.some(1), providers: [], logins: [] }
+  const herdr = "/user.slice/user-1000.slice/user@1000.service/app.slice/herdr-bite.service"
+
+  test("in its own scope, or where no user systemd manages it, or with no answer (a build from before), it is healthy", () => {
+    for (const placement of [
+      Option.some(Placement.cases.Placed.make({ unit: "opencode-service-4242.scope" })),
+      Option.some(Placement.cases.Unmanaged.make({ reason: "darwin has no user systemd" })),
+      Option.none<Placement>(),
+    ])
+      expect(healthOf({ ...ready, placement }, [])).toEqual(Health.Healthy())
+  })
+
+  test("outside its scope under a user manager, it is sick for good, naming where it runs", () => {
+    const health = healthOf({ ...ready, placement: Option.some(Placement.cases.Unplaced.make({ cgroup: herdr, cause: "Access denied" })) }, [])
+    expect(health).toEqual(Health.Sick({ plugin: "placement", cause: `the service runs outside its scope, in ${herdr}: Access denied`, final: true }))
+    expect(final(health)).toBe(true)
+    expect(steps([health, health], true)).toEqual(["Reinstall", "RollBack"])
   })
 })
 

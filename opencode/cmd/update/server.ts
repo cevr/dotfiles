@@ -6,9 +6,12 @@ import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Source from "@dotfiles/opencode-update/git/source"
 import { GATE_POLL, Updater, updaterLayer } from "@dotfiles/opencode-update/model"
 import * as Sessions from "@dotfiles/opencode-update/opencode/sessions"
+import { describePlacement, Placement } from "@dotfiles/opencode-update/placement"
 import * as Builder from "@dotfiles/opencode-update/process/builder"
 import * as Handoff from "@dotfiles/opencode-update/process/handoff"
 import * as HandoffMark from "@dotfiles/opencode-update/process/mark"
+import * as ProcessPlacement from "@dotfiles/opencode-update/process/placement"
+import { Placer } from "@dotfiles/opencode-update/service"
 import { UPDATE } from "@dotfiles/opencode-update/rpc"
 import { every, files, Options, stepEnv } from "@dotfiles/opencode-update/settings"
 import { Config, Context, Effect, Layer, Schedule, Schema } from "effect"
@@ -42,12 +45,22 @@ export default Plugin.define({
     const options = yield* Schema.decodeUnknownEffect(Options)(ctx.options).pipe(
       Effect.catch((error) => Effect.die(new Error(`dotfiles-opencode.update: invalid options: ${error.message}`))),
     )
+    // In every location: a service a TUI started loads its plugins in the TUI's location alone.
+    const placer = Context.get(yield* Layer.build(ProcessPlacement.layer(ProcessPlacement.optionsOf(process.pid, process.platform))), Placer)
+    const placed = yield* placer.place
+    const log = Placement.match(placed, { Placed: () => Effect.logDebug, Unplaced: () => Effect.logWarning, Unmanaged: () => Effect.logDebug })
+    yield* log(`dotfiles-opencode.update: the service runs ${describePlacement(placed)}`)
     if (canonical(ctx.location.directory) !== canonical(options.resident)) return
     const path = yield* Config.String("PATH").pipe(Effect.orElseSucceed(() => ""))
     const services = yield* Layer.build(updaterLayer({ fetchEvery: every(options) }).pipe(Layer.provide(live(ctx, options, stepEnv(options, path)))))
     const updater = Context.get(services, Updater)
     const scope = yield* Effect.scope
-    yield* ctx.rpc.register(UPDATE, { check: () => Effect.forkIn(updater.check("asked"), scope).pipe(Effect.as({ started: true })) }).pipe(Effect.orDie)
+    yield* ctx.rpc
+      .register(UPDATE, {
+        check: () => Effect.forkIn(updater.check("asked"), scope).pipe(Effect.as({ started: true })),
+        placement: () => placer.observe,
+      })
+      .pipe(Effect.orDie)
     yield* Effect.forkScoped(updater.check("interval").pipe(Effect.delay(GATE_POLL), Effect.repeat(Schedule.spaced(every(options)))))
   }),
 })

@@ -394,10 +394,11 @@ describe("process Landing", () => {
     expect(load.load).toBeGreaterThanOrEqual(0)
   })
 
-  test("the gate and acceptance run always go through the guard's launcher: niced, and in a scope under MemoryMax=12G on systemd", () => {
-    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", false)).toEqual(["nice", "-n", "10", "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log"])
-    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", true)).toEqual([
+  test("the gate and acceptance run always go through the guard's launcher: niced, and in the idle I/O class and a scope under MemoryMax=12G on systemd", () => {
+    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: false, ionice: false })).toEqual(["nice", "-n", "10", "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log"])
+    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: true, ionice: true })).toEqual([
       "nice", "-n", "10",
+      "ionice", "-c3",
       "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
       "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log",
     ])

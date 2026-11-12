@@ -23,7 +23,7 @@ const install = (dir: string, name: string, script: string) => Effect.runPromise
 const niceOf = (argv: ReadonlyArray<string>) => Number(Bun.spawnSync([...argv], { stdout: "pipe" }).stdout.toString().trim())
 
 test("a launcher runs its shell with the command, at the lower priority", async () => {
-  const script = launcherScript({ shell: "/bin/sh", limits: { nice: 10, memoryMax: "12G", cpuWeight: 20 }, scope: false })
+  const script = launcherScript({ shell: "/bin/sh", limits: { nice: 10, memoryMax: "12G", cpuWeight: 20 }, scope: false, ionice: false })
   const path = await install(scratch, "sh", script)
   expect(path).toEndWith("/sh")
   expect(readFileSync(path, "utf8")).toBe(script)
