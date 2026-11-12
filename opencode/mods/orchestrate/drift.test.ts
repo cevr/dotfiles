@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { CLEAN, departureLines, type Drift, driftLine, driftOf, logLineOf, scoreOf, WEIGHTS } from "./drift.ts"
 import { lineOfEvent, lineOfRefusal, type Line } from "./ledger.ts"
-import { type Command, DEFAULT_CADENCE, type Event, HandBack, Land, Landed, machine, type MachineState, Start } from "./machine.ts"
+import { type Command, DEFAULT_CADENCE, type Event, HandBack, Land, Landed, machine, type MachineState, type Rule, Start } from "./machine.ts"
 
 const T = 1_800_000_000_000
 const MIN = 60_000
@@ -156,5 +156,56 @@ describe("stale ledger state", () => {
     expect(driftOf(DEFAULT_CADENCE, lines).counts).toEqual({ ...CLEAN.counts, departed: 1 })
     // While up still implements, the finding rides with it: the same departure broke nothing.
     expect(driftOf(DEFAULT_CADENCE, lines.filter((each) => !(each.kind === "UnitHandedBack" && each.unit === "up"))).counts).toEqual({ ...CLEAN.counts, stale: 1 })
+  })
+
+  type UpState = "implement" | "ready" | "ended"
+  const UP_STATES: ReadonlyArray<UpState> = ["implement", "ready", "ended"]
+  const UP_HANDS_BACK: Readonly<Record<UpState, ReadonlyArray<Line>>> = {
+    implement: [],
+    ready: [line(10 * MIN, "UnitHandedBack", { unit: "up", ready: true })],
+    ended: [line(10 * MIN, "UnitHandedBack", { unit: "up", ready: false })],
+  }
+  const refusedLand = line(11 * MIN, "Refused", { rule: "FindingUnfolded", message: "(scrubbed)", call: Land.make({ rifts: ["push"] }) })
+  const verifierBetween = line(12 * MIN, "VerifierStarted", { batch: "batch-n", units: ["other"] })
+  const story = (up: UpState, refused: boolean, between: boolean): ReadonlyArray<Line> => [
+    ...written.slice(0, 9),
+    line(8 * MIN, "VerifierStarted", { batch: "batch-m", units: [] }),
+    line(8 * MIN, "VerifierEnded", { batch: "batch-m", verdict: "changes", findings: ["up/M1"] }),
+    line(9 * MIN, "UnitStarted", { unit: "up", round: 1, direct: false }),
+    line(9 * MIN, "FindingFolded", { finding: "up/M1", into: "up" }),
+    line(9 * MIN, "UnitStarted", { unit: "push", round: 1, direct: false }),
+    line(9 * MIN, "UnitStarted", { unit: "other", round: 1, direct: false }),
+    line(10 * MIN, "UnitHandedBack", { unit: "push", ready: true }),
+    line(10 * MIN, "UnitHandedBack", { unit: "other", ready: true }),
+    ...UP_HANDS_BACK[up],
+    ...[refusedLand].filter(() => refused),
+    ...[verifierBetween].filter(() => between),
+    line(13 * MIN, "Departed", { rule: "FindingUnfolded", why: "up/M1 is folded into up" }),
+  ]
+  const staleRules = (lines: ReadonlyArray<Line>) => driftOf(DEFAULT_CADENCE, lines).departures.map((departure) => departure.stale)
+
+  test("a departure from FindingUnfolded with no refused call, every finding folded into a ready unit, is stale: the land takes that unit", () => {
+    expect(staleRules(story("ready", false, false))).toEqual([["FindingUnfolded"]])
+    expect(driftOf(DEFAULT_CADENCE, story("ready", false, false)).counts).toEqual({ ...CLEAN.counts, stale: 1 })
+  })
+
+  test("a refused call before a verifier start is not the call a later departure answers: that departure is decided by its rule alone", () => {
+    expect(staleRules(story("ready", true, false))).toEqual([[]])
+    expect(staleRules(story("ready", true, true))).toEqual([["FindingUnfolded"]])
+    expect(driftOf(DEFAULT_CADENCE, story("ready", true, true)).counts).toEqual({ ...CLEAN.counts, refused: 1, stale: 1 })
+  })
+
+  test("property: over the folded unit's state, a refused call or none, and a verifier start between or none, the departure's kind is the reference's", () => {
+    const heldByTheCall: Readonly<Record<UpState, boolean>> = { implement: false, ready: true, ended: true }
+    const heldAlone: Readonly<Record<UpState, boolean>> = { implement: false, ready: false, ended: true }
+    const cases = UP_STATES.flatMap((up) => [false, true].flatMap((refused) => [false, true].map((between) => ({ up, refused, between }))))
+    const judged = cases.map(({ up, refused, between }) => {
+      const answered = refused && !between
+      const held = (answered && heldByTheCall[up]) || (!answered && heldAlone[up])
+      const stale: ReadonlyArray<Rule> = ["FindingUnfolded"]
+      return { up, refused, between, expected: [stale.filter(() => !held)], got: staleRules(story(up, refused, between)) }
+    })
+    expect(cases).toHaveLength(12)
+    expect(judged.map(({ up, refused, between, got }) => ({ up, refused, between, got }))).toEqual(judged.map(({ up, refused, between, expected }) => ({ up, refused, between, got: expected })))
   })
 })

@@ -13,11 +13,15 @@ import {
   compare,
   type Counts,
   DEBT_CONFIG,
+  EXEMPTABLE,
   HARD_CONFIG,
+  type Inputs,
   LINT_MANIFEST,
   parseOptions,
   POLICY,
   Policy,
+  policyProblems,
+  readInstalled,
   serialize,
   spawn,
   SUPPRESSION,
@@ -192,6 +196,90 @@ describe("the plugin never moves the runtime's effect", () => {
   })
 })
 
+/** The real workspace's policy, configs and installed versions: inputs with no problem. */
+const realInputs = readInstalled(REAL).pipe(Effect.map((installed): Inputs => ({ policy: realPolicy, ...installed })))
+
+const FILE_KINDS = {
+  exact: ["mods/demo/model.ts", "scripts/demo.ts", "tests/demo.test.ts", "lint/demo.ts"],
+  glob: ["mods/demo/*.ts", "scripts/**", "tests/demo.{ts,tsx}", "lint/demo?.ts", "!scripts/demo.ts", "lint/[ab].ts"],
+} as const
+const RULE_KINDS = { exemptable: EXEMPTABLE, style: Arr.filter(RULES, (rule) => !EXEMPTABLE.includes(rule)) } as const
+const REASONS = ["", "   ", "a bridge with no Effect platform layer"]
+/** Which side of the fence lists the exemption: the enforcing config's override, the policy's entry, or both. */
+const SIDES = [
+  { override: true, exemption: true },
+  { override: true, exemption: false },
+  { override: false, exemption: true },
+] as const
+
+/** One generated exemption: the kinds its file and rule are drawn from, its reason and the sides that list it. */
+interface FenceCase {
+  readonly seed: number
+  readonly fileKind: keyof typeof FILE_KINDS
+  readonly ruleKind: keyof typeof RULE_KINDS
+  readonly reason: string
+  readonly override: boolean
+  readonly exemption: boolean
+}
+
+const FENCE_CASES: ReadonlyArray<FenceCase> = Arr.flatMap(Arr.range(1, 40), (seed) =>
+  Arr.flatMap(["exact", "glob"] as const, (fileKind) =>
+    Arr.flatMap(["exemptable", "style"] as const, (ruleKind) => Arr.flatMap(REASONS, (reason) => Arr.map(SIDES, (side) => ({ seed, fileKind, ruleKind, reason, ...side })))),
+  ),
+)
+
+const when = (holds: boolean, line: string) => Arr.filter([line], () => holds)
+
+/** The oracle, from the contract alone: the problems a case must raise; only an exact file, an exemptable rule, a reason and both sides raise none. */
+const fenceOracle = (fence: FenceCase, file: string, rule: string) => [
+  ...when(fence.override && fence.fileKind === "glob", `${DEBT_CONFIG} exempts a glob, ${file}; exemptions name exact files`),
+  ...when(fence.override && fence.fileKind === "exact" && fence.ruleKind === "style", `${DEBT_CONFIG} exempts ${rule} in ${file}; only ${EXEMPTABLE.join(", ")} can be exempted`),
+  ...when(fence.exemption && fence.reason.trim().length === 0, `the exemption of ${rule} in ${file} has no reason`),
+  ...when(!(fence.override && fence.exemption), `${DEBT_CONFIG}'s overrides (`),
+]
+
+const checkFence = (real: Inputs, fence: FenceCase) => {
+  const random = generator(fence.seed)
+  const file = random.pick(FILE_KINDS[fence.fileKind])
+  const rule = random.pick(RULE_KINDS[fence.ruleKind])
+  const overrides = Arr.filter([{ files: [file], rules: { [rule]: "off" as const } }], () => fence.override)
+  const exemptions = Arr.filter([{ file, rule, reason: fence.reason }], () => fence.exemption)
+  const problems = policyProblems({ ...real, debt: { ...real.debt, overrides }, policy: { ...realPolicy, exemptions } }).join("\n")
+  const expected = fenceOracle(fence, file, rule)
+  expect({ fence, file, rule, refused: problems.length > 0, missing: Arr.filter(expected, (line) => !problems.includes(line)) }).toEqual({
+    fence,
+    file,
+    rule,
+    refused: expected.length > 0,
+    missing: [],
+  })
+}
+
+describe("the exemption fence: only an exact file, an exemptable rule, a reason and a matching policy entry switch a rule off", () => {
+  test("every generated (file kind, rule kind, reason, sides) but the allowed one is refused with its reason", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        expect(policyProblems(real)).toEqual([])
+        Arr.forEach(FENCE_CASES, (fence) => checkFence(real, fence))
+      }),
+    ))
+
+  test("the enforcing config's rules and the policy's follow the installed preset exactly", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        const rule = "effect/noTryCatch"
+        expect(real.debt.rules[rule]).toBe("error")
+        const loosened = { ...real.debt.rules, [rule]: ["error", { max: 1 }] as const }
+        expect(policyProblems({ ...real, debt: { ...real.debt, rules: loosened } })).toEqual([`${DEBT_CONFIG} sets ${rule} differently from the preset`])
+        const fewer = Object.fromEntries(Arr.filter(Object.entries(real.debt.rules), ([each]) => each !== rule))
+        expect(policyProblems({ ...real, debt: { ...real.debt, rules: fewer } })).toContain(`${DEBT_CONFIG}'s rules differ from the installed preset's`)
+        expect(policyProblems({ ...real, policy: { ...realPolicy, rules: Arr.filter(RULES, (each) => each !== rule) } })).toContain(`the policy's rules differ from the installed preset's`)
+      }),
+    ))
+})
+
 /** A temporary directory of its own, outside the repo, removed when the scope closes. */
 const scratch = Effect.acquireRelease(
   Effect.sync(() => mkdtempSync(path.join(tmpdir(), "effect-debt-"))),
@@ -213,6 +301,12 @@ const DEBT_SOURCE = [
   "}",
   "",
 ].join("\n")
+
+/** A source whose one finding is effect/noTryCatch, so switching that rule off hides all its debt. */
+const TRY_ONLY_SOURCE = ["export const size = (text: string) => {", "  try {", "    return text.length", "  } catch {", "    return 0", "  }", "}", ""].join("\n")
+
+const JsonObject = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown))
+const DebtOverrides = Schema.fromJsonString(Schema.StructWithRest(Schema.Struct({ overrides: Schema.Array(Schema.Unknown) }), [Schema.Record(Schema.String, Schema.Unknown)]))
 
 /** One source with debt in each path class the policy covers. */
 const SOURCES = Arr.map(["mods/demo/model.ts", "cmd/demo/server.ts", "decider/demo.ts", "scripts/demo.ts", "tests/demo.test.ts", "scenarios/demo.ts", "lint/demo.ts", "testbeds/demo/run.ts", "root.ts"], (file) => [file, DEBT_SOURCE] as const)
@@ -409,6 +503,63 @@ describe("effect-debt --check over a real workspace", () => {
       put(root, "mods/demo/broken.ts", "export const broken = (\n")
       return []
     }, "mods/demo/broken.ts: ", "(a parse or config error)"),
+    TEST_TIMEOUT,
+  )
+
+  test.concurrent(
+    "fails when an override and a policy exemption switch a style rule off for a new file's debt",
+    () =>
+      failsAfter(
+        (root, budgets) => {
+          put(root, "mods/demo/added.ts", TRY_ONLY_SOURCE)
+          const debt = Schema.decodeUnknownSync(DebtOverrides)(readReal(DEBT_CONFIG))
+          const overrides = [...debt.overrides, { files: ["mods/demo/added.ts"], rules: { "effect/noTryCatch": "off" } }]
+          put(root, DEBT_CONFIG, Schema.encodeSync(JsonObject)({ ...debt, overrides }))
+          const exemption = { file: "mods/demo/added.ts", rule: "effect/noTryCatch", reason: "a style rule is never a bridge" }
+          writePolicy(root, budgets, { exemptions: [...realPolicy.exemptions, exemption] })
+          return []
+        },
+        `${DEBT_CONFIG} exempts effect/noTryCatch in mods/demo/added.ts; only ${EXEMPTABLE.join(", ")} can be exempted`,
+      ),
+    TEST_TIMEOUT,
+  )
+
+  test.concurrent(
+    "fails on a workspace with no source files, never an empty pass",
+    () =>
+      runScoped(
+        Effect.gen(function* () {
+          const root = yield* scratch
+          symlinkSync(path.join(REAL, "node_modules"), path.join(root, "node_modules"))
+          put(root, "package.json", readReal("package.json"))
+          put(root, LINT_MANIFEST, readReal(LINT_MANIFEST))
+          symlinkSync(path.join(REAL, "lint/node_modules"), path.join(root, "lint/node_modules"))
+          put(root, HARD_CONFIG, hardConfigText())
+          const { overrides: _overrides, ...debt } = Schema.decodeUnknownSync(JsonObject)(readReal(DEBT_CONFIG))
+          put(root, DEBT_CONFIG, Schema.encodeSync(JsonObject)(debt))
+          writePolicy(root, {}, { exemptions: [] })
+          yield* git(root, "init", "-q")
+          const checked = yield* cli(root, "--check")
+          expect({ code: checked.code, empty: checked.stderr.includes(`no source files under ${root}`) }).toEqual({ code: 1, empty: true })
+        }),
+      ),
+    TEST_TIMEOUT,
+  )
+
+  test.concurrent(
+    "fails on a diagnostic for a file outside the source list, even one the policy budgets",
+    () =>
+      failsAfter((root, budgets) => {
+        writePolicy(root, { ...budgets, "elsewhere/outside.ts": { "effect/noTryCatch": 1 } })
+        const body = [
+          `const real = Bun.spawnSync(["${path.join(REAL, "node_modules/.bin/oxlint")}", ...process.argv.slice(2)], { stdout: "pipe", stderr: "inherit" })`,
+          "const report = JSON.parse(real.stdout.toString())",
+          'report.diagnostics.push({ code: "effect(noTryCatch)", message: "planted", filename: "elsewhere/outside.ts", severity: "error" })',
+          "process.stdout.write(JSON.stringify(report))",
+          "process.exit(real.exitCode)",
+        ].join("\n")
+        return ["--oxlint", fakeLinter(root, body)]
+      }, "elsewhere/outside.ts: a diagnostic for a file outside the source list"),
     TEST_TIMEOUT,
   )
 

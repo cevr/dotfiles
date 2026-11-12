@@ -1239,6 +1239,29 @@ describe("the planner's first model", () => {
       }),
     ))
 
+  test("a Sabbath planner latch rechecked while the Sabbath still holds latches again on Fable: no pace asked, never moved to Opus", () =>
+    scenario(
+      Effect.gen(function* () {
+        const friday = yield* start({ ...options, now: FRIDAY_EVENING }, { model, variants: ["medium"], others: [fable, sol] })
+        yield* friday.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        const latch = { kind: "latch", id: "w000001", directory: "/work", setAt: now, ...friday.kept[0]!, child: "ses_latched1" }
+        const asked: Array<unknown> = []
+        const codexAsked: Array<string> = []
+        const still = yield* start(
+          { ...options, now: FRIDAY_EVENING },
+          { model, variants: ["medium"], others: [fable, sol], poolAsk: fablePool(1, asked), codex: (id) => (codexAsked.push(id), room()) },
+        )
+        expect(yield* still.open(latch)).toMatchObject({ outcome: "held", hold: "sabbath" })
+        expect(still.ran).toEqual([])
+        const relatched = line(still.logged())
+        expect(relatched).toMatchObject({ kind: "latched", agent: "planner", model: "anthropic/claude-fable#medium", hold: "sabbath" })
+        expect(relatched.first).toBeUndefined()
+        expect(relatched.fallback).toBeUndefined()
+        expect(asked).toEqual([])
+        expect(codexAsked).toEqual([])
+      }),
+    ))
+
   test("a host that does not offer the first model starts the planner on Opus, saying so", () =>
     scenario(
       Effect.gen(function* () {
