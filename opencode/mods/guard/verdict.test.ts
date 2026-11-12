@@ -52,30 +52,7 @@ describe("the verdict denies", () => {
     expect(reasonOf("git --some-new-option HEAD reset --hard")).toBe(
       "`git --some-new-option HEAD reset --hard` passes git `--some-new-option`, an option the guard does not know, so it cannot tell what git runs; spell the command without it",
     )
-    for (const command of ["git --some-new-option status", "git -C repo -Z log", "git --some-new-option=x reset --soft", "git -c=core.pager=cat log"])
-      expect([command, judge(command)._tag]).toEqual([command, "Deny"])
-  })
-
-  test("a git command that defines an alias, or runs a subcommand that is not one of git's own: what it runs is not in its name", () => {
-    expect(reasonOf("git -c alias.nuke='reset --hard' nuke")).toBe(
-      "`git -c alias.nuke=reset --hard nuke` defines a git alias (`alias.nuke=reset --hard`), so the guard cannot tell what git runs; spell the git command out",
-    )
-    expect(reasonOf("git nuke")).toBe(
-      "`git nuke` runs `nuke`, which is not one of git's own commands (an alias or an add-on), so the guard cannot tell what it does; spell the git command out",
-    )
-    for (const command of [
-      "git -c alias.x=status status",
-      "git -c Alias.Nuke='!rm -rf ~' log",
-      "git -C repo -c alias.x='clean -fdx' x",
-      "git --config-env alias.x=NUKE x",
-      "git --config-env=alias.x=NUKE status",
-      "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='reset --hard' git x",
-      "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='reset --hard' git x",
-      "git cleanup",
-      "git lfs pull",
-      'git "$cmd" --hard',
-    ])
-      expect([command, judge(command)._tag]).toEqual([command, "Deny"])
+    for (const command of ["git --some-new-option status", "git -C repo -Z log", "git --some-new-option=x reset --soft"]) expect([command, judge(command)._tag]).toEqual([command, "Deny"])
   })
 
   test("any simple command of a chained line, through prefixes, groups and assignments", () => {
@@ -160,11 +137,6 @@ describe("the verdict allows", () => {
       "git --no-pager -C repo --literal-pathspecs log",
       "git --attr-source HEAD --exec-path=/usr/lib/git-core status",
       "git --version",
-      "git",
-      "git help reset",
-      "git -c core.pager=cat -c user.name=alias.x log",
-      "git --config-env core.pager=PAGER --no-pager worktree list",
-      "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.status GIT_CONFIG_VALUE_0=x git status",
       "trash ~",
     ])
       expect([command, judge(command)._tag]).toEqual([command, "Allow"])

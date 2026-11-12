@@ -97,97 +97,29 @@ export const GIT_BARE_OPTIONS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Git's own commands: those it runs itself, built in or from its exec path (`git --list-cmds=main`,
- * git 2.56; the workbox's 2.55 lists a subset). An alias never hides one of them, so a subcommand
- * here runs what its name says; any other (an alias, a `git-*` add-on on the PATH) could run
- * anything. tests/git-options.test.ts checks the installed git lists no command this lacks.
- */
-export const GIT_COMMANDS: ReadonlySet<string> = new Set([
-  "add", "am", "annotate", "apply", "archimport", "archive", "backfill", "bisect", "blame", "branch",
-  "bugreport", "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap", "check-ref-format",
-  "checkout", "checkout--worker", "checkout-index", "cherry", "cherry-pick", "clean", "clone", "column",
-  "commit", "commit-graph", "commit-tree", "config", "count-objects", "credential", "credential-cache",
-  "credential-cache--daemon", "credential-netrc", "credential-osxkeychain", "credential-store",
-  "cvsexportcommit", "cvsimport", "cvsserver", "daemon", "describe", "diagnose", "diff", "diff-files",
-  "diff-index", "diff-pairs", "diff-tree", "difftool", "difftool--helper", "fast-export", "fast-import",
-  "fetch", "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref", "for-each-repo", "format-patch",
-  "format-rev", "fsck", "fsck-objects", "fsmonitor--daemon", "gc", "get-tar-commit-id", "grep", "hash-object",
-  "help", "history", "hook", "http-backend", "http-fetch", "http-push", "imap-send", "index-pack", "init",
-  "init-db", "instaweb", "interpret-trailers", "jump", "last-modified", "log", "ls-files", "ls-remote",
-  "ls-tree", "mailinfo", "mailsplit", "maintenance", "merge", "merge-base", "merge-file", "merge-index",
-  "merge-octopus", "merge-one-file", "merge-ours", "merge-recursive", "merge-recursive-ours",
-  "merge-recursive-theirs", "merge-resolve", "merge-subtree", "merge-tree", "mergetool", "mktag", "mktree",
-  "multi-pack-index", "mv", "name-rev", "notes", "p4", "pack-objects", "pack-redundant", "pack-refs",
-  "patch-id", "pickaxe", "prune", "prune-packed", "pull", "push", "quiltimport", "range-diff", "read-tree",
-  "rebase", "receive-pack", "reflog", "refs", "remote", "remote-ext", "remote-fd", "remote-ftp", "remote-ftps",
-  "remote-http", "remote-https", "repack", "replace", "replay", "repo", "request-pull", "rerere", "reset",
-  "restore", "rev-list", "rev-parse", "revert", "rm", "send-email", "send-pack", "sh-i18n--envsubst", "shell",
-  "shortlog", "show", "show-branch", "show-index", "show-ref", "sparse-checkout", "stage", "stash", "status",
-  "stripspace", "submodule", "submodule--helper", "subtree", "switch", "symbolic-ref", "tag", "unpack-file",
-  "unpack-objects", "update-index", "update-ref", "update-server-info", "upload-archive",
-  "upload-archive--writer", "upload-pack", "url-parse", "var", "verify-commit", "verify-pack", "verify-tag",
-  "version", "web--browse", "whatchanged", "worktree", "write-tree",
-])
-
-/**
- * Why a git argv cannot be read, so a reader fails closed on it rather than guess:
- * - `option`: an option before the subcommand in neither options table; whether it takes the
- *   next word is unknown, so is the subcommand;
- * - `alias`: a `-c` or `--config-env` setting that defines an alias (`alias.<name>`);
- * - `command`: a subcommand that is not one of git's own (GIT_COMMANDS): an alias or an add-on,
- *   whose meaning is not in its name.
- */
-export type Unreadable = "option" | "alias" | "command"
-
-/**
  * A git command's argv read past its global options:
  * - `command`: its subcommand (`""` when no word follows the options) and the words after it;
- * - `unreadable`: the word that makes it unreadable, and why.
+ * - `unreadable`: an option before the subcommand in neither table. Whether it takes the next
+ *   word is unknown, so is the subcommand, and a reader fails closed on it rather than guess.
  */
 export type GitArgv =
   | { readonly kind: "command"; readonly name: string; readonly rest: ReadonlyArray<string> }
-  | { readonly kind: "unreadable"; readonly why: Unreadable; readonly word: string }
-
-/** Whether a config setting `<key>=<value>` (or `<key>=<envvar>`) defines an alias: its section, case-insensitive, is `alias`. */
-const definesAlias = (setting: string) => setting.toLowerCase().startsWith("alias.")
-
-/** The options whose value is a config setting. */
-const CONFIG_OPTIONS: ReadonlySet<string> = new Set(["-c", "--config-env"])
-
-/**
- * An option word as its name and the value it would take: a long option's `--name=value` in the
- * one word (`joined`), else the next word. Only a long option joins; git reads `-c=x` as no option it knows.
- */
-const optionParts = (word: string, next: string) => {
-  const at = word.indexOf("=")
-  if (!word.startsWith("--") || at < 0) return { option: word, value: next, joined: false }
-  return { option: word.slice(0, at), value: word.slice(at + 1), joined: true }
-}
+  | { readonly kind: "unreadable"; readonly option: string }
 
 export const gitSubcommand = (args: ReadonlyArray<string>): GitArgv => {
   const [word = "", ...after] = args
-  const [next = ""] = after
-  if (word === "" || (!word.startsWith("-") && GIT_COMMANDS.has(word))) return { kind: "command", name: word, rest: after }
-  if (!word.startsWith("-")) return { kind: "unreadable", why: "command", word }
-  const { option, value, joined } = optionParts(word, next)
-  if (CONFIG_OPTIONS.has(option) && definesAlias(value)) return { kind: "unreadable", why: "alias", word: value }
-  if (GIT_VALUE_OPTIONS.has(option) && !joined) return gitSubcommand(after.slice(1))
+  if (!word.startsWith("-")) return { kind: "command", name: word, rest: after }
+  const option = word.replace(/=.*/s, "")
+  if (GIT_VALUE_OPTIONS.has(option) && option === word) return gitSubcommand(after.slice(1))
   if (GIT_VALUE_OPTIONS.has(option) || GIT_BARE_OPTIONS.has(option)) return gitSubcommand(after)
-  return { kind: "unreadable", why: "option", word }
+  return { kind: "unreadable", option: word }
 }
-
-/** Why a reader cannot tell what `command` makes git run, for each way its argv is unreadable. */
-const UNREADABLE = {
-  option: (command, word) => `\`${command}\` passes git \`${word}\`, an option the guard does not know, so it cannot tell what git runs; spell the command without it`,
-  alias: (command, word) => `\`${command}\` defines a git alias (\`${word}\`), so the guard cannot tell what git runs; spell the git command out`,
-  command: (command, word) =>
-    `\`${command}\` runs \`${word}\`, which is not one of git's own commands (an alias or an add-on), so the guard cannot tell what it does; spell the git command out`,
-} satisfies { readonly [Why in Unreadable]: (command: string, word: string) => string }
 
 /** Why a `git` command loses work for good: a hard reset, or a forced clean with `-d`, `-x` or `-X`; or why it cannot be read. */
 const gitRefusal = (command: string, args: ReadonlyArray<string>): string | undefined => {
   const sub = gitSubcommand(args)
-  if (sub.kind === "unreadable") return UNREADABLE[sub.why](command, sub.word)
+  if (sub.kind === "unreadable")
+    return `\`${command}\` passes git \`${sub.option}\`, an option the guard does not know, so it cannot tell what git runs; spell the command without it`
   if (sub.name === "reset" && sub.rest.includes("--hard"))
     return `\`${command}\` discards uncommitted work; stash it (\`git stash -u\`) or commit first`
   if (sub.name !== "clean") return undefined

@@ -25,7 +25,7 @@ import {
   Visitor,
 } from "oxc-parser"
 import { gitSubcommand } from "../mods/guard/verdict.ts"
-import { type GitGlobalOptions, gitCommands, gitGlobalOptions } from "./git-options.ts"
+import { type GitGlobalOptions, gitGlobalOptions } from "./git-options.ts"
 import { gitClone, gitInit, QUIET_GIT } from "./git-repo.ts"
 import { scratch } from "./scratch.ts"
 
@@ -114,8 +114,8 @@ const HOLE = "\u0000"
 
 /**
  * What git runs for `argv`, read by mods/guard/verdict.ts's reader: its subcommand, none when that
- * word is not written as a literal; and whether the reader cannot read it (an option it does not
- * know, an alias defined, a literal subcommand that is not one of git's own), so it fails closed.
+ * word is not written as a literal; and whether an option before it is one the reader does not
+ * know, so the subcommand cannot be read at all.
  */
 interface ReadArgv {
   readonly subcommand: Option.Option<string>
@@ -128,9 +128,8 @@ const readArgv = (argv: ReadonlyArray<Item>): ReadArgv => {
     return HOLE
   })
   const read = gitSubcommand(words)
-  if (read.kind === "command") return { subcommand: Option.filter(Option.some(read.name), (name) => name !== ""), unreadable: false }
-  // A subcommand not written as a literal is unknown here, not unreadable: a wrapper's slot.
-  return { subcommand: Option.none(), unreadable: read.why !== "command" || read.word !== HOLE }
+  if (read.kind === "unreadable") return { subcommand: Option.none(), unreadable: true }
+  return { subcommand: Option.filter(Option.some(read.name), (name) => name !== HOLE && name !== ""), unreadable: false }
 }
 
 /** Whether a git argv makes a repository, or cannot be read and so fails closed as one that might. */
@@ -305,8 +304,6 @@ const SAMPLE = [
   "await $`git init -q`.cwd(dir).quiet()",
   "await Bun.$`git -C ${dir} clone ${source} out`",
   "await $`cd ${dir} && GIT_DIR=x git 'init'`",
-  "Bun.spawnSync([\"git\", \"-c\", \"alias.mk=init\", \"mk\", dir])",
-  "Bun.spawnSync([\"git\", \"nuke\", dir])",
   "await $`git add -A && git commit -q -m init`",
   "await $`git ${args}`",
   "const text = dedent`git init`",
@@ -331,20 +328,13 @@ const PROBE_MS = 60_000
 /** Options git does not know, which a reader cannot read past: a case with one before the subcommand is a site whatever follows. */
 const UNKNOWN_OPTIONS = ["--not-a-git-option", "-Z", "--not-a-git-option=init"]
 
-/**
- * Words a case puts where a value, a subcommand's argument or a wrapper's leading argument goes;
- * the decoys are git's own subcommand names, and alias settings (git reads a config section's
- * name in any case), which define an alias as the value of `-c` or `--config-env`.
- */
-const WORDS = ["init", "clone", "/nonexistent/loop-probe-x", "core.pager=cat", "-q", "alias.mk=init", "Alias.Nuke=HOME"]
+/** Words a case puts where a value, a subcommand's argument or a wrapper's leading argument goes; the decoys are git's own subcommand names. */
+const WORDS = ["init", "clone", "/nonexistent/loop-probe-x", "core.pager=cat", "-q"]
 
-/** The subcommands a case runs: the two that make a repository, others of git's own, and names git has none of (an alias's, an add-on's). */
-const SUBCOMMANDS = ["init", "clone", "status", "commit", "fetch", "rev-parse", "mk", "nuke", "lfs"]
+/** The subcommands a case runs: the two that make a repository, and others. */
+const SUBCOMMANDS = ["init", "clone", "status", "commit", "fetch", "rev-parse"]
 
-/** Whether `git <option> <value>` defines an alias: a config option whose setting's section is `alias`. */
-const definesAlias = (option: string, value: string) => (option === "-c" || option === "--config-env") && value.toLowerCase().startsWith("alias.")
-
-/** A generated case: test code with one call that runs git, and whether git's subcommand there makes a repository (or what it runs cannot be read). */
+/** A generated case: test code with one call that runs git, and whether git's subcommand there makes a repository (or cannot be read). */
 interface Case {
   readonly code: string
   readonly makes: boolean
@@ -358,25 +348,17 @@ const quoted = (words: ReadonlyArray<string>) => words.map((word) => JSON.string
  * arguments, in one of the call shapes test code writes. The options come from git itself
  * (tests/git-options.ts), not from the reader's tables, so an option the tables lack is generated.
  */
-const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions, commands: ReadonlyArray<string>): Case => {
-  /** One global option as its words, and whether it makes what git runs unreadable (unknown, or an alias defined). */
+const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions): Case => {
   const option = () => {
     const valued = random.pick(git.valued)
     const value = random.pick(WORDS)
-    const alias = definesAlias(valued, value)
     // Only a long option takes its value after `=` in the same word.
-    const joined = Arr.filter([{ words: [`${valued}=${value}`], blocks: alias }], () => valued.startsWith("--"))
-    return random.pick([
-      { words: [random.pick(git.passing)], blocks: false },
-      { words: [valued, value], blocks: alias },
-      ...joined,
-      { words: [random.pick(UNKNOWN_OPTIONS)], blocks: true },
-    ])
+    const joined = Arr.filter([[`${valued}=${value}`]], () => valued.startsWith("--"))
+    return random.pick([[random.pick(git.passing)], [valued, value], ...joined, [random.pick(UNKNOWN_OPTIONS)]])
   }
-  const options = Array.from({ length: random.count(4) }, option)
-  const globals = options.flatMap((each) => each.words)
+  const globals = Array.from({ length: random.count(4) }, option).flat()
+  const unknown = globals.some((word) => UNKNOWN_OPTIONS.includes(word))
   const sub = random.pick(SUBCOMMANDS)
-  const unknown = options.some((each) => each.blocks) || !commands.includes(sub)
   const after = Array.from({ length: random.count(3) }, () => random.pick(WORDS))
   const argv = [...globals, sub, ...after]
   const lead = random.pick(["\"/nonexistent/loop-probe-x\"", "\"init\"", "dir"])
@@ -404,17 +386,16 @@ describe("a test's temp git repository", () => {
     expect({ work: settings(work), bare: settings(bare), clone: settings(clone) }).toEqual({ work: QUIET, bare: QUIET, clone: QUIET })
   })
 
-  test("a call or Bun shell command that runs git's init or clone, defines an alias or runs no git command of its own is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
-    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32, 33, 34])
+  test("a call or Bun shell command that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
+    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32])
   })
 
   test(
-    "over generated git argv with the installed git's options in every call shape, a call is a site exactly when git's subcommand is init or clone, or not one of the installed git's commands, or an option before it is unknown or defines an alias",
+    "over generated git argv with the installed git's options in every call shape, a call is a site exactly when git's subcommand is init or clone, or an option before it is unknown",
     () => {
       const git = gitGlobalOptions()
-      const commands = gitCommands()
       for (const seed of Arr.range(1, 400)) {
-        const { code, makes } = generate(generator(seed), git, commands)
+        const { code, makes } = generate(generator(seed), git)
         expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
       }
     },

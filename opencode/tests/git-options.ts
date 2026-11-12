@@ -50,12 +50,6 @@ export const manualOptions = (text: string): ReadonlyArray<string> => {
   return Arr.dedupe(names)
 }
 
-/** The installed git's own commands, built in or from its exec path, as git lists them (`git --list-cmds=main`). */
-export const gitCommands = (): ReadonlyArray<string> =>
-  execFileSync("git", ["--list-cmds=main"], { encoding: "utf8" })
-    .split("\n")
-    .filter((line) => line !== "")
-
 /** Values tried for an option that may take one; each is one a valued global option accepts in a repository. */
 const VALUES = [".", "core.probe=1", "core.probe=HOME", "HEAD"]
 
