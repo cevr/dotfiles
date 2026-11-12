@@ -65,6 +65,14 @@
     },
     {
       "files": [
+        "tests/**"
+      ],
+      "rules": {
+        "dotfiles/kept-suite-folders": "error"
+      }
+    },
+    {
+      "files": [
         "decider/*.ts"
       ],
       "rules": {
