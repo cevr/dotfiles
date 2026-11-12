@@ -27,10 +27,11 @@ export const skill = (state: MemorySkill) =>
       }))),
   })
 
-/** Each run dir's seen version and its departure lines. */
+/** Each run dir's seen version and its departure lines, and each line logged near a path, in order. */
 export interface MemoryRecords {
   readonly seen: Map<string, string>
   readonly departures?: Readonly<Record<string, ReadonlyArray<string>>>
+  readonly logged?: Array<{ readonly near: string; readonly line: string }>
 }
 
 export const records = (state: MemoryRecords) =>
@@ -38,4 +39,5 @@ export const records = (state: MemoryRecords) =>
     seen: (runDir) => Effect.sync(() => state.seen.get(runDir)),
     see: (runDir, version) => Effect.sync(() => void state.seen.set(runDir, version)),
     departures: (runDir) => Effect.sync(() => state.departures?.[runDir] ?? []),
+    log: ({ near, line }) => Effect.sync(() => void state.logged?.push({ near, line })),
   })

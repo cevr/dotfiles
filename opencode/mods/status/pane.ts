@@ -6,7 +6,7 @@
 // on the owner, a claim under way, the claims made. The pane reads the pool's RPC
 // (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
 import { Schema } from "effect"
-import type { AgentCall, Unit } from "./status.ts"
+import type { AgentCall, Run, Unit } from "./status.ts"
 
 /**
  * One pool account, as much of the pool's status answer as the pane draws.
@@ -331,6 +331,12 @@ export const agentRows = (running: ReadonlyArray<RunningSession>, calls: Readonl
     const call = calls.find((item) => item.child === session.id)
     return { id: session.id, role: session.agent ?? call?.agent ?? "agent", description: call?.description ?? session.title ?? session.id }
   })
+
+/**
+ * A run's row: its name, and its drift from the batch machine when a verdict recorded one
+ * (`web · drift 35 after batch-n accepted (…): 1 unfolded land ×6`; 0 is a clean run).
+ */
+export const runLine = (run: Pick<Run, "name" | "drift">) => (run.drift === undefined ? run.name : `${run.name} · drift ${run.drift}`)
 
 /** A unit's line under its run. */
 export const unitLine = (unit: Unit) => `  ${unit.unit} · ${unit.state} · r${unit.round || "?"} · ${unit.since}`
