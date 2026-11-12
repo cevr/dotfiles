@@ -15,7 +15,8 @@ const SCOPED = `${MANAGER}/app.slice/${scopeName(PID)}`
 const calls = {
   move: (dir: string) => ["/bin/sh", "-c", `echo call >>'${dir}/calls'; printf '0::%s\\n' '${SCOPED}' >'${dir}/cgroup'`],
   // As the user manager does: it answers once the start is queued, and moves the process just after.
-  moveLater: (dir: string) => ["/bin/sh", "-c", `echo call >>'${dir}/calls'; (sleep 0.3; printf '0::%s\\n' '${SCOPED}' >'${dir}/cgroup') &`],
+  // The move is detached from the stand-in's stdio, so its answer ends before the move lands.
+  moveLater: (dir: string) => ["/bin/sh", "-c", `echo call >>'${dir}/calls'; (sleep 0.3; printf '0::%s\\n' '${SCOPED}' >'${dir}/cgroup') >/dev/null 2>&1 &`],
   refuse: (dir: string) => ["/bin/sh", "-c", `echo call >>'${dir}/calls'; echo 'Access denied' >&2; exit 1`],
 }
 
