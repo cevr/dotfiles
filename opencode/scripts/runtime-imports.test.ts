@@ -54,14 +54,24 @@ const reachOf = (seed: string) => {
   return reached
 }
 
-const LINT_TOOL = [/\/scripts\/effect-debt(-merge)?\.ts$/, /(^|\/)oxlint/]
-const NATIVE_PARSER = [/(^|\/)oxc-parser([@/]|$)/]
+/**
+ * The patterns match a target as the repo names it: a workspace file by its path from the root, a
+ * package by its specifier. The checkout's own directory (a Rift named `oxlint-x`) never counts.
+ */
+const LINT_TOOL = [/^scripts\/effect-debt(-merge)?\.ts$/, /^(@[^/]+\/)?oxlint/]
+const NATIVE_PARSER = [/^(@[^/]+\/)?oxc-parser([@/]|$)/]
+
+/** Whether `target`, reached from the checkout at `root`, is one of `forbidden`. */
+const forbiddenAt = (root: string, target: string, forbidden: ReadonlyArray<RegExp>) => {
+  const name = path.isAbsolute(target) ? path.relative(root, target) : target
+  return forbidden.some((pattern) => pattern.test(name))
+}
 
 /** Each module of `forbidden` that `seed` reaches, named with its importer. */
 const breaches = (seed: string, forbidden: ReadonlyArray<RegExp>) =>
   reachOf(seed)
     .entries()
-    .filter(([target]) => forbidden.some((pattern) => pattern.test(target)))
+    .filter(([target]) => forbiddenAt(ROOT, target, forbidden))
     .map(([target, importer]) => `${seed} reaches ${path.relative(ROOT, target)} through ${importer}`)
     .toArray()
 
@@ -71,6 +81,20 @@ const SCENARIOS = sources("scenarios/*.ts")
 const PLUGINS = [...sources("mods/**/*.{ts,tsx}"), ...sources("cmd/**/*.{ts,tsx}")]
 
 describe("runtime imports", () => {
+  test("a checkout in a directory named oxlint-* is not the lint tool", () => {
+    const root = "/Users/x/Developer/personal/.rifts/dotfiles/oxlint-x/opencode"
+    const lintTool = (target: string) => forbiddenAt(root, target, LINT_TOOL)
+    expect(lintTool(`${root}/mods/web/search.ts`)).toBe(false)
+    expect(lintTool(`${root}/scripts/daily.ts`)).toBe(false)
+    expect(lintTool(`${root}/scripts/effect-debt.ts`)).toBe(true)
+    expect(lintTool(`${root}/scripts/effect-debt-merge.ts`)).toBe(true)
+    expect(lintTool("oxlint")).toBe(true)
+    expect(lintTool("oxlint-plugin-effect/rules")).toBe(true)
+    expect(lintTool("effect")).toBe(false)
+    expect(forbiddenAt(root, "oxc-parser", NATIVE_PARSER)).toBe(true)
+    expect(forbiddenAt(root, `${root}/mods/oxc-parser-notes.ts`, NATIVE_PARSER)).toBe(false)
+  })
+
   test("no scenario, and not bun run daily, reaches the lint tool or oxc-parser", () => {
     expect(SCENARIOS.length).toBeGreaterThan(0)
     expect([...SCENARIOS, "scripts/daily.ts"].flatMap((seed) => breaches(seed, [...LINT_TOOL, ...NATIVE_PARSER]))).toEqual([])
