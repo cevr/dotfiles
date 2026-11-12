@@ -45,6 +45,14 @@ export const SUPPRESSION = "directive/suppression"
 /** Rules a host contract may switch off for one exact file; anything else stays budgeted. */
 export const EXEMPTABLE = ["effect/noGlobals", "effect/noNodeBuiltinImport", "effect/noAsyncFunction", "effect/noEffectRunInTests"]
 
+/**
+ * Rules only a named host bridge may switch off, each for its exact files alone: tests/scratch.ts
+ * is the one bridge to bun's suite lifecycle, since a suite's end reaches nothing but `afterAll`.
+ */
+export const HOST_BRIDGES: ReadonlyArray<{ readonly rule: string; readonly files: ReadonlyArray<string> }> = [
+  { rule: "effect/noTestLifecycleHooks", files: ["tests/scratch.ts"] },
+]
+
 const SOURCE = /\.(?:[cm]?[jt]sx?)$/u
 const DIRECTIVE = /^\s*(?:oxlint|eslint)-disable/u
 const GLOB = /[*?[\]{}!]/u
@@ -407,6 +415,11 @@ export const overridePairs = (overrides: ReadonlyArray<typeof Override.Type>) =>
   )
   const problems = Arr.flatMap(found, ({ file, rule }) => {
     if (GLOB.test(file)) return [`${DEBT_CONFIG} exempts a glob, ${file}; exemptions name exact files`]
+    const bridge = Arr.findFirst(HOST_BRIDGES, (each) => each.rule === rule)
+    if (Option.isSome(bridge)) {
+      if (bridge.value.files.includes(file)) return []
+      return [`${DEBT_CONFIG} exempts ${rule} in ${file}; only its host bridge ${bridge.value.files.join(", ")} can be exempted from it`]
+    }
     if (!EXEMPTABLE.includes(rule)) return [`${DEBT_CONFIG} exempts ${rule} in ${file}; only ${EXEMPTABLE.join(", ")} can be exempted`]
     return []
   })

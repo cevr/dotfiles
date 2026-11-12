@@ -15,6 +15,7 @@ import {
   DEBT_CONFIG,
   EXEMPTABLE,
   HARD_CONFIG,
+  HOST_BRIDGES,
   type Inputs,
   LINT_MANIFEST,
   parseOptions,
@@ -203,7 +204,8 @@ const FILE_KINDS = {
   exact: ["mods/demo/model.ts", "scripts/demo.ts", "tests/demo.test.ts", "lint/demo.ts"],
   glob: ["mods/demo/*.ts", "scripts/**", "tests/demo.{ts,tsx}", "lint/demo?.ts", "!scripts/demo.ts", "lint/[ab].ts"],
 } as const
-const RULE_KINDS = { exemptable: EXEMPTABLE, style: Arr.filter(RULES, (rule) => !EXEMPTABLE.includes(rule)) } as const
+const BRIDGED = Arr.map(HOST_BRIDGES, ({ rule }) => rule)
+const RULE_KINDS = { exemptable: EXEMPTABLE, style: Arr.filter(RULES, (rule) => !EXEMPTABLE.includes(rule) && !BRIDGED.includes(rule)) } as const
 const REASONS = ["", "   ", "a bridge with no Effect platform layer"]
 /** Which side of the fence lists the exemption: the enforcing config's override, the policy's entry, or both. */
 const SIDES = [
@@ -262,6 +264,37 @@ describe("the exemption fence: only an exact file, an exemptable rule, a reason 
         const real = yield* realInputs
         expect(policyProblems(real)).toEqual([])
         Arr.forEach(FENCE_CASES, (fence) => checkFence(real, fence))
+      }),
+    ))
+
+  test("a host-bridge rule is switched off only for its named exact file, with a reason, and refused for any second file", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        const rule = "effect/noTestLifecycleHooks"
+        const bridge = "tests/scratch.ts"
+        expect(HOST_BRIDGES).toEqual([{ rule, files: [bridge] }])
+        const problems = (entries: ReadonlyArray<{ readonly file: string; readonly reason: string }>) =>
+          policyProblems({
+            ...real,
+            debt: { ...real.debt, overrides: Arr.map(entries, ({ file }) => ({ files: [file], rules: { [rule]: "off" as const } })) },
+            policy: { ...realPolicy, exemptions: Arr.map(entries, ({ file, reason }) => ({ file, rule, reason })) },
+          })
+        const reason = "the one bridge to bun's suite lifecycle"
+        const refusedFor = (file: string) => `${DEBT_CONFIG} exempts ${rule} in ${file}; only its host bridge ${bridge} can be exempted from it`
+        expect({
+          bridge: problems([{ file: bridge, reason }]),
+          noReason: problems([{ file: bridge, reason: " " }]),
+          second: problems([{ file: bridge, reason }, { file: "tests/demo.test.ts", reason }]),
+          other: problems([{ file: "tests/scratch.test.ts", reason }]),
+          glob: problems([{ file: "tests/scratch.*", reason }]),
+        }).toEqual({
+          bridge: [],
+          noReason: [`the exemption of ${rule} in ${bridge} has no reason`],
+          second: [refusedFor("tests/demo.test.ts")],
+          other: [refusedFor("tests/scratch.test.ts")],
+          glob: [`${DEBT_CONFIG} exempts a glob, tests/scratch.*; exemptions name exact files`],
+        })
       }),
     ))
 
