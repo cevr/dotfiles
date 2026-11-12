@@ -3,11 +3,11 @@ import { Clock, Duration, Effect, Fiber, Layer, Option } from "effect"
 import { TestClock } from "effect/testing"
 import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
-import { EXIT_CODES, GATE_POLL, handoff, intervalChecks, Updater, updaterLayer } from "./model.ts"
+import { EXIT_CODES, GATE_POLL, handoff, HEALTH_DEADLINE, HEALTH_POLL, intervalChecks, Updater, updaterLayer } from "./model.ts"
 import { type Build, proven, type Record, stagedRecord } from "./record.ts"
 import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
-import type { Rejected, Running } from "./update.ts"
+import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
 
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
@@ -213,7 +213,7 @@ const check = (reason: string) =>
 const handOff = Effect.gen(function* () {
   const fiber = yield* Effect.forkChild(handoff("batch-7"))
   yield* settle
-  yield* TestClock.adjust("10 minutes")
+  yield* TestClock.adjust(HANDOFF_LIMIT)
   return yield* Fiber.join(fiber)
 })
 
@@ -227,7 +227,7 @@ const failedPool: Reading = { ...healthy, listed: [{ path: Option.some(POOL), fa
 const noAnthropic: Reading = { ...healthy, accounts: Option.some(1), logins: ["openai", "opencode-go"] }
 const LOST = "login: no anthropic login after the restart, which had one before it: the pool lists no anthropic account and no credential is stored"
 /** Readings enough to outlast the health deadline. */
-const throughDeadline = (reading: Reading) => Array.from({ length: 61 }, () => reading)
+const throughDeadline = (reading: Reading) => Array.from({ length: Duration.toMillis(HEALTH_DEADLINE) / Duration.toMillis(HEALTH_POLL) + 1 }, () => reading)
 const POOL_FAILED = "pool: Cannot find package '@dotfiles/opencode-status'"
 
 const notices = (host: World) => host.calls.filter((call) => call.startsWith("notice "))
@@ -495,6 +495,9 @@ describe("the handoff on its seams", () => {
         expect(yield* handOff).toBe("gave-up")
         expect(notices(host)).toEqual([`notice ${POOL_FAILED}; rollback at install the dependencies: install the dependencies exited 1`])
         expect(Option.map(host.rejected, (rejected) => [rejected.dotfiles, rejected.step])).toEqual(Option.some([TARGET.dotfiles, "health"]))
+        // Nothing claims the rollback: the record still names the target's build installed, as the checkout (moved back by the failed advance) holds it.
+        expect(Option.map(host.record, (record) => [record.version, record.dotfiles])).toEqual(Option.some([NEW.version, NEW.dotfiles]))
+        expect(host.lines.some((line) => line.includes("rolled-back"))).toBe(false)
       }),
     )
   })

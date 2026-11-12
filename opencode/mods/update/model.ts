@@ -9,8 +9,12 @@ import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts
 /** How often a held restart reads the sessions again. */
 export const GATE_POLL = Duration.seconds(30)
 
-/** How long the handoff reads a restarted service before it believes a plugin is missing. */
-export const HEALTH_DEADLINE = Duration.minutes(2)
+/**
+ * How long the handoff reads a restarted service before it believes a plugin is missing. A loaded
+ * host (load 20 to 30 on the workbox) boots a location's plugins in half a minute or more, and each
+ * read waits for them; four minutes keeps three restarts' reads inside `HANDOFF_LIMIT`.
+ */
+export const HEALTH_DEADLINE = Duration.minutes(4)
 
 /** How often it reads it meanwhile. */
 export const HEALTH_POLL = Duration.seconds(2)

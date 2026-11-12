@@ -12,9 +12,9 @@ import { argv } from "bun"
 import { Config, Effect, Layer } from "effect"
 
 /** Every implementation the handoff runs on. */
-export const live = (settings: Settings, env: Readonly<globalThis.Record<string, string>>) =>
+export const live = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string) =>
   Layer.mergeAll(
-    Service.layer(settings, env),
+    Service.layer(settings, env, registration),
     Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env }),
     Records.layer(settings.record),
     Rejections.layer(files(settings).rejected),
@@ -37,7 +37,9 @@ export const Live = Layer.unwrap(
   Effect.gen(function* () {
     const settings = yield* Config.schema(SettingsJson, HANDOFF_SETTINGS)
     const path = yield* Config.String("PATH").pipe(Config.withDefault(""))
-    return live(settings, stepEnv(settings, path))
+    const state = yield* Config.String("XDG_STATE_HOME").pipe(Config.option)
+    const home = yield* Config.String("HOME").pipe(Config.withDefault(""))
+    return live(settings, stepEnv(settings, path), Service.registrationFile(state, home))
   }),
 )
 

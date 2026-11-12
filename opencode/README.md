@@ -124,7 +124,8 @@ only the resident location's copy acts, so a host runs one updater.
   the resident location, the pool's status answering accounts, which
   spends nothing, and a login, a pool account or a stored credential, for
   each provider the configured models use: the default model, each agent's
-  and the planner's; on Linux, the service in its own scope, below). A provider that had a login before the restart and
+  and the planner's; on Linux, the service in its own scope, below; how it
+  reads, below). A provider that had a login before the restart and
   has none after it fails like a plugin; one that had none before either
   is reported (`no anthropic login: sign in with opencode auth login`, in
   the log and the notice), never rolled back, since a rollback cannot bring
@@ -133,8 +134,23 @@ only the resident location's copy acts, so a host runs one updater.
   rolls back to the last good build and dotfiles commit in `installed.json`
   and restarts on it. A step of the rollback that fails gives up. It ends
   proven (exit 0, the build recorded good), rolled back (exit 2) or given up
-  (exit 1); either failure shows the owner's notice and rejects the target.
+  (exit 1); either failure shows the owner's notice and rejects the target,
+  that target alone: a newer one, by either commit, installs as usual.
   TUIs follow by themselves.
+- **How the health check reads.** It reads the registered service over HTTP
+  (`~/.local/state/opencode/service.json`), never through `opencode api`:
+  that client's `Service.ensure` stops a service that misses three 2 s
+  probes, and on a loaded host the check's own reads killed the service it
+  waited for, every minute (workbox, 2026-11-12). Each read first boots the
+  resident location (`GET /api/location`) and waits for its plugins
+  (`GET /api/model` answers 503 until they are active), so a list read
+  mid-activation is "still activating", never a plugin "not loaded". It
+  reads again until a final answer or four minutes.
+- **Moving back.** Where the checkout moves by reset (the workbox), a move
+  also deletes each file the commit it leaves tracks and the commit it goes
+  to does not, as a fast-forward's `reset --keep` does: a workspace package
+  a newer commit added would otherwise stay, and the older commit's frozen
+  install would fail on it.
 - **The service's own scope.** On Linux the background service
   (`opencode serve --service`) asks the user manager, as the plugin loads,
   to move it into a transient `opencode-service-<pid>.scope` in `app.slice`
