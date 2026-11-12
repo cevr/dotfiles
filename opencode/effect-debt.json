@@ -539,7 +539,7 @@
     "mods/pool/laws.ts": {"effect/noComments":10,"effect/noEffectRunInTests":6,"effect/noInlineProvide":8,"effect/noLocaleCompare":1},
     "mods/pool/lease.test.ts": {"effect/noComments":12,"effect/noNullish":2,"effect/noTernary":3,"effect/preferTaggedConstructors":8},
     "mods/pool/lease.ts": {"effect/noComments":45,"effect/noGlobals":1,"effect/noNullish":21,"effect/noTernary":7,"effect/preferSchemaTaggedUnion":1,"effect/preferTaggedConstructors":3},
-    "mods/pool/limits.test.ts": {"effect/maxCognitiveComplexity":1,"effect/noComments":21,"effect/noConditionalEmptyObjectSpread":2,"effect/noGlobals":2,"effect/noNullish":1,"effect/noTernary":6},
+    "mods/pool/limits.test.ts": {"effect/maxCognitiveComplexity":1,"effect/noComments":21,"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":2,"effect/noNullish":1,"effect/noTernary":5},
     "mods/pool/limits.ts": {"complexity":1,"effect/maxCognitiveComplexity":4,"effect/noArrayFilterMap":1,"effect/noComments":40,"effect/noConditionalEmptyObjectSpread":10,"effect/noGlobals":1,"effect/noKnownValueWidening":9,"effect/noLocaleCompare":3,"effect/noNullish":65,"effect/noTernary":47},
     "mods/pool/memory/fleet-claims.test.ts": {"effect/noComments":27,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":2,"effect/noFixedWaitInTests":1,"effect/noGlobals":23,"effect/noKnownValueWidening":1,"effect/noNewPromise":1,"effect/noNullish":7,"effect/noReflectApply":1,"effect/noReflectGet":1,"effect/noRuntimeTypeof":1,"effect/noTernary":6,"effect/preferServiceOf":1},
     "mods/pool/memory/fleet.ts": {"effect/noComments":3},
