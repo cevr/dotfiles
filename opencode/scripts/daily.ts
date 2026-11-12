@@ -23,17 +23,13 @@
 // 4. Writes how far upstream/dev is past the build, and whether its merge is blocked, to
 //    `~/.local/state/opencode-daily/upstream.json` for the TUI's corner (`upstreamReading`), then
 //    restarts the background service so it loads the server plugins.
-// 5. Writes what the host now runs (`~/.local/state/opencode-fleet/installed.json`: the checkout,
-//    its commit, the fork commit, the version), so `bun run fleet-install` (scripts/fleet.ts), which
-//    runs this on each host, skips a host already on its target.
 import { $ } from "bun"
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
-import { stampFile, writeStamp } from "./fleet.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 
@@ -97,11 +93,38 @@ export const launcher = (binary: string, resident: string): string => {
  * for this location whenever it starts or restarts the service.
  */
 export const residentDir = (home: string): string => join(home, ".local/state/opencode-prime/resident")
+
+/**
+ * OpenCode's record of the installed build, `<XDG state>/opencode/installed.json` (the fork's
+ * `@opencode/util/installed-build`). An open TUI moves onto the installed build only from a build listed in `previous`,
+ * and a client of such a build starts the background service on the installed build, never its own: builds of one
+ * release carry no order among themselves, so this list is what says which are older. `previous` keeps the last
+ * record's builds and every build still installed beside this one (`opencode-<version>` in `share`).
+ */
+export const installedRecord = (
+  last: Json,
+  version: string,
+  binary: string,
+  installed: ReadonlyArray<string>,
+): { version: string; command: [string]; previous: string[] } => {
+  const earlier = [
+    ...(Array.isArray(last.previous) ? last.previous.filter((item): item is string => typeof item === "string") : []),
+    ...(typeof last.version === "string" ? [last.version] : []),
+    // A copy a crash left staged (`opencode-<version>.<pid>`) adds a name no build reports: harmless.
+    ...installed.flatMap((name) => /^opencode-(\d+\.\d+\.\d+.*)$/.exec(name)?.[1] ?? []),
+  ]
+  return { version, command: [binary], previous: [...new Set(earlier)].filter((item) => item !== version).slice(-200) }
+}
+
+export const installedFile = (home: string, env: Record<string, string | undefined> = process.env): string =>
+  join(env.XDG_STATE_HOME || join(home, ".local/state"), "opencode/installed.json")
 export const residentConfig: Json = { experimental: { location_idle_timeout: false } }
 
 /**
  * Each role's model: the newest Opus, the verifier too (the skill's Models rule). Codex is the
- * fallback the orchestrate mod moves a held start to; no role is bound to it.
+ * fallback the orchestrate mod moves a held start to; no role is bound to it. The planner goes
+ * on the newest Fable first (`plannerModel`, the orchestrate entry's `planner`): its Opus here is
+ * the second step of its chain, and what it runs on without the orchestrate mod.
  */
 export const roleModels = (catalog: Catalog): Record<string, string> => {
   const newest = (provider: string, family: string) => {
@@ -147,44 +170,31 @@ export const poolEntry = (pool: string, gent: string | undefined, fleet?: { read
   package: pool,
   options: {
     cacheLifeMs: CLAUDE_CACHE_LIFE_MS,
-    // No unasked reset claims until the fleet spend-authority redesign is verified; offers and a yes still work.
-    resets: { auto: false },
     ...(gent === undefined ? {} : { sources: [{ kind: "gent", dir: gent }] }),
     ...(fleet === undefined ? {} : { paced: { openai: "openai" }, fleet: { host: fleet.host, peers: peersOf(fleet.host) } }),
   },
 })
 
-/** The model experiment orchestrate runs (mods/orchestrate/experiment.ts): a share of one role's units on another model. */
-export interface Experiment {
-  readonly role: string
-  readonly model: string
-  readonly share: number
-}
-
 /**
- * The planner on the newest Fable for half the units, Opus for the rest: an A/B the model eval
- * (`models.ts --experiment`) compares (the owner's call, 2026-11-10, until 2026-11-16; Opus also
- * when the pool holds Fable).
- * None when the catalog has no Fable release.
+ * The planner's first model: the newest Fable release (the owner's call, 2026-11-12: "Fable is
+ * our planner"). Orchestrate starts every new planner on it at the planner's effort, and on the
+ * role's own model (Opus), then Codex, when the pool holds it. None when the catalog has no
+ * Fable release: the planner then runs on Opus like every role.
  */
-export const plannerExperiment = (catalog: Catalog): Experiment | undefined => {
+export const plannerModel = (catalog: Catalog): string | undefined => {
   const fable = newestRelease(catalog, "anthropic", "claude-fable")
-  return fable === undefined ? undefined : { role: "planner", model: `anthropic/${fable}`, share: 0.5 }
+  return fable === undefined ? undefined : `anthropic/${fable}`
 }
 
 /**
  * Orchestrate's plugin entry: a Codex provider's new agents take the pool's pace first, which
  * paces OpenAI on the ChatGPT account (`poolEntry`'s `paced`); the admission script answers only
- * when the pool has no measure of it. With `experiment`, the model experiment runs. With `install`
- * (on the owner's hosts), an accepted batch verdict asks for a fleet install through that script.
+ * when the pool has no measure of it. With `planner`, the planner's first model.
  */
-export const orchestrateEntry = (orchestrate: string, experiment?: Experiment, install?: string): PluginEntry => ({
+export const orchestrateEntry = (orchestrate: string, planner?: string): PluginEntry => ({
   package: orchestrate,
-  options: { codex: { pool: true }, ...(experiment === undefined ? {} : { experiment }), ...(install === undefined ? {} : { install: { script: install } }) },
+  options: { codex: { pool: true }, ...(planner === undefined ? {} : { planner: { model: planner } }) },
 })
-
-/** The fleet install's command (scripts/fleet-install.ts), for orchestrate on the owner's hosts; none elsewhere. */
-export const installScript = (host: string): string | undefined => (peersOf(host).length === 0 ? undefined : resolve(import.meta.dir, "fleet-install.ts"))
 
 /**
  * Mail's plugin entry: on one of the owner's hosts (`FLEET`) whose Tailscale address is known,
@@ -344,6 +354,11 @@ if (import.meta.main) {
   copyFileSync(built, staged)
   chmodSync(staged, 0o755)
   renameSync(staged, binary)
+  // Before the service restart below: the TUIs that see it restart read this record to know they may follow.
+  const record = installedFile(home)
+  mkdirSync(dirname(record), { recursive: true })
+  writeFileSync(`${record}.${process.pid}`, `${JSON.stringify(installedRecord(readJson(record), version, binary, readdirSync(share)), null, 2)}\n`)
+  renameSync(`${record}.${process.pid}`, record)
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })
@@ -354,11 +369,11 @@ if (import.meta.main) {
   const gent = gentAuthDir()
   const pool = pluginDir("pool")
   const catalog = await loadCatalog(fork)
-  const experiment = plannerExperiment(catalog)
+  const planner = plannerModel(catalog)
   const server: PluginEntry[] = [
     auth,
     poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
-    orchestrateEntry(pluginDir("orchestrate"), experiment, installScript(hostname())),
+    orchestrateEntry(pluginDir("orchestrate"), planner),
     pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
@@ -395,18 +410,9 @@ if (import.meta.main) {
   console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
   const restart = await $`${link} service restart`.nothrow().quiet()
-  // What this host now runs, for `bun run fleet-install`, which skips a host already on its target (scripts/fleet.ts).
-  const checkout = resolve(import.meta.dir, "../..")
-  writeStamp(stampFile(home), {
-    checkout,
-    dotfiles: (await $`git -C ${checkout} rev-parse HEAD`.text()).trim(),
-    fork: (await $`git -C ${fork} rev-parse HEAD`.text()).trim(),
-    version,
-    at: new Date().toISOString(),
-  })
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
-  console.log(experiment === undefined ? "experiment: none (no Fable in the catalog)" : `experiment: ${experiment.role} ${experiment.model} on ${experiment.share * 100}% of units`)
+  console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
   console.log(restart.exitCode === 0 ? "background service restarted" : `service restart exited ${restart.exitCode}: ${restart.stderr.toString().trim()}`)
 }

@@ -47,11 +47,25 @@ function isCredentialSource(entry: unknown): entry is CredentialSource {
   return isRecord(entry) && typeof entry.owns === "function" && typeof entry.resolve === "function"
 }
 
-/** The source that owns `credentialID` among the integration's registered sources. */
-export function credentialSource(integrationID: string, credentialID: string): CredentialSource | undefined {
-  const registry: unknown = Reflect.get(globalThis, CREDENTIAL_SOURCES)
-  if (!(registry instanceof Map)) return undefined
-  const sources: unknown = registry.get(integrationID)
+/** The registry as the plugins share it: each integration's id to its set of sources. */
+export type Registry = ReadonlyMap<unknown, unknown>
+
+/** Where a lookup reads the registry, at the time of the lookup. */
+export type RegistryRead = () => Registry
+
+/** The process's registry, at `globalThis[CREDENTIAL_SOURCES]`, where every plugin registers; an empty one until a plugin makes it. */
+export const processRegistry: RegistryRead = () => {
+  const found: unknown = Reflect.get(globalThis, CREDENTIAL_SOURCES)
+  if (found instanceof Map) return found
+  return new Map()
+}
+
+/**
+ * The source that owns `credentialID` among the integration's registered
+ * sources, in the process's registry unless a caller (a test) reads its own.
+ */
+export function credentialSource(integrationID: string, credentialID: string, read: RegistryRead = processRegistry): CredentialSource | undefined {
+  const sources: unknown = read().get(integrationID)
   if (!(sources instanceof Set)) return undefined
   for (const entry of sources) {
     if (isCredentialSource(entry) && entry.owns(credentialID)) return entry
@@ -96,12 +110,12 @@ export function readSource(source: CredentialSource, credentialID: string): Sour
   }
 }
 
-/** The sources registered for `integrationID` in this process's registry. */
-export const layer = (integrationID: string) =>
+/** The sources registered for `integrationID` in this process's registry, or in the one `read` gives. */
+export const layer = (integrationID: string, read: RegistryRead = processRegistry) =>
   Layer.succeed(CredentialSources, {
     find: (credentialID) =>
       Effect.sync(() => {
-        const source = credentialSource(integrationID, credentialID)
+        const source = credentialSource(integrationID, credentialID, read)
         return source === undefined ? undefined : readSource(source, credentialID)
       }),
   })

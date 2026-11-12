@@ -15,7 +15,10 @@ import { limitsModel, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 
 const WEEK = 7 * 86400000
-const TARGET = 0.99
+/** The share of a week the spend-evenly line reaches by its reset; a weekly window used this much has no room. */
+export const TARGET = 0.99
+/** A 5-hour window used this much has no room for a new start. */
+export const SHORT_5H = 0.9
 const LEEWAY = 0.05
 
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
@@ -127,7 +130,7 @@ export function poolPace(
   })
   const short = available.flatMap((a) => {
     const resets = (a.reading?.windows ?? []).flatMap((w) =>
-      w.resetAt !== undefined && w.resetAt > now && ((w.name === "5h" && w.utilization >= 0.9) || (w.name === "7d" && w.utilization >= TARGET))
+      w.resetAt !== undefined && w.resetAt > now && ((w.name === "5h" && w.utilization >= SHORT_5H) || (w.name === "7d" && w.utilization >= TARGET))
         ? [w.resetAt]
         : [],
     )

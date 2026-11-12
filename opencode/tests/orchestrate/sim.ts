@@ -31,12 +31,6 @@ export const UNITS_TASK = "units"
 export const HAND_BACK = "handback:"
 /** A root turn that makes one given call: `probe:` and `{ name, input }` as JSON. */
 export const PROBE = "probe:"
-/** A root task that calls one foreground subagent on `HANG_TASK`, then closes. */
-export const RESTART_TASK = "restart-root"
-/** The same, for the root the user interrupts. */
-export const ESCAPE_TASK = "escape-root"
-/** A subagent task whose first request hangs until the sim is released: the turn a shutdown cuts. */
-export const HANG_TASK = "task-hang"
 
 /**
  * The root's task in a machine run: three implementors, then (after the
@@ -50,17 +44,20 @@ export const MACHINE_TASK = "machine-run"
 export const MACHINE_SUMMARY = "## Objective\n- machine-run summary: three implementors handed back ready"
 /** The input tokens the reply that starts the third implementor reports: past the root's window, so it compacts. */
 export const MACHINE_FULL = 500_000
+/** The machine run root's last words, once its batch's verifier has handed back. */
+export const MACHINE_DONE = "root: batch-1 landed and verified"
 
 /** What the machine run's root was last told, newest first, and what it does next. */
 const MACHINE_SCRIPT: ReadonlyArray<readonly [string, Reply]> = [
-  ["verifier batch-1 r1: accepted", { kind: "text", text: "root: batch-1 landed and verified" }],
+  ["verifier batch-1 r1: accepted", { kind: "text", text: MACHINE_DONE }],
   [
     "Landed 3 Rift(s)",
     { kind: "tool", name: "subagent", input: { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: accepted /run/batch-1-findings.md` } },
   ],
   ["Land every ready unit at once when the cadence fires", { kind: "tool", name: "rift", input: { action: "land", rifts: ["alpha", "beta", "gamma"] } }],
   ["One verifier per batch, fresh", { kind: "tool", name: "rift", input: { action: "land", rifts: ["alpha"] } }],
-  [MACHINE_SUMMARY, { kind: "tool", name: "subagent", input: { agent: "verifier", description: "verifier alpha r1", prompt: `${HAND_BACK} verifier alpha r1: accepted /run/alpha/round-1-findings.md` } }],
+  // Compacted while gamma still runs in the background: the root waits for its report.
+  [MACHINE_SUMMARY, { kind: "text", text: "root: waiting for gamma" }],
   ["implementor gamma r1: ready", { kind: "tool", name: "subagent", input: { agent: "verifier", description: "verifier alpha r1", prompt: `${HAND_BACK} verifier alpha r1: accepted /run/alpha/round-1-findings.md` } }],
   ...(["gamma", "beta"] as const).map((unit, index): readonly [string, Reply] => [
     `implementor ${index === 0 ? "beta" : "alpha"} r1: ready`,
@@ -83,8 +80,16 @@ export const machineStep = (messages: ReadonlyArray<ChatMessage>): readonly [str
 export const isMachineRoot = (seen: Pick<Seen, "system" | "messages">): boolean =>
   !seen.system.includes("You name conversations") && seen.messages.some((message) => text(message.content).includes(MACHINE_TASK))
 
-/** The input tokens a machine run's request reports: full on the request that starts the third implementor. */
-export const machineTokens = (_task: string, messages: ReadonlyArray<ChatMessage>): number => messages.some((message) => text(message.content).includes(MACHINE_TASK)) && machineStep(messages)?.[0] === "implementor beta r1: ready" ? MACHINE_FULL : 100
+/** What the subagent call answers as the child starts in the background. */
+const BACKGROUND = "The subagent is working in the background"
+
+/** The input tokens a machine run's request reports: full on the request that starts the third implementor, until the root has compacted. */
+export const machineTokens = (_task: string, messages: ReadonlyArray<ChatMessage>): number =>
+  messages.some((message) => text(message.content).includes(MACHINE_TASK)) &&
+  !messages.some((message) => text(message.content).includes(MACHINE_SUMMARY)) &&
+  machineStep(messages)?.[0] === "implementor beta r1: ready"
+    ? MACHINE_FULL
+    : 100
 
 export interface ChatMessage {
   readonly role: string
@@ -157,8 +162,17 @@ export const reply = (request: ChatRequest): Reply => {
       }
     return { kind: "text", text: "root: the implementor handed back" }
   }
-  if (task.startsWith(HAND_BACK)) return { kind: "text", text: `${task.slice(HAND_BACK.length).trim()}\nThe gate is green.` }
-  if (isMachineRoot({ system, messages })) return machineStep(messages)?.[1] ?? { kind: "text", text: "root: lost the machine script" }
+  // A hand-back line anywhere in the task: a verifier's prompt ends with the findings the plugin appends after it.
+  const handBack = text(messages.find((message) => message.role === "user")?.content)
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith(HAND_BACK))
+  if (handBack !== undefined && !task.startsWith(UNITS_TASK)) return { kind: "text", text: `${handBack.slice(HAND_BACK.length).trim()}\nThe gate is green.` }
+  if (isMachineRoot({ system, messages })) {
+    // OpenCode runs every subagent in the background: the root ends its turn and waits for the child's report.
+    if (messages.at(-1)?.role === "tool" && last.includes(BACKGROUND)) return { kind: "text", text: "root: waiting for the subagent" }
+    return machineStep(messages)?.[1] ?? { kind: "text", text: "root: lost the machine script" }
+  }
   if (task === ROOT_TASK && offersSubagent) {
     if (results === 0)
       return { kind: "tool", name: "subagent", input: { description: "Untyped task", prompt: UNTYPED_TASK } }
@@ -169,10 +183,6 @@ export const reply = (request: ChatRequest): Reply => {
         input: { agent: "orchestrate-reviewer", description: "Review task", prompt: REVIEW_TASK },
       }
     return { kind: "text", text: "root: both subagents answered" }
-  }
-  if ((task === RESTART_TASK || task === ESCAPE_TASK) && offersSubagent) {
-    if (results === 0) return { kind: "tool", name: "subagent", input: { description: `${task} child`, prompt: HANG_TASK } }
-    return { kind: "text", text: "root: the subagent is back" }
   }
   return { kind: "text", text: `sim: ${lastLine(last) || "nothing"}` }
 }
@@ -221,9 +231,6 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
   const tokensOf = typeof promptTokens === "number" ? () => promptTokens : promptTokens
   const seen: Seen[] = []
   let served = 0
-  // Hanging requests, and whether a hang task's first request still hangs.
-  let hanging = 0
-  let released = false
   // Gates: a task whose first message holds a `gate:<name>` line answers its first request once the gate opens.
   const gates = new Map<string, { readonly opened: Promise<void>; readonly open: () => void }>()
   const gate = (name: string) => {
@@ -261,11 +268,6 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
       const first = messages.find((message) => message.role === "user")
       const gated = /^gate:(\S+)$/m.exec(text(first?.content))?.[1]
       if (gated !== undefined && text(messages.at(-1)?.content) === text(first?.content)) await gate(gated).opened
-      if (task === HANG_TASK && lastLine(text(messages.at(-1)?.content)) === HANG_TASK && !released) {
-        hanging += 1
-        // An open stream that never ends: the request runs until the server's shutdown cuts it.
-        return new Response(new ReadableStream({ start: () => {} }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
-      }
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, tokensOf(task, messages)), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
@@ -274,12 +276,6 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
   return {
     server,
     seen,
-    /** How many requests hang now or did. */
-    hanging: () => hanging,
-    /** From now on a hang task answers. */
-    release: () => {
-      released = true
-    },
     /** A gated task's first request answers. */
     open: (name: string) => gate(name).open(),
   }

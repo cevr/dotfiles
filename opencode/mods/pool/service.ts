@@ -9,6 +9,7 @@ import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { LimitsReport, Tally, Use } from "./limits.ts"
 import type { ClaimAnswer, QuotaReading } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
+import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
 import type { Report, SourceStatus } from "./status.ts"
 
@@ -117,8 +118,47 @@ export class Peers extends Context.Service<
      * through its pool's `lease`: its answer. The caller bounds the wait.
      */
     readonly lease: (peer: string, message: LeaseMessage) => Effect.Effect<LeaseAnswer, PeerUnreachable>
+    /** Hand a push request to the peer it is for (push.ts), through its pool's `push`: its answer. */
+    readonly push: (peer: string, request: PushRequest) => Effect.Effect<PushAnswer, PeerUnreachable>
   }
 >()("dotfiles-opencode/pool/Peers") {}
+
+/**
+ * Where this host keeps its pushes and the pool's questions about starting
+ * one (push.ts), which every plugin instance on the host reads. A failed read
+ * is none; a failed write is lost. Optional: a pool without it keeps them in
+ * the process.
+ */
+export class PushStore extends Context.Service<
+  PushStore,
+  {
+    readonly read: Effect.Effect<PushState>
+    /** Write what `events` change; `state` is the state with them folded in. */
+    readonly record: (events: ReadonlyArray<PushEvent>, state: PushState) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/pool/PushStore") {}
+
+/** One orchestrate run as the pool reads it: its name, the session that owns it, and each unit's state (the orchestrate status script's). */
+export interface RunWork {
+  readonly name: string
+  /** The session that owns the run (the status RPC's, from orchestrate's call log: it started the latest step of one of its units); none when no step was started. */
+  readonly session?: string
+  readonly units: ReadonlyArray<{ readonly unit: string; readonly state: string }>
+}
+
+/**
+ * What the host is doing, for a push's plan and the proactive question: its
+ * CPU load against its cores, and the orchestrate runs of the directory this
+ * plugin instance serves. None when unread. Optional: a pool without it plans
+ * without them.
+ */
+export class Workload extends Context.Service<
+  Workload,
+  {
+    readonly load: Effect.Effect<HostLoad | undefined>
+    readonly runs: Effect.Effect<ReadonlyArray<RunWork>>
+  }
+>()("dotfiles-opencode/pool/Workload") {}
 
 /**
  * Where this host keeps the Resets aggregate's state (resets.ts): each pool's
@@ -194,6 +234,8 @@ export class Owner extends Context.Service<
     readonly withdraw: (key: string) => Effect.Effect<void>
     /** A beat each time the questions change, until interrupted: the pool reads its answers then. */
     readonly changes: Stream.Stream<void>
+    /** The root of a session's tree, where its questions show: the session itself when the host cannot say more. */
+    readonly root: (sessionID: string) => Effect.Effect<string>
   }
 >()("dotfiles-opencode/pool/Owner") {}
 

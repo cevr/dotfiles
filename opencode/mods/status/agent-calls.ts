@@ -75,3 +75,37 @@ export const live = (state: AgentCallsState): ReadonlyArray<AgentCall> =>
     .sort((left, right) => left.order - right.order)
     .map((entry) => entry.call)
     .filter((call) => call.status !== "completed" && call.status !== "error")
+
+/** `<role> <unit> r<N>`: the hand-back form. */
+const ROLE_FIRST = /^(?:planner|implementor|verifier) (\S+)/
+/** `<unit>[ rN] <role>[ rN][ (note)]`: a one-word lowercase slug, the role, and only a round and a note after it. */
+const ROLE_AFTER = /^([a-z0-9#][a-z0-9._#/-]*)(?: r\d+)? (?:planner|implementor|verifier)(?: r\d+)?(?: \([^()]*\))?$/
+const ROUND = /^r\d+$/
+
+/** The first group `pattern` captures in `text`, if it matches. */
+const captured = (pattern: RegExp, text: string): Option.Option<string> => Option.fromNullishOr(pattern.exec(text)?.[1])
+
+/**
+ * The unit an orchestrate step's description names, in the skill's two forms:
+ * `<role> <unit> r<N>`, or `<unit>[ rN] <role>[ rN][ (note)]`. The same
+ * reading as orchestrate's described.ts, which the status domain may not
+ * import; prose that only mentions a role names none.
+ */
+export const stepUnit = (description: string): Option.Option<string> => {
+  const text = description.trim().replace(/\s+/g, " ")
+  return Option.orElse(captured(ROLE_FIRST, text), () => Option.filter(captured(ROLE_AFTER, text), (unit) => !ROUND.test(unit)))
+}
+
+/**
+ * The session that owns a run: the one that started the latest step of one of
+ * its `units` (a root owns a run once it starts one of its steps, as
+ * orchestrate's idle.ts reads it), over every call the log recorded, live or
+ * returned. None when no step of the run was started.
+ */
+export const runSession = (state: AgentCallsState, units: ReadonlyArray<string>): Option.Option<string> => {
+  const names = new Set(units)
+  const steps = HashMap.toValues(state.calls)
+    .filter(({ call }) => Option.exists(stepUnit(call.description ?? ""), (unit) => names.has(unit)))
+    .toSorted((left, right) => left.order - right.order)
+  return Option.map(Option.fromNullishOr(steps.at(-1)), ({ call }) => call.sessionID)
+}

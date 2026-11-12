@@ -8,6 +8,13 @@
 // (role.ts `codexFallback`), when the host offers one, with the Codex pace's
 // hold on it. The aggregate starts it there when Codex has room.
 //
+// The planner goes first on its own first model (the `planner` option, the
+// newest Fable: the owner's call, 2026-11-12): a new planner start that names
+// no model of its own runs on it at the planner's effort while the host offers
+// it and its pace has room; otherwise it takes the chain above (the role's own
+// model, Opus, then Codex) and its line says why (`first`). No other role has
+// a first model, so an implementor or verifier never starts on it.
+//
 // A held start latches: the wakes keep it (Latches), and at its time they ask
 // `openLatch`, which decides it again, its first model before its fallback,
 // and, admitted, starts it. With no wakes to keep it, the call is refused with
@@ -24,6 +31,7 @@
 import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
+import type { FirstRecord } from "./call-line.ts"
 import {
   type Command as IdleCommand,
   GoIdle,
@@ -45,6 +53,9 @@ import {
   handBackOf as stepHandBackOf,
   Land,
   Landed,
+  entryOf,
+  type LandEntry,
+  type LandTarget,
   machine,
   type MachineState,
   notesOf,
@@ -58,27 +69,24 @@ import {
   verifierPromptOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
-import * as Restart from "./restart.ts"
 import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
 
 /** The owner's rule: Codex plans and verifies, never implements; every other agent stays on its own model. */
 const onCodex = (agent: string) => agent === "planner" || agent === "verifier"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import {
+  Branches,
   CallLog,
   CodexAdmission,
   type Decided,
   type GuardMode,
   Latches,
   Findings,
-  Installs,
   Ledger,
   Liveness,
   Models,
   Remind,
   PoolPace,
-  Restarts,
-  type ResumeStart,
   RootHolds,
   RunRecords,
   Runs,
@@ -87,11 +95,10 @@ import {
   Steer,
   StepLog,
   Tell,
-  type Transcript,
   UnitLogs,
 } from "./service.ts"
 import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
-import { armFor, type ArmRecord, type Experiment } from "./experiment.ts"
+import { departureLines, driftLine, logLineOf, scoreOf } from "./drift.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
@@ -132,8 +139,8 @@ export interface Config {
    * admission script. Without it the script alone answers.
    */
   readonly codex?: { readonly providers: ReadonlyArray<string>; readonly pool?: boolean }
-  /** The model experiment (experiment.ts): a share of one role's units run on another model. */
-  readonly experiment?: Experiment
+  /** The planner's first model (`provider/id`, no variant), tried before the role's own on a new planner start. */
+  readonly planner?: { readonly model: string }
 }
 
 /** A held start the wakes keep: the latch's id and child, with the decision. */
@@ -147,8 +154,8 @@ export interface LatchedStart {
 /** A latch's models, kept in its context: the first it is decided on, and the Codex fallback. */
 const LatchModels = Schema.Struct({ primary: Schema.String, fallback: Schema.String })
 
-/** A latch's experiment arm, kept in its context, so the line its open writes records it too. */
-const LatchArm = Schema.Struct({ arm: Schema.Literals(["trial", "control"]), model: Schema.String, fellBack: Schema.optional(Schema.String) })
+/** Why a latched planner left its first model, kept in the latch's context, so the line its open writes records it too. */
+const LatchFirst = Schema.Struct({ model: Schema.String, fellBack: Schema.String })
 
 /** What `startSubagent` may refuse: the Sabbath or a still-latched child for a follow-up, and a held start no latch could be kept for. */
 export type StartRefusal = SabbathRest | PaceHeld | StillLatched
@@ -261,12 +268,12 @@ export const layer = (config: Config) =>
        * was refused. Every command is decided on its own inputs against the
        * aggregate's initial state (see tool-call.ts).
        */
-      const decide = (command: Command, now: number, tool: string, asked?: Asked, arm?: ArmRecord) =>
+      const decide = (command: Command, now: number, tool: string, asked?: Asked, first?: FirstRecord) =>
         ToolCall.decide(ToolCall.initial, command, now).pipe(
           // A latch is logged once the wakes keep it, with its child; or as the call's refusal when they cannot.
           Effect.tap((events) =>
             Effect.forEach(events, (event) =>
-              event._tag === "SubagentLatched" && event.child === undefined ? Effect.void : Effect.flatMap(at, (time) => log.append(lineOf(event, time, asked, arm))),
+              event._tag === "SubagentLatched" && event.child === undefined ? Effect.void : Effect.flatMap(at, (time) => log.append(lineOf(event, time, asked, first))),
             ),
           ),
           Effect.tapError((rejection) => deny(command.call, tool, whyOf(rejection))),
@@ -334,39 +341,38 @@ export const layer = (config: Config) =>
       })
 
       /**
-       * A new start's arm of the model experiment (experiment.ts), if it is in
-       * one. A trial start runs on the trial's model at the role's effort, with
-       * its pace as asked, when the host offers that model and its pace has
-       * room; otherwise, or over the Sabbath, it takes the normal chain (the
-       * role's model, then Codex) and its record says why.
+       * A new planner start on the planner's first model (`config.planner`),
+       * when it names no model of its own: at the role's effort, with its pace
+       * as asked, when the host offers that model and its pace has room;
+       * otherwise it takes the role's chain (its own model, then Codex) and
+       * `first` says why. Over the Sabbath it does what every role does there:
+       * it latches on its own model, the first one, asking no pace, and its
+       * open takes the chain (`openLatch`). None for any other start.
        */
-      const trialOf = Effect.fnUntraced(function* (
+      const firstOf = Effect.fnUntraced(function* (
         sessionID: string,
         start: {
           readonly agent: string
           readonly followUp: boolean
           readonly namedModel: boolean
-          readonly description: string | undefined
           readonly level: string | undefined
           readonly resting: boolean
         },
       ) {
-        const experiment = config.experiment
-        const placed = armFor(experiment, start)
-        if (experiment === undefined || placed === undefined) return undefined
-        const record = (fellBack?: string): ArmRecord => ({ arm: placed.arm, model: experiment.model, ...(fellBack === undefined ? {} : { fellBack }) })
-        if (placed.arm === "control") return { record: record() }
-        if (start.resting) return { record: record("the Sabbath") }
-        const model = yield* models.at(sessionID, experiment.model, start.level === "" ? undefined : start.level)
+        const first = config.planner?.model
+        if (first === undefined || start.agent !== "planner" || start.followUp || start.namedModel) return undefined
+        const fell = (fellBack: string) => ({ first: { model: first, fellBack } satisfies FirstRecord, model: undefined, paced: undefined })
+        const model = yield* models.at(sessionID, first, start.level === "" ? undefined : start.level)
         const ref = parseModel(model)
-        if (model === undefined || ref === undefined) return { record: record(`${experiment.model} is not offered`) }
+        if (model === undefined || ref === undefined) return fell(`${first} is not offered`)
+        if (start.resting) return { first: undefined, model, paced: undefined }
         const { hold, replies } = yield* holdOf(ref, start.agent, sessionID)
-        if (hold !== undefined) return { record: record(`${model} held: ${hold.reason}`) }
+        if (hold !== undefined) return fell(`${model} held: ${hold.reason}`)
         const asked: Asked = {
           ...(replies.pool === undefined ? {} : { pace: replies.pool }),
           ...(replies.codex === undefined ? {} : { codex: replies.codex }),
         }
-        return { record: record(), model, paced: { ref, hold: undefined, asked } }
+        return { first: undefined, model, paced: { ref, hold: undefined, asked } }
       })
 
       const startSubagent = Effect.fn("Orchestrate.startSubagent")(function* ({
@@ -411,16 +417,15 @@ export const layer = (config: Config) =>
         const codexNamed = asks !== undefined && routed.agent === "implementor" && isCodexModel(asks, config.codex?.providers ?? [])
         const dropped = asks !== undefined && ((bound !== undefined && namesModel(asks, bound)) || codexNamed) ? asks : undefined
         const level = isRole(routed.agent) ? effort(routed.agent) : undefined
-        const trial = yield* trialOf(call.sessionID, {
+        const onFirst = yield* firstOf(call.sessionID, {
           agent: routed.agent,
           followUp: child !== undefined,
           namedModel: asks !== undefined && dropped === undefined,
-          description: base.description,
           level,
           resting,
         })
-        // A new role subagent runs at the role's effort, as a variant of the model it would run on; a trial start, on the trial's model at it.
-        let model = trial?.model ?? (dropped === undefined ? asks : undefined)
+        // A new role subagent runs at the role's effort, as a variant of the model it would run on; a planner on its first model, at it.
+        let model = onFirst?.model ?? (dropped === undefined ? asks : undefined)
         if (child === undefined && level !== undefined && level !== "" && model === undefined) {
           const variant = yield* models.variant(call.sessionID, routed.agent, level)
           if (variant) model = variant
@@ -429,12 +434,12 @@ export const layer = (config: Config) =>
         const runsOn = child === undefined && model === undefined && routed.agent === WORKER ? yield* models.base(call.sessionID, routed.agent) : undefined
         const inherited = runsOn === undefined ? undefined : formatRef(runsOn)
         // A new agent's pace; over the Sabbath only its model, for the latch.
-        // A trial start's pace was asked when its arm was decided.
+        // A first-model start's pace was asked when it was tried.
         const paced =
           child === undefined
             ? resting
               ? { ref: parseModel(model) ?? (yield* models.base(call.sessionID, routed.agent)), hold: undefined, asked: {} }
-              : (trial?.paced ?? (yield* paceOf(call.sessionID, routed.agent, model)))
+              : (onFirst?.paced ?? (yield* paceOf(call.sessionID, routed.agent, model)))
             : undefined
         const hold = paced?.hold
         // The model it would run on, named; with a fallback the command names it so the log says what was held.
@@ -455,8 +460,8 @@ export const layer = (config: Config) =>
           ...(hold === undefined ? {} : { hold }),
           ...(childLatched === undefined ? {} : { childLatched }),
         })
-        const arm = trial?.record
-        const events = yield* decide(command, now, SUBAGENT, asked, arm)
+        const first = onFirst?.first
+        const events = yield* decide(command, now, SUBAGENT, asked, first)
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
           // The child is made on the model it latched on, and opened on whichever model admits it first.
@@ -479,7 +484,7 @@ export const layer = (config: Config) =>
               context: {
                 reason: latched.reason,
                 ...(fallback === undefined || primary === undefined ? {} : { models: { primary, fallback: fallback.model } }),
-                ...(arm === undefined ? {} : { experiment: arm }),
+                ...(first === undefined ? {} : { first }),
               },
             })
             .pipe(
@@ -493,7 +498,7 @@ export const layer = (config: Config) =>
               ),
             )
           const event: SubagentLatched = { ...latched, child: kept.child, ...(on === undefined ? {} : { model: on }) }
-          yield* log.append(CallLine.latched(event, yield* at, asked, arm))
+          yield* log.append(CallLine.latched(event, yield* at, asked, first))
           return Option.some({ _tag: "LatchedStart" as const, id: kept.id, child: kept.child, latched: event })
         }
         const started = events.find((event) => event._tag === "SubagentStarted")
@@ -512,16 +517,30 @@ export const layer = (config: Config) =>
         const resting = resumesAt(now, config.place) !== undefined
         // Its first model before its fallback; a latch with no fallback is decided on the model it was made on.
         const kept = Option.getOrUndefined(Schema.decodeUnknownOption(LatchModels)(latch.context.models))
-        const primary = kept?.primary ?? latch.model
-        const paced = resting || ran ? undefined : yield* paceOf(latch.parent, latch.agent, primary)
+        // A planner latched on its first model (over the Sabbath) takes the planner's chain at its open, as a new
+        // start would: the first model, else its own at its effort, then Codex.
+        const firstRef = parseModel(config.planner?.model)
+        const onFirstModel = latch.agent === "planner" && firstRef !== undefined && latch.model !== undefined && namesModel(latch.model, firstRef)
+        const level = isRole(latch.agent) ? effort(latch.agent) : undefined
+        const tried =
+          !resting && !ran && kept === undefined && onFirstModel
+            ? yield* firstOf(latch.parent, { agent: latch.agent, followUp: false, namedModel: false, level, resting: false })
+            : undefined
+        const own = tried !== undefined && tried.model === undefined && level !== undefined && level !== "" ? yield* models.variant(latch.parent, latch.agent, level) : undefined
+        const primary = tried?.model ?? own ?? kept?.primary ?? latch.model
+        const paced = resting || ran ? undefined : (tried?.paced ?? (yield* paceOf(latch.parent, latch.agent, primary)))
+        // The chain's Codex fallback, offered as a new start's is; a latch made with one keeps its own.
+        const offered =
+          tried !== undefined && paced?.hold !== undefined && paced.ref !== undefined ? yield* fallbackOf(latch.parent, paced.ref, latch.agent, latch.description) : undefined
         const fallbackAt = parseModel(kept?.fallback)
         const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent, latch.parent) : undefined
         const fallbackHold = fallbackPaced?.hold
-        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)) }
+        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)), ...offered?.asked }
         const fallback: Fallback | undefined =
-          kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) }
+          offered?.fallback ??
+          (kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) })
         const reason = Schema.decodeUnknownOption(Reason)(latch.context.reason)
-        const arm = Option.getOrUndefined(Schema.decodeUnknownOption(LatchArm)(latch.context.experiment))
+        const first = tried?.first ?? Option.getOrUndefined(Schema.decodeUnknownOption(LatchFirst)(latch.context.first))
         const events = yield* ToolCall.decide(
           ToolCall.initial,
           OpenLatch.make({
@@ -541,13 +560,13 @@ export const layer = (config: Config) =>
         ).pipe(Effect.orDie) // An open is never refused: it latches again or starts.
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
-          yield* log.append(CallLine.latched(latched, yield* at, asked, arm))
+          yield* log.append(CallLine.latched(latched, yield* at, asked, first))
           const ahead = yield* skew
           return { outcome: "held", hold: latched.hold, reason: latched.why, opensAt: latched.opensAt + ahead, recheckAt: latched.recheckAt + ahead }
         }
         const started = events.find((event) => event._tag === "SubagentStarted")
         if (started === undefined) return { outcome: "opened" }
-        yield* log.append(CallLine.started(started, yield* at, asked, arm))
+        yield* log.append(CallLine.started(started, yield* at, asked, first))
         const on = started.model ?? latch.model
         const opened = parseModel(on) ?? paced?.ref
         if (opened !== undefined) yield* pool.started(opened.providerID)
@@ -601,151 +620,11 @@ export const layer = (config: Config) =>
     }),
   )
 
-/**
- * Resumes the subagents a restart cut (restart.ts). `resumeCut(boot)` runs
- * once when the plugin starts, at `boot`: a server start, or a plugin reload,
- * which cuts nothing itself but finds a cut an earlier start left. After the
- * first backoff, so OpenCode's own restart recovery lands first, it finds this
- * location's children the restart cut; per parent it waits the longest
- * backoff its children's earlier resumes call for, checks each child again,
- * resumes it in the background (or leaves it after too many resumes in a
- * row), logs each resume, and tells the parent once. Over the Sabbath it
- * resumes nothing.
- */
-export class Restarter extends Context.Service<Restarter, { readonly resumeCut: (boot: number) => Effect.Effect<void> }>()(
-  "dotfiles-opencode/orchestrate/Restarter",
-) {}
-
-/** A child the restart cut, as the scan found it. */
-interface Found {
-  readonly child: string
-  readonly parent: string
-  /** When its turn was cut: a later check must find the same cut. */
-  readonly at: number
-  readonly tries: number
-}
-
-export const restarter = (config: Pick<Config, "place" | "now">, backoff: ReadonlyArray<number> = Restart.BACKOFF_MS) =>
-  Layer.effect(
-    Restarter,
-    Effect.gen(function* () {
-      const log = yield* CallLog
-      const restarts = yield* Restarts
-      const sabbathNow = config.now === undefined ? Clock.currentTimeMillis : Effect.succeed(config.now)
-      const at = Clock.currentTimeMillis.pipe(Effect.map((ms) => new Date(ms).toISOString()))
-      const first = backoff[0] ?? 0
-
-      /** Find this location's children the restart cut before `boot`. Each transcript is read once. */
-      const scan = Effect.fnUntraced(function* (boot: number) {
-        const read = new Map<string, Transcript | undefined>()
-        const transcript = (id: string) =>
-          read.has(id) ? Effect.succeed(read.get(id)) : restarts.transcript(id).pipe(Effect.tap((found) => Effect.sync(() => read.set(id, found))))
-        const judged = new Map<string, boolean>()
-        // Cut by the restart: cut with no turn end, or interrupted through a parent's call that was.
-        const cut = (id: string): Effect.Effect<boolean> =>
-          judged.has(id)
-            ? Effect.succeed(judged.get(id)!)
-            : Effect.gen(function* () {
-                judged.set(id, false) // a cycle in the parent links cuts nothing
-                const found = yield* transcript(id)
-                if (found === undefined) return false
-                const end = Restart.ending(found.entries)
-                if (!Restart.inWindow(end, boot)) return false
-                const parentID = found.session.parentID
-                let verdict = end._tag === "Cut"
-                if (!verdict && parentID !== undefined) {
-                  const parent = yield* transcript(parentID)
-                  verdict = parent !== undefined && Restart.callCut(parent.entries, id, yield* cut(parentID))
-                }
-                judged.set(id, verdict)
-                return verdict
-              })
-        const found: Array<Found> = []
-        for (const card of yield* restarts.children(boot - Restart.WINDOW_MS)) {
-          if (card.parentID === undefined || !(yield* cut(card.id))) continue
-          const entries = read.get(card.id)?.entries ?? []
-          const end = Restart.ending(entries)
-          if (end._tag === "Settled") continue
-          found.push({ child: card.id, parent: card.parentID, at: end.at, tries: Restart.resumes(entries) })
-        }
-        return found
-      })
-
-      /** Resume one parent's cut children, each checked again first, and tell the parent once. */
-      const settle = Effect.fnUntraced(function* (parent: string, children: ReadonlyArray<Found>) {
-        const waits = children.map((child) => Restart.verdict(child.tries, backoff)).flatMap((verdict) => (verdict._tag === "Resume" ? [verdict.waitMs] : []))
-        const wait = Math.max(0, ...waits) - first
-        if (wait > 0) yield* Effect.sleep(wait)
-        if (resumesAt(yield* sabbathNow, config.place) !== undefined) return
-        const parentNow = yield* restarts.transcript(parent)
-        const resumed: Array<Restart.Named> = []
-        const left: Array<Restart.Named & { readonly why: string }> = []
-        for (const found of children) {
-          const now = yield* restarts.transcript(found.child)
-          if (now === undefined) continue
-          const end = Restart.ending(now.entries)
-          // Continued meanwhile (its parent called it, OpenCode resumed it): nothing to do.
-          if (end._tag === "Settled" || end.at !== found.at) continue
-          const description = now.session.title ?? now.session.agent ?? "subagent"
-          const named = { child: found.child, description }
-          const verdict = Restart.verdict(Restart.resumes(now.entries), backoff)
-          if (verdict._tag === "GiveUp") {
-            // Left to the parent once: a later start finds the parent told.
-            if (!Restart.toldSince(parentNow?.entries ?? [], found.child, found.at)) left.push({ ...named, why: Restart.gaveUp(verdict.attempts) })
-            continue
-          }
-          const call = parentNow === undefined ? undefined : Restart.callTo(parentNow.entries, found.child)
-          const lastTurn = parentNow?.entries.findLast((entry) => entry.type === "assistant")
-          const start: ResumeStart = {
-            parent,
-            from: call?.agent ?? parentNow?.session.agent ?? "build",
-            messageID: call?.messageID ?? (lastTurn?.type === "assistant" ? lastTurn.id : ""),
-            callID: call?.callID ?? `resume-${found.child}`,
-            child: found.child,
-            agent: now.session.agent ?? "worker",
-            description,
-            prompt: Restart.resumePrompt,
-          }
-          const failed = yield* restarts.resume(start).pipe(
-            Effect.as(undefined),
-            Effect.catchTag("StartFailed", (failure) => Effect.succeed(failure)),
-          )
-          if (failed !== undefined) {
-            yield* Effect.logWarning("orchestrate: a subagent the restart cut could not be resumed", { child: found.child, message: failed.message })
-            left.push({ ...named, why: `it could not be resumed: ${failed.message}` })
-            continue
-          }
-          yield* log.append(CallLine.resumed(start, verdict.attempt, yield* at))
-          resumed.push(named)
-        }
-        if (resumed.length === 0 && left.length === 0) return
-        // A resumed child's result wakes the parent; a parent left only to act itself is woken now.
-        yield* restarts.tell({
-          parent,
-          text: Restart.notice(resumed, left),
-          description: Restart.NOTICE_TITLE,
-          wake: resumed.length === 0,
-          children: [...resumed, ...left].map((item) => item.child),
-        })
-      })
-
-      const resumeCut = Effect.fn("Restarter.resumeCut")(function* (boot: number) {
-        // Even with no wait, the plugin's setup finishes first: the subagent tool is handed in after it.
-        yield* Effect.sleep(first)
-        const found = yield* scan(boot)
-        const parents = Map.groupBy(found, (item) => item.parent)
-        yield* Effect.forEach(parents, ([parent, children]) => settle(parent, children), { concurrency: "unbounded", discard: true })
-      })
-
-      return { resumeCut }
-    }),
-  )
-
-const lineOf = (event: Event, at: string, asked: Asked | undefined, arm: ArmRecord | undefined) =>
+const lineOf = (event: Event, at: string, asked: Asked | undefined, first: FirstRecord | undefined) =>
   event._tag === "SubagentStarted"
-    ? CallLine.started(event, at, asked, arm)
+    ? CallLine.started(event, at, asked, first)
     : event._tag === "SubagentLatched"
-      ? CallLine.latched(event, at, asked, arm)
+      ? CallLine.latched(event, at, asked, first)
       : CallLine.finished(event, at)
 
 /** A held start that could not latch, as the call's refusal: the Sabbath's rest, or the pace's hold until it opens. */
@@ -905,11 +784,16 @@ export class Machines extends Context.Service<
     readonly start: (input: { readonly root: string; readonly key: string; readonly input: unknown }) => Effect.Effect<Passed, Refused>
     /** The call `key` answered: its child's session, or none when it did not start. */
     readonly started: (input: { readonly root: string; readonly key: string; readonly child?: string }) => Effect.Effect<void>
+    /**
+     * A land's Rifts as the machine knows them: each entry by path (`/…`, `~/…`) with the branch checked
+     * out there, when it reads. Read once, before the land: a pushed land trashes its Rifts.
+     */
+    readonly resolve: (rifts: ReadonlyArray<LandTarget>) => Effect.Effect<ReadonlyArray<LandEntry>>
     /** A `rift` land of `root`, about to run. */
-    readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
+    readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
     /** The Rifts a land of `root` answered green. */
-    readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) => Effect.Effect<void>
-    /** A session went idle: a step's hand-back moves its unit or ends its verifier; an accepted verdict asks for a fleet install. */
+    readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) => Effect.Effect<void>
+    /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
     /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
     readonly brief: (root: string) => Effect.Effect<string>
@@ -921,9 +805,6 @@ export class Machines extends Context.Service<
   }
 >()("dotfiles-opencode/orchestrate/Machines") {}
 
-/** The batch an event accepts: a verifier's `accepted` verdict; none for any other event. */
-export const acceptedBatch = (event: MachineEvent): ReadonlyArray<string> => (event._tag === "VerifierEnded" && event.verdict === "accepted" ? [event.batch] : [])
-
 /** The machine's handlers: the plugin feeds each call it sees, and the ledger decides it. */
 export const machineLayer = (config: MachineConfig) =>
   Layer.effect(
@@ -934,7 +815,8 @@ export const machineLayer = (config: MachineConfig) =>
       const liveness = yield* Liveness
       const remind = yield* Remind
       const findings = yield* Findings
-      const installs = yield* Installs
+      const branches = yield* Branches
+      const records = yield* RunRecords
       const inFlight = new Map<string, InFlight>()
 
       const flying = (root: string, role: Start["role"], name: string) =>
@@ -1008,6 +890,7 @@ export const machineLayer = (config: MachineConfig) =>
         const child = typeof fields.sessionID === "string" && fields.sessionID !== "" ? fields.sessionID : undefined
         const routed = route(fields.agent, config.fullAgent, description).agent
         const agent = child !== undefined && unspecific(fields.agent) ? ((yield* sessions.agentOf(child)) ?? routed) : routed
+        // The step is its description's alone: no prompt is read (a land knows a unit by its Rift's branch, unitOfEntry).
         const command = stepOfCall(agent, description)
         if (command === undefined) return { notes: [] }
         const at = yield* now
@@ -1041,7 +924,19 @@ export const machineLayer = (config: MachineConfig) =>
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Spawned.make({ role: step.role, name: step.name, child })])).pipe(Effect.ignore)
       })
 
-      const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) {
+      const resolve = Effect.fn("Machines.resolve")(function* (rifts: ReadonlyArray<LandTarget>) {
+        return yield* Effect.forEach(
+          rifts,
+          (target) => {
+            const entry = entryOf(target)
+            if (entry.unit !== undefined || entry.branch !== undefined || !/^(?:\/|~\/)/.test(entry.rift)) return Effect.succeed(entry)
+            return branches.of(entry.rift).pipe(Effect.map((branch): LandEntry => (branch === undefined ? entry : { ...entry, branch })))
+          },
+          { concurrency: 4 },
+        )
+      })
+
+      const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) {
         const command = Land.make({ rifts: input.rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
         const decided = yield* ledger.decide(
           input.root,
@@ -1052,7 +947,7 @@ export const machineLayer = (config: MachineConfig) =>
         return { notes: warnedNote(decided) }
       })
 
-      const landed = Effect.fn("Machines.landed")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) {
+      const landed = Effect.fn("Machines.landed")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) {
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
       })
 
@@ -1068,18 +963,27 @@ export const machineLayer = (config: MachineConfig) =>
         // does not read, or none named, leaves the verdict unresolved: never an empty set of findings.
         const said = back.role === "verifier" && back.verdict === "changes" ? HandBack.make({ ...back, ...(yield* readReport(reportOf(words))) }) : back
         // The session that handed back is the step's: a step started before its session was known gets it here.
-        const decided = yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.option)
-        // An accepted batch is on main: the fleet installs it. Only the event the ledger just recorded asks, so a
-        // hand-back seen again (another location's copy, a second idle) asks nothing more.
-        const accepted = Option.match(decided, { onNone: () => [], onSome: (value) => value.events.flatMap(acceptedBatch) })
-        for (const batch of accepted) yield* installs.request(`${batch} accepted`)
+        const at = yield* now
+        const decided = yield* ledger.decide(root, at, () => Effect.succeed([said])).pipe(Effect.orElseSucceed(() => undefined))
+        // Each verdict adds the root's drift to its run's log.md, the run being the one its report is in.
+        const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
+        const report = reportOf(words)
+        if (ended === undefined || ended.verdict === "none" || report === undefined) return
+        const directory = yield* sessions.directoryOf(sessionID)
+        const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
+        yield* records.log({ near: report, line, ...(directory === undefined ? {} : { directory }) })
       })
 
       const brief = Effect.fn("Machines.brief")(function* (root: string) {
         const at = yield* now
         const decided = yield* ledger.decide(root, at, (state) => Effect.all([reconcile(root, state), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read]))).pipe(Effect.orElseSucceed(() => undefined))
         const state = decided?.state ?? (yield* ledger.state(root))
-        return briefOf(state, at, config.cadence)
+        const run = briefOf(state, at, config.cadence)
+        if (run === "") return run
+        // How far the run drifted from the machine so far, with its newest departures and why.
+        const drift = yield* ledger.drift(root)
+        const departures = departureLines(drift)
+        return [run, scoreOf(drift) === 0 ? driftLine(drift) : `${driftLine(drift)} (0 is a clean run)`, ...(departures.length === 0 ? [] : ["last departures:", ...departures.map((line) => `  ${line}`)])].join("\n")
       })
 
       const compacted = Effect.fn("Machines.compacted")(function* (sessionID: string) {
@@ -1092,7 +996,7 @@ export const machineLayer = (config: MachineConfig) =>
         )
       })
 
-      return { start, started, land, landed, handBack, brief, compacted }
+      return { start, started, resolve, land, landed, handBack, brief, compacted }
     }),
   )
 

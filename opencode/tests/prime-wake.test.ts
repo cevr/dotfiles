@@ -1,10 +1,10 @@
 // Runs scenarios/prime-wake.ts with the Prime look and the orchestrate plugin
 // against an OpenCode checkout: a worker moves a shell command (one that runs
 // until the scenario releases it) to the background and ends its turn. While it waits its live row reads
-// waiting (its still symbol) with what it said last; once the shell's notice wakes it, the answer it
-// writes then is the one its parent gets, as a background worker's stop
-// notice and as a foreground call's result. It needs OPENCODE_DEV, the fork
-// whose subagent jobs wait for their child's own background work.
+// waiting (its still symbol) with what it said last, and OpenCode reports that
+// line to the parent with the shell still running; once the shell's notice
+// wakes it, the answer it writes then reaches the parent as a second report
+// (OpenCode reports a subagent each time it goes idle). It needs OPENCODE_DEV.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -15,8 +15,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-wake.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const root = join(import.meta.dir, "..")
-const names = ["bg-waiting", "bg-done", "fg-waiting", "fg-done"] as const
-const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { "bg-waiting": [], "bg-done": [], "fg-waiting": [], "fg-done": [] }
+const names = ["bg-waiting", "bg-done"] as const
+const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { "bg-waiting": [], "bg-done": [] }
 
 /** The row lines beneath the dock's count line, up to the first blank line. */
 function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
@@ -45,25 +45,20 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
     for (const name of names) frames[name] = readFileSync(join(out, `wake-${name}.txt`), "utf8").split("\n")
   }, 300_000)
 
-  test("a background worker that ended its turn to wait on its shell reads waiting, by its still symbol and what it said after starting the shell, and counts", () => {
+  test("a worker that ended its turn to wait on its shell reads waiting, by its still symbol and what it said after starting the shell, and counts", () => {
     expect(frames["bg-waiting"].join("\n")).toContain("Worker started.")
     // The dock counts it among the working subagents, though the host has it idle.
     expect(frames["bg-waiting"].some((line) => line.includes("◆ 1 subagent  ·"))).toBe(true)
     expect(rows(frames["bg-waiting"])).toEqual([expect.stringMatching(/^◈ worker gpt  Run the slow check  Waiting for the check\. · \d+s$/)])
   })
 
-  test("the parent's stop notice carries the answer the worker wrote after its shell finished, not its waiting line", () => {
-    const frame = frames["bg-done"].join("\n")
-    expect(frame).toContain("Root heard: the background check passed.")
-    expect(frame).not.toContain("Root heard too early.")
-  })
-
-  test("in the foreground the same: the row waits while the call runs, and the call's result is the later answer", () => {
-    expect(rows(frames["fg-waiting"])).toContainEqual(
-      expect.stringMatching(/^◈ worker gpt  Check it in the foreground  Waiting for the check\. · \d+s$/),
-    )
-    const frame = frames["fg-done"].join("\n")
-    expect(frame).toContain("Root heard: the foreground check passed.")
-    expect(frame).not.toContain("Root heard too early.")
+  test("the parent hears the waiting line with the shell still running, then the answer the worker wrote after its shell finished", () => {
+    const waiting = frames["bg-waiting"].join("\n")
+    expect(waiting).toContain("Background work still running:")
+    expect(waiting).toContain("Root heard it waits.")
+    expect(waiting).not.toContain("Root heard: the background check passed.")
+    const done = frames["bg-done"].join("\n")
+    expect(done).toContain("Background check passed after its shell.")
+    expect(done).toContain("Root heard: the background check passed.")
   })
 })

@@ -18,6 +18,8 @@ import { Effect } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { carryOver, type QuotaWindow, type ResetCredit } from "./quota.ts"
 import {
+  assumeOf,
+  claimOut,
   type Command,
   effectOf,
   type Event,
@@ -25,6 +27,8 @@ import {
   expiringKey,
   FRESH_MS,
   MIN_RESTORE,
+  NoAgreement,
+  NoteSend,
   NoteWait,
   offerKey,
   type PoolView,
@@ -33,9 +37,11 @@ import {
   Resets,
   type ResetsState,
   Review,
+  SETTLE_MS,
   SettleClaim,
   staleReason,
   TakeAnswer,
+  UNAGREED_ASSUME,
 } from "./resets.ts"
 import type { AccountStatus } from "./status.ts"
 
@@ -276,7 +282,7 @@ describe("B1 across pools and hosts: an account is its login, and a claim is jud
     expect(claimsOf(yes.events)).toEqual([])
   })
 
-  test("two hosts reading one account apart (windows ranked otherwise, grants listed in another order) that both claim send one request id, per kind", () => {
+  test("two hosts reading one account apart (windows ranked otherwise, the same grants listed in another order) decide one request id, per kind; not the guard: the spend authority is the fleet's lease (spend-authority.test.ts)", () => {
     const expiresAt = T0 + 2 * HOUR
     const grids = [0.2, 0.8, 1].flatMap((five) => [0.8, 1].map((seven) => [five, seven] as const))
     for (const grants of [
@@ -443,6 +449,69 @@ describe("auto: false, the owner's kill switch", () => {
     ])
     const key = asksOf(offer.events)[0]!.key
     expect(claimsOf(run([[T0 + 1, TakeAnswer.make({ key, answer: "Claim it" })]], offer.state).events)).toHaveLength(1)
+  })
+})
+
+describe("no agreement: a claim no one asked for becomes the owner's question", () => {
+  const expiresAt = T0 + 2 * HOUR
+  const spent = account([window("5h", 1, T0 + 4 * HOUR), window("7d", 1, T0 + 3 * DAY)], [grant("g1", expiresAt, FULL)])
+  const decided = () => {
+    const first = review([spent])
+    const [due] = claimsOf(first.events)
+    return { state: first.state, key: due!.key }
+  }
+
+  test("an expiring claim that found a peer unreachable is asked about, naming the peer; reviewed again, it is not claimed on its own, with automatic claims on or off", () => {
+    const { state, key } = decided()
+    const asked = run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac"] })]], state)
+    const [question] = asksOf(asked.events)
+    expect(question).toMatchObject({ key, stage: "asked", why: "expiring", header: "Reset now? · a" })
+    expect(question?.question).toBe(
+      "Full reset on account a now? It would expire unused otherwise. It gives back 5h 100% → 0%, weekly 100% → 0%. mac is unreachable, so I can't rule out it claiming too. Claim it?",
+    )
+    expect(assumeOf(question!)).toBe(UNAGREED_ASSUME)
+    for (const auto of [true, false]) expect(claimsOf(review([spent], T0 + RETRY_MS + 1, asked.state, auto).events)).toEqual([])
+    // Two peers unreachable are named both.
+    expect(asksOf(run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac", "spare"] })]], state).events)[0]?.question).toContain("mac, spare are unreachable, so I can't rule out them claiming too")
+  })
+
+  test("the owner's yes claims it, the claim marked the owner's: retried with automatic claims off and no fresh reading, and no notice after", () => {
+    const { state, key } = decided()
+    const asked = run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac"] })]], state)
+    const yes = run([[T0 + 2, TakeAnswer.make({ key, answer: "Claim it" })]], asked.state)
+    expect(claimsOf(yes.events)).toMatchObject([{ key, yes: true, stage: "claiming" }])
+    const failed = run([[T0 + 3, SettleClaim.make({ key, outcome: "failed", message: "backed off: mac refused", before: [] })]], yes.state)
+    const stale = account(spent.reading!.windows, spent.reading!.resets!.credits, T0 - 2 * HOUR)
+    expect(claimsOf(review([stale], T0 + 3 + RETRY_MS, failed.state, false).events)).toMatchObject([{ key, yes: true }])
+    const settled = run([[T0 + 4, SettleClaim.make({ key, outcome: "reset", before: [] })]], yes.state)
+    expect(settled.events.map((event) => event._tag)).toEqual(["ClaimSettled"])
+  })
+
+  test("a claim the owner was asked about, or one not claiming, takes no NoAgreement", () => {
+    const { state, key } = decided()
+    const asked = run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac"] })]], state)
+    expect(run([[T0 + 2, NoAgreement.make({ key, unreachable: ["mac"] })]], asked.state).events).toEqual([])
+    const yes = run([[T0 + 2, TakeAnswer.make({ key, answer: "Claim it" })]], asked.state)
+    expect(run([[T0 + 3, NoAgreement.make({ key, unreachable: ["mac"] })]], yes.state).events).toEqual([])
+  })
+})
+
+describe("a claim sent is remembered across a restart (claimOut)", () => {
+  test("no claim of the provider goes out on a reading taken before SETTLE_MS after one this host sent: on the account, or for a peer's ask, any; another account or provider may", () => {
+    const { state } = run([[T0, Review.make({ pools: [view([account([window("5h", 1, T0 + 4 * HOUR), window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 2 * HOUR, FULL)])])] })]])
+    const key = Object.keys(state.resets)[0]!
+    const sent = run([[T0 + 10, NoteSend.make({ key })]], state)
+    expect(sent.events).toEqual([{ _tag: "ClaimSent", key, at: T0 + 10 }])
+    expect(claimOut(sent.state, "claude", T0 + 10 + SETTLE_MS - 1)).toContain("may not show yet")
+    expect(claimOut(sent.state, "claude", T0 + 10 + SETTLE_MS)).toBeUndefined()
+    expect(claimOut(sent.state, "codex", T0 + 11)).toBeUndefined()
+    expect(claimOut(sent.state, "claude", T0 + 11, "a")).toContain("may not show yet")
+    expect(claimOut(sent.state, "claude", T0 + 11, "b")).toBeUndefined()
+    // Settled, it is still remembered.
+    const settled = run([[T0 + 20, SettleClaim.make({ key, outcome: "reset", before: [] })]], sent.state)
+    expect(claimOut(settled.state, "claude", T0 + 30)).toContain("may not show yet")
+    // A claim not claiming is not marked sent.
+    expect(run([[T0 + 30, NoteSend.make({ key })]], settled.state).events).toEqual([])
   })
 })
 

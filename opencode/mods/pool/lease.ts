@@ -1,39 +1,64 @@
-// The fleet's claim leases: how hosts that read one provider account agree
-// which of them claims its reset, with no host the master. Before a claim, a
-// host asks each peer it reaches for the account's lease: an account is the
-// set of reset ids its reading lists (resets.ts `grantsOf`), so two hosts
-// name it alike though each has its own login for it.
+// The fleet's spend authority: how the hosts that read one provider agree
+// which of them may spend a reset, with no host the master (the Mac may be
+// asleep, or on the move). Positive agreement: a claim no one asked for is
+// sent only once every peer the fleet knows of granted this host the
+// provider's lease. A peer that does not answer is no grant: the claim is
+// not sent, and the pool asks the owner instead (model.ts), since that peer
+// may be claiming too. The owner's yes is the authority in a partition: it
+// sends with the reachable peers' grants alone. `verdict` says which.
+//
+// The lease is per provider, not per account: a host's login is its own, and
+// the reset ids two hosts list for one account may differ (one host's list
+// lags), so no reading names the account alike on every host. Claims are
+// rare; one at a time per provider across the fleet only delays a second.
 //
 // A peer grants the lease unless one of these holds:
-// - it lent the account's lease to another host and that lease is live;
-// - it has seen a claim on the account no older than the asker's reading;
-// - it is claiming on the account itself;
-// - it is asking for the lease at once and asked first. The ask made earlier
-//   wins, then the lower host name, the same on both sides; the loser yields.
+// - it is quiet: its leases started (a restart) less than QUIET_MS ago,
+//   so it may have lent a lease it no longer remembers;
+// - it lent the lease to another host, and that lease is live;
+// - less than SETTLE_MS ago, by its own clock, it was told of a peer's claim
+//   on the provider (a release, seen when it arrives) or sent one itself
+//   (the claims its Resets store keeps across a restart, resets.ts
+//   `claimOut`, which model.ts asks first, for a peer's ask and for its own
+//   claim alike): a reading may not show that claim yet;
+// - it is claiming itself: from its hold until its claim comes back;
+// - it is asking at once and asked first: the earlier ask, then the lower
+//   host name, the same on both sides; the loser yields.
 //
-// A host claims only once every peer that answered granted it. It then holds
-// the lease for its `holdMs` (a lease whose host went away lapses then) and
-// releases it with the claim's time, so the peers know a claim was made. A
-// peer that does not answer within the wait is passed over: the host claims
-// on a fresh reading of the account (model.ts), and the claim's record says
-// so. On a link that is down both ways, two hosts may both claim; they send
-// one request id (resets.ts `claimRequestID`).
+// No time of one host is compared with another's: the hosts' clocks may be
+// minutes apart. Each host judges by its own clock how long ago it saw or
+// sent a claim, and the claim is sent only on a reading taken after every
+// grant: after each peer judged, on its own clock, that SETTLE_MS had passed
+// since the last claim it knew of, so that reading shows it (the provider's
+// lag is assumed below SETTLE_MS). The ask's `readAt` and a release's
+// `claimedAt` are for the record. Only the ask order's tie-break compares
+// two hosts' times, and both sides compare them alike.
+//
+// The asker's hold never outlasts what it asked for (`requestedAt + holdMs`,
+// its own clock). Once held, the lease is the host's until its claim comes
+// back (a held lease refuses every ask), and the host reads the account
+// again before it sends. Every sent claim is released, whatever came back:
+// a claim that may have gone through holds the next off for SETTLE_MS.
 //
 // The table is pure: `answer`, `begin`, `hold`, `finish` and `release` each
 // return the new table. `make` keeps one table per host behind the `Leases`
 // service; `HOST` is the process's, shared by every plugin instance in it.
 import { Clock, Context, Effect, Schema, Semaphore } from "effect"
-import { ResetProvider } from "./resets.ts"
+import { ResetProvider, SETTLE_MS } from "./resets.ts"
+
+export { SETTLE_MS }
 
 const MINUTE = 60_000
 
-/** How long a lease holds without a release: a claim reads the account, sends the claim and reads it again well within it. */
+/** How long a lease holds: a claim reads the account, sends the claim and reads it again well within it. */
 export const LEASE_MS = 2 * MINUTE
 /** The longest lease a peer lends, whatever the asker asks. */
-export const MAX_LEASE_MS = 10 * MINUTE
-/** How long a host waits for each peer's answer before it passes over the peer. */
+export const MAX_LEASE_MS = 5 * MINUTE
+/** How long a host just started lends nothing: a lease it lent, or a claim it sent, before it started has run out and shows. */
+export const QUIET_MS = Math.max(MAX_LEASE_MS, SETTLE_MS)
+/** How long a host waits for each peer's answer. */
 export const LEASE_WAIT_MS = 10_000
-/** How long a claim is remembered against an older reading. */
+/** How long a claim is remembered. */
 const SEEN_MS = 24 * 60 * MINUTE
 
 const LeaseFields = {
@@ -42,15 +67,15 @@ const LeaseFields = {
   /** The ask's id: one claim's, released under it. */
   id: Schema.String,
   provider: ResetProvider,
-  /** The account: the reset ids its reading lists. */
+  /** The reset ids the asker's reading lists, for the record. */
   grants: Schema.Array(Schema.String),
 }
 
-/** A host asks for an account's lease, on a reading taken at `readAt`, at `requestedAt`, to hold for `holdMs`. */
+/** A host asks for a provider's lease, at `requestedAt` to hold for `holdMs` (its clock; `readAt`, its reading's time, is for the record). */
 export const LeaseAsk = Schema.TaggedStruct("Ask", { ...LeaseFields, readAt: Schema.Number, requestedAt: Schema.Number, holdMs: Schema.Number })
 export type LeaseAsk = typeof LeaseAsk.Type
 
-/** A host releases a lease, with when its claim went through, if it did. */
+/** A host releases a lease, with when its claim was sent, if it was. */
 export const LeaseRelease = Schema.TaggedStruct("Release", { ...LeaseFields, claimedAt: Schema.optionalKey(Schema.Number) })
 export type LeaseRelease = typeof LeaseRelease.Type
 
@@ -61,29 +86,30 @@ export type LeaseMessage = typeof LeaseMessage.Type
 export const LeaseAnswer = Schema.Struct({ granted: Schema.Boolean, reason: Schema.optionalKey(Schema.String) })
 export type LeaseAnswer = typeof LeaseAnswer.Type
 
-interface Account {
+interface Scoped {
   readonly provider: ResetProvider
-  readonly grants: ReadonlyArray<string>
 }
 
-/** A lease this host asks for (`asking`), holds (`held`), or gave up to a host that asked first (`yielded`). */
-export interface Own extends Account {
+/** A lease this host asks for (`asking`), holds while its claim is out (`held`), or gave up to a host that asked first (`yielded`). */
+export interface Own extends Scoped {
   readonly id: string
+  readonly grants: ReadonlyArray<string>
   readonly readAt: number
   readonly requestedAt: number
   readonly stage: "asking" | "held" | "yielded"
+  /** When the lease ends: `requestedAt + holdMs`, never later. A held lease stays until its claim is finished. */
   readonly expiresAt: number
 }
 
 /** A lease this host lent another. */
-export interface Lent extends Account {
+export interface Lent extends Scoped {
   readonly host: string
   readonly id: string
   readonly expiresAt: number
 }
 
-/** A claim this host made or was told of. */
-export interface Seen extends Account {
+/** A peer's claim this host was told of, `at` when the telling arrived, by this host's clock. */
+export interface Seen extends Scoped {
   readonly at: number
 }
 
@@ -91,31 +117,34 @@ export interface LeaseTable {
   readonly own: ReadonlyArray<Own>
   readonly lent: ReadonlyArray<Lent>
   readonly seen: ReadonlyArray<Seen>
+  /** Until when this host lends nothing: its leases started then (a restart), and it may have lent one it forgot. */
+  readonly quietUntil?: number
 }
 
 export const emptyTable: LeaseTable = { own: [], lent: [], seen: [] }
 
-/** Whether two leases are on one account: one provider, a reset id in common. */
-export const sameAccount = (left: Account, right: Account) => left.provider === right.provider && left.grants.some((id) => right.grants.includes(id))
+/** A host's table as it starts: empty, and quiet for `quietMs` from `now`. */
+export const started = (now: number, quietMs: number = QUIET_MS): LeaseTable => ({ ...emptyTable, quietUntil: now + quietMs })
 
 /** Whether `left` asked before `right`: the earlier ask, then the lower host name. */
 export const asksFirst = (left: { readonly requestedAt: number; readonly host: string }, right: { readonly requestedAt: number; readonly host: string }) =>
   left.requestedAt < right.requestedAt || (left.requestedAt === right.requestedAt && left.host < right.host)
 
 const prune = (table: LeaseTable, now: number): LeaseTable => ({
-  own: table.own.filter((item) => item.expiresAt > now),
+  ...table,
+  own: table.own.filter((item) => item.stage === "held" || item.expiresAt > now),
   lent: table.lent.filter((item) => item.expiresAt > now),
   seen: table.seen.filter((item) => now - item.at < SEEN_MS),
 })
 
 const stamp = (at: number) => new Date(at).toISOString()
 
-/** Why the account is not free for a lease `ask`ed by `asker` on a reading at `readAt`, by what was lent and seen; none when it is. */
-const taken = (table: LeaseTable, account: Account & { readonly readAt: number }, asker: string): string | undefined => {
-  const lent = table.lent.find((item) => item.host !== asker && sameAccount(item, account))
-  if (lent !== undefined) return `${lent.host} holds the account's lease until ${stamp(lent.expiresAt)}`
-  const seen = table.seen.find((item) => sameAccount(item, account) && item.at >= account.readAt)
-  if (seen !== undefined) return `a claim at ${stamp(seen.at)} is newer than the reading`
+/** Why the provider is not free at `now` (this host's clock) for a lease asked by `asker`, by what was lent and seen; none when it is. */
+const taken = (table: LeaseTable, provider: ResetProvider, asker: string, now: number): string | undefined => {
+  const lent = table.lent.find((item) => item.host !== asker && item.provider === provider)
+  if (lent !== undefined) return `${lent.host} holds the ${provider} lease until ${stamp(lent.expiresAt)}`
+  const seen = table.seen.find((item) => item.provider === provider && now < item.at + SETTLE_MS)
+  if (seen !== undefined) return `a claim told of at ${stamp(seen.at)} may not show yet in a reading`
   return undefined
 }
 
@@ -123,30 +152,31 @@ const taken = (table: LeaseTable, account: Account & { readonly readAt: number }
 export const answer = (table: LeaseTable, self: string, ask: LeaseAsk, now: number): readonly [LeaseAnswer, LeaseTable] => {
   const current = prune(table, now)
   const refuse = (reason: string) => [{ granted: false, reason }, current] as const
-  const why = taken(current, ask, ask.host)
+  if (current.quietUntil !== undefined && now < current.quietUntil) return refuse(`${self} started lately and lends nothing until ${stamp(current.quietUntil)}`)
+  const why = taken(current, ask.provider, ask.host, now)
   if (why !== undefined) return refuse(why)
-  const mine = current.own.find((item) => item.stage !== "yielded" && sameAccount(item, ask))
-  if (mine?.stage === "held") return refuse(`${self} is claiming on the account`)
+  const mine = current.own.find((item) => item.stage !== "yielded" && item.provider === ask.provider)
+  if (mine?.stage === "held") return refuse(`${self} is claiming on ${ask.provider}`)
   if (mine !== undefined && asksFirst({ requestedAt: mine.requestedAt, host: self }, ask)) return refuse(`${self} asked first`)
   const own = current.own.map((item) => (item === mine ? { ...item, stage: "yielded" as const } : item))
   const lent = [
     ...current.lent.filter((item) => !(item.host === ask.host && item.id === ask.id)),
-    { host: ask.host, id: ask.id, provider: ask.provider, grants: ask.grants, expiresAt: now + Math.min(Math.max(ask.holdMs, 0), MAX_LEASE_MS) },
+    { host: ask.host, id: ask.id, provider: ask.provider, expiresAt: now + Math.min(Math.max(ask.holdMs, 0), MAX_LEASE_MS) },
   ]
   return [{ granted: true }, { ...current, own, lent }]
 }
 
-/** A peer released its lease: lent no more, and its claim, if one went through, seen. */
+/** A peer released its lease: lent no more, and its claim, if it sent one, seen now, by this host's clock (never the peer's `claimedAt`). */
 export const release = (table: LeaseTable, message: LeaseRelease, now: number): LeaseTable => {
   const current = prune(table, now)
   return {
     ...current,
     lent: current.lent.filter((item) => !(item.host === message.host && item.id === message.id)),
-    seen: message.claimedAt === undefined ? current.seen : [...current.seen, { provider: message.provider, grants: message.grants, at: message.claimedAt }],
+    seen: message.claimedAt === undefined ? current.seen : [...current.seen, { provider: message.provider, at: now }],
   }
 }
 
-/** This host starts asking for a lease; why it may not, if so (another host's lease, a newer claim, a claim in hand here). */
+/** This host starts asking for a lease; why it may not, if so (another host's lease, a claim that may not show yet, a claim out here). */
 export const begin = (
   table: LeaseTable,
   self: string,
@@ -154,27 +184,41 @@ export const begin = (
   now: number,
 ): readonly [string | undefined, LeaseTable] => {
   const current = prune(table, now)
-  const why = taken(current, ask, self) ?? (current.own.some((item) => item.stage !== "yielded" && sameAccount(item, ask)) ? "a claim on the account is in hand here" : undefined)
+  const why = taken(current, ask.provider, self, now) ?? (current.own.some((item) => item.stage !== "yielded" && item.provider === ask.provider) ? `a ${ask.provider} claim is in hand here` : undefined)
   if (why !== undefined) return [why, current]
-  const own: Own = { ...ask, stage: "asking", expiresAt: now + ask.holdMs }
+  const own: Own = { id: ask.id, provider: ask.provider, grants: ask.grants, readAt: ask.readAt, requestedAt: ask.requestedAt, stage: "asking", expiresAt: ask.requestedAt + ask.holdMs }
   return [undefined, { ...current, own: [...current.own.filter((item) => item.id !== ask.id), own] }]
 }
 
-/** Every peer that answered granted: hold the lease, unless this host yielded it meanwhile (false). */
-export const hold = (table: LeaseTable, id: string, holdMs: number, now: number): readonly [boolean, LeaseTable] => {
+/** Every peer granted: hold the lease until it ends (never longer), unless this host yielded it meanwhile or it ended (false). */
+export const hold = (table: LeaseTable, id: string, now: number): readonly [boolean, LeaseTable] => {
   const mine = table.own.find((item) => item.id === id)
-  if (mine === undefined || mine.stage === "yielded" || mine.expiresAt <= now) return [false, table]
-  return [true, { ...table, own: table.own.map((item) => (item === mine ? { ...item, stage: "held" as const, expiresAt: now + holdMs } : item)) }]
+  if (mine === undefined || mine.stage !== "asking" || mine.expiresAt <= now) return [false, table]
+  return [true, { ...table, own: table.own.map((item) => (item === mine ? { ...item, stage: "held" as const } : item)) }]
 }
 
-/** The claim is done (or not made): the lease ends, and a claim that went through is seen. */
-export const finish = (table: LeaseTable, id: string, claimedAt: number | undefined): LeaseTable => {
-  const mine = table.own.find((item) => item.id === id)
-  return {
-    ...table,
-    own: table.own.filter((item) => item.id !== id),
-    seen: mine === undefined || claimedAt === undefined ? table.seen : [...table.seen, { provider: mine.provider, grants: mine.grants, at: claimedAt }],
-  }
+/** The claim is done (or not sent): the lease ends. A claim this host sent its Resets store keeps (resets.ts `claimOut`), not this table. */
+export const finish = (table: LeaseTable, id: string): LeaseTable => ({ ...table, own: table.own.filter((item) => item.id !== id) })
+
+/** What the peers' answers allow: send (every peer granted, or the owner said yes and no reachable peer refused), back off, or ask the owner. */
+export type Verdict =
+  | { readonly _tag: "send"; readonly granted: ReadonlyArray<string>; readonly passedOver: ReadonlyArray<string> }
+  | { readonly _tag: "refused"; readonly reasons: ReadonlyArray<string> }
+  | { readonly _tag: "unreachable"; readonly peers: ReadonlyArray<string> }
+
+/**
+ * The spend rule. A refusal from any peer backs off. A peer with no answer
+ * (unreachable, or silent past the wait) is no grant: a claim no one asked
+ * for is not sent, it becomes the owner's question; the owner's `yes` sends
+ * it anyway, with the reachable peers' grants.
+ */
+export const verdict = (answers: ReadonlyArray<{ readonly peer: string; readonly answer: LeaseAnswer | undefined }>, yes: boolean): Verdict => {
+  const refused = answers.flatMap((item) => (item.answer !== undefined && !item.answer.granted ? [`${item.peer}: ${item.answer.reason ?? "refused"}`] : []))
+  if (refused.length > 0) return { _tag: "refused", reasons: refused }
+  const silent = answers.flatMap((item) => (item.answer === undefined ? [item.peer] : []))
+  const granted = answers.flatMap((item) => (item.answer?.granted === true ? [item.peer] : []))
+  if (silent.length > 0 && !yes) return { _tag: "unreachable", peers: silent }
+  return { _tag: "send", granted, passedOver: silent }
 }
 
 /**
@@ -189,19 +233,23 @@ export class Leases extends Context.Service<
     readonly answer: (self: string, ask: LeaseAsk) => Effect.Effect<LeaseAnswer>
     readonly release: (message: LeaseRelease) => Effect.Effect<void>
     readonly begin: (self: string, ask: Pick<LeaseAsk, "id" | "provider" | "grants" | "readAt" | "requestedAt" | "holdMs">) => Effect.Effect<string | undefined>
-    readonly hold: (id: string, holdMs: number) => Effect.Effect<boolean>
-    readonly finish: (id: string, claimedAt: number | undefined) => Effect.Effect<void>
+    readonly hold: (id: string) => Effect.Effect<boolean>
+    readonly finish: (id: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/Leases") {}
 
-/** A host's leases in memory: a fresh table and locks. */
-export const make = (): Leases["Service"] => {
-  let table = emptyTable
+/**
+ * A host's leases in memory, and its locks. The table starts at the first
+ * time it is used, quiet for `quietMs` (default QUIET_MS): a process
+ * cannot tell a first start from a restart that forgot a lease it lent.
+ */
+export const make = (options: { readonly quietMs?: number } = {}): Leases["Service"] => {
+  let table: LeaseTable | undefined
   const locks = new Map<ResetProvider, Semaphore.Semaphore>()
   /** Change the table at the clock's time, and answer what the change says. */
-  const change = <A>(body: (at: number) => readonly [A, LeaseTable]) =>
+  const change = <A>(body: (current: LeaseTable, at: number) => readonly [A, LeaseTable]) =>
     Effect.map(Clock.currentTimeMillis, (at) => {
-      const [result, next] = body(at)
+      const [result, next] = body(table ?? started(at, options.quietMs ?? QUIET_MS), at)
       table = next
       return result
     })
@@ -213,11 +261,11 @@ export const make = (): Leases["Service"] => {
       locks.set(provider, lock)
       return lock
     },
-    answer: (self, ask) => change((at) => answer(table, self, ask, at)),
-    release: (message) => change((at) => [undefined, release(table, message, at)] as const),
-    begin: (self, ask) => change((at) => begin(table, self, ask, at)),
-    hold: (id, holdMs) => change((at) => hold(table, id, holdMs, at)),
-    finish: (id, claimedAt) => change(() => [undefined, finish(table, id, claimedAt)] as const),
+    answer: (self, ask) => change((current, at) => answer(current, self, ask, at)),
+    release: (message) => change((current, at) => [undefined, release(current, message, at)] as const),
+    begin: (self, ask) => change((current, at) => begin(current, self, ask, at)),
+    hold: (id) => change((current, at) => hold(current, id, at)),
+    finish: (id) => change((current) => [undefined, finish(current, id)] as const),
   }
 }
 

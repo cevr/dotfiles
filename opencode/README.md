@@ -453,10 +453,10 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 `request.settings.cacheTTL` that `cmd/anthropic-auth`'s `http.request` hook
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
-routes each subagent call to a role, starts a new Opus start the pace holds on
+routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
-`log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
+`log.md`, and stops agent work over the Sabbath. Its
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence` and `guard`.
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -490,57 +490,16 @@ The model (the domain files at `mods/orchestrate/`):
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
-  keep a latch, and a latched child starts through the subagent tool), the
-  restart's reads and resumes (`Restarts`, below), the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
+  keep a latch, and a latched child starts through the subagent tool),
+  the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
   (the call log, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
-  latches, the restarts and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
-
-### Resuming after a restart
-
-OpenCode continues a root session and a background subagent that a shutdown
-cut mid-turn by itself, at its next start (a `restart` notice in each). It
-leaves a foreground subagent: the parent's call to it ends `Tool execution
-interrupted (sessionID: …)`, and the child stays cut until the parent calls it
-again by hand. When the plugin starts (a server start, or a plugin reload,
-which cuts nothing but finds a cut an earlier start left), it waits 10 s so
-OpenCode's own recovery lands first, then reads its location's subagent
-sessions active in the last 6 hours (`restart.ts`, through the `Restarts`
-contract, `opencode/restarts.ts`):
-
-- Cut: the last step ended aborted and no turn end followed (a shutdown
-  writes no `idle` marker). Resumed.
-- Interrupted (an `idle` marker `interrupted` after the aborted step): the
-  user's Escape or a parent's cancel, left alone, unless the parent's call
-  to it was cut by the same shutdown (the parent's own turn has no
-  `interrupted` after that call, or was itself cut through its parent).
-  The shutdown reaches a foreground child through its parent's call, which
-  cancels it, so this is the common case.
-- Anything else (ended, running, continued by a prompt or OpenCode's own
-  notice, cut before the window or after the start, a root session): left.
-
-Each cut child is prompted, in the background through the subagent tool, in
-its parent's call to it: `Your turn ended when OpenCode restarted; continue
-where you left off. Any shell you had running was cut by the restart; rerun
-the ones you still need.` Its result wakes the parent as a background
-subagent's does. A turn resumed in a row waits longer each time (10 s, 2 min,
-10 min, the `resume.backoffMs` option); past three it is left to the parent.
-Each child is checked again just before its resume, so one its parent or
-OpenCode continued meanwhile is not resumed twice, and a reload finds the
-resumed ones continued. Each resume is a `resumed` line in the call log
-(`{ kind, at, sessionID: parent, callID, child, agent, description, cause:
-"restart", attempt }`). The parent gets one steered notice per restart
-(`◈ Subagents resumed after a restart`) naming the children resumed and the
-ones left, with why; it wakes the parent only when none was resumed. Over the
-Sabbath nothing is resumed. `resume: false` turns it off.
-
-A crash (no graceful shutdown) leaves a step unfinished rather than aborted,
-which reads the same as a step that runs, so it is left to the parent.
 
 The route (`role.ts`): a role or any other agent asked by name runs as
 asked, and a former role name as its role. An untyped or general call runs
@@ -713,7 +672,9 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   implementor still runs (BatchNotDue), a land while a landed batch has no
   verdict, its verifier not started or still running, whatever round its
   units have moved on to (VerdictPending), a land with a finding of the last
-  verdict not folded into a ready unit it takes, or with a `changes` whose
+  verdict folded into no unit, or into one the land does not take that is not
+  still implementing (a finding folded into a running implementor holds no
+  land: it rides with that unit's later land, whose verifier is told it), or with a `changes` whose
   report did not read (FindingUnfolded: an unread report is never an empty
   set; the plugin reads it again before each start and land), a land that leaves a ready unit out
   (LandPartial). No rule holds an implementor's start. A refused call
@@ -727,6 +688,21 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   running implementor (its `sessionID`) or a new fix unit. The next land
   carries the folded findings to the next batch verifier, whose prompt ends
   with them and whose start answers with them.
+- **A land's units.** A unit is named by its role call's description
+  (`implementor <unit> rN`); no prompt is read. An implementor's description
+  may end `(rift: <path>)`: the ledger keeps that Rift as the unit's, across
+  rounds. A Rift a land names is a unit's by what the land and the ledger
+  say: the unit an entry names (`{ path, unit }`), else the unit whose start
+  named that Rift (by path, or a name that is its last segment; two such
+  units is none), else the branch checked out at an entry's path (read
+  before the land runs, since a pushed land trashes the Rift), else the
+  entry itself. A branch or name is read by its last segment, every way it
+  reads: as a unit's exact name, as `<unit>-<n>` (a later round's Rift or
+  branch), and through workrift's `feat-<unit>`. One unit among the readings
+  is that unit; none, or two (`db-2` when both `db` and `db-2` are units),
+  is none: the land goes through as none of the machine's, never as another
+  unit's (`unitOfEntry`). A LandPartial refusal names each ready unit's Rift
+  as `{ path, unit }` from the ledger.
 - **Departures.** The same call passes with `(departs: <why>)` at the end of
   a role call's description, or `departs: "<why>"` in a land's input; the
   ledger records a `Departed` line per rule it broke.
@@ -1549,7 +1525,8 @@ workbox in a week). One input, with an `action`:
   Rift by path (it starts with `/` or `.`), by name, or by its branch: exact
   first (the name, or the branch), then the branch with `/` as `-`
   (`mods/rift/find.ts`); an entry two Rifts answer to is refused, naming both
-  with their branches. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
+  with their branches. An entry may be `{ path, unit }`: the land lands its
+  path, and the orchestrate plugin records it as that unit's. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
   uncommitted changes (a file the same as in the warm source does not count)
   and a repository with no gate. Then, in the source's integration Rift
   (`integrate`, made on first use and kept): repair a stale multi-pack index,
@@ -2670,7 +2647,7 @@ Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
 Every role is an OpenCode subagent; its model is the config's.
 `bun run daily` binds every role (planner, implementor, verifier, worker)
-to the newest Claude Opus. Codex is the fallback, on the ChatGPT
+to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the fallback, on the ChatGPT
 subscription OpenCode signs in to itself (`opencode auth login openai`),
 used only when the pace holds a new Opus start.
 
@@ -2690,6 +2667,21 @@ there, and the next new start tries Opus first again. The parent's answer
 starts with `orchestrate: this agent runs on <model>, the Codex fallback
 (<why>).`, and the call log's `call` line carries the same `fallback`.
 No Codex bridge, MCP server or thread tools are involved.
+
+The planner goes on the newest Fable first (the owner's call, 2026-11-12:
+"Fable is our planner"). `bun run daily` writes it from the model catalog,
+never a pinned id, as orchestrate's `planner: { model }` option. A new
+planner start that names no model of its own runs on it at the planner's
+effort (medium); a follow-up keeps its model. When the host does not offer
+it, or its pace holds it (Fable's own week spent, or the pool's pace), the
+start takes the chain above, Opus then Codex, and its line carries
+`first: { model, fellBack }` saying why. Over the Sabbath the planner does
+what every role does: it latches on its own model, Fable, asking no pace, and
+when work resumes its open takes the same chain. No other role has a first
+model, so an implementor, verifier or worker never starts on Fable. The
+option replaced the planner A/B of 2026-11-10 (`experiment`, half the
+planner units on Fable); `models.ts --experiment` still reads that run's
+lines, which carry an arm.
 
 ## Pace and effort
 
@@ -2799,13 +2791,13 @@ bun run accept:affected   # the real-OpenCode tests that reach what changed
 bun run accept            # all of them, in parallel
 ```
 
-`bun run gate` (`scripts/gate.ts`) links the fork, then runs four legs at
-once: oxlint, `bun run agents -- --check`, `bun check` over the root and
+`bun run gate` (`scripts/gate.ts`) links the fork, then runs five legs at
+once: oxlint, the Effect debt ratchet, `bun run agents -- --check`, `bun check` over the root and
 every `mods/*` and `cmd/*` project, and the unit tests (every `*.test.ts`
 outside `tests/`) with `bun test --parallel`. A unit test file that passed is
 skipped while the key over what it reaches is unchanged: its package, the
 packages its `package.json` depends on, and the shared inputs (the root
-manifest, lock file, bunfig, tsconfig, the gate's scripts, Bun's version and
+manifest, lock file, bunfig, tsconfig, the lint policy, the gate's scripts, Bun's version and
 the fork's commit, diff and lock file). `scripts/reach.ts` derives that
 reach; `bun scripts/gate.ts --all` ignores the cache.
 
@@ -2828,9 +2820,59 @@ drive run still alive 5 s after the run ends is a leak, which it names, stops
 and fails the run on. It only ever names the run's own descendants, never the
 owner's servers or TUIs.
 
-`bun run lint` is oxlint: its errors are the layout fence (`.oxlintrc.json`,
-one import override per context; see `ARCHITECTURE.md`), and its warnings are
-advice. `git diff --check` checks patch whitespace. The typecheck links every
+`bun run lint` is oxlint, then the Effect debt ratchet. oxlint's errors are the
+layout fence (`.oxlintrc.json`, one import override per context; see
+`ARCHITECTURE.md`) and the rules of `oxlint-plugin-effect` the workspace
+already keeps. The plugin is pinned in the `lint` workspace (`lint/package.json`),
+never the root: it needs `effect` 4.1, and the lint workspace's own `effect`
+4.1.0 meets that peer, while the root's `effect` stays at what opencode-drive
+and the OpenCode SDK are built against (4.0.1, with their 4.0.1 platform
+packages). Moving the root's `effect` breaks every real-OpenCode scenario in
+`HttpApiClient`; `scripts/effect-debt.ts --check` refuses a root dependency on
+the plugin, and `scripts/effect-debt.test.ts` holds opencode-drive to the
+versions it pins. The kept rules are the 20 recommended rules it had
+no finding of, and `requireSuppressionReason` (a suppression names its rule
+and gives a reason after ` -- `). Two files keep one finding each a newer
+commit brought, as an exact-file override in `.oxlintrc.json` and a budget:
+`mods/orchestrate/machine.ts` (`maxHalsteadDifficulty`) and
+`mods/pool/memory/fleet-claims.test.ts` (`noReflectApply`). Its warnings are
+advice. `settings.effect.testFiles` names the test code beyond `*.test.*`
+(`tests/`, `scenarios/`, `laws.ts`, benchmarks, fakes), for the rules that
+treat tests apart.
+
+Every other recommended rule is debt, held by `scripts/effect-debt.ts`
+(`bun run debt`, also the gate's `debt` leg). `.oxlintrc.effect-debt.json`
+runs the pinned preset, unchanged, over every source file git tracks or would
+track, and `effect-debt.json` is the reviewed policy: the plugin and oxlint
+versions, the preset's rules, the ignores and test globs it was measured with,
+the host exemptions, and a budget per exact file and rule (plus
+`directive/suppression`, each file's count of lint suppressions, so a new one
+cannot hide debt). `--check` fails unless every count equals its own budget: a
+new file or rule has none, one file's fixes never pay for another's debt, and
+a fix fails until its budget is lowered in the same change
+(`bun scripts/effect-debt.ts --tighten` lowers budgets to the counts and never
+raises one). It also fails, never passing on an empty scan, when oxlint exits
+with an error, prints no report, cannot parse a file, loads a different number
+of rules, skips a source file, reports an unknown rule, or when the versions,
+preset, ignores or test globs drift between `package.json`, the installed
+packages, both configs and the policy. Nested configs are ignored.
+`bun run debt` prints the counts per rule and area, `--counts` per file as
+JSON, and `--measure` the unmodified preset's counts (no test globs, no
+exemptions). `--bootstrap` wrote the first policy and refuses once one exists.
+
+A host exemption switches one rule off for one exact file, in both
+`.oxlintrc.effect-debt.json`'s overrides and the policy's `exemptions` with
+its reason, and only for a capability no installed Effect service offers:
+
+| File | Rules | Why |
+| --- | --- | --- |
+| `scripts/effect-debt.ts` | `noGlobals`, `noNodeBuiltinImport` | the lint subprocess adapter: the root has no Effect platform layer, so it spawns git and oxlint with `Bun.spawn` and reads and writes files itself |
+| `scripts/effect-debt.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge (no Effect test runner is installed) and a real-process harness building throwaway workspaces |
+| `scripts/effect-isolation.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces and child `bun test` runs |
+
+No other rule can be exempted (`EXEMPTABLE` in the script): a test-global
+write, a fixed wait, a module mock, a swallowed failure or a style rule is
+fixed or stays budgeted. `git diff --check` checks patch whitespace. The typecheck links every
 workspace package (`mods/*`, `cmd/*`, `decider`) to the fork's installed host
 packages; run `bun run link-fork` before and after `bun install` (an install
 drops the links), and install only when changing the lock file. Link-fork, and

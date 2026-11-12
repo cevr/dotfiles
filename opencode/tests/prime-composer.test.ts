@@ -47,7 +47,7 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
   })
 
   test("Wakes lists the alarm: when it is due, its note, its mode, its repeat", () => {
-    expect(panel(frames.wakes).rows).toEqual([expect.stringMatching(/^\d\d:\d\d in (9m \d\ds|10m) · ALPHA: check the deploy · wake · once$/)])
+    expect(panel(frames.wakes).rows).toEqual([expect.stringMatching(/^(?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d in (9m \d\ds|10m) · ALPHA: check the deploy · wake · once$/)])
     expect(panel(frames.wakes).hints).toBe("detail enter  cancel ctrl+d  tabs ←/→")
   })
 

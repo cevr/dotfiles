@@ -1,0 +1,128 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [],
+  "categories": {
+    "correctness": "off"
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "testbeds/gamut/fixture/**",
+    "out/**",
+    "media/**"
+  ],
+  "jsPlugins": [
+    "./lint/node_modules/oxlint-plugin-effect/dist/plugin.js"
+  ],
+  "settings": {
+    "effect": {
+      "testFiles": [
+        "tests/**",
+        "scenarios/**",
+        "mods/*/laws.ts",
+        "**/*.bench.ts",
+        "mods/git/process/fake-gh.ts",
+        "mods/herdr/herdr/fake-server.ts",
+        "mods/kernel/catalog.fixture.ts",
+        "testbeds/gamut/sim-model.ts"
+      ]
+    }
+  },
+  "rules": {
+    "complexity": ["error", { "max": 21 }],
+    "effect/maxCognitiveComplexity": ["error", { "max": 21 }],
+    "effect/maxHalsteadDifficulty": ["error", { "max": 79 }],
+    "effect/noAliasTestLayer": "error",
+    "effect/noArrayFilterMap": "error",
+    "effect/noAs": "error",
+    "effect/noAsyncFunction": "error",
+    "effect/noChainedTypeAssertions": "error",
+    "effect/noComments": "error",
+    "effect/noConditionalEmptyObjectSpread": "error",
+    "effect/noDynamicImports": "error",
+    "effect/noEagerAcquire": "error",
+    "effect/noEffectBind": "error",
+    "effect/noEffectBunTestItCall": "error",
+    "effect/noEffectDo": "error",
+    "effect/noEffectRunInTests": "error",
+    "effect/noFixedWaitInTests": "error",
+    "effect/noGlobals": "error",
+    "effect/noInlineProvide": "error",
+    "effect/noKnownValueWidening": "error",
+    "effect/noLintEvasion": "error",
+    "effect/noLocaleCompare": "error",
+    "effect/noManagedRuntimeInEffect": "error",
+    "effect/noModuleLevelMutableState": "error",
+    "effect/noModuleMocks": "error",
+    "effect/noModulePathFacts": "error",
+    "effect/noNestedEffectGen": "error",
+    "effect/noNewError": "error",
+    "effect/noNewPromise": "error",
+    "effect/noNodeBuiltinImport": "error",
+    "effect/noNullish": "error",
+    "effect/noObjectParameters": "error",
+    "effect/noPerCallCacheConstruction": "error",
+    "effect/noPointFreeLog": "error",
+    "effect/noPromiseChainsInTests": "error",
+    "effect/noReduceAccumulatorCopy": "error",
+    "effect/noReflectApply": "error",
+    "effect/noReflectGet": "error",
+    "effect/noRepoTempDirectory": "error",
+    "effect/noRunCollectOnUnboundedStream": "error",
+    "effect/noRuntimeTypeof": "error",
+    "effect/noSequentialEffectAll": "error",
+    "effect/noShapeInSymbolNames": "error",
+    "effect/noSharedTestHome": "error",
+    "effect/noSilentCatchAll": "error",
+    "effect/noTernary": "error",
+    "effect/noTestGlobals": "error",
+    "effect/noTestLifecycleHooks": "error",
+    "effect/noThrowStatement": "error",
+    "effect/noTryCatch": "error",
+    "effect/noUnboundedConcurrency": "error",
+    "effect/noUnboundedRetry": "error",
+    "effect/noUnknownParameters": "error",
+    "effect/noUnknownReturns": "error",
+    "effect/noUnknownTypeAliases": "error",
+    "effect/noUnsafeDictionaryType": "error",
+    "effect/noWidenThenAssert": "error",
+    "effect/preferCatchTag": "error",
+    "effect/preferEffectFn": "error",
+    "effect/preferMatchTagsExhaustive": "error",
+    "effect/preferPredicateIsTagged": "error",
+    "effect/preferSchemaTaggedUnion": "error",
+    "effect/preferServiceOf": "error",
+    "effect/preferTaggedConstructors": "error",
+    "effect/requireForceKillAfter": "error",
+    "effect/requireNamedEffectFn": "error",
+    "effect/requireSuppressionReason": "error"
+  },
+  "overrides": [
+    {
+      "files": [
+        "scripts/effect-debt.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/effect-debt.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/effect-isolation.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    }
+  ]
+}

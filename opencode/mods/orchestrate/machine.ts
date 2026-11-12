@@ -15,8 +15,10 @@
 // from the verifier's findings by the plugin, `<unit>/<id>`) goes into a unit
 // of batch N+1, by that unit's implementor's start: its own unit's findings
 // by themselves, others named in `(folds: …)`. Batch N+1 lands once verdict
-// N is in, with every finding folded into a ready unit it takes; its verifier
-// checks the findings as folded.
+// N is in, with every finding folded into a unit: one folded into a ready
+// unit lands with it; one folded into a unit still implementing does not
+// hold the other ready units, it rides with its unit's later land, whose
+// verifier checks it as folded.
 //
 // A unit is `implement` (its implementor runs), `ended` (its implementor
 // stopped without `ready`), `ready`, `landed` (no verifier started for it
@@ -39,7 +41,9 @@
 //                    verifier's `units`), not a unit's slot, which a covered
 //                    unit's next round takes over;
 //   FindingUnfolded  a land while a finding of the last verdict is not folded
-//                    into a ready unit the land takes, or while a `changes`
+//                    into a unit, or is folded into one that is neither in
+//                    the land nor still implementing (a ready unit the land
+//                    leaves out, an implementor that ended), or while a `changes`
 //                    verdict's report did not read (`unresolved`: its
 //                    findings are not known, never none; the plugin reads
 //                    it again before each start and land, `ReportRead`);
@@ -49,7 +53,9 @@
 // one `Departed` per rule it broke; a land that departs with a finding
 // unfolded drops that finding. A verifier covers what is landed; with
 // nothing landed, what is ready (a land by hand, which the plugin does not
-// see, so the verifier's start stands for it). A root that runs no unit is
+// see, so the verifier's start stands for it, and the findings folded into
+// those units go to the verifier as folded, as a land's would). A verdict
+// closes the findings folded into a unit it took out of the state. A root that runs no unit is
 // left alone.
 //
 // Pure: no file, no clock. The ledger (service.ts `Ledger`) keeps each root's
@@ -77,7 +83,7 @@ export const RULES: Readonly<Record<Rule, { readonly name: string; readonly word
   VerifierRunning: { name: "Verify a batch", words: "never more than one runs on a machine at a time" },
   BatchNotDue: { name: "Batch cadence", words: "Land when 3 units are ready or the oldest ready unit has waited 30 minutes." },
   VerdictPending: { name: "The pipeline", words: "Batch N+1 lands only once batch N's verdict is in" },
-  FindingUnfolded: { name: "The pipeline", words: "only with every finding of batch N folded into a ready unit of batch N+1" },
+  FindingUnfolded: { name: "The pipeline", words: "only with every finding of batch N folded into a unit of batch N+1" },
   LandPartial: { name: "Land a batch", words: "Land every ready unit at once when the cadence fires" },
 }
 
@@ -102,6 +108,8 @@ export const Start = Schema.TaggedStruct("Start", {
   direct: Schema.Boolean,
   folds: Schema.optionalKey(Schema.Array(Schema.String)),
   departs: Schema.optionalKey(Schema.String),
+  /** An implementor's Rift, as its description names it: `(rift: <path>)`. A land of that path is its unit's. */
+  rift: Schema.optionalKey(Schema.String),
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
 
@@ -136,12 +144,25 @@ export interface HandBack extends Schema.Schema.Type<typeof HandBack> {}
 export const ReportRead = Schema.TaggedStruct("ReportRead", { batch: Schema.String, findings: Schema.Array(Schema.String) })
 export interface ReportRead extends Schema.Schema.Type<typeof ReportRead> {}
 
+/**
+ * One Rift a land names, as the land's input and the Rift itself say (never a brief):
+ * - `rift`: the input's entry, a path, a Rift's name or a branch;
+ * - `branch`: the branch checked out there, when the plugin read it;
+ * - `unit`: the unit the input names it for (`rifts: [{ path, unit }]`).
+ */
+export const LandEntry = Schema.Struct({ rift: Schema.String, branch: Schema.optionalKey(Schema.String), unit: Schema.optionalKey(Schema.String) })
+export interface LandEntry extends Schema.Schema.Type<typeof LandEntry> {}
+
+/** A land's Rift: its entry as a string, or with what the plugin knows of it. */
+export const LandTarget = Schema.Union([Schema.String, LandEntry])
+export type LandTarget = typeof LandTarget.Type
+
 /** A `rift` land about to run, with the Rifts it names. */
-export const Land = Schema.TaggedStruct("Land", { rifts: Schema.Array(Schema.String), departs: Schema.optionalKey(Schema.String) })
+export const Land = Schema.TaggedStruct("Land", { rifts: Schema.Array(LandTarget), departs: Schema.optionalKey(Schema.String) })
 export interface Land extends Schema.Schema.Type<typeof Land> {}
 
 /** The Rifts a land answered green. */
-export const Landed = Schema.TaggedStruct("Landed", { rifts: Schema.Array(Schema.String) })
+export const Landed = Schema.TaggedStruct("Landed", { rifts: Schema.Array(LandTarget) })
 export interface Landed extends Schema.Schema.Type<typeof Landed> {}
 
 /** The session a started step runs in, once the plugin knows it: what the ledger checks is still alive. */
@@ -153,7 +174,14 @@ export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead
 
 // ── The events ──
 
-export const UnitStarted = Schema.TaggedStruct("UnitStarted", { unit: Schema.String, round: Schema.Number, direct: Schema.Boolean, at: Schema.Number })
+/** A unit's round started; `rift`, the Rift its description named, is the unit's as well as those it had. */
+export const UnitStarted = Schema.TaggedStruct("UnitStarted", {
+  unit: Schema.String,
+  round: Schema.Number,
+  direct: Schema.Boolean,
+  rift: Schema.optionalKey(Schema.String),
+  at: Schema.Number,
+})
 export interface UnitStarted extends Schema.Schema.Type<typeof UnitStarted> {}
 
 export const UnitHandedBack = Schema.TaggedStruct("UnitHandedBack", { unit: Schema.String, ready: Schema.Boolean, at: Schema.Number })
@@ -215,6 +243,8 @@ export interface Unit {
   readonly direct: boolean
   /** Its implementor's session, once known. */
   readonly child?: string
+  /** The Rifts its implementors were started on, by `(rift: <path>)` in their descriptions; absent when none named one. */
+  readonly rifts?: ReadonlyArray<string>
 }
 
 /** A finding of a verdict: the verifier's batch, and the unit it was folded into, once it was. */
@@ -257,10 +287,16 @@ export const unitOfFinding = (finding: string): string => finding.split("/")[0]!
 /** The open findings, as `[key, finding]`. */
 const openFindings = (state: MachineState): ReadonlyArray<readonly [string, Finding]> => Object.entries(state.findings ?? {})
 
-/** The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it does not take. */
+/** A finding folded into a unit still implementing: it holds no land, and rides with its unit's. */
+export const riding = (state: MachineState, finding: Finding): boolean => finding.into !== undefined && state.units[finding.into]?.state === "implement"
+
+/**
+ * The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it
+ * does not take that is not still implementing (one still implementing rides with its own land).
+ */
 export const unfoldedOf = (state: MachineState, lands: ReadonlyArray<string>): ReadonlyArray<string> =>
   openFindings(state)
-    .filter(([, finding]) => finding.into === undefined || !lands.includes(finding.into))
+    .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && !riding(state, finding)))
     .map(([key]) => key)
 
 /** The open findings an implementor's start folds into its unit: its own unit's, and those its `folds` name. */
@@ -299,21 +335,76 @@ const unverifiedOf = (state: MachineState): ReadonlyArray<string> => [...new Set
 /** The units the running verifier covers: as it started, else (an older checkpoint) those in `verify`. */
 const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier?.units ?? unitsIn(state, "verify")
 
+// ── A land's Rifts and their units ──
+//
+// A unit is named by its role call's description (`implementor <unit> rN`). A Rift a land names is a unit's
+// by what the land's input, the ledger and the Rift itself say, never by a brief: an implementor's prompt may
+// name any Rift (a "do not touch" line, another unit's), so no prompt is read for workspaces. In order:
+//
+// 1. the unit the input names it for (`{ path, unit }`), when that is a unit; any other is no unit;
+// 2. else the unit whose implementor was started on that Rift (`(rift: <path>)` in its description, kept
+//    in the ledger across rounds): the entry is that path, or its last segment; two units on it is none;
+// 3. else its branch, when the plugin read it from the Rift: `feat/<unit>`, or a later round's
+//    `feat/<unit>-<n>` (any prefix: `<run>/<unit>` too), by the name rule on its last segment;
+// 4. else the entry itself, by the name rule on its last segment: a unit's name, a branch, or a Rift's
+//    path or name (`<unit>`, `<unit>-<n>`, workrift's `feat-<unit>`).
+//
+// The name rule reads a name every way it can: as a unit's exact name, and as `<name>-<n>`, unit `<name>`'s
+// round (`feat-<name>…` read as `<name>…` too). Exactly one unit among the readings is that unit; none, or
+// two (`db-2` when both `db` and `db-2` are units), is no unit. An entry that names no unit lands as none of
+// the machine's: never another unit's.
+
+/** A land's target as an entry. */
+export const entryOf = (target: LandTarget): LandEntry => (typeof target === "string" ? { rift: target } : target)
+
+/** A path or name with its trailing slashes dropped. */
+const trimmed = (text: string) => text.trim().replace(/\/+$/, "")
+
+/** The last `/` segment of a path or branch, trailing slashes dropped. */
+const lastSegment = (text: string) => trimmed(text).split("/").at(-1) ?? ""
+
+/** The unit `name` (a Rift's name, a branch's last segment) is, by the name rule; none when no reading or two disagree. */
+export const unitOfName = (name: string, units: ReadonlyArray<string>): string | undefined => {
+  const readings = name.startsWith("feat-") ? [name, name.slice("feat-".length)] : [name]
+  const found = new Set(
+    readings.flatMap((reading) => {
+      const base = /^(.+)-\d+$/.exec(reading)?.[1]
+      return [...(units.includes(reading) ? [reading] : []), ...(base !== undefined && units.includes(base) ? [base] : [])]
+    }),
+  )
+  return found.size === 1 ? [...found][0] : undefined
+}
+
+/** Whether a land's entry names the Rift at `path`: the path itself, or a name that is its last segment. */
+const namesRift = (entry: string, path: string) => entry === trimmed(path) || (!entry.includes("/") && lastSegment(path) === entry)
+
 /**
- * The unit a land's entry names: by its name, its branch (`<run>/<unit>`,
- * `feat/<unit>`), its path (`…/.rifts/<repo>/<unit>`) or workrift's
- * directory (`<run>-<unit>`). The longest unit name that fits wins
- * (`fix-auth` over `auth`); an entry that is no unit's is none.
+ * The unit a land's entry is: by the unit the input names, else the Rift a unit's implementor was started on
+ * (`rifts`: each unit's, from the ledger), else its branch, else its own name; none, never a wrong one.
  */
-export const unitOfRift = (rift: string, units: ReadonlyArray<string>): string | undefined => {
-  const entry = rift.trim().replace(/\/+$/, "")
-  return units.filter((unit) => entry === unit || entry.endsWith(`/${unit}`) || entry.endsWith(`-${unit}`)).sort((a, b) => b.length - a.length)[0]
+export const unitOfEntry = (target: LandTarget, units: ReadonlyArray<string>, rifts: Readonly<Record<string, ReadonlyArray<string>>> = {}): string | undefined => {
+  const entry = entryOf(target)
+  if (entry.unit !== undefined) return units.includes(entry.unit) ? entry.unit : undefined
+  const owners = units.filter((unit) => (rifts[unit] ?? []).some((path) => namesRift(trimmed(entry.rift), path)))
+  if (owners.length > 0) return owners.length === 1 ? owners[0] : undefined
+  return unitOfName(lastSegment(entry.branch ?? entry.rift), units)
+}
+
+/** Each unit's Rifts, as its implementors' starts named them. */
+const riftsIn = (state: MachineState): Readonly<Record<string, ReadonlyArray<string>>> =>
+  Object.fromEntries(Object.entries(state.units).flatMap(([name, unit]) => (unit.rifts === undefined ? [] : [[name, unit.rifts]])))
+
+/** A land's target as the root wrote it in the land's input: its entry, or `{ path, unit }`. */
+const inputOf = (target: LandTarget): string => {
+  const entry = entryOf(target)
+  return entry.unit === undefined ? JSON.stringify(entry.rift) : `{ path: ${JSON.stringify(entry.rift)}, unit: ${JSON.stringify(entry.unit)} }`
 }
 
 /** The ready units a land's `rifts` name. */
-const named = (state: MachineState, rifts: ReadonlyArray<string>): ReadonlyArray<string> => {
+const named = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
   const all = Object.keys(state.units)
-  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfRift(rift, all) === unit))
+  const recorded = riftsIn(state)
+  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all, recorded) === unit))
 }
 
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
@@ -335,6 +426,28 @@ export const coverOf = (state: MachineState): ReadonlyArray<string> => {
   const landed = unverifiedOf(state)
   return landed.length > 0 ? landed : unitsIn(state, "ready")
 }
+
+/** What a verifier's start covers: its own unit alone for a unit-named one that departed, else the batch (`coverOf`). */
+const coverOfStart = (state: MachineState, start: Start): ReadonlyArray<string> => {
+  const unit = state.units[start.name]
+  return !BATCH.test(start.name) && unit !== undefined && (unit.state === "ready" || unverifiedOf(state).includes(start.name)) ? [start.name] : coverOf(state)
+}
+
+/**
+ * The findings folded into a ready unit a verifier's start covers with no land seen (a land by hand): the start
+ * stands for that land, so they go to the verifier as folded, as a land's would. Left open, they outlived the
+ * verdict on a unit no longer in the state and held every later land (the ledger of 2026-11-12, batches j-l).
+ */
+const standInFindings = (state: MachineState, units: ReadonlyArray<string>): Readonly<Record<string, Required<Finding>>> => {
+  const landed = state.unverified ?? []
+  const standsIn = units.filter((name) => state.units[name]?.state === "ready" && !landed.includes(name))
+  return Object.fromEntries(
+    openFindings(state).flatMap(([key, finding]) => (finding.into !== undefined && standsIn.includes(finding.into) ? [[key, { batch: finding.batch, into: finding.into }]] : [])),
+  )
+}
+
+/** What a verifier over `units` checks as folded: the findings landed with them, and those its start stands in the land for. */
+const checkedOf = (state: MachineState, units: ReadonlyArray<string>): Readonly<Record<string, Required<Finding>>> => ({ ...state.carried, ...standInFindings(state, units) })
 
 // ── The refusal's words ──
 
@@ -361,7 +474,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
     }
     case "VerdictPending":
       return state.verifier === undefined
-        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a ready unit. Keep the next batch's implementors working meanwhile.`
+        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a unit (one folded into a unit still implementing rides with that unit's later land). Keep the next batch's implementors working meanwhile.`
         : `Verifier ${state.verifier.batch} still runs over ${list(coveredOf(state))}: keep the next batch's implementors working, fold its findings into them when its verdict comes, then land.`
     case "FindingUnfolded": {
       const lands = call._tag === "Land" ? named(state, call.rifts) : ready
@@ -376,12 +489,14 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
           ? []
           : [
               `Fold each finding into a unit this land takes: ${unfolded.map((key) => foldedLine(state, key)).join(", ")}.`,
-              `A finding folded into a unit still implementing lands when that unit hands back ready. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
+              `A finding folded into a unit still implementing holds no land: it rides with that unit's later land, whose verifier checks it. One folded into a ready unit lands with it: take that unit too. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
             ]),
       ].join(" ")
     }
     case "LandPartial":
-      return `Land every ready unit in one call: rift({ action: "land", rifts: [${ready.map((unit) => JSON.stringify(unit)).join(", ")}] }) (each by its Rift's name, branch or path).`
+      return `Land every ready unit in one call, each Rift as { path, unit }: rift({ action: "land", rifts: [${ready
+        .map((unit) => `{ path: ${JSON.stringify(state.units[unit]?.rifts?.at(-1) ?? "<its Rift>")}, unit: ${JSON.stringify(unit)} }`)
+        .join(", ")}] }).`
   }
 }
 
@@ -389,7 +504,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
 export const refusalOf = (state: MachineState, rule: Rule, call: Command, now: number, cadence: Cadence): string => {
   const how =
     call._tag === "Land"
-      ? `add departs: "<why>" to the land's input: rift({ action: "land", rifts: [${call.rifts.map((rift) => JSON.stringify(rift)).join(", ")}], departs: "<why>" })`
+      ? `add departs: "<why>" to the land's input: rift({ action: "land", rifts: [${call.rifts.map(inputOf).join(", ")}], departs: "<why>" })`
       : call._tag === "Start"
         ? `end the call's description with (departs: <why>): description "${call.role} ${call.name} r${call.round} (departs: <why>)"`
         : "state (departs: <why>) in the call"
@@ -421,7 +536,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           // No rule holds an implementor: the next batch fans out while a verifier runs.
           if (command.role === "implementor")
             return [
-              UnitStarted.make({ unit: command.name, round: command.round, direct: command.direct, at: now }),
+              UnitStarted.make({ unit: command.name, round: command.round, direct: command.direct, ...(command.rift === undefined ? {} : { rift: command.rift }), at: now }),
               ...foldsOf(state, command).map((finding) => FindingFolded.make({ finding, into: command.name, at: now })),
             ]
           const batch = BATCH.test(command.name)
@@ -434,9 +549,8 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           // A root that runs no unit is left alone: its reviewer is none of the machine's.
           if (!batch && !any) return departed
           // A unit-named verifier that departs covers its unit alone.
-          const unit = state.units[command.name]
-          const units = !batch && unit !== undefined && (unit.state === "ready" || unverifiedOf(state).includes(command.name)) ? [command.name] : coverOf(state)
-          const carried = Object.entries(state.carried ?? {}).map(([key, finding]) => `${key} → ${finding.into}`)
+          const units = coverOfStart(state, command)
+          const carried = Object.entries(checkedOf(state, units)).map(([key, finding]) => `${key} → ${finding.into}`)
           return [...departed, VerifierStarted.make({ batch: command.name, units, ...(carried.length === 0 ? {} : { findings: carried }), at: now })]
         }
         case "HandBack": {
@@ -490,7 +604,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         const prior = state.units[event.unit]?.state
         const verifier = prior === "verify" && state.verifier !== undefined && state.verifier.units === undefined ? { ...state.verifier, units: coveredOf(state) } : state.verifier
         const unverified = prior === "landed" ? [...new Set([...(state.unverified ?? []), event.unit])] : state.unverified
-        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct }
+        // The unit keeps the Rifts of its earlier rounds: a land may name any of them.
+        const rifts = [...new Set([...(state.units[event.unit]?.rifts ?? []), ...(event.rift === undefined ? [] : [event.rift])])]
+        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct, ...(rifts.length === 0 ? {} : { rifts }) }
         return tidy({ ...state, units, ...(verifier === undefined ? {} : { verifier }), ...(unverified === undefined ? {} : { unverified }) })
       }
       case "UnitHandedBack": {
@@ -531,10 +647,15 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           if (unit !== undefined && (unit.state === "landed" || (unit.state === "ready" && !unverified.includes(name))))
             units[name] = { ...unit, state: "verify", since: event.at }
         }
+        // The findings folded into a unit it stands in the land for go to it as folded, as a land's would.
+        for (const [key, finding] of Object.entries(standInFindings(state, event.units))) {
+          carried[key] = finding
+          delete findings[key]
+        }
         const left = unverified.filter((name) => !event.units.includes(name))
         // A second verifier (one that departed) takes over what the first one covered too: neither has a verdict yet.
         const covers = [...new Set([...(state.verifier === undefined ? [] : coveredOf(state)), ...event.units])]
-        return tidy({ ...state, units, unverified: left, verifier: { batch: event.batch, since: event.at, units: covers } })
+        return tidy({ ...state, units, findings, carried, unverified: left, verifier: { batch: event.batch, since: event.at, units: covers } })
       }
       case "VerifierEnded": {
         const covered = coveredOf(state)
@@ -548,6 +669,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         // A dead verifier's units, whatever round each is on now, still wait for a verdict.
         if (event.verdict === "none") return tidy({ ...rest, units, unverified: [...new Set([...(state.unverified ?? []), ...covered])] })
         // The verdict is in: what it checked as folded is done, and its own findings open, or its debt when they did not read.
+        // A finding folded into a unit no longer in the state was checked by a verdict already: a ledger written
+        // before a verifier's start stood in for a land by hand kept it open (`standInFindings`), so it goes too.
+        for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && units[finding.into] === undefined) delete findings[key]
         for (const key of event.findings ?? []) findings[key] = { batch: event.batch }
         const unresolved = { ...state.unresolved, ...(event.unresolved === undefined ? {} : { [event.batch]: event.unresolved }) }
         return tidy({ ...rest, units, findings, carried: {}, unresolved })
@@ -591,8 +715,10 @@ const foldedList = (state: MachineState, keys: ReadonlyArray<string>) => keys.ma
 export const notesOf = (state: MachineState, command: Command, now: number, cadence: Cadence): ReadonlyArray<string> => {
   if (command._tag !== "Start") return []
   if (command.role === "verifier") {
-    const carried = Object.keys(state.carried ?? {})
-    return carried.length === 0 ? [] : [`orchestrate: ${command.role} ${command.name} also checks these findings as folded: ${foldedList(state, carried)}; the plugin added them to its prompt.`]
+    const checked = Object.entries(checkedOf(state, coverOfStart(state, command)))
+    return checked.length === 0
+      ? []
+      : [`orchestrate: ${command.role} ${command.name} also checks these findings as folded: ${checked.map(([key, finding]) => `${key} → ${finding.into}`).join(", ")}; the plugin added them to its prompt.`]
   }
   const why = dueOf(state, now, cadence)
   const landed = unverifiedOf(state)
@@ -624,7 +750,7 @@ export const notesOf = (state: MachineState, command: Command, now: number, cade
  */
 export const verifierPromptOf = (state: MachineState, command: Command): string | undefined => {
   if (command._tag !== "Start" || command.role !== "verifier") return undefined
-  const carried = Object.entries(state.carried ?? {})
+  const carried = Object.entries(checkedOf(state, coverOfStart(state, command)))
   if (carried.length === 0) return undefined
   return [
     "Findings of the batch before, folded into this batch (the orchestrate plugin's ledger). Prove each fixed in the unit it was folded into, as a finding of that unit:",
@@ -653,6 +779,7 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
   const next = unitsIn(state, "implement", "ready").map((unit) => `${unit} (${state.units[unit]!.state})`)
   const folded = findings.filter(([, finding]) => finding.into !== undefined).map(([key, finding]) => `${finding.batch} ${key} → ${finding.into}`)
   const unfolded = findings.filter(([, finding]) => finding.into === undefined).map(([key, finding]) => `${finding.batch} ${key}`)
+  const rides = findings.filter(([, finding]) => riding(state, finding)).map(([key, finding]) => `${finding.batch} ${key} → ${finding.into}`)
   return [
     ...BRIEF_ORDER.flatMap((name) => {
       const units = unitsIn(state, name)
@@ -662,7 +789,10 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
     ...(state.verifier === undefined && findings.length === 0
       ? []
       : [`next batch: units ${list(next)}; folded findings: ${folded.length === 0 ? "none" : folded.join(", ")}`]),
-    ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a ready unit)`]),
+    ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a unit)`]),
+    ...(rides.length === 0
+      ? []
+      : [`riding with a unit still implementing: ${rides.join(", ")} (holds no land; each lands with its unit, and that land's verifier must name it as folded)`]),
     ...debts.map(([batch, debt]) => `findings not known: ${batch} changes, ${debt.why}${debt.report === undefined ? "" : ` (${debt.report})`}; the next batch lands once its report reads and each finding is folded`),
     ...(state.verifier === undefined && carried.length > 0 ? [`landed with folded findings, for the next verifier: ${foldedList(state, carried)}`] : []),
     ...(why === undefined ? [] : [`a batch is due (${why})`]),
@@ -673,14 +803,16 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
 
 const DEPARTS = /\(departs:\s*([^()]*?)\s*\)/i
 const FOLDS = /\(folds:\s*([^()]*?)\s*\)/i
+const RIFT = /\(rift:\s*([^()\s]+?)\/*\s*\)/i
 const DIRECT = /\(direct\)/i
 const ROUND = /^r(\d+)$/i
 
 /**
  * The machine's command for a role agent's call: `agent` is the role it runs
  * as, `description` names the step (`<role> <unit> r<N>`, described.ts), and
- * may end `(direct)`, `(folds: <finding>, …)` or `(departs: <why>)`. None for
- * a call that is no step of `agent`'s role.
+ * may end `(direct)`, `(folds: <finding>, …)`, `(rift: <path>)` (an
+ * implementor's Rift, which a land then knows as its unit's) or
+ * `(departs: <why>)`. None for a call that is no step of `agent`'s role.
  */
 export const startOf = (agent: string, description: string | undefined): Start | undefined => {
   const text = description ?? ""
@@ -688,7 +820,8 @@ export const startOf = (agent: string, description: string | undefined): Start |
   // The departure is read first and set aside: its words may hold anything.
   const rest = text.replace(DEPARTS, "")
   const folds = (FOLDS.exec(rest)?.[1] ?? "").split(/[\s,]+/).filter((ref) => ref !== "")
-  const step = described(rest.replace(FOLDS, "").trim())
+  const rift = RIFT.exec(rest)?.[1]
+  const step = described(rest.replace(FOLDS, "").replace(RIFT, "").trim())
   if (step === undefined || step.role !== agent) return undefined
   const [name, ...words] = step.rest.split(" ")
   if (name === undefined || name === "" || ROUND.test(name)) return undefined
@@ -700,6 +833,7 @@ export const startOf = (agent: string, description: string | undefined): Start |
     direct: DIRECT.test(text),
     ...(folds.length === 0 ? {} : { folds }),
     ...(departs === undefined || departs === "" ? {} : { departs }),
+    ...(rift === undefined || step.role !== "implementor" ? {} : { rift }),
   })
 }
 

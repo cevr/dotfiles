@@ -14,6 +14,8 @@ export interface MemoryOwner {
   /** Whether asking fails, as an absent questions plugin would. */
   refusing: boolean
   readonly beats: Queue.Queue<void>
+  /** Each session's parent, as the host keeps them: a session not here is a root. */
+  readonly parents: Map<string, string>
 }
 
 export const empty = (): MemoryOwner => ({
@@ -22,6 +24,7 @@ export const empty = (): MemoryOwner => ({
   withdrawn: [],
   refusing: false,
   beats: Effect.runSync(Queue.unbounded<void>()),
+  parents: new Map(),
 })
 
 /** The owner answers the question under `key`, and the questions change. */
@@ -55,4 +58,14 @@ export const layer = (owner: MemoryOwner) =>
         owner.withdrawn.push(key)
       }),
     changes: Stream.fromQueue(owner.beats),
+    root: (sessionID) =>
+      Effect.sync(() => {
+        const seen = new Set([sessionID])
+        let current = sessionID
+        for (let parent = owner.parents.get(current); parent !== undefined && !seen.has(parent); parent = owner.parents.get(current)) {
+          seen.add(parent)
+          current = parent
+        }
+        return current
+      }),
   })

@@ -1,23 +1,23 @@
 // Two hosts of the fleet, one provider: the pool model on memory layers, each
-// host with its own Resets store, its own leases and its own reading of one
-// Claude account, both reading and claiming at one provider that applies a
-// claim as Claude's does and keys it on its request id. The round-2
-// verifier's counterexample (batch 2026-11-11f, B1): two hosts with fresh but
-// different readings each picked another window and grant, and both were
-// spent, the second for 0% → 0%.
+// host with its own Resets store, its own leases, its own owner and its own
+// reading of one Claude account, both reading and claiming at one provider
+// that applies a claim as Claude's does. The provider here dedupes a request
+// id it saw, but no host relies on it: every case counts the grants spent.
 //
-// No host is the master: before a claim a host asks the other for the
-// account's lease (lease.ts) over the fleet link, here a direct call into the
-// other host's pool that a test can cut (`down`: refused at once) or silence
-// (`silent`: never answers, a host asleep or gone).
-// - Both online: one claim, under a lease the other granted.
-// - The other offline: the host claims after the wait, on a fresh reading,
-//   and the record names the fallback.
-// - The link down both ways, both online: both claim, under one request id,
-//   and the provider, keying on it, spends one grant.
-// - A host gone mid-lease: its lease lapses, and the other proceeds.
+// No host is the master. A claim no one asked for needs every peer's grant
+// of the provider's lease (lease.ts) over the fleet link, here a direct call
+// into the other host's pool that a test can cut (`down`: refused at once) or
+// silence (`silent`: never answers, a host asleep or gone).
+// - Both online: one claim, under the lease the other granted.
+// - The other unreachable (offline, the link down, gone mid-lease): no claim
+//   unasked; the owner is asked, naming it, and a yes claims.
+// - The counterexamples of rounds 2 and 4: divergent fresh readings, and
+//   divergent grant lists over a cut link, spend one grant at most.
+// - A claim made outside the fleet while the lease is asked shows in the
+//   reading right before the send: nothing more is spent.
+// - A restarted host lends nothing while a lease it lent may be live.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Layer, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Schema, Stream } from "effect"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as Lease from "../lease.ts"
@@ -29,6 +29,7 @@ import * as PeersTest from "./peers.ts"
 import * as ResetsTest from "./resets.ts"
 import * as Model from "../model.ts"
 import type { ClaimAnswer, QuotaReading, ResetCredit } from "../quota.ts"
+import { CLAIM } from "../resets.ts"
 import { PeerUnreachable, Quota } from "../service.ts"
 
 const MINUTE = 60_000
@@ -119,45 +120,65 @@ interface Host {
   readonly view: View
   /** How this host's asks reach the other. */
   link: Link
+  /** The host's leases: a long-running host's (not quiet) unless a test restarts it. */
+  leases: Lease.Leases["Service"]
+  readonly owner: OwnerTest.MemoryOwner
+  /** Whether it claims with no one asked (`autoClaims`). */
+  auto: boolean
+  /** Its Resets store's storage: kept across a restart. */
+  readonly store: Map<string, Schema.Json>
+  /** Runs when an ask from the other host arrives, before it is answered. */
+  onAsk?: () => void
   pool?: Model.Pool["Service"]
 }
 
-/** Two hosts, `mac` and `workbox`, on one provider account, each the other's peer. */
+/** Two hosts, `mac` and `workbox`, on one provider account, each the other's peer; `start` builds both as they are set up then. */
 const fleet = (account: Provider) => {
-  const make = (name: string): Host => ({ name, view: { snapshot: undefined, lags: false, away: false, claiming: false }, link: "up" })
+  const make = (name: string): Host => ({
+    name,
+    view: { snapshot: undefined, lags: false, away: false, claiming: false },
+    link: "up",
+    leases: Lease.make({ quietMs: 0 }),
+    owner: OwnerTest.empty(),
+    auto: true,
+    store: new Map(),
+  })
   const mac = make("mac")
   const workbox = make("workbox")
-  const build = (self: Host, other: Host) => {
-    const integration: LoginsTest.Integration = {
-      connections: new Map([[ANTHROPIC, [{ type: "credential" as const, method: "oauth" as const, id: `claude-${self.name}`, label: "Claude A" }]]]),
-      marks: [],
-    }
-    const config: Model.Config = {
-      providers: { anthropic: ANTHROPIC },
-      cacheLifeMs: CACHE_LIFE_MS,
-      resets: { anthropic: "claude" },
-      fleet: { ...Model.DEFAULT_FLEET, host: self.name, leaseMs: LEASE_MS, leaseWaitMs: WAIT_MS },
-    }
-    const externals = Layer.mergeAll(
-      LoginsTest.layer(integration),
-      hostQuota(account, self.view),
-      LedgerTest.layer(),
-      PeersTest.layer(new Map([[other.name, { down: "not polled here" }]]), (peer, message) => {
-        if (self.link === "down") return Effect.fail(new PeerUnreachable({ peer, message: "connection refused" }))
-        if (self.link === "silent" || other.pool === undefined) return Effect.never
-        return other.pool.lease(message)
-      }),
-      FleetTest.layer(),
-      ResetsTest.layer(new Map<string, Schema.Json>()),
-      OwnerTest.layer(OwnerTest.empty()),
-      Layer.succeed(Lease.Leases, Lease.make()),
-    )
-    return Effect.gen(function* () {
-      const services = yield* Layer.build(Model.layer(config).pipe(Layer.provide(externals)))
-      self.pool = Context.get(services, Model.Pool)
-      return self.pool
+  const build = (self: Host, other: Host) =>
+    Effect.suspend(() => {
+      const integration: LoginsTest.Integration = {
+        connections: new Map([[ANTHROPIC, [{ type: "credential" as const, method: "oauth" as const, id: `claude-${self.name}`, label: "Claude A" }]]]),
+        marks: [],
+      }
+      const config: Model.Config = {
+        providers: { anthropic: ANTHROPIC },
+        cacheLifeMs: CACHE_LIFE_MS,
+        resets: { anthropic: "claude" },
+        autoClaims: self.auto,
+        fleet: { ...Model.DEFAULT_FLEET, host: self.name, leaseMs: LEASE_MS, leaseWaitMs: WAIT_MS },
+      }
+      const externals = Layer.mergeAll(
+        LoginsTest.layer(integration),
+        hostQuota(account, self.view),
+        LedgerTest.layer(),
+        PeersTest.layer(new Map([[other.name, { down: "not polled here" }]]), (peer, message) => {
+          if (self.link === "down") return Effect.fail(new PeerUnreachable({ peer, message: "connection refused" }))
+          if (self.link === "silent" || other.pool === undefined) return Effect.never
+          if (message._tag === "Ask") other.onAsk?.()
+          return other.pool.lease(message)
+        }),
+        FleetTest.layer(),
+        ResetsTest.layer(self.store),
+        OwnerTest.layer(self.owner),
+        Layer.succeed(Lease.Leases, self.leases),
+      )
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(Model.layer(config).pipe(Layer.provide(externals)))
+        self.pool = Context.get(services, Model.Pool)
+        return self.pool
+      })
     })
-  }
   return { mac, workbox, start: Effect.all([build(mac, workbox), build(workbox, mac)]) }
 }
 
@@ -167,7 +188,7 @@ const sleep = (ms: number) => Effect.promise(() => new Promise<void>((done) => s
 /** A full grant (clears both windows) ending in two hours: due on its own while a window is spent. */
 const full = (id: string, now: number): ResetCredit => ({ id, count: 1, usable: true, expiresAt: now + 2 * HOUR, clears: ["five_hour", "seven_day"], kind: "full", requiresLimit: false })
 
-/** The verifier's case: the account spent, and two readings of it, each fresh, each ranking another window and listing the grants in another order. */
+/** The round-2 verifier's case: the account spent, and two readings of it, each fresh, each ranking another window and listing the grants in another order. */
 const verifierCase = (now: number) => {
   const account = provider({ "5h": { utilization: 1, resetAt: now + 4 * HOUR }, "7d": { utilization: 1, resetAt: now + 3 * DAY } }, [full("g1", now), full("g2", now)])
   const left: QuotaReading = {
@@ -191,6 +212,9 @@ const verifierCase = (now: number) => {
 
 const records = (pool: Model.Pool["Service"]) => Effect.map(pool.resets, (status) => status.claims)
 
+/** The questions a host asked the owner about a claim no peer agreed to. */
+const unagreed = (host: Host) => host.owner.asked.filter((question) => question.header?.startsWith("Reset now? ") === true && question.question.includes("unreachable"))
+
 describe("one account read by two hosts, claimed at one provider, no host the master", () => {
   test("both online, both deciding to claim on divergent fresh readings at once: one grant spent, under the lease the other granted; the other backs off or finds it done", () =>
     scoped(
@@ -212,7 +236,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
       }),
     ))
 
-  test("the other host offline (no answer): the host claims after the wait, on a fresh reading, and the record names the fallback", () =>
+  test("the other host offline (no answer): no claim unasked; the owner is asked, naming it, and a yes claims past it", () =>
     scoped(
       Effect.gen(function* () {
         const now = Date.now()
@@ -224,13 +248,20 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         const started = Date.now()
         yield* workbox.sweep
         expect(Date.now() - started).toBeGreaterThanOrEqual(WAIT_MS)
+        expect(account.sent).toEqual([])
+        expect(yield* records(workbox)).toEqual([])
+        const [question] = unagreed(hosts.workbox)
+        expect(question?.question).toContain("mac is unreachable, so I can't rule out it claiming too. Claim it?")
+        expect(question?.assume).toBe("Don't claim: a peer may be claiming it")
+        yield* OwnerTest.answer(hosts.workbox.owner, question!.key, CLAIM)
+        yield* workbox.reviewResets
         expect(account.spent()).toHaveLength(1)
         const [record] = yield* records(workbox)
-        expect(record).toMatchObject({ outcome: "reset", lease: `fallback: mac did not answer in ${WAIT_MS / 1000} s; sent on a fresh reading` })
+        expect(record).toMatchObject({ outcome: "reset", lease: "the owner's yes; mac unreachable" })
       }),
     ))
 
-  test("the link down between them, both online and both claiming on readings that lag: one request id, and the provider keying on it spends one grant", () =>
+  test("the link down between them, both online, readings that lag and list the same grants: nothing spent unasked, both ask the owner", () =>
     scoped(
       Effect.gen(function* () {
         const now = Date.now()
@@ -246,15 +277,51 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         }
         const [mac, workbox] = yield* hosts.start
         yield* Effect.all([mac.sweep, workbox.sweep], { concurrency: 2 })
-        // Both sent: each picked another grant, under one request id.
-        expect(account.sent.map((claim) => claim.result).toSorted()).toEqual(["already-redeemed", "reset"])
-        expect(new Set(account.sent.map((claim) => claim.requestID)).size).toBe(1)
-        expect(account.spent()).toHaveLength(1)
-        for (const record of [...(yield* records(mac)), ...(yield* records(workbox))]) expect(record.lease).toMatch(/^fallback: (mac|workbox) did not answer/)
+        expect(account.sent).toEqual([])
+        expect(unagreed(hosts.mac)).toHaveLength(1)
+        expect(unagreed(hosts.workbox)).toHaveLength(1)
       }),
     ))
 
-  test("the Mac gone mid-lease (its claim never comes back, its link silent): the lease it was lent lapses, and the workbox claims", () =>
+  test("the link down, the hosts' grant lists differing (round 4, B1: two request ids, the second grant for 0%): nothing spent unasked", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const { account, left, right } = verifierCase(now)
+        const hosts = fleet(account)
+        const partial: QuotaReading = { ...right, resets: { available: 1, credits: [right.resets!.credits[0]!] } }
+        for (const [host, snapshot] of [
+          [hosts.mac, left],
+          [hosts.workbox, partial],
+        ] as const) {
+          host.view.snapshot = snapshot
+          host.view.lags = true
+          host.link = "down"
+        }
+        const [mac, workbox] = yield* hosts.start
+        yield* Effect.all([mac.sweep, workbox.sweep], { concurrency: 2 })
+        expect(account.sent).toEqual([])
+        expect(unagreed(hosts.mac)).toHaveLength(1)
+        expect(unagreed(hosts.workbox)).toHaveLength(1)
+      }),
+    ))
+
+  test("both online, the hosts' grant lists differing (no reset id in common): one grant spent, the lease being the provider's", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const { account, left, right } = verifierCase(now)
+        const hosts = fleet(account)
+        hosts.mac.view.snapshot = { ...left, resets: { available: 1, credits: [full("g1", now)] } }
+        hosts.workbox.view.snapshot = { ...right, resets: { available: 1, credits: [full("g2", now)] } }
+        for (const host of [hosts.mac, hosts.workbox]) host.view.lags = true
+        const [mac, workbox] = yield* hosts.start
+        yield* Effect.all([mac.sweep, workbox.sweep], { concurrency: 2 })
+        expect(account.spent()).toHaveLength(1)
+      }),
+    ))
+
+  test("the Mac gone mid-claim (its claim never comes back, its link silent): the workbox claims nothing unasked, and asks the owner", () =>
     scoped(
       Effect.gen(function* () {
         const now = Date.now()
@@ -270,9 +337,226 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         yield* sleep(LEASE_MS + 50)
         hosts.workbox.view.snapshot = { ...right, at: Date.now() }
         yield* workbox.sweep
-        expect(account.spent()).toHaveLength(1)
+        expect(account.sent).toEqual([])
+        expect(unagreed(hosts.workbox)).toHaveLength(1)
+      }),
+    ))
+
+  test("a claim made outside the fleet while the lease is asked (the owner in Claude's app) shows in the reading right before the send: nothing more is spent", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const { account, right } = verifierCase(now)
+        const hosts = fleet(account)
+        hosts.workbox.view.snapshot = right
+        hosts.mac.onAsk = () => {
+          account.claim({ creditID: "g1", requestID: "claude-app" })
+        }
+        const [, workbox] = yield* hosts.start
+        yield* workbox.sweep
+        // The one spent is the app's: the workbox read the account again and sent nothing.
+        expect(account.spent().map((claim) => claim.requestID)).toEqual(["claude-app"])
         const [record] = yield* records(workbox)
-        expect(record).toMatchObject({ outcome: "reset", lease: expect.stringMatching(/^fallback: mac did not answer/) })
+        expect(record).toMatchObject({ outcome: "nothing-to-reset", message: expect.stringMatching(/^not sent: /), lease: "granted by mac" })
+      }),
+    ))
+})
+
+/** A clock `ms` ahead of the real one (behind when negative). */
+const shifted = (ms: number): Clock.Clock => {
+  const real = Effect.runSync(Effect.clockWith(Effect.succeed))
+  return {
+    currentTimeMillisUnsafe: () => real.currentTimeMillisUnsafe() + ms,
+    currentTimeMillis: Effect.sync(() => real.currentTimeMillisUnsafe() + ms),
+    currentTimeNanosUnsafe: () => real.currentTimeNanosUnsafe() + BigInt(ms) * 1_000_000n,
+    currentTimeNanos: Effect.sync(() => real.currentTimeNanosUnsafe() + BigInt(ms) * 1_000_000n),
+    monotonicTimeNanosUnsafe: () => real.monotonicTimeNanosUnsafe(),
+    monotonicTimeNanos: real.monotonicTimeNanos,
+    sleep: (duration) => real.sleep(duration),
+  }
+}
+
+/** A host's pool on its own clock: its sweeps, and its answers to the other's lease messages. */
+const onClock = (host: Host, ms: number): Model.Pool["Service"] => {
+  const clock = shifted(ms)
+  const pool = host.pool!
+  const timed = new Proxy(pool, {
+    get: (target, key) => {
+      const value: unknown = Reflect.get(target, key)
+      if (Effect.isEffect(value)) return Effect.provideService(value, Clock.Clock, clock)
+      if (typeof value !== "function") return value
+      return (...args: ReadonlyArray<unknown>) => {
+        const out: unknown = Reflect.apply(value, target, args)
+        return Effect.isEffect(out) ? Effect.provideService(out, Clock.Clock, clock) : out
+      }
+    },
+  })
+  host.pool = timed
+  return timed
+}
+
+describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is compared with another's", () => {
+  // The workbox's clock against the Mac's, in minutes: SETTLE_MS is 5.
+  for (const [minutes, differ] of [
+    [0, false],
+    [4, false],
+    [6, false],
+    [6, true],
+    [5.5, true],
+    [-6, true],
+    [12, true],
+  ] as const)
+    test(`the workbox ${Math.abs(minutes)} min ${minutes < 0 ? "behind" : "ahead"}${differ ? ", its grant list lagging (only g2: another request id)" : ""}, its reading seconds later not showing the Mac's claim: one claim sent`, () =>
+      scoped(
+        Effect.gen(function* () {
+          const { account, left, right } = verifierCase(Date.now())
+          const hosts = fleet(account)
+          hosts.mac.view.snapshot = left
+          yield* hosts.start
+          const mac = onClock(hosts.mac, 0)
+          const workbox = onClock(hosts.workbox, minutes * MINUTE)
+          yield* mac.sweep
+          expect(account.spent()).toHaveLength(1)
+          hosts.workbox.view.snapshot = { ...right, at: Date.now() + minutes * MINUTE, ...(differ ? { resets: { available: 1, credits: [right.resets!.credits[0]!] } } : {}) }
+          hosts.workbox.view.lags = true
+          yield* workbox.sweep
+          expect(account.sent).toHaveLength(1)
+          const [record] = yield* records(workbox)
+          expect(record?.message).toMatch(/^backed off: .*may not show yet/)
+        }),
+      ))
+
+  test("the Mac's release lost and the workbox's loan to it run out, the workbox 6 min ahead: the Mac's store refuses the workbox's ask on the Mac's clock; one claim sent", () =>
+    scoped(
+      Effect.gen(function* () {
+        const { account, left, right } = verifierCase(Date.now())
+        const hosts = fleet(account)
+        hosts.mac.view.snapshot = left
+        const claim = account.claim
+        // The link goes as the Mac's claim goes out: its release never reaches the workbox.
+        account.claim = (input) => {
+          hosts.mac.link = "down"
+          return claim(input)
+        }
+        yield* hosts.start
+        const mac = onClock(hosts.mac, 0)
+        const workbox = onClock(hosts.workbox, 6 * MINUTE)
+        yield* mac.sweep
+        expect(account.spent()).toHaveLength(1)
+        yield* sleep(LEASE_MS + 50)
+        hosts.workbox.view.snapshot = { ...right, at: Date.now() + 6 * MINUTE, resets: { available: 1, credits: [right.resets!.credits[0]!] } }
+        hosts.workbox.view.lags = true
+        yield* workbox.sweep
+        expect(account.sent).toHaveLength(1)
+        const [record] = yield* records(workbox)
+        expect(record?.message).toMatch(/^backed off: mac: a claim sent on Claude A at .* may not show yet/)
+      }),
+    ))
+})
+
+describe("a host's own claim (test strength, round 5)", () => {
+  test("its release to the peer lost and the peer's loan run out, the host reads the account again, lagging its claim and ranking another window first (another decision): its store holds its own next claim off; one grant spent", () =>
+    scoped(
+      Effect.gen(function* () {
+        const { account, left, right } = verifierCase(Date.now())
+        const hosts = fleet(account)
+        hosts.workbox.view.snapshot = right
+        const claim = account.claim
+        account.claim = (input) => {
+          hosts.workbox.link = "down"
+          return claim(input)
+        }
+        const [, workbox] = yield* hosts.start
+        yield* workbox.sweep
+        expect(account.spent()).toHaveLength(1)
+        // The Mac never heard of the claim, and its loan has run out: it would grant again.
+        yield* sleep(LEASE_MS + 50)
+        hosts.workbox.link = "up"
+        account.claim = claim
+        // Read again: the provider has not shown the claim yet, and this reading ranks the five-hour window first: another reset's key.
+        hosts.workbox.view.snapshot = { ...left, at: Date.now() }
+        hosts.workbox.view.lags = true
+        yield* workbox.sweep
+        expect(account.sent).toHaveLength(1)
+        const made = yield* records(workbox)
+        expect(made.some((record) => /^backed off: a claim sent on Claude A at .* may not show yet/.test(record.message ?? ""))).toBe(true)
+      }),
+    ))
+})
+
+describe("a restart, the owner's yes and the kill switch (batch 2026-11-11g probes)", () => {
+  test("a restarted lender lends nothing while the lease it lent may be live, and claims nothing unasked with the borrower unreachable", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const { account, right } = verifierCase(now)
+        const hosts = fleet(account)
+        const [, workbox] = yield* hosts.start
+        const ask = Lease.LeaseAsk.make({ host: "mac", id: "mac-pending", provider: "claude", grants: ["g1", "g2"], readAt: now, requestedAt: now, holdMs: LEASE_MS })
+        expect(yield* workbox.lease(ask)).toEqual({ granted: true })
+        // The workbox restarts: a process's leases start quiet.
+        hosts.workbox.leases = Lease.make()
+        const [, restarted] = yield* hosts.start
+        expect(yield* restarted.lease({ ...ask, id: "mac-again" })).toMatchObject({ granted: false, reason: expect.stringContaining("workbox started lately") })
+        hosts.workbox.link = "silent"
+        hosts.workbox.view.snapshot = right
+        yield* restarted.sweep
+        expect(account.sent).toEqual([])
+      }),
+    ))
+
+  test("both restarted after the workbox's claim, the Mac's reading lagging it: the workbox's store remembers the claim and refuses the Mac's ask; one grant spent", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const { account, left, right } = verifierCase(now)
+        const hosts = fleet(account)
+        hosts.workbox.view.snapshot = right
+        const [, workbox] = yield* hosts.start
+        yield* workbox.sweep
+        expect(account.spent()).toHaveLength(1)
+        // Both processes go: their leases with them (not quiet here, so the store alone answers); the stores stay.
+        hosts.mac.leases = Lease.make({ quietMs: 0 })
+        hosts.workbox.leases = Lease.make({ quietMs: 0 })
+        hosts.mac.view.snapshot = left
+        hosts.mac.view.lags = true
+        const [mac] = yield* hosts.start
+        yield* mac.sweep
+        expect(account.spent()).toHaveLength(1)
+        const [record] = yield* records(mac)
+        expect(record?.message).toMatch(/^backed off: workbox: a claim sent on Claude A at .* may not show yet/)
+      }),
+    ))
+
+  test("with automatic claims off, a yes backs off while the other host holds the lease", () =>
+    scoped(
+      Effect.gen(function* () {
+        const { account } = verifierCase(Date.now())
+        const hosts = fleet(account)
+        hosts.workbox.auto = false
+        const [, workbox] = yield* hosts.start
+        yield* workbox.pace("anthropic", undefined, "owner-session")
+        yield* workbox.sweep
+        yield* workbox.reviewResets
+        expect(hosts.workbox.owner.asked.length).toBeGreaterThan(0)
+        const now = Date.now()
+        yield* workbox.lease(Lease.LeaseAsk.make({ host: "mac", id: "held", provider: "claude", grants: ["g1", "g2"], readAt: now, requestedAt: now, holdMs: 60_000 }))
+        yield* OwnerTest.answer(hosts.workbox.owner, hosts.workbox.owner.asked[0]!.key, CLAIM)
+        yield* workbox.reviewResets
+        expect(account.sent).toEqual([])
+      }),
+    ))
+
+  test("with automatic claims off on both, neither online host claims unasked", () =>
+    scoped(
+      Effect.gen(function* () {
+        const { account } = verifierCase(Date.now())
+        const hosts = fleet(account)
+        hosts.mac.auto = false
+        hosts.workbox.auto = false
+        const [mac, workbox] = yield* hosts.start
+        yield* Effect.all([mac.sweep, workbox.sweep], { concurrency: 2 })
+        expect(account.sent).toEqual([])
       }),
     ))
 })

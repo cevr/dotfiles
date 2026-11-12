@@ -40,14 +40,15 @@
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
  * - `skill`: the orchestrate skill's dir, whose git history versions it,
  *   default `~/.claude/skills/orchestrate`.
- * - `experiment`: `{ role, model, share }`, the model experiment
- *   (mods/orchestrate/experiment.ts): `share` of the role's units, by a hash
- *   of the unit's name, start on `model` at the role's effort (the trial arm),
- *   the rest on the role's own (control). Only a new start that names no model
- *   of its own (or the role's) is in an arm; a follow-up keeps its model. A
- *   trial start the host does not offer `model` for, or whose pace holds it,
- *   takes the normal chain (the role's model, then Codex). Each start's line
- *   records `experiment: { arm, model[, fellBack] }`. Absent, no experiment.
+ * - `planner`: `{ model }`, the planner's first model (`provider/id`, no
+ *   variant; `bun run daily` writes the newest Fable). A new planner start
+ *   that names no model of its own (or the role's) runs on it at the
+ *   planner's effort; a follow-up keeps its model. One the host does not
+ *   offer `model` for, or whose pace holds it, takes the role's chain (its
+ *   own model, then Codex), and its line records `first: { model, fellBack }`.
+ *   Over the Sabbath it latches on `model` as every role latches on its own,
+ *   and its open takes the same chain. Only the planner has a first model. Absent,
+ *   the planner starts on its own model like every role.
  *
  * - Skill drift: when a root that owns a run goes idle and the installed
  *   skill is newer than the version the run last saw (`<run dir>/skill-version`),
@@ -80,17 +81,8 @@
  *   at medium, the rest at high), or luna at max for a step whose description
  *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
  *   `fallback: <first model> held: <reason>`, and the parent reads that line
- *   first in the subagent's answer. Held on both, it latches on whichever
+ *   first in the subagent call's result. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
- *
- * - Restart: when the plugin starts (a server start, or a plugin reload),
- *   the subagents of its location the last shutdown cut mid-turn, and that
- *   OpenCode's own recovery left (a foreground subagent), are resumed in the
- *   background through the subagent tool, each turn at most three times in a
- *   row, after a backoff; each resume is a `resumed` line in the call log,
- *   and each parent is told once (`mods/orchestrate/restart.ts`). A turn the
- *   user or the parent cancelled is not resumed, nor is a root session.
- *   `resume: false` turns it off; `resume.backoffMs` sets the waits.
  *
  * - Batch machine: the plugin keeps each root's machine (mods/orchestrate/
  *   machine.ts) in a ledger, one JSONL line per event or refusal (keyed by
@@ -100,7 +92,8 @@
  *   against its six rules in the skill's words: a verifier not named for a
  *   batch, a second verifier, a land or verifier before the cadence while an
  *   implementor runs, a land before the last batch's verdict, a land with a
- *   finding of it not folded into a ready unit, a land that leaves a ready
+ *   finding of it folded into no unit (one folded into a running implementor
+ *   rides with that unit's later land), a land that leaves a ready
  *   unit out. The machine is a pipeline: implementors start while a verifier
  *   runs; a verifier's findings (read from its report) fold into the next
  *   batch by an implementor's start, and the next batch verifier's prompt
@@ -108,19 +101,14 @@
  *   land's input, lets the call through and records it. A step whose session
  *   no longer works is handed back as `none` first. After a root's
  *   compaction, it gets one message (no new turn): SKILL.md's machine section
- *   and its run from the ledger (the brief).
+ *   and its run from the ledger (the brief), with its drift from the machine
+ *   (mods/orchestrate/drift.ts: 0 is a clean run). Each verdict adds that
+ *   drift as a line to its run's log.md (the run its report is in), which the
+ *   skill's status.ts reads for the /pool pane's run row and the runs' trend.
  *   Options: `ledger` (default `~/.cache/orchestrate/machine.jsonl`),
  *   `cadence: { ready, waitMs }` (default 3 and 30 minutes), `guard`:
  *   `refuse` (default) or `warn` (the call passes, its answer carries the
  *   rule's words, the ledger records the departure).
- *
- * - Fleet install: a verifier's `accepted` verdict, as the ledger records
- *   it (once per verdict), asks for a fleet install: `install.script` (the
- *   dotfiles' `scripts/fleet-install.ts`, set by `bun run daily` on the
- *   owner's hosts) run with `request --reason "<batch> accepted"`. The
- *   script coalesces requests close together, waits for load, skips a host
- *   already on the target and runs outside this server, which it restarts.
- *   Absent, nothing is asked.
  *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
@@ -129,7 +117,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -148,35 +136,31 @@ import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
 import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
-import * as InstallsLive from "@dotfiles/opencode-orchestrate/process/installs"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
-import * as RestartsLive from "@dotfiles/opencode-orchestrate/opencode/restarts"
 import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
-import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
-import { DEFAULT_CADENCE, type Refused } from "@dotfiles/opencode-orchestrate/machine"
-import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/restarts"
+import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused } from "@dotfiles/opencode-orchestrate/machine"
+import * as GitBranches from "@dotfiles/opencode-orchestrate/git/branches"
+import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
+  type Branches,
   type CallLog,
   type CodexAdmission,
   type GuardMode,
   type Latches,
   type Findings,
-  type Installs,
   type Ledger,
   Liveness,
   type LatchStart,
   type Models,
   type PoolPace,
   type Remind,
-  type Restarts,
-  type ResumeStart,
   type RootHolds,
   type RunRecords,
   type Runs,
@@ -227,10 +211,8 @@ const Codex = Schema.Struct({
   pool: Schema.optional(Schema.Boolean),
 })
 
-const Experiment = Schema.Struct({
-  role: Schema.Literals(ROLES),
+const Planner = Schema.Struct({
   model: Schema.String.check(Schema.isPattern(/^[^/#\s]+\/[^#\s]+$/)),
-  share: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
 })
 
 const Cadence = Schema.Struct({
@@ -243,18 +225,13 @@ export const Options = Schema.Struct({
   ledger: Schema.String.pipe(withDefault(DEFAULT_LEDGER)),
   cadence: Cadence.pipe(withDefault<typeof Cadence.Type>(DEFAULT_CADENCE)),
   guard: Schema.Literals(["refuse", "warn"]).pipe(withDefault<GuardMode>("refuse")),
-  experiment: Schema.optional(Experiment),
+  planner: Schema.optional(Planner),
   now: Schema.optional(Instant),
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
-  install: Schema.optional(Schema.Struct({ script: Schema.String })),
-  resume: Schema.Union([
-    Schema.Literal(false),
-    Schema.Struct({ backoffMs: Schema.Array(Schema.Finite).pipe(withDefault<ReadonlyArray<number>>(BACKOFF_MS)) }),
-  ]).pipe(withDefault<false | { readonly backoffMs: ReadonlyArray<number> }>({ backoffMs: BACKOFF_MS })),
 })
 export type Options = typeof Options.Type
 
@@ -271,7 +248,6 @@ export type Externals =
   | Runs
   | RootHolds
   | Steer
-  | Restarts
   | Skill
   | RunRecords
   | Tell
@@ -279,27 +255,23 @@ export type Externals =
   | Liveness
   | Remind
   | Findings
-  | Installs
+  | Branches
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
-
-/** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
-export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 /**
  * The outside systems as OpenCode, the filesystem and processes provide them;
- * `start` runs a latched child, and `resume` a child a restart cut, through
- * the subagent tool.
+ * `start` runs a latched child through the subagent tool.
  */
-export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background): Layer.Layer<Externals> =>
+export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background): Layer.Layer<Externals> =>
   Layer.mergeAll(
     LedgerLive.layer(options.ledger, options.cadence),
     FindingsLive.layer,
-    InstallsLive.layer(options.install === undefined ? undefined : options.install.script),
+    GitBranches.layer,
     SteerLive.remindLayer(synthetic(ctx)),
     // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
     // work of its own; a session that cannot be read does not.
@@ -314,7 +286,6 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
           Effect.orElseSucceed(() => background(sessionID) > 0),
         ),
     }),
-    RestartsLive.fromContext(ctx, resume),
     CallLogLive.layer(options.log),
     SessionsLive.layer(
       (sessionID) =>
@@ -460,10 +431,17 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /** The rift tool, whose `land` the machine decides. */
 const RIFT = "rift"
 
+/** A land input's Rift: its entry (path, name or branch), or `{ path, unit }` naming the unit it is for. */
+const targetOf = (rift: unknown): ReadonlyArray<LandTarget> => {
+  if (typeof rift === "string") return [rift]
+  if (isObject(rift) && typeof rift.path === "string") return [typeof rift.unit === "string" && rift.unit.trim() !== "" ? { rift: rift.path, unit: rift.unit.trim() } : rift.path]
+  return []
+}
+
 /** A `rift` land's Rifts and its stated departure; none for any other call. */
-const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<string>; readonly departs?: string } | undefined => {
+const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string } | undefined => {
   if (tool !== RIFT || !isObject(input) || input.action !== "land" || !Array.isArray(input.rifts)) return undefined
-  const rifts = input.rifts.filter((rift): rift is string => typeof rift === "string")
+  const rifts = input.rifts.flatMap(targetOf)
   return typeof input.departs === "string" && input.departs.trim() !== "" ? { rifts, departs: input.departs.trim() } : { rifts }
 }
 
@@ -503,15 +481,24 @@ const OUTCOME = /^- (\S+) \((.+)\): (green|red|pending)\b/
 
 /**
  * The Rifts a completed land landed: in a checked land (`rift.push` false), each Rift answered green or
- * pending (its gate passed), by its branch and path; in a pushed one, every Rift it was asked to land.
+ * pending (its gate passed), by its path and the branch the land merged, with the unit the input named
+ * for that path; in a pushed one, every Rift it was asked to land.
  */
-export const greenOf = (rifts: ReadonlyArray<string>, text: string): ReadonlyArray<string> => {
+export const greenOf = (rifts: ReadonlyArray<LandEntry>, text: string): ReadonlyArray<LandEntry> => {
   const outcomes = text.split("\n").flatMap((line) => {
     const match = OUTCOME.exec(line.trim())
     return match === null ? [] : [{ branch: match[1]!, path: match[2]!, verdict: match[3]! }]
   })
   if (outcomes.length === 0) return rifts
-  return outcomes.filter((outcome) => outcome.verdict !== "red").flatMap((outcome) => [outcome.branch, outcome.path])
+  return outcomes
+    .filter((outcome) => outcome.verdict !== "red")
+    .map((outcome): LandEntry => {
+      const unit = rifts.find((rift) => {
+        const named = rift.rift.replace(/\/+$/, "")
+        return rift.unit !== undefined && (named === outcome.path || outcome.path.endsWith(`/${named}`))
+      })?.unit
+      return { rift: outcome.path, branch: outcome.branch, ...(unit === undefined ? {} : { unit }) }
+    })
 }
 
 type Execute = Tool.Info["execute"]
@@ -519,7 +506,7 @@ type ToolContext = Parameters<Execute>[1]
 
 /** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
 export const make = (
-  externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background) => Layer.Layer<Externals>,
+  externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
@@ -530,7 +517,7 @@ export const make = (
         Effect.orDie,
       )
       // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it,
-      // and a child a restart cut is resumed through it, in the background on the existing child.
+      // in the background on the existing child.
       let subagent: Execute | undefined
       const run = (request: LatchStart, prompt: string) =>
         Effect.suspend(() => {
@@ -555,13 +542,12 @@ export const make = (
           ).pipe(Effect.asVoid)
         })
       const start: LatchesLive.Start = (request) => run(request, `${SPAWNED}\n${request.prompt}`)
-      const resume: Resume = (request) => run(request, request.prompt)
       const config = {
         place: options.place,
         fullAgent: options.fullAgent,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
-        ...(options.experiment === undefined ? {} : { experiment: options.experiment }),
+        ...(options.planner === undefined ? {} : { planner: options.planner }),
       }
       // Each session's background work of its own, as its last idle listed it: a step that went idle with a
       // shell still running has not ended.
@@ -573,8 +559,7 @@ export const make = (
           Model.machineLayer({ cadence: options.cadence, mode: options.guard, fullAgent: options.fullAgent, block: MACHINE_BLOCK }),
           Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
           Model.driftLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
-          Model.restarter(config, options.resume === false ? [] : options.resume.backoffMs),
-        ).pipe(Layer.provideMerge(externals(ctx, options, start, resume, ownBackground))),
+        ).pipe(Layer.provideMerge(externals(ctx, options, start, ownBackground))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
       const machines = Context.get(services, Model.Machines)
@@ -659,9 +644,6 @@ export const make = (
         })
         .pipe(Effect.orDie)
 
-      // Subagents the last shutdown cut: found and resumed in the background, once this start has settled.
-      if (options.resume !== false) yield* Effect.forkScoped(Context.get(services, Model.Restarter).resumeCut(yield* Clock.currentTimeMillis))
-
       // The roles, defined as OpenCode's own plugins define build and general: before the
       // config's agent files, so a file in the owner's config still overrides a role's fields.
       // Each role and each primary agent compacts at `WINDOW`. Config agent files
@@ -706,6 +688,8 @@ export const make = (
       const notes = new Map<string, string>()
       // A land's note under `warn` (the rule it broke), by its call, put first in the rift tool's answer.
       const landNotes = new Map<string, string>()
+      // A land's Rifts as read before it ran (their branches), by its call, for its answer.
+      const landRifts = new Map<string, ReadonlyArray<LandEntry>>()
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -765,8 +749,11 @@ export const make = (
           const land = landOf(event.tool, event.input)
           if (land === undefined) return used
           // A land is decided on the root's machine before it runs; a refused one never reaches the rift tool.
+          // Its Rifts' branches are read now, for its answer too: a pushed land trashes them.
           return used.pipe(
-            Effect.andThen(machines.land({ root: event.sessionID, ...land }).pipe(Effect.mapError(refusedError))),
+            Effect.andThen(machines.resolve(land.rifts)),
+            Effect.tap((rifts) => Effect.sync(() => landRifts.set(callKey(event.sessionID, event.id), rifts))),
+            Effect.flatMap((rifts) => machines.land({ root: event.sessionID, ...land, rifts }).pipe(Effect.mapError(refusedError))),
             Effect.map((passed) => {
               if (passed.notes.length > 0) landNotes.set(callKey(event.sessionID, event.id), passed.notes.join("\n"))
             }),
@@ -837,9 +824,14 @@ export const make = (
           if (land === undefined) return Effect.void
           const said = landNotes.get(callKey(event.sessionID, event.id))
           landNotes.delete(callKey(event.sessionID, event.id))
+          const resolved = landRifts.get(callKey(event.sessionID, event.id))
+          landRifts.delete(callKey(event.sessionID, event.id))
           if (event.status !== "completed") return Effect.void
           if (said !== undefined) event.result = prepend(event.result, said)
-          return machines.landed({ root: event.sessionID, rifts: greenOf(land.rifts, textOf(event.result)) })
+          const result = event.result
+          return (resolved === undefined ? machines.resolve(land.rifts) : Effect.succeed(resolved)).pipe(
+            Effect.flatMap((rifts) => machines.landed({ root: event.sessionID, rifts: greenOf(rifts, textOf(result)) })),
+          )
         }
         const metadata = event.status === "completed" ? event.result.metadata : undefined
         const child = isObject(metadata) && typeof metadata.sessionID === "string" ? metadata.sessionID : undefined

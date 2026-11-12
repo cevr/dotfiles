@@ -6,7 +6,7 @@
 // on the owner, a claim under way, the claims made. The pane reads the pool's RPC
 // (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
 import { Schema } from "effect"
-import type { AgentCall, Unit } from "./status.ts"
+import type { AgentCall, Run, Unit } from "./status.ts"
 
 /**
  * One pool account, as much of the pool's status answer as the pane draws.
@@ -242,6 +242,9 @@ export const PaneResets = Schema.Struct({
       weekly: Schema.String,
     }),
   ),
+  /** Each pool's use-or-lose forecast and each push active on the host, as lines. */
+  forecast: Schema.optionalKey(Schema.Array(Schema.String)),
+  pushes: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type PaneResets = typeof PaneResets.Type
 
@@ -272,7 +275,7 @@ const WEEKLY: Readonly<Record<string, string>> = { moved: "weekly reset moved", 
  * Codex · work · reset · weekly reset moved · <time>`). None when the pool
  * has worked none.
  */
-const WHY: Readonly<Record<string, string>> = { expiring: " (expiring unused)", offer: " (offered on demand)" }
+const WHY: Readonly<Record<string, string>> = { expiring: " (expiring unused)", offer: " (offered on demand)", push: " (for a push)" }
 
 /** A reset's provider and kind as its row names them: `Claude Fable reset`, or the provider alone when no kind was read. */
 const resetName = (reset: { readonly provider: string; readonly kind?: string }) => {
@@ -281,6 +284,9 @@ const resetName = (reset: { readonly provider: string; readonly kind?: string })
 }
 
 export const resetRows = (resets: PaneResets): ReadonlyArray<ResetRow> => [
+  // The pushes on, then the resets that would expire unused at this rate.
+  ...(resets.pushes ?? []).map((text) => ({ asking: false, text })),
+  ...(resets.forecast ?? []).map((text) => ({ asking: false, text })),
   ...resets.resets
     .filter((reset) => reset.stage === "asked" || reset.stage === "claiming" || reset.stage === "failed")
     .map((reset) => ({
@@ -325,6 +331,12 @@ export const agentRows = (running: ReadonlyArray<RunningSession>, calls: Readonl
     const call = calls.find((item) => item.child === session.id)
     return { id: session.id, role: session.agent ?? call?.agent ?? "agent", description: call?.description ?? session.title ?? session.id }
   })
+
+/**
+ * A run's row: its name, and its drift from the batch machine when a verdict recorded one
+ * (`web · drift 35 after batch-n accepted (…): 1 unfolded land ×6`; 0 is a clean run).
+ */
+export const runLine = (run: Pick<Run, "name" | "drift">) => (run.drift === undefined ? run.name : `${run.name} · drift ${run.drift}`)
 
 /** A unit's line under its run. */
 export const unitLine = (unit: Unit) => `  ${unit.unit} · ${unit.state} · r${unit.round || "?"} · ${unit.since}`

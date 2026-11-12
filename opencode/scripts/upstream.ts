@@ -13,7 +13,8 @@
 // Only the fork's owner runs it (the Mac, `FORK_OWNER`); the workbox pulls origin prime-look.
 // Before it, on every host, `syncFork` fast-forwards prime-look to origin/prime-look, so the merge
 // never starts from a branch origin has moved past.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dlopen, FFIType } from "bun:ffi"
+import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs"
 import { loadavg, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { UpstreamReading } from "../mods/prime/update.ts"
@@ -222,34 +223,45 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   return { kind: "merged", from: base, merge, commits, pushed: pushed.ok }
 }
 
-/** Whether process `pid` is running, asked of `ps` (never a signal). */
-const running = (pid: number): boolean =>
-  Number.isInteger(pid) && pid > 0 && Bun.spawnSync(["ps", "-p", String(pid), "-o", "pid="], { stdout: "pipe", stderr: "pipe" }).exitCode === 0
+/** `flock(2)`'s operations; the same numbers on macOS and Linux. */
+const LOCK_EX = 2
+const LOCK_NB = 4
+const LOCK_UN = 8
+
+let libc: ((fd: number, operation: number) => number) | undefined
+/** libc's `flock`, opened once (macOS's libSystem, glibc's libc.so.6). */
+const flock = (fd: number, operation: number): number => {
+  libc ??= dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  }).symbols.flock as (fd: number, operation: number) => number
+  return libc(fd, operation)
+}
 
 /**
- * Runs `merge` holding `<state>/upstream.lock`, so `bun run daily`'s step 0 and a land's post-land
- * step never merge in the one worktree at once. Answers nothing, running nothing, while a live
- * process holds it; a lock its process left behind is taken over.
+ * Runs `merge` holding an exclusive `flock` on `<state>/upstream.lock`, so `bun run daily`'s step 0
+ * and a land's post-land step never merge in the one worktree at once. Answers nothing, running
+ * nothing, while another process holds it. The kernel owns the lock: taking it is one atomic call,
+ * exactly one of any racing processes wins, and it ends with its holder (a crash, a kill, a cut at
+ * any point), so there is no stale lock to judge or take over, and the file is never removed (a
+ * removal would let a second holder lock a new file while the first holds the old one). The file
+ * says which pid holds it, for a person reading it; nothing reads it back.
  */
 export const withUpstreamLock = async <A>(state: string, merge: () => Promise<A>): Promise<A | undefined> => {
   mkdirSync(state, { recursive: true })
-  const lock = join(state, "upstream.lock")
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(lock, `${process.pid}\n`, { flag: "wx" })
-    } catch {
-      const holder = Number(existsSync(lock) ? readFileSync(lock, "utf8").trim() : "")
-      if (running(holder)) return undefined
-      rmSync(lock, { force: true })
-      continue
-    }
+  // Opened without truncating: what it says is only rewritten by the holder.
+  const fd = openSync(join(state, "upstream.lock"), "a+")
+  try {
+    if (flock(fd, LOCK_EX | LOCK_NB) !== 0) return undefined
+    ftruncateSync(fd, 0)
+    writeSync(fd, `${process.pid}\n`)
     try {
       return await merge()
     } finally {
-      rmSync(lock, { force: true })
+      flock(fd, LOCK_UN)
     }
+  } finally {
+    closeSync(fd)
   }
-  return undefined
 }
 
 /**

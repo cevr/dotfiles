@@ -32,11 +32,15 @@ export const Unit = Schema.Struct({
 })
 export type Unit = typeof Unit.Type
 
-/** An orchestrate run: its directory's name, its path when known, and its units. */
+/** An orchestrate run: its directory's name, its path when known, the session that owns it when the call log names one, its units, and its drift from the batch machine when a verdict recorded one. */
 export const Run = Schema.Struct({
   name: Schema.String,
   dir: Schema.optionalKey(Schema.String),
+  /** The session that started the latest step of one of its units (agent-calls.ts `runSession`): the run's orchestrator. */
+  session: Schema.optionalKey(Schema.String),
   units: Schema.Array(Unit),
+  /** The status script's drift line, after `Drift: ` (`35 after batch-n accepted (…): 1 unfolded land ×6, …`); 0 is a clean run. */
+  drift: Schema.optionalKey(Schema.String),
 })
 export type Run = typeof Run.Type
 

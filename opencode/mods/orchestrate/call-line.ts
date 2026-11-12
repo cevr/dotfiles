@@ -4,7 +4,6 @@
 // A new subagent's line says what admitted or held it: each pace asked, by
 // its answer or by why it failed open, so a start a measured pace admitted
 // reads apart from one a broken RPC let through. A follow-up asks no pace.
-import type { ArmRecord } from "./experiment.ts"
 import type { PaceReply } from "./pace.ts"
 import type { Reason } from "./role.ts"
 import type { Hold, Status, SubagentFinished, SubagentLatched, SubagentStarted, ToolCallId } from "./tool-call.ts"
@@ -38,7 +37,18 @@ const admissions = (asked: Asked | undefined) => ({
   ...(asked?.fallbackCodex === undefined ? {} : { fallbackCodex: admissionOf(asked.fallbackCodex) }),
 })
 
-/** A line's admission fields, and the experiment arm a new start is in (experiment.ts). */
+/**
+ * Why a new planner start runs on the role's chain (its own model, then Codex)
+ * instead of the planner's first model (the plugin's `planner` option): that
+ * model, and why (`<model> held: <reason>`, `<model> is not offered`). A
+ * type, not an interface, so a latch's JSON context can keep it.
+ */
+export type FirstRecord = {
+  readonly model: string
+  readonly fellBack: string
+}
+
+/** A line's admission fields, and why a new planner start left the planner's first model. */
 interface Admissions {
   /** The pool's pace on its model. */
   readonly pace?: Admission
@@ -48,11 +58,11 @@ interface Admissions {
   readonly fallbackPace?: Admission
   /** The Codex admission on its Codex fallback. */
   readonly fallbackCodex?: Admission
-  /** Its arm of the model experiment, the trial's model, and why a trial start ran on the normal chain. */
-  readonly experiment?: ArmRecord
+  /** The planner's first model, and why this planner start does not run on it. */
+  readonly first?: FirstRecord
 }
 
-const armed = (experiment: ArmRecord | undefined) => (experiment === undefined ? {} : { experiment })
+const firstOf = (first: FirstRecord | undefined) => (first === undefined ? {} : { first })
 
 /** One line of the call log. `asked` is what the model passed; `agent` is what runs. */
 export type CallLine =
@@ -112,22 +122,9 @@ export type CallLine =
       readonly tool: string
       readonly why: string
     }
-  | {
-      /** A subagent a restart cut, resumed by the plugin: the parent's call it answers to. */
-      readonly kind: "resumed"
-      readonly at: string
-      readonly sessionID: string
-      readonly callID: string
-      readonly child: string
-      readonly agent: string
-      readonly description: string
-      readonly cause: "restart"
-      /** Which resume of the same turn this is, from 1. */
-      readonly attempt: number
-    }
 
-/** A started subagent's line, at `at` (ISO 8601), with the paces `asked` for it and its experiment arm. */
-export const started = (event: SubagentStarted, at: string, asked?: Asked, experiment?: ArmRecord): CallLine => ({
+/** A started subagent's line, at `at` (ISO 8601), with the paces `asked` for it and why it left the planner's first model. */
+export const started = (event: SubagentStarted, at: string, asked?: Asked, first?: FirstRecord): CallLine => ({
   kind: "call",
   at,
   sessionID: event.call.sessionID,
@@ -143,11 +140,11 @@ export const started = (event: SubagentStarted, at: string, asked?: Asked, exper
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
   ...admissions(asked),
-  ...armed(experiment),
+  ...firstOf(first),
 })
 
-/** A latched subagent's line: the paces `asked` for it, its experiment arm, what holds it, why, and when it opens. */
-export const latched = (event: SubagentLatched, at: string, asked?: Asked, experiment?: ArmRecord): CallLine => ({
+/** A latched subagent's line: the paces `asked` for it, why it left the planner's first model, what holds it, why, and when it opens. */
+export const latched = (event: SubagentLatched, at: string, asked?: Asked, first?: FirstRecord): CallLine => ({
   kind: "latched",
   at,
   sessionID: event.call.sessionID,
@@ -162,7 +159,7 @@ export const latched = (event: SubagentLatched, at: string, asked?: Asked, exper
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
   ...admissions(asked),
-  ...armed(experiment),
+  ...firstOf(first),
   hold: event.hold,
   why: event.why,
   opens: new Date(event.opensAt).toISOString(),
@@ -176,23 +173,6 @@ export const finished = (event: SubagentFinished, at: string): CallLine => ({
   callID: event.call.callID,
   ...(event.child === undefined ? {} : { child: event.child }),
   status: event.status,
-})
-
-/** A resumed subagent's line: its parent's call, and which resume of its turn this is. */
-export const resumed = (
-  start: { readonly parent: string; readonly callID: string; readonly child: string; readonly agent: string; readonly description: string },
-  attempt: number,
-  at: string,
-): CallLine => ({
-  kind: "resumed",
-  at,
-  sessionID: start.parent,
-  callID: start.callID,
-  child: start.child,
-  agent: start.agent,
-  description: start.description,
-  cause: "restart",
-  attempt,
 })
 
 /** A refused call's line: the tool and why it was refused. */

@@ -1,11 +1,11 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { describe, expect, test } from "bun:test"
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installScript, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, installedRecord, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -68,7 +68,7 @@ describe("the pool's entry", () => {
   test("gives the pool the cache lifetime the config gives Claude, so a session stays on its cache's login as long as the cache lives", () => {
     const entry = poolEntry(`${MODS}/pool`, undefined)
     const ttl = (mergeServer({}, [entry], {}, [MODS]).providers as { anthropic: { settings: { cache: { ttl: string } } } }).anthropic.settings.cache.ttl
-    expect(entry).toEqual({ package: `${MODS}/pool`, options: { cacheLifeMs: 3_600_000, resets: { auto: false } } })
+    expect(entry).toEqual({ package: `${MODS}/pool`, options: { cacheLifeMs: 3_600_000 } })
     // The ttl as OpenCode's cache settings write it, read by the cache mods' own parser.
     expect(parseTTL(ttl)).toMatchObject({ _tag: "Some", value: 3_600_000 })
   })
@@ -76,7 +76,7 @@ describe("the pool's entry", () => {
   test("adds gent's store as a source when it has one", () => {
     expect(poolEntry(`${MODS}/pool`, "/home/.local/share/gent/auth")).toEqual({
       package: `${MODS}/pool`,
-      options: { cacheLifeMs: 3_600_000, resets: { auto: false }, sources: [{ kind: "gent", dir: "/home/.local/share/gent/auth" }] },
+      options: { cacheLifeMs: 3_600_000, sources: [{ kind: "gent", dir: "/home/.local/share/gent/auth" }] },
     })
   })
 })
@@ -87,7 +87,6 @@ describe("the pool's fleet", () => {
       package: `${MODS}/pool`,
       options: {
         cacheLifeMs: 3_600_000,
-        resets: { auto: false },
         paced: { openai: "openai" },
         fleet: { host: "Cristians-MacBook-Pro.local", peers: [{ name: "workbox", ssh: "bite-workbox" }] },
       },
@@ -122,32 +121,24 @@ describe("the pool's fleet", () => {
     expect(mergeServer({ plugins: [`${MODS}/orchestrate`] }, [entry], {}, [MODS]).plugins).toEqual([entry])
   })
 
-  test("orchestrate's entry carries the planner experiment, and replaces an earlier run's options whole", () => {
+  test("orchestrate's entry names the newest Fable as the planner's first model, and replaces an earlier run's options whole", () => {
     const catalog = { anthropic: { models: {
       "claude-fable-5-1": { family: "claude-fable", release_date: "2026-09-01" },
       "claude-fable-5-2": { family: "claude-fable", release_date: "2026-11-09" },
       "claude-opus-5-5": { family: "claude-opus", release_date: "2026-09-22" },
     } } }
-    const experiment = plannerExperiment(catalog as never)
-    expect(experiment).toEqual({ role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 })
-    const entry = orchestrateEntry(`${MODS}/orchestrate`, experiment)
-    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 } } })
+    const planner = plannerModel(catalog as never)
+    expect(planner).toBe("anthropic/claude-fable-5-2")
+    const entry = orchestrateEntry(`${MODS}/orchestrate`, planner)
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, planner: { model: "anthropic/claude-fable-5-2" } } })
+    // The planner A/B's option an earlier run wrote goes with its entry.
     const earlier = { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-1", share: 0.2 } } }
     expect(mergeServer({ plugins: [earlier, "/x"] }, [entry], {}, [MODS]).plugins).toEqual([entry, "/x"])
-    // A catalog with no Fable runs no experiment, and the entry names none.
-    expect(plannerExperiment({ anthropic: { models: {} } } as never)).toBeUndefined()
+    // A catalog with no Fable names no first model, and the entry names none: the planner runs on Opus.
+    expect(plannerModel({ anthropic: { models: {} } } as never)).toBeUndefined()
     expect(mergeServer({ plugins: [earlier] }, [orchestrateEntry(`${MODS}/orchestrate`, undefined)], {}, [MODS]).plugins).toEqual([
       { package: `${MODS}/orchestrate`, options: { codex: { pool: true } } },
     ])
-  })
-
-  test("on the owner's hosts orchestrate's entry names the fleet install, which an accepted verdict asks for; elsewhere none", () => {
-    for (const host of ["Cristians-MacBook-Pro.local", "bite-cristian"]) {
-      const script = installScript(host)
-      expect(script).toBe(resolve(import.meta.dir, "fleet-install.ts"))
-      expect(orchestrateEntry(`${MODS}/orchestrate`, undefined, script)).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, install: { script } } })
-    }
-    expect(installScript("ci-runner")).toBeUndefined()
   })
 })
 
@@ -206,26 +197,22 @@ describe("the role models", () => {
 describe("the upstream merge", () => {
   // Real git on local repositories: `upstream` and `origin` are bare repos beside the fork, so
   // nothing touches the network. A scratch git config keeps the owner's hooks and signing out.
-  const saved = { ...process.env }
-  beforeAll(() => {
-    Object.assign(process.env, {
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_AUTHOR_NAME: "daily test",
-      GIT_AUTHOR_EMAIL: "daily@test.invalid",
-      GIT_COMMITTER_NAME: "daily test",
-      GIT_COMMITTER_EMAIL: "daily@test.invalid",
-    })
-  })
-  afterAll(() => {
-    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
-      if (saved[key] === undefined) delete process.env[key]
-      else process.env[key] = saved[key]
-    }
-  })
+  /** The test's own git env: a scratch config handed to each child, never written to this process's env. */
+  const env = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "daily test",
+    GIT_AUTHOR_EMAIL: "daily@test.invalid",
+    GIT_COMMITTER_NAME: "daily test",
+    GIT_COMMITTER_EMAIL: "daily@test.invalid",
+  }
+  /** `mergeUpstream` and `syncFork` run git with the process's env, so each repository's own config keeps the owner's identity, signing and hooks out of their commits and pushes. */
+  const repoConfig = (hooks: string) =>
+    `[user]\n\tname = daily test\n\temail = daily@test.invalid\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[core]\n\thooksPath = ${hooks}\n`
 
   const git = (dir: string, ...args: string[]) => {
-    const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env: process.env, stdout: "pipe", stderr: "pipe" })
+    const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env, stdout: "pipe", stderr: "pipe" })
     if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
     return ran.stdout.toString().trim()
   }
@@ -257,6 +244,9 @@ describe("the upstream merge", () => {
     const fork = join(root, "fork")
     git(root, "clone", "--quiet", "--branch", "prime-look", origin, fork)
     git(fork, "remote", "add", "upstream", upstream)
+    const hooks = join(root, "no-hooks")
+    mkdirSync(hooks)
+    for (const config of [join(upstream, "config"), join(origin, "config"), join(fork, ".git/config")]) appendFileSync(config, repoConfig(hooks))
     const calls: string[] = []
     const options = (overrides: Partial<UpstreamOptions> = {}): UpstreamOptions => ({
       fork,
@@ -322,7 +312,7 @@ describe("the upstream merge", () => {
     expect(readFileSync(f.options().report, "utf8")).toContain("- a.txt")
     // No merge left half-done in the worktree, and the fork's own tree untouched.
     expect(existsSync(join(f.options().worktree, ".git"))).toBe(true)
-    expect(Bun.spawnSync(["git", "-C", f.options().worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).exitCode).not.toBe(0)
+    expect(Bun.spawnSync(["git", "-C", f.options().worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"], { env }).exitCode).not.toBe(0)
     expect(readFileSync(join(f.fork, "a.txt"), "utf8")).toBe("ours\n")
   })
 
@@ -348,7 +338,7 @@ describe("the upstream merge", () => {
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     expect(await mergeUpstream(f.options({ host: "bite-cristian" }))).toMatchObject({ kind: "skipped" })
     expect(await mergeUpstream(f.options({ skip: true }))).toEqual({ kind: "skipped", reason: "--no-upstream" })
-    expect(Bun.spawnSync(["git", "-C", f.fork, "rev-parse", "-q", "--verify", "refs/remotes/upstream/dev"]).exitCode).not.toBe(0)
+    expect(Bun.spawnSync(["git", "-C", f.fork, "rev-parse", "-q", "--verify", "refs/remotes/upstream/dev"], { env }).exitCode).not.toBe(0)
     expect(existsSync(f.options().worktree)).toBe(false)
   })
 
@@ -423,6 +413,31 @@ describe("the upstream merge", () => {
     expect(tests).toContain("./tests/orchestrate.test.ts")
     expect(tests).not.toContain("./tests/mail-peer.test.ts")
     expect(tests.every((file) => /\/(prime-[^/]+|tui-cpu|mail|orchestrate)\.test\.ts$/.test(file))).toBe(true)
+  })
+})
+
+describe("the installed build's record", () => {
+  test("names the new build and every build it superseded, never itself", () => {
+    const record = installedRecord(
+      { version: "2.2.7-prime.bbbbbbbb", command: ["/s/opencode-2.2.7-prime.bbbbbbbb"], previous: ["2.2.5-prime.aaaaaaaa"] },
+      "2.2.7-prime.cccccccc",
+      "/s/opencode-2.2.7-prime.cccccccc",
+      ["opencode-2.2.6-prime.dddddddd", "opencode-2.2.7-prime.cccccccc", "anthropic-auth", "opencode-2.2.7-prime.bbbbbbbb"],
+    )
+    expect(record).toEqual({
+      version: "2.2.7-prime.cccccccc",
+      command: ["/s/opencode-2.2.7-prime.cccccccc"],
+      previous: ["2.2.5-prime.aaaaaaaa", "2.2.7-prime.bbbbbbbb", "2.2.6-prime.dddddddd"],
+    })
+  })
+
+  test("starts from the builds installed beside it when there is no record yet", () => {
+    expect(installedRecord({}, "2.2.8", "/s/opencode-2.2.8", ["opencode-2.2.7"]).previous).toEqual(["2.2.7"])
+  })
+
+  test("lives in OpenCode's state directory, which XDG_STATE_HOME moves", () => {
+    expect(installedFile("/h", {})).toBe("/h/.local/state/opencode/installed.json")
+    expect(installedFile("/h", { XDG_STATE_HOME: "/x" })).toBe("/x/opencode/installed.json")
   })
 })
 

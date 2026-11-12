@@ -3,10 +3,10 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
+import type { Drift } from "./drift.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
-import type { Entry } from "./restart.ts"
 import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
 import type { Transition } from "./unit-log.ts"
@@ -237,6 +237,7 @@ export interface Decided {
  * Each root's batch machine, kept as lines (`{ at, sessionID, kind, ... }`,
  * one per event or refusal), its state the fold of its lines.
  * - `state`: the root's state now; the initial state for a root with no line.
+ * - `drift`: how far the root drifted from the machine, scored from its lines (drift.ts); clean for a root with no line.
  * - `decide`: under the store's one lock (every ledger on the store shares it), `plan` reads the state and gives the
  *   commands to decide, each on the state the last left; each one's events
  *   are lines. A refused command is a `Refused` line, changes nothing, and
@@ -247,6 +248,7 @@ export class Ledger extends Context.Service<
   Ledger,
   {
     readonly state: (sessionID: string) => Effect.Effect<MachineState>
+    readonly drift: (sessionID: string) => Effect.Effect<Drift>
     readonly decide: <E, R>(
       sessionID: string,
       now: number,
@@ -279,12 +281,11 @@ export type FindingsRead = { readonly _tag: "Read"; readonly findings: ReadonlyA
 export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<FindingsRead> }>()("dotfiles-opencode/orchestrate/Findings") {}
 
 /**
- * The fleet install (dotfiles `scripts/fleet-install.ts`), asked for once per accepted batch verdict.
- * Asking never fails and returns at once: the install coalesces the requests that come close
- * together, waits for load, and runs outside this server, which it restarts.
+ * The branch checked out in a Rift (a land's entry by path, `~/` for home): what names its unit
+ * (`feat/<unit>`). None when it cannot be read: no checkout there, a detached HEAD, no git.
  */
-export class Installs extends Context.Service<Installs, { readonly request: (reason: string) => Effect.Effect<void> }>()(
-  "dotfiles-opencode/orchestrate/Installs",
+export class Branches extends Context.Service<Branches, { readonly of: (path: string) => Effect.Effect<string | undefined> }>()(
+  "dotfiles-opencode/orchestrate/Branches",
 ) {}
 
 /** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
@@ -314,6 +315,10 @@ export class Skill extends Context.Service<
  * - `seen`: the skill version the run last saw (`SEEN_FILE`); none when never recorded.
  * - `see`: record it. Never fails: a lost record costs one repeated note.
  * - `departures`: the "Departs from" lines in the run's own top-level Markdown files, `<file>:<line>: <text>`.
+ * - `log`: append one line to the run's own log.md, the run being the one holding `near` (a verifier's report:
+ *   `<run dir>/batch-<k>-findings.md`, or a unit's `<run dir>/<unit>/round-N-findings.md`, a unit dir being one
+ *   that holds spec.md), relative to `directory` when not absolute (`~/` is home). Never fails: a path that
+ *   names no directory writes nothing, and a lost line costs the run one drift reading.
  */
 export class RunRecords extends Context.Service<
   RunRecords,
@@ -321,6 +326,7 @@ export class RunRecords extends Context.Service<
     readonly seen: (runDir: string) => Effect.Effect<string | undefined>
     readonly see: (runDir: string, version: string) => Effect.Effect<void>
     readonly departures: (runDir: string) => Effect.Effect<ReadonlyArray<string>>
+    readonly log: (input: { readonly near: string; readonly line: string; readonly directory?: string }) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/RunRecords") {}
 
@@ -329,62 +335,3 @@ export class Tell extends Context.Service<
   Tell,
   { readonly tell: (sessionID: string, note: { readonly text: string; readonly description: string }) => Effect.Effect<void, NudgeRefused> }
 >()("dotfiles-opencode/orchestrate/Tell") {}
-
-/** A session as the restart reads it: its parent, title (a subagent's is its call's description) and agent. */
-export interface SessionCard {
-  readonly id: string
-  readonly parentID?: string
-  readonly title?: string
-  readonly agent?: string
-}
-
-/** A session and its context's messages, as the restart reads them (restart.ts `Entry`). */
-export interface Transcript {
-  readonly session: SessionCard
-  readonly entries: ReadonlyArray<Entry>
-}
-
-/** A cut child to resume: the parent's call it answers to, and the prompt it is resumed with. */
-export interface ResumeStart {
-  readonly parent: string
-  /** The agent the parent's call ran under. */
-  readonly from: string
-  readonly messageID: string
-  readonly callID: string
-  readonly child: string
-  /** The agent the child runs as, kept as it is. */
-  readonly agent: string
-  readonly description: string
-  readonly prompt: string
-}
-
-/** A notice to a parent: what its transcript shows, and whether it wakes an idle parent. */
-export interface ParentNotice {
-  readonly parent: string
-  readonly text: string
-  readonly description: string
-  readonly wake: boolean
-  /** The children it names, kept with it so a later start tells no child twice. */
-  readonly children: ReadonlyArray<string>
-}
-
-/**
- * What the restart reads and does, for the sessions of this plugin's
- * location (the host runs one copy of the plugin per location).
- * - `children`: the subagent sessions active since `since` (epoch ms);
- *   none when the host cannot list them.
- * - `transcript`: a session and its context; none when it cannot be read.
- * - `resume`: prompt the child, as the subagent tool continues a background
- *   subagent: its result wakes the parent.
- * - `tell`: a notice to the parent as a steered synthetic message. Telling
- *   never fails: a lost notice costs the parent a line, not the resume.
- */
-export class Restarts extends Context.Service<
-  Restarts,
-  {
-    readonly children: (since: number) => Effect.Effect<ReadonlyArray<SessionCard>>
-    readonly transcript: (sessionID: string) => Effect.Effect<Transcript | undefined>
-    readonly resume: (start: ResumeStart) => Effect.Effect<void, StartFailed>
-    readonly tell: (notice: ParentNotice) => Effect.Effect<void>
-  }
->()("dotfiles-opencode/orchestrate/Restarts") {}

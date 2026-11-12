@@ -6,7 +6,7 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Clock, Context, Effect, Layer, Option, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
@@ -34,7 +34,9 @@ import * as Lease from "./lease.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
-import { FleetStore, Ledger, Limits, Logins, Owner, Peers, Quota, ResetsStore, type LoginsUnavailable } from "./service.ts"
+import { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, type RunWork, Workload, type LoginsUnavailable } from "./service.ts"
+import * as PushModel from "./push.ts"
+import type { PushAnswer, PushRequest } from "./push.ts"
 
 /** A question gone from the owner's tray this long after it was asked, with no answer, was dismissed. */
 const ANSWER_GRACE_MS = 60_000
@@ -77,6 +79,8 @@ export interface Config extends Rules {
   readonly resets?: Readonly<Record<string, ResetProvider>>
   /** Whether resets are claimed with no one asked (resets.ts `Review.auto`); default true. False: only on the owner's yes. */
   readonly autoClaims?: boolean
+  /** What one queued orchestrate unit is taken to cost, as a share of one account's week, for the proactive push question; default push.ts `UNIT_COST`. */
+  readonly unitCost?: number
 }
 
 export interface FleetConfig {
@@ -216,8 +220,32 @@ export class Pool extends Context.Service<
     readonly resets: Effect.Effect<ResetsStatus>
     /** Answer a peer's lease message (lease.ts): grant or refuse an account's claim lease, or take its release. */
     readonly lease: (message: LeaseMessage) => Effect.Effect<LeaseAnswer>
+    /**
+     * The owner's session starts, ends, reads or plans a push (push.ts
+     * `PushRequest`); one for a peer goes to that peer. The answer says what
+     * it did, with the plan measured from the pool.
+     */
+    readonly push: (request: PushRequest) => Effect.Effect<PushAnswer>
+    /**
+     * Work the pushes: end those past their end or whose run closed, take the
+     * owner's answers to the push questions, and ask once per scope per week
+     * whether to start one when a run's queued units need more than the pool
+     * can spend before its windows reset by themselves. The sweep runs it.
+     */
+    readonly reviewPushes: Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/Pool") {}
+
+/** The pushes in this process alone, for a pool built without a PushStore. */
+const processPushes = Effect.gen(function* () {
+  const ref = yield* Ref.make(PushModel.empty)
+  return { read: Ref.get(ref), record: (_events: ReadonlyArray<PushModel.Event>, state: PushModel.PushState) => Ref.set(ref, state) }
+})
+
+/** How long after a start held for lack of quota in a push's scope the pace asks to be asked again: the push's claim takes seconds. */
+export const PUSH_RETRY_MS = 60_000
+/** A session that asked the pace this recently is where the pool asks about a push. */
+export const PUSH_ASKER_MS = 60 * 60_000
 
 export const layer = (config: Config) =>
   Layer.effect(
@@ -242,6 +270,11 @@ export const layer = (config: Config) =>
       const resetsLock = yield* Semaphore.make(1)
       // One review at a time: a review carries out claims, which take seconds.
       const reviewing = yield* Semaphore.make(1)
+      // The pushes are the host's when it keeps them (every instance reads the same), else this process's.
+      const pushStore = Option.getOrUndefined(yield* Effect.serviceOption(PushStore)) ?? (yield* processPushes)
+      const pushLock = yield* Semaphore.make(1)
+      // What the host is doing: optional, a plan goes without its load and runs.
+      const workload = Option.getOrUndefined(yield* Effect.serviceOption(Workload))
 
       /**
        * Have the aggregate decide a command against the pool's state, fold
@@ -432,6 +465,8 @@ export const layer = (config: Config) =>
         Effect.andThen(limits?.flush ?? Effect.void),
         // The fresh readings may lift a hold (a question withdrawn) or let a credit expire unused (a claim due).
         Effect.andThen(Effect.suspend(() => reviewResets)),
+        // The pushes end by their time or their run, and the queued work may need one.
+        Effect.andThen(Effect.suspend(() => reviewPushes)),
         Effect.withSpan("Pool.sweep"),
       )
 
@@ -462,6 +497,9 @@ export const layer = (config: Config) =>
        * next start names one again.
        */
       const askers = new Map<string, { readonly at: number; readonly sessionID: string }>()
+      /** Each session that asked the pace, with when it last did: a run is asked about only while its tree is at work. Kept in memory, pruned as it is read. */
+      const pacedBy = new Map<string, number>()
+      const notePaced = (sessionID: Option.Option<string>, now: number) => Option.map(sessionID, (asker) => pacedBy.set(asker, now))
       const askerOf = (pool: string, now: number) => {
         const asker = askers.get(pool)
         return asker !== undefined && now - asker.at < ResetsModel.WAIT_MS ? asker.sessionID : undefined
@@ -529,30 +567,40 @@ export const layer = (config: Config) =>
           return { fresh, why }
         })
 
-      interface Sent {
-        readonly answer: ClaimAnswer
-        readonly before: ReadonlyArray<QuotaWindow>
-        readonly lease?: string
-      }
+      type Sent =
+        | { readonly _tag: "sent"; readonly answer: ClaimAnswer; readonly before: ReadonlyArray<QuotaWindow>; readonly lease?: string }
+        | { readonly _tag: "unreachable"; readonly peers: ReadonlyArray<string> }
       const failed = (message: string): ClaimAnswer => ({ outcome: "failed", message })
+      const settles = (answer: ClaimAnswer, before: ReadonlyArray<QuotaWindow>, lease?: string): Sent => ({
+        _tag: "sent",
+        answer,
+        before,
+        ...(lease === undefined ? {} : { lease }),
+      })
 
       /**
-       * Send a claim under the provider's claim lock and the account's lease:
-       * judge it on the account read now, ask every peer for the lease (each
-       * for at most `leaseWaitMs`), and send it only when none refused; a
-       * peer that did not answer is passed over once a second fresh reading
-       * still finds it worth it, and the record says so. The lease is released
-       * to the peers that granted it, with the claim's time when it went
-       * through. Backed off (a peer refused, or holds the lease): `failed`,
-       * to go again while the hold lasts; no longer worth it: settled unsent.
+       * Send a claim under the provider's claim lock and the fleet's lease
+       * for the provider (lease.ts): judge it on the account read now, ask
+       * every peer for the lease (each for at most `leaseWaitMs`), and go on
+       * only as `verdict` allows: every peer granted, or the owner said yes
+       * and no peer that answered refused. A claim no one asked for with a
+       * peer unreachable is not sent: `unreachable`, for the owner's question.
+       * Then hold the lease (held, it refuses every peer's ask until it is
+       * finished here), read the account again right before the send, and
+       * send only when that reading still finds the claim worth it: a reading
+       * taken after every grant, so after each peer judged on its own clock
+       * that the claims it knew of settled. The lease is released to the peers that
+       * granted it, with the claim's time whenever one was sent.
+       * Backed off (a peer refused): `failed`, to go again while the hold
+       * lasts; no longer worth it: settled unsent.
        */
       const sendClaim = (where: Pooled, reset: ResetsModel.Reset): Effect.Effect<Sent> =>
         leases.lock(reset.provider).withPermits(1)(
           Effect.gen(function* () {
             const first = yield* judge(where, reset)
-            if (first.fresh === undefined) return { answer: failed(first.why ?? "unread"), before: [] }
+            if (first.fresh === undefined) return settles(failed(first.why ?? "unread"), [])
             const before = first.fresh.windows
-            if (first.why !== undefined) return { answer: { outcome: "nothing-to-reset", message: `not sent: ${first.why}` }, before }
+            if (first.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${first.why}` }, before)
             const host = fleetConfig.host
             const requestedAt = yield* Clock.currentTimeMillis
             const ask = {
@@ -563,24 +611,17 @@ export const layer = (config: Config) =>
               requestedAt,
               holdMs: leaseMs,
             }
+            // A claim this host sent on the account less than SETTLE_MS ago by its clock, a restart ago too: a reading may not show it yet.
+            const out = ResetsModel.claimOut(yield* resetsStore.read, reset.provider, requestedAt, reset.credentialID)
+            if (out !== undefined) return settles(failed(`backed off: ${out}`), before)
             const busy = yield* leases.begin(host, ask)
-            if (busy !== undefined) return { answer: failed(`backed off: ${busy}`), before }
-            const answers = yield* Effect.forEach(
-              peers.names,
-              (peer) =>
-                peers.lease(peer, Lease.LeaseAsk.make({ host, ...ask })).pipe(
-                  Effect.timeout(leaseWaitMs),
-                  Effect.option,
-                  Effect.map((answer) => ({ peer, answer: Option.getOrUndefined(answer) })),
-                ),
-              { concurrency: "unbounded" },
-            )
-            const granted = answers.flatMap((item) => (item.answer?.granted === true ? [item.peer] : []))
-            const refused = answers.flatMap((item) => (item.answer !== undefined && !item.answer.granted ? [`${item.peer}: ${item.answer.reason ?? "refused"}`] : []))
-            const silent = answers.flatMap((item) => (item.answer === undefined ? [item.peer] : []))
-            const release = (claimedAt: number | undefined) =>
+            if (busy !== undefined) return settles(failed(`backed off: ${busy}`), before)
+            let claimedAt: number | undefined
+            let granted: ReadonlyArray<string> = []
+            // However this ends (an answer, a refusal, an interruption), the lease ends here and with every peer that granted it.
+            const release = Effect.suspend(() =>
               Effect.andThen(
-                leases.finish(ask.id, claimedAt),
+                leases.finish(ask.id),
                 Effect.forEach(
                   granted,
                   (peer) =>
@@ -589,30 +630,40 @@ export const layer = (config: Config) =>
                       .pipe(Effect.timeout(leaseWaitMs), Effect.ignore),
                   { concurrency: "unbounded", discard: true },
                 ),
+              ),
+            )
+            return yield* Effect.gen(function* () {
+              const answers = yield* Effect.forEach(
+                peers.names,
+                (peer) =>
+                  peers.lease(peer, Lease.LeaseAsk.make({ host, ...ask })).pipe(
+                    Effect.timeout(leaseWaitMs),
+                    Effect.option,
+                    Effect.map((answer) => ({ peer, answer: Option.getOrUndefined(answer) })),
+                  ),
+                { concurrency: "unbounded" },
               )
-            if (refused.length > 0) {
-              yield* release(undefined)
-              return { answer: failed(`backed off: ${refused.join("; ")}`), before }
-            }
-            const fallback = silent.length === 0 ? undefined : `fallback: ${silent.join(", ")} did not answer in ${leaseWaitMs / 1000} s; sent on a fresh reading`
-            const lease = fallback ?? (granted.length === 0 ? undefined : `granted by ${granted.join(", ")}`)
-            const noted = lease === undefined ? {} : { lease }
-            // A peer passed over may have claimed meanwhile: the account read again says so.
-            const second = silent.length === 0 ? first : yield* judge(where, reset)
-            if (second.fresh === undefined || second.why !== undefined) {
-              yield* release(undefined)
-              return second.fresh === undefined
-                ? { answer: failed(second.why ?? "unread"), before, ...noted }
-                : { answer: { outcome: "nothing-to-reset", message: `not sent: ${second.why}` }, before: second.fresh.windows, ...noted }
-            }
-            if (!(yield* leases.hold(ask.id, leaseMs))) {
-              yield* release(undefined)
-              return { answer: failed("backed off: a peer that asked first holds the lease"), before }
-            }
-            const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
-            const through = answer.outcome === "reset" || answer.outcome === "already-redeemed"
-            yield* release(through ? yield* Clock.currentTimeMillis : undefined)
-            return { answer, before: second.fresh.windows, ...noted }
+              granted = answers.flatMap((item) => (item.answer?.granted === true ? [item.peer] : []))
+              const verdict = Lease.verdict(answers, reset.yes === true)
+              if (verdict._tag === "refused") return settles(failed(`backed off: ${verdict.reasons.join("; ")}`), before)
+              if (verdict._tag === "unreachable") return { _tag: "unreachable", peers: verdict.peers } satisfies Sent
+              const lease =
+                verdict.passedOver.length > 0
+                  ? `the owner's yes; ${verdict.passedOver.join(", ")} unreachable${verdict.granted.length === 0 ? "" : `; granted by ${verdict.granted.join(", ")}`}`
+                  : verdict.granted.length === 0
+                    ? undefined
+                    : `granted by ${verdict.granted.join(", ")}`
+              if (!(yield* leases.hold(ask.id))) return settles(failed("backed off: the lease ended or went to a peer that asked first"), before, lease)
+              // Right before the send: a claim made meanwhile, from any pool or host, shows in the account read again.
+              const second = yield* judge(where, reset)
+              if (second.fresh === undefined) return settles(failed(second.why ?? "unread"), before, lease)
+              if (second.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${second.why}` }, second.fresh.windows, lease)
+              claimedAt = yield* Clock.currentTimeMillis
+              yield* sendResets(ResetsModel.NoteSend.make({ key: reset.key }))
+              const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
+              claimedAt = yield* Clock.currentTimeMillis
+              return settles(answer, second.fresh.windows, lease)
+            }).pipe(Effect.ensuring(release))
           }),
         )
 
@@ -620,12 +671,21 @@ export const layer = (config: Config) =>
        * Send a claim the aggregate decided (`sendClaim`), then read the account's
        * usage again, record the outcome with the windows before and after and
        * how the fleet agreed to it, and log what it did to them: whether the
-       * weekly reset moved answers what a Claude grant does to the week.
+       * weekly reset moved answers what a Claude grant does to the week. A
+       * claim no one asked for that found a peer unreachable becomes the
+       * owner's question (`NoAgreement`).
        */
       const claim = Effect.fn("Pool.claim")(function* (reset: ResetsModel.Reset) {
         const where = poolOf(PoolId.make(reset.pool))
         if (where === undefined) return
-        const { answer, before, lease } = yield* sendClaim(where, reset)
+        const sent = yield* sendClaim(where, reset)
+        if (sent._tag === "unreachable") {
+          yield* Effect.logWarning(`pool resets: did not claim a ${reset.provider} reset on ${reset.label} on its own: ${sent.peers.join(", ")} unreachable; asking the owner`)
+          const now = yield* Clock.currentTimeMillis
+          const sessionID = [...askers.values()].filter((asker) => now - asker.at < ResetsModel.WAIT_MS).toSorted((left, right) => right.at - left.at)[0]?.sessionID
+          return yield* carry(yield* sendResets(ResetsModel.NoAgreement.make({ key: reset.key, unreachable: sent.peers, ...(sessionID === undefined ? {} : { sessionID }) })))
+        }
+        const { answer, before, lease } = sent
         // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
         if (answer.outcome === "reset" || answer.outcome === "already-redeemed")
           yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
@@ -650,8 +710,19 @@ export const layer = (config: Config) =>
         yield* carry(settled.filter((event) => event._tag === "OwnerTold"))
       })
 
+      /**
+       * A peer's lease message: an ask is refused while a claim this host sent
+       * (its store keeps it across a restart) is less than SETTLE_MS old by
+       * this host's clock, else the table answers. The asker's times are
+       * never compared with this host's: clocks differ.
+       */
       const lease = (message: LeaseMessage): Effect.Effect<LeaseAnswer> =>
-        message._tag === "Ask" ? leases.answer(fleetConfig.host, message) : Effect.as(leases.release(message), { granted: true })
+        message._tag === "Release"
+          ? Effect.as(leases.release(message), { granted: true })
+          : Effect.gen(function* () {
+              const out = ResetsModel.claimOut(yield* resetsStore.read, message.provider, yield* Clock.currentTimeMillis)
+              return out === undefined ? yield* leases.answer(fleetConfig.host, message) : { granted: false, reason: out }
+            })
 
       /** Carry out what the aggregate decided. */
       const carry = (events: ReadonlyArray<ResetsModel.Event>): Effect.Effect<void> =>
@@ -663,7 +734,7 @@ export const layer = (config: Config) =>
                 return claim(event.reset)
               case "OwnerAsked": {
                 const offer = event.reset.why === "offer"
-                const what = offer ? `a ${event.reset.provider} reset offer` : "a Claude reset"
+                const what = offer ? `a ${event.reset.provider} reset offer` : event.reset.why === "expiring" || event.reset.provider === "codex" ? `a ${event.reset.provider} reset no peer agreed to` : "a Claude reset"
                 return owner
                   .ask({
                     sessionID: event.reset.sessionID ?? "",
@@ -671,7 +742,7 @@ export const layer = (config: Config) =>
                     question: event.reset.question ?? "",
                     header: event.reset.header ?? ResetsModel.claudeHeader(event.reset.label),
                     options: [{ label: ResetsModel.CLAIM }, { label: ResetsModel.KEEP }],
-                    assume: offer ? ResetsModel.OFFER_ASSUME : ResetsModel.ASSUME,
+                    assume: ResetsModel.assumeOf(event.reset),
                   })
                   .pipe(
                     Effect.tap((asked) =>
@@ -709,6 +780,7 @@ export const layer = (config: Config) =>
                 // A notice not yet read goes with its reset.
                 return Effect.forEach(event.keys, (key) => owner.withdraw(ResetsModel.toldKey(key)), { discard: true })
               case "WaitNoted":
+              case "ClaimSent":
               case "ClaimSettled":
                 return Effect.void
             }
@@ -746,7 +818,13 @@ export const layer = (config: Config) =>
       const reviewResets = Effect.gen(function* () {
         if (Object.keys(config.resets ?? {}).length === 0) return
         yield* takeAnswers
-        yield* carry(yield* sendResets(ResetsModel.Review.make({ pools: yield* resetViews, auto: config.autoClaims !== false })))
+        yield* takePushAnswers
+        const pushes = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, yield* Clock.currentTimeMillis).map(PushModel.grantOf)
+        yield* carry(
+          yield* sendResets(
+            ResetsModel.Review.make({ pools: yield* resetViews, auto: config.autoClaims !== false, ...(pushes.length === 0 ? {} : { pushes }) }),
+          ),
+        )
       }).pipe(
         reviewing.withPermits(1),
         Effect.catchCause((cause) => Effect.logWarning("pool resets: a review failed", cause)),
@@ -755,25 +833,337 @@ export const layer = (config: Config) =>
 
       const followAnswers = owner.changes.pipe(Stream.runForEach(() => reviewResets))
 
+      // ── Pushes ──
+
+      /** Have the Pushes aggregate decide a command against the host's pushes, and record what it decides. */
+      const sendPush = (command: PushModel.Command) =>
+        Effect.gen(function* () {
+          const state = yield* pushStore.read
+          const events = yield* PushModel.Pushes.decide(state, command, yield* Clock.currentTimeMillis)
+          if (events.length > 0) yield* pushStore.record(events, fold(PushModel.Pushes, events, state))
+          return events
+        }).pipe(pushLock.withPermits(1))
+
+      /** Carry out what the Pushes aggregate decided: ask the owner, withdraw a question, and log. */
+      const carryPush = (events: ReadonlyArray<PushModel.Event>, asked: ReadonlyArray<PushModel.PushAsk> = []): Effect.Effect<void> =>
+        Effect.forEach(
+          events,
+          (event) => {
+            switch (event._tag) {
+              case "PushStarted":
+                return Effect.logInfo(`pool push: started "${event.push.goal}" (${event.push.by}) on ${event.push.scope.host}, up to ${event.push.allowance.max} resets, until ${new Date(event.push.endsAt).toISOString()}`)
+              case "PushEnded":
+                return Effect.logInfo(`pool push: ${event.id} ended: ${event.why}`)
+              case "PushAsked":
+                return owner
+                  .ask({
+                    sessionID: event.ask.sessionID,
+                    key: PushModel.askKey(event.ask.key),
+                    question: event.ask.question,
+                    header: PushModel.askHeader(event.ask.goal),
+                    options: [{ label: PushModel.START }, { label: PushModel.NOT_NOW }],
+                    assume: PushModel.ASK_ASSUME,
+                  })
+                  .pipe(Effect.tap((ok) => (ok ? Effect.logInfo(`pool push: asked the owner about a push for ${event.ask.goal}`) : Effect.logWarning(`pool push: the owner could not be asked about a push for ${event.ask.goal}`))))
+              case "PushAnswered":
+                return Effect.void
+              case "AsksForgotten":
+                // A question still open when its week is out goes from the tray.
+                return Effect.forEach(
+                  event.keys.filter((key) => asked.some((ask) => ask.key === key && ask.stage === "asked")),
+                  (key) => owner.withdraw(PushModel.askKey(key)),
+                  { discard: true },
+                )
+            }
+          },
+          { discard: true },
+        )
+
+      /** The owner's answers to the push questions open: a yes starts the push it proposed; a no, or a question gone a minute without one, holds for the week. */
+      const takePushAnswers = Effect.gen(function* () {
+        const open = Object.values((yield* pushStore.read).asks).filter((ask) => ask.stage === "asked")
+        if (open.length === 0) return
+        const answers = yield* owner.answers
+        if (answers === undefined) return
+        const now = yield* Clock.currentTimeMillis
+        for (const ask of open) {
+          const found = answers.find((row) => row.key === PushModel.askKey(ask.key))
+          if (found !== undefined && found.answer === undefined) continue
+          if (found === undefined && now - ask.at < ANSWER_GRACE_MS) continue
+          yield* carryPush(yield* sendPush(PushModel.TakePushAnswer.make({ key: ask.key, ...(found?.answer === undefined ? {} : { answer: found.answer }) })))
+          if (found !== undefined) yield* owner.withdraw(found.key)
+        }
+      })
+
+      const hostLoad = workload === undefined ? Effect.succeed(undefined) : workload.load
+
+      /** A request's resets as a push's allowance: `resets` approved (none named: none), of the kinds and accounts named. */
+      const allowanceOf = (request: PushRequest): PushModel.Allowance => ({
+        max: Math.max(0, Math.floor(request.resets ?? 0)),
+        asNeeded: request.asNeeded === true,
+        ...(request.kinds === undefined || request.kinds.length === 0 ? {} : { kinds: request.kinds }),
+        ...(request.accounts === undefined || request.accounts.length === 0 ? {} : { accounts: request.accounts }),
+      })
+
+      /** Every reset in hand, for a plan that measures what the work would need. */
+      const ALL = 99
+
+      /**
+       * Ask the owner whether to start a push for `goal` in `scope` when its
+       * queued `units` need more than the pool can spend before its windows
+       * reset by themselves and the resets in hand cover the rest: the fewest
+       * of them, in the order a push spends them. Once per scope per week
+       * (`AskPush`). The plan's text, whether asked or not.
+       */
+      const propose = Effect.fn("Pool.propose")(function* (goal: string, units: number, scope: PushModel.PushScope, sessionID: string) {
+        const now = yield* Clock.currentTimeMillis
+        const views = yield* resetViews
+        const load = yield* hostLoad
+        const need = { units, cost: units * (config.unitCost ?? PushModel.UNIT_COST) }
+        const measured = PushModel.planOf({ views, grant: { max: ALL }, now, need, ...(load === undefined ? {} : { load }) })
+        const proposal = PushModel.proposalOf(measured, need.cost)
+        if (proposal === undefined) return { asked: false, text: PushModel.planText(measured) }
+        const kinds = [...new Set(proposal.map((reset) => reset.kind))]
+        const allowance: PushModel.Allowance = { max: proposal.length, asNeeded: true, kinds }
+        const plan = PushModel.planOf({ views, grant: allowance, now, need, ...(load === undefined ? {} : { load }) })
+        const question = PushModel.askText(goal, proposal, plan)
+        const asked = yield* sendPush(PushModel.AskPush.make({ goal, scope, allowance, sessionID, question }))
+        yield* carryPush(asked)
+        return { asked: asked.length > 0, text: question }
+      })
+
+      /**
+       * Ask about each run with queued work in the tree that owns it (the
+       * status RPC's session for the run, from orchestrate's call log), so a
+       * yes covers that tree: only while the tree is at work (one of `recent`,
+       * the sessions that asked the pace lately, is in it). A run with no known
+       * owner, or whose tree is idle, is asked about nowhere.
+       */
+      const proposeRuns = Effect.fn("Pool.proposeRuns")(function* (runs: ReadonlyArray<RunWork>, recent: ReadonlyArray<string>) {
+        const working = new Set(yield* Effect.forEach(recent, owner.root))
+        const owned = runs.flatMap((run) =>
+          Option.toArray(Option.map(Option.fromNullishOr(run.session), (session) => ({ run: run.name, session, units: run.units.filter((unit) => PushModel.QUEUED_STATES.includes(unit.state)).length }))),
+        )
+        for (const { run, session, units } of owned) {
+          const root = yield* owner.root(session)
+          if (units > 0 && working.has(root)) yield* propose(`run ${run}`, units, { host: fleetConfig.host, sessionID: root, run }, root)
+        }
+      })
+
+      const reviewPushes = Effect.gen(function* () {
+        const runs = workload === undefined ? [] : yield* workload.runs
+        const closedRuns = runs.filter((run) => run.units.length > 0 && run.units.every((unit) => PushModel.closedState(unit.state))).map((run) => run.name)
+        const before = yield* pushStore.read
+        yield* carryPush(yield* sendPush(PushModel.Tick.make({ closedRuns })), Object.values(before.asks))
+        yield* takePushAnswers
+        if (Object.keys(config.resets ?? {}).length === 0) return
+        const now = yield* Clock.currentTimeMillis
+        for (const [sessionID, at] of pacedBy) if (now - at >= PUSH_ASKER_MS) pacedBy.delete(sessionID)
+        const recent = [...pacedBy].toSorted((left, right) => right[1] - left[1]).map(([sessionID]) => sessionID)
+        if (recent.length === 0) return
+        const queued = runs.flatMap((run) => {
+          const units = run.units.filter((unit) => PushModel.QUEUED_STATES.includes(unit.state)).length
+          return units === 0 ? [] : [{ run: run.name, units }]
+        })
+        yield* proposeRuns(runs, recent)
+        /** The resets question names no run: it goes to the tree that asked the pace last. */
+        const root = yield* owner.root(recent[0]!)
+        // Resets that would expire unused at the current burn are budget going to waste: the owner is asked once a week per pool, queued work or not.
+        const views = yield* resetViews
+        const load = yield* hostLoad
+        for (const view of views) {
+          const forecast = PushModel.forecastOf(view, now)
+          if (forecast.wasted.length === 0) continue
+          const allowance: PushModel.Allowance = {
+            max: forecast.wasted.length,
+            asNeeded: true,
+            kinds: [...new Set(forecast.wasted.map((item) => item.kind))],
+          }
+          const plan = PushModel.planOf({ views: [view], grant: allowance, now, ...(load === undefined ? {} : { load }) })
+          const goal = queued.length === 0 ? `the ${view.id} resets that would expire unused` : `${queued.map((item) => `run ${item.run}`).join(", ")} with the ${view.id} resets that would expire unused`
+          yield* carryPush(
+            yield* sendPush(
+              PushModel.AskPush.make({
+                goal,
+                scope: { host: fleetConfig.host },
+                about: view.id,
+                allowance,
+                sessionID: root,
+                question: PushModel.wasteAskText(forecast, queued, plan),
+              }),
+            ),
+          )
+        }
+      }).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("pool push: a review failed", cause)),
+        Effect.withSpan("Pool.reviewPushes"),
+      )
+
+      /** What one push request did, with the host's pushes after it. */
+      const answered = (ok: boolean, text: string) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          return { ok, text, pushes: PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now) } satisfies PushAnswer
+        })
+
+      /** A push's text and its plan now. */
+      const describe = Effect.fn(function* (push: PushModel.Push) {
+        const now = yield* Clock.currentTimeMillis
+        const used = ResetsModel.pushUsed(yield* resetsStore.read, push.id).length
+        const load = yield* hostLoad
+        const plan = PushModel.planOf({
+          views: yield* resetViews,
+          grant: { ...push.allowance, max: Math.max(0, push.allowance.max - used) },
+          now,
+          ...(load === undefined ? {} : { load }),
+        })
+        return `${PushModel.pushText(push, used, now)}\n${PushModel.planText(plan)}`
+      })
+
+      const push = (request: PushRequest): Effect.Effect<PushAnswer> =>
+        Effect.gen(function* () {
+          const host = request.host ?? fleetConfig.host
+          if (host !== fleetConfig.host) {
+            if (!peers.names.includes(host)) return yield* answered(false, `No host ${host}: this is ${fleetConfig.host}, and its peers are ${peers.names.join(", ") || "none"}.`)
+            // The caller's session is this host's, not the peer's: a push for a peer covers that whole host, so it names no session, nor a run (a run is a session's).
+            if (request.action === "start" && (request.session === true || request.run !== undefined))
+              return yield* answered(false, `A push for ${host} covers that whole host: this session's tree and runs are ${fleetConfig.host}'s. Start it without session or run, or from a session on ${host}.`)
+            // Nor does it name the host: the peer knows itself by its own name (the Mac's "workbox" is "bite-cristian" there), and a request with none is for itself.
+            const { sessionID: _caller, session: _session, host: _host, ...forwarded } = request
+            return yield* peers.push(host, forwarded).pipe(
+              Effect.catchTag("PeerUnreachable", (error) => answered(false, `${host} cannot be reached: ${error.message}. Nothing changed.`)),
+            )
+          }
+          const now = yield* Clock.currentTimeMillis
+          const state = yield* pushStore.read
+          const active = PushModel.activeOn(state, host, now)
+          switch (request.action) {
+            case "status": {
+              if (active.length === 0) return yield* answered(true, `No push is active on ${host}.`)
+              const texts = yield* Effect.forEach(active, describe)
+              return yield* answered(true, texts.join("\n\n"))
+            }
+            case "end": {
+              const ending = request.id === undefined ? active : active.filter((item) => item.id === request.id)
+              if (ending.length === 0) return yield* answered(false, request.id === undefined ? `No push is active on ${host}.` : `No push ${request.id} is active on ${host}.`)
+              for (const item of ending) yield* carryPush(yield* sendPush(PushModel.EndPush.make({ id: item.id, why: "ended by the owner" })))
+              return yield* answered(true, `Ended ${ending.map((item) => `"${item.goal}"`).join(", ")}: the pace holds starts as usual again.`)
+            }
+            case "plan": {
+              const goal = request.goal ?? "the queued work"
+              if (request.units !== undefined && request.units > 0 && request.sessionID !== undefined) {
+                const root = yield* owner.root(request.sessionID)
+                const scope: PushModel.PushScope = request.run === undefined ? { host, sessionID: root } : { host, sessionID: root, run: request.run }
+                const proposed = yield* propose(goal, request.units, scope, root)
+                return yield* answered(true, proposed.asked ? `Asked the owner in the session's tray:\n${proposed.text}` : proposed.text)
+              }
+              const load = yield* hostLoad
+              const plan = PushModel.planOf({
+                views: yield* resetViews,
+                grant: { ...allowanceOf(request), max: request.resets === undefined ? ALL : allowanceOf(request).max },
+                now,
+                ...(request.units === undefined ? {} : { need: { units: request.units, cost: request.units * (config.unitCost ?? PushModel.UNIT_COST) } }),
+                ...(load === undefined ? {} : { load }),
+              })
+              return yield* answered(true, PushModel.planText(plan))
+            }
+            case "start": {
+              const goal = request.goal?.trim() ?? ""
+              if (goal === "") return yield* answered(false, "A push needs a goal: say what the work is.")
+              const until = request.until === undefined || request.until === "done" ? undefined : Date.parse(request.until)
+              if (until !== undefined && Number.isNaN(until)) return yield* answered(false, `"${request.until}" is not a time: give an ISO time, or "done".`)
+              const endsAt = request.hours !== undefined ? now + request.hours * 3_600_000 : until
+              if (endsAt !== undefined && endsAt <= now) return yield* answered(false, "That end time has passed already.")
+              // A run is the calling session's: its push covers the caller's tree, as `session` does, and nothing outside it.
+              const tree = request.session === true || request.run !== undefined
+              if (tree && request.sessionID === undefined)
+                return yield* answered(false, "A push for a session's tree or a run needs the calling session: start it from that session, or for the whole host.")
+              const root = tree && request.sessionID !== undefined ? yield* owner.root(request.sessionID) : undefined
+              const scope: PushModel.PushScope =
+                root === undefined ? { host } : request.run === undefined ? { host, sessionID: root } : { host, sessionID: root, run: request.run }
+              const events = yield* sendPush(
+                PushModel.StartPush.make({
+                  goal,
+                  scope,
+                  ...(endsAt === undefined ? {} : { endsAt }),
+                  allowance: allowanceOf(request),
+                  by: "asked",
+                  ...(request.sessionID === undefined ? {} : { sessionID: request.sessionID }),
+                }),
+              )
+              yield* carryPush(events)
+              const started = events.flatMap((event) => (event._tag === "PushStarted" ? [event.push] : []))[0]
+              if (started === undefined) return yield* answered(false, "The push did not start.")
+              return yield* answered(true, yield* describe(started))
+            }
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("pool push: a request failed", cause).pipe(Effect.andThen(Effect.succeed({ ok: false, text: "The push request failed; nothing changed.", pushes: [] }))),
+          ),
+          Effect.withSpan("Pool.push"),
+        )
+
       const resetsStatus = Effect.gen(function* () {
         const state = yield* resetsStore.read
+        const now = yield* Clock.currentTimeMillis
+        const forecast = (yield* resetViews).flatMap((view) => {
+          const text = PushModel.forecastText(PushModel.forecastOf(view, now))
+          return text === undefined ? [] : [text]
+        })
+        const pushes = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now).map((item) =>
+          PushModel.pushText(item, ResetsModel.pushUsed(state, item.id).length, now),
+        )
         return {
           resets: Object.values(state.resets).toSorted((left, right) => right.at - left.at),
           claims: [...state.claims].reverse(),
+          ...(forecast.length === 0 ? {} : { forecast }),
+          ...(pushes.length === 0 ? {} : { pushes }),
         } satisfies ResetsStatus
       }).pipe(Effect.withSpan("Pool.resets"))
 
       const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string) {
         const answer = yield* paceOf(providerID, model)
         const id = measuredBy(config, providerID)
-        if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined)
-          askers.set(id, { at: yield* Clock.currentTimeMillis, sessionID })
+        const now = yield* Clock.currentTimeMillis
+        if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined) askers.set(id, { at: now, sessionID })
+        notePaced(Option.fromNullishOr(sessionID), now)
+        if (answer.ok || !answer.measured) return answer
+        // A push active on this host covers the start when its scope names no session, or the root of the start's.
+        const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
+        const root = active.length > 0 && sessionID !== undefined ? yield* owner.root(sessionID) : undefined
+        const push = active.find((item) => PushModel.covers(item, root))
+        const used = push === undefined ? 0 : ResetsModel.pushUsed(yield* resetsStore.read, push.id).length
+        // The spend-evenly target alone does not hold a start a push covers: the accounts have quota, and the push spends
+        // them to 100% and claims its resets. Once its approved resets are spent, the pace holds again from the last claim's line.
+        if (answer.soft === true && push !== undefined && (push.allowance.max === 0 || used < push.allowance.max))
+          return {
+            ok: true,
+            measured: true,
+            reason: `the push "${push.goal}" lifts the spend-evenly hold until ${new Date(push.endsAt).toISOString()} (${answer.reason})`,
+          } satisfies Pace
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
-        if (!answer.ok && answer.measured && id !== undefined && config.resets?.[id] !== undefined) {
-          yield* sendResets(ResetsModel.NoteWait.make({ pool: id, ...(sessionID === undefined ? {} : { sessionID }) }))
-          yield* Effect.forkIn(reviewResets, scope)
+        if (id === undefined || config.resets?.[id] === undefined) return answer
+        const hard = answer.soft !== true
+        yield* sendResets(
+          ResetsModel.NoteWait.make({
+            pool: id,
+            ...(sessionID === undefined ? {} : { sessionID }),
+            ...(hard ? { hard: true } : {}),
+            ...(root === undefined ? {} : { root }),
+            ...(model === undefined ? {} : { model }),
+          }),
+        )
+        yield* Effect.forkIn(reviewResets, scope)
+        if (!hard || push === undefined) return answer
+        // Held for lack of quota in a push's scope: the review claims one of its resets, and the start asks again soon.
+        const left = push.allowance.max - used
+        if (left <= 0) return { ...answer, reason: `${answer.reason}; the push "${push.goal}" has spent its ${push.allowance.max} approved resets` }
+        return {
+          ...answer,
+          reason: `${answer.reason}; the push "${push.goal}" claims one of its ${left} approved reset${left === 1 ? "" : "s"}`,
+          retryAt: Math.min(answer.retryAt ?? Number.POSITIVE_INFINITY, now + PUSH_RETRY_MS),
         }
-        return answer
       })
 
       const paceOf = Effect.fn("Pool.paceOf")(function* (providerID: string, model?: string) {
@@ -926,6 +1316,8 @@ export const layer = (config: Config) =>
         followAnswers,
         resets: resetsStatus,
         lease,
+        push,
+        reviewPushes,
       }
     }),
   )

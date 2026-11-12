@@ -20,8 +20,16 @@
 // short-lived fetch/503 toast is a failure too. A pane selecting from home is
 // tested both with cached metadata (submit during boot) and without it (wait
 // for the composer, then submit). The scripted model must receive the prompt.
+//
+// The proxy can also go down (nothing listens on its port, so connections are
+// refused, as in a restart's gap). A TUI opened with -s or --continue while
+// the service is down or booting says it waits ("Waiting for the OpenCode
+// server") and opens its session, where it used to exit with Bun's "Unable to
+// connect. Is the computer able to access the url?" (the owner's 2026-11-11
+// report); a picker selection and prompt sent into the gap arrive; a TUI opened
+// on a stopped or restarting background service opens its session.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
@@ -39,6 +47,21 @@ const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "gi
 const BACK_WITHIN_MS = 20_000
 /** How long the booting case refuses the session after the restarted service can serve. */
 const BOOTING_MS = 8_000
+/**
+ * How long a TUI has to start and draw: from source on a host the batch's
+ * acceptance run fills, it took over 8 s. A window the TUI must see (a service
+ * down or booting) opens once the TUI is up, never on the clock before it starts.
+ */
+const START_MS = 60_000
+/**
+ * How long a TUI opened on a ready service has to show its session, and one opened
+ * on a down or booting service once the service serves: that service stays down or
+ * booting until the TUI says it waits, then BOOTING_MS / 2 more.
+ */
+const SHOWS_WITHIN = { ready: START_MS, down: BACK_WITHIN_MS, booting: BACK_WITHIN_MS } as const
+const WAITING = /Waiting for the OpenCode server/
+/** What a TUI that gives up on an unreachable or booting service shows. */
+const GAVE_UP = /Could not reach|Unable to connect|did not provide|UnexpectedStatus|cli process failed/
 
 // ToastSurface lives at top=1/right=2, at most 60 columns wide, with
 // SplitBorder's vertical edges and an `x` close affordance. Match that UI,
@@ -183,16 +206,23 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
    */
   const refused = new Map<string, number>()
   let unavailableUntil = 0
+  /** A TUI opened while the service boots: the booting window opens at its first request, not on the clock before it starts. */
+  let bootingFromFirstRequest = false
   const refusedRequests: string[] = []
-  const proxyServer = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    idleTimeout: 0,
-    fetch: async (request) => {
+  const proxyFetch = async (request: Request) => {
+      if (bootingFromFirstRequest) {
+        bootingFromFirstRequest = false
+        unavailableUntil = Date.now() + BOOTING_MS
+      }
       const url = new URL(request.url)
       const sessionID = /^\/api\/session\/([^/]+)$/.exec(url.pathname)?.[1]
       if (Date.now() < unavailableUntil || (request.method === "GET" && sessionID !== undefined && Date.now() < (refused.get(sessionID) ?? 0))) {
         refusedRequests.push(`${request.method} ${url.pathname}`)
+        // The service's own answers while it boots: its info (version, pid and the starting code) and every other route.
+        if (request.method === "GET" && url.pathname === "/api/info") {
+          const info = (await (await fetch(new URL("/api/info", (await ready(serviceFile, () => "the service")).url), { headers: request.headers })).json()) as Record<string, unknown>
+          return Response.json({ ...info, code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
+        }
         return Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
       }
       if (request.method === "POST" && url.pathname.includes("/prompt")) submissions.push({ path: url.pathname, body: await request.clone().text() })
@@ -223,9 +253,25 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
           cancel: () => reader.cancel().catch(() => undefined),
         })
       return new Response(body, { status: upstream.status, headers: back })
+  }
+  const listen = (port: number) => Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 0, fetch: proxyFetch })
+  let proxyServer = listen(0)
+  let listening = true
+  const proxyPort = proxyServer.port ?? 0
+  const proxy = {
+    url: proxyServer.url.toString().replace(/\/$/, ""),
+    refuse: (sessionID: string, until: number) => refused.set(sessionID, until),
+    /** Nothing listens on the proxy's port until `up`: a client's connection is refused, as in a restart's gap. */
+    down: () => {
+      listening = false
+      proxyServer.stop(true)
     },
-  })
-  const proxy = { url: proxyServer.url.toString().replace(/\/$/, ""), refuse: (sessionID: string, until: number) => refused.set(sessionID, until) }
+    up: () => {
+      if (listening) return
+      proxyServer = listen(proxyPort)
+      listening = true
+    },
+  }
 
   const pid = (service: Service) => fetch(new URL("/api/info", service.url), { headers: { authorization: `Basic ${btoa(`opencode:${service.password}`)}` } }).then((response) => response.json() as Promise<{ pid?: number }>)
 
@@ -279,17 +325,19 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   test(
     "after `service restart` the TUI keeps its root/subagent session without an error toast in any frame",
     async () => {
-      type Case = { readonly busy?: boolean; readonly gone?: string; readonly booting?: boolean }
-      const run = async (name: string, sessionID: string, marker: string, { busy = false, gone, booting = false }: Case = {}) => {
+      type Case = { readonly busy?: boolean; readonly gone?: string; readonly booting?: boolean; readonly bootingAll?: boolean; readonly draft?: boolean; readonly starting?: boolean }
+      const run = async (name: string, sessionID: string, marker: string, { busy = false, gone, booting = false, bootingAll = false, draft = false, starting = false }: Case = {}) => {
         const socket = join(root, `${name}.sock`)
         // A herdr pane's directory need not be the session's: the TUI starts in the HOME.
         // A booting service is the proxy in front of it: the TUI reaches the service through it.
-        const explicit = booting || Boolean(binary)
+        const explicit = booting || bootingAll || starting || Boolean(binary)
         const command = explicit ? [...tui, "--server", proxy.url, "-s", sessionID] : [...tui, "-s", sessionID]
         const password: Record<string, string> = explicit ? { OPENCODE_PASSWORD: service.password } : {}
         const frames: string[] = []
         const badFrames: string[] = []
         let recording = false
+        // Opened while the service still boots (an install restarted it a moment before): the TUI waits for it.
+        bootingFromFirstRequest = starting
         const host = serve({ socket, cwd: home, command: command as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}), ...password }, cols: 120, rows: 40 }, (rows) => {
           if (!recording) return
           const frame = rows.join("\n")
@@ -305,24 +353,38 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
           return rows.join("\n")
         }
         const showing = (text: string) => text.includes(marker)
-        await until(screen, showing, (last) => `${name}: the TUI never showed ${marker}:\n${last}`, 60_000)
+        await until(screen, showing, (last) => `${name}: the TUI never showed ${marker}:\n${last}`, START_MS)
         if (busy) {
           await client.session.prompt({ sessionID, text: "hold" })
           await until(screen, (text) => text.includes("holding"), (last) => `${name}: the turn never started:\n${last}`, 30_000)
         }
         if (gone !== undefined) rmSync(gone, { recursive: true, force: true })
+        // Text typed in the composer and not sent: the restart must not take it.
+        const draftText = `${name}-unsent-draft-marker`
+        if (draft) {
+          await hostCall(socket, { op: "type", text: draftText })
+          await until(screen, (text) => text.includes(draftText), (last) => `${name}: the draft never showed:\n${last}`, 10_000)
+        }
 
         const before = await pid(await ready(serviceFile, () => "the service"))
         recording = true
         if (booting) proxy.refuse(sessionID, Number.POSITIVE_INFINITY)
+        if (bootingAll) unavailableUntil = Number.POSITIVE_INFINITY
         const restarted = await opencode("service", "restart")
         expect(restarted).toMatchObject({ code: 0 })
         // The new service still refuses the session for a while, as one still loading its plugins does.
         if (booting) proxy.refuse(sessionID, Date.now() + BOOTING_MS)
+        // Or every request, its event stream and info too, as the service does until its routes are built.
+        if (bootingAll) unavailableUntil = Date.now() + BOOTING_MS
         const after = await ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`)
         // A new service process, not the old one answering.
         expect((await pid(after)).pid).not.toBe(before.pid)
         await until(screen, showing, (last) => `${name}: ${BACK_WITHIN_MS / 1000}s after the restart the TUI does not show ${marker}:\n${last}`, BACK_WITHIN_MS)
+        // Back on the session with the draft still in the composer, once the service serves again.
+        if (draft) {
+          await until(() => Date.now(), (now) => now >= unavailableUntil, () => "the booting window", BOOTING_MS + 1_000)
+          await until(screen, (text) => text.includes(draftText) && showing(text), (last) => `${name}: the draft is gone after the restart:\n${last}`, BACK_WITHIN_MS)
+        }
         // And it is live on the new service: a turn sent there shows up, so the screen is not a stale frame.
         const live = OpenCode.make({ baseUrl: after.url, headers: { authorization: `Basic ${btoa(`opencode:${after.password}`)}` } })
         if (gone !== undefined) {
@@ -346,6 +408,14 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       await run("child", child.id, "child-transcript-marker")
       await run("busy", parent.id, "parent-transcript-marker", { busy: true })
       await run("booting", parent.id, "parent-transcript-marker", { booting: true })
+      // The owner's panes: a draft in the composer, and a service that refuses everything while it boots.
+      // A session of their own, so the parent's growing transcript does not scroll the marker away.
+      const drafted = await client.session.create({ location: { directory: work }, title: "Reconnect draft" })
+      await client.session.prompt({ sessionID: drafted.id, text: "say draft-transcript-marker" })
+      await client.experimental.session.wait({ sessionID: drafted.id })
+      await run("draft", drafted.id, "draft-transcript-marker", { draft: true, starting: true })
+      await run("booting-all", drafted.id, "draft-transcript-marker", { bootingAll: true, draft: true })
+      unavailableUntil = 0
 
       // A worker's session in a Rift the run has since removed.
       const rift = join(root, "rift")
@@ -358,18 +428,128 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
     TIMEOUT_MS,
   )
 
-  test.each(["cached", "uncached"])(
-    "selecting a %s session from home during service boot and submitting waits without an error toast",
-    async (cache) => {
-      // Release any targeted refusal left by a failed preceding case.
+  test(
+    "a TUI opened while the service is down or booting waits for it, says so, and opens its session",
+    async () => {
       refused.clear()
       unavailableUntil = 0
+      proxy.up()
+      // In the directory the TUI's process sees (macOS's /var is /private/var), so --continue finds it there.
+      const opened = realpathSync(work)
+      const target = await client.session.create({ location: { directory: opened }, title: "Reconnect opened" })
+      await client.session.prompt({ sessionID: target.id, text: "say opened-transcript-marker" })
+      await client.experimental.session.wait({ sessionID: target.id })
+      // A directory with no session: --continue has none to open there.
+      const empty = join(root, "empty")
+      mkdirSync(empty, { recursive: true })
+      type Open = { readonly name: string; readonly args: ReadonlyArray<string>; readonly mode: "down" | "booting" | "ready"; readonly cwd?: string; readonly shows?: RegExp }
+      const open = async ({ name, args, mode, cwd = opened, shows = /opened-transcript-marker/ }: Open) => {
+        if (mode === "down") proxy.down()
+        if (mode === "booting") unavailableUntil = Number.POSITIVE_INFINITY
+        const socket = join(root, `${name}.sock`)
+        const badFrames: string[] = []
+        const frames: string[] = []
+        const host = serve({ socket, cwd, command: [...tui, "--server", proxy.url, ...args] as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}), OPENCODE_PASSWORD: service.password }, cols: 120, rows: 40 }, (rows) => {
+          const frame = rows.join("\n")
+          if (frames.at(-1) !== frame) frames.push(frame)
+          const toast = errorToast(rows)
+          if (toast && badFrames.length === 0) badFrames.push(toast)
+        })
+        hosts.push(host)
+        await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)
+        const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" })).rows.join("\n")
+        // While the service cannot serve, the terminal says the TUI waits for it; a TUI that gives up says so at once.
+        if (mode !== "ready") {
+          const said = await until(screen, (text) => WAITING.test(text) || GAVE_UP.test(text), (last) => `${name}: no waiting line while the service cannot serve:\n${last}`, START_MS)
+          expect(said, `${name}: no waiting line while the service cannot serve`).toMatch(WAITING)
+          await Bun.sleep(BOOTING_MS / 2)
+          proxy.up()
+          unavailableUntil = 0
+        }
+        await until(screen, (text) => shows.test(text), (last) => `${name}: the TUI never showed ${shows}:\n${last}`, SHOWS_WITHIN[mode])
+        await host.stop()
+        unavailableUntil = 0
+        expect(frames.filter((frame) => GAVE_UP.test(frame)), `${name}: a failure in any frame`).toEqual([])
+        expect(badFrames, `${name}: error toast while the service could not serve`).toEqual([])
+      }
+      const cases: ReadonlyArray<Open> = [
+        { name: "open-down", args: ["-s", target.id], mode: "down" },
+        { name: "continue-down", args: ["--continue"], mode: "down" },
+        { name: "open-booting", args: ["-s", target.id], mode: "booting" },
+        { name: "continue-booting", args: ["--continue"], mode: "booting" },
+        // Nothing to continue: home, not a blank session screen.
+        { name: "continue-empty", args: ["--continue"], mode: "ready", cwd: empty, shows: /Fix a TODO in the codebase|What is the tech stack of this project\?|Fix broken tests/ },
+      ]
+      // Every case runs, so one red names all that fail.
+      const failures: string[] = []
+      for (const each of cases)
+        await open(each)
+          .catch((error: unknown) => failures.push(String(error).replace(/\n\s*\n+/g, "\n").slice(0, 1_500)))
+          .finally(() => {
+            proxy.up()
+            unavailableUntil = 0
+          })
+      expect(failures).toEqual([])
+    },
+    TIMEOUT_MS,
+  )
+
+  test(
+    "a TUI opened on the background service while it is stopped or restarting opens its session",
+    async () => {
+      refused.clear()
+      unavailableUntil = 0
+      proxy.up()
+      const target = await client.session.create({ location: { directory: work }, title: "Reconnect managed" })
+      await client.session.prompt({ sessionID: target.id, text: "say managed-transcript-marker" })
+      await client.experimental.session.wait({ sessionID: target.id })
+      const open = async (name: string, before: () => Promise<unknown>) => {
+        const pending = before()
+        const socket = join(root, `${name}.sock`)
+        const frames: string[] = []
+        const badFrames: string[] = []
+        // No --server: the TUI finds the service the way the owner's panes do, by its registration.
+        const host = serve({ socket, cwd: home, command: [...tui, "-s", target.id] as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}) }, cols: 120, rows: 40 }, (rows) => {
+          const frame = rows.join("\n")
+          if (frames.at(-1) !== frame) frames.push(frame)
+          const toast = errorToast(rows)
+          if (toast && badFrames.length === 0) badFrames.push(toast)
+        })
+        hosts.push(host)
+        await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)
+        const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" })).rows.join("\n")
+        await until(screen, (text) => text.includes("managed-transcript-marker"), (last) => `${name}: the TUI never opened its session:\n${last}`, 60_000)
+        await pending
+        await host.stop()
+        expect(frames.filter((frame) => /Could not reach|Unable to connect|did not provide|UnexpectedStatus|cli process failed/.test(frame)), `${name}: a failure in any frame`).toEqual([])
+        expect(badFrames, `${name}: error toast while the service could not serve`).toEqual([])
+        return frames
+      }
+      // Stopped: the TUI starts the service and says so.
+      expect(await opencode("service", "stop")).toMatchObject({ code: 0 })
+      const stopped = await open("managed-stopped", async () => undefined)
+      expect(stopped.some((frame) => /Starting background server|Waiting for the OpenCode server/.test(frame)), "managed-stopped: no line while the service started").toBe(true)
+      service = await ready(serviceFile, () => "the service the TUI started")
+      // Restarting: opened while `service restart` stops the service and starts the next one.
+      await open("managed-restarting", async () => expect(await opencode("service", "restart")).toMatchObject({ code: 0 }))
+      service = await ready(serviceFile, () => "the restarted service")
+    },
+    TIMEOUT_MS,
+  )
+
+  test.each(["cached", "uncached", "down"])(
+    "selecting a %s session from home during service boot and submitting waits without an error toast",
+    async (cache) => {
+      // Release any targeted refusal or downtime left by a failed preceding case.
+      refused.clear()
+      unavailableUntil = 0
+      proxy.up()
       // A second pane sits at home with its session picker already populated.
       // Select from that cached list while *every* HTTP request returns the
       // same 503 as the service's actual plugin-loading readiness window.
       const socket = join(root, `open-booting-${cache}.sock`)
       const badFrames: string[] = []
-      const host = serve({ socket, cwd: work, command: [...tui, "--server", proxy.url, ...(cache === "cached" ? ["-s", parent.id] : [])] as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}), OPENCODE_PASSWORD: service.password }, cols: 120, rows: 40 }, (rows) => {
+      const host = serve({ socket, cwd: work, command: [...tui, "--server", proxy.url, ...(cache !== "uncached" ? ["-s", parent.id] : [])] as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}), OPENCODE_PASSWORD: service.password }, cols: 120, rows: 40 }, (rows) => {
         const toast = errorToast(rows)
         if (toast && badFrames.length === 0) badFrames.push(toast)
       })
@@ -381,7 +561,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       }
       // Visit first so a returning home pane has cached session metadata and
       // its composer can accept input before the boot-time reload completes.
-      if (cache === "cached") {
+      if (cache !== "uncached") {
         await until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model"), (last) => `session did not load before going home:\n${last}`, 60_000)
         await hostCall(socket, { op: "keys", names: ["ctrl+x"] })
         await hostCall(socket, { op: "type", text: "n" })
@@ -400,9 +580,14 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       unavailableUntil = Date.now() + BOOTING_MS
       const beforeRefusals = refusedRequests.length
       expect(Date.now(), "selection happens while the service still answers 503").toBeLessThan(unavailableUntil)
+      // Down: nothing listens when the selection is made; the service comes back after a while, still booting.
+      if (cache === "down") {
+        proxy.down()
+        setTimeout(proxy.up, BOOTING_MS / 2)
+      }
       await hostCall(socket, { op: "keys", names: ["enter"] })
       await until(screen, (text) => /Connection lost|Reconnecting to the server/.test(text) || (!/\bSessions\b/.test(text) && /sim-model/.test(text)), (last) => `selection did not leave the picker or wait for reconnection:\n${last}`, 5_000)
-      if (cache === "cached") expect(Date.now(), "cached composer accepts input while the service still answers 503").toBeLessThan(unavailableUntil)
+      if (cache !== "uncached") expect(Date.now(), "cached composer accepts input while the service still answers 503").toBeLessThan(unavailableUntil)
       else await until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !/\bSessions\b|Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
       const marker = `opened-during-boot-${cache}-marker`
       await hostCall(socket, { op: "type", text: `say ${marker}` })
