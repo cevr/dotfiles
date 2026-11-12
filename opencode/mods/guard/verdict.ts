@@ -60,11 +60,15 @@ const TRASH = "use `trash` on what you mean to remove"
 /** How deep `sh -c` and `eval` are followed; a deeper line is not read. */
 const MAX_DEPTH = 4
 
-/** Git's options that take the next word as their value. */
-const GIT_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"])
+/**
+ * Git's global options that take the next word as their value (git 2.56's `git --help`; each long
+ * one also takes `--opt=value` as one word). The one reader of git's argv: tests/git-repo.test.ts
+ * reads test code's git calls with it too.
+ */
+export const GIT_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"])
 
 /** A git command's subcommand and the words after it; the global options before it skipped. */
-const gitSubcommand = (args: ReadonlyArray<string>) => {
+export const gitSubcommand = (args: ReadonlyArray<string>) => {
   let index = 0
   while (index < args.length && (args[index] ?? "").startsWith("-")) {
     index += 1
