@@ -9,10 +9,12 @@
  * too. Then a session in the asking directory asks one question; the run opens
  * the /answer form for it (`session.form.create`, as the TUI does) and submits
  * an answer, waits for the letter and the turn it wakes. Last, a root session
- * and a subagent of it (its child session): the subagent asks, the form in the
- * root answers it, the subagent wakes on the letter, and the root, not woken by
- * the notice (only by OpenCode's idle reports of the subagent), takes one more
- * turn, which reads the notice. It writes the sessions'
+ * and a subagent of it (its child session): the subagent asks, and OpenCode's
+ * idle report of it wakes the root, whose turn ends before the form in the root
+ * answers. The subagent wakes on the letter, its answer held by the sim, so the
+ * notice is the only thing that could wake the root; the run takes the root's
+ * messages then (`untold`), releases the subagent, and lets its second report
+ * wake the root for the turn that reads the notice. It writes the sessions'
  * messages and every warning the server logged to `<base>/result.json`.
  *
  * @module
@@ -21,7 +23,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { formOf } from "../../mods/questions/form.ts"
 import type { Question } from "../../mods/questions/question.ts"
-import { ASK_TASK, IDLE_TASK, LETTER, QUESTION, ROOT_TASK, serve, SUBAGENT } from "./sim.ts"
+import { answeredAfter, ASK_TASK, IDLE_TASK, isNotice, isReport, LETTER, type Message, messagesOf, QUESTION, ROOT_TASK, serve, SUBAGENT } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -39,7 +41,7 @@ export interface Result {
   readonly asked: unknown
   /** The other directory's session's messages. */
   readonly other: unknown
-  /** The subagent run: the form field's key, the subagent's messages, and the root's before and after its next turn. */
+  /** The subagent run: the form field's key, the subagent's messages, and the root's while the subagent's letter turn is held and at the end. */
   readonly subagent: { readonly field: string; readonly child: unknown; readonly untold: unknown; readonly root: unknown }
   /** Every warning the server logged. */
   readonly warnings: ReadonlyArray<Warning>
@@ -123,15 +125,17 @@ try {
     await opencode.sessions.form.reply({ sessionID: session.id, formID: form.id, answer: { [input.fields[0].key]: "Redis" } })
 
     // The letter wakes the session; wait for it to arrive, then for the turn it starts.
-    const lettered = async (sessionID: string) => {
+    /** Polls a session's messages until `ready` holds of them, or fails with `what` after 30 s. */
+    const until = async (sessionID: string, ready: (messages: ReadonlyArray<Message>) => boolean, what: string) => {
       const deadline = Date.now() + 30_000
-      while (!JSON.stringify(await opencode.sessions.context({ sessionID })).includes(LETTER)) {
-        if (Date.now() > deadline) throw new Error(`the answer's letter never arrived in ${sessionID}`)
+      while (!ready(messagesOf(await opencode.sessions.context({ sessionID })))) {
+        if (Date.now() > deadline) throw new Error(`${what} never happened in ${sessionID}`)
         await sleep(100)
       }
-      await opencode.experimental.session.wait({ sessionID })
     }
-    await lettered(session.id)
+    const hasLetter = (messages: ReadonlyArray<Message>) => JSON.stringify(messages).includes(LETTER)
+    await until(session.id, hasLetter, "the answer's letter")
+    await opencode.experimental.session.wait({ sessionID: session.id })
 
     // A root session and a subagent of it: the subagent asks, the form in the root answers it.
     const root = await opencode.sessions.create({ location: { directory: asking } })
@@ -140,17 +144,26 @@ try {
     const child = await opencode.sessions.create({ location: { directory: asking }, parentID: root.id, title: SUBAGENT })
     await opencode.sessions.prompt({ sessionID: child.id, text: ASK_TASK })
     await opencode.experimental.session.wait({ sessionID: child.id })
+    // OpenCode wakes the root with the subagent's idle report: let that turn end before the answer, so a turn
+    // the notice caused cannot hide inside it.
+    await until(root.id, (messages) => answeredAfter(messages, isReport), "the root's turn on the subagent's report")
+    await opencode.experimental.session.wait({ sessionID: root.id })
     const subInput = formOf([{ id: "q1", sessionID: child.id, askedAt: 0, ...QUESTION }], root.id, () => SUBAGENT)
     if (subInput === undefined) throw new Error("no form for the subagent's question")
     const subForm = await opencode.sessions.form.create({ sessionID: root.id, ...subInput })
+    // The subagent's turn on the letter is held, so it sends no report yet: only the notice can wake the root now.
+    const release = sim.hold()
     await opencode.sessions.form.reply({ sessionID: root.id, formID: subForm.id, answer: { [subInput.fields[0].key]: "Redis" } })
-    await lettered(child.id)
+    await until(child.id, hasLetter, "the answer's letter")
+    // The notice goes to the root with the letter; a root it does not wake shows it only at its next turn.
     // A wake the notice should not cause would have answered by now.
     await sleep(1000)
     await opencode.experimental.session.wait({ sessionID: root.id })
     const untold = await opencode.sessions.context({ sessionID: root.id })
-    // The root's next turn reads the notice.
-    await opencode.sessions.prompt({ sessionID: root.id, text: "carry on" })
+    release()
+    await opencode.experimental.session.wait({ sessionID: child.id })
+    // The root's next turn, on the subagent's second report, reads the notice.
+    await until(root.id, (messages) => answeredAfter(messages, isNotice), "the root's turn after the notice")
     await opencode.experimental.session.wait({ sessionID: root.id })
 
     // Every location's subscriber has long seen the event by now; let any late one log.

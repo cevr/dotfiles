@@ -12,6 +12,7 @@ import {
   resetInside,
   rowKey,
   tally,
+  weeklyRatios,
   takePeer,
   weightedOf,
   type LimitsState,
@@ -233,10 +234,90 @@ describe("the line", () => {
       ]))
     })
     state = recount(state, uses, T0 + HOUR)
-    // Exact readings: each range closes on its rate.
+    // Exact readings: each range closes on its rate; the weekly points per own-week point follow the own week.
     expect(limitsLine(tally(state, T0 + HOUR))).toBe(
-      "limit/Mtok 7d: Fable 1.6% 1.6–1.6 n 3 (own week 0.30%) · Opus 0.90% 0.90–0.90 n 3 (last 7 days)",
+      "limit/Mtok 7d: Fable 1.6% 1.6–1.6 n 3 (own week 0.30% 0.30–0.30 n 3; weekly/own 5.3) · Opus 0.90% 0.90–0.90 n 3 (last 7 days)",
     )
     expect(limitsLine(tally(emptyState(T0), T0))).toBeUndefined()
+  })
+
+  test("a model's own week with no rate on the shared week shows alone", () => {
+    const resetAt = T0 + 7 * DAY
+    let state = observe(emptyState(T0 - 7 * DAY), "anthropic", "a", reading(T0 + HOUR, [{ name: "7d:Fable", utilization: 0.02, resetAt }]))
+    state = recount(state, [use(T0 + HOUR / 2, "a", "claude-fable-5-2", 1e6)], T0 + HOUR)
+    expect(limitsLine(tally(state, T0 + HOUR))).toBe("limit/Mtok: Fable own week 2.0% n 1 (last 7 days)")
+  })
+
+  test("a model's own week with no rate yet says why: no counted period has its tokens, and when the next can begin", () => {
+    const since = T0
+    let state = emptyState(since)
+    // a's week began before the store did; b's began after, with no Fable in it.
+    state = observe(state, "anthropic", "a", reading(T0 + HOUR, [{ name: "7d", utilization: 0.3, resetAt: T0 + 2 * DAY }, { name: "7d:Fable", utilization: 0.05, resetAt: T0 + 2 * DAY }]))
+    state = observe(state, "anthropic", "b", reading(T0 + HOUR, [{ name: "7d", utilization: 0.01, resetAt: T0 + 7 * DAY }, { name: "7d:Fable", utilization: 0, resetAt: T0 + 7 * DAY }]))
+    state = recount(state, [use(T0 + HOUR / 2, "a", "claude-fable-5-2", 1e6), use(T0 + HOUR / 2, "b", "claude-opus-5-5", 1e6)], T0 + HOUR)
+    const answer = tally(state, T0 + HOUR)
+    expect(answer.waiting).toEqual([{ pool: "anthropic", window: "7d:Fable", counted: 1, from: T0 + 2 * DAY }])
+    expect(limitsLine(answer)).toBe(
+      "limit/Mtok 7d: Opus 1.0% n 1 · Fable own week: none yet (1 counted period has none of its tokens; next counted period from 2026-11-03 00:00Z) (last 7 days)",
+    )
+    // Once a's next week has begun, it is the counted period: no next one to wait for.
+    const later = observe(state, "anthropic", "a", reading(T0 + 2 * DAY + HOUR, [{ name: "7d:Fable", utilization: 0, resetAt: T0 + 9 * DAY }]))
+    expect(tally(later, T0 + 2 * DAY + HOUR).waiting).toEqual([{ pool: "anthropic", window: "7d:Fable", counted: 2 }])
+  })
+})
+
+describe("a model's reported part of the weekly window", () => {
+  /** Weeks of accounts with `[opus, fable]` Mtok; Fable's own week reports its part of the week (`weeklyUsed`), rounded to a point like the endpoint's. */
+  const weeks = (mixes: ReadonlyArray<readonly [number, number]>, opus: number, fable: number, ofWeekly: number, report = true) => {
+    let state = emptyState(T0 - 7 * DAY)
+    const uses: Array<Use> = []
+    mixes.forEach(([o, f], i) => {
+      const id = `acct-${i}`
+      const resetAt = T0 + 7 * DAY
+      uses.push(use(T0 + HOUR / 2, id, "claude-opus-5-5", o * 1e6), use(T0 + HOUR / 2, id, "claude-fable-5-2", f * 1e6))
+      const own = (fable * f) / ofWeekly
+      state = observe(state, "anthropic", id, reading(T0 + HOUR, [
+        { name: "7d", utilization: (opus * o + fable * f) / 100, resetAt },
+        { name: "7d:Fable", utilization: own / 100, resetAt, ofWeekly, ...(report ? { weeklyUsed: Math.round(fable * f) / 100 } : {}) },
+      ]))
+    })
+    return tally(recount(state, uses, T0 + HOUR), T0 + HOUR)
+  }
+  const mixes: ReadonlyArray<readonly [number, number]> = [
+    [400, 4],
+    [300, 3],
+    [500, 2],
+    [350, 5],
+    [450, 3.5],
+  ]
+
+  test("a model with a sliver of the tokens gets its rate from its part, and the others the rest of the rise", () => {
+    // Fable at about 1% of the weighted tokens: 2 points per weighted Mtok on the week, 0.2 for Opus.
+    const answer = weeks(mixes, 0.2, 2, 0.5)
+    const week = answer.recent.find((w) => w.window === "7d")!
+    const fable = week.families.find((f) => f.family === "Fable")!
+    expect(fable).toMatchObject({ reported: true, n: 5 })
+    expect(Math.abs(fable.weighted.rate - 2)).toBeLessThan(0.1)
+    expect(week.families.find((f) => f.family === "Opus")!.weighted.rate).toBeCloseTo(0.2, 2)
+    expect(weeklyRatios(answer, "anthropic")["7d:Fable"]!.rate).toBeCloseTo(0.5, 1)
+  })
+
+  test("without its part reported, the shared fit leaves the sliver out and no ratio exists", () => {
+    const answer = weeks(mixes, 0.2, 2, 0.5, false)
+    const week = answer.recent.find((w) => w.window === "7d")!
+    expect(week.families.map((f) => f.family)).toEqual(["Opus"])
+    expect(weeklyRatios(answer, "anthropic")).toEqual({})
+  })
+
+  test("a period without the part, holding the model's tokens, is left out of the others' fit", () => {
+    let state = emptyState(T0 - 7 * DAY)
+    const resetAt = T0 + 7 * DAY
+    state = observe(state, "anthropic", "a", reading(T0 + HOUR, [{ name: "7d", utilization: 0.2, resetAt }, { name: "7d:Fable", utilization: 0.02, resetAt, weeklyUsed: 0.01 }]))
+    // b's reading names no part: its Fable tokens' share of its rise is unknown.
+    state = observe(state, "anthropic", "b", reading(T0 + HOUR, [{ name: "7d", utilization: 0.5, resetAt }, { name: "7d:Fable", utilization: 0.1, resetAt }]))
+    state = recount(state, [use(T0 + HOUR / 2, "a", "claude-opus-5-5", 19e6), use(T0 + HOUR / 2, "a", "claude-fable-5-2", 1e6), use(T0 + HOUR / 2, "b", "claude-opus-5-5", 1e6), use(T0 + HOUR / 2, "b", "claude-fable-5-2", 1e6)], T0 + HOUR)
+    const week = tally(state, T0 + HOUR).recent.find((w) => w.window === "7d")!
+    expect(week.families.find((f) => f.family === "Opus")).toMatchObject({ n: 1, weighted: { rate: 1 } })
+    expect(week.families.find((f) => f.family === "Fable")).toMatchObject({ n: 1, reported: true, weighted: { rate: 1 } })
   })
 })

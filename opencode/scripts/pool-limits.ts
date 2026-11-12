@@ -2,9 +2,13 @@
 // The limit tally's view: what each model family costs in % of ONE account's
 // usage limit per million tokens, per pool and window, with its 95% range and
 // n (the window periods it has tokens in). The pool writes the tally on every
-// sweep (`@dotfiles/opencode-pool/limits`); this reads that file, or computes
-// the tally from one dump per host of the OpenCode database
-// (pool-limits-dump.ts, run on a copy), the first host as this one.
+// sweep (`@dotfiles/opencode-pool/limits`); this fits that file's rows again,
+// or computes the tally from one dump per host of the OpenCode database
+// (pool-limits-dump.ts, run on a copy), the first host as this one. The file
+// counts tokens only since its pool first ran (its `since`); a dump counts
+// them from the oldest step the pool's ledger placed. After the windows, each
+// model's weekly points per own-week point, and every window read with no row
+// fitted yet, with why.
 //
 // Usage: bun pool-limits.ts [--file <limits.json>] [--json]
 //        bun pool-limits.ts --dump <host>=<dump.json> [--dump <host>=<dump.json> ...] [--json]
@@ -19,6 +23,8 @@ import {
   resetInside,
   takePeer,
   tally,
+  waitingText,
+  weeklyRatios,
   type LimitsState,
   type Rate,
   type Tally,
@@ -82,9 +88,17 @@ export const table = (windows: ReadonlyArray<WindowTally>): ReadonlyArray<string
     `  ${w.pool} ${w.window} (${w.rows} periods)`,
     ...w.families.map(
       (f) =>
-        `    ${f.family.padEnd(14)} ${rate(f.weighted).padEnd(24)} %/Mtok · raw ${rate(f.raw).padEnd(26)} %/Mtok · n ${String(f.n).padStart(3)} · ${f.mtok.toFixed(1)} Mtok weighted, ${f.rawMtok.toFixed(0)} raw`,
+        `    ${f.family.padEnd(14)} ${rate(f.weighted).padEnd(24)} %/Mtok · raw ${rate(f.raw).padEnd(26)} %/Mtok · n ${String(f.n).padStart(3)} · ${f.mtok.toFixed(1)} Mtok weighted, ${f.rawMtok.toFixed(0)} raw${f.reported === true ? " · its reported part" : ""}`,
     ),
   ])
+
+/** Each pool's weekly points per own-week point, and every window read with no row fitted yet. */
+export const notes = (computed: Tally): ReadonlyArray<string> => [
+  ...[...new Set(computed.cumulative.map((w) => w.pool))].flatMap((pool) =>
+    Object.entries(weeklyRatios(computed, pool)).map(([window, ratio]) => `  ${pool} ${window}: ${rate(ratio)} weekly points per own-week point`),
+  ),
+  ...(computed.waiting ?? []).map((waiting) => `  ${waiting.pool} ${waiting.window}: none yet (${waitingText(waiting)})`),
+]
 
 if (import.meta.main) {
   const args = process.argv.slice(2)
@@ -119,7 +133,8 @@ if (import.meta.main) {
       console.error(`no limit tally at ${path} (the pool writes it on each sweep)`)
       process.exit(1)
     }
-    const computed = file?.tally ?? tally(state, Date.now())
+    // Fitted again from the file's rows, so a fit this view knows reads rows a running pool of an older fit wrote.
+    const computed = tally(state, Date.now())
     const line = limitsLine(computed)
     answer = { ...(line === undefined ? {} : { line }), tally: computed }
   }
@@ -130,6 +145,8 @@ if (import.meta.main) {
     for (const line of table(answer.tally.recent)) console.log(line)
     console.log("All periods kept:")
     for (const line of table(answer.tally.cumulative)) console.log(line)
+    const more = notes(answer.tally)
+    if (more.length > 0) console.log(["Weekly ratios and windows not fitted yet:", ...more].join("\n"))
     if (answer.hosts !== undefined) console.log(`Hosts: ${JSON.stringify(answer.hosts)}`)
   }
 }
