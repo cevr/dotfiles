@@ -330,6 +330,40 @@ describe("proactive push", () => {
       }),
     ))
 
+  /** The verifier's VP1 (round 3): the run's tree asked the pace `gap` ago, and another tree paces now; the run's questions asked after the review. */
+  const askedAfter = Effect.fn("test.askedAfter")(function* (gap: number) {
+    const w = world()
+    w.owner.parents.set("ses_orch", "ses_owner")
+    const weekAt = T0 + 5 * DAY
+    w.work.runs = [{ name: "ergo", session: "ses_orch", units: queued("implement", 6).units }]
+    const read = (at: number) => {
+      w.readings.set("a", reading(at, 0.2, 0.95, weekAt, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
+      w.readings.set("b", reading(at, 0.2, 0.95, weekAt, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
+    }
+    read(T0)
+    const pool = yield* w.pool
+    yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orch")
+    yield* TestClock.adjust(gap)
+    read(T0 + gap)
+    yield* pool.pace("anthropic", "claude-opus-5-5", "ses_stranger")
+    yield* pool.reviewPushes
+    return w.owner.asked.filter((question) => question.key.startsWith("push:") && !question.key.includes("#")).map((question) => question.sessionID)
+  })
+
+  test("VP1 a run whose tree asked the pace over an hour ago is asked about nowhere, though another tree paces now", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        expect(yield* askedAfter(Model.PUSH_ASKER_MS + MINUTE)).toEqual([])
+      }),
+    ))
+
+  test("VP1, the other side of the hour: a run whose tree asked the pace within it is asked about in its tree", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        expect(yield* askedAfter(Model.PUSH_ASKER_MS - MINUTE)).toEqual(["ses_owner"])
+      }),
+    ))
+
   /** A property over askers from several trees: whatever asks the pace, and in what order, a yes to the run's question lifts no hold outside the run's tree. */
   for (const seed of [1, 2, 3, 4, 5, 6]) {
     test(`property, seed ${seed}: a yes to a run's question lifts no hold outside the run's tree`, () =>
