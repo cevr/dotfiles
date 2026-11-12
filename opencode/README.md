@@ -2872,6 +2872,7 @@ its reason, and only for a capability no installed Effect service offers:
 | `scripts/effect-debt.ts` | `noGlobals`, `noNodeBuiltinImport` | the lint subprocess adapter: the root has no Effect platform layer, so it spawns git and oxlint with `Bun.spawn` and reads and writes files itself |
 | `scripts/effect-debt.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge (no Effect test runner is installed) and a real-process harness building throwaway workspaces |
 | `scripts/effect-isolation.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces and child `bun test` runs |
+| `mods/update/model.test.ts` | `noEffectRunInTests` | the Bun test bridge: the update model run on its fake git, build and exec seams under a `TestClock` |
 
 No other rule can be exempted (`EXEMPTABLE` in the script): a test-global
 write, a fixed wait, a module mock, a swallowed failure or a style rule is
