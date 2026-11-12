@@ -24,7 +24,7 @@ import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as Lease from "../lease.ts"
 import * as Model from "../model.ts"
-import { NOT_NOW, START } from "../push.ts"
+import { NOT_NOW, type PushAnswer, type PushRequest, START } from "../push.ts"
 import type { ClaimAnswer, QuotaReading, ResetCredit } from "../quota.ts"
 import { type RunWork, Workload } from "../service.ts"
 import * as FleetTest from "./fleet.ts"
@@ -63,7 +63,14 @@ interface Sent {
 }
 
 /** The workbox's pool on memory layers: a peer (the Mac) that grants every lease it is asked for, and the runs and load the test sets. */
-const world = (config: Partial<Model.Config> = {}) => {
+interface Fleet {
+  readonly host: string
+  readonly peer: string
+  /** What the peer does with a push request, as ssh/push.ts hands it to the peer's `push` RPC; none: it takes no pushes. */
+  readonly pushes?: (peer: string, request: PushRequest) => Effect.Effect<PushAnswer>
+}
+
+const world = (config: Partial<Model.Config> = {}, fleet: Fleet = { host: "workbox", peer: "mac" }) => {
   const readings = new Map<string, QuotaReading>()
   const claims: Array<Sent> = []
   const leases: Array<string> = []
@@ -88,11 +95,14 @@ const world = (config: Partial<Model.Config> = {}) => {
       return state.answer(input)
     }),
     LedgerTest.layer(),
-    PeersTest.layer(new Map([["mac", { down: "not read in this test" }]]), (peer, message) =>
-      Effect.sync(() => {
-        leases.push(`${peer}:${message._tag}`)
-        return { granted: true }
-      }),
+    PeersTest.layer(
+      new Map([[fleet.peer, { down: "not read in this test" }]]),
+      (peer, message) =>
+        Effect.sync(() => {
+          leases.push(`${peer}:${message._tag}`)
+          return { granted: true }
+        }),
+      fleet.pushes,
     ),
     FleetTest.layer(),
     ResetsTest.layer(new Map<string, Schema.Json>()),
@@ -106,7 +116,7 @@ const world = (config: Partial<Model.Config> = {}) => {
     cacheLifeMs: CACHE_LIFE_MS,
     resets: { anthropic: "claude" },
     // Each start counts 40% of a week until it settles: three of them put the pool over its spend-evenly line.
-    fleet: { ...Model.DEFAULT_FLEET, host: "workbox", startCost: 0.4 },
+    fleet: { ...Model.DEFAULT_FLEET, host: fleet.host, startCost: 0.4 },
     ...config,
   }
   const pool = Effect.gen(function* () {
@@ -230,7 +240,7 @@ describe("proactive push", () => {
         const { w, pool } = yield* setUp()
         const asked = w.owner.asked.filter((question) => question.key.startsWith("push:"))
         expect(asked).toHaveLength(1)
-        expect(asked[0]).toMatchObject({ sessionID: "ses_owner", key: "push:workbox:ses_owner:ergo", options: [{ label: START }, { label: NOT_NOW }] })
+        expect(asked[0]).toMatchObject({ sessionID: "ses_owner", key: "push:workbox:*:ergo", options: [{ label: START }, { label: NOT_NOW }] })
         expect(asked[0]!.question).toContain("Start a push for run ergo using the weekly reset on Max A?")
         expect(asked[0]!.question).toContain("Queued work: 6 units ≈ 60% of one account's week; room 10%")
         expect(asked[0]!.question).toContain("Host load 42.0 on 16 cores")
@@ -318,6 +328,264 @@ describe("use it or lose it", () => {
         expect(w.claims.map((claim) => claim.creditID)).toEqual(["g-a"])
         const claim = (yield* pool.resets).claims[0]!
         expect(claim.after?.find((window) => window.name === "7d")?.utilization).toBe(0)
+      }),
+    ))
+})
+
+// The owner's limits, each as the verifier of round 1 probed it (P1-P3,
+// P5-P8): a push reaches no further than its scope and its end, spends no
+// more than the resets approved, and a no to its question holds for the run.
+describe("the owner's limits", () => {
+  const weekAt = T0 + 3 * DAY
+  const spentBoth = (w: ReturnType<typeof world>, at: number) => {
+    w.readings.set("a", reading(at, 1, 1, weekAt, [grant("g-a", T0 + 30 * DAY, FULL)]))
+    w.readings.set("b", reading(at, 1, 1, weekAt, [grant("g-b", T0 + 30 * DAY, FULL)]))
+  }
+  const roomy = (w: ReturnType<typeof world>) => {
+    w.readings.set("a", reading(T0, 0.3, 0.5, weekAt, [grant("g-a", T0 + 30 * DAY, FULL)]))
+    w.readings.set("b", reading(T0, 0.3, 0.5, weekAt))
+  }
+
+  test("P1 a push for the peer starts there, by the names each host knows (daily.ts FLEET: the Mac's workbox is bite-cristian); session and run stay on the asking host", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const wb = world({}, { host: "bite-cristian", peer: "macbook" })
+        roomy(wb)
+        const workbox = yield* wb.pool
+        const mac = world({}, { host: "cristians-macbook-pro", peer: "workbox", pushes: (_peer, request) => workbox.push(request) })
+        roomy(mac)
+        const pool = yield* mac.pool
+        const answer = yield* pool.push({ action: "start", goal: "ergo", host: "workbox", resets: 1, sessionID: "ses_mac" })
+        expect(answer.ok).toBe(true)
+        expect(answer.pushes).toMatchObject([{ goal: "ergo", scope: { host: "bite-cristian" } }])
+        expect(answer.pushes[0]!.scope.sessionID).toBeUndefined()
+        expect((yield* pool.push({ action: "status" })).pushes).toEqual([])
+        expect((yield* pool.push({ action: "status", host: "workbox" })).pushes).toHaveLength(1)
+        // A session's tree or a run is the Mac's: refused for the workbox, and nothing starts.
+        for (const scoped of [{ session: true }, { run: "ergo" }]) {
+          const refused = yield* pool.push({ action: "start", goal: "x", host: "workbox", sessionID: "ses_mac", ...scoped })
+          expect(refused.ok).toBe(false)
+          expect(refused.text).toContain("covers that whole host")
+        }
+        expect((yield* workbox.push({ action: "status" })).pushes.map((push) => push.goal)).toEqual(["ergo"])
+      }),
+    ))
+
+  test("P2 a run's push covers the tree it was started from: an unrelated session keeps its spend-evenly hold and gets no claim; a run with no calling session is refused", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        roomy(w)
+        w.owner.parents.set("ses_child", "ses_owner")
+        const pool = yield* w.pool
+        for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
+        const started = yield* pool.push({ action: "start", goal: "run ergo only", run: "ergo", resets: 1, sessionID: "ses_owner" })
+        expect(started.pushes).toMatchObject([{ scope: { host: "workbox", sessionID: "ses_owner", run: "ergo" } }])
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_other")).toMatchObject({ ok: false, soft: true })
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_child")).toMatchObject({ ok: true })
+        // Every account spent: a start from outside the tree is held, and the push claims nothing for it, at once or on the sweep.
+        spentBoth(w, T0 + MINUTE)
+        yield* TestClock.adjust(MINUTE)
+        const held = yield* pool.pace("anthropic", "claude-opus-5-5", "ses_other")
+        expect(held.reason ?? "").not.toContain("the push")
+        yield* settle
+        yield* pool.sweep
+        yield* settle
+        expect(w.claims).toEqual([])
+        // From inside the tree, the claim.
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_child")
+        yield* settle
+        expect(w.claims.map((claim) => claim.creditID)).toHaveLength(1)
+        // The push RPC with a run and no calling session: no tree to cover, so no push.
+        const refused = yield* pool.push({ action: "start", goal: "y", run: "other" })
+        expect(refused).toMatchObject({ ok: false })
+        expect(refused.text).toContain("needs the calling session")
+      }),
+    ))
+
+  test("M6 a session's push lifts the spend-evenly hold in its tree only", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        roomy(w)
+        w.owner.parents.set("ses_child", "ses_owner")
+        const pool = yield* w.pool
+        for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
+        yield* pool.push({ action: "start", goal: "ergo", session: true, resets: 1, sessionID: "ses_owner" })
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_other")).toMatchObject({ ok: false, soft: true })
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_child")).toMatchObject({ ok: true })
+      }),
+    ))
+
+  test("P3 a no to a run's question holds for the week, whichever session asks the pace next", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        w.readings.set("a", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
+        w.readings.set("b", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
+        w.work.runs = [{ name: "ergo", units: Array.from({ length: 6 }, (_, at) => ({ unit: `u${at}`, state: "implement" })) }]
+        const pool = yield* w.pool
+        const runQuestions = () => w.owner.asked.filter((question) => question.key.startsWith("push:") && !question.key.includes("#"))
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orch_1")
+        yield* pool.reviewPushes
+        expect(runQuestions().map((question) => question.key)).toEqual(["push:workbox:*:ergo"])
+        yield* OwnerTest.answer(w.owner, runQuestions()[0]!.key, NOT_NOW)
+        yield* pool.reviewResets
+        // Handed off: other orchestrator sessions ask the pace through the week; the run is not asked about again.
+        for (const [hours, session] of [[1, "ses_orch_2"], [30, "ses_orch_3"], [100, "ses_orch_2"]] as const) {
+          yield* TestClock.adjust(hours * HOUR)
+          yield* pool.pace("anthropic", "claude-opus-5-5", session)
+          yield* pool.reviewPushes
+        }
+        expect(runQuestions()).toHaveLength(1)
+      }),
+    ))
+
+  test("P5 one approved reset: never a second claim, however long the starts are held", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        spentBoth(w, T0)
+        const pool = yield* w.pool
+        yield* pool.push({ action: "start", goal: "ergo", resets: 1, sessionID: "ses_owner" })
+        for (let round = 0; round < 8; round++) {
+          // The claim does not show in the readings: the accounts stay spent.
+          spentBoth(w, T0 + round * 40 * MINUTE)
+          yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")
+          yield* settle
+          yield* pool.sweep
+          yield* settle
+          yield* TestClock.adjust(40 * MINUTE)
+        }
+        expect(new Set(w.claims.map((claim) => claim.requestID)).size).toBe(1)
+      }),
+    ))
+
+  test("P6 past its end and before the sweep ends it: the spend-evenly hold holds and nothing is claimed", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        roomy(w)
+        const pool = yield* w.pool
+        for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
+        yield* pool.push({ action: "start", goal: "ergo", hours: 1, resets: 3, sessionID: "ses_owner" })
+        expect((yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")).ok).toBe(true)
+        yield* TestClock.adjust(61 * MINUTE)
+        for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
+        // No sweep has run: the push is still recorded, and past its end it does nothing.
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")).toMatchObject({ ok: false, soft: true })
+        spentBoth(w, T0 + 61 * MINUTE)
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")
+        yield* settle
+        expect(w.claims).toEqual([])
+      }),
+    ))
+
+  test("P7 a session's push: a start held in another tree, or a week spent with none held, claims nothing; held in the tree, one claim", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        spentBoth(w, T0)
+        const pool = yield* w.pool
+        yield* pool.push({ action: "start", goal: "ergo", session: true, resets: 2, sessionID: "ses_owner" })
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_other")
+        yield* settle
+        yield* pool.sweep
+        yield* settle
+        expect(w.claims).toEqual([])
+        w.owner.parents.set("ses_child", "ses_owner")
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_child")
+        yield* settle
+        expect(w.claims).toHaveLength(1)
+      }),
+    ))
+
+  test("P8 a push on the Mac: the workbox's review of the same accounts claims nothing", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const mac = world({}, { host: "cristians-macbook-pro", peer: "workbox" })
+        const wb = world({}, { host: "bite-cristian", peer: "macbook" })
+        spentBoth(mac, T0)
+        spentBoth(wb, T0)
+        const macPool = yield* mac.pool
+        const wbPool = yield* wb.pool
+        yield* macPool.push({ action: "start", goal: "mac only", resets: 2, sessionID: "ses_owner" })
+        yield* wbPool.pace("anthropic", "claude-opus-5-5", "ses_wb")
+        yield* settle
+        yield* wbPool.sweep
+        yield* settle
+        expect(wb.claims).toEqual([])
+      }),
+    ))
+
+  // A property over push and pace sequences (seeded, so a failure replays):
+  // the claims never pass the approved count, none is made past the push's
+  // end, and a push of one tree claims nothing and lifts no hold for starts
+  // from outside it.
+  const random = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  for (const seed of [1, 2, 3, 5, 8, 13, 21, 34]) {
+    test(`property, seed ${seed}: claims ≤ approved, none past the end, none and no lifted hold outside the tree`, () =>
+      onTestClock(
+        Effect.gen(function* () {
+          const next = random(seed)
+          const w = world()
+          w.owner.parents.set("ses_child", "ses_owner")
+          let now = T0
+          const claimedAt: Array<number> = []
+          w.state.answer = (claim) => {
+            claimedAt.push(now)
+            w.readings.set(claim.credentialID, reading(now, 0, 0, weekAt))
+            return { outcome: "reset" }
+          }
+          roomy(w)
+          const pool = yield* w.pool
+          const max = 1 + Math.floor(next() * 2)
+          const hours = 1 + Math.floor(next() * 3)
+          const endsAt = T0 + hours * HOUR
+          yield* pool.push({ action: "start", goal: "ergo", session: true, hours, resets: max, sessionID: "ses_owner" })
+          for (let step = 0; step < 14; step++) {
+            const roll = next()
+            if (roll < 0.3) spentBoth(w, now)
+            else if (roll < 0.4) yield* pool.started("anthropic")
+            const outside = next() < 0.5
+            const answer = yield* pool.pace("anthropic", "claude-opus-5-5", outside ? "ses_other" : "ses_child")
+            yield* settle
+            if (next() < 0.3) yield* pool.sweep
+            yield* settle
+            if (outside) expect(answer.reason ?? "").not.toContain("the push")
+            const elapsed = Math.floor(next() * 50) * MINUTE
+            yield* TestClock.adjust(elapsed)
+            now += elapsed
+          }
+          expect(claimedAt.length).toBeLessThanOrEqual(max)
+          expect(claimedAt.every((at) => at < endsAt)).toBe(true)
+        }),
+      ))
+  }
+
+  test("property: only starts from outside a session's push, any sequence: no claim at all", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        for (const seed of [4, 6, 9]) {
+          const next = random(seed)
+          const w = world()
+          spentBoth(w, T0)
+          const pool = yield* w.pool
+          yield* pool.push({ action: "start", goal: "ergo", session: true, resets: 3, sessionID: "ses_owner" })
+          for (let step = 0; step < 8; step++) {
+            yield* pool.pace("anthropic", "claude-opus-5-5", `ses_other_${Math.floor(next() * 3)}`)
+            yield* settle
+            if (next() < 0.5) yield* pool.sweep
+            yield* settle
+            yield* TestClock.adjust(Math.floor(next() * 50) * MINUTE)
+          }
+          expect(w.claims).toEqual([])
+        }
       }),
     ))
 })

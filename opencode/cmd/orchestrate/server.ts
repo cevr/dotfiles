@@ -40,14 +40,14 @@
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
  * - `skill`: the orchestrate skill's dir, whose git history versions it,
  *   default `~/.claude/skills/orchestrate`.
- * - `experiment`: `{ role, model, share }`, the model experiment
- *   (mods/orchestrate/experiment.ts): `share` of the role's units, by a hash
- *   of the unit's name, start on `model` at the role's effort (the trial arm),
- *   the rest on the role's own (control). Only a new start that names no model
- *   of its own (or the role's) is in an arm; a follow-up keeps its model. A
- *   trial start the host does not offer `model` for, or whose pace holds it,
- *   takes the normal chain (the role's model, then Codex). Each start's line
- *   records `experiment: { arm, model[, fellBack] }`. Absent, no experiment.
+ * - `planner`: `{ model }`, the planner's first model (`provider/id`, no
+ *   variant; `bun run daily` writes the newest Fable). A new planner start
+ *   that names no model of its own (or the role's) runs on it at the
+ *   planner's effort; a follow-up keeps its model. One the host does not
+ *   offer `model` for, whose pace holds it, or over the Sabbath, takes the
+ *   role's chain (its own model, then Codex), and its line records
+ *   `first: { model, fellBack }`. Only the planner has a first model. Absent,
+ *   the planner starts on its own model like every role.
  *
  * - Skill drift: when a root that owns a run goes idle and the installed
  *   skill is newer than the version the run last saw (`<run dir>/skill-version`),
@@ -100,7 +100,10 @@
  *   land's input, lets the call through and records it. A step whose session
  *   no longer works is handed back as `none` first. After a root's
  *   compaction, it gets one message (no new turn): SKILL.md's machine section
- *   and its run from the ledger (the brief).
+ *   and its run from the ledger (the brief), with its drift from the machine
+ *   (mods/orchestrate/drift.ts: 0 is a clean run). Each verdict adds that
+ *   drift as a line to its run's log.md (the run its report is in), which the
+ *   skill's status.ts reads for the /pool pane's run row and the runs' trend.
  *   Options: `ledger` (default `~/.cache/orchestrate/machine.jsonl`),
  *   `cadence: { ready, waitMs }` (default 3 and 30 minutes), `guard`:
  *   `refuse` (default) or `warn` (the call passes, its answer carries the
@@ -207,10 +210,8 @@ const Codex = Schema.Struct({
   pool: Schema.optional(Schema.Boolean),
 })
 
-const Experiment = Schema.Struct({
-  role: Schema.Literals(ROLES),
+const Planner = Schema.Struct({
   model: Schema.String.check(Schema.isPattern(/^[^/#\s]+\/[^#\s]+$/)),
-  share: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
 })
 
 const Cadence = Schema.Struct({
@@ -223,7 +224,7 @@ export const Options = Schema.Struct({
   ledger: Schema.String.pipe(withDefault(DEFAULT_LEDGER)),
   cadence: Cadence.pipe(withDefault<typeof Cadence.Type>(DEFAULT_CADENCE)),
   guard: Schema.Literals(["refuse", "warn"]).pipe(withDefault<GuardMode>("refuse")),
-  experiment: Schema.optional(Experiment),
+  planner: Schema.optional(Planner),
   now: Schema.optional(Instant),
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
@@ -545,7 +546,7 @@ export const make = (
         fullAgent: options.fullAgent,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
-        ...(options.experiment === undefined ? {} : { experiment: options.experiment }),
+        ...(options.planner === undefined ? {} : { planner: options.planner }),
       }
       // Each session's background work of its own, as its last idle listed it: a step that went idle with a
       // shell still running has not ended.

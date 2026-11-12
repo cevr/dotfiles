@@ -1,6 +1,6 @@
 // A run dir's skill records as real files in a scratch run dir.
 import { afterAll, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
@@ -40,4 +40,21 @@ test("the departures are the run's own Markdown lines that depart, by file and l
     "plan.md:2: **Departs from** Batch cadence: one unit lands at a time.",
   ])
   expect(await run(records.departures(join(scratch, "gone")))).toEqual([])
+})
+
+test("a verdict's line goes to the run's own log.md: by a batch report in the run dir, a unit's report in its unit dir, or a relative path", async () => {
+  const dir = join(scratch, "p9")
+  mkdirSync(join(dir, "lexer"), { recursive: true })
+  writeFileSync(join(dir, "lexer", "spec.md"), "# lexer\n")
+  writeFileSync(join(dir, "log.md"), "no newline")
+  await run(records.log({ near: join(dir, "batch-1-findings.md"), line: "one" }))
+  await run(records.log({ near: join(dir, "lexer", "round-1-findings.md"), line: "two" }))
+  await run(records.log({ near: "p9/batch-2-findings.md", line: "three", directory: scratch }))
+  expect(readFileSync(join(dir, "log.md"), "utf8")).toBe("no newline\none\ntwo\nthree\n")
+  expect(existsSync(join(dir, "lexer", "log.md"))).toBe(false)
+  // A path that names no run dir, or a relative one with no directory to read it from, writes nothing.
+  await run(records.log({ near: join(scratch, "gone", "batch-1-findings.md"), line: "lost" }))
+  await run(records.log({ near: "p9/batch-3-findings.md", line: "lost" }))
+  expect(existsSync(join(scratch, "gone"))).toBe(false)
+  expect(readFileSync(join(dir, "log.md"), "utf8")).not.toContain("lost")
 })
