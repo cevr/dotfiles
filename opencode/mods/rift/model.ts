@@ -295,7 +295,7 @@ export const layer = Layer.effect(
       const { readings, now } = yield* reading
       if (!settled(readings, now)) return
       yield* Effect.forEach(all, (owed) => runOwed(owed.source, "settled"), { discard: true })
-    }).pipe(Effect.catch(() => Effect.void))
+    }).pipe(Effect.catch((failure) => Effect.logWarning("rift: the post-land check failed", failure)))
     yield* Effect.forkIn(Effect.forever(Effect.andThen(Effect.sleep(CHECK_EVERY), check)), scope)
 
     /** Each Rift green, its own branch pushed when `pushBranches` is set; a refused push is named, never fatal. */
