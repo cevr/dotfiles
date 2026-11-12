@@ -15,6 +15,7 @@
 // the model's version, then the update (cut, then dropped), then the cut
 // falls where the width ends.
 import { modelLabel } from "./model.ts"
+import { fields, is, list } from "./same.ts"
 import { live, type Row, type State } from "./subagent-row.ts"
 
 /**
@@ -25,8 +26,7 @@ export type Kind = "mark" | "lead" | "role" | "model" | "unit" | "update" | "tim
 export type Segment = { readonly text: string; readonly kind: Kind }
 
 /** Whether two drawings of a row are the same segments: a view keeps the old ones, and draws nothing. */
-export const sameSegments = (a: ReadonlyArray<Segment>, b: ReadonlyArray<Segment>): boolean =>
-  a.length === b.length && a.every((segment, index) => segment.text === b[index]?.text && segment.kind === b[index]?.kind)
+export const sameSegments = list(fields<Segment>({ text: is(), kind: is() }))
 
 /**
  * The frames a working row's diamond turns through, one each `SPIN_MS`: full,
