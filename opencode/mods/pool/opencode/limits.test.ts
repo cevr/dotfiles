@@ -104,8 +104,6 @@ describe("the limit store", () => {
 
   test("a file an older pool wrote under a store login's legacy id reads as that login's rows, and the next write names no legacy id", () => {
     const entries = new Map<string, Schema.Json>()
-    using dir = scratch("limits-")
-    const path = join(dir.path, "limits.json")
     const legacy = `${LEGACY_PREFIX}work`
     const reading = (at: number, utilization: number) => ({
       at,
@@ -114,8 +112,14 @@ describe("the limit store", () => {
         { name: "7d", utilization: utilization / 4, resetAt: 6 * DAY },
       ],
     })
+    // The test body is not async, so its folder lives as long as the effect that writes in it, not the call that returns it.
     return runTest(
       Effect.gen(function* () {
+        const dir = yield* Effect.acquireRelease(
+          Effect.sync(() => scratch("limits-")),
+          (held) => Effect.sync(() => held[Symbol.dispose]()),
+        )
+        const path = join(dir.path, "limits.json")
         // Today's file, as the pool before the rename wrote it: every row keyed and named by the legacy id.
         yield* start(
           entries,
@@ -151,7 +155,7 @@ describe("the limit store", () => {
           ["store:work", 5],
           ["store:work", 1.25],
         ])
-      }),
+      }).pipe(Effect.scoped),
     )
   })
 })
