@@ -37,7 +37,7 @@ import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, droppedOf, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -2292,6 +2292,122 @@ describe("the batch machine", () => {
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "FindingUnfolded", why: "the owner read the verdict himself" }))
       }),
     ))
+
+  // orch-followups 2: the race ledger-stale fixed for an implementor, on the verifier's path. A verifier that handed
+  // back and went quiet before its idle was seen was marked dead (`none`) by the next decision's reconcile: its
+  // verdict was lost, and its idle then found no verifier, so the fleet target and the run's log line never came.
+  test("orch-followups 2: a verifier's hand-back a land reads before its idle is its verdict, concluded once: the fleet asked and the run's log written once, its idle after adds nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const logged: Array<{ readonly near: string; readonly line: string }> = []
+        const sessions = {
+          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
+          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+        }
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, records: { seen: new Map(), logged } })
+        const land = (rifts: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            const called = yield* plugin.call("rift", "root", { action: "land", rifts })
+            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+            return called
+          })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        // The verifier handed back accepted and its session stopped; its idle is not seen yet. beta's land reads it.
+        expect((yield* land(["beta"])).refused).toBeUndefined()
+        const verdicts = () => kinds(plugin).filter((kind) => kind === "VerifierEnded")
+        expect(verdicts()).toHaveLength(1)
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "accepted" }))
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "BatchLanded", units: ["beta"] }))
+        yield* eventually(() => expect(fleet).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }]))
+        const driftLines = () => logged.filter((each) => / drift \d+ after batch-1 accepted/.test(each.line))
+        expect(driftLines().map((each) => each.near)).toEqual(["/run/batch-1-findings.md"])
+        // Its idle comes after: the ledger decides the hand-back to nothing, and nothing is told twice.
+        yield* plugin.idle("ses_v")
+        yield* settle
+        expect([verdicts().length, fleet.length, driftLines().length]).toEqual([1, 1, 1])
+      }),
+    ))
+
+  test("orch-followups 2: a verifier's changes a land reads before its idle opens its findings and holds that land, and its log line is still written once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const logged: Array<{ readonly near: string; readonly line: string }> = []
+        const report = "/run/batch-1-findings.md"
+        const sessions = {
+          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
+          ses_v: { parentID: "root", agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}`, directory: "/checkouts/dotfiles" },
+        }
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1"] }, records: { seen: new Map(), logged } })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        const held = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })
+        expect(held.refused?.message).toContain("alpha/M1 (not folded)")
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", findings: ["alpha/M1"] }))
+        yield* plugin.idle("ses_v")
+        yield* settle
+        expect(logged).toEqual([{ near: report, line: expect.stringMatching(/ drift \d+ after batch-1 changes/) }])
+      }),
+    ))
+
+  // orch-followups 3: a unit the root drops ends on its machine and releases its findings.
+  test("orch-followups 3: a root's log.ts move of a unit to dropped ends it on the ledger and releases its finding: the next land needs no departs", () =>
+    scenario(
+      Effect.gen(function* () {
+        const report = "/run/batch-1-findings.md"
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
+          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
+          ses_f: { agent: "implementor" },
+          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1"] } })
+        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* plugin.idle("ses_v")
+        // alpha/M1 folds into a fix whose implementor dies and is never restarted; the root decides to drop it.
+        yield* begin(plugin, { agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M1)", prompt: "fix", background: true }, "ses_f")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        const drop = (command: string, text: string) =>
+          plugin.finish({ tool: "shell", input: { command }, status: "completed", result: { content: [{ type: "text", text }] } })
+        // A refused move, and another unit's move, drop nothing.
+        yield* drop("bun ~/.claude/skills/orchestrate/scripts/log.ts /run/alpha-fix1 implement dropped r1", "log.ts refused: the unit is in decide, not implement")
+        yield* drop("bun ~/.claude/skills/orchestrate/scripts/log.ts /run/beta implement ready r1", "2026-11-04T15:00Z implement → ready r1")
+        expect(kinds(plugin)).not.toContain("UnitDropped")
+        yield* drop("cd /run && bun ~/.claude/skills/orchestrate/scripts/log.ts --current '/run/alpha-fix1/' dropped r1 not worth a round; echo ----", "2026-11-04T15:00Z decide → dropped r1 not worth a round\n----")
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitDropped", unit: "alpha-fix1", released: ["alpha/M1"] }))
+        expect((yield* land(["beta"])).refused).toBeUndefined()
+        expect(kinds(plugin)).not.toContain("Departed")
+      }),
+    ))
+
+  test("a unit is dropped only by a log.ts move to dropped that wrote its line", () => {
+    const log = "bun ~/.claude/skills/orchestrate/scripts/log.ts"
+    const wrote = "2026-11-04T15:00Z decide → dropped r3"
+    expect(droppedOf("shell", `${log} /run/auth decide dropped r3 superseded`, wrote)).toEqual(Option.some("auth"))
+    expect(droppedOf("bash", `${log} --current "/tmp/orchestrate/p5/auth/" dropped r3`, wrote)).toEqual(Option.some("auth"))
+    expect(droppedOf("shell", `${log} /run/auth decide dropped r3 && ${log} /run/db implement ready r1`, wrote)).toEqual(Option.some("auth"))
+    expect(droppedOf("shell", `${log} /run/auth verify implement r2; ${log} /run/db decide dropped r2`, wrote)).toEqual(Option.some("db"))
+    expect(droppedOf("shell", `${log} /run/auth decide dropped r3`, "log.ts refused: the unit is in verify, not decide")).toEqual(Option.none())
+    expect(droppedOf("shell", `${log} /run/auth verify implement r2`, "2026-11-04T15:00Z verify → implement r2")).toEqual(Option.none())
+    expect(droppedOf("shell", "echo dropped", wrote)).toEqual(Option.none())
+    expect(droppedOf("rift", `${log} /run/auth decide dropped r3`, wrote)).toEqual(Option.none())
+  })
 
   test("a checked land lands only the Rifts it answered green or pending, by their paths and branches, each with the unit its input named", () => {
     const text = ["Checked 2 Rift(s) as one batch", "- run/alpha (/r/run-alpha): green", "- run/beta (/r/run-beta): red; conflict", "- run/gamma (/r/scratch): pending"].join("\n")

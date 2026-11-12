@@ -33,7 +33,7 @@
 // rule's words are the skill's own is git/machine-words.test.ts (this
 // folder's root files read no file).
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { lineOfCheckpoint } from "./ledger.ts"
 import { checkpointOf } from "./line.ts"
 import {
@@ -46,8 +46,9 @@ import {
   Land,
   Landed,
   type LandTarget,
+  Drop,
   machine,
-  type MachineState,
+  MachineState,
   notesOf,
   ReportRead,
   reportOf,
@@ -56,6 +57,7 @@ import {
   Spawned,
   Start,
   startOf,
+  UnitDropped,
   unitOfEntry,
   unitOfName,
   verifierPromptOf,
@@ -88,7 +90,8 @@ const restored = (state: MachineState): MachineState =>
 
 type ShadowState = "implement" | "ended" | "ready" | "landed" | "verify"
 interface Shadow {
-  readonly units: Map<string, { state: ShadowState; since: number; direct: boolean }>
+  /** Each unit's state, and the Rifts its implementors' starts named (`(rift: <path>)`), kept across its rounds. */
+  readonly units: Map<string, { state: ShadowState; since: number; direct: boolean; rifts: ReadonlyArray<string> }>
   verifier: string | undefined
   /** What the running verifier covers, as it started: no unit's later round changes it. */
   covering: ReadonlyArray<string>
@@ -106,7 +109,9 @@ const inState = (shadow: Shadow, ...states: ReadonlyArray<ShadowState>) => [...s
 /** The units a land takes: the ready and the ended ones it names (a land is the root's word an ended unit is ready). */
 const matched = (shadow: Shadow, rifts: ReadonlyArray<LandTarget>) => {
   const ready = inState(shadow, "ready", "ended")
-  return ready.filter((unit) => rifts.some((rift) => unitOfEntry(rift, [...shadow.units.keys()]) === unit))
+  // Each unit's Rifts as its starts named them; a unit that named none has none (`unitOfEntry` reads it as absent).
+  const started = Object.fromEntries([...shadow.units].map(([name, unit]) => [name, unit.rifts]))
+  return ready.filter((unit) => rifts.some((rift) => unitOfEntry(rift, [...shadow.units.keys()], started) === unit))
 }
 /**
  * What a batch verifier covers: what landed and has no verifier yet, whatever round each is on since; with
@@ -158,7 +163,9 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
   switch (command._tag) {
     case "Start": {
       if (command.role === "implementor") {
-        shadow.units.set(command.name, { state: "implement", since: now, direct: command.direct })
+        const before = Option.toArray(Option.fromNullishOr(shadow.units.get(command.name))).flatMap((unit) => unit.rifts)
+        const rifts = [...new Set([...before, ...Option.toArray(Option.fromNullishOr(command.rift))])]
+        shadow.units.set(command.name, { state: "implement", since: now, direct: command.direct, rifts })
         // Its own unit's findings, and those its folds name, are folded into it.
         for (const [key, finding] of shadow.findings) {
           const of = key.split("/")[0]!
@@ -222,6 +229,16 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       return
     case "Land":
       return
+    case "Drop": {
+      // A dropped unit ends, unless its batch holds it (landed or verifying); the findings folded into it, and its
+      // own folded nowhere, go with it.
+      const slot = Option.fromNullishOr(shadow.units.get(command.unit))
+      if (Option.exists(slot, (unit) => ["implement", "ended", "ready"].includes(unit.state))) shadow.units.delete(command.unit)
+      // Folded, the unit it went into; folded nowhere, its own unit.
+      for (const [key, finding] of shadow.findings)
+        if (Option.getOrElse(Option.fromNullishOr(finding.into), () => key.split("/")[0]) === command.unit) shadow.findings.delete(key)
+      return
+    }
     case "Landed": {
       const lands = matched(shadow, command.rifts)
       for (const unit of lands) {
@@ -268,12 +285,30 @@ const riftFor = (unit: string, pick: number): LandTarget =>
 const command = (random: () => number, shadow: Shadow): Command => {
   const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
   const departs = random() < 0.08 ? { departs: "the owner asked for this one alone" } : {}
+  // A step's session as the plugin learns it (an implementor's, the running verifier's, or one it holds none for),
+  // and a unit the root drops: every field of the state is filled, so the checkpoint round trip (S1) covers each.
+  const aside = random()
+  const child = `ses_${Math.floor(random() * 1000)}`
+  const verifier = Option.toArray(Option.fromNullishOr(shadow.verifier))
+  if (aside < 0.07)
+    return pick([
+      Spawned.make({ role: "implementor", name: pick(UNITS), child }),
+      Spawned.make({ role: "implementor", name: pick(UNITS), child }),
+      Spawned.make({ role: "verifier", name: pick([...verifier, ...verifier, "batch-1"]), child }),
+    ])
+  if (aside < 0.1) return Drop.make({ unit: pick([...UNITS, ...[...shadow.findings.keys()].map((key) => key.split("/")[0]!)]) })
   const roll = random()
   if (roll < 0.3) {
     // Now and then a fold: a finding by its key, or every finding of a unit, maybe one that is no open finding's.
     const open = [...shadow.findings.keys()]
     const folds = random() < 0.4 ? [random() < 0.15 || open.length === 0 ? `${pick(UNITS)}/M9` : random() < 0.5 ? pick(open) : pick(open).split("/")[0]!] : []
-    return Start.make({ role: "implementor", name: pick(UNITS), round: 1 + Math.floor(random() * 5), direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }) })
+    const name = pick(UNITS)
+    const round = 1 + Math.floor(random() * 5)
+    // Its Rift, as its description names it: one of its own round's, a scratch one any unit may share, or none.
+    const rift = pick([[], [], [`/home/me/.rifts/repo/${name}-${round}`], [`/home/me/.rifts/repo/${name}-${round}`], [`/home/me/.rifts/repo/scratch-${Math.floor(random() * 7)}`]])
+    const start = Start.make({ role: "implementor", name, round, direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }) })
+    // `rift` holds at most one path: the start names it, or none.
+    return rift.reduce((made, path) => Start.make({ ...made, rift: path }), start)
   }
   if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "stuck", "none"] as const) })
   if (roll < 0.68) {
@@ -301,6 +336,29 @@ const command = (random: () => number, shadow: Shadow): Command => {
 const SEQUENCES = 1500
 const STEPS = 45
 
+/** Each key of each of `records`, under `prefix` (`units.*.child`). */
+const keysOf = (prefix: string, records: ReadonlyArray<object>): ReadonlyArray<string> => records.flatMap((record) => Object.keys(record).map((key) => `${prefix}.${key}`))
+
+/** Every field the state's schema holds: its own, and those of a unit, the verifier, a finding, a carried finding and a debt. */
+const FIELDS: ReadonlyArray<string> = [
+  ...Object.keys(MachineState.fields),
+  ...keysOf("units.*", [MachineState.fields.units.value.fields]),
+  ...keysOf("verifier", [MachineState.fields.verifier.schema.fields]),
+  ...keysOf("findings.*", [MachineState.fields.findings.schema.value.fields]),
+  ...keysOf("carried.*", [MachineState.fields.carried.schema.value.fields]),
+  ...keysOf("unresolved.*", [MachineState.fields.unresolved.schema.value.fields]),
+]
+
+/** The fields `state` fills, named as `FIELDS` names them. */
+const filledOf = (state: MachineState): ReadonlyArray<string> => [
+  ...Object.keys(state),
+  ...keysOf("units.*", Object.values(state.units)),
+  ...keysOf("verifier", Option.toArray(Option.fromNullishOr(state.verifier))),
+  ...keysOf("findings.*", Object.values({ ...state.findings })),
+  ...keysOf("carried.*", Object.values({ ...state.carried })),
+  ...keysOf("unresolved.*", Object.values({ ...state.unresolved })),
+]
+
 const statesOf = (state: MachineState) => Object.fromEntries(Object.entries(state.units).map(([name, unit]) => [name, unit.state]))
 const findingsOf = (state: MachineState) => Object.fromEntries(Object.entries(state.findings ?? {}).map(([key, finding]) => [key, `${finding.batch}:${finding.into ?? "-"}`]))
 const shadowFindings = (shadow: Shadow) => Object.fromEntries([...shadow.findings].map(([key, finding]) => [key, `${finding.batch}:${finding.into ?? "-"}`]))
@@ -309,6 +367,8 @@ const shadowCarried = (shadow: Shadow) => Object.fromEntries([...shadow.carried]
 
 describe("the machine against its reference model", () => {
   test(`${SEQUENCES} generated runs agree on every outcome and keep the invariants`, async () => {
+    // The field paths the runs' states filled: S1 covers a field only where a run fills it.
+    const filled = new Set<string>()
     for (let seed = 1; seed <= SEQUENCES; seed++) {
       const random = rng(seed)
       const shadow: Shadow = { units: new Map(), verifier: undefined, covering: [], pending: new Set(), unresolved: new Set(), findings: new Map(), carried: new Map() }
@@ -354,12 +414,16 @@ describe("the machine against its reference model", () => {
         const pendingBefore = verdictDue(shadow)
         const coverBefore = coverOf(shadow)
         const unfoldedBefore = next._tag === "Land" ? [...unfolded(shadow, matched(shadow, next.rifts)), ...shadow.unresolved] : []
-        const foldedBefore = Object.entries(findingsOf(state)).filter(([, finding]) => !finding.endsWith(":-")).map(([key]) => key)
+        const findingsBefore = findingsOf(state)
+        const foldedBefore = Object.entries(findingsBefore).filter(([, finding]) => !finding.endsWith(":-")).map(([key]) => key)
         apply(shadow, next, now)
         state = evolve(state, outcome.events)
-        // I7: a folded finding rides with its unit, whatever state it is in, until its land carries it or a verdict ends it.
-        if (next._tag !== "HandBack" || next.role !== "verifier")
-          expect([where, foldedBefore.filter((key) => !(key in findingsOf(state)) && !(key in carriedOf(state)))]).toEqual([where, []])
+        for (const field of filledOf(state)) filled.add(field)
+        // I7: a folded finding rides with its unit, whatever state it is in, until its land carries it, a verdict ends
+        // it, or its unit is dropped (those folded into another unit stay).
+        const gone = foldedBefore.filter((key) => !(key in findingsOf(state)) && !(key in carriedOf(state)))
+        if (next._tag === "Drop") expect([where, gone.filter((key) => !findingsBefore[key]!.endsWith(`:${next.unit}`))]).toEqual([where, []])
+        else if (next._tag !== "HandBack" || next.role !== "verifier") expect([where, gone]).toEqual([where, []])
 
         // The decider's state is the shadow's.
         const units = statesOf(state)
@@ -409,6 +473,9 @@ describe("the machine against its reference model", () => {
         expect([end, land]).toEqual([end, { events: [] }])
       }
     }
+    // Every field of the state, its units', findings' and verifier's, was filled by some run, so a checkpoint
+    // that drops one is caught by S1.
+    expect(FIELDS.filter((field) => !filled.has(field))).toEqual([])
   }, 120_000)
 })
 
@@ -521,6 +588,48 @@ describe("the machine's stories", () => {
       const done = evolve(after, [{ _tag: "VerifierEnded", batch: "batch-2", verdict: "accepted", at: T0 + 60 * MIN }])
       expect(done).toEqual({ units: {} })
     }
+  })
+
+  test("orch-followups 3: a dropped unit ends and releases its findings, recorded on the ledger: its own unfolded one, one folded into it dead, and one folded into it ready; the next land needs no departs", () => {
+    const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+    const drop = (unit: string) => Drop.make({ unit })
+    const verdict: Array<readonly [Command, number]> = [
+      [impl("alpha"), 0],
+      [impl("beta"), 0],
+      [ready("alpha"), MIN],
+      [ready("beta"), MIN],
+      [Land.make({ rifts: ["alpha", "beta"] }), 2 * MIN],
+      [Landed.make({ rifts: ["alpha", "beta"] }), 2 * MIN],
+      [verifier("batch-1"), 3 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["alpha/M1", "beta/M1"] }), 20 * MIN],
+      // beta's fix folds beta/M1 and dies; gamma, a new unit, is ready.
+      [Start.make({ role: "implementor", name: "beta-fix1", round: 1, direct: false, folds: ["beta/M1"] }), 21 * MIN],
+      [HandBack.make({ role: "implementor", name: "beta-fix1", verdict: "none" }), 22 * MIN],
+      [impl("gamma"), 21 * MIN],
+      [ready("gamma"), 40 * MIN],
+    ]
+    // alpha/M1 is folded nowhere: gamma's land is held.
+    expect((runNow([...verdict, [Land.make({ rifts: ["gamma"] }), 60 * MIN]])).last).toMatchObject({ refused: "FindingUnfolded" })
+    // The root drops alpha (its next round is not worth it): its own finding goes, as the ledger records.
+    const alpha = runNow([...verdict, [drop("alpha"), 50 * MIN]])
+    expect(alpha.last).toEqual({ events: [UnitDropped.make({ unit: "alpha", released: ["alpha/M1"], at: T0 + 50 * MIN })] })
+    expect(alpha.state.findings).toEqual({ "beta/M1": { batch: "batch-1", into: "beta-fix1" } })
+    // The dead beta-fix1, never restarted, held beta/M1 open; dropped, it ends and releases it.
+    const both = runNow([...verdict, [drop("alpha"), 50 * MIN], [drop("beta-fix1"), 51 * MIN]])
+    expect(both.last).toEqual({ events: [UnitDropped.make({ unit: "beta-fix1", released: ["beta/M1"], at: T0 + 51 * MIN })] })
+    expect(both.state.findings).toBeUndefined()
+    expect(Object.keys(both.state.units)).toEqual(["gamma"])
+    expect((runNow([...verdict, [drop("alpha"), 50 * MIN], [drop("beta-fix1"), 51 * MIN], [Land.make({ rifts: ["gamma"] }), 60 * MIN]])).last).toEqual({ events: [] })
+    // A ready unit a finding was folded into, dropped: the land of the others no longer has to take it, or depart.
+    const into = [...verdict, [drop("alpha"), 50 * MIN], [Start.make({ role: "implementor", name: "delta", round: 1, direct: false, folds: ["beta/M1"] }), 52 * MIN], [ready("delta"), 53 * MIN]] as const
+    expect((runNow([...into, [drop("beta-fix1"), 54 * MIN], [Land.make({ rifts: ["gamma"] }), 60 * MIN]])).last).toMatchObject({ refused: "FindingUnfolded" })
+    expect((runNow([...into, [drop("beta-fix1"), 54 * MIN], [drop("delta"), 55 * MIN], [Land.make({ rifts: ["gamma"] }), 60 * MIN]])).last).toEqual({ events: [] })
+    // A landed unit stays with its batch, whose verdict ends it; a unit the machine never held drops to nothing.
+    const landed = runNow([[impl("eps"), 0], [ready("eps"), MIN], [Landed.make({ rifts: ["eps"] }), 2 * MIN], [drop("eps"), 3 * MIN]])
+    expect([landed.last, landed.state.units.eps?.state]).toEqual([{ events: [] }, "landed"])
+    expect((runNow([[drop("nobody"), 0]])).last).toEqual({ events: [] })
+    // The drop is the ledger's: a checkpoint keeps it.
+    expect(restored(both.state)).toEqual(both.state)
   })
 
   test("a finding folded into a long redesign still implementing holds no land of three independent ready units; it rides with the redesign's later land, whose verifier is told it; one not folded still holds the land, one folded into a blocked unit rides with it", async () => {

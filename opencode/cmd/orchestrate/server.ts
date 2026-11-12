@@ -121,7 +121,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -453,6 +453,43 @@ const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<L
   const rifts = input.rifts.flatMap(targetOf)
   return typeof input.departs === "string" && input.departs.trim() !== "" ? { rifts, departs: input.departs.trim() } : { rifts }
 }
+
+/** The shell tool, by its name and its former one. */
+const SHELLS = new Set(["shell", "bash"])
+
+/** A shell call's input: its command. */
+const ShellInput = Schema.Struct({ command: Schema.String })
+const decodeShell = Schema.decodeUnknownOption(ShellInput)
+
+/** One shell word, its quotes dropped (an unmatched group joins as nothing). */
+const WORD = /"([^"]*)"|'([^']*)'|([^\s"']+)/g
+/** Where one command of a shell line ends. */
+const SEPARATOR = /;|&&|\|\||\|/
+
+/** The unit one command moves to `dropped` by `log.ts`: its unit dir's last segment, the dir its first argument. */
+const droppedBy = (command: string): Option.Option<string> => {
+  const words = Array.from(command.matchAll(WORD), (match) => match.slice(1).join(""))
+  return Arr.findFirstIndex(words, (word) => /(?:^|\/)log\.ts$/.test(word)).pipe(
+    Option.map((at) => words.slice(at + 1).filter((word) => word !== "--current")),
+    // `<dir> <from> dropped` or, with `--current`, `<dir> dropped`: the move names it before its round.
+    Option.filter((args) => args.slice(1, 3).includes("dropped")),
+    Option.flatMap((args) => Arr.head(args)),
+    Option.map((dir) => dir.replace(/\/+$/, "").split("/").at(-1)),
+    Option.flatMap(Option.fromNullishOr),
+    Option.filter((unit) => unit !== ""),
+  )
+}
+
+/**
+ * The unit a root's shell call dropped: a run of the orchestrate skill's `log.ts` moving a unit to `dropped`
+ * (`log.ts <unit dir> <from> dropped r<N>`, or `log.ts --current <unit dir> dropped r<N>`), which answered
+ * with the line it wrote (`… → dropped r<N>`). None for any other call, a refused move, or one that wrote nothing.
+ */
+export const droppedOf = (tool: string, command: string, text: string): Option.Option<string> =>
+  Option.some(command.split(SEPARATOR)).pipe(
+    Option.filter(() => SHELLS.has(tool) && / → dropped r\d+/.test(text)),
+    Option.flatMap((parts) => Arr.findFirst(parts, (part) => droppedBy(part))),
+  )
 
 const callKey = (sessionID: string, callID: string) => `${sessionID}/${callID}`
 
@@ -827,6 +864,15 @@ export const make = (
           yield* machines.handBack(event.sessionID)
         }),
       )
+      // A unit the root logged `dropped` ends on its machine, and the findings it held go with it.
+      yield* ctx.tool.hook("execute.after", (event) => {
+        if (event.status !== "completed") return Effect.void
+        const result = event.result
+        return Option.match(
+          Option.flatMap(decodeShell(event.input), (shell) => droppedOf(event.tool, shell.command, textOf(result))),
+          { onNone: () => Effect.void, onSome: (unit) => machines.dropped({ root: event.sessionID, unit }) },
+        )
+      })
       yield* ctx.tool.hook("execute.after", (event) => {
         if (event.tool !== SUBAGENT) {
           const land = landOf(event.tool, event.input)

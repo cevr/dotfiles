@@ -25,7 +25,9 @@
 // `ready`, `landed` (no verifier started for it yet) or `verify` (a verifier covering it runs). A verifier's verdict takes
 // the units it covered out of the state and opens its findings; a unit's
 // next round comes back in by its implementor's start. A `direct` unit closes
-// when it lands.
+// when it lands. A unit the root drops (its log moved to `dropped`) leaves the
+// state, unless landed, and releases the findings folded into it and its own
+// folded nowhere else: none of them holds a land since.
 //
 // The rules, in the order they are checked:
 //
@@ -169,8 +171,15 @@ export interface Landed extends Schema.Schema.Type<typeof Landed> {}
 export const Spawned = Schema.TaggedStruct("Spawned", { role: Role, name: Schema.String, child: Schema.String })
 export interface Spawned extends Schema.Schema.Type<typeof Spawned> {}
 
-export const Command = Schema.Union([Start, HandBack, Land, Landed, Spawned, ReportRead])
-export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead
+/**
+ * The root dropped a unit: its log moved to `dropped` (`log.ts <unit dir> … dropped r<N>`). The unit ends, and
+ * the findings it would have carried are released: those folded into it, and its own folded into no other unit.
+ */
+export const Drop = Schema.TaggedStruct("Drop", { unit: Schema.String })
+export interface Drop extends Schema.Schema.Type<typeof Drop> {}
+
+export const Command = Schema.Union([Start, HandBack, Land, Landed, Spawned, ReportRead, Drop])
+export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead | Drop
 
 // ── The events ──
 
@@ -226,8 +235,12 @@ export interface Departed extends Schema.Schema.Type<typeof Departed> {}
 export const StepSpawned = Schema.TaggedStruct("StepSpawned", { role: Role, name: Schema.String, child: Schema.String, at: Schema.Number })
 export interface StepSpawned extends Schema.Schema.Type<typeof StepSpawned> {}
 
-export const Event = Schema.Union([UnitStarted, UnitHandedBack, BatchLanded, VerifierStarted, VerifierEnded, ReportResolved, FindingFolded, Departed, StepSpawned])
-export type Event = UnitStarted | UnitHandedBack | BatchLanded | VerifierStarted | VerifierEnded | ReportResolved | FindingFolded | Departed | StepSpawned
+/** A unit the root dropped left the state, with the findings it released (`<unit>/<id>`), none holding a land since. */
+export const UnitDropped = Schema.TaggedStruct("UnitDropped", { unit: Schema.String, released: Schema.Array(Schema.String), at: Schema.Number })
+export interface UnitDropped extends Schema.Schema.Type<typeof UnitDropped> {}
+
+export const Event = Schema.Union([UnitStarted, UnitHandedBack, BatchLanded, VerifierStarted, VerifierEnded, ReportResolved, FindingFolded, Departed, StepSpawned, UnitDropped])
+export type Event = UnitStarted | UnitHandedBack | BatchLanded | VerifierStarted | VerifierEnded | ReportResolved | FindingFolded | Departed | StepSpawned | UnitDropped
 
 /** The call went against `rule`; `message` quotes the rule and says what to do instead. */
 export class Refused extends Schema.TaggedError<Refused>()("Refused", { rule: Rule, message: Schema.String }) {}
@@ -336,6 +349,15 @@ export const unfoldedOf = (state: MachineState, lands: ReadonlyArray<string>): R
 export const foldsOf = (state: MachineState, start: Start): ReadonlyArray<string> =>
   openFindings(state)
     .filter(([key, finding]) => finding.into !== start.name && (unitOfFinding(key) === start.name || (start.folds ?? []).some((ref) => ref === key || ref === unitOfFinding(key))))
+    .map(([key]) => key)
+
+/** The states a dropped unit leaves: a landed one stays with its batch, whose verdict ends it. */
+const DROPPABLE: ReadonlyArray<UnitState> = ["implement", "ended", "ready"]
+
+/** The open findings dropping `unit` releases: those folded into it, and its own folded into no other unit. */
+export const releasedBy = (state: MachineState, unit: string): ReadonlyArray<string> =>
+  openFindings(state)
+    .filter(([key, finding]) => finding.into === unit || (!("into" in finding) && unitOfFinding(key) === unit))
     .map(([key]) => key)
 
 /** A state with its optional records, each left out when empty. */
@@ -630,6 +652,12 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           if (command.role === "verifier" && state.verifier?.batch === command.name && state.verifier.child !== command.child) return spawned
           return []
         }
+        case "Drop": {
+          const released = releasedBy(state, command.unit)
+          const ends = DROPPABLE.some((name) => state.units[command.unit]?.state === name)
+          if (!ends && released.length === 0) return []
+          return [UnitDropped.make({ unit: command.unit, released, at: now })]
+        }
       }
     }),
   evolve: (state, event) => {
@@ -736,6 +764,11 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         if (unit === undefined) return state
         units[event.name] = { ...unit, child: event.child }
         return { ...state, units }
+      }
+      case "UnitDropped": {
+        if (DROPPABLE.some((name) => units[event.unit]?.state === name)) delete units[event.unit]
+        for (const key of event.released) delete findings[key]
+        return tidy({ ...state, units, findings })
       }
     }
   },
