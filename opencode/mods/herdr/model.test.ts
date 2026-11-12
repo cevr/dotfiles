@@ -117,14 +117,24 @@ describe("the reporter", () => {
       }),
     ))
 
-  test("nothing is reported after close", () =>
+  test("nothing is reported after close, or after a release run as a stop signal arrives, which releases at once; the close after it releases no second time", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const { peer, reporting, close } = yield* bench()
         yield* close
         reporting.show(working)
+        // Told to stop mid-turn: the signal's run and the teardown's run at once release the pane once, before the scope closes.
+        const stopped = yield* bench()
+        stopped.reporting.show(working)
+        yield* settle(stopped.peer, 2)
+        yield* Effect.all([stopped.reporting.release, stopped.reporting.release], { concurrency: "unbounded" })
+        const released = yield* stopped.peer.received
+        stopped.reporting.show(idle)
         yield* Effect.sleep(30)
+        yield* stopped.close
         expect(methods(yield* peer.received)).toEqual(["pane.release_agent"])
+        expect(methods(released)).toEqual(["pane.report_agent", "pane.report_metadata", "pane.release_agent"])
+        expect(methods(yield* stopped.peer.received)).toEqual(methods(released))
       }),
     ))
 })

@@ -1267,7 +1267,9 @@ A `pane.report_metadata` report sets the pane's title to the session's title.
 It also sets the working label to what runs now, such as
 `kernel: <first line of the cell>`, `shell: <command>` or `3 subagents`, in
 60 characters or fewer. That metadata has a 10-minute ttl and is refreshed
-every 5 minutes. Closing the TUI releases the pane.
+every 5 minutes. Closing the TUI releases the pane. A SIGTERM or SIGINT
+releases it at once, before OpenCode's own teardown, so a supervisor that
+kills the TUI a second later still sees the pane released.
 
 Reports go straight to `HERDR_SOCKET_PATH` from the TUI process, in the
 background. Each request has a 500 ms timeout and one retry. Only the newest

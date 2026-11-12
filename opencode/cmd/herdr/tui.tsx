@@ -3,8 +3,8 @@
 // socket, what the session on screen is doing; anywhere else it does nothing.
 // It follows the open background questions over the questions plugin's RPC
 // (@dotfiles/opencode-questions), so a session idling on them shows blocked.
-// Reports run in the background and never reach the UI; closing the plugin
-// releases the pane.
+// Reports run in the background and never reach the UI; a stop signal, or
+// closing the plugin, releases the pane.
 import { decide } from "@dotfiles/opencode-herdr/activity"
 import * as SocketHerdr from "@dotfiles/opencode-herdr/herdr/socket"
 import { reporter } from "@dotfiles/opencode-herdr/model"
@@ -18,6 +18,13 @@ import { createEffect, createRoot } from "solid-js"
 
 /** How long one request to herdr may take; each is tried twice. */
 const TIMEOUT_MILLIS = 500
+/**
+ * The signals that start OpenCode's teardown: OpenCode already listens for
+ * both, so a listener here changes no default action. A hangup is turned into
+ * SIGTERM by OpenCode itself, and is left alone (a listener would override
+ * nohup's ignore).
+ */
+const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const
 
 export default Plugin.define({
   id: "dotfiles-opencode.herdr",
@@ -43,7 +50,12 @@ export default Plugin.define({
       createEffect(() => reporting.show(decide(read(context.data, route(), asked))))
       return dispose
     })
+    // Told to stop, OpenCode tears down for up to 10 s, and whoever stops it may not wait that long (a
+    // supervisor's SIGKILL a second later): the pane is released at once, not at the end of the teardown.
+    const releaseNow = () => void Effect.runFork(reporting.release)
+    for (const signal of STOP_SIGNALS) process.on(signal, releaseNow)
     return async () => {
+      for (const signal of STOP_SIGNALS) process.off(signal, releaseNow)
       stop()
       await Effect.runPromise(Scope.close(scope, Exit.void))
     }

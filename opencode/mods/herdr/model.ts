@@ -2,9 +2,10 @@
 // them in the background, for the scope's lifetime. Only the newest activity
 // waits (a sliding queue of one), an activity herdr already knows is dropped,
 // each request is tried twice, and a failure is logged at debug level, never
-// raised. The labels are refreshed before their ttl runs out; closing the
-// scope releases the pane.
-import { Clock, Effect, Fiber, Option, Queue, type Scope } from "effect"
+// raised. The labels are refreshed before their ttl runs out. `release`
+// stops it and releases the pane, once: the TUI runs it as soon as it is told
+// to stop, ahead of its own teardown, and closing the scope runs it too.
+import { Clock, Deferred, Effect, Exit, Fiber, Option, Queue, type Scope } from "effect"
 import { sameActivity, type Activity } from "./activity.ts"
 import { agentParams, changes, METADATA_REFRESH_MS, metadataParams, nextSeq, releaseParams } from "./report.ts"
 import { Herdr, type HerdrFailure } from "./service.ts"
@@ -12,6 +13,11 @@ import { Herdr, type HerdrFailure } from "./service.ts"
 export interface Reporter {
   /** Tells herdr about `activity` soon, unless it is the one told last. Never blocks or fails. */
   readonly show: (activity: Activity) => void
+  /**
+   * Stops reporting and releases the pane, the first time it runs; a later run
+   * waits for that one. Nothing is reported after it. Never fails.
+   */
+  readonly release: Effect.Effect<void>
 }
 
 export interface Target {
@@ -70,16 +76,21 @@ export const reporter: (target: Target) => Effect.Effect<Reporter, never, Herdr 
     }),
   ).pipe(Effect.forkScoped)
 
-  yield* Effect.addFinalizer(() =>
-    Effect.gen(function* () {
-      closed = true
+  // The first run releases; a run after it waits for that one to end.
+  const released = yield* Deferred.make<void>()
+  const release = Effect.suspend(() => {
+    if (closed) return Deferred.await(released)
+    closed = true
+    return Effect.gen(function* () {
       yield* Fiber.interrupt(worker)
       yield* Queue.shutdown(activities)
       yield* attempt("pane.release_agent", herdr.release(releaseParams(target.paneId, yield* stamp)))
-    }),
-  )
+    }).pipe(Effect.ensuring(Deferred.done(released, Exit.void)), Effect.uninterruptible)
+  })
+  yield* Effect.addFinalizer(() => release)
 
   return {
+    release,
     show: (activity) => {
       if (closed) return
       if (offered !== undefined && sameActivity(offered, activity)) return
