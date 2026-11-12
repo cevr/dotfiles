@@ -30,6 +30,10 @@ describe("what the restarted service says, as the handoff reads it", () => {
     const config = `{"model":"anthropic/claude-opus-5-5#medium","plugins":["/d/cmd/guard",{"package":"/d/cmd/orchestrate","options":{"codex":{"pool":true},"planner":{"model":"fable/claude-fable-5-2"}}},{"package":"/d/cmd/pool","options":{"planner":3}}],"agents":{"planner":{"model":"anthropic/claude-opus-5-5"},"worker":{"model":"openai/sol-6"},"plain":{"steps":3}}}`
     expect(providersOf(config)).toEqual(["anthropic", "openai", "fable"])
     expect(providersOf(`{"model":"no-provider"}`)).toEqual([])
+    // Each place a model sits names its provider on its own.
+    expect(providersOf(`{"model":"anthropic/claude-opus-5-5","agents":{"plain":{"steps":3}}}`)).toEqual(["anthropic"])
+    expect(providersOf(`{"agents":{"worker":{"model":"openai/sol-6"}}}`)).toEqual(["openai"])
+    expect(providersOf(`{"plugins":[{"package":"/d/cmd/orchestrate","options":{"planner":{"model":"fable/claude-fable-5-2"}}}]}`)).toEqual(["fable"])
     expect(providersOf("")).toEqual([])
   })
 
