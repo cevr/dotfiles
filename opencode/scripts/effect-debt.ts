@@ -93,7 +93,8 @@ export const compare = (budgets: Counts, current: Counts, known: ReadonlySet<str
 
 /** The line `--check` prints for a breach. */
 export const describeBreach = (breach: Breach) => {
-  if (breach.count > breach.budget) return `over: ${breach.file} ${breach.rule} has ${breach.count}, budget ${breach.budget}`
+  if (breach.count > breach.budget)
+    return `over: ${breach.file} ${breach.rule} has ${breach.count}, budget ${breach.budget}; fix the new findings in ${breach.file} (a budget is never raised by hand; only the ratchet's own landing re-bootstraps one)`
   if (breach.budget === 0) return `zero budget: ${breach.file} ${breach.rule}; remove the entry, a missing budget is zero`
   return `lower: ${breach.file} ${breach.rule} has ${breach.count}, budget ${breach.budget}; lower it in ${POLICY} (bun scripts/effect-debt.ts --tighten)`
 }

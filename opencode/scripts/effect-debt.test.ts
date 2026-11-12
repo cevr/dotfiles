@@ -262,7 +262,7 @@ describe("effect-debt --check over a real workspace", () => {
       failsAfter((root) => {
         put(root, "mods/demo/added.ts", DEBT_SOURCE)
         return []
-      }, "over: mods/demo/added.ts effect/noTryCatch has 1, budget 0"),
+      }, "over: mods/demo/added.ts effect/noTryCatch has 1, budget 0; fix the new findings in mods/demo/added.ts"),
     TEST_TIMEOUT,
   )
 
