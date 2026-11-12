@@ -53,7 +53,9 @@
 // one `Departed` per rule it broke; a land that departs with a finding
 // unfolded drops that finding. A verifier covers what is landed; with
 // nothing landed, what is ready (a land by hand, which the plugin does not
-// see, so the verifier's start stands for it). A root that runs no unit is
+// see, so the verifier's start stands for it, and the findings folded into
+// those units go to the verifier as folded, as a land's would). A verdict
+// closes the findings folded into a unit it took out of the state. A root that runs no unit is
 // left alone.
 //
 // Pure: no file, no clock. The ledger (service.ts `Ledger`) keeps each root's
@@ -425,6 +427,28 @@ export const coverOf = (state: MachineState): ReadonlyArray<string> => {
   return landed.length > 0 ? landed : unitsIn(state, "ready")
 }
 
+/** What a verifier's start covers: its own unit alone for a unit-named one that departed, else the batch (`coverOf`). */
+const coverOfStart = (state: MachineState, start: Start): ReadonlyArray<string> => {
+  const unit = state.units[start.name]
+  return !BATCH.test(start.name) && unit !== undefined && (unit.state === "ready" || unverifiedOf(state).includes(start.name)) ? [start.name] : coverOf(state)
+}
+
+/**
+ * The findings folded into a ready unit a verifier's start covers with no land seen (a land by hand): the start
+ * stands for that land, so they go to the verifier as folded, as a land's would. Left open, they outlived the
+ * verdict on a unit no longer in the state and held every later land (the ledger of 2026-11-12, batches j-l).
+ */
+const standInFindings = (state: MachineState, units: ReadonlyArray<string>): Readonly<Record<string, Required<Finding>>> => {
+  const landed = state.unverified ?? []
+  const standsIn = units.filter((name) => state.units[name]?.state === "ready" && !landed.includes(name))
+  return Object.fromEntries(
+    openFindings(state).flatMap(([key, finding]) => (finding.into !== undefined && standsIn.includes(finding.into) ? [[key, { batch: finding.batch, into: finding.into }]] : [])),
+  )
+}
+
+/** What a verifier over `units` checks as folded: the findings landed with them, and those its start stands in the land for. */
+const checkedOf = (state: MachineState, units: ReadonlyArray<string>): Readonly<Record<string, Required<Finding>>> => ({ ...state.carried, ...standInFindings(state, units) })
+
 // ── The refusal's words ──
 
 const list = (units: ReadonlyArray<string>) => (units.length === 0 ? "none" : units.join(", "))
@@ -525,9 +549,8 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           // A root that runs no unit is left alone: its reviewer is none of the machine's.
           if (!batch && !any) return departed
           // A unit-named verifier that departs covers its unit alone.
-          const unit = state.units[command.name]
-          const units = !batch && unit !== undefined && (unit.state === "ready" || unverifiedOf(state).includes(command.name)) ? [command.name] : coverOf(state)
-          const carried = Object.entries(state.carried ?? {}).map(([key, finding]) => `${key} → ${finding.into}`)
+          const units = coverOfStart(state, command)
+          const carried = Object.entries(checkedOf(state, units)).map(([key, finding]) => `${key} → ${finding.into}`)
           return [...departed, VerifierStarted.make({ batch: command.name, units, ...(carried.length === 0 ? {} : { findings: carried }), at: now })]
         }
         case "HandBack": {
@@ -624,10 +647,15 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           if (unit !== undefined && (unit.state === "landed" || (unit.state === "ready" && !unverified.includes(name))))
             units[name] = { ...unit, state: "verify", since: event.at }
         }
+        // The findings folded into a unit it stands in the land for go to it as folded, as a land's would.
+        for (const [key, finding] of Object.entries(standInFindings(state, event.units))) {
+          carried[key] = finding
+          delete findings[key]
+        }
         const left = unverified.filter((name) => !event.units.includes(name))
         // A second verifier (one that departed) takes over what the first one covered too: neither has a verdict yet.
         const covers = [...new Set([...(state.verifier === undefined ? [] : coveredOf(state)), ...event.units])]
-        return tidy({ ...state, units, unverified: left, verifier: { batch: event.batch, since: event.at, units: covers } })
+        return tidy({ ...state, units, findings, carried, unverified: left, verifier: { batch: event.batch, since: event.at, units: covers } })
       }
       case "VerifierEnded": {
         const covered = coveredOf(state)
@@ -641,6 +669,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         // A dead verifier's units, whatever round each is on now, still wait for a verdict.
         if (event.verdict === "none") return tidy({ ...rest, units, unverified: [...new Set([...(state.unverified ?? []), ...covered])] })
         // The verdict is in: what it checked as folded is done, and its own findings open, or its debt when they did not read.
+        // A finding folded into a unit no longer in the state was checked by a verdict already: a ledger written
+        // before a verifier's start stood in for a land by hand kept it open (`standInFindings`), so it goes too.
+        for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && units[finding.into] === undefined) delete findings[key]
         for (const key of event.findings ?? []) findings[key] = { batch: event.batch }
         const unresolved = { ...state.unresolved, ...(event.unresolved === undefined ? {} : { [event.batch]: event.unresolved }) }
         return tidy({ ...rest, units, findings, carried: {}, unresolved })
@@ -684,8 +715,10 @@ const foldedList = (state: MachineState, keys: ReadonlyArray<string>) => keys.ma
 export const notesOf = (state: MachineState, command: Command, now: number, cadence: Cadence): ReadonlyArray<string> => {
   if (command._tag !== "Start") return []
   if (command.role === "verifier") {
-    const carried = Object.keys(state.carried ?? {})
-    return carried.length === 0 ? [] : [`orchestrate: ${command.role} ${command.name} also checks these findings as folded: ${foldedList(state, carried)}; the plugin added them to its prompt.`]
+    const checked = Object.entries(checkedOf(state, coverOfStart(state, command)))
+    return checked.length === 0
+      ? []
+      : [`orchestrate: ${command.role} ${command.name} also checks these findings as folded: ${checked.map(([key, finding]) => `${key} → ${finding.into}`).join(", ")}; the plugin added them to its prompt.`]
   }
   const why = dueOf(state, now, cadence)
   const landed = unverifiedOf(state)
@@ -717,7 +750,7 @@ export const notesOf = (state: MachineState, command: Command, now: number, cade
  */
 export const verifierPromptOf = (state: MachineState, command: Command): string | undefined => {
   if (command._tag !== "Start" || command.role !== "verifier") return undefined
-  const carried = Object.entries(state.carried ?? {})
+  const carried = Object.entries(checkedOf(state, coverOfStart(state, command)))
   if (carried.length === 0) return undefined
   return [
     "Findings of the batch before, folded into this batch (the orchestrate plugin's ledger). Prove each fixed in the unit it was folded into, as a finding of that unit:",

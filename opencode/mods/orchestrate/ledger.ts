@@ -1,10 +1,11 @@
 // The ledger's lines and its decisions, over any store of lines (the
-// filestore's JSONL file, memory's array): service.ts `Ledger`. A line is
-// `{ at, sessionID, kind, ... }`: `kind` an event's tag (machine.ts `Event`)
-// with the event's fields, `Refused` with the rule, the message and the call,
-// or `Checkpoint` with a root's whole state. `at` is ISO 8601. A root's state
-// is the fold of its lines from its last checkpoint; a line that does not
-// read is skipped.
+// filestore's JSONL file, memory's array): service.ts `Ledger`. A line
+// (line.ts) is `{ at, sessionID, kind, ... }`: `kind` an event's tag
+// (machine.ts `Event`) with the event's fields, `Refused` with the rule, the
+// message and the call, `Checkpoint` with a root's whole state, or `Drift`
+// with its drift tally (drift.ts). `at` is ISO 8601. A root's state is the
+// fold of its lines from its last checkpoint, and its drift the score of its
+// lines from its last tally; a line that does not read is skipped.
 //
 // One ledger per store, whoever opens it. A root is keyed by its session
 // alone, never by a directory: the plugin has one copy per location, and a
@@ -15,17 +16,19 @@
 //
 // The store is bounded (`Retention`). After a decision that leaves it past
 // its threshold, it is compacted: each root's lines become one checkpoint of
-// its state (none when it holds nothing) and its last departures and
-// refusals within the idle window; a root idle past the window is dropped, and
+// its state (none when it holds nothing), its last departures and refusals
+// within the idle window, and one tally of its drift (none for a clean
+// root), so its score outlives the lines; a root idle past the window is dropped, and
 // only the most recently active roots are kept. The next threshold is twice
 // what the compaction kept, and never less than `bytes`, so a compaction runs
 // at most once per that many bytes written.
-import { Effect, Option, Schema, Semaphore } from "effect"
-import { type Cadence, type Command, Event, machine, type MachineState, Refused, Unresolved } from "./machine.ts"
+import { Effect, Option, Semaphore } from "effect"
+import { type Drift, driftOf, lineOfDrift, scoreOf } from "./drift.ts"
+import { checkpointOf, eventOf, headOf, isRecord, type Line } from "./line.ts"
+import { type Cadence, type Command, type Event, machine, type MachineState, Refused } from "./machine.ts"
 import type { Decided, GuardMode } from "./service.ts"
 
-/** One line as written. */
-export type Line = Readonly<Record<string, unknown>> & { readonly at: string; readonly sessionID: string; readonly kind: string }
+export { eventOf, type Line }
 
 /** What a store keeps: its lines, read afresh, a line appended, all its lines replaced, and its size in bytes. */
 export interface Store {
@@ -75,51 +78,8 @@ export const lineOfRefusal = (sessionID: string, now: number, refused: Refused, 
   call,
 })
 
-const Unit = Schema.Struct({
-  state: Schema.Literals(["implement", "ended", "ready", "landed", "verify"]),
-  round: Schema.Number,
-  since: Schema.Number,
-  direct: Schema.Boolean,
-  child: Schema.optionalKey(Schema.String),
-  rifts: Schema.optionalKey(Schema.Array(Schema.String)),
-})
-const State = Schema.Struct({
-  units: Schema.Record(Schema.String, Unit),
-  verifier: Schema.optionalKey(
-    Schema.Struct({ batch: Schema.String, since: Schema.Number, units: Schema.optionalKey(Schema.Array(Schema.String)), child: Schema.optionalKey(Schema.String) }),
-  ),
-  unverified: Schema.optionalKey(Schema.Array(Schema.String)),
-  findings: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.optionalKey(Schema.String) }))),
-  carried: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.String }))),
-  unresolved: Schema.optionalKey(Schema.Record(Schema.String, Unresolved)),
-})
-
 /** A root's whole state as one line, stamped with its last line's time. */
 export const lineOfCheckpoint = (sessionID: string, at: number, state: MachineState): Line => ({ at: iso(at), sessionID, kind: "Checkpoint", state })
-
-const decodeEvent = Schema.decodeUnknownOption(Event)
-const decodeState = Schema.decodeUnknownOption(State)
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
-
-/** A line's root and time; none for a line that does not read. */
-const headOf = (line: unknown): { readonly sessionID: string; readonly at: number } | undefined => {
-  if (!isRecord(line) || typeof line.kind !== "string" || typeof line.at !== "string" || typeof line.sessionID !== "string") return undefined
-  const at = Date.parse(line.at)
-  return Number.isNaN(at) ? undefined : { sessionID: line.sessionID, at }
-}
-
-/** The event a line holds; none for a refusal, a checkpoint, or a line that does not read. */
-export const eventOf = (line: unknown): Event | undefined => {
-  if (!isRecord(line) || typeof line.kind !== "string" || typeof line.at !== "string") return undefined
-  const { kind, at, sessionID: _, ...fields } = line
-  const ms = Date.parse(at)
-  if (Number.isNaN(ms)) return undefined
-  return Option.getOrUndefined(decodeEvent({ ...fields, _tag: kind, at: ms }))
-}
-
-/** The state a checkpoint line holds; none for any other line. */
-const checkpointOf = (line: unknown): MachineState | undefined =>
-  isRecord(line) && line.kind === "Checkpoint" ? Option.getOrUndefined(decodeState(line.state)) : undefined
 
 /** A root's state: the fold of `lines` (its own) from its last checkpoint. */
 export const stateOf = (cadence: Cadence, lines: ReadonlyArray<unknown>): MachineState => {
@@ -142,7 +102,8 @@ const isAudit = (line: unknown) => isRecord(line) && (line.kind === "Departed" |
  * What a compaction at `now` keeps of `lines`: for each root active within
  * the window, newest first and at most `retention.roots`, a checkpoint of
  * its state when it holds anything, then its newest departures and refusals
- * within the window. Every kept root's state is the one its lines folded to.
+ * within the window, then its drift's tally when it drifted. Every kept
+ * root's state and drift are the ones its lines folded to.
  */
 export const compact = (cadence: Cadence, retention: Retention, now: number, lines: ReadonlyArray<unknown>): ReadonlyArray<Line> => {
   const roots = new Map<string, { last: number; lines: Array<unknown> }>()
@@ -161,7 +122,9 @@ export const compact = (cadence: Cadence, retention: Retention, now: number, lin
     .flatMap(([sessionID, root]): ReadonlyArray<Line> => {
       const state = stateOf(cadence, root.lines)
       const audit = root.lines.filter((line) => isAudit(line) && now - headOf(line)!.at <= retention.idleMs).slice(-retention.audit) as ReadonlyArray<Line>
-      return holds(state) ? [lineOfCheckpoint(sessionID, root.last, state), ...audit] : audit
+      const drift = driftOf(cadence, root.lines)
+      const tally = scoreOf(drift) === 0 && drift.departures.length === 0 ? [] : [lineOfDrift(sessionID, root.last, drift)]
+      return [...(holds(state) ? [lineOfCheckpoint(sessionID, root.last, state)] : []), ...audit, ...tally]
     })
 }
 
@@ -206,6 +169,9 @@ export const make = (store: Store, cadence: Cadence, retention: Retention = DEFA
 
     const state = (sessionID: string) => shared.lock.withPermits(1)(load(sessionID))
 
+    const drift = (sessionID: string): Effect.Effect<Drift> =>
+      shared.lock.withPermits(1)(Effect.map(store.read(), (lines) => driftOf(cadence, lines.filter(isOf(sessionID)))))
+
     const decide = <E, R>(
       sessionID: string,
       now: number,
@@ -239,5 +205,5 @@ export const make = (store: Store, cadence: Cadence, retention: Retention = DEFA
         }).pipe(Effect.ensuring(compactIfDue(now))),
       )
 
-    return { state, decide }
+    return { state, drift, decide }
   })
