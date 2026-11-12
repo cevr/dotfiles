@@ -49,54 +49,57 @@ models, a one-hour prompt cache for Claude
 (`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change. At its end it writes what the host now runs to
-`~/.local/state/opencode-fleet/installed.json` (the checkout and its commit,
-the fork commit, the version).
+`~/.local/state/opencode/installed.json`, OpenCode's own record of the
+installed build (the version, the binary, the builds it superseded), with the
+dotfiles and fork commits and the last build that passed a health check
+(`mods/update/record.ts`). By hand it then restarts the service through the
+update's handoff (below), so its health check and recovery run too.
 
-## The fleet install
+## The update
 
-```sh
-bun run fleet-install                 # install the MacBook, then the workbox
-bun run fleet-install --wait          # and print each host's line when it ends
-bun run fleet-install --upstream      # merge upstream into the fork first (the daily install)
-bun run fleet-install --force         # install a host already on the target
-```
+Each host's OpenCode updates itself. The update is a server plugin
+(`cmd/update`, its model in `mods/update`) that daily loads on every host;
+only the resident location's copy acts, so a host runs one updater.
 
-One command installs both hosts from origin/main and the fork's
-origin/prime-look (`scripts/fleet-install.ts`, its rules in `scripts/fleet.ts`).
-It records a request in `~/.local/state/opencode-fleet/requests.jsonl` and
-starts the coordinator: on the Mac a one-shot launchd job
-(`dev.cvr.opencode-fleet-install`: RunAtLoad, no KeepAlive, never `launchctl
-submit`, which reruns it), outside the OpenCode server's process tree, since
-the Mac's install restarts that server; from another host the request goes
-to the Mac over ssh. A coordinator already running takes the request.
+- **The target.** An accepted batch verdict records what every host installs:
+  orchestrate (its `fleet` option, `{ dotfiles, fork }`, which daily writes)
+  takes the verifier's checkout, when it is one of the dotfiles or the fork, and
+  pushes an annotated tag to the dotfiles origin as `refs/fleet/verified`
+  (`mods/orchestrate/git/fleet.ts`). The tag points at the verified dotfiles
+  commit; its message is `{dotfiles, fork, batch}`. One ref, written whole,
+  read with one fetch, and recorded only when origin holds both commits.
+- **The check.** At start, every ten minutes and when asked (RPC
+  `dotfiles-opencode.update` `check`), the plugin fetches the ref and compares
+  it with `installed.json`. A host on the target does nothing. One check runs
+  at a time; a newer target during a run is the next run.
+- **Advance.** The dotfiles checkout moves to the target's commit
+  (fast-forward on the Mac, back by `reset --keep` when the target is older;
+  on the workbox, a Syncthing follower, a reset that keeps
+  `codex/config.toml`, `skills/.system/` and `workbox/herdr-config.toml` and
+  drops Syncthing's conflict copies), then `bun install --frozen-lockfile` in
+  `opencode/` and the fork's links. A failed install moves the checkout back.
+  Nothing else moves the checkout.
+- **Build ahead.** `bun scripts/daily.ts --stage --fork-target <sha>` from
+  the advanced checkout: the fork to the target's commit (on the Mac, upstream
+  merged first, step 0), the build, the configs and `installed.json`, with no
+  restart. A failed stage moves the dotfiles and the configs back.
+- **The wait.** The restart waits until no root session on the host runs a
+  turn or a compaction, and never in the Sabbath rest
+  (`mods/orchestrate/sabbath.ts`). Subagents do not hold it: the restart cuts
+  them and the server resumes them. No timeout: the log says how long it
+  waited. A newer target while it waits is built ahead first.
+- **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
+  service it restarts: `opencode service restart`, then the health check
+  (every configured local plugin loaded in the resident location, and the
+  pool's status answering accounts, which spends nothing). A failure
+  reinstalls the dependencies and restarts once; still failing, it rolls back
+  to the last good build and dotfiles commit in `installed.json` and restarts
+  on it. TUIs follow by themselves.
 
-The coordinator waits until no request came for two minutes, so requests
-close together are one install, then goes host by host, the Mac first (it
-owns the fork; its daily may merge upstream and push `prime-look`, which the
-workbox then builds). Each host's step is `scripts/fleet/host-sync.sh`: the
-dotfiles checkout reaches origin/main (the Mac fast-forwards only; the
-workbox, whose files Syncthing keeps in step with the Mac's, moves HEAD, puts
-back each tracked file that differs except `codex/config.toml`,
-`skills/.system/` and `workbox/herdr-config.toml`, and deletes Syncthing's
-conflict copies), then `fleet-install.ts host` from that code: a host whose
-`installed.json` names the target is skipped; else, whatever the host's
-load (no gate, the owner's call), `bun install`, the
-fork's links and `bun run daily`. The Mac's step runs in the coordinator; the
-workbox's over `ssh bite-workbox` in a transient systemd unit of its own
-(`opencode-fleet-install`), so neither its server's restart nor a plugin
-reload stops it, and a second install there waits for the first. A deferred
-or unreachable host is tried again every ten minutes, for up to twelve
-hours; a request that comes during a pass starts one more. After a pass that
-installed, the Mac's `upstream.json` goes to the workbox. Each host's line
-(`workbox: installed 2.2.5-prime.1a2b3c4d (dotfiles 89abcde0) in 6m12s`) is
-in `fleet.log` and each pass's whole output in `runs/`; nothing else tells
-of it (no notification, no message to a session: the owner's call).
-
-An accepted batch verdict starts one by itself: when the batch machine's
-ledger records a verifier's `accepted` (once per verdict, whichever
-location's copy sees it), orchestrate runs `fleet-install.ts request --reason
-"<batch> accepted"` (its `install` option, which `daily` sets on the owner's
-hosts; `cmd/orchestrate/server.ts`).
+There is no load gate and no notification (the owner's call). Each step is a
+line in `~/.local/state/opencode-update/update.log`; a failed update also
+shows in Prime's TUI corner (`update failed · <plugin>: <cause>`), read from
+daily's `upstream.json`, so it shows without the failed plugin.
 
 Why a fork: stock OpenCode's plugin API covers the pool, the `/pool` pane,
 the orchestrate guard, the Sabbath and the pace hold. It has no hook for the
