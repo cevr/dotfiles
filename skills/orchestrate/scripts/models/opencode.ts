@@ -94,7 +94,7 @@ export type Round = {
   child?: string;
   why?: string;
   ran?: string; // the model id it ran on, as models/prices.ts keys it (`claude-opus-5-5`)
-  experiment?: { arm: 'trial' | 'control'; model: string; fellBack?: string }; // its model-experiment arm (the mod's experiment.ts)
+  experiment?: { arm: 'trial' | 'control'; model: string; fellBack?: string }; // its arm of the planner A/B (2026-11-10 to 2026-11-12); later lines carry none
 };
 
 // `anthropic/claude-opus-5-5#medium` → `opus-5-5@medium`, as the models table spells it.
@@ -117,7 +117,7 @@ export function roundsOf(text: string, since = 0): Round[] {
     const at = Date.parse(d.at ?? '');
     if (!(at >= since) || typeof d.callID !== 'string') continue;
     if (d.kind === 'call') {
-      // Only a new start of the experiment's role carries an arm; a follow-up never does.
+      // Only a new planner start of the A/B carries an arm; a follow-up never does, nor a line since it ended.
       const e = d.experiment;
       const arm = e?.arm === 'trial' || e?.arm === 'control' ? { arm: e.arm, model: String(e.model ?? ''), ...(e.fellBack ? { fellBack: String(e.fellBack) } : {}) } : undefined;
       const ran = typeof d.model === 'string' ? d.model.replace(/^[\w-]+\//, '').split('#')[0] : undefined;
