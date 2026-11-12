@@ -114,6 +114,15 @@
         "effect/noEffectRunInTests": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/effect-isolation.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }

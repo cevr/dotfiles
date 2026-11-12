@@ -4,7 +4,7 @@
 // adapters it checks how they reach the host's integration, quota RPC and
 // storage. tests/pool-failover.test.ts and tests/pool-gent-opencode.test.ts
 // run it in OpenCode.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -62,16 +62,8 @@ interface SessionEvent {
   }
 }
 
-// The live adapters keep the limit tally under XDG_STATE_HOME: never the owner's, in a test.
-// Set for this file's tests only, and restored after, so no other test file sees it.
-const ambientState = process.env["XDG_STATE_HOME"]
-beforeAll(() => {
-  process.env["XDG_STATE_HOME"] = mkdtempSync(join(tmpdir(), "pool-state-"))
-})
-afterAll(() => {
-  if (ambientState === undefined) delete process.env["XDG_STATE_HOME"]
-  else process.env["XDG_STATE_HOME"] = ambientState
-})
+/** A limit tally of the test's own, in every start's options: the live adapters otherwise keep it under the owner's XDG_STATE_HOME. */
+const scratchLimits = () => join(mkdtempSync(join(tmpdir(), "pool-state-")), "limits.json")
 
 /**
  * What the outside systems hold for one test. The test layers read it, and so
@@ -197,7 +189,7 @@ const start = (
       events: { subscribe: () => Stream.fromQueue(state.owner.beats) },
     }
     const host = {
-      options,
+      options: { limitsFile: scratchLimits(), ...options },
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
           const source = state.forks.get(sessionID)

@@ -41,6 +41,7 @@
     "effect/noSequentialEffectAll": "error",
     "effect/noSharedTestHome": "error",
     "effect/noSilentCatchAll": "error",
+    "effect/noTestGlobals": "error",
     "effect/noUnknownTypeAliases": "error",
     "effect/noWidenThenAssert": "error",
     "effect/preferCatchTag": "error",
