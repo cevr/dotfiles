@@ -25,16 +25,16 @@ const scratch = mkdtempSync(join(tmpdir(), "drift-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 describe("the ledger of 2026-11-12", () => {
-  test("the dotfiles root drifted 35: the j-l verdicts' stale findings are the ledger's; the dropped finding and the real departures are the run's", async () => {
+  test("the dotfiles root drifted 29: the j-l verdicts' stale findings and batch m's, folded into an ended unit, are the ledger's; the dropped finding and the real departures are the run's", async () => {
     const file = join(scratch, "machine.jsonl")
     copyFileSync(FIXTURE, file)
     const drift = await Effect.runPromise(Effect.flatMap(Ledger, (ledger) => ledger.drift("ses_root007")).pipe(Effect.provide(FileLedger.layer(file, DEFAULT_CADENCE))))
-    expect(drift.counts).toEqual({ unfoldedLand: 1, departed: 3, verifierPerUnit: 0, offCadence: 2, refused: 5, stale: 8 })
-    expect(scoreOf(drift)).toBe(35)
+    expect(drift.counts).toEqual({ unfoldedLand: 1, departed: 1, verifierPerUnit: 0, offCadence: 2, refused: 3, stale: 12 })
+    expect(scoreOf(drift)).toBe(29)
     expect(drift.dropped).toEqual(["land-upstream/M1"])
-    // The departures around the j-l verdicts' findings are stale; batch m's, with a finding folded into an ended unit, are not.
+    // The departures around the j-l verdicts' findings are stale, and so are batch m's: a finding folded into an ended unit is never open again.
     expect(drift.departures.filter((departure) => departure.why.startsWith("stale ledger")).map((departure) => departure.stale)).toEqual([["FindingUnfolded"], ["FindingUnfolded"]])
-    expect(drift.departures.filter((departure) => departure.why.startsWith("batch m")).map((departure) => departure.stale)).toEqual([[], []])
+    expect(drift.departures.filter((departure) => departure.why.startsWith("batch m")).map((departure) => departure.stale)).toEqual([["FindingUnfolded"], ["FindingUnfolded"]])
   })
 
   test("the hymn root drifted 4, and every other root is clean", () => {

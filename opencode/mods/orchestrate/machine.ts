@@ -21,8 +21,8 @@
 // verifier checks it as folded.
 //
 // A unit is `implement` (its implementor runs), `ended` (its implementor
-// stopped without `ready`), `ready`, `landed` (no verifier started for it
-// yet) or `verify` (a verifier covering it runs). A verifier's verdict takes
+// stopped without `ready`; a later `ready` or a land naming it moves it on),
+// `ready`, `landed` (no verifier started for it yet) or `verify` (a verifier covering it runs). A verifier's verdict takes
 // the units it covered out of the state and opens its findings; a unit's
 // next round comes back in by its implementor's start. A `direct` unit closes
 // when it lands.
@@ -41,9 +41,9 @@
 //                    verifier's `units`), not a unit's slot, which a covered
 //                    unit's next round takes over;
 //   FindingUnfolded  a land while a finding of the last verdict is not folded
-//                    into a unit, or is folded into one that is neither in
-//                    the land nor still implementing (a ready unit the land
-//                    leaves out, an implementor that ended), or while a `changes`
+//                    into a unit, or is folded into a ready unit the land
+//                    leaves out (one folded into a unit that ended is settled:
+//                    never open again), or while a `changes`
 //                    verdict's report did not read (`unresolved`: its
 //                    findings are not known, never none; the plugin reads
 //                    it again before each start and land, `ReportRead`);
@@ -291,12 +291,22 @@ const openFindings = (state: MachineState): ReadonlyArray<readonly [string, Find
 export const riding = (state: MachineState, finding: Finding): boolean => finding.into !== undefined && state.units[finding.into]?.state === "implement"
 
 /**
+ * A finding folded into a unit whose implementor ended without a `ready` the plugin read: the unit was blocked,
+ * stopped, or landed and verified by a hand-back or a land the ledger missed (the ledger of 2026-11-12, batches
+ * af-ai). A finding whose unit has ended is never open again: it holds no land, and the next land settles it.
+ */
+export const endedWith = (state: MachineState, finding: Finding): boolean => unitsIn(state, "ended").some((name) => name === finding.into)
+
+/** A folded finding that holds no land: its unit still implements (it rides), or has ended (it is settled). */
+export const holdsNoLand = (state: MachineState, finding: Finding): boolean => riding(state, finding) || endedWith(state, finding)
+
+/**
  * The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it
- * does not take that is not still implementing (one still implementing rides with its own land).
+ * does not take that is neither still implementing (that one rides with its own land) nor ended.
  */
 export const unfoldedOf = (state: MachineState, lands: ReadonlyArray<string>): ReadonlyArray<string> =>
   openFindings(state)
-    .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && !riding(state, finding)))
+    .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && !holdsNoLand(state, finding)))
     .map(([key]) => key)
 
 /** The open findings an implementor's start folds into its unit: its own unit's, and those its `folds` name. */
@@ -400,11 +410,14 @@ const inputOf = (target: LandTarget): string => {
   return entry.unit === undefined ? JSON.stringify(entry.rift) : `{ path: ${JSON.stringify(entry.rift)}, unit: ${JSON.stringify(entry.unit)} }`
 }
 
-/** The ready units a land's `rifts` name. */
+/**
+ * The units a land's `rifts` name that it lands: the ready ones, and the ended ones (an implementor's end the
+ * ledger guessed, or a hand-back it did not read: the root's land is its word that the unit is ready).
+ */
 const named = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
   const all = Object.keys(state.units)
   const recorded = riftsIn(state)
-  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all, recorded) === unit))
+  return unitsIn(state, "ready", "ended").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all, recorded) === unit))
 }
 
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
@@ -554,8 +567,11 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           return [...departed, VerifierStarted.make({ batch: command.name, units, ...(carried.length === 0 ? {} : { findings: carried }), at: now })]
         }
         case "HandBack": {
-          if (command.role === "implementor")
-            return state.units[command.name]?.state === "implement" ? [UnitHandedBack.make({ unit: command.name, ready: command.verdict === "ready", at: now })] : []
+          if (command.role === "implementor") {
+            const was = state.units[command.name]?.state
+            if (was === "implement") return [UnitHandedBack.make({ unit: command.name, ready: command.verdict === "ready", at: now })]
+            return was === "ended" && command.verdict === "ready" ? [UnitHandedBack.make({ unit: command.name, ready: true, at: now })] : []
+          }
           if (command.role === "verifier" && state.verifier?.batch === command.name) {
             if (command.verdict !== "changes") return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, at: now })]
             // A `changes` whose findings were not read is unresolved, never an empty set.
@@ -577,7 +593,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           const rules: Array<Rule> = []
           if (verdictPending(state)) rules.push("VerdictPending")
           if (unfoldedOf(state, lands).length > 0 || unresolvedOf(state).length > 0) rules.push("FindingUnfolded")
-          if (unitsIn(state, "ready").length > lands.length) rules.push("LandPartial")
+          if (unitsIn(state, "ready").some((unit) => !lands.includes(unit))) rules.push("LandPartial")
           if (waiting(state, now, cadence)) rules.push("BatchNotDue")
           return yield* guard(rules, command.departs)
         }
@@ -628,9 +644,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           }
         }
         // Each finding folded into a unit that landed goes to the next verifier; one not folded, or not
-        // known, was departed from.
+        // known, was departed from; one folded into a unit that ended and did not land is settled.
         for (const [key, finding] of Object.entries(findings)) {
-          if (finding.into === undefined) delete findings[key]
+          if (finding.into === undefined || (!event.units.includes(finding.into) && endedWith(state, finding))) delete findings[key]
           else if (event.units.includes(finding.into)) {
             carried[key] = { batch: finding.batch, into: finding.into }
             delete findings[key]
@@ -671,7 +687,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         // The verdict is in: what it checked as folded is done, and its own findings open, or its debt when they did not read.
         // A finding folded into a unit no longer in the state was checked by a verdict already: a ledger written
         // before a verifier's start stood in for a land by hand kept it open (`standInFindings`), so it goes too.
-        for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && units[finding.into] === undefined) delete findings[key]
+        for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && (units[finding.into] === undefined || endedWith(state, finding))) delete findings[key]
         for (const key of event.findings ?? []) findings[key] = { batch: event.batch }
         const unresolved = { ...state.unresolved, ...(event.unresolved === undefined ? {} : { [event.batch]: event.unresolved }) }
         return tidy({ ...rest, units, findings, carried: {}, unresolved })
