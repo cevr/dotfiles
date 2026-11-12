@@ -41,8 +41,8 @@ const record = (root: string, batch: string, header: string, program = "git") =>
     return yield* recordOnce({ dotfiles: `${root}/dotfiles`, fork: `${root}/fork` }, `${root}/run/${batch}-findings.md`, batch, program)
   })
 
-/** A batch header naming both heads, short, as the orchestrator writes it. */
-const both = (dotfiles: string, fork: string) => `Dotfiles: base 1111111a, head ${dotfiles.slice(0, 8)}; Rift detached at it. Fork prime-look: base 2222222b, head ${fork.slice(0, 10)}.`
+/** A batch header as the orchestrator writes it: prose naming other commits, then the one heads line with both full commits. */
+const both = (dotfiles: string, fork: string) => `Dotfiles: base 1111111a, head 2222222b; Rift detached at it. Fork: 3333333c → origin/main.\n\nHeads: dotfiles=${dotfiles} fork=${fork}`
 
 /** Runs `body` on a scratch root with a dotfiles and a fork repository of `count` commits each, removed after. */
 const onRepositories = <A>(count: number, body: (root: string, dotfiles: ReadonlyArray<string>, fork: ReadonlyArray<string>) => Effect.Effect<A>) =>
@@ -74,19 +74,21 @@ describe("the fleet's record over real git", () => {
   )
 
   test(
-    "M1: a batch file that names one head, a head nobody knows or no commit at all publishes nothing, and says what it lacks; no kept fork stands in",
+    "M1: a batch file with no heads line, two, a malformed one or a head nobody knows publishes nothing and says why; no kept fork stands in",
     () =>
-      onRepositories(3, (root, [, d2, d3], [, f2]) =>
+      onRepositories(3, (root, [, d2, d3], [, f2, f3]) =>
         Effect.gen(function* () {
-          expect(yield* record(root, "batch-1", `Dotfiles: base 1111111a, head ${d2.slice(0, 8)}.`)).toEqual(
-            FleetOutcome.Refused({ reason: `the batch file ${root}/run/batch-1.md lacks the fork head (\`Fork prime-look: base X, head Y\` or \`Fork unchanged (Y)\`)` }),
+          const form = "`Heads: dotfiles=<40-hex sha> fork=<40-hex sha>`"
+          expect(yield* record(root, "batch-1", `Dotfiles: base 1111111a, head ${d2.slice(0, 8)}. Fork prime-look: base 2222222b, head ${f2.slice(0, 10)}.`)).toEqual(
+            FleetOutcome.Refused({ reason: `the batch file ${root}/run/batch-1.md has no heads line; write one, exactly ${form}` }),
           )
           expect(recorded(root)).toEqual(Option.none())
           yield* record(root, "batch-2", both(d2, f2))
-          expect(refused(yield* record(root, "batch-3", `Dotfiles: base ${d2.slice(0, 8)}, head ${d3.slice(0, 8)}.`))).toContain("lacks the fork head")
-          expect(refused(yield* record(root, "batch-4", "Fork unchanged (2222222b).\n"))).toContain("lacks the dotfiles head")
-          expect(refused(yield* record(root, "batch-5", both("9999999a", f2)))).toContain("a head the checkouts do not know")
-          expect(refused(yield* record(root, "batch-6", "Dotfiles: base 1111111a, head origin/main."))).toContain("lacks the dotfiles head (`Dotfiles: base X, head Y`) and the fork head")
+          expect(refused(yield* record(root, "batch-3", `Heads: dotfiles=${d3.slice(0, 8)} fork=${f3}`))).toBe(
+            `the batch file ${root}/run/batch-3.md has a malformed heads line (<Heads: dotfiles=${d3.slice(0, 8)} fork=${f3}>); write it exactly ${form}, both full commit names`,
+          )
+          expect(refused(yield* record(root, "batch-4", `${both(d3, f3)}\n${both(d3, f3)}`))).toBe(`the batch file ${root}/run/batch-4.md has 2 heads lines; write one, exactly ${form}`)
+          expect(refused(yield* record(root, "batch-5", both("9".repeat(40), f2)))).toContain("a head the checkouts do not know")
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f2, batch: "batch-2" }))
         }),
       ),
