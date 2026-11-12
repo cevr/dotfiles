@@ -8,22 +8,27 @@ import { describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Array as Arr, Effect, Schema, type Scope } from "effect"
+import { Array as Arr, Effect, Order, Result, Schema, type Scope } from "effect"
+import { mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
 import {
   compare,
   type Counts,
+  countsJson,
   DEBT_CONFIG,
+  type DebtConfig,
   EXEMPTABLE,
   HARD_CONFIG,
   HOST_BRIDGES,
   type Inputs,
   LINT_MANIFEST,
+  overridePairs,
   parseOptions,
   POLICY,
   Policy,
   policyProblems,
   readInstalled,
   serialize,
+  serializeConfig,
   spawn,
   SUPPRESSION,
   tighten,
@@ -716,6 +721,242 @@ const FENCES = [
   ["mods/kernel/fence.ts", 'import { readFileSync } from "node:fs"\nexport const read = readFileSync'],
   ["decider/fence.ts", 'import { createSignal } from "solid-js"\nexport const signal = createSignal'],
 ] as const
+
+type Budgets = Policy["budgets"]
+type Exemption = Policy["exemptions"][number]
+
+const budgetsJson = (counts: Counts): Budgets => countsJson(counts)
+
+/** One unit's edit of the budgets: it lowers, drops, re-counts or adds pairs, each of its own choosing. */
+const editBudgets = (random: ReturnType<typeof generator>, base: Counts) => {
+  const edited = copy(base)
+  for (const _ of Arr.range(1, 1 + random.int(3))) {
+    const live = Arr.filter(Array.from(edited), ([, rules]) => rules.size > 0)
+    if (live.length === 0) break
+    const [file, rules] = random.pick(live)
+    const [rule, count] = random.pick(Array.from(rules))
+    const edit = random.pick(["lower", "drop pair", "drop file", "raise", "add file"] as const)
+    if (edit === "lower") rules.set(rule, random.int(count))
+    if (edit === "drop pair") rules.delete(rule)
+    if (edit === "drop file") edited.delete(file)
+    if (edit === "raise") rules.set(rule, count + 1 + random.int(3))
+    if (edit === "add file") edited.set(`${random.pick(CLASSES)}added-${random.int(4)}.ts`, new Map([[random.pick(RULES), 1 + random.int(3)]]))
+  }
+  return tighten(edited, edited)
+}
+
+/** The oracle, from the driver's contract alone: per pair, the side that changed, both alike once, both differently summed; zero or less is absent. */
+const expectedMerge = (base: Counts, ours: Counts, theirs: Counts): Budgets => {
+  const files = new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])
+  const merged = new Map<string, Map<string, number>>()
+  for (const file of files) {
+    const rules = new Set([...(base.get(file)?.keys() ?? []), ...(ours.get(file)?.keys() ?? []), ...(theirs.get(file)?.keys() ?? [])])
+    for (const rule of rules) {
+      const value = mergedCount(pairCount(base, file, rule), pairCount(ours, file, rule), pairCount(theirs, file, rule))
+      if (value > 0) merged.set(file, new Map([...(merged.get(file) ?? []), [rule, value] as const]))
+    }
+  }
+  return budgetsJson(merged)
+}
+
+const mergedCount = (was: number, mine: number, other: number) => {
+  if (mine === other || was === other) return mine
+  if (was === mine) return other
+  return mine + other - was
+}
+
+/** `overrides` with `file` added to the group that holds `member`. */
+const extendGroup = (overrides: DebtConfig["overrides"], member: string, file: string) =>
+  Arr.map(overrides ?? [], (group) => {
+    if (!group.files.includes(member)) return group
+    return { ...group, files: [...group.files, file] }
+  })
+
+const withExemption = (policy: Policy, config: DebtConfig, exemption: Exemption, place: "end" | "start"): readonly [Policy, DebtConfig] => {
+  const group = { files: [exemption.file], rules: { [exemption.rule]: "off" as const } }
+  const overrides = config.overrides ?? []
+  if (place === "start") return [{ ...policy, exemptions: [exemption, ...policy.exemptions] }, { ...config, overrides: [group, ...overrides] }]
+  return [{ ...policy, exemptions: [...policy.exemptions, exemption] }, { ...config, overrides: [...overrides, group] }]
+}
+
+const exemptionOf = (file: string, rule: string): Exemption => ({ file, rule, reason: `merge fixture: ${file} needs ${rule}` })
+
+/** The real policy's first two budgeted files, which sit on adjacent lines. */
+const [ADJACENT_A = "", ADJACENT_B = ""] = Object.keys(realPolicy.budgets).sort()
+
+const lowerFirst = (policy: Policy, file: string): Policy => {
+  const rules = policy.budgets[file] ?? {}
+  const [rule = "", count = 0] = Object.entries(rules)[0] ?? []
+  return { ...policy, budgets: { ...policy.budgets, [file]: { ...rules, [rule]: count - 1 } } }
+}
+
+const unitEdits = (config: DebtConfig) => {
+  const [oursPolicy, oursConfig] = withExemption(lowerFirst(realPolicy, ADJACENT_A), config, exemptionOf("mods/demo/ours.ts", "effect/noGlobals"), "end")
+  const [theirsPolicy, theirsConfig] = withExemption(lowerFirst(realPolicy, ADJACENT_B), config, exemptionOf("mods/demo/theirs.ts", "effect/noNodeBuiltinImport"), "end")
+  return { oursPolicy, oursConfig, theirsPolicy, theirsConfig }
+}
+
+const DRIVER = `${process.execPath} ${path.join(REAL, "scripts/effect-debt.ts")} --merge %O %A %B %P || git merge-file --diff3 -L ours -L base -L theirs %A %O %B`
+
+/** A repo whose base commit holds the real policy and config, with the driver registered; `attributes` routes the two files to it. */
+const mergeRepo = Effect.fn("EffectDebtTest.mergeRepo")(function* () {
+  const root = yield* scratch
+  yield* git(root, "init", "-q", "-b", "main")
+  yield* git(root, "config", "merge.effect-debt.driver", DRIVER)
+  yield* git(root, "config", "commit.gpgSign", "false")
+  put(root, POLICY, readReal(POLICY))
+  put(root, DEBT_CONFIG, readReal(DEBT_CONFIG))
+  yield* git(root, "add", POLICY, DEBT_CONFIG)
+  yield* git(root, "commit", "-q", "-m", "base")
+  return root
+})
+
+const commitSide = Effect.fn("EffectDebtTest.commitSide")(function* (root: string, branch: string, policy: Policy, config: DebtConfig) {
+  yield* git(root, "checkout", "-q", "-b", branch, "main")
+  put(root, POLICY, serialize(policy))
+  put(root, DEBT_CONFIG, serializeConfig(config))
+  yield* git(root, "commit", "-q", "-am", branch)
+})
+
+const merge = (root: string, branch: string) =>
+  spawn(["git", "-c", "user.email=effect-debt@example.com", "-c", "user.name=effect-debt", "merge", "--no-ff", "-q", "-m", "merge", branch], root, CLI_TIMEOUT)
+
+const routeToDriver = (root: string) => put(root, ".git/info/attributes", `${POLICY} merge=effect-debt\n${DEBT_CONFIG} merge=effect-debt\n`)
+
+describe("merge by key: two units' edits of the policy and its config merge without a line conflict and keep the ratchet", () => {
+  test("the committed policy and config are their own canonical prints, so the driver rewrites only what it merged", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        expect(serialize(realPolicy)).toBe(readReal(POLICY))
+        expect(serializeConfig(real.debt)).toBe(readReal(DEBT_CONFIG))
+      }),
+    ))
+
+  test("generated parallel budget edits merge to each side's change, alike changes once, different changes summed", () => {
+    for (const seed of Arr.range(1, 300)) {
+      const random = generator(seed)
+      const base = generateBudgets(random)
+      const ours = editBudgets(random, base)
+      const theirs = editBudgets(random, base)
+      const sides = Arr.map([base, ours, theirs], (budgets) => ({ ...realPolicy, budgets: budgetsJson(budgets) }))
+      const [was = realPolicy, mine = realPolicy, other = realPolicy] = sides
+      const merged = mergePolicy(was, mine, other)
+      const swapped = mergePolicy(was, other, mine)
+      expect({ seed, merged: Result.map(merged, (policy) => policy.budgets) }).toEqual({ seed, merged: Result.succeed(expectedMerge(base, ours, theirs)) })
+      expect({ seed, swapped: Result.map(swapped, (policy) => serialize(policy)) }).toEqual({ seed, swapped: Result.map(merged, (policy) => serialize(policy)) })
+    }
+  })
+
+  test("exemptions and overrides merge as sets: each side's addition kept, each side's removal dropped, and the pair stays consistent", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        const removed = realPolicy.exemptions.find((each) => each.file === "mods/rift/process/flock.ts")
+        expect(removed).toBeDefined()
+        const { oursPolicy, oursConfig, theirsPolicy, theirsConfig } = unitEdits(real.debt)
+        const extended = { ...oursConfig, overrides: extendGroup(oursConfig.overrides, "mods/update/model.test.ts", "mods/demo/extended.test.ts") }
+        const oursWith = { ...oursPolicy, exemptions: [...oursPolicy.exemptions, exemptionOf("mods/demo/extended.test.ts", "effect/noEffectRunInTests")] }
+        const theirsWithout = { ...theirsPolicy, exemptions: theirsPolicy.exemptions.filter((each) => each !== removed) }
+        const theirsConfigWithout = { ...theirsConfig, overrides: (theirsConfig.overrides ?? []).filter((group) => !group.files.includes("mods/rift/process/flock.ts")) }
+        const extendedTheirs = { ...theirsConfigWithout, overrides: extendGroup(theirsConfigWithout.overrides, "mods/update/model.test.ts", "mods/demo/theirs.test.ts") }
+        const theirsAll = { ...theirsWithout, exemptions: [...theirsWithout.exemptions, exemptionOf("mods/demo/theirs.test.ts", "effect/noEffectRunInTests")] }
+        const policy = Result.getOrThrow(mergePolicy(realPolicy, oursWith, theirsAll))
+        const config = Result.getOrThrow(mergeConfig(real.debt, extended, extendedTheirs))
+        const keys = (exemptions: ReadonlyArray<Exemption>) => Arr.map(exemptions, (each) => `${each.file} ${each.rule}`)
+        expect(keys(policy.exemptions)).toEqual([
+          ...keys(realPolicy.exemptions.filter((each) => each !== removed)),
+          "mods/demo/theirs.ts effect/noNodeBuiltinImport",
+          "mods/demo/theirs.test.ts effect/noEffectRunInTests",
+          "mods/demo/ours.ts effect/noGlobals",
+          "mods/demo/extended.test.ts effect/noEffectRunInTests",
+        ])
+        const group = (config.overrides ?? []).find((each) => each.files.includes("mods/update/model.test.ts"))
+        expect(group?.files.slice(-2)).toEqual(["mods/demo/theirs.test.ts", "mods/demo/extended.test.ts"])
+        expect(Arr.sort(overridePairs(config.overrides ?? []).pairs, Order.String)).toEqual(Arr.sort(keys(policy.exemptions), Order.String))
+        expect(policy.budgets[ADJACENT_A]).toEqual(oursPolicy.budgets[ADJACENT_A])
+        expect(policy.budgets[ADJACENT_B]).toEqual(theirsPolicy.budgets[ADJACENT_B])
+      }),
+    ))
+
+  test("a value both sides changed differently is a conflict: the provenance, an exemption's reason, an override's rule setting", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const real = yield* realInputs
+        const provenance = (text: string) => ({ ...realPolicy, provenance: text })
+        expect(Result.isFailure(mergePolicy(realPolicy, provenance("ours"), provenance("theirs")))).toBe(true)
+        expect(Result.isSuccess(mergePolicy(realPolicy, provenance("both"), provenance("both")))).toBe(true)
+        const reason = (text: string) => ({ ...realPolicy, exemptions: Arr.map(realPolicy.exemptions, (each, index) => ({ ...each, reason: `${each.reason}${text.repeat(Number(index === 0))}` })) })
+        expect(mergePolicy(realPolicy, reason("ours"), reason("theirs"))).toEqual(Result.fail(`exemptions/${realPolicy.exemptions[0]?.file} ${realPolicy.exemptions[0]?.rule}`))
+        const setting = (max: number) => ({ ...real.debt, rules: { ...real.debt.rules, complexity: ["error", { max }] as const } })
+        expect(mergeConfig(real.debt, setting(1), setting(2))).toEqual(Result.fail("rules/complexity"))
+      }),
+    ))
+
+  test.concurrent(
+    "git merges two units' adjacent edits of both files cleanly through the driver, where a line merge conflicts",
+    () =>
+      runScoped(
+        Effect.gen(function* () {
+          const real = yield* realInputs
+          const root = yield* mergeRepo()
+          const { oursPolicy, oursConfig, theirsPolicy, theirsConfig } = unitEdits(real.debt)
+          yield* commitSide(root, "theirs", theirsPolicy, theirsConfig)
+          yield* commitSide(root, "ours", oursPolicy, oursConfig)
+          const byLine = yield* merge(root, "theirs")
+          expect(byLine.code).toBe(1)
+          expect(`${byLine.stdout}${byLine.stderr}`).toContain(`CONFLICT (content): Merge conflict in ${POLICY}`)
+          yield* git(root, "merge", "--abort")
+          routeToDriver(root)
+          const byKey = yield* merge(root, "theirs")
+          expect({ code: byKey.code, stderr: byKey.stderr }).toEqual({ code: 0, stderr: "" })
+          expect(readFileSync(path.join(root, POLICY), "utf8")).toBe(serialize(Result.getOrThrow(mergePolicy(realPolicy, oursPolicy, theirsPolicy))))
+          expect(readFileSync(path.join(root, DEBT_CONFIG), "utf8")).toBe(serializeConfig(Result.getOrThrow(mergeConfig(real.debt, oursConfig, theirsConfig))))
+          const merged = Schema.decodeUnknownSync(Schema.fromJsonString(Policy))(readFileSync(path.join(root, POLICY), "utf8"))
+          expect(merged.budgets[ADJACENT_A]).toEqual(oursPolicy.budgets[ADJACENT_A])
+          expect(merged.budgets[ADJACENT_B]).toEqual(theirsPolicy.budgets[ADJACENT_B])
+          expect(merged.exemptions.slice(-2)).toEqual([exemptionOf("mods/demo/theirs.ts", "effect/noNodeBuiltinImport"), exemptionOf("mods/demo/ours.ts", "effect/noGlobals")])
+        }),
+      ),
+    TEST_TIMEOUT,
+  )
+
+  test.concurrent(
+    "a conflict the driver cannot settle falls back to git's line merge, with conflict markers and the merge stopped",
+    () =>
+      runScoped(
+        Effect.gen(function* () {
+          const real = yield* realInputs
+          const root = yield* mergeRepo()
+          routeToDriver(root)
+          yield* commitSide(root, "theirs", { ...realPolicy, provenance: "theirs" }, real.debt)
+          yield* commitSide(root, "ours", { ...realPolicy, provenance: "ours" }, real.debt)
+          const merged = yield* merge(root, "theirs")
+          expect(merged.code).toBe(1)
+          expect(`${merged.stdout}${merged.stderr}`).toContain(`provenance changed differently on both sides`)
+          const text = readFileSync(path.join(root, POLICY), "utf8")
+          expect(text).toContain("<<<<<<< ours")
+          expect(text).toContain(">>>>>>> theirs")
+        }),
+      ),
+    TEST_TIMEOUT,
+  )
+
+  test("the driver refuses a file it does not own and a wrong argument count, writing nothing", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const root = yield* scratch
+        put(root, "other.json", "{}\n")
+        const driver = (...argv: ReadonlyArray<string>) => spawn([process.execPath, path.join(REAL, "scripts/effect-debt.ts"), "--merge", ...argv], root, CLI_TIMEOUT)
+        const other = path.join(root, "other.json")
+        const foreign = yield* driver(other, other, other, "other.json")
+        expect({ code: foreign.code, stderr: foreign.stderr }).toEqual({ code: 1, stderr: expect.stringContaining("is neither") })
+        const short = yield* driver(other, other)
+        expect({ code: short.code, stderr: short.stderr }).toEqual({ code: 1, stderr: expect.stringContaining("usage:") })
+        expect(readFileSync(other, "utf8")).toBe("{}\n")
+      }),
+    ))
+})
 
 const OxlintReport = Schema.fromJsonString(
   Schema.Struct({ diagnostics: Schema.Array(Schema.Struct({ code: Schema.optionalKey(Schema.String), filename: Schema.String, severity: Schema.String })) }),
