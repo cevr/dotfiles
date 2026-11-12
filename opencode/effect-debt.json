@@ -104,6 +104,7 @@
     {"file":"mods/wake/process/readiness.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so the generated model suite runs its Effect once with Effect.runPromise"},
     {"file":"mods/update/model.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs the update model on its fake git, build and exec seams under a TestClock with Effect.runPromise"},
     {"file":"mods/update/git/source.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs the advance step on a scratch git checkout and real bun with Effect.runPromise"},
+    {"file":"mods/update/process/mark.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs the handoff's mark over a scratch file and real ps with Effect.runPromise"},
     {"file":"mods/orchestrate/git/fleet-record.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case records a batch's verified target over scratch git repositories with Effect.runPromise"}
   ],
   "budgets": {

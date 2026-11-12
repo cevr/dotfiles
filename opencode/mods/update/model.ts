@@ -2,9 +2,9 @@ import { Clock, Context, Duration, Effect, Layer, Option, Ref } from "effect"
 import { describeGate, Gate, gate, rootsOf } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
-import { Builder, Configs, Handoff, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
+import { Builder, Configs, Handoff, HandoffMark, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
-import { ask, ended, IDLE, Plan, plan, superseded } from "./update.ts"
+import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
 /** How often a held restart reads the sessions again. */
 export const GATE_POLL = Duration.seconds(30)
@@ -46,6 +46,7 @@ export const updaterLayer = (policy: Policy) =>
       const sessions = yield* Sessions
       const handoff = yield* Handoff
       const records = yield* Records
+      const mark = yield* HandoffMark
       const rejections = yield* Rejections
       const configs = yield* Configs
       const log = yield* Log
@@ -111,9 +112,14 @@ export const updaterLayer = (policy: Policy) =>
       const once = Effect.fn("Updater.once")(function* (reason: string) {
         const waiting = yield* Ref.get(handedOff)
         if (Option.isSome(waiting)) return yield* log.line(`check (${reason}): the restart onto ${shortTarget(waiting.value)} is handed off`).pipe(Effect.as(false))
+        const held = yield* mark.read
+        const alive = yield* Option.match(held, { onNone: () => Effect.succeed(false), onSome: (each) => mark.alive(each.pid) })
+        const running = runningOf(held, alive, yield* Clock.currentTimeMillis)
         const target = yield* source.verified
-        const next = plan(target, yield* records.read, yield* rejections.read)
+        const next = plan(target, yield* records.read, yield* rejections.read, running)
         return yield* Plan.$match(next, {
+          HandingOff: ({ running: handing }) =>
+            log.line(`check (${reason}): a handoff runs (pid ${handing.pid}); nothing builds or restarts until it ends`).pipe(Effect.as(false)),
           NoTarget: () => log.line(`check (${reason}): the origin names no verified target`).pipe(Effect.as(false)),
           Current: ({ target: current }) => log.line(`check (${reason}): installed is ${shortTarget(current)}`).pipe(Effect.as(false)),
           Rejected: ({ target: failed, rejected }) =>
@@ -164,7 +170,7 @@ const failedStep = (step: string) => (failed: UpdateFailed) => Health.Sick({ plu
  * the handoff ends healthy, rolled back, or given up with the owner's notice, and never fails. A
  * build that does not end proven is rejected, so no check builds or restarts onto it again.
  */
-export const handoff: (reason: string) => Effect.Effect<Outcome, never, Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoff")(function* (reason: string) {
+const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
   const service = yield* Service
   const source = yield* Source
   const records = yield* Records
@@ -263,3 +269,11 @@ export const handoff: (reason: string) => Effect.Effect<Outcome, never, Service 
     health = yield* restartAndRead(stage)
   }
 })
+
+/**
+ * The handoff under its mark (`HandoffMark`): held before it names the staged build installed and
+ * dropped once its outcome, good or rejected, is recorded. The restarted service's own check reads
+ * the mark and waits, so one handoff runs at a time.
+ */
+export const handoff = (reason: string): Effect.Effect<Outcome, never, HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log> =>
+  HandoffMark.use((mark) => mark.hold.pipe(Effect.andThen(steps(reason)), Effect.ensuring(mark.release)))

@@ -2931,6 +2931,7 @@ its reason, and only for a capability no installed Effect service offers:
 | `mods/wake/process/readiness.test.ts` | `noEffectRunInTests` | the Bun test bridge: the generated model suite of the test-only readiness wait runs its Effect once with `Effect.runPromise` |
 | `mods/update/model.test.ts` | `noEffectRunInTests` | the Bun test bridge: the update model run on its fake git, build and exec seams under a `TestClock` |
 | `mods/update/git/source.test.ts` | `noEffectRunInTests` | the Bun test bridge: the advance step run on a scratch git checkout with real bun |
+| `mods/update/process/mark.test.ts` | `noEffectRunInTests` | the Bun test bridge: the handoff's mark over a scratch file and real `ps` |
 | `mods/orchestrate/git/fleet-record.test.ts` | `noEffectRunInTests` | the Bun test bridge: a batch's verified target recorded over scratch git repositories |
 
 No other rule can be exempted (`EXEMPTABLE` in the script): a test-global

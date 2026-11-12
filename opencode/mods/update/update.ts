@@ -1,4 +1,4 @@
-import { Data, Option, Schema } from "effect"
+import { Data, Duration, Option, Schema } from "effect"
 import { buildOf, goodOf, type Record, stagedOf } from "./record.ts"
 import type { Target } from "./target.ts"
 
@@ -18,8 +18,32 @@ export const sameCommits = (a: { readonly dotfiles: string; readonly fork: strin
 export const rejectionOf = (target: Target, rejected: Option.Option<Rejected>): Option.Option<Rejected> =>
   Option.filter(rejected, (each) => sameCommits(each, target))
 
+/**
+ * The mark of a running handoff, `handoff.json` in the update's own directory: its process and
+ * when it began (epoch ms). The handoff holds it from before it names the staged build installed
+ * until it ends, so no check restarts the service under it.
+ */
+export const Running = Schema.Struct({ pid: Schema.Number, at: Schema.Number })
+export interface Running extends Schema.Schema.Type<typeof Running> {}
+
+/**
+ * The longest a handoff runs: three restarts with their health reads (`HEALTH_DEADLINE` each), a
+ * reinstall and a rollback's install. A mark older than this is stale, whatever its pid.
+ */
+export const HANDOFF_LIMIT = Duration.minutes(20)
+
+/**
+ * The handoff that runs, from its mark: one whose process lives and which began within
+ * `HANDOFF_LIMIT`. A mark whose process is gone (a killed handoff, a reboot) or which is too old
+ * (a reused pid) holds nothing.
+ */
+export const runningOf = (mark: Option.Option<Running>, alive: boolean, now: number): Option.Option<Running> =>
+  Option.filter(mark, (each) => alive && now - each.at < Duration.toMillis(HANDOFF_LIMIT))
+
 /** What one update run does. */
 export type Plan = Data.TaggedEnum<{
+  /** A handoff runs: no check builds or restarts until it ends. */
+  HandingOff: { readonly running: Running }
   /** The origin names no verified target yet. */
   NoTarget: {}
   /** The installed build is the target's, and its health check proved it. */
@@ -34,10 +58,12 @@ export type Plan = Data.TaggedEnum<{
 export const Plan = Data.taggedEnum<Plan>()
 
 /**
- * The run's plan: the target against the installed record and the rejected target. A build is
- * current only once proven: installed and good. A host with no record installs.
+ * The run's plan: the target against the installed record and the rejected target. A handoff
+ * that runs holds every run. A build is current only once proven: installed and good. A host with
+ * no record installs.
  */
-export const plan = (target: Option.Option<Target>, record: Option.Option<Record>, rejected: Option.Option<Rejected>): Plan => {
+export const plan = (target: Option.Option<Target>, record: Option.Option<Record>, rejected: Option.Option<Rejected>, running: Option.Option<Running>): Plan => {
+  if (Option.isSome(running)) return Plan.HandingOff({ running: running.value })
   if (Option.isNone(target)) return Plan.NoTarget()
   const wanted = target.value
   const failed = rejectionOf(wanted, rejected)
