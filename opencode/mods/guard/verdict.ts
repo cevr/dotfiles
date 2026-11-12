@@ -61,25 +61,65 @@ const TRASH = "use `trash` on what you mean to remove"
 const MAX_DEPTH = 4
 
 /**
- * Git's global options that take the next word as their value (git 2.56's `git --help`; each long
- * one also takes `--opt=value` as one word). The one reader of git's argv: tests/git-repo.test.ts
- * reads test code's git calls with it too.
+ * Git's global options (`git [<option>…] <command>`), in two tables that together are every one
+ * the installed git's manual lists; tests/git-options.test.ts checks both against that git,
+ * running each option to see whether it takes the next word. The one reader of git's argv:
+ * tests/git-repo.test.ts reads test code's git calls with it too.
+ *
+ * The options that take the next word as their value; each long one also takes `--opt=value` as one word.
  */
-export const GIT_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"])
+export const GIT_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source"])
 
-/** A git command's subcommand and the words after it; the global options before it skipped. */
-export const gitSubcommand = (args: ReadonlyArray<string>) => {
-  let index = 0
-  while (index < args.length && (args[index] ?? "").startsWith("-")) {
-    index += 1
-    if (GIT_VALUE_OPTIONS.has(args[index - 1] ?? "")) index += 1
-  }
-  return { name: args[index], rest: args.slice(index + 1) }
+/** The options that take no next word (some take `=value` in the same word: `--exec-path=`, `--list-cmds=`). */
+export const GIT_BARE_OPTIONS: ReadonlySet<string> = new Set([
+  "-v",
+  "--version",
+  "-h",
+  "--help",
+  "--exec-path",
+  "--html-path",
+  "--man-path",
+  "--info-path",
+  "-p",
+  "--paginate",
+  "-P",
+  "--no-pager",
+  "--bare",
+  "--no-replace-objects",
+  "--no-lazy-fetch",
+  "--no-optional-locks",
+  "--no-advice",
+  "--literal-pathspecs",
+  "--glob-pathspecs",
+  "--noglob-pathspecs",
+  "--icase-pathspecs",
+  "--list-cmds",
+])
+
+/**
+ * A git command's argv read past its global options:
+ * - `command`: its subcommand (`""` when no word follows the options) and the words after it;
+ * - `unreadable`: an option before the subcommand in neither table. Whether it takes the next
+ *   word is unknown, so is the subcommand, and a reader fails closed on it rather than guess.
+ */
+export type GitArgv =
+  | { readonly kind: "command"; readonly name: string; readonly rest: ReadonlyArray<string> }
+  | { readonly kind: "unreadable"; readonly option: string }
+
+export const gitSubcommand = (args: ReadonlyArray<string>): GitArgv => {
+  const [word = "", ...after] = args
+  if (!word.startsWith("-")) return { kind: "command", name: word, rest: after }
+  const option = word.replace(/=.*/s, "")
+  if (GIT_VALUE_OPTIONS.has(option) && option === word) return gitSubcommand(after.slice(1))
+  if (GIT_VALUE_OPTIONS.has(option) || GIT_BARE_OPTIONS.has(option)) return gitSubcommand(after)
+  return { kind: "unreadable", option: word }
 }
 
-/** Why a `git` command loses work for good: a hard reset, or a forced clean with `-d`, `-x` or `-X`. */
+/** Why a `git` command loses work for good: a hard reset, or a forced clean with `-d`, `-x` or `-X`; or why it cannot be read. */
 const gitRefusal = (command: string, args: ReadonlyArray<string>): string | undefined => {
   const sub = gitSubcommand(args)
+  if (sub.kind === "unreadable")
+    return `\`${command}\` passes git \`${sub.option}\`, an option the guard does not know, so it cannot tell what git runs; spell the command without it`
   if (sub.name === "reset" && sub.rest.includes("--hard"))
     return `\`${command}\` discards uncommitted work; stash it (\`git stash -u\`) or commit first`
   if (sub.name !== "clean") return undefined
