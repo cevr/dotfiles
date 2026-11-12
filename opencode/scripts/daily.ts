@@ -9,8 +9,11 @@
 //    skips it; `--dry-run` fetches, says what it would merge and stops before anything else.
 // 1. Builds the fork in `OPENCODE_DEV` (default: the prime-look Rift) as a release binary
 //    (channel `latest`, version `<base>-prime.<commit>`), so it shares the installed OpenCode's
-//    database and background service; a version change restarts that service as ours.
-//    `--skip-build` reuses the last build.
+//    database and background service; a version change restarts that service as ours. With
+//    `--fork-target <sha>` it builds exactly that commit, in a detached worktree of the fork
+//    pinned there (`~/.local/state/opencode-daily/fork-build`), never prime-look's HEAD, which
+//    a land's post-land merge moves. A binary whose version names another commit stops daily, and the
+//    record names the commit built (mods/update/process/pin.ts). `--skip-build` reuses the last build.
 // 2. Copies it to `~/.local/share/opencode-prime/` and writes `~/.local/bin/opencode`, a launcher
 //    that runs it without the caller's Anthropic routing and, after a service start or restart,
 //    loads the resident location so the server plugins run with no client (`launcher`,
@@ -36,6 +39,7 @@ import { hostLocks } from "../mods/rift/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
 import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
+import { releaseBuild, runDailyBuild } from "../mods/update/process/pin.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -396,21 +400,11 @@ if (import.meta.main) {
     } else console.log(`upstream: ${fork} does not have prime-look checked out, so this build leaves the merge out`)
   }
 
-  const base = (JSON.parse(readFileSync(join(cli, "package.json"), "utf8")) as { version: string }).version
-  const commit = (await $`git -C ${fork} rev-parse --short=8 HEAD`.text()).trim()
-  const version = `${base}-prime.${commit}`
-  const target = `cli-${process.platform}-${process.arch}`
-  const built = join(cli, "dist", target, "bin/opencode")
-
-  if (!args.has("--skip-build")) {
-    console.log(`building ${version} from ${fork}`)
-    await $`bun run script/build.ts --single --skip-install --skip-web-ui`
-      .cwd(cli)
-      .env({ ...env, OPENCODE_CHANNEL: "latest", OPENCODE_VERSION: version })
-      .quiet()
-  }
-  const reported = (await $`${built} --version`.text()).trim()
-  if (!reported.includes(version)) throw new Error(`${built} reports ${reported}, not ${version}: build it (drop --skip-build)`)
+  // A stage (`--fork-target`) builds exactly the verified target's fork commit, in a worktree of its
+  // own pinned there, never prime-look's HEAD, which a land's post-land merge moves; by hand, the
+  // checkout as it stands. Either binary must name the commit it was built from (mods/update/process/pin.ts).
+  const build = releaseBuild(process.execPath, `cli-${process.platform}-${process.arch}`, {}, args.has("--skip-build"))
+  const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, bun: process.execPath, build, log: console.log })
 
   const share = join(home, ".local/share/opencode-prime")
   mkdirSync(share, { recursive: true })
@@ -425,7 +419,7 @@ if (import.meta.main) {
   const record = installedFile(home)
   mkdirSync(dirname(record), { recursive: true })
   const checkout = dirname(dirname(MODS))
-  writeFileSync(`${record}.${process.pid}`, stagedText(readFileSync(record, { encoding: "utf8", flag: "a+" }), { version, command: [binary], dotfiles: headOf(checkout), fork: forkTarget[0] ?? headOf(fork) }, readdirSync(share)))
+  writeFileSync(`${record}.${process.pid}`, stagedText(readFileSync(record, { encoding: "utf8", flag: "a+" }), { version, command: [binary], dotfiles: headOf(checkout), fork: builtCommit }, readdirSync(share)))
   renameSync(`${record}.${process.pid}`, record)
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })

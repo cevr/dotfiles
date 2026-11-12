@@ -103,7 +103,13 @@ only the resident location's copy acts, so a host runs one updater.
   the advanced checkout: the fork to the target's commit (on the Mac, upstream
   merged first, step 0), the build, the configs and the build `staged` in
   `installed.json`, with no restart. A failed stage moves the dotfiles and the
-  configs back.
+  configs back. The build is exactly the target's fork commit, whatever
+  prime-look's HEAD (which a land's post-land merge moves): daily builds it in
+  a detached worktree of the fork pinned there,
+  `~/.local/state/opencode-daily/fork-build`, made on first use and moved to
+  each target after, and never moves prime-look for it. A binary whose
+  version (`-prime.<hash>`) names another commit fails the stage, and
+  `installed.json` names the commit built (`mods/update/process/pin.ts`).
 - **The wait.** The restart waits until no root session on the host runs a
   turn or a compaction, and never in the Sabbath rest
   (`mods/orchestrate/sabbath.ts`). Subagents do not hold it: the restart cuts
@@ -2977,6 +2983,7 @@ its reason, and only for a capability no installed Effect service offers:
 | `mods/update/model.test.ts` | `noEffectRunInTests` | the Bun test bridge: the update model run on its fake git, build and exec seams under a `TestClock` |
 | `mods/update/git/source.test.ts` | `noEffectRunInTests` | the Bun test bridge: the advance step run on a scratch git checkout with real bun |
 | `mods/update/process/mark.test.ts` | `noEffectRunInTests` | the Bun test bridge: the handoff's mark over a scratch file and real `ps` |
+| `mods/update/process/pin.test.ts` | `noEffectRunInTests` | the Bun test bridge: a stage's build tree pinned in a scratch fork checkout with real git and bun, and a stand-in build |
 | `mods/orchestrate/git/fleet-record.test.ts` | `noEffectRunInTests` | the Bun test bridge: a batch's verified target recorded over scratch git repositories |
 
 No other rule can be exempted (`EXEMPTABLE` in the script): a test-global
