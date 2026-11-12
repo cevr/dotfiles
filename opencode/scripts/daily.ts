@@ -308,7 +308,7 @@ if (import.meta.main) {
       skip: args.has("--no-upstream"),
       dryRun,
       landing: locks.moveSync,
-      checks: (dir) => locks.tests(() => forkChecks(resolve(import.meta.dir, ".."), fork, env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings"))(dir)),
+      checks: (dir) => locks.tests(() => forkChecks(resolve(import.meta.dir, ".."), fork, env.GENT_SOURCE)(dir)),
       worktree: join(state, "upstream-merge"),
       report: join(state, "upstream-conflict.md"),
       log: console.log,

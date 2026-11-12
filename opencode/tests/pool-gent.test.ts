@@ -18,12 +18,12 @@ import {
   registerCredentialSource,
 } from "../mods/pool/gent/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
-import { gentAvailable, gentSource, openGentStore, type GentStore } from "./gent/store.ts"
+import { gentAvailable, openGentStore, type GentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
 
 const ready = gentAvailable()
 if (!ready) {
-  console.warn(`tests/pool-gent.test.ts: skipped. Clone gent to ${gentSource()} (or set GENT_SOURCE).`)
+  console.warn("tests/pool-gent.test.ts: skipped. Set GENT_SOURCE to a gent checkout.")
 }
 
 const HOUR = 3_600_000

@@ -442,11 +442,13 @@ export const acceptance = async (files: ReadonlyArray<string>, run: TestRun, hos
  * The real checks, each niced: the merged lockfile installs as committed, packages/tui, core and
  * plugin typecheck, and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
  * without the caller's Anthropic routing (`acceptance`: on a calm host, a failed file rerun once).
+ * `gent` is gent's checkout as the caller's `GENT_SOURCE` names it; none assumes no path.
  */
 export const forkChecks =
-  (opencode: string, fork: string, gent: string, host: Host = realHost, log: (line: string) => void = console.log): Checks =>
+  (opencode: string, fork: string, gent: string | undefined, host: Host = realHost, log: (line: string) => void = console.log): Checks =>
   async (dir) => {
     const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DEV: dir, GENT_SOURCE: gent }
+    if (gent === undefined) delete env.GENT_SOURCE
     delete env.ANTHROPIC_BASE_URL
     const spawn = async (cwd: string, command: ReadonlyArray<string>, extra: Record<string, string> = {}) => {
       const child = Bun.spawn(["nice", "-n", "10", ...command], { cwd, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" })

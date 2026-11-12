@@ -5,13 +5,47 @@
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 
-/** gent's checkout: `GENT_SOURCE`, else beside this repository. */
-export const gentSource = (): string =>
-  resolve(process.env.GENT_SOURCE || join(import.meta.dir, "../../../../gent"))
+type Env = Readonly<Record<string, string | undefined>>
 
-const core = () => join(gentSource(), "packages/core")
+/** gent's checkout: `GENT_SOURCE`, and none when it is unset. No path is assumed. */
+export const gentSource = (env: Env = process.env): string | undefined =>
+  env.GENT_SOURCE ? resolve(env.GENT_SOURCE) : undefined
 
-export const gentAvailable = (): boolean => existsSync(join(core(), "src/runtime/provider.ts"))
+/**
+ * Whether the gent suites can run: `GENT_SOURCE` names a directory. A directory that is not
+ * gent's checkout fails the suites rather than skipping them.
+ */
+export const gentAvailable = (env: Env = process.env): boolean => {
+  const source = gentSource(env)
+  return source !== undefined && existsSync(source)
+}
+
+/** The acceptance suites that need gent's checkout, each skipped without it. */
+export const GENT_SUITES: ReadonlyArray<string> = [
+  "tests/pool-fleet.test.ts",
+  "tests/pool-gent-opencode.test.ts",
+  "tests/pool-gent-refresh.test.ts",
+  "tests/pool-gent.test.ts",
+]
+
+/**
+ * The one line a run of `files` prints when gent's suites among them skip for lack of gent's
+ * checkout; none when gent is there or no file of the run needs it.
+ */
+export const gentSkipped = (files: ReadonlyArray<string>, env: Env = process.env): string | undefined => {
+  if (gentAvailable(env)) return undefined
+  const suites = GENT_SUITES.filter((suite) => files.some((file) => file === suite || file.endsWith(`/${suite}`)))
+  if (suites.length === 0) return undefined
+  const source = gentSource(env)
+  const why = source === undefined ? "GENT_SOURCE is not set" : `GENT_SOURCE=${source} does not exist`
+  return `SKIPPED: gent suites (${suites.length} ${suites.length === 1 ? "file" : "files"}: ${suites.join(", ")}): no gent checkout (${why})`
+}
+
+const core = () => {
+  const source = gentSource()
+  if (source === undefined) throw new Error("GENT_SOURCE is not set: the gent suites need gent's checkout")
+  return join(source, "packages/core")
+}
 
 export interface Tokens {
   readonly access: string
