@@ -1755,6 +1755,39 @@ OpenCode's own answer. A kernel cell's `tools.<name>` misses are the kernel's
 to answer: they never reach the registry's hooks. The rule is `nearest` in
 `mods/tool-names/near-miss.ts`.
 
+## Stall watchdog
+
+`cmd/stall` is a server plugin that profiles the server's own event-loop
+stalls, so a stall names its cause without anyone sending the process a
+signal. It measures the main thread's lag with a drift check (a tick sleeps
+250 ms and the time past that is the lag, on the monotonic clock, so a host
+that sleeps is no stall) and keeps the runtime's CPU profiler
+(`node:inspector`, the same one the binary's SIGPROF profile uses) sampling
+every 10 ms in windows of 30 s, dropped while nothing happens. A lag of 2 s or
+more is a stall: the window it fell in samples 10 s more, then is written to
+OpenCode's log directory (`~/.local/share/opencode/log`) as
+`stall-<UTC time>-<lag>ms-<pid>.cpuprofile` (open it in Chrome DevTools or
+speedscope), with `stall-….json` beside it: the stall's lag and time, the RSS
+at the tick before it and after it, and the heap and RSS at the window's end.
+One warning names the file: `stall watchdog: a 5321 ms event-loop stall; CPU
+profile <path>`. At most one capture per 10 minutes (a stall inside that is an
+info line, `no capture`), and the 5 newest captures stay. No heap snapshot: on a
+multi-GB heap it would be a stall of its own. The sampler takes samples only
+while JavaScript runs, so an idle server's windows are empty and a busy one's
+cost a few milliseconds to drop.
+
+OpenCode runs a copy of the plugin per location in one process with one
+profiler, so the copies take turns: the first listed on the process runs the
+watchdog, and the next takes over within 5 s when it leaves. The options
+(`thresholdMs`, `tickMs`, `windowMs`, `captureMs`, `cooldownMs`, `keep`,
+`intervalUs`, `turnMs`, `dir`) are listed in `cmd/stall/server.ts`; the rule
+is `step` in `mods/stall/watch.ts`. `tests/stall.test.ts` proves it in a real
+OpenCode service, with a test-only plugin whose RPC busy-waits on the main
+thread. The binary's SIGPROF profile drives the same one profiler: while the
+watchdog runs, whichever of the two stops first ends the other's window, and
+the other's stop fails with a logged error (the watchdog then samples a new
+window). Send no SIGPROF to a server that runs the watchdog.
+
 ## Web
 
 `cmd/web` is a server plugin that makes the built-in `websearch` and

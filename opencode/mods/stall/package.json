@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-stall",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The stall watchdog for OpenCode's server: an event-loop stall of 2 s or more writes the CPU profile that holds it, with the RSS around it.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

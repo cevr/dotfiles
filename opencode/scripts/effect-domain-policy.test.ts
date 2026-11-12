@@ -382,6 +382,7 @@ const FENCES = [
   "mods/guard/*.ts",
   "mods/rift/*.ts",
   "mods/tool-names/*.ts",
+  "mods/stall/*.ts",
   "mods/memory/*.ts",
   "mods/idle-compact/*.ts",
   "mods/mail/*.ts",

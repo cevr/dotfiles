@@ -32,7 +32,7 @@ export const SERVER_PLUGINS: ReadonlyArray<Entry> = [
   anthropicAuthPlugin,
   { package: pluginDir("pool"), options: { cacheLifeMs: 3_600_000, paced: { openai: "openai" }, fleet: { host: "scratch", peers: [] } } },
   { package: pluginDir("orchestrate"), options: { codex: { pool: true } } },
-  ...["guard", "kernel", "status", "queue", "git", "idle-compact", "mail", "questions", "wake", "skills", "rift", "tool-names", "cache", "web", "memory"].map(pluginDir),
+  ...["guard", "kernel", "status", "queue", "git", "idle-compact", "mail", "questions", "wake", "skills", "rift", "tool-names", "cache", "web", "memory", "stall"].map(pluginDir),
 ]
 export const nameOf = (entry: Entry): string => (typeof entry === "string" ? entry : entry.package).split("/").at(-1) ?? ""
 

@@ -162,6 +162,13 @@
         "@dotfiles/opencode-skills": "workspace:*",
       },
     },
+    "cmd/stall": {
+      "name": "@dotfiles/opencode-cmd-stall",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-stall": "workspace:*",
+      },
+    },
     "cmd/status": {
       "name": "@dotfiles/opencode-cmd-status",
       "version": "0.0.0",
@@ -344,6 +351,10 @@
       "name": "@dotfiles/opencode-skills",
       "version": "0.0.0",
     },
+    "mods/stall": {
+      "name": "@dotfiles/opencode-stall",
+      "version": "0.0.0",
+    },
     "mods/status": {
       "name": "@dotfiles/opencode-status",
       "version": "0.0.0",
@@ -433,6 +444,8 @@
 
     "@dotfiles/opencode-cmd-skills": ["@dotfiles/opencode-cmd-skills@workspace:cmd/skills"],
 
+    "@dotfiles/opencode-cmd-stall": ["@dotfiles/opencode-cmd-stall@workspace:cmd/stall"],
+
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
 
     "@dotfiles/opencode-cmd-tool-names": ["@dotfiles/opencode-cmd-tool-names@workspace:cmd/tool-names"],
@@ -474,6 +487,8 @@
     "@dotfiles/opencode-rift": ["@dotfiles/opencode-rift@workspace:mods/rift"],
 
     "@dotfiles/opencode-skills": ["@dotfiles/opencode-skills@workspace:mods/skills"],
+
+    "@dotfiles/opencode-stall": ["@dotfiles/opencode-stall@workspace:mods/stall"],
 
     "@dotfiles/opencode-status": ["@dotfiles/opencode-status@workspace:mods/status"],
 
