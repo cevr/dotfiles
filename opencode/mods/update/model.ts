@@ -1,6 +1,6 @@
-import { Clock, Context, Duration, Effect, Layer, Option, Ref } from "effect"
+import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref } from "effect"
 import { describeGate, Gate, gate, rootsOf } from "./gate.ts"
-import { describeHealth, final, Health, healthOf, recover, Recovery, type Stage } from "./health.ts"
+import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
 import { Builder, Configs, Handoff, HandoffMark, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
@@ -179,11 +179,11 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
   const notice = yield* Notice
   const log = yield* Log
 
-  const healthNow = Effect.fn("Update.health")(function* () {
+  const healthNow = Effect.fn("Update.health")(function* (before: ReadonlyArray<string>) {
     const start = yield* Clock.currentTimeMillis
     for (;;) {
       const health = yield* service.read.pipe(
-        Effect.map(healthOf),
+        Effect.map((reading) => healthOf(reading, before)),
         Effect.catchTag("UpdateFailed", (failed: UpdateFailed) => Effect.succeed(Health.Sick({ plugin: "service", cause: failed.message, final: false }))),
       )
       if (final(health) || (yield* Clock.currentTimeMillis) - start >= Duration.toMillis(HEALTH_DEADLINE)) return health
@@ -191,10 +191,10 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
     }
   })
 
-  const restartAndRead = Effect.fn("Update.restartAndRead")(function* (stage: Stage) {
+  const restartAndRead = Effect.fn("Update.restartAndRead")(function* (stage: Stage, before: ReadonlyArray<string>) {
     yield* log.line(`handoff (${stage}): restarting the service`)
     const restarted = yield* service.restart.pipe(Effect.as(Option.none<Health>()), Effect.catch((failed) => Effect.succeed(Option.some(failedStep("service restart")(failed)))))
-    const health = yield* Option.match(restarted, { onNone: () => healthNow(), onSome: Effect.succeed })
+    const health = yield* Option.match(restarted, { onNone: () => healthNow(before), onSome: Effect.succeed })
     yield* log.line(`handoff (${stage}): ${describeHealth(health)}`)
     return health
   })
@@ -213,6 +213,17 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
       Effect.catch((failed) => Effect.succeed(Option.some(failedStep(`rollback at ${failed.step}`)(failed)))),
     )
   })
+
+  /**
+   * The providers the running service has a login for, read before the restart. Logins that do not
+   * read count as none: a login missing after the restart is then reported, never rolled back.
+   */
+  const loginsBefore = service.logins.pipe(
+    Effect.tap((logins) => log.line(`handoff: logins before the restart: ${Arr.match(logins, { onEmpty: () => "none", onNonEmpty: (each) => each.join(", ") })}`)),
+    Effect.catchTag("UpdateFailed", (failed: UpdateFailed) =>
+      log.line(`handoff: the logins before the restart do not read (${failed.message}); a missing login is reported, not rolled back`).pipe(Effect.as<ReadonlyArray<string>>([])),
+    ),
+  )
 
   const canRollBack = records.read.pipe(Effect.map((record) => Option.isSome(Option.flatMap(record, rolledBack))))
 
@@ -234,8 +245,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
     Effect.catch((failed) => Effect.succeed(Option.some(failedStep("installed record")(failed)))),
   )
   if (Option.isSome(installing)) return yield* end("gave-up", tried, installing.value, `${describeHealth(installing.value)}; the service was not restarted`)
+  const hadLogins = yield* loginsBefore
   let stage: Stage = "first"
-  let health = yield* restartAndRead(stage)
+  let health = yield* restartAndRead(stage, hadLogins)
   let failure = health
   for (;;) {
     if (Health.$is("Sick")(health)) failure = health
@@ -245,7 +257,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
       yield* Effect.forEach(Option.toArray(record), (current) => records.write(proven(current)), { discard: true }).pipe(
         Effect.catch((failed) => log.line(`handoff: recording the good build failed: ${failed.message}`)),
       )
-      yield* notice.clear
+      yield* Option.match(provenNotice(health), { onNone: () => notice.clear, onSome: notice.show })
       yield* log.line("handoff: the build is proven and recorded as the good build")
       return "proven" satisfies Outcome
     }
@@ -266,7 +278,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
       if (Option.isSome(back)) return yield* end("gave-up", tried, failure, `${describeHealth(failure)}; ${describeHealth(back.value)}`)
       stage = "rolled-back"
     }
-    health = yield* restartAndRead(stage)
+    health = yield* restartAndRead(stage, hadLogins)
   }
 })
 

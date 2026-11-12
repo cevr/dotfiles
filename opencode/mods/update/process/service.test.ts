@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { accountsOf, configuredOf, listedOf } from "./service.ts"
+import { accountsOf, configuredOf, connectedOf, listedOf, pooledOf, providersOf } from "./service.ts"
 
 describe("what the restarted service says, as the handoff reads it", () => {
   test("its plugin list: each local plugin's directory, and the error of one that failed", () => {
@@ -24,5 +24,20 @@ describe("what the restarted service says, as the handoff reads it", () => {
   test("the server config's local plugins: the entries that are directories, bare or with options", () => {
     expect(configuredOf(`{"plugins":["/d/cmd/guard",{"package":"/d/cmd/pool","options":{}},"-opencode.tool.schedule","some-npm-plugin"]}`)).toEqual(["/d/cmd/guard", "/d/cmd/pool"])
     expect(configuredOf("")).toEqual([])
+  })
+
+  test("the providers the config's models use: the default model, each agent's, the planner's", () => {
+    const config = `{"model":"anthropic/claude-opus-5-5#medium","plugins":["/d/cmd/guard",{"package":"/d/cmd/orchestrate","options":{"codex":{"pool":true},"planner":{"model":"fable/claude-fable-5-2"}}},{"package":"/d/cmd/pool","options":{"planner":3}}],"agents":{"planner":{"model":"anthropic/claude-opus-5-5"},"worker":{"model":"openai/sol-6"},"plain":{"steps":3}}}`
+    expect(providersOf(config)).toEqual(["anthropic", "openai", "fable"])
+    expect(providersOf(`{"model":"no-provider"}`)).toEqual([])
+    expect(providersOf("")).toEqual([])
+  })
+
+  test("the logins: providers whose pool lists an account, and integrations with a connection", () => {
+    expect(pooledOf(`{"output":{"anthropic":{"accounts":[]},"openai":{"accounts":[{"credentialID":"c"}]}}}`)).toEqual(["openai"])
+    expect(pooledOf("Error")).toEqual([])
+    const integrations = `{"location":{"directory":"/r"},"data":[{"id":"anthropic","name":"Anthropic","methods":[],"connections":[]},{"id":"openai","name":"OpenAI","methods":[],"connections":[{"type":"credential","id":"x","label":"l","method":"oauth"}]},{"id":"groq","name":"Groq","methods":[],"connections":[{"type":"env","name":"GROQ_API_KEY"}]}]}`
+    expect(connectedOf(integrations)).toEqual(Option.some(["openai", "groq"]))
+    expect(connectedOf("not json")).toEqual(Option.none())
   })
 })

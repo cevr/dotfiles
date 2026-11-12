@@ -231,7 +231,15 @@ describe("the run's config", () => {
     expect(projectConfig(haiku, undefined, plugins).plugins).toEqual(plugins)
     // The store is the caller's, never the run's own home.
     expect(gentAuthDir({ GAMUT_GENT_AUTH: "/elsewhere/auth" })).toBe("/elsewhere/auth")
-    expect(gentAuthDir({})).toEndWith("/.local/share/opencode-prime/pool-auth")
+    expect(gentAuthDir({}, "/h", () => true)).toBe("/h/.local/share/opencode-prime/pool-auth")
+  })
+
+  test("a host whose gent store is gent's own (the workbox) is found from its files, with no variable set", () => {
+    const has = (paths: ReadonlyArray<string>) => (path: string) => paths.includes(path)
+    expect(gentAuthDir({}, "/h", has(["/h/.gent/auth"]))).toBe("/h/.gent/auth")
+    expect(gentAuthDir({}, "/h", has(["/h/.gent/auth", "/h/.local/share/opencode-prime/pool-auth"]))).toBe("/h/.local/share/opencode-prime/pool-auth")
+    expect(gentAuthDir({}, "/h", has([]))).toBe("/h/.local/share/opencode-prime/pool-auth")
+    expect(gentAuthDir({ GAMUT_GENT_AUTH: "/elsewhere/auth" }, "/h", has(["/h/.gent/auth"]))).toBe("/elsewhere/auth")
   })
 
   test("a gent store with no account the pool can use is refused, saying why", () => {
