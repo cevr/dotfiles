@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Clock, Effect, Exit, Fiber, Option, Ref } from "effect"
 import { TestClock } from "effect/testing"
-import { NEVER_PROBED, notYet, ready, ReadinessTimeout, waitFor } from "./readiness.ts"
+import { BodyTimeout, bounded, LIMIT_MARGIN_MS, NEVER_PROBED, notYet, ready, ReadinessTimeout, testLimitMs, waitFor } from "./readiness.ts"
 
 type Status = "waiting" | "ready" | "timeout" | "cancelled"
 
@@ -177,4 +177,41 @@ const allCases = Effect.gen(function* () {
 
 describe("a readiness wait", () => {
   test("agrees with the reference model on every generated sequence of publish, advance, probe and cancel", () => Effect.runPromise(allCases))
+})
+
+/** A body that holds a scoped resource, counts its releases, and then runs `end`. */
+const scopedBody = (released: Ref.Ref<number>, end: Effect.Effect<string>) =>
+  Effect.acquireRelease(Effect.void, () => Ref.update(released, (count) => count + 1)).pipe(Effect.andThen(end))
+
+const BOUNDS = { body: 10, release: 5 }
+
+/** A bounded body run to its end on the test clock: how many times its scope released before the bound, its exit, and the releases in all. */
+const boundedRun = Effect.fn("ReadinessTest.boundedRun")(function* (end: Effect.Effect<string>) {
+  const released = yield* Ref.make(0)
+  const fiber = yield* Effect.forkChild(bounded("the probe body", scopedBody(released, end), BOUNDS))
+  yield* settle
+  const releasedBefore = yield* Ref.get(released)
+  yield* TestClock.adjust(BOUNDS.body)
+  const exit = yield* Fiber.await(fiber)
+  return { releasedBefore, exit, released: yield* Ref.get(released) }
+})
+
+const boundedCases = Effect.gen(function* () {
+  const stuck = yield* boundedRun(Effect.never)
+  expect({ releasedBefore: stuck.releasedBefore, released: stuck.released, error: Exit.findErrorOption(stuck.exit) }).toEqual({
+    releasedBefore: 0,
+    released: 1,
+    error: Option.some(new BodyTimeout({ label: "the probe body", boundMs: BOUNDS.body })),
+  })
+  const done = yield* boundedRun(Effect.succeed("done"))
+  expect({ released: done.released, exit: done.exit }).toEqual({ released: 1, exit: Exit.succeed("done") })
+}).pipe(Effect.provide(TestClock.layer()))
+
+describe("a bounded test body", () => {
+  test("is cut at its body bound with BodyTimeout and releases its scope once, and releases it once when it ends in time", () => Effect.runPromise(boundedCases))
+
+  test("gets a Bun limit past its body and its release, so the Effect always ends first", () => {
+    expect(testLimitMs({ body: "40 seconds", release: "10 seconds" })).toBe(40_000 + 10_000 + LIMIT_MARGIN_MS)
+    expect(LIMIT_MARGIN_MS).toBeGreaterThan(0)
+  })
 })

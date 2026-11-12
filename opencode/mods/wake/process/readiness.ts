@@ -5,8 +5,12 @@
  * deadline wins at equality: a probe that would run at or past it times out instead, naming the
  * state it observed last. Ready is only what a probe observed before the deadline; an interrupted
  * wait stops probing at once.
+ *
+ * A test's body runs `bounded`: in its own scope, cut at its body bound, with a Bun limit
+ * (`testLimitMs`) past the body and its release, so the scope always closes and its release runs
+ * before Bun gives up on the test, and a stuck wait fails with its own timeout first.
  */
-import { Clock, Data, Duration, Effect, Predicate, Ref, Result, Schedule } from "effect"
+import { Clock, Data, Duration, Effect, Predicate, Ref, Result, Schedule, type Scope } from "effect"
 
 /** A wait that reached its deadline: what it waited for, how long, and the state its last probe saw. */
 export class ReadinessTimeout extends Data.TaggedError("ReadinessTimeout")<{
@@ -74,3 +78,29 @@ export const waitFor = Effect.fn("Readiness.waitFor")(function* <A, R>(label: st
     Effect.catchTag("Pending", (pending) => Effect.flatMap(Clock.currentTimeMillis, (now) => Effect.fail(new ReadinessTimeout({ label, waitedMs: now - start, last: pending.last })))),
   )
 })
+
+/** How long a test's body may run, and how long its scope's release may take after it. */
+export interface TestBounds {
+  readonly body: Duration.Input
+  readonly release: Duration.Input
+}
+
+/** A test body that ran to its bound: its scope closed there, and the test fails with this. */
+export class BodyTimeout extends Data.TaggedError("BodyTimeout")<{ readonly label: string; readonly boundMs: number }> {}
+
+/** What Bun's limit leaves past the body and release bounds. */
+export const LIMIT_MARGIN_MS = 5000
+
+/** The Bun limit of a test with these bounds: past its body and its release, so the Effect ends first. */
+export const testLimitMs = (bounds: TestBounds) => Duration.toMillis(bounds.body) + Duration.toMillis(bounds.release) + LIMIT_MARGIN_MS
+
+/** Runs `body` in its own scope, cut at the body bound with `BodyTimeout`; the scope closes and its release runs on every outcome. */
+export const bounded = <A, E, R>(label: string, body: Effect.Effect<A, E, R>, bounds: TestBounds): Effect.Effect<A, E | BodyTimeout, Exclude<R, Scope.Scope>> =>
+  Effect.scoped(
+    body.pipe(
+      Effect.timeoutOrElse({
+        duration: bounds.body,
+        orElse: () => Effect.fail(new BodyTimeout({ label, boundMs: Duration.toMillis(bounds.body) })),
+      }),
+    ),
+  )
