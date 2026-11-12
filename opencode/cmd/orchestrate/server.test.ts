@@ -2038,6 +2038,42 @@ describe("the batch machine", () => {
       }),
     ))
 
+  test("unit-map r1 M1 through the plugin: with units db and db-2, db's round-2 Rift db-2 on p5/db-2 lands as db when its start named it (rift: <path>), and as no unit by its branch alone", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = steps({
+          ses_d2: { agent: "implementor", lastWords: "implementor db-2 r1: ready x" },
+          ses_d: { agent: "implementor", lastWords: "implementor db r2: ready x" },
+        })
+        const branches = { "/u/.rifts/app/db-2-first": "p5/db-2", "/u/.rifts/app/db-2": "p5/db-2" }
+        const land = (plugin: Plugin, rifts: ReadonlyArray<unknown>, departs?: string) =>
+          plugin.call("rift", "root", { action: "land", rifts, ...(departs === undefined ? {} : { departs }) })
+        const landed = (plugin: Plugin, rifts: ReadonlyArray<unknown>) =>
+          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed as one push" }] } })
+        // The starts name their Rifts: db's round-2 Rift is db's, though its name and branch read as db-2.
+        const named = yield* start({ now: WEDNESDAY }, { sessions, branches })
+        yield* begin(named, { agent: "implementor", description: "implementor db-2 r1 (rift: /u/.rifts/app/db-2-first)", prompt: "go", background: true }, "ses_d2")
+        yield* begin(named, { agent: "implementor", description: "implementor db r2 (rift: /u/.rifts/app/db-2)", prompt: "go", background: true }, "ses_d")
+        yield* named.idle("ses_d2")
+        yield* named.idle("ses_d")
+        expect(named.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "db", round: 2, rift: "/u/.rifts/app/db-2" }))
+        const partial = yield* land(named, ["/u/.rifts/app/db-2"])
+        expect(partial.refused?.message).toContain('rifts: [{ path: "/u/.rifts/app/db-2-first", unit: "db-2" }, { path: "/u/.rifts/app/db-2", unit: "db" }]')
+        expect((yield* land(named, ["/u/.rifts/app/db-2"], "probe")).refused).toBeUndefined()
+        yield* landed(named, ["/u/.rifts/app/db-2"])
+        expect(named.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["db"] })
+        // No start named them: the branch p5/db-2 reads as db-2 and as db's round 2, so the land is no unit's.
+        const unnamed = yield* start({ now: WEDNESDAY }, { sessions, branches })
+        yield* begin(unnamed, { agent: "implementor", description: "implementor db-2 r1", prompt: "go", background: true }, "ses_d2")
+        yield* begin(unnamed, { agent: "implementor", description: "implementor db r2", prompt: "go", background: true }, "ses_d")
+        yield* unnamed.idle("ses_d2")
+        yield* unnamed.idle("ses_d")
+        expect((yield* land(unnamed, ["/u/.rifts/app/db-2"])).refused).toBeUndefined()
+        yield* landed(unnamed, ["/u/.rifts/app/db-2"])
+        expect(kinds(unnamed)).not.toContain("BatchLanded")
+      }),
+    ))
+
   test("property: over arbitrary units, numbered rounds and briefs naming other units' Rifts in every own-form, a land of every unit's Rift by path is exactly the batch", async () => {
     const random = rngOf(1111)
     const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
