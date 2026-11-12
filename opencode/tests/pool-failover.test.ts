@@ -4,8 +4,7 @@
 // second, and the fake must have seen exactly that. No real Anthropic call:
 // the auth plugin sends every request to ANTHROPIC_BASE_URL, the fake.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -17,6 +16,7 @@ import {
   type FakeRequestInfo,
 } from "./fake-anthropic.ts"
 import { owned } from "./owned.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -45,7 +45,7 @@ interface Run {
 }
 
 describe.skipIf(!ready)("the pool fails a refused run over to the next login (real OpenCode, fake Anthropic)", () => {
-  const root = mkdtempSync(join(tmpdir(), "pool-failover-"))
+  const root = scratchWhen(ready, "pool-failover-")
   let fake: FakeAnthropic | undefined
   afterAll(async () => {
     await fake?.stop()

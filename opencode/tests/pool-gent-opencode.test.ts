@@ -6,14 +6,14 @@
 // token of the gent slot the pool picked, and the stale second slot must be
 // refreshed once under gent's lock and written back for gent.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -27,7 +27,7 @@ const HOUR = 3_600_000
 const RUN_TIMEOUT_MS = 120_000
 
 describe.skipIf(!ready)("OpenCode runs on gent's Claude accounts through the pool (real OpenCode, fake Anthropic)", () => {
-  const root = mkdtempSync(join(tmpdir(), "pool-gent-opencode-"))
+  const root = scratchWhen(ready, "pool-gent-opencode-")
   afterAll(() => rmSync(root, { recursive: true, force: true }))
 
   test(

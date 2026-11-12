@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { scratch } from "../tests/scratch.ts"
 import { parseArgs, plan, type Row, render, secondsOf } from "./migrate-schedules.ts"
 
 const NOW = Date.parse("2026-11-06T18:00:00Z")
@@ -97,7 +97,8 @@ describe("plan", () => {
 
 describe("the dry run", () => {
   test("prints each schedule's entry, prompt file, differences and pause, and touches nothing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "migrate-schedules-"))
+    using held = scratch("migrate-schedules-")
+    const dir = held.path
     const file = join(dir, "rows.json")
     // The script plans at the real clock, so the PR watch's end moves with it; a fixed end would expire.
     writeFileSync(file, JSON.stringify(rows.map((item) => (item.id === "sch_watch" ? { ...item, ends_at: Date.now() + 3 * 86_400_000 } : item))))

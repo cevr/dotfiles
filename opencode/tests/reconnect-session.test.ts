@@ -29,12 +29,12 @@
 // report); a picker selection and prompt sent into the gap arrive; a TUI opened
 // on a stopped or restarting background service opens its session.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/reconnect-session.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -152,7 +152,7 @@ const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean,
 }
 
 describe.skipIf(!fork)("a TUI on the background service across a service restart", () => {
-  const root = mkdtempSync(join(tmpdir(), "reconnect-session-"))
+  const root = scratchWhen(Boolean(fork), "reconnect-session-")
   const home = join(root, "home")
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)

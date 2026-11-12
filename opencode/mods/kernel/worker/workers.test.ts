@@ -3,10 +3,10 @@
 // restored into a fresh worker, values and all. The worker is this repo's own program,
 // run in a scratch directory; the adapter has no fake to stand for it.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, type Scope } from "effect"
+import { Context, Effect, Layer, type Scope } from "effect"
 import type { Json, Listing, Omission } from "../frame.ts"
 import { workersLaws } from "../laws.ts"
 import { Workers, type Cell } from "../service.ts"
@@ -14,23 +14,31 @@ import { KernelSessionId } from "../session.ts"
 import { CallFailed } from "../tools.ts"
 import * as ProcessWorkers from "./workers.ts"
 
-const work = mkdtempSync(join(tmpdir(), "kernel-workers-"))
+/** A scratch directory of the scope's own, removed when the scope closes. */
+const scratch = Effect.acquireRelease(
+  Effect.sync(() => mkdtempSync(join(tmpdir(), "kernel-workers-"))),
+  (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+)
+
+/** The directory a scenario's workers start in: its own scratch directory. */
+class Work extends Context.Service<Work, string>()("kernel/test/Work") {}
+
 const first = KernelSessionId.make("ses_first")
 
 const none: Cell["call"] = () => Effect.fail(new CallFailed({ message: "no tools in this test" }))
 const cell = (source: string, tools: ReadonlyArray<Listing> = [], call: Cell["call"] = none): Cell => ({ source, tools, call })
 
-/** `body` with the live workers, each test its own; every worker is killed when it ends. */
-const scenario = <A, E>(body: Effect.Effect<A, E, Workers | Scope.Scope>, timeoutMs = 5_000) =>
-  Effect.runPromise(Effect.scoped(body).pipe(Effect.provide(ProcessWorkers.layer({ timeoutMs }))))
+/** `body` with the live workers and a scratch directory, each test its own; every worker is killed and the directory removed when it ends. */
+const scenario = <A, E>(body: Effect.Effect<A, E, Workers | Work | Scope.Scope>, timeoutMs = 5_000) =>
+  Effect.runPromise(Effect.scoped(body).pipe(Effect.provide(Layer.merge(ProcessWorkers.layer({ timeoutMs }), Layer.effect(Work, scratch)))))
 
-workersLaws("the worker processes", () => ProcessWorkers.layer({ timeoutMs: 5_000 }), work)
+workersLaws("the worker processes", () => ProcessWorkers.layer({ timeoutMs: 5_000 }), scratch)
 
 /** The session's worker, started. */
 const started = (session = first) =>
   Effect.gen(function* () {
     const workers = yield* Workers
-    yield* workers.start(session, work)
+    yield* workers.start(session, yield* Work)
     return workers
   })
 
@@ -133,7 +141,7 @@ describe("a worker", () => {
         yield* workers.evaluate(first, cell('let n = 5; const m = new Map([["a", 1n]]); const f = (x: number): number => x + n'))
         const snapshot = yield* workers.snapshot(first)
         expect(snapshot.omitted).toEqual([])
-        yield* workers.start(first, work)
+        yield* workers.start(first, yield* Work)
         expect(yield* workers.restore(first, snapshot.bindings)).toEqual(["f", "n", "m"])
         expect((yield* workers.evaluate(first, cell("[n, m.get('a'), f(1)]"))).display).toBe("[ 5, 1n, 6 ]")
       }),
@@ -220,7 +228,7 @@ describe("a worker", () => {
         // A restart keeps the handle's data; its methods come back through tools.shell.handle.
         const snapshot = yield* workers.snapshot(first)
         expect(snapshot.omitted).toEqual([])
-        yield* workers.start(first, work)
+        yield* workers.start(first, yield* Work)
         yield* workers.restore(first, snapshot.bindings)
         expect((yield* run("[h.id, h.state, typeof h.kill]")).display).toBe('[ "sh_1", "killed", "undefined" ]')
         expect((yield* run("typeof (await tools.shell.handle(h.id)).wait")).display).toBe("function")
@@ -234,7 +242,7 @@ const restart = (...cells: ReadonlyArray<string>) =>
     const workers = yield* started()
     for (const source of cells) expect((yield* workers.evaluate(first, cell(source))).ok).toBe(true)
     const snapshot = yield* workers.snapshot(first)
-    yield* workers.start(first, work)
+    yield* workers.start(first, yield* Work)
     const restored = yield* workers.restore(first, snapshot.bindings)
     const show = (expression: string) => workers.evaluate(first, cell(expression)).pipe(Effect.map((result) => result.display))
     return { snapshot, restored, show }
@@ -324,6 +332,7 @@ describe("a restart", () => {
   test("runs imports again: named, namespace, default and bare", () =>
     scenario(
       Effect.gen(function* () {
+        const work = yield* Work
         const helper = join(work, "helper.ts")
         const effect = join(work, "effect.ts")
         yield* Effect.promise(() => Bun.write(helper, "export const shout = (text: string): string => text.toUpperCase()\nexport default (n: number) => n + 1\n"))

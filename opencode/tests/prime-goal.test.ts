@@ -5,10 +5,10 @@
 // follows the goal through active, paused, resumed and cancelled, each in its
 // state's colour.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 type Rgba = readonly [number, number, number, number]
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba }> }> }
@@ -45,7 +45,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-goal.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("Prime's dock and goal line", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-goal-"))
+    using held = scratch("prime-goal-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-goal.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -61,7 +62,6 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
         lines: readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n"),
         frame: JSON.parse(readFileSync(join(out, `${label}-${name}.json`), "utf8")),
       }
-    console.log(`prime-goal artifacts: ${out}`)
   }, 240_000)
 
   test("the dock: shells, then the wakes in the success colour; no goal before one is set", () => {

@@ -2,10 +2,10 @@
 // and asserts on the frames it saves: the text of each row, and the colour of a
 // few key cells. It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork)
@@ -78,7 +78,8 @@ function load(out: string, name: string): Saved {
 
 describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-scenario-"))
+    using held = scratch("prime-scenario-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
       env: {

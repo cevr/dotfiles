@@ -8,11 +8,11 @@
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
 // which publishes the `session.composer.queued` slot (`prime-look`).
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-idle-send.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -47,7 +47,8 @@ const rows = (frame: string) => frame.split("\n").filter((line) => ROW.test(line
 
 describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-idle-send-"))
+    using held = scratch("prime-idle-send-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-idle-send.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

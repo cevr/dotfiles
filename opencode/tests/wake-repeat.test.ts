@@ -7,10 +7,10 @@
 // the server's commands, and each change must reach the
 // session as one short synthetic notice, never a user prompt.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -27,8 +27,7 @@ interface Session {
 }
 
 const label = "wake-repeat"
-const run = async () => {
-  const out = mkdtempSync(join(tmpdir(), `${label}-`))
+const run = async (out: string) => {
   const child = owned(["bunx", "opencode-drive", "run", "scenarios/wake-repeat.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -39,14 +38,15 @@ const run = async () => {
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   const timeout = join(out, `${label}-timeout.txt`)
   if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
-  return { out, read: (name: string) => readFileSync(join(out, `${label}-${name}`), "utf8") }
+  return { read: (name: string) => readFileSync(join(out, `${label}-${name}`), "utf8") }
 }
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/wake-repeat.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("with OpenCode's schedules on", () => {
   test("the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice", async () => {
-    const { out, read } = await run()
+    using out = scratch(`${label}-`)
+    const { read } = await run(out.path)
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root")
 
@@ -79,6 +79,5 @@ describe.skipIf(!fork)("with OpenCode's schedules on", () => {
     for (const message of fired) expect((message.text ?? "").length).toBeLessThan(600)
     // No user message carries the note: the only user prompts are the three steps typed.
     expect(messages.filter((message) => message.type === "user" && (message.text ?? "").includes("WATCH"))).toEqual([])
-    console.log(`Wake-repeat artifacts: ${out}`)
   }, 180_000)
 })

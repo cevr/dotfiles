@@ -5,10 +5,10 @@
 // the top, where it shows itself. It needs OPENCODE_DEV, a fork with the
 // session.transcript.overlay slot.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-pin.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -33,7 +33,8 @@ const look = (saved: Saved, y: number) =>
 
 describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-pin-"))
+    using held = scratch("prime-pin-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-pin.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

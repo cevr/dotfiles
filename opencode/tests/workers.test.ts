@@ -3,10 +3,10 @@
 // read as one group, and their completion notices, landing together, as one group.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/workers.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -16,7 +16,8 @@ const frames: Record<"started" | "finished", ReadonlyArray<string>> = {} as neve
 
 describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-workers-"))
+    using held = scratch("prime-workers-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-workers.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, SCENARIO_LABEL: "workers", OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

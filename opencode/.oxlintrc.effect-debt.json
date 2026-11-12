@@ -169,6 +169,14 @@
       "rules": {
         "effect/noEffectRunInTests": "off"
       }
+    },
+    {
+      "files": [
+        "tests/scratch.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }

@@ -23,13 +23,13 @@
 // `upstreamReading`); the test writes that file in the scratch HOME as daily
 // would, and the corner adds `upstream +12 · merge blocked`, or nothing at 0.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/update-badge.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -63,7 +63,7 @@ const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean,
 }
 
 describe.skipIf(!fork)("the update notice", () => {
-  const root = mkdtempSync(join(tmpdir(), "update-badge-"))
+  const root = scratchWhen(Boolean(fork), "update-badge-")
   const home = join(root, "home")
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)

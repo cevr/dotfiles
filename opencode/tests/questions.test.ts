@@ -4,10 +4,10 @@
 // the host's question form that /answer opens are read off the frame; the
 // answers off the next model requests and the transcripts.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const RECEIPT = [
   "Asked in the background; nobody has answered yet:",
@@ -61,7 +61,8 @@ if (!fork) console.warn("tests/questions.test.ts: skipped. Set OPENCODE_DEV to t
 describe.skipIf(!fork)("background questions", () => {
   for (const via of ["direct", "kernel"] as const)
     test(`asked ${via === "direct" ? "through ask_user_async" : "from a kernel cell"}: the tray, /answer's form, one letter per submit, a form closed unanswered`, async () => {
-      const out = mkdtempSync(join(tmpdir(), `questions-${via}-`))
+      using held = scratch(`questions-${via}-`)
+      const out = held.path
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/questions.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUESTIONS_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -164,6 +165,5 @@ describe.skipIf(!fork)("background questions", () => {
       )
       if (via === "kernel") expect(tools).not.toContain("ask_user_async")
       else expect(tools.filter((name) => name === "ask_user_async")).toHaveLength(3)
-      console.log(`Questions (${via}) artifacts: ${out}`)
     }, 150_000)
 })

@@ -4,10 +4,10 @@
 // worker's notice is a tool-call group beside an ordinary one.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-thoughts.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -54,7 +54,8 @@ function slice(saved: Saved, first: string, count: number) {
 
 describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-thoughts-"))
+    using held = scratch("prime-thoughts-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-thoughts.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, SCENARIO_LABEL: "thoughts", OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

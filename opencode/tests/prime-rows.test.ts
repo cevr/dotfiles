@@ -8,10 +8,10 @@
 // polls; a finished worker reads done by a muted diamond, then its row drops.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-rows.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -66,7 +66,8 @@ function lead(frame: Styled | undefined, unit: string): string {
 
 describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-rows-"))
+    using held = scratch("prime-rows-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-rows.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

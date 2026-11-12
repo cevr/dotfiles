@@ -4,16 +4,17 @@
 // watcher's notice comes into the session as a `◈` row and wakes it, and the
 // watch ends.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/pr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the pr tool and its watcher", () => {
   test("a watch set in a turn sends its notice into the idle session when the checks pass", async () => {
-    const out = mkdtempSync(join(tmpdir(), "pr-tool-"))
+    using held = scratch("pr-tool-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/pr.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -39,6 +40,5 @@ describe.skipIf(!fork)("the pr tool and its watcher", () => {
     const calls = JSON.parse(readFileSync(join(out, "gh-calls.json"), "utf8")) as ReadonlyArray<ReadonlyArray<string>>
     expect(calls.some((call) => call[0] === "api" && call[1] === "graphql")).toBe(true)
     expect(calls.filter((call) => call[0] === "api" && call[1] === "--include").every((call) => call.includes("--silent"))).toBe(true)
-    console.log(`pr scenario artifacts: ${out}`)
   }, 150_000)
 })

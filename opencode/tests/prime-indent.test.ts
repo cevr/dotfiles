@@ -6,10 +6,10 @@
 // row, folded and unfolded. The host draws its own rows at its layout
 // `gutter`, which Prime sets to its own. It needs OPENCODE_DEV, the fork.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-indent.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -19,7 +19,8 @@ const NOTICE = "rift land · accept passed"
 const frames: Record<string, ReadonlyArray<string>> = {}
 
 const run = async (verbosity: "low" | "medium") => {
-  const out = mkdtempSync(join(tmpdir(), `prime-indent-${verbosity}-`))
+  using held = scratch(`prime-indent-${verbosity}-`)
+  const out = held.path
   const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-indent.ts"], {
     cwd: root,
     env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), INDENT_VERBOSITY: verbosity },

@@ -20,12 +20,12 @@
 // agree with the new service: no live row (no time in its state) for a child
 // it does not run, and no subagent count, within SETTLE_MS.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -132,7 +132,7 @@ const liveRow = (screen: string, title: string) =>
   screen.split("\n").some((line) => line.includes(title) && /· (\d+h \d+m|\d+m( \d+s)?|\d+s)( · updated .*)?\s*$/.test(line))
 
 describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn", () => {
-  const root = mkdtempSync(join(tmpdir(), "dock-reconnect-"))
+  const root = scratchWhen(Boolean(fork), "dock-reconnect-")
   const home = join(root, "home")
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)

@@ -8,10 +8,10 @@
 // a notice that did not come. It needs OPENCODE_DEV, the fork whose panel
 // counts a subagent waiting on its own running work as active.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-waiting.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -42,7 +42,8 @@ function panel(frame: ReadonlyArray<string>) {
 
 describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-waiting-"))
+    using held = scratch("prime-waiting-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-waiting.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

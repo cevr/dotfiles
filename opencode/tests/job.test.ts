@@ -3,10 +3,10 @@
 // end wakes the idle session, and a job it kills. What happened is read off
 // the model's requests, the transcripts and the frames.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -28,7 +28,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/job.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("jobs", () => {
   test("a job's end steers a letter with its exit, log tail and note into the idle session; a killed job wakes nobody", async () => {
-    const out = mkdtempSync(join(tmpdir(), "job-"))
+    using held = scratch("job-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/job.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -61,6 +62,5 @@ describe.skipIf(!fork)("jobs", () => {
     const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
     const letters = sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.kind === "job" && message.metadata.progress !== true))
     expect(letters.map((message) => message.metadata?.exitCode)).toEqual([4])
-    console.log(`Job artifacts: ${out}`)
   }, 240_000)
 })

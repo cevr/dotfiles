@@ -10,10 +10,10 @@
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
 // which publishes the `session.composer.queued` slot (`prime-look`).
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-queued.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -35,7 +35,8 @@ const LATER = "  ◌ after the turn · Afterwards tag the release."
 
 describe.skipIf(!fork)("prompts sent during a compaction wait above the composer as one list, in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-queued-"))
+    using held = scratch("prime-queued-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-queued.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

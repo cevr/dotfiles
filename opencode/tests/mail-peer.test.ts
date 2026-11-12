@@ -10,12 +10,12 @@
 // which reaches the Mac's session the same way. A request from an unpaired
 // host is refused.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { owned } from "./owned.ts"
 import { ready, type Service } from "./service.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -127,7 +127,7 @@ const readJson = (file: string): unknown => {
 }
 
 describe.skipIf(!fork)("session mail between two paired OpenCode servers (real pair command, scripted model)", () => {
-  const root = mkdtempSync(join(tmpdir(), "mail-peer-"))
+  const root = scratchWhen(Boolean(fork), "mail-peer-")
   const hosts: Array<Host> = []
   afterAll(async () => {
     await Promise.all(hosts.map((host) => host.stop()))

@@ -5,10 +5,10 @@
 // composer; once the draft clears it is steered with exactly one line, names
 // its wait as a queue item the sidebar shows, and is not nudged again.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const LINE = "idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on."
 
@@ -18,7 +18,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-root.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("an idle root with units to move", () => {
   test("is steered once, after its planner ends and the owner's draft clears, and names its wait", async () => {
-    const out = mkdtempSync(join(tmpdir(), "idle-root-"))
+    using held = scratch("idle-root-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/idle-root.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -54,6 +55,5 @@ describe.skipIf(!fork)("an idle root with units to move", () => {
     expect(count(final, LINE)).toBe(1)
     const requests: ReadonlyArray<string> = JSON.parse(readFileSync(join(out, "idle-root-requests.json"), "utf8"))
     expect(requests.filter((last) => last.includes(LINE))).toHaveLength(1)
-    console.log(`idle-root artifacts: ${out}`)
   }, 200_000)
 })

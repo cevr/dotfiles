@@ -4,10 +4,10 @@
 // C's next model request carries it. The model requests, the transcripts and
 // A's frame are read off the run.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 interface Request {
   readonly session: "A" | "B" | "C" | "title"
@@ -46,7 +46,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("session mail", () => {
   test("a message wakes an idle session, which answers its sender, and a running session reads one at its next step", async () => {
-    const out = mkdtempSync(join(tmpdir(), "mail-"))
+    using held = scratch("mail-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/mail.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -105,6 +106,5 @@ describe.skipIf(!fork)("session mail", () => {
     expect(cNext).toContain(`✉ Message from session \\"Mail A\\" (${a.id})`)
     expect(of("C")).toHaveLength(2)
     expect(JSON.stringify(c.messages)).toContain("C read the steer")
-    console.log(`Mail artifacts: ${out}`)
   }, 150_000)
 })

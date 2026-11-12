@@ -2,10 +2,10 @@
 // `review` skill exists in both tiers, and a scripted model. The `$` popup is
 // read off the frame; what each `$` token attached, off the model requests.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 /** The frame's lines, without the composer's rails and padding. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.replaceAll("┃", "").replace(/\s+/g, " ").trim())
@@ -20,7 +20,8 @@ if (!fork) console.warn("tests/skills.test.ts: skipped. Set OPENCODE_DEV to the 
 else if (!hooked) console.warn(`tests/skills.test.ts: skipped. ${fork} has no plugin autocomplete (ui.autocomplete).`)
 describe.skipIf(!hooked)("$ skills", () => {
   test("the popup lists both tiers, a pick sends the local skill, the qualified token the global one, and $5 or a code span nothing", async () => {
-    const out = mkdtempSync(join(tmpdir(), "skills-"))
+    using held = scratch("skills-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/skills.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

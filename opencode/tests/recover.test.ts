@@ -2,17 +2,18 @@
 // strands a session in a removed folder and opens it, and the plugin moves it
 // back to the project, toasting where it went.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/recover.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 describe.skipIf(!fork)("session recover", () => {
   test("a session whose folder is gone goes back to where it was, with a toast", async () => {
-    const out = mkdtempSync(join(tmpdir(), "recover-"))
+    using held = scratch("recover-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/recover.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

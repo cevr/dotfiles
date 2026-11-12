@@ -6,10 +6,10 @@
 // second option, picked with ↓ and Enter, reaches the session's model.
 // scenarios/question-scroll.ts drives it; the frames are read here.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 /** The frame's lines, trimmed, without the form's left border or its scrollbar's column. */
 const lines = (frame: string): ReadonlyArray<string> =>
@@ -20,7 +20,8 @@ if (!fork) console.warn("tests/question-scroll.test.ts: skipped. Set OPENCODE_DE
 describe.skipIf(!fork)("a question taller than a phone's pane", () => {
   for (const via of ["builtin", "async"] as const)
     test(`asked ${via === "builtin" ? "through the question tool" : "through ask_user_async, answered from /answer"}: it scrolls from its first line to its options, and the pick reaches the session`, async () => {
-      const out = mkdtempSync(join(tmpdir(), `question-scroll-${via}-`))
+      using held = scratch(`question-scroll-${via}-`)
+      const out = held.path
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/question-scroll.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUESTION_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

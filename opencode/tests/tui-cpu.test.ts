@@ -8,10 +8,10 @@
 // TUI took 0.3 to 0.6 of a core here; with them it takes about 0.1. It needs
 // OPENCODE_DEV.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/tui-cpu.test.ts: skipped. Set OPENCODE_DEV to an OpenCode checkout to run it.")
@@ -26,7 +26,8 @@ let busy: string
 
 describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents stream (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "tui-cpu-"))
+    using held = scratch("tui-cpu-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/tui-cpu.ts"], {
       cwd: root,
       env: {

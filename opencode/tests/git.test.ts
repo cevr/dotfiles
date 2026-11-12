@@ -4,17 +4,18 @@
 // the branch, the totals and the pull request; /git lists the files, and
 // Enter hands the terminal to hunk and takes it back.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { PULL_REQUEST_FIELDS } from "../mods/git/pull-request.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/git.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the Git sidebar section and /git", () => {
   test("show the branch against its upstream, the totals and the pull request, and review a file with hunk", async () => {
-    const out = mkdtempSync(join(tmpdir(), "git-pane-"))
+    using held = scratch("git-pane-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/git.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -47,6 +48,5 @@ describe.skipIf(!fork)("the Git sidebar section and /git", () => {
     const after = readFileSync(join(out, "git-after-review.txt"), "utf8")
     expect(after).toContain("▸ M  a.ts  +3 −1")
     expect(after).not.toContain("hunk not found")
-    console.log(`Git pane artifacts: ${out}`)
   }, 150_000)
 })

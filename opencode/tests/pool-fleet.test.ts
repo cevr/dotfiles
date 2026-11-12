@@ -10,8 +10,7 @@
 // B's pace must hold a new agent for A's wave, before any reading shows it,
 // name the unreachable peer, and carry no token across.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -21,6 +20,7 @@ import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -86,7 +86,7 @@ const until = async <A>(read: () => Promise<A>, done: (value: A) => boolean, lab
 }
 
 describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report.ts, fake Anthropic, scripted model)", () => {
-  const root = mkdtempSync(join(tmpdir(), "pool-fleet-"))
+  const root = scratchWhen(ready, "pool-fleet-")
   const hosts: Array<Host> = []
   afterAll(async () => {
     await Promise.all(hosts.map((host) => host.stop()))

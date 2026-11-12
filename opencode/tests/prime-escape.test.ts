@@ -6,11 +6,11 @@
 // escape plugin (cmd/escape), loaded beside Prime, does the cancelling; it
 // needs OPENCODE_DEV, the fork.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-escape.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -32,7 +32,8 @@ const dock = (frame: ReadonlyArray<string>) => {
 
 describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it, in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-escape-"))
+    using held = scratch("prime-escape-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-escape.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

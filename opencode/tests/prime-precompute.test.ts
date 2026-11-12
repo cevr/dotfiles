@@ -6,12 +6,12 @@
 // row with the background request's tokens. Needs OPENCODE_DEV, a fork with
 // the `background_compaction` flag.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Requests } from "../scenarios/prime-precompute.ts"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-precompute.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -30,7 +30,8 @@ function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("an automatic compaction swaps in the summary written in the background, in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-precompute-"))
+    using held = scratch("prime-precompute-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-precompute.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

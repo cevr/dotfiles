@@ -6,10 +6,10 @@
 // wakes it, the answer it writes then reaches the parent as a second report
 // (OpenCode reports a subagent each time it goes idle). It needs OPENCODE_DEV.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-wake.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -29,7 +29,8 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-wake-"))
+    using held = scratch("prime-wake-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-wake.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

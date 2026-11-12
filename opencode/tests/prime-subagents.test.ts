@@ -3,10 +3,10 @@
 // keyboard and by mouse, each reads like the main session, and Up, Left and
 // Right move between them. It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-subagents.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -52,7 +52,8 @@ function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[n
 
 describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-subagents-"))
+    using held = scratch("prime-subagents-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-subagents.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, SCENARIO_LABEL: "subagents", OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

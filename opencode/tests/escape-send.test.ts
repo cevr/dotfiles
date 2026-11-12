@@ -10,10 +10,10 @@
 // it) and once with the fallback chord, leader (Ctrl+X) then F. Needs
 // OPENCODE_DEV.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-send.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -35,7 +35,8 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
   let requests: ReadonlyArray<ReadonlyArray<string>> = []
 
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), `escape-send-${chord}-`))
+    using held = scratch(`escape-send-${chord}-`)
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-send.ts"], {
       cwd: root,
       env: { ...process.env, CHORD: chord, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

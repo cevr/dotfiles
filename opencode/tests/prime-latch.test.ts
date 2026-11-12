@@ -8,10 +8,10 @@
 // on the child made when it latched, and its answer wakes the parent. It
 // needs OPENCODE_DEV, the fork with the plugin hook points the Prime rows use.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-latch.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -41,7 +41,8 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-latch-"))
+    using held = scratch("prime-latch-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-latch.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

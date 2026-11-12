@@ -6,10 +6,10 @@
 // running is the newest row. It needs OPENCODE_DEV, the fork
 // with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-runs.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -44,7 +44,8 @@ const row = (line: string) =>
 
 describe.skipIf(!fork)("a message between two calls starts a new group in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-runs-"))
+    using held = scratch("prime-runs-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-runs.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

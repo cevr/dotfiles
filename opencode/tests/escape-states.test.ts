@@ -4,19 +4,20 @@
 // sent while it ran, and says so when the server does not answer. Needs
 // OPENCODE_DEV, the fork.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-states.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const root = join(import.meta.dir, "..")
 const cases = ["steer", "queue", "tool", "draft", "offline"] as const
-let out = ""
-const frame = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8")
+/** The scenario's text files (frames, requests), by name, read before its scratch directory goes. */
+const saved = new Map<string, string>()
+const frame = (name: string) => `${saved.get(`${name}.txt`)}`
 
 /** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
 function split(name: string) {
@@ -27,7 +28,8 @@ function split(name: string) {
 
 describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    out = mkdtempSync(join(tmpdir(), "escape-states-"))
+    using held = scratch("escape-states-")
+    const out = held.path
     for (const which of cases) {
       const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-states.ts"], {
         cwd: root,
@@ -38,6 +40,7 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
       const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
       if (code !== 0) throw new Error(`the ${which} case exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     }
+    for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
   }, 400_000)
 
   for (const which of ["steer", "queue"] as const)
@@ -51,7 +54,7 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
     })
 
   test("a running shell call: one Escape cancels it and interrupts", () => {
-    expect(readFileSync(join(out, "tool-tool.txt"), "utf8")).toBe("interrupted")
+    expect(frame("tool-tool")).toBe("interrupted")
     expect(split("tool-after").transcript.slice(-2)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted"])
   })
 

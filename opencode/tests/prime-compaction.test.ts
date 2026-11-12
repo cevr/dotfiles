@@ -4,11 +4,11 @@
 // at All (Ctrl+O) the host's whole block, its rule and the summary. It needs
 // OPENCODE_DEV, a fork with the `session.message.compaction` slot.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-compaction.test.ts: skipped. Set OPENCODE_DEV to the fork with the compaction slot to run it.")
@@ -30,7 +30,8 @@ const LINE = /^ {2}◇ Compacted · 171k → 6k tokens · 1\.\ds$/
 
 describe.skipIf(!fork)("a compaction is one line in the Prime look, and the host's block at All (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-compaction-"))
+    using held = scratch("prime-compaction-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-compaction.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },

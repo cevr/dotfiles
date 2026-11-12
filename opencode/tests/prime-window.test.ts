@@ -11,10 +11,10 @@
 // turn's 64k then reads 50%, where the model's window alone reads 24%
 // (tests/prime.test.ts, no window).
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-window.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -25,7 +25,8 @@ describe.skipIf(!fork)("the tray's context share under an agent's compaction win
   let frame = ""
 
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-window-"))
+    using held = scratch("prime-window-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
       env: {

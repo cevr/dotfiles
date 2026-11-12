@@ -1,11 +1,11 @@
 // The limit tally's store survives a restart: the requests in the plugin's
 // storage, the rows and the tally in the file, which the CLI reads as written.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, type Schema } from "effect"
 import { TestClock } from "effect/testing"
+import { scratch } from "../../../tests/scratch.ts"
 import { PoolId } from "../account-pool.ts"
 import { storage } from "../memory/ledger.ts"
 import { Limits } from "../service.ts"
@@ -38,7 +38,8 @@ const run = <A>(
 describe("the limit store", () => {
   test("a restart reads back the requests and the rows: the tally is the same, and the file holds it", async () => {
     const entries = new Map<string, Schema.Json>()
-    const path = join(mkdtempSync(join(tmpdir(), "limits-")), "state", "limits.json")
+    using dir = scratch("limits-")
+    const path = join(dir.path, "state", "limits.json")
     const before = await run(
       entries,
       path,
@@ -64,7 +65,8 @@ describe("the limit store", () => {
 
   test("a request older than the longest period is forgotten at the next flush; its row keeps its count", async () => {
     const entries = new Map<string, Schema.Json>()
-    const path = join(mkdtempSync(join(tmpdir(), "limits-")), "limits.json")
+    using dir = scratch("limits-")
+    const path = join(dir.path, "limits.json")
     await run(
       entries,
       path,

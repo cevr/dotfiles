@@ -7,10 +7,10 @@
 // call; the dock's count opens the shell list, where ctrl+k kills one; the
 // dock's count follows each move and kill, and its line goes once none runs.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const label = "prime-shells"
 const names = ["moved", "list", "killed", "blocking", "user", "user-list", "user-killed"] as const
@@ -40,7 +40,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-shells.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("background shells in Prime", () => {
   beforeAll(async () => {
-    const out = mkdtempSync(join(tmpdir(), "prime-shells-"))
+    using held = scratch("prime-shells-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-shells.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -53,7 +54,6 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     if (code !== 0) throw new Error(`prime-shells scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, `${label}-requests.json`), "utf8"))
-    console.log(`prime-shells artifacts: ${out}`)
   }, 240_000)
 
   test("past its limit, a foreground call moves to the background: its row says so, and the dock counts it", () => {

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
@@ -51,9 +51,11 @@ const server = Bun.serve({
     return Response.json({ output: report })
   },
 })
-afterAll(() => server.stop(true))
-
 const dir = mkdtempSync(join(tmpdir(), "pool-ssh-"))
+afterAll(() => {
+  server.stop(true)
+  rmSync(dir, { recursive: true, force: true })
+})
 const serviceFile = (name: string, password: string) => {
   const path = join(dir, `${name}.json`)
   writeFileSync(path, JSON.stringify({ id: name, url: server.url.origin, pid: process.pid, password }))

@@ -4,16 +4,17 @@
 // command that signs it in again, and as a toast; a refresh that succeeds
 // clears both. scenarios/lost-login.ts drives it.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/lost-login.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("a lost gent login in the TUI", () => {
   test("the sidebar and a toast name it with gent's sign-in command, and a good refresh clears both", async () => {
-    const out = mkdtempSync(join(tmpdir(), "lost-login-"))
+    using held = scratch("lost-login-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/lost-login.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -50,6 +51,5 @@ describe.skipIf(!fork)("a lost gent login in the TUI", () => {
     expect(cleared).not.toContain("sign in again in gent")
     // No token reaches the screen.
     for (const text of [toast, frame, cleared]) expect(text).not.toMatch(/fake-(access|refresh)-/)
-    console.log(`Lost-login artifacts: ${out}`)
   }, 150_000)
 })

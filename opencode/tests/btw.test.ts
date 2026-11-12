@@ -6,10 +6,10 @@
 // back into the session once, which answers it. The model requests show the
 // fork reusing the session's cached prefix.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 interface Message {
   readonly role: string
@@ -31,7 +31,8 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/btw.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("/btw", () => {
   test("answers a side question in a pane while the session works, follows up, reopens, and brings the answer back once", async () => {
-    const out = mkdtempSync(join(tmpdir(), "btw-pane-"))
+    using held = scratch("btw-pane-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/btw.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -100,6 +101,5 @@ describe.skipIf(!fork)("/btw", () => {
     expect(textOf(notices[0] ?? { role: "user" })).toContain("Question:\nWhich command?\n\nAnswer:\nThe sleep in the shell call.")
     expect(back.map(textOf)).toContain("The check passed.")
     for (const message of back) expect(textOf(message)).not.toBe(note)
-    console.log(`btw artifacts: ${out}`)
   }, 150_000)
 })

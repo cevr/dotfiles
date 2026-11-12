@@ -1,16 +1,17 @@
 // Public UI seam: real OpenCode, real status plugin, fake pool/bridge RPC,
 // real logged and running subagent; shared status.ts reads real unit logs.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/status.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("/pool in the Prime look", () => {
   test("shows held accounts and both quota windows, a live agent and derived run states", async () => {
-    const out = mkdtempSync(join(tmpdir(), "pool-pane-"))
+    using held = scratch("pool-pane-")
+    const out = held.path
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/pool.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -39,6 +40,5 @@ describe.skipIf(!fork)("/pool in the Prime look", () => {
     expect(first).toBeGreaterThan(-1)
     expect(section).toEqual([first, first + 1, first + 2, first + 3])
     expect(JSON.parse(readFileSync(join(out, "pool-session-query.json"), "utf8"))).toMatchObject({ sessionID: expect.stringMatching(/^ses_/), providerID: "simulation" })
-    console.log(`Status pane artifacts: ${out}`)
   }, 150_000)
 })

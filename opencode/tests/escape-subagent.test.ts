@@ -8,18 +8,19 @@
 // subagent's view is what interrupts it, and sends at once. Needs OPENCODE_DEV,
 // the fork.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { composerRow } from "./composer.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-subagent.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const root = join(import.meta.dir, "..")
-let out = ""
-const frame = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8")
+/** The scenario's text files (frames, requests), by name, read before its scratch directory goes. */
+const saved = new Map<string, string>()
+const frame = (name: string) => `${saved.get(`${name}.txt`)}`
 /** The picker's header row: the host's composer panel, its Subagents tab first. */
 const picker = (name: string) => frame(name).split("\n").some((line) => /^\s*┃\s+Subagents(\s|$)/.test(line))
 /** The composer's first row (tests/composer.ts; the dock's session row sits above it). */
@@ -27,13 +28,14 @@ const composer = (name: string) => {
   const lines = frame(name).split("\n")
   return lines[composerRow(lines)] ?? ""
 }
-const requests = () => readFileSync(join(out, "requests.txt"), "utf8").trim().split("\n")
+const requests = () => frame("requests").trim().split("\n")
 /** The parent's own prompt, which only its view shows. */
 const ASK = "Fix the money parsing in a worker."
 
 describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, then goes back to the parent, never interrupting (OPENCODE_DEV)", () => {
   beforeAll(async () => {
-    out = mkdtempSync(join(tmpdir(), "escape-subagent-"))
+    using held = scratch("escape-subagent-")
+    const out = held.path
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-subagent.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
@@ -42,6 +44,7 @@ describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, the
     })
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
+    for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
   }, 300_000)
 
   test("the subagent's view opens on its picker", () => {

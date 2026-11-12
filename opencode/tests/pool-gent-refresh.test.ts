@@ -6,14 +6,14 @@
 // pool places the retry on the second account, where the turn completes with
 // no error in the transcript.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -45,7 +45,7 @@ const logsUnder = (dir: string): string =>
     .join("\n")
 
 describe.skipIf(!ready)("a gent account whose refresh is rate-limited does not end the turn (real OpenCode, fake Anthropic)", () => {
-  const root = mkdtempSync(join(tmpdir(), "pool-gent-refresh-"))
+  const root = scratchWhen(ready, "pool-gent-refresh-")
   afterAll(() => rmSync(root, { recursive: true, force: true }))
 
   test(

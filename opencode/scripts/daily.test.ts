@@ -1,10 +1,10 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
+import { scratch as scratchDir } from "../tests/scratch.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
@@ -220,7 +220,8 @@ describe("the upstream merge", () => {
   }
   /** Commits `files` on `branch` of the bare repo `remote` through a scratch clone. */
   const commitTo = (remote: string, branch: string, files: Record<string, string>) => {
-    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "daily-push-")))
+    using clone = scratchDir("daily-push-")
+    const scratch = realpathSync(clone.path)
     git(scratch, "clone", "--quiet", "--branch", branch, remote, ".")
     for (const [file, text] of Object.entries(files)) writeFileSync(join(scratch, file), text)
     git(scratch, "add", "-A")
@@ -228,9 +229,10 @@ describe("the upstream merge", () => {
     git(scratch, "push", "--quiet", "origin", branch)
   }
 
-  /** upstream/dev and origin/prime-look share one root commit; the fork has prime-look checked out. */
+  /** upstream/dev and origin/prime-look share one root commit; the fork has prime-look checked out. Held with `using`, its repositories go when the test ends. */
   const fixture = () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "daily-upstream-")))
+    const held = scratchDir("daily-upstream-")
+    const root = realpathSync(held.path)
     const upstream = join(root, "upstream.git")
     const origin = join(root, "origin.git")
     const seed = join(root, "seed")
@@ -263,11 +265,11 @@ describe("the upstream merge", () => {
       env,
     })
     const head = (dir: string, ref: string) => git(dir, "rev-parse", ref)
-    return { root, upstream, origin, fork, calls, options, head }
+    return { root, upstream, origin, fork, calls, options, head, [Symbol.dispose]: held[Symbol.dispose] }
   }
 
   test("up to date: nothing merges, nothing runs, and a stale report goes", async () => {
-    const f = fixture()
+    using f = fixture()
     const before = f.head(f.fork, "prime-look")
     mkdirSync(join(f.root, "state"))
     writeFileSync(f.options().report, "# old conflict\n")
@@ -278,7 +280,7 @@ describe("the upstream merge", () => {
   })
 
   test("a clean merge whose checks pass fast-forwards prime-look to it and pushes it to origin", async () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     commitTo(f.origin, "prime-look", { "c.txt": "ours\n" })
     git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
@@ -297,7 +299,7 @@ describe("the upstream merge", () => {
   })
 
   test("a conflict aborts, leaves prime-look and origin unchanged, and reports the files", async () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.upstream, "dev", { "a.txt": "upstream\n" })
     commitTo(f.origin, "prime-look", { "a.txt": "ours\n" })
     git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
@@ -317,7 +319,7 @@ describe("the upstream merge", () => {
   })
 
   test("red checks leave prime-look and origin unchanged, keep the merge on a branch and report the check", async () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     const before = f.head(f.fork, "prime-look")
     const outcome = await mergeUpstream(
@@ -334,7 +336,7 @@ describe("the upstream merge", () => {
   })
 
   test("the workbox, and --no-upstream, skip it without fetching", async () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     expect(await mergeUpstream(f.options({ host: "bite-cristian" }))).toMatchObject({ kind: "skipped" })
     expect(await mergeUpstream(f.options({ skip: true }))).toEqual({ kind: "skipped", reason: "--no-upstream" })
@@ -343,7 +345,7 @@ describe("the upstream merge", () => {
   })
 
   test("a dry run says what would merge and changes nothing", async () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     const before = f.head(f.fork, "prime-look")
     expect(await mergeUpstream(f.options({ dryRun: true }))).toMatchObject({ kind: "would-merge", commits: 1 })
@@ -355,7 +357,7 @@ describe("the upstream merge", () => {
   // The fork checkout can fall behind origin when prime-look moved from another checkout; merging
   // upstream into the stale branch redoes conflicts origin already resolved and builds old code.
   test("a fork behind origin fast-forwards to origin/prime-look, untracked files kept, so the merge starts from it", async () => {
-    const f = fixture()
+    using f = fixture()
     const stale = f.head(f.fork, "prime-look")
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
     writeFileSync(join(f.fork, "scratch.txt"), "untracked\n")
@@ -375,7 +377,7 @@ describe("the upstream merge", () => {
   })
 
   test("a fork with local commits or tracked changes is left alone, and says so", () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
     writeFileSync(join(f.fork, "d.txt"), "local\n")
     git(f.fork, "add", "d.txt")
@@ -386,7 +388,7 @@ describe("the upstream merge", () => {
     expect(f.head(f.fork, "prime-look")).toBe(diverged)
     expect(lines.join("\n")).toContain("1 commit not on origin")
 
-    const g = fixture()
+    using g = fixture()
     commitTo(g.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
     const before = g.head(g.fork, "prime-look")
     writeFileSync(join(g.fork, "a.txt"), "edited\n")
@@ -398,7 +400,7 @@ describe("the upstream merge", () => {
   })
 
   test("a dry run says it would fast-forward and moves nothing", () => {
-    const f = fixture()
+    using f = fixture()
     const before = f.head(f.fork, "prime-look")
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
     expect(sync({ fork: f.fork, dryRun: true, log: () => {} })).toEqual({ kind: "would-fast-forward", commits: 1 })
@@ -406,7 +408,7 @@ describe("the upstream merge", () => {
   })
 
   test("with a target commit, the fork fast-forwards to it and no further, though origin is past it", () => {
-    const f = fixture()
+    using f = fixture()
     commitTo(f.origin, "prime-look", { "c.txt": "verified\n" })
     const verified = f.head(f.origin, "prime-look")
     commitTo(f.origin, "prime-look", { "c.txt": "not verified yet\n" })
@@ -435,7 +437,8 @@ describe("the installed build's record", () => {
 
 describe("the opencode launcher", () => {
   test("runs the binary with the caller's arguments and without its Anthropic routing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "launcher it's-"))
+    using held = scratchDir("launcher it's-")
+    const dir = held.path
     const binary = join(dir, "opencode-fake")
     writeFileSync(binary, '#!/bin/sh\necho "base=${ANTHROPIC_BASE_URL:-unset} insecure=${ANTHROPIC_INSECURE:-unset} home=$HOME args=$*"\n')
     chmodSync(binary, 0o755)
@@ -448,7 +451,8 @@ describe("the opencode launcher", () => {
   })
 
   test("after a service start or restart, asks the service for its resident location; a failed start stops there", () => {
-    const dir = mkdtempSync(join(tmpdir(), "launcher-"))
+    using held = scratchDir("launcher-")
+    const dir = held.path
     const binary = join(dir, "opencode-fake")
     writeFileSync(binary, '#!/bin/sh\necho "ran $*"\n')
     chmodSync(binary, 0o755)

@@ -176,14 +176,15 @@ export const toolboxLaws = (name: string, layer: (tools: ReadonlyArray<LawTool>)
 const none: Cell["call"] = () => Effect.fail(new CallFailed({ message: "no tools in the laws" }))
 const cell = (source: string, call: Cell["call"] = none): Cell => ({ source, tools: [{ id: "echo", description: "says it back" }], call })
 
-/** `layer` is the workers under test; each starts in `directory`. */
-export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, directory: string) =>
+/** `layer` is the workers under test; each test's start in a directory `directoryOf` acquires in the test's scope. */
+export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, directoryOf: Effect.Effect<string, never, Scope.Scope>) =>
   describe(`${name} keeps the Workers laws`, () => {
     test("a started worker is alive and keeps its bindings from one cell to the next", () =>
       check(
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           expect(yield* workers.alive(first)).toBe(false)
           yield* workers.start(first, directory)
           expect(yield* workers.alive(first)).toBe(true)
@@ -197,6 +198,7 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           expect((yield* Effect.flip(workers.evaluate(first, cell("1"))))._tag).toBe("WorkerLost")
           expect((yield* Effect.flip(workers.snapshot(first)))._tag).toBe("WorkerLost")
           expect((yield* Effect.flip(workers.restore(first, [])))._tag).toBe("WorkerLost")
@@ -213,6 +215,7 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           yield* workers.start(first, directory)
           yield* workers.start(second, directory)
           yield* workers.evaluate(first, cell("let mine = 1"))
@@ -229,6 +232,7 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           yield* workers.start(first, directory)
           yield* workers.evaluate(first, cell('let n = 5; const word = "kept"'))
           const snapshot = yield* workers.snapshot(first)
@@ -244,6 +248,7 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           yield* workers.start(first, directory)
           const echo: Cell["call"] = (id, input) => Effect.succeed({ id, input })
           expect((yield* workers.evaluate(first, cell('(await tools.echo({ a: 1 })).input.a', echo))).display).toBe("1")
@@ -255,6 +260,7 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           yield* workers.start(first, directory)
           const result = yield* workers.evaluate(first, cell('attach("shot.png", "/abs/b.jpg", "shot.png")'))
           expect(result.display).toBe("attached 3 images: shot.png, /abs/b.jpg, shot.png")
@@ -273,6 +279,7 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         layer(),
         Effect.gen(function* () {
           const workers = yield* Workers
+          const directory = yield* directoryOf
           yield* workers.start(first, directory)
           const hung = yield* Effect.timeoutOrElse(workers.evaluate(first, cell("await new Promise(() => {})")), {
             duration: "200 millis",
@@ -293,12 +300,13 @@ export interface FilesWorld {
   readonly missing: string
 }
 
-export const filesLaws = (name: string, layer: () => Layer.Layer<Files>, world: FilesWorld) =>
+export const filesLaws = (name: string, layer: () => Layer.Layer<Files>, worldOf: Effect.Effect<FilesWorld, never, Scope.Scope>) =>
   describe(`${name} keeps the Files laws`, () => {
     test("reads a file's bytes, up to the limit itself", () =>
       check(
         layer(),
         Effect.gen(function* () {
+          const world = yield* worldOf
           const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
           const path = yield* world.put("seven.bin", bytes)
           expect(yield* (yield* Files).read(path, 7)).toEqual(bytes)
@@ -309,6 +317,7 @@ export const filesLaws = (name: string, layer: () => Layer.Layer<Files>, world: 
       check(
         layer(),
         Effect.gen(function* () {
+          const world = yield* worldOf
           const path = yield* world.put("eleven.bin", new Uint8Array(11))
           expect(yield* Effect.flip((yield* Files).read(path, 10))).toEqual(new FileTooLarge({ path, bytes: 11, limit: 10 }))
         }),
@@ -318,6 +327,7 @@ export const filesLaws = (name: string, layer: () => Layer.Layer<Files>, world: 
       check(
         layer(),
         Effect.gen(function* () {
+          const world = yield* worldOf
           const files = yield* Files
           for (const path of [world.missing, world.folder]) {
             const failed = yield* Effect.flip(files.read(path, 1_000))

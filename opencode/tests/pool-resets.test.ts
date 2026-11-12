@@ -18,8 +18,7 @@
 // - One spent week, two weekly resets about to expire: one is claimed, and
 //   the reading after it (the week back to 0%) keeps the second.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -27,6 +26,7 @@ import { ROOT } from "../scripts/agents.ts"
 import { claimEffect, type FakeAccount, fakeAccount, type FakeGrant, startFakeAnthropic, type FakeQuota } from "./fake-anthropic.ts"
 import { spentAccount, startFakeChatGPT } from "./fake-chatgpt.ts"
 import { owned } from "./owned.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -94,7 +94,7 @@ interface Resets {
 }
 
 describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake ChatGPT)", () => {
-  const root = mkdtempSync(join(tmpdir(), "pool-resets-"))
+  const root = scratchWhen(ready, "pool-resets-")
   const stops: Array<() => Promise<void>> = []
   afterAll(async () => {
     for (const stop of stops.reverse()) await stop()

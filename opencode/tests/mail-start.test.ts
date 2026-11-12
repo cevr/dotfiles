@@ -6,8 +6,7 @@
 // pairing is written as the pair command leaves it, and the peer's request is
 // signed with the shared secret.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { sign } from "../mods/mail/pairing.ts"
 import { ROUTES } from "../mods/mail/peer.ts"
@@ -15,6 +14,7 @@ import { keyed, token } from "../mods/mail/node/keyed.ts"
 import { launcher, residentConfig, residentDir } from "../scripts/daily.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { freePort } from "./service.ts"
+import { scratchWhen } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-start.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -42,7 +42,7 @@ const until = async <A>(read: () => A, done: (value: A) => boolean, label: () =>
 }
 
 describe.skipIf(!fork)("the mail listener from the service's start", () => {
-  const root = mkdtempSync(join(tmpdir(), "mail-start-"))
+  const root = scratchWhen(Boolean(fork), "mail-start-")
   const home = join(root, "home")
   const work = join(root, "work")
   const link = join(root, "bin/opencode")

@@ -6,7 +6,7 @@
 // runtime's description, the agents' rules and a deleted session's cleanup.
 // tests/kernel.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, realpathSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tool } from "@opencode/plugin/effect"
@@ -19,7 +19,11 @@ import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots
 import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
 import Kernel, { make } from "./server.ts"
 
-const work = mkdtempSync(join(tmpdir(), "kernel-plugin-"))
+/** The session's directory: a scratch directory of the scenario's own, removed when its scope closes. */
+const scratchWork = Effect.acquireRelease(
+  Effect.sync(() => mkdtempSync(join(tmpdir(), "kernel-plugin-"))),
+  (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+)
 
 type Host = Parameters<(typeof Kernel)["effect"]>[0]
 
@@ -59,6 +63,7 @@ interface World {
  */
 const start = (options: Record<string, unknown> = {}, world: World = {}, stored: Map<string, Json> = new Map()) =>
   Effect.gen(function* () {
+    const work = yield* scratchWork
     const entries = new Map<string, Json>()
     const hooks = new Map<string, Array<(event: RequestEvent) => Effect.Effect<void>>>()
     const synthetics: Array<{ readonly sessionID: string; readonly text: string; readonly resume?: boolean }> = []
@@ -173,7 +178,7 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
         for (const callback of hooks.get(hook) ?? []) yield* callback(event)
         return { kernel: event.tools.kernel!.description, tools: Object.keys(event.tools) }
       })
-    return { call, parts, fail, entries, agentRules, tool, deleteSession, request, offer, synthetics, announced }
+    return { call, parts, fail, entries, agentRules, tool, deleteSession, request, offer, synthetics, announced, work }
   })
 
 /** A request hook's event, as much of it as the kernel reads. */
@@ -220,9 +225,9 @@ describe("the kernel tool", () => {
   test("lets a cell call a tool through its execute, with the input decoded", () =>
     scenario(
       Effect.gen(function* () {
+        const { call, fail, work } = yield* start({}, { tools: [readTool] })
         const file = join(work, "note.txt")
         yield* Effect.promise(() => Bun.write(file, "kept text"))
-        const { call, fail } = yield* start({}, { tools: [readTool] })
         expect(yield* call(`const text = await tools.read({ path: ${JSON.stringify(file)} }); text.length`)).toBe("9")
         expect(yield* fail("await tools.read({ path: 1 })")).toContain("Invalid input for read")
         expect(yield* fail("await tools.kernel({ code: '1' })")).toContain("Tools: tools.read")
@@ -357,9 +362,9 @@ describe("attach", () => {
   test("shows an attached image as a file part after the text, its data a data URI named by its resolved path", () =>
     scenario(
       Effect.gen(function* () {
+        const { parts, work } = yield* start()
         const file = join(work, "pixel.png")
         yield* Effect.promise(() => Bun.write(file, PIXEL))
-        const { parts } = yield* start()
         const content = yield* parts('attach("pixel.png")')
         expect(content).toEqual([
           { type: "text", text: "attached 1 image: pixel.png" },
@@ -372,7 +377,7 @@ describe("attach", () => {
   test("names a missing path and why in the text, and adds no part for it", () =>
     scenario(
       Effect.gen(function* () {
-        const { parts } = yield* start()
+        const { parts, work } = yield* start()
         const missing = join(work, "absent.png")
         const content = yield* parts(`attach(${JSON.stringify(missing)}); "after"`)
         expect(content).toHaveLength(1)

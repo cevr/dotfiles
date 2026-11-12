@@ -63,7 +63,13 @@ interface SessionEvent {
 }
 
 /** A limit tally of the test's own, in every start's options: the live adapters otherwise keep it under the owner's XDG_STATE_HOME. */
-const scratchLimits = () => join(mkdtempSync(join(tmpdir(), "pool-state-")), "limits.json")
+const scratchLimits = (root: string) => join(mkdtempSync(join(root, "pool-state-")), "limits.json")
+
+/** A start's scratch directory, which holds its limit tallies; removed when the start's scope closes. */
+const scratchRoot = Effect.acquireRelease(
+  Effect.sync(() => mkdtempSync(join(tmpdir(), "pool-server-"))),
+  (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+)
 
 /**
  * What the outside systems hold for one test. The test layers read it, and so
@@ -106,7 +112,7 @@ const world = (): World => ({
 })
 
 /** The outside systems as test layers over `state`. */
-const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>) => () =>
+const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>, root: string) => () =>
   Layer.mergeAll(
     LoginsTest.layer(state.integration),
     QuotaTest.layer(new Map([[ANTHROPIC, state.readings]]), new Map([[ANTHROPIC, published]])),
@@ -115,7 +121,7 @@ const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>) =>
     FleetTest.layer(state.storage),
     ResetsTest.layer(state.storage),
     OwnerTest.layer(state.owner),
-    LimitsLive.layer(LedgerTest.storage(state.storage), join(mkdtempSync(join(tmpdir(), "pool-limits-")), "limits.json")),
+    LimitsLive.layer(LedgerTest.storage(state.storage), join(mkdtempSync(join(root, "pool-limits-")), "limits.json")),
   )
 
 /** A hook or RPC handler the plugin registered; a missing one fails the test. */
@@ -136,6 +142,7 @@ const start = (
   externals: Parameters<typeof make>[0] | "test" = "test",
 ) =>
   Effect.gen(function* () {
+    const root = yield* scratchRoot
     const hooks: Record<string, Hook> = {}
     const rpc: Record<string, Record<string, Handler>> = {}
     const transforms: Array<(editor: unknown) => void> = []
@@ -188,7 +195,7 @@ const start = (
         }),
       events: { subscribe: () => Stream.fromQueue(state.owner.beats) },
     }
-    const hostOptions = { limitsFile: scratchLimits(), ...options }
+    const hostOptions = { limitsFile: scratchLimits(root), ...options }
     const host = {
       options: hostOptions,
       session: {
@@ -263,7 +270,7 @@ const start = (
       ),
       storage: LedgerTest.storage(state.storage),
     } as unknown as Host
-    yield* make(externals === "test" ? testLayers(state, published) : externals).effect(host)
+    yield* make(externals === "test" ? testLayers(state, published, root) : externals).effect(host)
 
     /** One model request of a session: the headers the pool sets on it. */
     const send = Effect.fn("PoolServerTest.send")(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
