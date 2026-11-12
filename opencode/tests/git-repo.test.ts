@@ -20,6 +20,8 @@ import {
   type ObjectPropertyKind,
   type ParamPattern,
   parseSync,
+  type TaggedTemplateExpression,
+  type TemplateLiteral,
   Visitor,
 } from "oxc-parser"
 import { gitSubcommand } from "../mods/guard/verdict.ts"
@@ -107,6 +109,9 @@ const argvOf = (call: CallExpression, wrappers: ReadonlyMap<string, Template>): 
   return Option.some(flat.slice(git + 1))
 }
 
+/** A word of git's argv that test code does not write as a literal. */
+const HOLE = "\u0000"
+
 /**
  * What git runs for `argv`, read by mods/guard/verdict.ts's reader: its subcommand, none when that
  * word is not written as a literal; and whether an option before it is one the reader does not
@@ -120,14 +125,14 @@ interface ReadArgv {
 const readArgv = (argv: ReadonlyArray<Item>): ReadArgv => {
   const words = argv.map((word) => {
     if (word.kind === "literal") return word.text
-    return "\u0000"
+    return HOLE
   })
   const read = gitSubcommand(words)
   if (read.kind === "unreadable") return { subcommand: Option.none(), unreadable: true }
-  return { subcommand: Option.filter(Option.some(read.name), (name) => name !== "\u0000" && name !== ""), unreadable: false }
+  return { subcommand: Option.filter(Option.some(read.name), (name) => name !== HOLE && name !== ""), unreadable: false }
 }
 
-/** Whether a call's git argv makes a repository, or cannot be read and so fails closed as one that might. */
+/** Whether a git argv makes a repository, or cannot be read and so fails closed as one that might. */
 const makesRepository = (argv: ReadonlyArray<Item>) => {
   const read = readArgv(argv)
   return read.unreadable || Option.exists(read.subcommand, (name) => MAKES_REPOSITORY.has(name))
@@ -139,17 +144,24 @@ interface Named {
   readonly fn: Function | ArrowFunctionExpression
 }
 
-/** A file's calls, in source order, and its named functions. */
+/** A file's calls, in source order, its named functions, and its Bun shell commands (`$\`…\``). */
 interface Parsed {
   readonly calls: ReadonlyArray<CallExpression>
   readonly functions: ReadonlyArray<Named>
+  readonly shells: ReadonlyArray<TaggedTemplateExpression>
 }
+
+/** Whether a template's tag is Bun's shell: `$` itself, or `Bun.$`. */
+const isShell = ({ tag }: TaggedTemplateExpression) =>
+  (tag.type === "Identifier" && tag.name === "$") || (tag.type === "MemberExpression" && !tag.computed && tag.property.type === "Identifier" && tag.property.name === "$")
 
 const parse = (file: string, text: string): Parsed => {
   const calls: Array<CallExpression> = []
   const functions: Array<Named> = []
+  const shells: Array<TaggedTemplateExpression> = []
   new Visitor({
     CallExpression: (call) => calls.push(call),
+    TaggedTemplateExpression: (template) => Arr.forEach(Arr.filter([template], isShell), (shell) => shells.push(shell)),
     FunctionDeclaration: (fn) => Arr.forEach(Arr.fromNullishOr(fn.id), (id) => functions.push({ name: id.name, fn })),
     VariableDeclarator: (declarator) => {
       const { id, init } = declarator
@@ -157,7 +169,39 @@ const parse = (file: string, text: string): Parsed => {
       if (init.type === "ArrowFunctionExpression" || init.type === "FunctionExpression") functions.push({ name: id.name, fn: init })
     },
   }).visit(parseSync(file, text).program)
-  return { calls: Arr.sort(calls, Order.mapInput(Order.Number, (call: CallExpression) => call.start)), functions }
+  return { calls: Arr.sort(calls, Order.mapInput(Order.Number, (call: CallExpression) => call.start)), functions, shells }
+}
+
+/** What an interpolation stands for in a shell template: a string literal's text when it is one plain word, else a word not read. */
+const interpolated = (expression: TemplateLiteral["expressions"][number]) => {
+  if (expression.type === "Literal" && Predicate.isString(expression.value) && /^[^\s;&|'"]+$/.test(expression.value)) return expression.value
+  return HOLE
+}
+
+/** Whether a word is an environment assignment before a command (`NAME=value`). */
+const isAssignment = (word: Item) => word.kind === "literal" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.text)
+
+/**
+ * The git argv of each command in a Bun shell template that runs git: the text split into commands
+ * at `;`, `&`, `|` and line ends, each into words at blanks with its quotes dropped. A word
+ * holding an interpolation that is not a plain string literal is not read.
+ */
+const shellArgvs = (template: TemplateLiteral): ReadonlyArray<ReadonlyArray<Item>> => {
+  const text = template.quasis.map((quasi, index) => quasi.value.raw + Option.getOrElse(Option.map(Arr.get(template.expressions, index), interpolated), () => "")).join("")
+  const commands = text.split(/[;&|\n]+/).map((command) =>
+    command
+      .replace(/['"]/g, "")
+      .split(/\s+/)
+      .filter((word) => word !== "")
+      .map((word): Item => {
+        if (word.includes(HOLE)) return OTHER
+        return { kind: "literal", text: word }
+      }),
+  )
+  return commands.flatMap((words) => {
+    const command = Arr.dropWhile(words, isAssignment)
+    return Arr.filter([command.slice(1)], () => Option.exists(Arr.head(command), (head) => head.kind === "literal" && head.text === "git"))
+  })
 }
 
 /** What a parameter at `index` stands for in a template: its name, and its slot. */
@@ -215,16 +259,16 @@ const rawSites = (file: string, text: string): ReadonlyArray<string> => {
   const parsed = parse(file, text)
   const wrappers = gitWrappers(parsed)
   const lines = text.split("\n")
+  const calls = parsed.calls.filter((call) => Option.exists(argvOf(call, wrappers), makesRepository)).map((call) => call.start)
+  const shells = parsed.shells.filter((shell) => shellArgvs(shell.quasi).some(makesRepository)).map((shell) => shell.start)
   return Arr.dedupe(
-    parsed.calls
-      .filter((call) => Option.exists(argvOf(call, wrappers), makesRepository))
-      .map((call) => text.slice(0, call.start).split("\n").length),
+    Arr.sort([...calls, ...shells], Order.Number).map((start) => text.slice(0, start).split("\n").length),
   ).map((line) => `${line}: ${Option.getOrElse(Arr.get(lines, line - 1), () => "").trim()}`)
 }
 
-/** Every test file, and every file under tests/ (fixtures and helpers the tests run). */
+/** Every test file, and every file under tests/ and testbeds/ (fixtures, helpers and the harnesses the tests and agents run). */
 const testFiles = () =>
-  [...new Set(["**/*.test.ts", "tests/**/*.ts"].flatMap((glob) => [...new Bun.Glob(glob).scanSync({ cwd: ROOT })]))].filter((file) => !file.includes("node_modules/")).sort()
+  [...new Set(["**/*.test.ts", "tests/**/*.ts", "testbeds/**/*.ts"].flatMap((glob) => [...new Bun.Glob(glob).scanSync({ cwd: ROOT })]))].filter((file) => !file.includes("node_modules/")).sort()
 
 /** Test code with each shape the guard must judge: its wrappers first, then one call a line. */
 const SAMPLE = [
@@ -257,6 +301,12 @@ const SAMPLE = [
   "Bun.spawnSync([\"git\", \"--attr-source\", \"HEAD\", \"init\", dir])",
   "Bun.spawnSync([\"git\", \"--not-a-git-option\", \"status\"])",
   "Bun.spawnSync([\"git\", \"--attr-source\", \"init\", \"status\"])",
+  "await $`git init -q`.cwd(dir).quiet()",
+  "await Bun.$`git -C ${dir} clone ${source} out`",
+  "await $`cd ${dir} && GIT_DIR=x git 'init'`",
+  "await $`git add -A && git commit -q -m init`",
+  "await $`git ${args}`",
+  "const text = dedent`git init`",
 ].join("\n")
 
 /** A seeded generator (mulberry32), so a failing case names its seed and replays. */
@@ -336,8 +386,8 @@ describe("a test's temp git repository", () => {
     expect({ work: settings(work), bare: settings(bare), clone: settings(clone) }).toEqual({ work: QUIET, bare: QUIET, clone: QUIET })
   })
 
-  test("a call that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
-    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28])
+  test("a call or Bun shell command that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
+    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32])
   })
 
   test(
@@ -352,7 +402,7 @@ describe("a test's temp git repository", () => {
     PROBE_MS,
   )
 
-  test("no test file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {
+  test("no test or testbed file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {
     const raw = testFiles()
       .filter((file) => !HELPERS.includes(file))
       .flatMap((file) => rawSites(file, readFileSync(join(ROOT, file), "utf8")).map((site) => `${file}:${site}`))
