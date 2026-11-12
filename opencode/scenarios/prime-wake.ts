@@ -132,14 +132,36 @@ export default OpenCodeDriver.use(
       const waiting = (frame: string) =>
         frame.split("\n").some((line) => line.includes(`◈ worker gpt  ${WORKER.description}  ${WAITING} · `))
 
+      // At All the parent's subagent call is a `✓ subagent · …` row (below All, `● Ran …`).
+      const atAll = (frame: string) => /^ {2}\S subagent · /m.test(frame)
+      // Ctrl+O until the frame shows All. A press is never taken on faith: one sent while the
+      // session screen was still coming up was lost under load (batch bh), and the frames then
+      // read Details, where a finished worker's notice is its header alone. A press that went
+      // past All (to Overview) just cycles on.
+      const toAll = Effect.gen(function* () {
+        for (let press = 0; press < 6; press++) {
+          if (atAll(text(yield* ui.capture()))) return
+          yield* ui.press("o", { ctrl: true })
+          yield* ui.capture().pipe(
+            Effect.filterOrFail((frame) => atAll(text(frame)), () => "pending"),
+            Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 30 }),
+            Effect.ignore,
+          )
+        }
+        return yield* until("wake-all", atAll, 0)
+      })
+
       yield* ui.submit(ASK)
+      // The parent's call has drawn its row (and its line after it), at whatever level the TUI shows.
+      yield* until("wake-started", (frame) => frame.includes(STARTED))
       // At All (Ctrl+O) the worker's notices hang their reports under their headers, which the frames read.
-      yield* ui.press("o", { ctrl: true })
-      // The worker has said it waits and ended its turn, and the parent has its waiting report; its shell still runs, until the release.
-      yield* until("wake-bg-waiting", (frame) => frame.includes(HEARD_WAITING) && waiting(frame))
+      yield* toAll
+      // The worker has said it waits and ended its turn, and the parent has its waiting report, drawn
+      // under the notice; its shell still runs, until the release.
+      yield* until("wake-bg-waiting", (frame) => frame.includes(HEARD_WAITING) && waiting(frame) && frame.includes("Background work still running:"))
       yield* save("wake-bg-waiting")
       yield* Effect.sync(() => writeFileSync(WORKER.release, ""))
-      yield* until("wake-bg-done", (frame) => frame.includes(WORKER.heard))
+      yield* until("wake-bg-done", (frame) => frame.includes(WORKER.heard) && frame.includes(WORKER.answer))
       yield* save("wake-bg-done")
     }),
 )
