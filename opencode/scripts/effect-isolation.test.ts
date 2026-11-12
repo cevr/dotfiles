@@ -6,7 +6,7 @@
  * used to write the process's env or global registry run in a child `bun test` under generated
  * parent envs, a preload records the env and the registry around every test, and none moves.
  *
- * Known misses of `effect/noTestGlobals` (oxlint-plugin-effect 0.32.1), never promised here: a
+ * Known misses of `effect/noTestGlobals` (oxlint-plugin-effect 0.32.3), never promised here: a
  * computed env root (`process["env"]`) and an alias (`const env = process.env; env.X = ...`). The
  * repo's own `dotfiles/no-module-env-in-tests` still refuses the computed root while a test file
  * loads; that retained coverage is asserted, the alias is not.

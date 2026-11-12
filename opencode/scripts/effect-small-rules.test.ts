@@ -4,7 +4,7 @@
  * `effect/preferPredicateIsTagged` and `effect/noReduceAccumulatorCopy` under each supported
  * import alias, in every path class the config names, while it accepts named and untraced
  * operations, unspanned generators, locally shadowed names and nonmatching local functions, as
- * oxlint-plugin-effect 0.32.1 decides them. At run time: `forkTurns`, whose reducer was the one
+ * oxlint-plugin-effect 0.32.3 decides them. At run time: `forkTurns`, whose reducer was the one
  * accumulator copy, folds generated fork histories as an independent model of a turn does, and
  * leaves its input as it was.
  */
