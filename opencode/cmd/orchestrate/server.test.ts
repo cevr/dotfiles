@@ -34,7 +34,7 @@ import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
-import { Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
+import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
@@ -88,6 +88,8 @@ interface World {
   readonly alive?: Readonly<Record<string, boolean>>
   /** The findings each verifier report holds, by its path, read at each read (a test may add one later); a report not here does not read. */
   readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
+  /** The branch checked out at each Rift path; a path not here reads none. */
+  readonly branches?: Readonly<Record<string, string>>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -180,6 +182,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
           }),
       }),
       Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
+      Layer.succeed(Branches, { of: (path: string) => Effect.succeed(world.branches?.[path.replace(/\/+$/, "")]) }),
       OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
       RestartsTest.layer(world.restarts ?? RestartsTest.empty(), resume),
       CallLogTest.layer(lines),
@@ -1743,6 +1746,13 @@ describe("the batch machine", () => {
       yield* plugin.finish({ input, status: "completed", result: { metadata: { sessionID: child, status: "running" } } })
     })
   const kinds = (plugin: Plugin) => plugin.ledger.map((line) => (line as { kind: string }).kind)
+  /** A seeded stream in [0, 1), so a failing trial names its seed. */
+  const rngOf = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
 
   test("a verifier for one unit is refused in the skill's words before anything starts; the batch's starts", () =>
     scenario(
@@ -1961,7 +1971,7 @@ describe("the batch machine", () => {
       }),
     ))
 
-  test("a unit's next round in a Rift of another name: the ledger records the Rift its brief names as its own (not one it only mentions), and a land by that Rift is the unit's, its folded findings with it (orch-pipeline OB1)", () =>
+  test("a unit's next round in a Rift of another name lands as the unit by its branch, its folded findings with it (orch-pipeline OB1)", () =>
     scenario(
       Effect.gen(function* () {
         const report = "/run/batch-1-findings.md"
@@ -1970,26 +1980,96 @@ describe("the batch machine", () => {
           ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
           ses_a2: { agent: "implementor", lastWords: "implementor reset-use r2: ready x" },
         })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: { [report]: ["reset-use/B1", "reset-use/M1"] } })
-        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
-        const landed = (rifts: ReadonlyArray<string>) =>
+        const branches = { "/u/.rifts/dotfiles/scratch-17": "feat/reset-use-2" }
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: { [report]: ["reset-use/B1", "reset-use/M1"] }, branches })
+        const land = (rifts: ReadonlyArray<unknown>) => plugin.call("rift", "root", { action: "land", rifts })
+        const landed = (rifts: ReadonlyArray<unknown>) =>
           plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
-        yield* begin(plugin, { ...implementor("reset-use"), prompt: "Work in the Rift /u/.rifts/dotfiles/reset-use on branch feat/reset-use." }, "ses_a")
+        yield* begin(plugin, implementor("reset-use"), "ses_a")
         yield* plugin.idle("ses_a")
         yield* land(["reset-use"])
         yield* landed(["reset-use"])
         yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
         yield* plugin.idle("ses_v")
-        // Round 2 runs in a Rift named for no unit: the ledger binds it to reset-use from the prompt.
-        yield* begin(plugin, { agent: "implementor", description: "implementor reset-use r2", prompt: "Round 2. Do not touch /u/.rifts/dotfiles/web (unit web's).\nYou work in the Rift /u/.rifts/dotfiles/scratch-17 (a copy).", background: true }, "ses_a2")
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "reset-use", round: 2, workspaces: ["/u/.rifts/dotfiles/scratch-17"] }))
+        // Round 2 runs in a Rift named for no unit, on branch feat/reset-use-2: the land reads the branch.
+        yield* begin(plugin, { agent: "implementor", description: "implementor reset-use r2", prompt: "Round 2. You work in the Rift /u/.rifts/dotfiles/scratch-17.", background: true }, "ses_a2")
         yield* plugin.idle("ses_a2")
-        expect((yield* land(["scratch-17"])).refused).toBeUndefined()
-        yield* landed(["scratch-17"])
+        expect((yield* land(["/u/.rifts/dotfiles/scratch-17"])).refused).toBeUndefined()
+        yield* landed(["/u/.rifts/dotfiles/scratch-17"])
         expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["reset-use"] })
         expect(kinds(plugin)).not.toContain("Refused")
+        // No prompt is read: no line of the ledger holds a workspace.
+        expect(JSON.stringify(plugin.ledger)).not.toContain("scratch-17")
       }),
     ))
+
+  test("a brief that names another unit's Rift in any form is never read: a land is each unit's by its Rift's branch, or the unit it names (land-upstream r3 M1)", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = steps({
+          ses_api: { agent: "implementor", lastWords: "implementor api r2: ready x" },
+          ses_web: { agent: "implementor", lastWords: "implementor web r1: ready x" },
+        })
+        // The verifier's probe: brief A names web's Rift in a `Rift:` line under Do not touch; brief B in a negated phrase.
+        const briefA = "You work in the Rift /u/.rifts/app/api-2.\n\n## Do not touch\n- Rift: /u/.rifts/app/web-3 (web's, running)"
+        const briefB = "Do not work in the Rift /u/.rifts/app/api-2 (api's). You work in the Rift /u/.rifts/app/web-3."
+        const branches = { "/u/.rifts/app/api-2": "feat/api-2", "/u/.rifts/app/web-3": "feat/web-3", "/u/.rifts/app/wip": "wip" }
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, branches })
+        yield* begin(plugin, { agent: "implementor", description: "implementor api r2", prompt: briefA, background: true }, "ses_api")
+        yield* begin(plugin, { agent: "implementor", description: "implementor web r1", prompt: briefB, background: true }, "ses_web")
+        yield* plugin.idle("ses_api")
+        yield* plugin.idle("ses_web")
+        const land = (rifts: ReadonlyArray<unknown>) => plugin.call("rift", "root", { action: "land", rifts })
+        // web's Rift alone is web's, so the land leaves api out; a Rift of no unit's branch alone is none of the machine's.
+        expect((yield* land(["/u/.rifts/app/web-3"])).refused?.message).toContain(RULES.LandPartial.words)
+        expect((yield* land(["/u/.rifts/app/wip"])).refused).toBeUndefined()
+        // The same Rift named for api: the unit the land names wins.
+        expect((yield* land([{ path: "/u/.rifts/app/wip", unit: "api" }])).refused?.message).toContain(RULES.LandPartial.words)
+        const both = ["/u/.rifts/app/web-3", { path: "/u/.rifts/app/wip", unit: "api" }]
+        expect((yield* land(both)).refused).toBeUndefined()
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: both }, status: "completed", result: { content: [{ type: "text", text: "Landed 2 Rift(s) as one push" }] } })
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["api", "web"] })
+      }),
+    ))
+
+  test("property: over arbitrary units, numbered rounds and briefs naming other units' Rifts in every own-form, a land of every unit's Rift by path is exactly the batch", async () => {
+    const random = rngOf(1111)
+    const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
+    const word = () => Array.from({ length: 1 + Math.floor(random() * 5) }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(random() * 26)]).join("")
+    const ownForms = [(path: string) => `Rift: ${path}`, (path: string) => `- **Workspace:** ${path}`, (path: string) => `You work in the Rift ${path}.`, (path: string) => `## Workspace\n${path}`]
+    const mentions = [...ownForms, (path: string) => `Do not work in the Rift ${path}.`, (path: string) => `## Do not touch\n- Rift: ${path} (running)`]
+    for (let trial = 0; trial < 40; trial++) {
+      const units = [...new Set(Array.from({ length: 2 + Math.floor(random() * 3) }, () => Array.from({ length: 1 + Math.floor(random() * 2) }, word).join("-")))]
+      if (units.length < 2) continue
+      const rounds = Object.fromEntries(units.map((unit) => [unit, 1 + Math.floor(random() * 5)]))
+      // Each unit's Rift: called for another unit, or for nothing, on its own branch (a later round's numbered).
+      const paths = Object.fromEntries(units.map((unit, i) => [unit, random() < 0.5 ? `/h/.rifts/r/${pick(units)}-${i + 2}` : `/h/.rifts/r/${word()}-${i}`]))
+      const branches = Object.fromEntries(units.map((unit) => [paths[unit]!, rounds[unit]! > 1 && random() < 0.7 ? `feat/${unit}-${rounds[unit]}` : `feat/${unit}`]))
+      const brief = (unit: string) => {
+        const others = units.filter((other) => other !== unit).map((other) => pick(mentions)(paths[other]!))
+        const cut = Math.floor(random() * (others.length + 1))
+        return [...others.slice(0, cut), pick(ownForms)(paths[unit]!), ...others.slice(cut)].join("\n")
+      }
+      const sessions = steps(Object.fromEntries(units.map((unit, i) => [`ses_${i}`, { agent: "implementor", lastWords: `implementor ${unit} r${rounds[unit]}: ready x` }])))
+      await scenario(
+        Effect.gen(function* () {
+          const plugin = yield* start({ now: WEDNESDAY }, { sessions, branches })
+          for (const [i, unit] of units.entries())
+            yield* begin(plugin, { agent: "implementor", description: `implementor ${unit} r${rounds[unit]}`, prompt: brief(unit), background: true }, `ses_${i}`)
+          for (const i of units.keys()) yield* plugin.idle(`ses_${i}`)
+          const where = JSON.stringify({ trial, units, paths, branches })
+          // One unit's Rift alone is that unit's: the land leaves the others out.
+          const one = yield* plugin.call("rift", "root", { action: "land", rifts: [paths[units[0]!]] })
+          expect([where, one.refused?.message.includes(RULES.LandPartial.words)]).toEqual([where, true])
+          const all = [...units].sort(() => random() - 0.5).map((unit) => paths[unit]!)
+          expect([where, (yield* plugin.call("rift", "root", { action: "land", rifts: all })).refused]).toEqual([where, undefined])
+          yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: all }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+          const batch = plugin.ledger.at(-1) as { kind: string; units: ReadonlyArray<string> }
+          expect([where, batch.kind, [...batch.units].sort()]).toEqual([where, "BatchLanded", [...units].sort()])
+        }),
+      )
+    }
+  })
 
   test("a land before the verdict passes when it departs, and the departure is recorded", () =>
     scenario(
@@ -2102,10 +2182,13 @@ describe("the batch machine", () => {
       }),
     ))
 
-  test("a checked land lands only the Rifts it answered green or pending", () => {
-    const text = ["Checked 2 Rift(s) as one batch", "- run/alpha (/r/run-alpha): green", "- run/beta (/r/run-beta): red; conflict", "- run/gamma (/r/run-gamma): pending"].join("\n")
-    expect(greenOf(["alpha", "beta", "gamma"], text)).toEqual(["run/alpha", "/r/run-alpha", "run/gamma", "/r/run-gamma"])
-    expect(greenOf(["alpha"], "Landed 1 Rift(s) as one push")).toEqual(["alpha"])
+  test("a checked land lands only the Rifts it answered green or pending, by their paths and branches, each with the unit its input named", () => {
+    const text = ["Checked 2 Rift(s) as one batch", "- run/alpha (/r/run-alpha): green", "- run/beta (/r/run-beta): red; conflict", "- run/gamma (/r/scratch): pending"].join("\n")
+    expect(greenOf([{ rift: "alpha" }, { rift: "beta" }, { rift: "/r/scratch/", unit: "gamma" }], text)).toEqual([
+      { rift: "/r/run-alpha", branch: "run/alpha" },
+      { rift: "/r/scratch", branch: "run/gamma", unit: "gamma" },
+    ])
+    expect(greenOf([{ rift: "alpha" }], "Landed 1 Rift(s) as one push")).toEqual([{ rift: "alpha" }])
   })
 })
 

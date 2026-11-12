@@ -30,3 +30,13 @@ test("a root that holds nothing keeps only its newest departures within the wind
   const kept = compact(DEFAULT_CADENCE, retention, T + 75 * MIN, lines)
   expect(kept.map((line) => line.why)).toEqual([`at ${T + 40 * MIN}`, `at ${T + 50 * MIN}`])
 })
+
+test("a ledger written when starts recorded a workspace still reads: the workspace is dropped, the unit kept", () => {
+  const at = new Date(T).toISOString()
+  const lines = [
+    { at, sessionID: "root", kind: "UnitStarted", unit: "alpha", round: 2, direct: false, workspaces: ["/u/.rifts/app/web-3"] },
+    { at, sessionID: "other", kind: "Checkpoint", state: { units: { beta: { state: "ready", round: 1, since: T, direct: false, workspaces: ["/u/.rifts/app/x"] } } } },
+  ]
+  expect(stateOf(DEFAULT_CADENCE, lines.slice(0, 1))).toEqual({ units: { alpha: { state: "implement", round: 2, since: T, direct: false } } })
+  expect(stateOf(DEFAULT_CADENCE, lines.slice(1))).toEqual({ units: { beta: { state: "ready", round: 1, since: T, direct: false } } })
+})
