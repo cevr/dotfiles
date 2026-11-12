@@ -15,6 +15,11 @@
 //   by splitting a rise by list price: a split by price would presuppose the
 //   answer (that limit cost follows price). The range is the 95% interval from
 //   the fit's standard errors; `n` counts the rows the family has tokens in.
+// - A model whose own window reports its part of the shared one (`7d:Fable`'s
+//   `weeklyUsed`, Fable's points of `7d`): that part is its rise on the shared
+//   window, fitted on its tokens alone, and the rest of the rise is the other
+//   families'. The fit would otherwise give a minor family 0 (its column
+//   soaks up only noise), and its weekly-points ratio would never exist.
 // - A reset inside a period (utilization falls under the same reset time, as a
 //   claimed reset does): the row is dropped. A period that began before the
 //   tokens were recorded (on this host or on a peer) is dropped.
@@ -138,6 +143,11 @@ export interface LimitRow {
   readonly at: number
   /** Points of the limit used at `at` (0 to 100). */
   readonly rise: number
+  /**
+   * The points of `rise` the reading says a model took, by the model's name:
+   * its own window's `weeklyUsed` (`7d:Fable` reports Fable's part of `7d`).
+   */
+  readonly parts?: Readonly<Record<string, number>>
   /** A reset came inside the period: its start is not known, and the row is left out. */
   readonly broken?: boolean
   /** This host's tokens on the account from `start` to `at`. */
@@ -174,6 +184,12 @@ export const observe = (state: LimitsState, pool: string, credentialID: string, 
     if (held !== undefined && held.at >= reading.at) continue
     const rise = window.utilization * 100
     const broken = held?.broken === true || (held !== undefined && rise < held.rise - FALL_POINTS)
+    // A model's own window of this one (`7d:Fable` of `7d`) may say what part of this one its model took.
+    const parts: Record<string, number> = {}
+    for (const scoped of reading.windows) {
+      const scope = scopeOf(scoped.name)
+      if (scope !== undefined && scoped.name === `${window.name}:${scope}` && scoped.weeklyUsed !== undefined) parts[scope] = scoped.weeklyUsed * 100
+    }
     rows ??= { ...state.rows }
     rows[key] = {
       pool,
@@ -183,6 +199,7 @@ export const observe = (state: LimitsState, pool: string, credentialID: string, 
       resetAt: window.resetAt,
       at: reading.at,
       rise,
+      ...(Object.keys(parts).length > 0 ? { parts } : {}),
       ...(broken ? { broken: true } : {}),
       own: held?.own ?? {},
       peers: held?.peers ?? {},
@@ -327,6 +344,8 @@ export interface FamilyEstimate {
   /** The family's tokens over those rows, in millions. */
   readonly mtok: number
   readonly rawMtok: number
+  /** Its points are the part of each rise its readings report (`LimitRow.parts`), not the fit's share. */
+  readonly reported?: true
 }
 
 export interface WindowTally {
@@ -348,6 +367,21 @@ export interface Tally {
   readonly peers: Readonly<Record<string, number>>
   readonly recent: ReadonlyArray<WindowTally>
   readonly cumulative: ReadonlyArray<WindowTally>
+  /** The windows read with no row fitted yet, and why. */
+  readonly waiting?: ReadonlyArray<Waiting>
+}
+
+/**
+ * A window the readings name that the tally fits no row of yet: `counted`
+ * periods count (they began after every host recorded tokens) but hold none
+ * of the window's tokens, and the rest began before; the first period of an
+ * account that can still count begins at `from`.
+ */
+export interface Waiting {
+  readonly pool: string
+  readonly window: string
+  readonly counted: number
+  readonly from?: number
 }
 
 /** Two-sided 95% t quantiles by degrees of freedom; 1.96 past 30. */
@@ -445,25 +479,45 @@ export const fitRows = (rows: ReadonlyArray<LimitRow>): ReadonlyArray<WindowTall
     .map((group): WindowTally => {
       const sums = group.map(allSums)
       const seen = [...new Set(sums.flatMap((s) => Object.keys(s)))].sort()
+      // A family whose part of the rise a reading reports is fitted on that part alone (`LimitRow.parts`).
+      const scopes = [...new Set(group.flatMap((row) => Object.keys(row.parts ?? {})))]
+      const scopeOfFamily = (family: string) => scopes.find((scope) => limitsModel(scope, family))
+      const reported = seen.filter((family) => scopeOfFamily(family) !== undefined)
       const weightOf = (family: string) => sums.reduce((t, s) => t + (s[family]?.w ?? 0), 0)
       const all = seen.reduce((t, family) => t + weightOf(family), 0)
       // A family with a sliver of the tokens cannot be told from noise: its column would soak up the residual.
-      const families = seen.filter((family) => weightOf(family) >= MIN_SHARE * all)
-      const ignored = seen.filter((family) => !families.includes(family)).map((family) => ({ family, mtok: weightOf(family) / 1e6 }))
-      const weighted = nnls(group.map((row, i) => ({ y: row.rise, x: families.map((f) => (sums[i]![f]?.w ?? 0) / 1e6) })), families.length)
-      const raw = nnls(group.map((row, i) => ({ y: row.rise, x: families.map((f) => (sums[i]![f]?.raw ?? 0) / 1e6) })), families.length)
+      const families = seen.filter((family) => !reported.includes(family) && weightOf(family) >= MIN_SHARE * all)
+      const ignored = seen
+        .filter((family) => !reported.includes(family) && !families.includes(family))
+        .map((family) => ({ family, mtok: weightOf(family) / 1e6 }))
+      // The rest of the rise is the other families': a row counts for them when it reports the part of every reported family it has tokens of.
+      const rest = group.flatMap((row, i) =>
+        reported.every((family) => (sums[i]![family]?.raw ?? 0) === 0 || row.parts?.[scopeOfFamily(family)!] !== undefined)
+          ? [{ y: row.rise - Object.values(row.parts ?? {}).reduce((t, part) => t + part, 0), s: sums[i]! }]
+          : [],
+      )
+      const fit = (points: ReadonlyArray<{ y: number; s: Sums }>, columns: ReadonlyArray<string>) => {
+        const weighted = nnls(points.map((p) => ({ y: p.y, x: columns.map((f) => (p.s[f]?.w ?? 0) / 1e6) })), columns.length)
+        const raw = nnls(points.map((p) => ({ y: p.y, x: columns.map((f) => (p.s[f]?.raw ?? 0) / 1e6) })), columns.length)
+        return columns.map((family, j): FamilyEstimate => ({
+          family,
+          weighted: weighted[j]!,
+          raw: raw[j]!,
+          n: points.filter((p) => (p.s[family]?.raw ?? 0) > 0).length,
+          mtok: points.reduce((t, p) => t + (p.s[family]?.w ?? 0), 0) / 1e6,
+          rawMtok: points.reduce((t, p) => t + (p.s[family]?.raw ?? 0), 0) / 1e6,
+        }))
+      }
+      const own = reported.flatMap((family) => {
+        const scope = scopeOfFamily(family)!
+        const points = group.flatMap((row, i) => (row.parts?.[scope] === undefined ? [] : [{ y: row.parts[scope]!, s: sums[i]! }]))
+        return fit(points, [family]).map((estimate) => ({ ...estimate, reported: true as const }))
+      })
       return {
         pool: group[0]!.pool,
         window: group[0]!.window,
         rows: group.length,
-        families: families.map((family, j) => ({
-          family,
-          weighted: weighted[j]!,
-          raw: raw[j]!,
-          n: sums.filter((s) => (s[family]?.raw ?? 0) > 0).length,
-          mtok: sums.reduce((t, s) => t + (s[family]?.w ?? 0), 0) / 1e6,
-          rawMtok: sums.reduce((t, s) => t + (s[family]?.raw ?? 0), 0) / 1e6,
-        })),
+        families: [...fit(rest, families), ...own].sort((a, b) => a.family.localeCompare(b.family)),
         ...(ignored.length === 0 ? {} : { ignored }),
       }
     })
@@ -473,13 +527,41 @@ export const fitRows = (rows: ReadonlyArray<LimitRow>): ReadonlyArray<WindowTall
 /** The tally at `now`: the usable rows that are idle or not yet ended, of the last 7 days and of all time. */
 export const tally = (state: LimitsState, now: number): Tally => {
   const rows = Object.values(state.rows).filter((row) => usable(state, row) && Object.keys(allSums(row)).length > 0)
+  const cumulative = fitRows(rows)
+  const waiting = waitingOf(state, cumulative)
   return {
     at: now,
     since: state.since,
     peers: state.peerSince,
     recent: fitRows(rows.filter((row) => row.resetAt >= now - RECENT_MS)),
-    cumulative: fitRows(rows),
+    cumulative,
+    ...(waiting.length === 0 ? {} : { waiting }),
   }
+}
+
+/** The windows of the state's rows with no row fitted, each with its periods that count and when the next can begin. */
+const waitingOf = (state: LimitsState, fitted: ReadonlyArray<WindowTally>): ReadonlyArray<Waiting> => {
+  const recording = Math.max(state.since, ...Object.values(state.peerSince))
+  const groups = new Map<string, Array<LimitRow>>()
+  for (const row of Object.values(state.rows)) {
+    if (row.broken === true || fitted.some((window) => window.pool === row.pool && window.window === row.window)) continue
+    const key = `${row.pool}|${row.window}`
+    groups.set(key, [...(groups.get(key) ?? []), row])
+  }
+  return [...groups.values()]
+    .map((group): Waiting => {
+      // An account's next period begins at its newest period's reset; the first that begins after every host recorded tokens can count.
+      const newest = new Map<string, LimitRow>()
+      for (const row of group) if ((newest.get(row.credentialID)?.resetAt ?? -Infinity) < row.resetAt) newest.set(row.credentialID, row)
+      const next = [...newest.values()].filter((row) => !usable(state, row) && row.resetAt >= recording).map((row) => row.resetAt)
+      return {
+        pool: group[0]!.pool,
+        window: group[0]!.window,
+        counted: group.filter((row) => usable(state, row)).length,
+        ...(next.length === 0 ? {} : { from: Math.min(...next) }),
+      }
+    })
+    .sort((a, b) => `${a.pool}|${a.window}`.localeCompare(`${b.pool}|${b.window}`))
 }
 
 /**
@@ -518,26 +600,53 @@ export const weeklyRatios = (
 const num = (value: number) => (value >= 10 ? value.toFixed(0) : value >= 1 ? value.toFixed(1) : value.toFixed(2))
 const range = (rate: Rate) => (rate.low === undefined || rate.high === undefined ? "" : ` ${num(rate.low)}–${num(rate.high)}`)
 
+const minute = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")}Z`
+
+/** Why a model's own week has no rate yet, from its `Waiting`. */
+export const waitingText = (waiting: Waiting): string =>
+  [
+    ...(waiting.counted > 0 ? [`${waiting.counted} counted ${waiting.counted === 1 ? "period has" : "periods have"} none of its tokens`] : []),
+    ...(waiting.from === undefined ? [] : [`next counted period from ${minute(waiting.from)}`]),
+  ].join("; ") || "no period counts"
+
 /**
  * The tally on one line, per family on the shared week (`7d`), with a model's
- * own week after it: `limit/Mtok 7d: Opus 0.90% 0.70–1.1 n 12 · Fable 1.6% …
- * (own week 0.30%) · sol 0.40% n 3 (last 7 days)`. The 5-hour window when no
- * row of a week is usable yet. None when nothing is fitted.
+ * own week after it and the weekly points one own-week point costs:
+ * `limit/Mtok 7d: Opus 0.90% 0.70–1.1 n 12 · Fable 0.80% 0.60–1.0 n 5 (own
+ * week 1.6% 1.2–2.0 n 5; weekly/own 0.50) · sol 0.40% n 3 (last 7 days)`.
+ * The 5-hour window when no row of a week is usable yet. A model's own week
+ * with no shared rate follows alone (`Fable own week 2.1% n 1`), and one with
+ * no rate yet says why (`Fable own week: none yet (…)`). None when nothing is
+ * fitted or waiting.
  */
 export const limitsLine = (tally: Tally): string | undefined => {
   const pick = (windows: ReadonlyArray<WindowTally>, name: string) => windows.filter((w) => w.window === name)
   const span = tally.recent.length > 0 ? "last 7 days" : "all rows"
   const windows = tally.recent.length > 0 ? tally.recent : tally.cumulative
   const shown = pick(windows, "7d").length > 0 ? "7d" : pick(windows, "5h").length > 0 ? "5h" : undefined
-  if (shown === undefined) return undefined
-  const parts = pick(windows, shown).flatMap((w) =>
+  const owns = windows.filter((o) => scopeOf(o.window) !== undefined)
+  const ownOf = (pool: string, family: string) =>
+    owns.flatMap((o) => (o.pool === pool ? o.families.filter((g) => g.family === family && g.n > 0).map((g) => ({ window: o.window, rate: g })) : []))[0]
+  const told = new Set<string>()
+  const parts = (shown === undefined ? [] : pick(windows, shown)).flatMap((w) =>
     w.families
       .filter((f) => f.n > 0)
       .map((f) => {
-        const own = windows.find((o) => o.pool === w.pool && o.window.startsWith(`${shown}:`) && o.families.some((g) => g.family === f.family && g.n > 0))
-        const ownRate = own?.families.find((g) => g.family === f.family)?.weighted
-        return `${f.family} ${num(f.weighted.rate)}%${range(f.weighted)} n ${f.n}${ownRate === undefined ? "" : ` (own week ${num(ownRate.rate)}%)`}`
+        const own = ownOf(w.pool, f.family)
+        if (own === undefined) return `${f.family} ${num(f.weighted.rate)}%${range(f.weighted)} n ${f.n}`
+        told.add(`${w.pool}|${own.window}`)
+        const ratio = weeklyRatios(tally, w.pool)[own.window]
+        return `${f.family} ${num(f.weighted.rate)}%${range(f.weighted)} n ${f.n} (own week ${num(own.rate.weighted.rate)}%${range(own.rate.weighted)} n ${own.rate.n}${ratio === undefined ? "" : `; weekly/own ${num(ratio.rate)}`})`
       }),
   )
-  return parts.length === 0 ? undefined : `limit/Mtok ${shown}: ${parts.join(" · ")} (${span})`
+  // A model's own week whose model has no rate on the shared one.
+  for (const o of owns)
+    if (!told.has(`${o.pool}|${o.window}`))
+      for (const g of o.families.filter((g) => g.n > 0)) parts.push(`${g.family} own week ${num(g.weighted.rate)}%${range(g.weighted)} n ${g.n}`)
+  // A model's own week read with no rate yet.
+  for (const waiting of tally.waiting ?? []) {
+    const scope = scopeOf(waiting.window)
+    if (scope !== undefined) parts.push(`${scope} own week: none yet (${waitingText(waiting)})`)
+  }
+  return parts.length === 0 ? undefined : `limit/Mtok${shown === undefined ? "" : ` ${shown}`}: ${parts.join(" · ")} (${span})`
 }

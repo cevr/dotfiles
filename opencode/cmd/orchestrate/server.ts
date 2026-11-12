@@ -80,17 +80,8 @@
  *   at medium, the rest at high), or luna at max for a step whose description
  *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
  *   `fallback: <first model> held: <reason>`, and the parent reads that line
- *   first in the subagent's answer. Held on both, it latches on whichever
+ *   first in the subagent call's result. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
- *
- * - Restart: when the plugin starts (a server start, or a plugin reload),
- *   the subagents of its location the last shutdown cut mid-turn, and that
- *   OpenCode's own recovery left (a foreground subagent), are resumed in the
- *   background through the subagent tool, each turn at most three times in a
- *   row, after a backoff; each resume is a `resumed` line in the call log,
- *   and each parent is told once (`mods/orchestrate/restart.ts`). A turn the
- *   user or the parent cancelled is not resumed, nor is a root session.
- *   `resume: false` turns it off; `resume.backoffMs` sets the waits.
  *
  * - Batch machine: the plugin keeps each root's machine (mods/orchestrate/
  *   machine.ts) in a ledger, one JSONL line per event or refusal (keyed by
@@ -122,7 +113,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -144,15 +135,13 @@ import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
-import * as RestartsLive from "@dotfiles/opencode-orchestrate/opencode/restarts"
 import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
-import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
 import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused } from "@dotfiles/opencode-orchestrate/machine"
 import * as GitBranches from "@dotfiles/opencode-orchestrate/git/branches"
-import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/restarts"
+import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
@@ -168,8 +157,6 @@ import {
   type Models,
   type PoolPace,
   type Remind,
-  type Restarts,
-  type ResumeStart,
   type RootHolds,
   type RunRecords,
   type Runs,
@@ -241,10 +228,6 @@ export const Options = Schema.Struct({
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
-  resume: Schema.Union([
-    Schema.Literal(false),
-    Schema.Struct({ backoffMs: Schema.Array(Schema.Finite).pipe(withDefault<ReadonlyArray<number>>(BACKOFF_MS)) }),
-  ]).pipe(withDefault<false | { readonly backoffMs: ReadonlyArray<number> }>({ backoffMs: BACKOFF_MS })),
 })
 export type Options = typeof Options.Type
 
@@ -261,7 +244,6 @@ export type Externals =
   | Runs
   | RootHolds
   | Steer
-  | Restarts
   | Skill
   | RunRecords
   | Tell
@@ -274,18 +256,14 @@ export type Externals =
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
 
-/** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
-export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
-
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 /**
  * The outside systems as OpenCode, the filesystem and processes provide them;
- * `start` runs a latched child, and `resume` a child a restart cut, through
- * the subagent tool.
+ * `start` runs a latched child through the subagent tool.
  */
-export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background): Layer.Layer<Externals> =>
+export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background): Layer.Layer<Externals> =>
   Layer.mergeAll(
     LedgerLive.layer(options.ledger, options.cadence),
     FindingsLive.layer,
@@ -304,7 +282,6 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
           Effect.orElseSucceed(() => background(sessionID) > 0),
         ),
     }),
-    RestartsLive.fromContext(ctx, resume),
     CallLogLive.layer(options.log),
     SessionsLive.layer(
       (sessionID) =>
@@ -525,7 +502,7 @@ type ToolContext = Parameters<Execute>[1]
 
 /** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
 export const make = (
-  externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background) => Layer.Layer<Externals>,
+  externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
@@ -536,7 +513,7 @@ export const make = (
         Effect.orDie,
       )
       // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it,
-      // and a child a restart cut is resumed through it, in the background on the existing child.
+      // in the background on the existing child.
       let subagent: Execute | undefined
       const run = (request: LatchStart, prompt: string) =>
         Effect.suspend(() => {
@@ -561,7 +538,6 @@ export const make = (
           ).pipe(Effect.asVoid)
         })
       const start: LatchesLive.Start = (request) => run(request, `${SPAWNED}\n${request.prompt}`)
-      const resume: Resume = (request) => run(request, request.prompt)
       const config = {
         place: options.place,
         fullAgent: options.fullAgent,
@@ -579,8 +555,7 @@ export const make = (
           Model.machineLayer({ cadence: options.cadence, mode: options.guard, fullAgent: options.fullAgent, block: MACHINE_BLOCK }),
           Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
           Model.driftLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
-          Model.restarter(config, options.resume === false ? [] : options.resume.backoffMs),
-        ).pipe(Layer.provideMerge(externals(ctx, options, start, resume, ownBackground))),
+        ).pipe(Layer.provideMerge(externals(ctx, options, start, ownBackground))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
       const machines = Context.get(services, Model.Machines)
@@ -664,9 +639,6 @@ export const make = (
             ),
         })
         .pipe(Effect.orDie)
-
-      // Subagents the last shutdown cut: found and resumed in the background, once this start has settled.
-      if (options.resume !== false) yield* Effect.forkScoped(Context.get(services, Model.Restarter).resumeCut(yield* Clock.currentTimeMillis))
 
       // The roles, defined as OpenCode's own plugins define build and general: before the
       // config's agent files, so a file in the owner's config still overrides a role's fields.

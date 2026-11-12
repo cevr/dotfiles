@@ -7,13 +7,14 @@
 // not recorded … NotOpen`, which a submit logged once per other directory).
 // The same run has a root session and a subagent of it: the subagent's
 // question, answered in the root's form, wakes the subagent with the letter,
-// and the root, not woken, reads a notice of it at its next turn.
+// and the root, not woken by the notice, reads it at its next turn, which
+// OpenCode starts with the subagent's next idle report.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./questions/run.ts"
-import { ANSWERED, IDLE, LETTER, NOTICE, ROOT_TOLD } from "./questions/sim.ts"
+import { answeredAfter, ANSWERED, IDLE, isNotice, isReport, LETTER, messagesOf, NOTICE, ROOT_TOLD } from "./questions/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/questions-locations.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -52,15 +53,6 @@ const run = async (): Promise<Result> => {
   return JSON.parse(readFileSync(result, "utf8")) as Result
 }
 
-interface Message {
-  readonly type?: string
-  readonly metadata?: { readonly source?: string }
-}
-const messagesOf = (context: unknown): ReadonlyArray<Message> => {
-  const list = Array.isArray(context) ? context : (context as { messages?: unknown }).messages
-  return Array.isArray(list) ? (list as ReadonlyArray<Message>) : []
-}
-
 /** The one run both tests read. */
 let once: Promise<Result> | undefined
 const shared = () => (once ??= run())
@@ -87,8 +79,22 @@ describe.skipIf(!fork)("questions with two directories open on one server", () =
     expect(messagesOf(subagent.child).filter((message) => message.metadata?.source === "questions")).toHaveLength(1)
     expect(JSON.stringify(subagent.child)).toContain(LETTER)
     expect(JSON.stringify(subagent.child)).toContain(ANSWERED)
-    // The notice did not wake the root; its next turn read it.
-    expect(JSON.stringify(subagent.untold)).not.toContain(ROOT_TOLD)
+    // The notice did not wake the root. OpenCode wakes it with each idle report of the subagent: the run lets
+    // the first report's turn end before the answer, and holds the subagent's turn on the letter, so while it is
+    // held the notice, sent with the letter, is the only thing that could wake the root, and the root takes no
+    // turn: its first turn and the first report's, nothing after.
+    const untold = messagesOf(subagent.untold)
+    const turns = (messages: ReadonlyArray<{ readonly type?: string }>) => messages.filter((message) => message.type === "assistant").length
+    expect(untold.filter(isReport)).toHaveLength(1)
+    expect(answeredAfter(untold, isReport)).toBe(true)
+    expect(turns(untold)).toBe(2)
+    expect(answeredAfter(untold, isNotice)).toBe(false)
+    // Its next turn, on the subagent's second report, read it.
+    const root = messagesOf(subagent.root)
+    expect(root.filter(isReport)).toHaveLength(2)
+    expect(root.findIndex(isNotice)).toBeGreaterThan(root.findIndex(isReport))
+    expect(answeredAfter(root, isNotice)).toBe(true)
+    expect(turns(root)).toBe(3)
     expect(JSON.stringify(subagent.root)).toContain(NOTICE)
     expect(JSON.stringify(subagent.root)).toContain(ROOT_TOLD)
     expect(JSON.stringify(subagent.root)).not.toContain(LETTER)

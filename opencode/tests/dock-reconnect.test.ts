@@ -90,11 +90,17 @@ const sim = Bun.serve({
     const last = messages.at(-1)
     if (!titling && last?.role === "user" && textOf(last.content).includes("hold")) {
       const head = new TextEncoder().encode(`data: ${JSON.stringify(chunk({ role: "assistant", content: "holding" }, null))}\n\n`)
+      let held: ReadableStreamDefaultController<Uint8Array> | undefined
       return new Response(
         new ReadableStream<Uint8Array>({
           start: (controller) => {
             controller.enqueue(head)
+            held = controller
             holds.add(controller)
+          },
+          // A request OpenCode gave up on (a cancelled or retried turn) has no answer left to end.
+          cancel: () => {
+            if (held !== undefined) holds.delete(held)
           },
         }),
         { headers: SSE },

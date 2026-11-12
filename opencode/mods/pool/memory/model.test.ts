@@ -114,7 +114,8 @@ describe("Codex resets", () => {
         // The credit that expires soonest goes first; the hold is worked once.
         expect(codex.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["codex-b", "credit-soon"]])
         expect(codex.claims[0]!.requestID).toMatch(/^pool-[0-9a-f]{24}$/)
-        expect(codex.owner.asked).toEqual([])
+        // No question about the claim; the push question about resets left unused (push.ts) is another matter.
+        expect(codex.owner.asked.filter((question) => !question.key.startsWith("push:"))).toEqual([])
         const status = yield* pool.resets
         expect(status.claims.map((claim) => [claim.outcome, claim.weekly])).toEqual([["reset", "moved"]])
         expect(status.resets.map((reset) => [reset.credentialID, reset.stage])).toEqual([["codex-b", "settled"]])

@@ -69,7 +69,6 @@ import {
   verifierPromptOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
-import * as Restart from "./restart.ts"
 import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
 
 /** The owner's rule: Codex plans and verifies, never implements; every other agent stays on its own model. */
@@ -88,8 +87,6 @@ import {
   Models,
   Remind,
   PoolPace,
-  Restarts,
-  type ResumeStart,
   RootHolds,
   RunRecords,
   Runs,
@@ -98,7 +95,6 @@ import {
   Steer,
   StepLog,
   Tell,
-  type Transcript,
   UnitLogs,
 } from "./service.ts"
 import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
@@ -604,146 +600,6 @@ export const layer = (config: Config) =>
       })
 
       return { startSubagent, openLatch, useTool, finishSubagent: finish, handBack }
-    }),
-  )
-
-/**
- * Resumes the subagents a restart cut (restart.ts). `resumeCut(boot)` runs
- * once when the plugin starts, at `boot`: a server start, or a plugin reload,
- * which cuts nothing itself but finds a cut an earlier start left. After the
- * first backoff, so OpenCode's own restart recovery lands first, it finds this
- * location's children the restart cut; per parent it waits the longest
- * backoff its children's earlier resumes call for, checks each child again,
- * resumes it in the background (or leaves it after too many resumes in a
- * row), logs each resume, and tells the parent once. Over the Sabbath it
- * resumes nothing.
- */
-export class Restarter extends Context.Service<Restarter, { readonly resumeCut: (boot: number) => Effect.Effect<void> }>()(
-  "dotfiles-opencode/orchestrate/Restarter",
-) {}
-
-/** A child the restart cut, as the scan found it. */
-interface Found {
-  readonly child: string
-  readonly parent: string
-  /** When its turn was cut: a later check must find the same cut. */
-  readonly at: number
-  readonly tries: number
-}
-
-export const restarter = (config: Pick<Config, "place" | "now">, backoff: ReadonlyArray<number> = Restart.BACKOFF_MS) =>
-  Layer.effect(
-    Restarter,
-    Effect.gen(function* () {
-      const log = yield* CallLog
-      const restarts = yield* Restarts
-      const sabbathNow = config.now === undefined ? Clock.currentTimeMillis : Effect.succeed(config.now)
-      const at = Clock.currentTimeMillis.pipe(Effect.map((ms) => new Date(ms).toISOString()))
-      const first = backoff[0] ?? 0
-
-      /** Find this location's children the restart cut before `boot`. Each transcript is read once. */
-      const scan = Effect.fnUntraced(function* (boot: number) {
-        const read = new Map<string, Transcript | undefined>()
-        const transcript = (id: string) =>
-          read.has(id) ? Effect.succeed(read.get(id)) : restarts.transcript(id).pipe(Effect.tap((found) => Effect.sync(() => read.set(id, found))))
-        const judged = new Map<string, boolean>()
-        // Cut by the restart: cut with no turn end, or interrupted through a parent's call that was.
-        const cut = (id: string): Effect.Effect<boolean> =>
-          judged.has(id)
-            ? Effect.succeed(judged.get(id)!)
-            : Effect.gen(function* () {
-                judged.set(id, false) // a cycle in the parent links cuts nothing
-                const found = yield* transcript(id)
-                if (found === undefined) return false
-                const end = Restart.ending(found.entries)
-                if (!Restart.inWindow(end, boot)) return false
-                const parentID = found.session.parentID
-                let verdict = end._tag === "Cut"
-                if (!verdict && parentID !== undefined) {
-                  const parent = yield* transcript(parentID)
-                  verdict = parent !== undefined && Restart.callCut(parent.entries, id, yield* cut(parentID))
-                }
-                judged.set(id, verdict)
-                return verdict
-              })
-        const found: Array<Found> = []
-        for (const card of yield* restarts.children(boot - Restart.WINDOW_MS)) {
-          if (card.parentID === undefined || !(yield* cut(card.id))) continue
-          const entries = read.get(card.id)?.entries ?? []
-          const end = Restart.ending(entries)
-          if (end._tag === "Settled") continue
-          found.push({ child: card.id, parent: card.parentID, at: end.at, tries: Restart.resumes(entries) })
-        }
-        return found
-      })
-
-      /** Resume one parent's cut children, each checked again first, and tell the parent once. */
-      const settle = Effect.fnUntraced(function* (parent: string, children: ReadonlyArray<Found>) {
-        const waits = children.map((child) => Restart.verdict(child.tries, backoff)).flatMap((verdict) => (verdict._tag === "Resume" ? [verdict.waitMs] : []))
-        const wait = Math.max(0, ...waits) - first
-        if (wait > 0) yield* Effect.sleep(wait)
-        if (resumesAt(yield* sabbathNow, config.place) !== undefined) return
-        const parentNow = yield* restarts.transcript(parent)
-        const resumed: Array<Restart.Named> = []
-        const left: Array<Restart.Named & { readonly why: string }> = []
-        for (const found of children) {
-          const now = yield* restarts.transcript(found.child)
-          if (now === undefined) continue
-          const end = Restart.ending(now.entries)
-          // Continued meanwhile (its parent called it, OpenCode resumed it): nothing to do.
-          if (end._tag === "Settled" || end.at !== found.at) continue
-          const description = now.session.title ?? now.session.agent ?? "subagent"
-          const named = { child: found.child, description }
-          const verdict = Restart.verdict(Restart.resumes(now.entries), backoff)
-          if (verdict._tag === "GiveUp") {
-            // Left to the parent once: a later start finds the parent told.
-            if (!Restart.toldSince(parentNow?.entries ?? [], found.child, found.at)) left.push({ ...named, why: Restart.gaveUp(verdict.attempts) })
-            continue
-          }
-          const call = parentNow === undefined ? undefined : Restart.callTo(parentNow.entries, found.child)
-          const lastTurn = parentNow?.entries.findLast((entry) => entry.type === "assistant")
-          const start: ResumeStart = {
-            parent,
-            from: call?.agent ?? parentNow?.session.agent ?? "build",
-            messageID: call?.messageID ?? (lastTurn?.type === "assistant" ? lastTurn.id : ""),
-            callID: call?.callID ?? `resume-${found.child}`,
-            child: found.child,
-            agent: now.session.agent ?? "worker",
-            description,
-            prompt: Restart.resumePrompt,
-          }
-          const failed = yield* restarts.resume(start).pipe(
-            Effect.as(undefined),
-            Effect.catchTag("StartFailed", (failure) => Effect.succeed(failure)),
-          )
-          if (failed !== undefined) {
-            yield* Effect.logWarning("orchestrate: a subagent the restart cut could not be resumed", { child: found.child, message: failed.message })
-            left.push({ ...named, why: `it could not be resumed: ${failed.message}` })
-            continue
-          }
-          yield* log.append(CallLine.resumed(start, verdict.attempt, yield* at))
-          resumed.push(named)
-        }
-        if (resumed.length === 0 && left.length === 0) return
-        // A resumed child's result wakes the parent; a parent left only to act itself is woken now.
-        yield* restarts.tell({
-          parent,
-          text: Restart.notice(resumed, left),
-          description: Restart.NOTICE_TITLE,
-          wake: resumed.length === 0,
-          children: [...resumed, ...left].map((item) => item.child),
-        })
-      })
-
-      const resumeCut = Effect.fn("Restarter.resumeCut")(function* (boot: number) {
-        // Even with no wait, the plugin's setup finishes first: the subagent tool is handed in after it.
-        yield* Effect.sleep(first)
-        const found = yield* scan(boot)
-        const parents = Map.groupBy(found, (item) => item.parent)
-        yield* Effect.forEach(parents, ([parent, children]) => settle(parent, children), { concurrency: "unbounded", discard: true })
-      })
-
-      return { resumeCut }
     }),
   )
 

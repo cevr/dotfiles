@@ -170,8 +170,6 @@ export const poolEntry = (pool: string, gent: string | undefined, fleet?: { read
   package: pool,
   options: {
     cacheLifeMs: CLAUDE_CACHE_LIFE_MS,
-    // No unasked reset claims until the fleet spend-authority redesign is verified; offers and a yes still work.
-    resets: { auto: false },
     ...(gent === undefined ? {} : { sources: [{ kind: "gent", dir: gent }] }),
     ...(fleet === undefined ? {} : { paced: { openai: "openai" }, fleet: { host: fleet.host, peers: peersOf(fleet.host) } }),
   },

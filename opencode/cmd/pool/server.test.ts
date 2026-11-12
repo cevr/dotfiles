@@ -36,6 +36,11 @@ const ANTHROPIC = PoolId.make("anthropic")
 type Host = Parameters<(typeof Pool)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void>
 type Handler = (input: unknown) => Effect.Effect<unknown>
+/** A tool the plugin added: its name and how it runs, as the stand-in host keeps it. */
+interface ToolDefinition {
+  readonly name: string
+  readonly execute: (input: never, context: { readonly sessionID: string }) => Effect.Effect<{ readonly content: ReadonlyArray<{ readonly text: string }> }, unknown>
+}
 
 /** The provider's logins: two OAuth logins and an API key, which the pool leaves out. */
 const CONNECTIONS = [
@@ -142,6 +147,7 @@ const start = (
     const hooks: Record<string, Hook> = {}
     const rpc: Record<string, Record<string, Handler>> = {}
     const transforms: Array<(editor: unknown) => void> = []
+    const tools = new Map<string, ToolDefinition>()
     const quotaIDs: Array<string> = []
     const statuses: Array<{ readonly credentialID: unknown; readonly status: unknown }> = []
     const events = yield* Queue.unbounded<SessionEvent>()
@@ -216,6 +222,13 @@ const start = (
           }),
       },
       event: { subscribe: () => Stream.fromQueue(events) },
+      tool: {
+        transform: (callback: (editor: { readonly add: (tool: ToolDefinition) => void }) => void) =>
+          Effect.sync(() => {
+            callback({ add: (tool) => void tools.set(tool.name, tool) })
+            return { dispose: Effect.void }
+          }),
+      },
       agent: {
         get: ({ agentID }: { readonly agentID: string }) => {
           if (!state.agents.has(agentID)) return Effect.fail(new Error(`Agent not found: ${agentID}`))
@@ -361,6 +374,7 @@ const start = (
       statuses,
       rpc,
       hooks,
+      tools,
     }
   })
 
@@ -1525,6 +1539,29 @@ describe("the lease RPC", () => {
         // The grant, the refusal while lent and the release are lease.test.ts's and fleet-claims.test.ts's: the table here is the process's.
         expect(yield* lease(ask("mac", "a"))).toMatchObject({ granted: false, reason: expect.stringContaining("started lately and lends nothing until") })
         expect(yield* lease({ _tag: "Release", host: "mac", id: "a", provider: "claude", grants })).toEqual({ granted: true })
+      }),
+    ))
+})
+
+describe("the push", () => {
+  test("pool_push starts a push from the calling session and answers with its plan; the push RPC takes the same request, and a malformed one changes nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        // The test layers' owner walks the sessions' parents.
+        state.owner.parents.set("ses_child", "ses_owner")
+        const plugin = yield* start({ sweepMinutes: 0, fleet: { host: "workbox" } }, state)
+        const tool = plugin.tools.get("pool_push")
+        expect(tool).toBeDefined()
+        const answer = yield* tool!.execute({ action: "start", goal: "ergo", session: true, resets: 1 } as never, { sessionID: "ses_child" })
+        expect(answer.content[0]!.text).toContain('Push push-workbox_ses_owner__-')
+        expect(answer.content[0]!.text).toContain('"ergo" (asked): host workbox, session ses_owner')
+        const push = plugin.rpc["dotfiles-opencode.pool"]!.push!
+        expect(yield* push({ action: "status" })).toMatchObject({ ok: true, pushes: [{ goal: "ergo", scope: { host: "workbox", sessionID: "ses_owner" } }] })
+        expect(yield* push({ action: "launch" })).toEqual({ ok: false, text: "not a push request", pushes: [] })
+        // A refusal is the tool's error, with the reason.
+        const refused = yield* tool!.execute({ action: "start", goal: "" } as never, { sessionID: "ses_child" }).pipe(Effect.flip)
+        expect(String((refused as { message?: string }).message)).toContain("A push needs a goal")
       }),
     ))
 })

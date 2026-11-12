@@ -407,8 +407,8 @@ writes over the provider-configured lifetime, raised by the pool to the provider
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
-`log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog` and `resume`.
+`log.md`, and stops agent work over the Sabbath. Its
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence` and `guard`.
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -442,57 +442,16 @@ The model (the domain files at `mods/orchestrate/`):
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
-  keep a latch, and a latched child starts through the subagent tool), the
-  restart's reads and resumes (`Restarts`, below), the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
+  keep a latch, and a latched child starts through the subagent tool),
+  the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
   (the call log, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
-  latches, the restarts and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
-
-### Resuming after a restart
-
-OpenCode continues a root session and a background subagent that a shutdown
-cut mid-turn by itself, at its next start (a `restart` notice in each). It
-leaves a foreground subagent: the parent's call to it ends `Tool execution
-interrupted (sessionID: …)`, and the child stays cut until the parent calls it
-again by hand. When the plugin starts (a server start, or a plugin reload,
-which cuts nothing but finds a cut an earlier start left), it waits 10 s so
-OpenCode's own recovery lands first, then reads its location's subagent
-sessions active in the last 6 hours (`restart.ts`, through the `Restarts`
-contract, `opencode/restarts.ts`):
-
-- Cut: the last step ended aborted and no turn end followed (a shutdown
-  writes no `idle` marker). Resumed.
-- Interrupted (an `idle` marker `interrupted` after the aborted step): the
-  user's Escape or a parent's cancel, left alone, unless the parent's call
-  to it was cut by the same shutdown (the parent's own turn has no
-  `interrupted` after that call, or was itself cut through its parent).
-  The shutdown reaches a foreground child through its parent's call, which
-  cancels it, so this is the common case.
-- Anything else (ended, running, continued by a prompt or OpenCode's own
-  notice, cut before the window or after the start, a root session): left.
-
-Each cut child is prompted, in the background through the subagent tool, in
-its parent's call to it: `Your turn ended when OpenCode restarted; continue
-where you left off. Any shell you had running was cut by the restart; rerun
-the ones you still need.` Its result wakes the parent as a background
-subagent's does. A turn resumed in a row waits longer each time (10 s, 2 min,
-10 min, the `resume.backoffMs` option); past three it is left to the parent.
-Each child is checked again just before its resume, so one its parent or
-OpenCode continued meanwhile is not resumed twice, and a reload finds the
-resumed ones continued. Each resume is a `resumed` line in the call log
-(`{ kind, at, sessionID: parent, callID, child, agent, description, cause:
-"restart", attempt }`). The parent gets one steered notice per restart
-(`◈ Subagents resumed after a restart`) naming the children resumed and the
-ones left, with why; it wakes the parent only when none was resumed. Over the
-Sabbath nothing is resumed. `resume: false` turns it off.
-
-A crash (no graceful shutdown) leaves a step unfinished rather than aborted,
-which reads the same as a step that runs, so it is left to the parent.
 
 The route (`role.ts`): a role or any other agent asked by name runs as
 asked, and a former role name as its role. An untyped or general call runs
@@ -682,15 +641,20 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   carries the folded findings to the next batch verifier, whose prompt ends
   with them and whose start answers with them.
 - **A land's units.** A unit is named by its role call's description
-  (`implementor <unit> rN`); no prompt is read. A Rift a land names is a
-  unit's by what the land says: the unit an entry names (`{ path, unit }`),
-  else the branch checked out at an entry's path (read before the land runs,
-  since a pushed land trashes the Rift), else the entry itself. A branch or
-  name is read by its last segment: a unit's exact name wins, and
-  `<unit>-<n>` (a later round's Rift or branch) or workrift's `feat-<unit>`
-  is that unit's when `<unit>` is one. A reading that names no unit, or two,
+  (`implementor <unit> rN`); no prompt is read. An implementor's description
+  may end `(rift: <path>)`: the ledger keeps that Rift as the unit's, across
+  rounds. A Rift a land names is a unit's by what the land and the ledger
+  say: the unit an entry names (`{ path, unit }`), else the unit whose start
+  named that Rift (by path, or a name that is its last segment; two such
+  units is none), else the branch checked out at an entry's path (read
+  before the land runs, since a pushed land trashes the Rift), else the
+  entry itself. A branch or name is read by its last segment, every way it
+  reads: as a unit's exact name, as `<unit>-<n>` (a later round's Rift or
+  branch), and through workrift's `feat-<unit>`. One unit among the readings
+  is that unit; none, or two (`db-2` when both `db` and `db-2` are units),
   is none: the land goes through as none of the machine's, never as another
-  unit's (`unitOfEntry`).
+  unit's (`unitOfEntry`). A LandPartial refusal names each ready unit's Rift
+  as `{ path, unit }` from the ledger.
 - **Departures.** The same call passes with `(departs: <why>)` at the end of
   a role call's description, or `departs: "<why>"` in a land's input; the
   ledger records a `Departed` line per rule it broke.

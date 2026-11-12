@@ -94,6 +94,25 @@
  *   expiring claim, no Codex credit for a held start): offers and questions
  *   go on, and a yes still claims. `true` is `{ "auto": true }`.
  *
+ * - `unitCost`: what one queued orchestrate unit is taken to cost, as a share
+ *   of one account's week, for the push question (`@dotfiles/opencode-pool/push`).
+ *   Default 0.1.
+ *
+ * A push (`@dotfiles/opencode-pool/push`) is an owner-approved, time-boxed
+ * spend plan: the `pool_push` tool (start, status, end, plan) starts one from
+ * the owner's session, and the `push` RPC takes the same request, so a push
+ * for a peer (`host`) runs there over SSH (`@dotfiles/opencode-pool/ssh/push`).
+ * While one is active in its scope (a host, and a session's tree or a run),
+ * the spend-evenly hold does not hold a start there until its approved resets
+ * are spent; an account whose week is spent, or a start held for lack of
+ * quota, has one of its resets claimed (an asked claim: the fleet's lease and
+ * the read before the send still apply). The sweep ends pushes past their end
+ * or whose run closed (the status plugin's runs), and asks the owner once a
+ * week per scope to start one when a run's queued units need more than the
+ * pool can spend before its windows reset by themselves, and once a week per
+ * pool when resets in hand would expire unused at the current burn. `resets`
+ * answers that forecast and the pushes on, for the /pool pane.
+ *
  * `started` records a new agent (orchestrate calls it once a subagent starts),
  * `report` answers a peer with this host's starts and its readings (never a
  * token), and `fleet` names each peer, its starts and, while it cannot be read,
@@ -116,7 +135,7 @@
  * shows them in the sidebar and as a toast.
  */
 import { hostname } from "node:os"
-import { Agent, Integration, Plugin } from "@opencode/plugin/effect"
+import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
@@ -128,6 +147,9 @@ import * as FleetStoreLive from "@dotfiles/opencode-pool/opencode/fleet"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
 import * as LoginsLive from "@dotfiles/opencode-pool/opencode/logins"
 import * as OwnerLive from "@dotfiles/opencode-pool/opencode/owner"
+import * as PushStoreLive from "@dotfiles/opencode-pool/opencode/pushes"
+import * as WorkloadLive from "@dotfiles/opencode-pool/opencode/workload"
+import { PUSH_DESCRIPTION, PushRequest, PushToolInput } from "@dotfiles/opencode-pool/push"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import * as ResetsStoreLive from "@dotfiles/opencode-pool/opencode/resets"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
@@ -135,10 +157,11 @@ import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
 import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
 import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
-import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, Quota, ResetsStore } from "@dotfiles/opencode-pool/service"
+import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload } from "@dotfiles/opencode-pool/service"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
+import { STATUS } from "@dotfiles/opencode-status/status"
 
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
@@ -203,6 +226,7 @@ export const Options = Schema.Struct({
     withDefault<boolean | { readonly auto: boolean }>(true),
   ),
   limitsFile: Schema.optional(Schema.String),
+  unitCost: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
 })
 export type Options = typeof Options.Type
 
@@ -279,7 +303,7 @@ export const live = (
   options: Options,
   sources: ReadonlyArray<GentSource>,
   chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
-): Layer.Layer<Externals | Limits> =>
+): Layer.Layer<Externals | Limits | PushStore | Workload> =>
     Layer.mergeAll(
       LimitsLive.layer(ctx.storage, options.limitsFile ?? LimitsLive.defaultPath()),
       LoginsLive.layer(
@@ -308,6 +332,10 @@ export const live = (
       // And the same resets, so a hold is worked once on the host.
       ResetsStoreLive.layer(ctx.storage),
       OwnerLive.layer(questionsHost(ctx)),
+      // The pushes are the host's too: a push started in one project covers its scope in all of them.
+      PushStoreLive.layer(ctx.storage),
+      // The host's load, and the orchestrate runs of this directory from the status plugin (reached at each call: it may start after the pool).
+      WorkloadLive.layer(() => Effect.suspend(() => ctx.rpc(STATUS).status({}))),
     )
 
 /** The questions plugin's RPC and the host's sessions, as the pool asks the owner through them. */
@@ -382,6 +410,7 @@ export const make = (
           },
           resets: resetsOf(options),
           autoClaims: typeof options.resets === "boolean" || options.resets.auto,
+          ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
         }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
       )
       const pool = Context.get(services, Model.Pool)
@@ -545,6 +574,25 @@ export const make = (
       if (options.fleet.peers.length > 0)
         yield* Effect.forkScoped(pool.poll.pipe(Effect.repeat(Schedule.spaced(`${options.fleet.pollSeconds} seconds`))))
 
+      // The owner's session starts, reads, ends or plans a push; the calling session scopes one that names `session`.
+      yield* ctx.tool.transform((editor) => {
+        editor.add({
+          name: "pool_push",
+          description: PUSH_DESCRIPTION,
+          input: PushToolInput,
+          // A direct tool beside the others, so it is offered without code mode and reached from a kernel cell.
+          options: { codemode: false },
+          execute: (input, context) =>
+            pool.push({ ...input, sessionID: context.sessionID }).pipe(
+              Effect.flatMap((answer) =>
+                answer.ok
+                  ? Effect.succeed({ content: [{ type: "text" as const, text: answer.text }] })
+                  : Effect.fail(new Tool.Error({ message: answer.text, error: answer })),
+              ),
+            ),
+        })
+      })
+
       // The pool's own RPC has no error to answer with: a pool whose logins
       // cannot be read fails the call, and its caller goes on without it. An
       // RPC that cannot be registered stops the plugin.
@@ -574,6 +622,12 @@ export const make = (
               onSome: pool.lease,
             }),
           limits: () => pool.limits,
+          // A malformed push request changes nothing.
+          push: (input) =>
+            Option.match(decodePush(input), {
+              onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
+              onSome: pool.push,
+            }),
         })
         .pipe(Effect.orDie)
     }),
@@ -583,6 +637,7 @@ const decodeSessionQuery = Schema.decodeUnknownOption(SessionQuery)
 const decodeLoginsQuery = Schema.decodeUnknownOption(LoginsQuery)
 const decodeStartedQuery = Schema.decodeUnknownOption(StartedQuery)
 const decodeLease = Schema.decodeUnknownOption(LeaseMessage)
+const decodePush = Schema.decodeUnknownOption(PushRequest)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""

@@ -46,6 +46,8 @@ export const POOL_STATUS = {
     lease: { input: { type: "object" }, output: { type: "object" } },
     /** The limit tally (limits.ts `Tally`) and its one line, `{ tally?, line? }`. */
     limits: { input: { type: "object" }, output: { type: "object" } },
+    /** Start, end, read or plan a push (push.ts `PushRequest`); the answer is a `PushAnswer`. A peer's `pool_push` forwards here over SSH. */
+    push: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const
@@ -245,9 +247,16 @@ export const FleetStatus = Schema.Struct({
 })
 export type FleetStatus = typeof FleetStatus.Type
 
-/** The resets method's answer: each hold's reset as it is worked, newest first, and the claims made, newest first. */
+/**
+ * The resets method's answer: each hold's reset as it is worked, newest
+ * first, and the claims made, newest first; each pool's use-or-lose forecast
+ * (push.ts `forecastText`) when a reset would expire unused at the current
+ * burn, and each push active on the host (push.ts `pushText`), as lines.
+ */
 export const ResetsStatus = Schema.Struct({
   resets: Schema.Array(Reset),
   claims: Schema.Array(Claim),
+  forecast: Schema.optionalKey(Schema.Array(Schema.String)),
+  pushes: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type ResetsStatus = typeof ResetsStatus.Type

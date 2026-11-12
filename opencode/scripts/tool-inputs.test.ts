@@ -13,6 +13,7 @@ import { SessionsInput } from "../mods/mail/directory.ts"
 import { MessageInput } from "../mods/mail/letter.ts"
 import { ForgetInput, SaveInput, SearchInput } from "../mods/memory/notebook.ts"
 import { AskInput } from "../mods/questions/ask.ts"
+import { PushToolInput } from "../mods/pool/push.ts"
 import { QueueInput } from "../mods/queue/queue.ts"
 import { RiftInput } from "../mods/rift/rift.ts"
 import { CancelInput, JobInput, ListInput, MonitorInput, WakeInput } from "../mods/wake/tools.ts"
@@ -27,6 +28,7 @@ const INPUTS: Record<string, unknown> = {
   SearchInput,
   ForgetInput,
   AskInput,
+  PushToolInput,
   QueueInput,
   RiftInput,
   WakeInput,

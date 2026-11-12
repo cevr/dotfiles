@@ -60,8 +60,8 @@
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { windowMs } from "./limits.ts"
-import type { PacePlan } from "./pace.ts"
-import { accountWide, ClaimOutcome, grantKind, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
+import { type PacePlan, SHORT_5H, TARGET } from "./pace.ts"
+import { accountWide, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 
 export { ClaimOutcome } from "./quota.ts"
@@ -117,8 +117,19 @@ export const SETTLE_MS = 5 * MINUTE
 export const ResetProvider = Schema.Literals(["claude", "codex"])
 export type ResetProvider = typeof ResetProvider.Type
 
-/** A start the pace held: when, and the session that made the call, if the pace was told. */
-export const Wait = Schema.Struct({ at: Schema.Number, sessionID: Schema.optionalKey(Schema.String) })
+/**
+ * A start the pace held: when, and the session that made the call, if the
+ * pace was told. `hard`: held for lack of quota, not by the spend-evenly
+ * target alone; `root`: the root of the session's tree, which a push's scope
+ * names; `model`: the model the start asked for, whose own window may hold it.
+ */
+export const Wait = Schema.Struct({
+  at: Schema.Number,
+  sessionID: Schema.optionalKey(Schema.String),
+  hard: Schema.optionalKey(Schema.Boolean),
+  root: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+})
 export type Wait = typeof Wait.Type
 
 /** The outcomes worth sending the same claim again for, later. */
@@ -127,9 +138,10 @@ export const retryable = (outcome: ClaimOutcome): boolean =>
 
 /**
  * Why a reset is worked: every account is held and a start waits, a credit is
- * about to expire unused, or demand makes it worth offering.
+ * about to expire unused, demand makes it worth offering, or a push the owner
+ * approved spends one of its resets on a start held for lack of quota (push.ts).
  */
-export const ResetWhy = Schema.Literals(["held", "expiring", "offer"])
+export const ResetWhy = Schema.Literals(["held", "expiring", "offer", "push"])
 export type ResetWhy = typeof ResetWhy.Type
 
 export const Stage = Schema.Literals(["asked", "claiming", "failed", "settled", "declined", "withdrawn"])
@@ -169,6 +181,8 @@ export const Reset = Schema.Struct({
   yes: Schema.optionalKey(Schema.Boolean),
   /** When its claim was last sent, recorded right before the send: a restart remembers it (`claimOut`). */
   sentAt: Schema.optionalKey(Schema.Number),
+  /** The push whose approved reset it spends (push.ts), for a reset claimed for one. */
+  push: Schema.optionalKey(Schema.String),
 })
 export type Reset = typeof Reset.Type
 
@@ -526,23 +540,53 @@ export interface PoolView {
   readonly asker?: string
 }
 
-/** A start on the pool was held by its pace, from the session `sessionID` when the pace was told. */
-export const NoteWait = Schema.TaggedStruct("NoteWait", { pool: Schema.String, sessionID: Schema.optionalKey(Schema.String) })
+/**
+ * A start on the pool was held by its pace, from the session `sessionID` when
+ * the pace was told; `hard` when for lack of quota, with the session's tree
+ * root and the model it asked for (`Wait`).
+ */
+export const NoteWait = Schema.TaggedStruct("NoteWait", {
+  pool: Schema.String,
+  sessionID: Schema.optionalKey(Schema.String),
+  hard: Schema.optionalKey(Schema.Boolean),
+  root: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+})
 export interface NoteWait extends Schema.Schema.Type<typeof NoteWait> {}
+
+/**
+ * A push active on this host now, as a review reads it (push.ts `Push`): the
+ * root session its scope names (none: the whole host), and the resets the
+ * owner approved: at most `max`, of `kinds` and on `accounts` (a login's id
+ * or label) when named.
+ */
+export interface PushGrant {
+  readonly id: string
+  readonly goal: string
+  readonly root?: string
+  readonly max: number
+  readonly kinds?: ReadonlyArray<ResetKind>
+  readonly accounts?: ReadonlyArray<string>
+}
 
 /**
  * Decide what is due, on every pool's accounts as the pool holds them now.
  * `auto: false` (the owner's kill switch) claims nothing no one asked for:
  * no reset before it expires, no Codex credit for a held start, and no retry
- * of one; offers and questions go on, and a yes still claims.
+ * of one; offers and questions go on, and a yes still claims. `pushes`: the
+ * pushes active on this host, whose approved resets are asked claims.
  */
 export interface Review {
   readonly _tag: "Review"
   readonly pools: ReadonlyArray<PoolView>
   readonly auto?: boolean
+  readonly pushes?: ReadonlyArray<PushGrant>
 }
 export const Review = {
-  make: (input: { readonly pools: ReadonlyArray<PoolView>; readonly auto?: boolean }): Review => ({ _tag: "Review", ...input }),
+  make: (input: { readonly pools: ReadonlyArray<PoolView>; readonly auto?: boolean; readonly pushes?: ReadonlyArray<PushGrant> }): Review => ({
+    _tag: "Review",
+    ...input,
+  }),
 }
 
 /** The owner answered a reset's question (`undefined`: the question went without an answer, dismissed). */
@@ -887,9 +931,55 @@ const spareOf = (provider: ResetProvider, account: AccountStatus, credit: ResetC
 /** The spend-evenly target pace.ts paces a week to. */
 const TARGET_WEEK = 0.99
 
+/** Each reset in hand on an account (a credit's every count) that gives back some of a spent week: its spare and its expiry. */
+export const sparesOf = (
+  provider: ResetProvider,
+  account: AccountStatus,
+  now: number,
+  ratios: Readonly<Record<string, Ratio>> = {},
+): ReadonlyArray<{ readonly credit: ResetCredit; readonly kind: ResetKind; readonly spare: number; readonly expiresAt?: number }> =>
+  (account.reading?.resets?.credits ?? [])
+    .filter((credit) => inHand(credit, now))
+    .flatMap((credit) => {
+      const spare = spareOf(provider, account, credit, ratios)
+      const kind = kindOf(provider, credit)
+      return spare <= 0 ? [] : Array.from({ length: credit.count }, () => ({ credit, kind, spare, ...(credit.expiresAt === undefined ? {} : { expiresAt: credit.expiresAt }) }))
+    })
+    .toSorted((left, right) => (left.expiresAt ?? Number.POSITIVE_INFINITY) - (right.expiresAt ?? Number.POSITIVE_INFINITY))
+
 /**
- * Each account's line (pace.ts `PacePlan`): the spare its best reset in hand
- * gives back of a spent week, and, once a reset was claimed this week (the
+ * The spare an account's line is raised by this week: the best reset in hand,
+ * or, when more of them expire before they can be spent one per week, every
+ * one of those. Taken soonest to expire first, one per week from this one
+ * (the next weeks begin at the weekly reset, then every 7 days); a reset that
+ * expires before its week begins must go this week too, or it is lost.
+ */
+export const spareThisWeek = (
+  provider: ResetProvider,
+  account: AccountStatus,
+  weekResetAt: number,
+  now: number,
+  ratios: Readonly<Record<string, Ratio>> = {},
+): number => {
+  const spares = sparesOf(provider, account, now, ratios)
+  let slot = 0
+  let due = 0
+  for (const item of spares) {
+    if (slot === 0) {
+      due += item.spare
+      slot = 1
+      continue
+    }
+    if ((item.expiresAt ?? Number.POSITIVE_INFINITY) <= weekResetAt + (slot - 1) * 7 * DAY) due += item.spare
+    else slot += 1
+  }
+  return Math.max(0, due, ...spares.map((item) => item.spare))
+}
+
+/**
+ * Each account's line (pace.ts `PacePlan`): the spare its resets in hand give
+ * back of a spent week (`spareThisWeek`: the best one, or more when more would
+ * expire before they can be spent one per week), and, once a reset was claimed this week (the
  * claim went through and its reading after it names the week), where the line
  * starts again: the claim's time and the week's use after it.
  */
@@ -904,7 +994,7 @@ export const pacePlans = (
   for (const account of accounts) {
     const week = weekly(account)
     if (week?.resetAt === undefined) continue
-    const spare = Math.max(0, ...(account.reading?.resets?.credits ?? []).filter((credit) => inHand(credit, now)).map((credit) => spareOf(provider, account, credit, ratios)))
+    const spare = spareThisWeek(provider, account, week.resetAt, now, ratios)
     const claim = claims
       .filter(
         (claim) =>
@@ -1084,9 +1174,199 @@ const claudeDue = (state: ResetsState, view: PoolView, current: ReadonlySet<stri
   return [OwnerAsked.make({ reset: { ...reset, sessionID: wait.sessionID, question: claudeQuestion(reset.label, best.account, best.credit, now) } })]
 }
 
+// ── A push's resets ──
+
+/**
+ * The windows that hold a start of `model` on an account now, for lack of
+ * quota: an account-wide 5-hour or weekly window spent or past the pace's
+ * room (`SHORT_5H`, `TARGET`), and the model's own week (`7d:Fable`) spent.
+ */
+export const blockingOf = (account: AccountStatus, now: number, model?: string): ReadonlyArray<QuotaWindow> =>
+  (account.reading?.windows ?? []).filter((window) => {
+    if (window.resetAt === undefined || window.resetAt <= now) return false
+    if (window.name === "5h") return window.utilization >= SHORT_5H
+    if (window.name === "7d") return window.utilization >= TARGET
+    const scope = scopeOf(window.name)
+    return scope !== undefined && model !== undefined && limitsModel(scope, model) && window.utilization >= 1
+  })
+
+/** Whether a window still holds a start at `used`. */
+const stillBlocks = (name: string, used: number) => (name === "5h" ? used >= SHORT_5H : name === "7d" ? used >= TARGET : used >= 1)
+
+/** One reset a push could spend on an account: what it gives back, by window length, and when it would be lost. */
+export interface PushOption {
+  readonly account: AccountStatus
+  readonly credit: ResetCredit
+  readonly kind: ResetKind
+  readonly gives: ReadonlyArray<Giveback>
+  /** The use it gives back of week-long windows (the weekly, a model's own week). */
+  readonly weekly: number
+  /** The use it gives back of the 5-hour window. */
+  readonly short: number
+  /** The account's weekly window's natural reset, when read. */
+  readonly weekResetAt?: number
+  /** It expires before the account's week resets by itself: unused, it is lost. */
+  readonly expiresFirst: boolean
+}
+
+/** Whether a push allows a reset: its kind and its account (by id or label) among those the owner named, when named. */
+const allows = (grant: Pick<PushGrant, "kinds" | "accounts">, view: PoolView, account: AccountStatus, kind: ResetKind) =>
+  (grant.kinds === undefined || grant.kinds.includes(kind)) &&
+  (grant.accounts === undefined ||
+    grant.accounts.includes(account.credentialID) ||
+    grant.accounts.includes(view.labels[account.credentialID] ?? account.credentialID))
+
+/**
+ * The resets a push may spend on an account for a start of `model`: of a kind
+ * and an account it allows, that give back at least MIN_RESTORE of a window
+ * and leave no window holding the start. A Fable reset only when the model's
+ * own week is what holds it: Fable's share comes back, nothing else. With
+ * `held` false (a plan), an account no window holds yet counts what each
+ * reset would give back once spent: every usable reset of the kinds allowed.
+ */
+export const pushOptions = (
+  view: PoolView,
+  account: AccountStatus,
+  grant: Pick<PushGrant, "kinds" | "accounts">,
+  now: number,
+  model?: string,
+  held = true,
+): ReadonlyArray<PushOption> => {
+  const blocking = blockingOf(account, now, model)
+  if (held && blocking.length === 0) return []
+  const fableOut = blocking.some((window) => scopeOf(window.name) !== undefined)
+  const weekResetAt = weekly(account)?.resetAt
+  return usableCredits(account, now).flatMap((credit) => {
+    const kind = kindOf(view.provider, credit)
+    if (!allows(grant, view, account, kind)) return []
+    if (kind === "fable" && held && !fableOut) return []
+    const gives = effectOf(view.provider, account, credit, view.ratios)
+    const given = new Map(gives.map((give) => [give.window, give]))
+    if (held && blocking.some((window) => stillBlocks(window.name, given.get(window.name)?.to ?? window.utilization))) return []
+    const restored = (give: Giveback) => give.from - give.to
+    const weeklyBack = gives.filter((give) => (lengthOf(give.window) ?? 0) >= OFFER_WINDOW_MS).reduce((total, give) => total + restored(give), 0)
+    const short = gives.filter((give) => give.window === "5h").reduce((total, give) => total + restored(give), 0)
+    if (Math.max(weeklyBack, short) < MIN_RESTORE && held) return []
+    return [
+      {
+        account,
+        credit,
+        kind,
+        gives,
+        weekly: weeklyBack,
+        short,
+        ...(weekResetAt === undefined ? {} : { weekResetAt }),
+        expiresFirst: credit.expiresAt !== undefined && credit.expiresAt < (weekResetAt ?? Number.POSITIVE_INFINITY),
+      },
+    ]
+  })
+}
+
+/**
+ * The order a push spends its resets in, by value: a reset that would expire
+ * before its week resets by itself first (the soonest first: unused it is
+ * lost), then the most week-long use given back, then the most 5-hour use,
+ * then the most time left before the account's natural weekly reset (a claim
+ * does not move it, so the use given back has longest to be spent).
+ */
+export const rankPush = (left: PushOption, right: PushOption): number =>
+  Number(right.expiresFirst) - Number(left.expiresFirst) ||
+  (left.expiresFirst && right.expiresFirst ? (left.credit.expiresAt ?? 0) - (right.credit.expiresAt ?? 0) : 0) ||
+  right.weekly - left.weekly ||
+  right.short - left.short ||
+  (right.weekResetAt ?? 0) - (left.weekResetAt ?? 0)
+
+/** The key of a push's claim on a held account: once per push, account and hold. */
+export const pushKey = (pushID: string, credentialID: string, until: number) => `push:${pushID}:${credentialID}:${Math.floor(until / KEY_BUCKET_MS)}`
+
+/** Until when the windows that hold the account block a start of `model`; none when none does. */
+const blockedUntil = (account: AccountStatus, now: number, model?: string): number | undefined => {
+  const blocking = blockingOf(account, now, model)
+  return blocking.length === 0 ? undefined : Math.max(...blocking.map((window) => window.resetAt ?? 0))
+}
+
+/** The resets a push has spent or is spending: in flight, to be sent again, or claimed. */
+export const pushUsed = (state: ResetsState, pushID: string): ReadonlyArray<Reset> =>
+  Object.values(state.resets).filter(
+    (reset) =>
+      reset.push === pushID &&
+      (reset.stage === "claiming" ||
+        (reset.stage === "failed" && reset.attempts < MAX_ATTEMPTS) ||
+        (reset.stage === "settled" && (reset.outcome === "reset" || reset.outcome === "already-redeemed"))),
+  )
+
+/** The push that covers a held start: active here, its scope's root the wait's (or none: the whole host), with a reset left. */
+const pushFor = (state: ResetsState, wait: Wait, pushes: ReadonlyArray<PushGrant>): PushGrant | undefined =>
+  pushes.find((grant) => (grant.root === undefined || grant.root === wait.root) && pushUsed(state, grant.id).length < grant.max)
+
+/**
+ * The claim a push makes in a pool: a start its pace held for lack of quota
+ * waits in the push's scope, and the push has an approved reset left. One at
+ * a time across the host (no other push claim in flight), on an account no
+ * claim is due on or settling, the best by value (`rankPush`). An asked
+ * claim (`yes`): the owner approved it with the push, so the fleet's lease
+ * passes over a peer that cannot be reached, and the account is read again
+ * right before the send (model.ts `sendClaim`).
+ */
+const pushDue = (
+  state: ResetsState,
+  view: PoolView,
+  pushes: ReadonlyArray<PushGrant>,
+  current: ReadonlySet<string>,
+  now: number,
+  claiming: ReadonlySet<string>,
+): ReadonlyArray<ClaimDue> => {
+  const busy = Object.values(state.resets).some(
+    (reset) => reset.push !== undefined && ((reset.stage === "claiming" && now - reset.at < RETRY_MS) || retries(reset, current)),
+  )
+  if (busy) return []
+  const wait = waiting(state, view.id, now)
+  const held = wait?.hard === true ? wait : undefined
+  // A start held in its scope is served first; else an account whose week is spent has its reset claimed at once.
+  const covering = held === undefined ? undefined : pushFor(state, held, pushes)
+  // A spent week is claimed on with no start held only for a push of the whole host: one scoped to a session's tree changes nothing outside it.
+  const grant = covering ?? pushes.find((item) => item.root === undefined && pushUsed(state, item.id).length < item.max)
+  if (grant === undefined) return []
+  const open = view.accounts.filter((account) => !claiming.has(account.credentialID) && !settling(state, current, account, now))
+  const candidates = (model: string | undefined, spentWeek: boolean) =>
+    open.flatMap((account) => {
+      if (spentWeek && !blockingOf(account, now).some((window) => window.name === "7d")) return []
+      const until = blockedUntil(account, now, model)
+      if (until === undefined) return []
+      const key = pushKey(grant.id, account.credentialID, until)
+      if (state.resets[key] !== undefined) return []
+      return pushOptions(view, account, grant, now, model)
+        .filter((option) => !spentWeek || option.weekly >= MIN_RESTORE)
+        .map((option) => ({ option, key }))
+    })
+  const best = [
+    ...(covering === undefined || held === undefined ? [] : candidates(held.model, false)),
+    ...(grant.root === undefined ? candidates(undefined, true) : []),
+  ].toSorted((left, right) =>
+    rankPush(left.option, right.option),
+  )[0]
+  if (best === undefined) return []
+  const reset = resetOf(view, best.option.account, best.option.credit, best.key, "push", "claiming", now)
+  return [ClaimDue.make({ reset: { ...reset, yes: true, push: grant.id, buys: buysOf(best.option.gives) } })]
+}
+
+/** The keys of the pushes' claims still current: each push, on each account a window holds for the pool's waiting model. */
+const pushKeys = (state: ResetsState, pools: ReadonlyArray<PoolView>, pushes: ReadonlyArray<PushGrant>, now: number): ReadonlyArray<string> =>
+  pushes.flatMap((grant) =>
+    pools.flatMap((view) =>
+      view.accounts.flatMap((account) =>
+        [state.waits[view.id]?.model, undefined].flatMap((model) => {
+          const until = blockedUntil(account, now, model)
+          return until === undefined ? [] : [pushKey(grant.id, account.credentialID, until)]
+        }),
+      ),
+    ),
+  )
+
 const review = (state: ResetsState, command: Review, now: number): ReadonlyArray<Event> => {
   const auto = command.auto !== false
-  const current = currentKeys(command.pools, now)
+  const pushes = command.pushes ?? []
+  const current = new Set([...currentKeys(command.pools, now), ...pushKeys(state, command.pools, pushes, now)])
   const events: Array<Event> = []
   // A question whose hold lifted by itself, or whose grant is gone, is withdrawn first.
   const credits = new Set(
@@ -1132,6 +1412,14 @@ const review = (state: ResetsState, command: Review, now: number): ReadonlyArray
   }
   after = { ...after, resets: Object.fromEntries(Object.entries(after.resets).filter(([key]) => !withdrawn.has(key))) }
   for (const view of command.pools) {
+    // A push's approved reset comes first: the owner already said yes, so the start held in its scope asks nothing more.
+    const pushed = pushDue(after, view, pushes, current, now, claiming)
+    if (pushed.length > 0) {
+      after = pushed.reduce(evolve, after)
+      events.push(...pushed)
+      for (const event of pushed) claiming.add(event.reset.credentialID)
+      continue
+    }
     const due = view.provider === "codex" ? (auto ? codexDue(after, view, command.pools, current, now, claiming) : []) : claudeDue(after, view, current, now, claiming)
     // A pool reviewed after another sees what the other decided: an account two pools list is asked about, or claimed on, once.
     after = due.reduce(evolve, after)
@@ -1277,7 +1565,18 @@ export const Resets: Decider<ResetsState, Command, Event> = {
   decide: (state, command, now) => {
     switch (command._tag) {
       case "NoteWait":
-        return Effect.succeed([WaitNoted.make({ pool: command.pool, wait: { at: now, ...(command.sessionID === undefined ? {} : { sessionID: command.sessionID }) } })])
+        return Effect.succeed([
+          WaitNoted.make({
+            pool: command.pool,
+            wait: {
+              at: now,
+              ...(command.sessionID === undefined ? {} : { sessionID: command.sessionID }),
+              ...(command.hard === true ? { hard: true } : {}),
+              ...(command.root === undefined ? {} : { root: command.root }),
+              ...(command.model === undefined ? {} : { model: command.model }),
+            },
+          }),
+        ])
       case "Review":
         return Effect.succeed(review(state, command, now))
       case "TakeAnswer":

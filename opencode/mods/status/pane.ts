@@ -242,6 +242,9 @@ export const PaneResets = Schema.Struct({
       weekly: Schema.String,
     }),
   ),
+  /** Each pool's use-or-lose forecast and each push active on the host, as lines. */
+  forecast: Schema.optionalKey(Schema.Array(Schema.String)),
+  pushes: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type PaneResets = typeof PaneResets.Type
 
@@ -272,7 +275,7 @@ const WEEKLY: Readonly<Record<string, string>> = { moved: "weekly reset moved", 
  * Codex · work · reset · weekly reset moved · <time>`). None when the pool
  * has worked none.
  */
-const WHY: Readonly<Record<string, string>> = { expiring: " (expiring unused)", offer: " (offered on demand)" }
+const WHY: Readonly<Record<string, string>> = { expiring: " (expiring unused)", offer: " (offered on demand)", push: " (for a push)" }
 
 /** A reset's provider and kind as its row names them: `Claude Fable reset`, or the provider alone when no kind was read. */
 const resetName = (reset: { readonly provider: string; readonly kind?: string }) => {
@@ -281,6 +284,9 @@ const resetName = (reset: { readonly provider: string; readonly kind?: string })
 }
 
 export const resetRows = (resets: PaneResets): ReadonlyArray<ResetRow> => [
+  // The pushes on, then the resets that would expire unused at this rate.
+  ...(resets.pushes ?? []).map((text) => ({ asking: false, text })),
+  ...(resets.forecast ?? []).map((text) => ({ asking: false, text })),
   ...resets.resets
     .filter((reset) => reset.stage === "asked" || reset.stage === "claiming" || reset.stage === "failed")
     .map((reset) => ({
