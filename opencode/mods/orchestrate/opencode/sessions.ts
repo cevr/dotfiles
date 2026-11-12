@@ -19,6 +19,17 @@ export interface Session {
   readonly directory?: string
 }
 
+/** Where a session runs, or which sessions a copy of the plugin serves. */
+export interface Place {
+  readonly directory: string
+  readonly workspaceID?: string | undefined
+}
+
+const canonical = (directory: string) => (directory.length > 1 && directory.endsWith("/") ? directory.slice(0, -1) : directory)
+
+/** Whether two places are one location, as the fork keys them. */
+export const samePlace = (a: Place, b: Place) => canonical(a.directory) === canonical(b.directory) && (a.workspaceID ?? undefined) === (b.workspaceID ?? undefined)
+
 /** OpenCode's session lookup, as the plugin calls it. */
 export type Get = (sessionID: string) => Effect.Effect<Session, unknown>
 

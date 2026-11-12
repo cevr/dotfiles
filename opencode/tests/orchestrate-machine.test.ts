@@ -11,8 +11,10 @@
 // told, never on a count of tool results: the compaction removes them.
 //
 //   1. `implementor alpha r1`, `implementor beta r1`, `implementor gamma r1`,
-//      each in the foreground, each handing back `ready`;
-//   2. the root's context passes its window, so it compacts before its next call;
+//      each in the background (as OpenCode runs every subagent), each next
+//      one started once the last one's report wakes the root;
+//   2. the root's context passes its window as gamma starts, so it compacts
+//      while gamma runs, and waits for gamma's report;
 //   3. `verifier alpha r1`                        → refused (VerifierPerUnit);
 //   4. `rift({ action: "land", rifts: ["alpha"] })` → refused (LandPartial);
 //   5. `rift({ action: "land", rifts: ["alpha", "beta", "gamma"] })` → runs;
@@ -106,8 +108,9 @@ describe.skipIf(!fork)("a root that compacts mid-run and drifts still lands as a
       expect(told).toBeLessThanOrEqual(1)
       const last = textOf(after.at(-1)!.messages)
       expect(count(last, BLOCK)).toBe(1)
-      expect(last).toContain("ready: alpha")
-      expect(last).toMatch(/a batch is due \(3 ready\)/)
+      // The state as of the compaction: gamma still runs in the background, alpha and beta are ready.
+      expect(last).toContain("implement: gamma")
+      expect(last).toMatch(/ready: alpha \(\d+ min\), beta \(\d+ min\)/)
 
       // The drift is refused in the skill's words, and nothing it asked for started.
       const root = textOf(result.root!.messages)
