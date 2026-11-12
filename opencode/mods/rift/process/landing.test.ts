@@ -283,6 +283,32 @@ describe("process Landing", () => {
     )
   })
 
+  test("an interrupted check ends with its whole process group: the command inside its shells does not outlive it", () => {
+    const made = bench()
+    const pid = join(made.scratch, "pid")
+    /** Whether the process `inner` still runs, as ps sees it. */
+    const alive = (inner: string) => sh(made.scratch, "sh", "-c", `ps -p ${inner} -o pid= || true`) !== ""
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        const running = yield* Effect.forkChild(landing.check(made.integration, "gate", `echo $$ > "${pid}"; sleep 20`, {}))
+        yield* appeared(pid)
+        const inner = readFileSync(pid, "utf8").trim()
+        expect(alive(inner)).toBe(true)
+        yield* Fiber.interrupt(running)
+        const gone = yield* Effect.sync(() => alive(inner)).pipe(
+          Effect.filterOrFail(
+            (still) => !still,
+            () => `${inner} still runs`,
+          ),
+          Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 40 }),
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        )
+        expect(gone).toBe(true)
+      }),
+    )
+  })
+
   test("a post-land script's exclusively waits for a lock another holder has, and runs its step once it lets go; exclusivelySync holds it through its step; an empty name runs the step as is", () => {
     const made = bench()
     const file = join(made.scratch, "locks", "checks.lock")
