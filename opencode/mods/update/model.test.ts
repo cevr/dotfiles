@@ -46,6 +46,8 @@ interface World {
   reinstallFails: boolean
   /** The commits whose advance fails. */
   advanceFails: ReadonlyArray<string>
+  /** The providers the service had a login for before the restart; none when that read fails. */
+  before: Option.Option<ReadonlyArray<string>>
 }
 
 const world = (at: Partial<Omit<World, "calls" | "lines">> = {}): World => ({
@@ -62,6 +64,7 @@ const world = (at: Partial<Omit<World, "calls" | "lines">> = {}): World => ({
   restartFailures: 0,
   reinstallFails: false,
   advanceFails: [],
+  before: Option.some([]),
   ...at,
 })
 
@@ -166,6 +169,7 @@ const fakes = (host: World) =>
           return failure("restart the service")
         }),
         read: Effect.suspend(() => Option.match(Option.fromNullishOr(host.readings.shift()), { onNone: () => failure("read"), onSome: Effect.succeed })),
+        logins: Effect.suspend(() => Option.match(host.before, { onNone: () => failure("list the integrations"), onSome: Effect.succeed })),
       }),
     ),
   )
@@ -200,8 +204,13 @@ const handOff = Effect.gen(function* () {
 const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true })
 
 const POOL = "/d/opencode/cmd/pool"
-const healthy: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.none() }], accounts: Option.some(7) }
-const failedPool: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.some("Cannot find package '@dotfiles/opencode-status'") }], accounts: Option.none() }
+const healthy: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.none() }], accounts: Option.some(7), providers: ["anthropic"], logins: ["anthropic", "openai"] }
+const failedPool: Reading = { ...healthy, listed: [{ path: Option.some(POOL), failed: Option.some("Cannot find package '@dotfiles/opencode-status'") }], accounts: Option.none() }
+/** The workbox after its 12:10Z restart on 2026-11-12: every plugin runs, the pool lists OpenAI only, the models are Anthropic's. */
+const noAnthropic: Reading = { ...healthy, accounts: Option.some(1), logins: ["openai", "opencode-go"] }
+const LOST = "login: no anthropic login after the restart, which had one before it: the pool lists no anthropic account and no credential is stored"
+/** Readings enough to outlast the health deadline. */
+const throughDeadline = (reading: Reading) => Array.from({ length: 61 }, () => reading)
 const POOL_FAILED = "pool: Cannot find package '@dotfiles/opencode-status'"
 
 const notices = (host: World) => host.calls.filter((call) => call.startsWith("notice "))
@@ -438,6 +447,52 @@ describe("the handoff on its seams", () => {
     )
   })
 
+  test("a restart that loses the configured models' login reinstalls, then rolls back, naming the provider, though the pool answers with accounts", () => {
+    const host = world({ record: stagedTarget(), before: Option.some(["anthropic", "openai"]), readings: [...throughDeadline(noAnthropic), ...throughDeadline(noAnthropic), healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("rolled-back")
+        expect(host.calls.slice(1)).toEqual([
+          "restart",
+          "reinstall",
+          "restart",
+          "advance c",
+          "restore config",
+          `record ${GOOD.version} good ${GOOD.version}`,
+          "restart",
+          `notice ${LOST}; rolled back`,
+          "reject health",
+        ])
+        expect(host.lines).toContain("handoff: logins before the restart: anthropic, openai")
+        expect(host.lines).toContain(`handoff (first): ${LOST}`)
+      }),
+    )
+  })
+
+  test("a login the host had not before the restart either is reported in the log and the corner, and the build is proven, not rolled back", () => {
+    const host = world({ record: stagedTarget(), before: Option.some(["openai"]), readings: [noAnthropic] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.calls.slice(1)).toEqual(["restart", `record ${NEW.version} good ${NEW.version}`, "notice healthy, but no anthropic login: sign in with opencode auth login"])
+        expect(host.lines).toContain("handoff (first): healthy, but no anthropic login: sign in with opencode auth login")
+      }),
+    )
+  })
+
+  test("logins before the restart that do not read count as none: a missing login is reported, not rolled back", () => {
+    const host = world({ record: stagedTarget(), before: Option.none(), readings: [noAnthropic] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.lines).toContain("handoff: the logins before the restart do not read (list the integrations exited 1); a missing login is reported, not rolled back")
+      }),
+    )
+  })
+
   test("with no good build to go back to, it gives up and the corner names the failed plugin", () => {
     const host = world({ record: Option.some(stagedRecord(Option.none(), NEW, [])), readings: [failedPool, failedPool] })
     return run(
@@ -451,7 +506,7 @@ describe("the handoff on its seams", () => {
 })
 
 /** The pool's status not answering yet: a reading that is not final, so the handoff reads again. */
-const poolSilent: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.none() }], accounts: Option.none() }
+const poolSilent: Reading = { ...healthy, accounts: Option.none() }
 
 /**
  * A handoff on the fakes with the restarted service's own check at `after` into it: the plugin of

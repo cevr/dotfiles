@@ -121,8 +121,13 @@ export class Service extends Context.Service<
   {
     /** Restarts the service onto the installed build, and loads its resident location. */
     readonly restart: Effect.Effect<void, UpdateFailed>
-    /** What the running service says of its plugins and its pool. */
+    /** What the running service says of its plugins, its pool and its logins. */
     readonly read: Effect.Effect<Reading, UpdateFailed>
+    /**
+     * The providers the running service has a usable login for (`Reading.logins`), read before the
+     * restart, so the health after it can tell a lost login from one the host never had.
+     */
+    readonly logins: Effect.Effect<ReadonlyArray<string>, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Service") {}
 

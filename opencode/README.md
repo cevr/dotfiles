@@ -115,8 +115,14 @@ only the resident location's copy acts, so a host runs one updater.
 - **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
   service it restarts: it names the staged build installed, `opencode service
   restart`, then the health check (every configured local plugin loaded in
-  the resident location, and the pool's status answering accounts, which
-  spends nothing). A failure, or a failed restart, reinstalls the
+  the resident location, the pool's status answering accounts, which
+  spends nothing, and a login, a pool account or a stored credential, for
+  each provider the configured models use: the default model, each agent's
+  and the planner's). A provider that had a login before the restart and
+  has none after it fails like a plugin; one that had none before either
+  is reported (`no anthropic login: sign in with opencode auth login`, in
+  the log and the notice), never rolled back, since a rollback cannot bring
+  a login back. A failure, or a failed restart, reinstalls the
   dependencies and restarts once; still failing, or a failed reinstall, it
   rolls back to the last good build and dotfiles commit in `installed.json`
   and restarts on it. A step of the rollback that fails gives up. It ends
