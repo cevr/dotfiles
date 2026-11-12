@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-stall",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The stall watchdog's OpenCode server plugin: the composition root of @dotfiles/opencode-stall.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-stall": "workspace:*"
+  }
+}

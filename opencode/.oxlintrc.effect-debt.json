@@ -255,6 +255,56 @@
     },
     {
       "files": [
+        "mods/stall/filestore/captures.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/stall/laws.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/stall/model.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/stall/inspector/profiler.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/stall/server.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/stall.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "mods/pool/opencode/migrate.test.ts"
       ],
       "rules": {

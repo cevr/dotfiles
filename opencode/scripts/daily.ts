@@ -452,6 +452,7 @@ if (import.meta.main) {
     pluginDir("cache"),
     pluginDir("web"),
     pluginDir("memory"),
+    pluginDir("stall"),
     updateEntry(pluginDir("update"), settings),
     BUILTIN_SCHEDULE_OFF,
   ]
