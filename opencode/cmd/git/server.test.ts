@@ -15,6 +15,7 @@ import { PULL_REQUEST_FIELDS } from "@dotfiles/opencode-git/pull-request"
 import { HUNK_MISSING } from "@dotfiles/opencode-git/review"
 import { type FakeWorld, install } from "@dotfiles/opencode-git/process/fake-gh"
 import { gitInit } from "../../tests/git-repo.ts"
+import { waitUntil } from "../../tests/wait.ts"
 import Git, { live, make } from "./server.ts"
 
 type Host = Parameters<(typeof Git)["effect"]>[0]
@@ -201,10 +202,9 @@ const FAKE: FakeWorld = {
   branch: { name: "master", head: "bbbbbbbb22", checks: [{ name: "build", word: "SUCCESS" }] },
 }
 
-const until = (done: () => boolean) =>
-  Effect.gen(function* () {
-    for (let tries = 0; tries < 200 && !done(); tries += 1) yield* Effect.promise(() => new Promise((wake) => setTimeout(wake, 10)))
-  })
+
+/** Waits, in real time, until `done` holds (tests/wait.ts); a wait that never ends fails naming `what`. */
+const waitFor = (what: string, done: () => boolean) => Effect.promise(() => waitUntil(what, done))
 
 describe("the pr tool", () => {
   test("is a direct tool; a watch's notice comes into the session on the watcher's tick, and the watch is kept in storage", () =>
@@ -222,10 +222,10 @@ describe("the pr tool", () => {
         expect([...plugin.storage.keys()].sort()).toEqual(["repo:biteinc/maitred", "watch:ses_1:biteinc/maitred#412"])
 
         gh.put({ ...FAKE, requests: [{ ...FAKE.requests[0]!, checks: [{ name: "test", word: "SUCCESS" }] }] })
-        yield* until(() => plugin.delivered.length > 0)
+        yield* waitFor("the watch's notice to be delivered", () => plugin.delivered.length > 0)
         expect(plugin.delivered.map((each) => [each.sessionID, each.description])).toEqual([["ses_1", "PR biteinc/maitred#412: checks pending → pass"]])
         expect(plugin.delivered[0]?.text).toContain("The watch ended.")
-        yield* until(() => !plugin.storage.has("watch:ses_1:biteinc/maitred#412"))
+        yield* waitFor("the watch to leave storage", () => !plugin.storage.has("watch:ses_1:biteinc/maitred#412"))
         expect(plugin.storage.has("watch:ses_1:biteinc/maitred#412")).toBe(false)
       }),
     ))

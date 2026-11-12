@@ -28,6 +28,7 @@ import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
+import { waitUntil } from "../../tests/wait.ts"
 import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const MINUTE = 60_000
@@ -383,6 +384,9 @@ const start = (
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
+
+/** Waits, in real time, until `done` holds (tests/wait.ts); a wait that never ends fails naming `what`. */
+const waitFor = (what: string, done: () => boolean) => Effect.promise(() => waitUntil(what, done))
 
 type Scoped<A, E> = Effect.Effect<A, E, import("effect").Scope.Scope>
 const scenario = <A, E>(body: Scoped<A, E>) => Effect.runPromise(Effect.scoped(body))
@@ -1399,7 +1403,7 @@ describe("resets on the live adapters", () => {
           state.credentials.set("chatgpt-1", { type: "oauth", access: "access-1", refresh: "r", expires: now + DAY, metadata: { accountID: "acct-1" } })
           const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live)
           expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })
-          yield* waitFor(() => fake.consumes.length > 0)
+          yield* waitFor("the fake's consume request", () => fake.consumes.length > 0)
           yield* plugin.pace("openai", "ses_root")
           // Consumption precedes the HTTP reply and the post-claim usage read.
           // Keep that boundary open: a second pace must not lose or duplicate the claim.
@@ -1440,14 +1444,14 @@ describe("resets on the live adapters", () => {
         state.parents.set("ses_child", "ses_root")
         const plugin = yield* start({ sweepMinutes: 0 }, state, live)
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
-        yield* waitFor(() => state.owner.asked.length > 0)
+        yield* waitFor("the owner's question", () => state.owner.asked.length > 0)
         const asked = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
         expect(asked).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Claude reset · Anthropic 1" })
         expect(asked.question).toContain("3.0 days remain before the weekly reset")
         expect(plugin.claims).toEqual([])
         // The owner says yes; the questions change, and the pool reads the answer.
         yield* OwnerTest.answer(state.owner, asked.key, "Claim it")
-        yield* waitFor(() => plugin.claims.length > 0)
+        yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
         yield* settle
         expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "grant-1"]])
         expect(state.owner.questions.size).toBe(0)
@@ -1467,9 +1471,9 @@ describe("resets on the live adapters", () => {
         state.readings.set("cred-a", spentClaude(now))
         const plugin = yield* start({ sweepMinutes: 0 }, state, live)
         yield* plugin.pace("anthropic", "ses_root")
-        yield* waitFor(() => state.owner.asked.length > 0)
+        yield* waitFor("the owner's question", () => state.owner.asked.length > 0)
         yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "Don't claim")
-        yield* waitFor(() => state.owner.questions.size === 0)
+        yield* waitFor("the owner's question to close", () => state.owner.questions.size === 0)
         yield* plugin.pace("anthropic", "ses_root")
         yield* settle
         expect(plugin.claims).toEqual([])
@@ -1500,7 +1504,7 @@ describe("resets on the live adapters", () => {
         state.parents.set("ses_child", "ses_root")
         const plugin = yield* start({ sweepMinutes: 0 }, state, live)
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
-        yield* waitFor(() => plugin.claims.length > 0 && state.owner.asked.length > 0)
+        yield* waitFor("the plugin's claim and the owner's question", () => plugin.claims.length > 0 && state.owner.asked.length > 0)
         expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
         // No question before the claim: the one asked is the notice after it.
         expect(state.owner.asked).toHaveLength(1)
@@ -1509,7 +1513,7 @@ describe("resets on the live adapters", () => {
         // Read, it leaves the tray.
         // The reading the memory quota keeps still lists the grant: it is not offered again under another key.
         yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "OK")
-        yield* waitFor(() => state.owner.questions.size === 0)
+        yield* waitFor("the owner's question to close", () => state.owner.questions.size === 0)
         yield* plugin.pace("anthropic", "ses_child")
         yield* settle
         expect(state.owner.asked).toHaveLength(1)
@@ -1540,13 +1544,13 @@ describe("resets on the live adapters", () => {
         state.parents.set("ses_child", "ses_root")
         const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live)
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
-        yield* waitFor(() => state.owner.asked.length > 0)
+        yield* waitFor("the owner's question", () => state.owner.asked.length > 0)
         yield* settle
         expect(plugin.claims).toEqual([])
         expect(state.owner.asked).toHaveLength(1)
         expect(state.owner.asked[0]).toMatchObject({ sessionID: "ses_root", header: "Claude reset · Anthropic 1" })
         yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "Claim it")
-        yield* waitFor(() => plugin.claims.length > 0)
+        yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
         expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
       }),
     ))
@@ -1613,12 +1617,3 @@ describe("the push", () => {
     ))
 })
 
-/** Wait, in real time, until `done` holds; a second without it fails the test. */
-const waitFor = (done: () => boolean) =>
-  Effect.promise(async () => {
-    const deadline = Date.now() + 1000
-    while (!done()) {
-      if (Date.now() > deadline) throw new Error("waited a second in vain")
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
-  })

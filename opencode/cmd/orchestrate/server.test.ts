@@ -40,6 +40,7 @@ import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
+import { eventuallyPasses } from "../../tests/wait.ts"
 import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
@@ -286,19 +287,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
   })
 
-/** Waits for the plugin's background work: `check` passes within a second. */
-const eventually = (check: () => void) =>
-  Effect.gen(function* () {
-    for (let n = 0; n < 100; n += 1) {
-      try {
-        check()
-        return
-      } catch {
-        yield* Effect.sleep("10 millis")
-      }
-    }
-    check()
-  })
+/** Waits for the plugin's background work, in real time, until `check` passes (tests/wait.ts); one that never does fails with its own expectation. */
+const eventually = (check: () => void) => Effect.promise(() => eventuallyPasses(check))
 
 /** Lets the plugin's background work run, for a check that nothing happened. */
 const settle = Effect.sleep("100 millis")
