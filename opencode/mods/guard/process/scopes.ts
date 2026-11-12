@@ -1,9 +1,10 @@
 // Scopes over `systemd-run`: on Linux, a scope is available when
 // `systemd-run --user --scope --quiet --collect true` exits 0 (a user
 // systemd with a reachable bus); asked once, on the first heavy command. On
-// any other system there is none.
+// any other system there is none. `ionice` is there on Linux when it is on
+// PATH (`ioniceAvailable`), never elsewhere.
 import { Effect, Layer } from "effect"
-import { SCOPE_PROBE } from "../launcher.ts"
+import { ioniceAvailable, SCOPE_PROBE } from "../launcher.ts"
 import { Scopes } from "../service.ts"
 
 /** The probe's command line; `platform` and `run` are the machine's unless a test names them. */
@@ -24,6 +25,7 @@ export const layer = (platform: string = process.platform, probe: ReadonlyArray<
     Scopes,
     Effect.gen(function* () {
       const available = yield* Effect.cached(platform === "linux" ? runs(probe) : Effect.succeed(false))
-      return Scopes.of({ available })
+      const ionice = yield* Effect.cached(Effect.sync(() => ioniceAvailable(platform)))
+      return Scopes.of({ available, ionice })
     }),
   )

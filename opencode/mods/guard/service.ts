@@ -64,12 +64,14 @@ export class Launchers extends Context.Service<
   }
 >()("dotfiles-opencode/guard/Launchers") {}
 
-/** Whether this machine can run a command in a systemd user scope. */
+/** Whether this machine can run a command in a systemd user scope, and in the idle I/O class. */
 export class Scopes extends Context.Service<
   Scopes,
   {
     /** True when `systemd-run --user --scope` works here; asked once, then known. */
     readonly available: Effect.Effect<boolean>
+    /** True when `ionice -c3` can run a command here (Linux, with `ionice` on PATH). */
+    readonly ionice: Effect.Effect<boolean>
   }
 >()("dotfiles-opencode/guard/Scopes") {}
 

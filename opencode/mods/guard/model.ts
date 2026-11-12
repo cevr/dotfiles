@@ -134,7 +134,8 @@ export const policyLayer = (config: PolicyConfig) =>
       const shellFor = Effect.fn("ShellPolicy.shellFor")(function* (shell: string, command: string) {
         if (!shell.startsWith("/") || !isHeavy(command, config.heavy)) return shell
         const scope = yield* scopes.available
-        return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope })).pipe(
+        const ionice = yield* scopes.ionice
+        return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope, ionice })).pipe(
           Effect.catchTag("LauncherUnavailable", (error) =>
             Effect.logWarning(`dotfiles-opencode.guard: a heavy command runs without its limits: ${error.message}`).pipe(Effect.as(shell)),
           ),
