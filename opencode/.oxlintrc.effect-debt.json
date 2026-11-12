@@ -218,6 +218,31 @@
     },
     {
       "files": [
+        "mods/rift/filestore/debts.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rift/filestore/debts.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rift/memory/post-land-owed.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
         "scripts/merge-driver.ts"
       ],
       "rules": {

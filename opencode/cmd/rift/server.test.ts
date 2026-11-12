@@ -5,6 +5,7 @@
 // tests/rift.test.ts runs it in OpenCode on the scripted model and real Rift.
 import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer, Schema, type Scope } from "effect"
+import * as MemoryDebts from "@dotfiles/opencode-rift/memory/debts"
 import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
 import * as MemoryRifts from "@dotfiles/opencode-rift/memory/rifts"
@@ -47,6 +48,7 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
         MemoryLanding.layer(landing),
         MemoryNotices.layer(woken),
         MemoryWorkbox.layer(false),
+        MemoryDebts.layer(MemoryDebts.world()),
       ),
     ).effect(host)
 

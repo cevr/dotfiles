@@ -3,6 +3,7 @@
 // fence keeps the root's files off its folders.
 import { describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Predicate, Queue } from "effect"
+import * as MemoryDebts from "./debts.ts"
 import * as MemoryLanding from "./landing.ts"
 import * as MemoryNotices from "./notices.ts"
 import * as MemoryRifts from "./rifts.ts"
@@ -21,9 +22,10 @@ interface Bench {
   readonly woken: Array<MemoryNotices.Woken>
   readonly workbox: Array<MemoryWorkbox.Ran>
   readonly onWorkbox: boolean
+  readonly debts: MemoryDebts.World
 }
 
-const bench = (rifts: MemoryRifts.World, landing = MemoryLanding.world(), onWorkbox = false): Bench => ({ rifts, landing, woken: [], workbox: [], onWorkbox })
+const bench = (rifts: MemoryRifts.World, landing = MemoryLanding.world(), onWorkbox = false): Bench => ({ rifts, landing, woken: [], workbox: [], onWorkbox, debts: MemoryDebts.world() })
 
 const make = (made: Bench, sessions: Record<string, string> = { ses_1: "/code/app/src", ses_in: `${FEAT}/src` }) =>
   Model.layer.pipe(
@@ -34,6 +36,7 @@ const make = (made: Bench, sessions: Record<string, string> = { ses_1: "/code/ap
         MemoryLanding.layer(made.landing),
         MemoryNotices.layer(made.woken),
         MemoryWorkbox.layer(made.onWorkbox, made.workbox),
+        MemoryDebts.layer(made.debts),
       ),
     ),
   )
@@ -229,7 +232,8 @@ describe("land", () => {
           const started = yield* Queue.unbounded<string>()
           const release = yield* Deferred.make<string>()
           made.landing.postLandHold = Queue.offer(started, "started").pipe(Effect.andThen(Deferred.await(release)), Effect.asVoid)
-          const step = `post-land ${POST_LAND} base0 abc1234`
+          made.landing.headOf = (push) => `head${push}`
+          const step = `post-land ${POST_LAND} base0 head1`
           const ended = `ended post-land ${POST_LAND}`
           expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
           yield* Queue.take(started)
@@ -243,13 +247,19 @@ describe("land", () => {
           expect(yield* answerOf(tool, { action: "remove", name: "post-land" })).toBe(`refused: ${POST_LAND} is busy: the post-land step of feat/x runs there. Remove it after its wake.`)
           yield* Deferred.succeed(release, "released")
           yield* Queue.take(started)
-          yield* Queue.take(started)
-          expect(made.landing.steps.filter(ran).slice(0, 5)).toEqual([step, ended, step, ended, step])
+          yield* settle
+          // The two lands that waited owe one step, the newest's, over both batches: it runs once.
+          expect(made.landing.steps.filter(ran)).toEqual([step, ended, `post-land ${POST_LAND} base0 head3`, ended])
+          expect(made.woken.filter((woken) => woken.notice.description.includes("post-land")).map((woken) => woken.notice.text.split(" ran in")[0])).toEqual([
+            "rift land: the post-land step after feat/x",
+            "rift land: the post-land step after feat/y, feat/z",
+          ])
         }),
       )
     }
 
-    test("a land while a post-land step runs goes on, and its own post-land step waits for the first to end: two never overlap", () => overlapping(withPostLand(undefined)))
+    test("a land while a post-land step runs goes on, and its own post-land step waits for the first to end: two never overlap, and the waiting ones run once, as the newest", () =>
+      overlapping(withPostLand(undefined)))
 
     test("with an accept check too, the integration Rift is free once it ends, while the post-land step still runs", () => overlapping(withPostLand("bun run accept")))
 
@@ -292,7 +302,7 @@ describe("land", () => {
       )
     })
 
-    test("a failed post-land step wakes with its exit and output; one under load is skipped and said to run at the next land; no step is run for a batch that was not pushed", async () => {
+    test("a failed post-land step wakes with its exit and output; one under load is owed and said so; no step is run for a batch that was not pushed", async () => {
       const failed = withPostLand(undefined)
       failed.landing.postLandRun = { code: 1, output: "error: the fork is not a checkout\n", report: undefined }
       await calls(failed, [{ action: "land", rifts: ["feat-x"] }])
@@ -305,13 +315,16 @@ describe("land", () => {
       await calls(loaded, [{ action: "land", rifts: ["feat-x"] }])
       expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([])
       expect(loaded.woken[0]!.notice).toEqual({
-        text: "rift land: the post-land step after feat/x was skipped: the 1-minute load is 12.5, at or past the host's 10 cores. The next land runs it again.",
-        description: "rift land · post-land skipped (load)",
+        text: "rift land: the post-land step after feat/x is owed: the 1-minute load is 12.5, at or past the host's 10 cores. It runs once the load has stayed under 10 for 5 minutes (read every 1 min), or at the first land after 6 hours owed whatever the load; a later land's step replaces it. This session is woken with its report.",
+        description: "rift land · post-land owed (load)",
       })
-      // The next land, on a calm host, runs it.
+      expect(loaded.debts.owed.map((owed) => owed.lands.map((land) => land.head))).toEqual([["abc1234"]])
+      // The next land, on a calm host, runs it once, for both batches, and pays it.
       loaded.landing.load = { load: 2, cores: 10 }
       await calls(loaded, [{ action: "land", rifts: ["feat-y"] }])
       expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
+      expect(loaded.woken[1]!.notice.text).toStartWith("rift land: the post-land step after feat/x, feat/y ran in 4s.")
+      expect(loaded.debts.owed).toEqual([])
       const red = withPostLand("bun run accept")
       red.landing.checks.set(`${INTEGRATE} gate`, { code: 1, output: "1 fail\n" })
       await calls(red, [{ action: "land", rifts: ["feat-x"] }])

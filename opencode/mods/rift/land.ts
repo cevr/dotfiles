@@ -62,8 +62,9 @@ export interface LandConfig {
    * the integration Rift in the background after the accept check, one at a
    * time with it, with RIFT_LAND_BASE, RIFT_LAND_HEAD and
    * RIFT_POST_LAND_REPORT set: what it writes to that file is the report the
-   * session is woken with. Skipped while the host is loaded past its cores;
-   * the next land runs it again.
+   * session is woken with. While the host is loaded past its cores it is
+   * owed, not dropped (owed.ts): it runs once the load settles, or at a land
+   * past the max wait.
    */
   readonly postLand: string | undefined
 }
@@ -184,10 +185,6 @@ export const postLandedText = (units: ReadonlyArray<Unit>, ran: PostLanded): str
       : `rift land: the post-land step after ${branches(units)} FAILED (exit ${ran.code}) in ${ran.seconds}s. The batch is already pushed. Log: ${ran.log}`,
     ran.report !== undefined && ran.report.trim() !== "" ? ran.report.trimEnd() : digest(ran.output, 20),
   ].join("\n")
-
-/** The wake a post-land step skipped under load sends. */
-export const postLandSkippedText = (units: ReadonlyArray<Unit>, load: HostLoad): string =>
-  `rift land: the post-land step after ${branches(units)} was skipped: the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores. The next land runs it again.`
 
 /** The wake a background accept check sends. */
 export const acceptedText = (units: ReadonlyArray<Unit>, accept: Ran): string =>

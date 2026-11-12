@@ -1,0 +1,129 @@
+// The post-land step a land owes. A land's post-land step (`rift.postLand`) is owed from the push until it
+// has run; while the host is loaded past its cores it stays owed rather than being dropped. One step is owed
+// per warm source, over every land since one last ran: a later land's replaces the one owed (only the newest
+// runs), kept beside the land logs so a server restart keeps it. The rift plugin's check, every CHECK_EVERY,
+// runs an owed step once the 1-minute load has stayed under the cores for SETTLE; a land runs its own at
+// once on a calm host, and once the step has been owed MAX_WAIT, whatever the load (heavy, so nice'd), and
+// says so. This file holds the rules and the words; model.ts runs them.
+import { Array as Arr, Duration, Option, Schema } from "effect"
+import type { HostLoad, Unit } from "./land.ts"
+
+/** How often the plugin reads the load while a post-land step is owed. */
+export const CHECK_EVERY = Duration.minutes(1)
+/** How long the load must stay under the host's cores before the check runs an owed step. */
+export const SETTLE = Duration.minutes(5)
+/** How long a step stays owed before a land runs it whatever the load. */
+export const MAX_WAIT = Duration.hours(6)
+
+/** One pushed land whose post-land step has not run. */
+export const OwedLand = Schema.Struct({
+  /** The batch's base, RIFT_LAND_BASE when it is the oldest owed. */
+  base: Schema.String,
+  /** The pushed commit, RIFT_LAND_HEAD when it is the newest. */
+  head: Schema.String,
+  /** The Rifts it landed. */
+  units: Schema.Array(Schema.Struct({ path: Schema.String, branch: Schema.String })),
+  /** When it was pushed, epoch milliseconds. */
+  at: Schema.Finite,
+})
+export type OwedLand = typeof OwedLand.Type
+
+/** The post-land step owed for a warm source: one run, as the newest land's, over every land owed, oldest first. */
+export const OwedPostLand = Schema.Struct({
+  /** The warm source whose post-land Rift it runs in. */
+  source: Schema.String,
+  /** The default branch the post-land Rift is put at, as the newest land read it. */
+  main: Schema.String,
+  /** `rift.postLand`, as the newest land read it. */
+  command: Schema.String,
+  /** The session woken with its report: the newest land's. */
+  sessionID: Schema.String,
+  lands: Schema.NonEmptyArray(OwedLand),
+})
+export type OwedPostLand = typeof OwedPostLand.Type
+
+/** RIFT_LAND_BASE: the oldest owed land's base, so the step sees every batch it covers. */
+export const baseOf = (owed: OwedPostLand): string => Arr.headNonEmpty(owed.lands).base
+/** RIFT_LAND_HEAD: the newest land's pushed commit. */
+export const headOf = (owed: OwedPostLand): string => Arr.lastNonEmpty(owed.lands).head
+/** The Rifts of every owed land, oldest first. */
+export const unitsOf = (owed: OwedPostLand): ReadonlyArray<Unit> => owed.lands.flatMap((land) => land.units)
+/** When the step was first owed: the oldest owed land's push. */
+export const sinceOf = (owed: OwedPostLand): number => Arr.headNonEmpty(owed.lands).at
+
+/** One land as the step it owes, before it meets what its source owed already. */
+export interface Owing {
+  readonly source: string
+  readonly main: string
+  readonly command: string
+  readonly sessionID: string
+  readonly land: OwedLand
+}
+
+/** The owed steps after a land: its source's step now the land's, over the lands owed before it too. */
+export const owe = (all: ReadonlyArray<OwedPostLand>, owing: Owing): ReadonlyArray<OwedPostLand> => {
+  const before = Option.fromNullishOr(all.find((owed) => owed.source === owing.source))
+  const lands = Option.match(before, { onNone: () => Arr.of(owing.land), onSome: (owed) => Arr.append(owed.lands, owing.land) })
+  const owed: OwedPostLand = { source: owing.source, main: owing.main, command: owing.command, sessionID: owing.sessionID, lands }
+  return [...all.filter((each) => each.source !== owing.source), owed]
+}
+
+/**
+ * The owed steps once the source's step ran for `head`: the lands up to that one are paid, and a land owed
+ * while it ran stays owed, its base where that run ended.
+ */
+export const pay = (all: ReadonlyArray<OwedPostLand>, source: string, head: string): ReadonlyArray<OwedPostLand> =>
+  all.flatMap((owed) => {
+    if (owed.source !== source) return [owed]
+    const ran = owed.lands.findLastIndex((land) => land.head === head)
+    const left = owed.lands.slice(ran + 1)
+    if (!Arr.isReadonlyArrayNonEmpty(left)) return []
+    return [{ ...owed, lands: left }]
+  })
+
+/** Whether the host is too loaded for a post-land step: the 1-minute load at or past its cores. */
+export const overloaded = (load: HostLoad): boolean => load.load >= load.cores
+
+/** How long `owed` has been owed at `now`. */
+export const owedFor = (owed: OwedPostLand, now: number): Duration.Duration => Duration.millis(Math.max(0, now - sinceOf(owed)))
+
+/** Whether `owed` has waited MAX_WAIT or more. */
+export const overdue = (owed: OwedPostLand, now: number): boolean => Duration.isGreaterThanOrEqualTo(owedFor(owed, now), MAX_WAIT)
+
+/** Who asks for an owed step: a land, or the plugin's check after the load settled. */
+export type Trigger = "land" | "settled"
+
+/** What an owed step does now: runs, runs past the load (a land, past MAX_WAIT), or stays owed. */
+export type Verdict = "run" | "forced" | "defer"
+
+/** The rule: a calm host runs it; a loaded one defers it, unless a land finds it owed MAX_WAIT or more. */
+export const verdict = (owed: OwedPostLand, load: HostLoad, now: number, trigger: Trigger): Verdict => {
+  if (!overloaded(load)) return "run"
+  if (trigger === "land" && overdue(owed, now)) return "forced"
+  return "defer"
+}
+
+/** Since when the load has stayed under the cores, after one more reading: none while it is at or past them. */
+export const calmSince = (before: Option.Option<number>, load: HostLoad, now: number): Option.Option<number> => {
+  if (overloaded(load)) return Option.none()
+  return Option.orElse(before, () => Option.some(now))
+}
+
+/** Whether the load has stayed under the cores for SETTLE by `now`. */
+export const settled = (calm: Option.Option<number>, now: number): boolean =>
+  Option.exists(calm, (since) => Duration.isGreaterThanOrEqualTo(Duration.millis(now - since), SETTLE))
+
+const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
+
+const minutesOf = (duration: Duration.Duration): number => Math.round(Duration.toMinutes(duration))
+
+/** The wake a land whose post-land step is deferred sends. */
+export const deferredText = (owed: OwedPostLand, load: HostLoad): string =>
+  [
+    `rift land: the post-land step after ${branches(unitsOf(owed))} is owed: the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores.`,
+    `It runs once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes (read every ${minutesOf(CHECK_EVERY)} min), or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; a later land's step replaces it. This session is woken with its report.`,
+  ].join(" ")
+
+/** The line that heads the report of a step a land ran past the load. */
+export const forcedLine = (owed: OwedPostLand, load: HostLoad, now: number): string =>
+  `rift land: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${load.load.toFixed(1)} on ${load.cores} cores), nice'd like every check.`

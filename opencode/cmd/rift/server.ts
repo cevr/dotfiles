@@ -12,7 +12,9 @@
  * `@dotfiles/opencode-rift/workspace` for what a removal refuses, and
  * `@dotfiles/opencode-rift/land` for a land. A land's accept check runs in
  * the plugin's scope and wakes the calling session through
- * `session.synthetic`; its logs go to `${XDG_CACHE_HOME:-~/.cache}/rift-land`.
+ * `session.synthetic`; its logs go to `${XDG_CACHE_HOME:-~/.cache}/rift-land`, and
+ * a post-land step owed while the host is loaded (`@dotfiles/opencode-rift/owed`)
+ * to `post-land-owed.json` there, which the plugin's check reads every minute.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `workrift`: make and remove Rifts with `workrift` (the workbox's branch
@@ -21,6 +23,7 @@
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Schema } from "effect"
+import * as FilestoreDebts from "@dotfiles/opencode-rift/filestore/debts"
 import * as Model from "@dotfiles/opencode-rift/model"
 import * as OpenCodeNotices from "@dotfiles/opencode-rift/opencode/notices"
 import * as OpenCodeSessionDirectories from "@dotfiles/opencode-rift/opencode/session-directories"
@@ -28,7 +31,7 @@ import * as ProcessLanding from "@dotfiles/opencode-rift/process/landing"
 import * as ProcessRifts from "@dotfiles/opencode-rift/process/rifts"
 import * as ProcessWorkbox from "@dotfiles/opencode-rift/process/workbox"
 import { RIFT_DESCRIPTION, RiftInput } from "@dotfiles/opencode-rift/rift"
-import type { Landing, Notices, Rifts, SessionDirectories, Workbox } from "@dotfiles/opencode-rift/service"
+import type { Landing, Notices, PostLandDebts, Rifts, SessionDirectories, Workbox } from "@dotfiles/opencode-rift/service"
 
 /** OpenCode's worktree tools, by their registry ids; the rift tool replaces them. */
 export const WORKTREE_TOOLS = ["opencode_worktree_create", "opencode_worktree_list", "opencode_worktree_remove"] as const
@@ -39,7 +42,7 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = Rifts | SessionDirectories | Landing | Notices | Workbox
+export type Externals = Rifts | SessionDirectories | Landing | Notices | Workbox | PostLandDebts
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
@@ -52,6 +55,7 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
   Layer.mergeAll(
     ProcessRifts.layer({ workrift: options.workrift }),
     ProcessLanding.layer({ logs: landLogs() }),
+    FilestoreDebts.layer(FilestoreDebts.debtsFile(landLogs())),
     ProcessWorkbox.layer({ workrift: options.workrift }),
     OpenCodeNotices.layer((input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } as SyntheticInput)),
     OpenCodeSessionDirectories.layer((sessionID) =>

@@ -30,6 +30,10 @@ export interface World {
   load: HostLoad | undefined
   /** What Git says when the push fails. */
   pushFails: string | undefined
+  /** The pushed commit's hash for each push, counted from 1; at first, `abc1234` for every one. */
+  headOf: (push: number) => string
+  /** The pushes so far. */
+  pushes: number
   /** Each branch whose own push fails, to what Git says. */
   readonly branchFails: Map<string, string>
   /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`, `load`, `post-land <path> <RIFT_LAND_BASE> <RIFT_LAND_HEAD>`, `ended post-land <path>`. */
@@ -65,6 +69,8 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   checkHold: { gate: Effect.void, accept: Effect.void },
   load: undefined,
   pushFails: undefined,
+  headOf: () => "abc1234",
+  pushes: 0,
   branchFails: new Map(),
   steps: [],
 })
@@ -116,7 +122,8 @@ export const layer = (state: World) =>
       push: Effect.fn("Landing.push")(function* (path: string, main: string) {
         state.steps.push(`push ${path}`)
         if (state.pushFails !== undefined) return yield* new RiftFailed({ operation: "git push", message: state.pushFails })
-        return `abc1234 Merge into ${main}`
+        state.pushes += 1
+        return `${state.headOf(state.pushes)} Merge into ${main}`
       }),
       pushBranch: Effect.fn("Landing.pushBranch")(function* (unit: Unit) {
         state.steps.push(`push-branch ${unit.branch}`)
