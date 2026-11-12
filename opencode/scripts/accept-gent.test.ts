@@ -29,6 +29,21 @@ describe("the acceptance run without gent's checkout", () => {
     expect(ran.lines.filter((line) => line !== "").at(-1)).toBe(skipLine("GENT_SOURCE is not set"))
   })
 
+  test("a real run of gent's suites alone, with GENT_SOURCE unset, skips them and ends with the SKIPPED line", () => {
+    using dir = scratch("accept-gent-run-")
+    const child = Bun.spawnSync([process.execPath, "scripts/accept.ts", ...GENT_SUITES], {
+      cwd: ROOT,
+      env: { ...process.env, OPENCODE_DEV: "", GENT_SOURCE: "", ACCEPT_LOCK: join(dir.path, "accept.lock") },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const out = child.stdout.toString().split("\n").filter((line) => line !== "")
+    expect(child.exitCode).toBe(0)
+    expect(child.stderr.toString()).toMatch(/Ran \d+ tests across 4 files/)
+    expect(out.at(-1)).toBe(skipLine("GENT_SOURCE is not set"))
+    expect(out.filter((line) => line.startsWith("SKIPPED: gent suites"))).toHaveLength(1)
+  }, 120_000)
+
   test("with GENT_SOURCE at a missing path, the SKIPPED line names the path", () => {
     expect(list("/nonexistent/gent-skip-probe").skipped).toEqual([skipLine("GENT_SOURCE=/nonexistent/gent-skip-probe does not exist")])
   })
