@@ -3,21 +3,17 @@
 // row opens its session on click and brightens under the pointer; inside a
 // subagent the current one is marked. They show whether or not the host shows
 // the session's sidebar, which carries only the queue.
-import { columns, format, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
+import { columns, format, sameSegments, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
+import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { subagents, visible, type Row as SubagentRow, type Tone } from "@dotfiles/opencode-subagents/subagent-row"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, Show, type Accessor } from "solid-js"
+import { createEffect, createMemo, createSignal, Index, Show, type Accessor } from "solid-js"
+import { wholeSecond } from "../clock.ts"
 import { capped, moreLine } from "../rows.ts"
-import { working as familyWorking } from "../subagent.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { useSessionLink } from "./link.ts"
-
-/** Which subagents of `sessionID`'s family work now, as the host's live state says (subagent.ts). */
-export function working(host: Host, sessionID: string): (id: string) => boolean {
-  return familyWorking(host.subagents(sessionID))
-}
 
 /** The rows for `sessionID`'s family; `child` when the route is one of the subagents, which is then marked. */
 export function SubagentRows(props: { host: Host; sessionID: string; child: boolean }) {
@@ -29,7 +25,10 @@ export function SubagentRows(props: { host: Host; sessionID: string; child: bool
   // Whether rows are live depends on the clock, so the clock follows a signal set after both
   // exist: Solid may run useNow's effect at once, before a later `const` is initialised.
   const [active, setActive] = createSignal(false)
-  const now = useNow(active)
+  const ticks = useNow(active)
+  // The rows read the clock in whole seconds, the unit their elapsed time shows: every row's
+  // time and spinner turn on the same tick, once a second, and the ticks between draw nothing.
+  const now = createMemo(() => wholeSecond(ticks()))
   const live = createMemo(() => visible(all(), now()).length > 0)
   createEffect(() => setActive(live()))
   const current = () => (props.child ? { current: props.sessionID } : {})
@@ -48,19 +47,20 @@ export function SubagentRows(props: { host: Host; sessionID: string; child: bool
           queueMicrotask(() => setMeasured(value))
         }}
       >
-        <For each={shown().rows}>
+        {/* By place, not by object: a tick gives every live row a new object, and a row kept in place only redraws what changed. */}
+        <Index each={shown().rows}>
           {(row) => (
             <Row
               host={props.host}
-              row={row}
+              row={row()}
               width={width()}
               columns={cols()}
               now={now}
-              marked={props.child && row.id === props.sessionID}
+              marked={props.child && row().id === props.sessionID}
               marking={props.child}
             />
           )}
-        </For>
+        </Index>
         <Show when={moreLine(shown().more, props.child)}>
           {(line) => (
             <text wrapMode="none" truncate fg={props.host.theme().text.faint}>
@@ -84,13 +84,16 @@ function Row(props: {
 }) {
   const theme = () => props.host.theme()
   const link = useSessionLink(props.host, () => (props.marked ? undefined : props.row.id))
-  const segments = createMemo(() =>
-    format(props.row, props.width, {
-      columns: props.columns,
-      // One clock for every spinner, so the rows turn together.
-      spinner: spinner(props.now()),
-      ...(props.marking ? { mark: props.marked ? "marked" : "unmarked" } : {}),
-    }),
+  // A reading that draws the same words keeps the segments, so it requests no frame.
+  const segments = keptMemo(
+    () =>
+      format(props.row, props.width, {
+        columns: props.columns,
+        // One clock for every spinner, so the rows turn together.
+        spinner: spinner(props.now()),
+        ...(props.marking ? { mark: props.marked ? "marked" : "unmarked" } : {}),
+      }),
+    sameSegments,
   )
   const roleColor = (tone: Tone): RGBA => {
     if (tone === "planner") return theme().hue.interactive[300]
@@ -123,7 +126,13 @@ function Row(props: {
   return (
     <box height={1} flexShrink={0} {...link.handlers}>
       <text wrapMode="none" truncate>
-        <For each={segments()}>{(segment) => <span style={{ fg: color(segment.kind) }}>{segment.text}</span>}</For>
+        <Index each={segments()}>
+          {(segment) => {
+            // A segment whose words change keeps its colour, and sets no style again.
+            const kind = createMemo(() => segment().kind)
+            return <span style={{ fg: color(kind()) }}>{segment().text}</span>
+          }}
+        </Index>
       </text>
     </box>
   )
