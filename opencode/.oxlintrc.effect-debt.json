@@ -230,7 +230,8 @@
       ],
       "rules": {
         "effect/noEffectRunInTests": "off",
-        "effect/noNodeBuiltinImport": "off"
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noGlobals": "off"
       }
     },
     {
