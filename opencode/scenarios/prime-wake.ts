@@ -18,6 +18,7 @@
 // It writes, under SCENARIO_OUT:
 // - `wake-bg-waiting`: the worker has ended its turn and waits on its shell;
 // - `wake-bg-done`: its answer has reached the parent.
+// Both at All: a finished worker's notice shows its report only there.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines. A
 // wait that times out writes `<frame>.timeout.txt` and keeps the run's server
 // and TUI logs in `<frame>.logs`.
@@ -132,6 +133,8 @@ export default OpenCodeDriver.use(
         frame.split("\n").some((line) => line.includes(`◈ worker gpt  ${WORKER.description}  ${WAITING} · `))
 
       yield* ui.submit(ASK)
+      // At All (Ctrl+O) the worker's notices hang their reports under their headers, which the frames read.
+      yield* ui.press("o", { ctrl: true })
       // The worker has said it waits and ended its turn, and the parent has its waiting report; its shell still runs, until the release.
       yield* until("wake-bg-waiting", (frame) => frame.includes(HEARD_WAITING) && waiting(frame))
       yield* save("wake-bg-waiting")

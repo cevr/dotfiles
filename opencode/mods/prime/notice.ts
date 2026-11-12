@@ -4,7 +4,8 @@
 // tree holding what it answered, folded below All as a call's output is.
 // Workers that finish together read as one group (`● 3 agents finished`, a
 // node per worker); the first notice of the burst draws it and the rest draw
-// nothing.
+// nothing. A worker that finished well shows its header alone below All; a
+// click opens its whole answer in place and a second closes it.
 import { close, stretch } from "./burst.ts"
 import type { Detail } from "./detail.ts"
 import type { LeadTone, Run } from "./group.ts"
@@ -44,8 +45,6 @@ export function noticeResult(text: string): string {
 export type NoticeNode = {
   readonly label?: string
   readonly lines: ReadonlyArray<string>
-  /** The session a click on the node opens. */
-  readonly child?: string
 }
 
 /** A notice's group, as the message that carries it draws it. */
@@ -57,7 +56,12 @@ export type NoticeGroup = {
   readonly nodes: ReadonlyArray<NoticeNode>
   /** Whether a failure or a cancel ended it: the overview keeps its reason. */
   readonly bad: boolean
-  /** The session a click on the header opens: one finished worker's own. */
+  /**
+   * Whether it is workers that finished well: its tree shows only at All, or
+   * opened by a click (`noticeLines`), and a click opens no session.
+   */
+  readonly folds: boolean
+  /** The session a click on the header opens: a failed or cancelled worker's own. */
   readonly child?: string
 }
 
@@ -90,11 +94,9 @@ export function noticeGroup(messages: ReadonlyArray<Message>, messageID: string)
       glyph: { char: "●", tone: "muted" },
       // Counted as agents, as the launch group's header counts them.
       header: [{ text: `${burst.length} agents finished`, tone: "muted" }],
-      nodes: burst.map((item) => {
-        const child = childOf(item)
-        return { label: task(item), lines: result(item), ...(child === undefined ? {} : { child }) }
-      }),
+      nodes: burst.map((item) => ({ label: task(item), lines: result(item) })),
       bad: false,
+      folds: true,
     }
   const actor =
     metadata.source === "shell" ? "Shell" : titlecase(typeof metadata.agent === "string" ? metadata.agent : "subagent")
@@ -105,7 +107,8 @@ export function noticeGroup(messages: ReadonlyArray<Message>, messageID: string)
         ? { word: "cancelled", tone: "warning" as const, glyph: { char: "●", tone: "warning" as const } }
         : { word: "finished", tone: "muted" as const, glyph: { char: "●", tone: "muted" as const } }
   const described = task(message)
-  const child = childOf(message)
+  const folds = finished(message)
+  const child = folds ? undefined : childOf(message)
   return {
     drawn,
     glyph: ending.glyph,
@@ -116,30 +119,35 @@ export function noticeGroup(messages: ReadonlyArray<Message>, messageID: string)
     ],
     nodes: [{ lines: result(message) }],
     bad: state === "error" || state === "cancelled",
+    folds,
     ...(child === undefined ? {} : { child }),
   }
 }
 
-/** Lines of a lone notice's answer that show below All, as a call's output head shows. */
+/** Lines of a shell's or a failed worker's answer that show below All, as a call's output head shows. */
 export const NOTICE_HEAD = 5
 
 /** One line of a notice's tree: what leads it (a connector, the tree's rail, or blank) and its words. */
 export type NoticeLine = {
   readonly lead: "├" | "└" | "│" | " "
   readonly runs: ReadonlyArray<Run>
-  /** The session a click on the line opens. */
-  readonly child?: string
 }
 
 /**
  * The tree under a notice's header at a level, as fx hangs a call's output:
  * a node's first line behind its connector, the rest past it beside the
- * tree's rail while nodes follow. Below All a lone notice shows the head of
- * its answer and counts the rest (`… +N lines (ctrl+o)`), and a burst one line
- * per worker (`├ Fix money parsing · <first line>`); All shows every line.
- * The overview shows only a failure's or a cancel's first line.
+ * tree's rail while nodes follow. Workers that finished well (`folds`) show
+ * none below All and every line at All; `opened` (a click) flips that.
+ * Any other lone notice shows the head of its answer below All and counts
+ * the rest (`… +N lines (ctrl+o)`); All shows every line. The overview shows
+ * only a failure's or a cancel's first line.
  */
-export function noticeLines(group: NoticeGroup, detail: Detail): NoticeLine[] {
+export function noticeLines(group: NoticeGroup, detail: Detail, opened = false): NoticeLine[] {
+  if (group.folds) return (detail === "all") !== opened ? tree(group, "all") : []
+  return tree(group, detail)
+}
+
+function tree(group: NoticeGroup, detail: Detail): NoticeLine[] {
   if (detail === "overview" && !group.bad) return []
   const count = group.nodes.length
   return group.nodes.flatMap((node, index): NoticeLine[] => {
@@ -147,25 +155,23 @@ export function noticeLines(group: NoticeGroup, detail: Detail): NoticeLine[] {
     const connector = last ? "└" : "├"
     const rail = last ? " " : "│"
     const [first = "", ...rest] = node.lines
-    const click = node.child === undefined ? {} : { child: node.child }
     const head: NoticeLine = {
       lead: connector,
       runs:
         node.label === undefined
           ? [{ text: first, tone: "muted" }]
           : [{ text: node.label, tone: "muted" }, ...(first ? [{ text: ` · ${first}`, tone: "faint" as const }] : [])],
-      ...click,
     }
     if (detail === "overview") return [head]
-    // A named node is one line below All; a lone notice's answer shows its head.
-    const room = detail === "all" ? rest.length : node.label === undefined ? NOTICE_HEAD - 1 : 0
+    // Below All a lone notice's answer shows its head (a burst, named nodes, draws only at All).
+    const room = detail === "all" ? rest.length : NOTICE_HEAD - 1
     const shown = rest.slice(0, room)
     const hidden = rest.length - shown.length
     const tone = node.label === undefined ? ("muted" as const) : ("faint" as const)
     return [
       head,
       ...shown.map((line): NoticeLine => ({ lead: rail, runs: [{ text: line, tone }] })),
-      ...(hidden > 0 && node.label === undefined
+      ...(hidden > 0
         ? [{ lead: rail, runs: [{ text: `… +${hidden} lines (ctrl+o)`, tone: "faint" as const }] } satisfies NoticeLine]
         : []),
     ]

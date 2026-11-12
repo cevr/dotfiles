@@ -12,7 +12,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/workers.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
 
 const root = join(import.meta.dir, "..")
-const frames: Record<"started" | "finished", ReadonlyArray<string>> = {} as never
+const frames: Record<"started" | "finished" | "opened", ReadonlyArray<string>> = {} as never
 
 describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "workers-")
@@ -33,6 +33,7 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
     const lines = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     frames.started = lines("workers-started")
     frames.finished = lines("workers")
+    frames.opened = lines("workers-opened")
   }, 300_000))
 
   test("three steps that each start a worker, a moment apart, read as one group with a row per worker", kept.test(() => {
@@ -46,16 +47,24 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
     ])
   }))
 
-  test("workers that finish together read as one group, a node per worker, in the order they finished", kept.test(() => {
+  test("workers that finish together read as one group, its header alone by default", kept.test(() => {
     const done = frames.finished.filter((line) => line.includes("finished"))
     expect(done).toEqual(["  ● 3 agents finished"])
     const at = frames.finished.indexOf(done[0]!)
-    const nodes = frames.finished.slice(at + 1, at + 4)
+    // The owner's scrawl of 2026-11-12: the nodes show only on Ctrl+O or a click. The folded notices
+    // draw nothing and add no blank rows: the parent's reply is one blank row below.
+    expect(frames.finished.slice(at + 1, at + 3)).toEqual(["", "  Noted."])
+  }))
+
+  test("a click on the group opens a node per worker, in the order they finished, in place", kept.test(() => {
+    expect(frames.opened[0]).toBe(frames.finished[0])
+    const at = frames.opened.indexOf("  ● 3 agents finished")
+    expect(at).toBeGreaterThan(-1)
+    const nodes = frames.opened.slice(at + 1, at + 4)
     expect(nodes.map((line) => line.slice(0, 4))).toEqual(["  ├ ", "  ├ ", "  └ "])
-    // Each node is its task, then its answer's first line.
+    // Each node is its task, then its answer.
     for (const line of nodes) expect(line).toMatch(/^ {2}[├└] (Fix money parsing|Fix CSV quoting|Fix month padding) · \1: done\.$/)
     for (const task of ["Fix money parsing", "Fix CSV quoting", "Fix month padding"]) expect(nodes.join("\n")).toContain(task)
-    // The folded notices draw nothing and add no blank rows: the parent's reply is one blank row below.
-    expect(frames.finished.slice(at + 4, at + 6)).toEqual(["", "  Noted."])
+    expect(frames.opened.slice(at + 4, at + 6)).toEqual(["", "  Noted."])
   }))
 })

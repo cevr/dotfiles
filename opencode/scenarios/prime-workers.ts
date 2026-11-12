@@ -4,7 +4,8 @@
 //
 // It writes, under SCENARIO_OUT and named by SCENARIO_LABEL (default `workers`):
 // - `<label>-started`: once the three workers run;
-// - `<label>`: after all three have finished and the parent has answered, in Details mode.
+// - `<label>`: after all three have finished and the parent has answered, in Details mode;
+// - `<label>-opened`: after a click on the finished group's header.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -101,5 +102,15 @@ export default OpenCodeDriver.use(
       yield* until(label, (frame) => frame.includes("Noted."))
       yield* Effect.sleep("1500 millis")
       yield* save(label)
+      // A click on the group's header opens every worker's answer in place.
+      const lines = text(yield* ui.capture()).split("\n")
+      const y = lines.findIndex((line) => line.includes("3 agents finished"))
+      if (y < 0) return yield* Effect.fail("no line contains 3 agents finished")
+      const x = lines[y]!.indexOf("3 agents finished")
+      yield* ui.mouse({ action: "move", x, y })
+      yield* ui.mouse({ action: "down", x, y, button: "left" })
+      yield* ui.mouse({ action: "up", x, y, button: "left" })
+      yield* until(`${label}-opened`, (frame) => /└ Fix [a-zA-Z ]+ · /.test(frame))
+      yield* save(`${label}-opened`)
     }),
 )

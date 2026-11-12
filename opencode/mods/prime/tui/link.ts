@@ -1,5 +1,5 @@
 // A transcript line that opens a session on click: a subagent's row, a
-// finished worker's notice. It reads as plain text until the pointer is over
+// failed or cancelled worker's notice. It reads as plain text until the pointer is over
 // it, then brightens.
 import { createSignal, type Accessor } from "solid-js"
 import type { Host } from "./host.ts"

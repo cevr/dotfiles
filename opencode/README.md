@@ -287,7 +287,9 @@ label in a tool name's colour and its first line faint; at All (Ctrl+O) the
 whole thought hangs under it. A step that only thinks is a one-node group
 headed `Thought` (`Thinking` while it streams, the glyph blinking in the
 accent). The Overview shows no thoughts. A finished worker's notice is a
-group too, its result the body:
+group too, its result the body; below All it is its header alone, and All
+(or a click on it, which opens the whole answer in place and closes it on
+the next; the Subagents picker opens the worker's session) hangs the body:
 
 ```
 ● Read 1 file · ran 1 command

@@ -167,9 +167,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "      3           try:",
       "  ● Ran code-reviewer",
       "    │ ✉ Agent message · ↓ code-reviewer",
-      // OpenCode runs every subagent in the background: its answer comes back as a completion notice group.
+      // OpenCode runs every subagent in the background: its answer comes back as a completion notice group,
+      // its header alone below All (the owner's scrawl of 2026-11-12).
       "  ● General finished · code-reviewer",
-      "  └ Approved: the loop now makes every attempt.",
       // The step that made two calls in parallel: one header, a tree row per call.
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       "  ├ Searched /retries/ in src",
@@ -186,15 +186,15 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     // Each step's group stacks tight; the next step's group opens a blank row below it.
     expect(at[1]).toBe(at[0]! + 1)
     expect(at.slice(7, 12)).toEqual(Array.from({ length: 5 }, (_, index) => at[7]! + index))
-    expect(at[15]).toBe(at[14]! + 1)
-    expect(at.slice(16, 20)).toEqual(Array.from({ length: 4 }, (_, index) => at[16]! + index))
+    expect(at.slice(15, 19)).toEqual(Array.from({ length: 4 }, (_, index) => at[15]! + index))
     expect(details.lines[at[12]! - 1]).toBe("")
     expect(details.lines[at[14]! - 1]).toBe("")
-    expect(details.lines[at[16]! - 1]).toBe("")
+    expect(details.lines[at[15]! - 1]).toBe("")
+    expect(details.text).not.toContain("Approved: the loop now makes every attempt.")
     // Answer text and a group sit a blank row apart.
     expect(details.lines[at[2]! - 1]).toBe("")
     expect(details.lines[at[7]! - 1]).toBe("")
-    expect(details.lines[at[20]! - 1]).toBe("")
+    expect(details.lines[at[19]! - 1]).toBe("")
     // The thought's label reads as a call row's verb does; its words are faint.
     expect(cell(details, "└ thinking", 2).fg).toBe(MUTED)
     expect(cell(details, "Look at the test first").fg).toBe(FAINT)

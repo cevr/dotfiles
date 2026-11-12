@@ -8,7 +8,9 @@
 // It writes, under SCENARIO_OUT and named by SCENARIO_LABEL (default `thoughts`):
 // - `<label>-streaming`: while the first step's thought still streams;
 // - `<label>`: after the parent's last reply, in Details mode;
-// - `<label>-all` and `<label>-overview`: after each Ctrl+O.
+// - `<label>-all` and `<label>-overview`: after each Ctrl+O;
+// - `<label>-opened` and `<label>-closed`: back at Details, after a click on
+//   the finished worker's notice, then after a second click.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -25,7 +27,19 @@ const BRIEF = "Worker brief: fix the CSV quoting."
 export const PLAN = "**Planning the check**\n\nRead money.py first, then run its test.\nThe CSV fix goes to a worker."
 export const SETTLED = "The worker has the CSV fix; nothing else needs me now."
 export const STARTED = "A worker is on the CSV quoting."
-export const ANSWER = ["CSV quoting fixed.", "Quoted fields keep their commas.", "All 12 tests pass."].join("\n")
+// Longer than a notice's head (NOTICE_HEAD): opened, every line shows, with no `+N lines` count.
+export const ANSWER = [
+  "CSV quoting fixed.",
+  "Quoted fields keep their commas.",
+  "Escaped quotes stay doubled.",
+  "Empty fields stay empty.",
+  "Newlines in a field keep their quotes.",
+  "The writer and the reader agree.",
+  "All 12 tests pass.",
+].join("\n")
+const ANSWER_LAST = "All 12 tests pass."
+// The finished worker's notice header.
+const NOTICE = "General finished · Fix CSV quoting"
 export const NOTED = "Noted: the CSV fix is in."
 
 export default OpenCodeDriver.use(
@@ -108,6 +122,17 @@ export default OpenCodeDriver.use(
           writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
           console.log("screenshot:", yield* ui.screenshot(name))
         })
+      // A left click on the first cell of `needle` in the current frame.
+      const click = (needle: string) =>
+        Effect.gen(function* () {
+          const lines = text(yield* ui.capture()).split("\n")
+          const y = lines.findIndex((line) => line.includes(needle))
+          if (y < 0) return yield* Effect.fail(`no line contains ${needle}`)
+          const x = lines[y]!.indexOf(needle)
+          yield* ui.mouse({ action: "move", x, y })
+          yield* ui.mouse({ action: "down", x, y, button: "left" })
+          yield* ui.mouse({ action: "up", x, y, button: "left" })
+        })
 
       yield* ui.submit(ASK)
       yield* until(`${label}-streaming`, (frame) => frame.includes("Planning the check"))
@@ -123,5 +148,16 @@ export default OpenCodeDriver.use(
         yield* Effect.sleep("300 millis")
         yield* save(`${label}-${mode}`)
       }
+      // Back at Details, a click on the finished worker's notice opens its whole answer in place; a second closes it.
+      yield* ui.press("o", { ctrl: true })
+      // Details again: the thoughts the Overview hides are back.
+      yield* until(`${label}-back`, (frame) => frame.includes("● Thought"))
+      yield* click(NOTICE)
+      yield* until(`${label}-opened`, (frame) => frame.includes(ANSWER_LAST))
+      yield* save(`${label}-opened`)
+      // A second click within half a second on the same cell is a double click, which selects a word (opentui); this one lands a word over.
+      yield* click("finished · Fix CSV quoting")
+      yield* until(`${label}-closed`, (frame) => !frame.includes(ANSWER_LAST))
+      yield* save(`${label}-closed`)
     }),
 )

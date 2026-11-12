@@ -503,12 +503,10 @@ describe("completion notices", () => {
     expect(group.drawn).toBe(true)
     expect(noticeGroup(messages, "n2")!.drawn).toBe(false)
     expect(group.header.map((run) => run.text).join("")).toBe("3 agents finished")
-    // A node per worker, each opening its own session.
-    expect(group.nodes.map((node) => [node.label, node.child])).toEqual([
-      ["fix-a", "ses_n1"],
-      ["fix-b", "ses_n2"],
-      ["fix-c", "ses_n3"],
-    ])
+    // A node per worker; a click opens the group's answers in place, not a worker's session.
+    expect(group.nodes.map((node) => node.label)).toEqual(["fix-a", "fix-b", "fix-c"])
+    expect(group.folds).toBe(true)
+    expect(group.child).toBeUndefined()
   })
 
   test("a failure, a shell, a pause or a row between stands alone", () => {
@@ -550,10 +548,42 @@ describe("a notice as a tool-call group", () => {
     expect(group.glyph).toEqual({ char: "●", tone: "muted" })
     expect(header(group)).toBe("Worker finished · Fix money parsing")
     expect(group.header.map((run) => run.tone)).toEqual(["muted", "muted", "muted"])
-    expect(group.child).toBe("ses_n1")
-    expect(drawn(noticeLines(group, "details"))).toEqual(["└ Fixed money parsing.", "  All green."])
-    // The overview keeps the header alone, as a group that ended well.
+    // Below All it is its header alone; All hangs the answer under it.
+    expect(group.folds).toBe(true)
+    expect(noticeLines(group, "details")).toEqual([])
     expect(noticeLines(group, "overview")).toEqual([])
+    expect(drawn(noticeLines(group, "all"))).toEqual(["└ Fixed money parsing.", "  All green."])
+    // A click opens its answer in place: it opens no session.
+    expect(group.child).toBeUndefined()
+  })
+
+  test("a click opens a finished worker's whole answer at any level, and the next click closes it", () => {
+    const body = Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n")
+    const group = noticeGroup([worker("completed", body)], "n1")!
+    const whole = ["└ line 1", ...Array.from({ length: 8 }, (_, index) => `  line ${index + 2}`)]
+    expect(drawn(noticeLines(group, "details", true))).toEqual(whole)
+    expect(drawn(noticeLines(group, "overview", true))).toEqual(whole)
+    expect(drawn(noticeLines(group, "all"))).toEqual(whole)
+    // At All the click closes it to its header.
+    expect(noticeLines(group, "all", true)).toEqual([])
+    // A burst opens every worker's whole answer.
+    const burst = noticeGroup([worker("completed", "A done.\nmore", "n1"), worker("completed", "B done.", "n2")], "n1")!
+    expect(drawn(noticeLines(burst, "details", true))).toEqual(["├ Fix money parsing · A done.", "│ more", "└ Fix money parsing · B done."])
+  })
+
+  test("a failure, a cancel and a shell keep their tree below All, and a click on a failure opens its session", () => {
+    const failed = noticeGroup([worker("error", "Subagent failed\nwhy")], "n1")!
+    expect(failed.folds).toBe(false)
+    expect(failed.child).toBe("ses_n1")
+    expect(drawn(noticeLines(failed, "details"))).toEqual(["└ Subagent failed", "  why"])
+    // The click flag is a finished worker's alone.
+    expect(drawn(noticeLines(failed, "details", true))).toEqual(["└ Subagent failed", "  why"])
+    const cancelled = noticeGroup([worker("cancelled", "Subagent cancelled")], "n1")!
+    expect(cancelled.folds).toBe(false)
+    expect(drawn(noticeLines(cancelled, "details"))).toEqual(["└ Subagent cancelled"])
+    const shell = noticeGroup([notice("s1", "<shell id=\"s\" state=\"completed\" command=\"ls\">\na\nb\n</shell>", { source: "shell", state: "completed" }, "ls")], "s1")!
+    expect(shell.folds).toBe(false)
+    expect(drawn(noticeLines(shell, "details"))).toEqual(["└ a", "  b"])
   })
 
   test("a failure and a cancel say so in their tone, the glyph too, and keep their reason at the overview", () => {
@@ -569,9 +599,10 @@ describe("a notice as a tool-call group", () => {
     expect(header(shell)).toBe("Shell failed · bun test")
   })
 
-  test("below All a long answer shows its head and counts the rest; All shows it whole", () => {
+  test("below All a shell's long answer shows its head and counts the rest; All shows it whole", () => {
     const body = Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n")
-    const group = noticeGroup([worker("completed", body)], "n1")!
+    const shell = `<shell id="s" state="completed" command="seq 9">\n${body}\n</shell>`
+    const group = noticeGroup([notice("s1", shell, { source: "shell", state: "completed" }, "seq 9")], "s1")!
     expect(drawn(noticeLines(group, "details"))).toEqual([
       "└ line 1",
       "  line 2",
@@ -584,12 +615,11 @@ describe("a notice as a tool-call group", () => {
     expect(noticeLines(group, "all")).toHaveLength(9)
   })
 
-  test("a burst is a node per worker: its task, then its answer's first line, faint; All hangs the rest beside the rail", () => {
+  test("a burst is its header alone below All; at All a node per worker: its task, then its answer, faint, beside the rail", () => {
     const messages = [worker("completed", "A done.\nmore", "n1"), worker("completed", "B done.", "n2")]
     const group = noticeGroup(messages, "n1")!
-    expect(drawn(noticeLines(group, "details"))).toEqual(["├ Fix money parsing · A done.", "└ Fix money parsing · B done."])
-    expect(noticeLines(group, "details")[0]!.runs.map((run) => run.tone)).toEqual(["muted", "faint"])
-    expect(noticeLines(group, "details").map((line) => line.child)).toEqual(["ses_n1", "ses_n2"])
+    expect(noticeLines(group, "details")).toEqual([])
+    expect(noticeLines(group, "all")[0]!.runs.map((run) => run.tone)).toEqual(["muted", "faint"])
     expect(drawn(noticeLines(group, "all"))).toEqual(["├ Fix money parsing · A done.", "│ more", "└ Fix money parsing · B done."])
   })
 
