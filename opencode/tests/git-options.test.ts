@@ -2,10 +2,11 @@
 // installed here rather than a copy: every option its manual lists is in one table, and the
 // value-taking table is exactly the options that git, run, makes take the next word. A git that
 // adds an option the tables lack (as 2.56's --attr-source was) fails this test; until then both
-// readers fail closed on it.
+// readers fail closed on it. Likewise git's own commands: every one the installed git lists is in
+// GIT_COMMANDS, so a subcommand outside it is an alias or an add-on, which the readers refuse.
 import { describe, expect, test } from "bun:test"
-import { GIT_BARE_OPTIONS, GIT_VALUE_OPTIONS } from "../mods/guard/verdict.ts"
-import { gitGlobalOptions, manualOptions } from "./git-options.ts"
+import { GIT_BARE_OPTIONS, GIT_COMMANDS, GIT_VALUE_OPTIONS } from "../mods/guard/verdict.ts"
+import { gitCommands, gitGlobalOptions, manualOptions } from "./git-options.ts"
 
 /** Running git once or a few times per option, in a scratch repository: a loaded machine gets room. */
 const PROBE_MS = 60_000
@@ -26,6 +27,13 @@ describe("the guard's git global options", () => {
     },
     PROBE_MS,
   )
+
+  test("the guard's git commands are every command the installed git runs itself, so only an alias or an add-on is unknown", () => {
+    const commands = gitCommands()
+    // No list, no commands: the check cannot pass on nothing read.
+    expect(commands).toContain("reset")
+    expect(commands.filter((name) => !GIT_COMMANDS.has(name))).toEqual([])
+  })
 
   test("the manual's option items are read as git spells them, a value's placeholder dropped", () => {
     const page = [
