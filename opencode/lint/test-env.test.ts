@@ -8,11 +8,11 @@
 //
 // dotfiles/kept-suite-folders (lint/kept-scratch.ts), in the same oxlint run:
 // in a file that calls keptScratch, every form its header lists is refused, at
-// module scope, in a describe body, in a test body and before the Kept, bare
-// or as a member; the same calls in a file with no Kept, and the safe forms in
-// a Kept file, are left alone.
+// module scope, in a describe body, in a test body and before the Kept, bare,
+// as a member or renamed; in a file with no Kept only tmpdir() is, and not in
+// tests/scratch.ts; the safe forms in a Kept file are left alone.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -103,6 +103,8 @@ interface Case {
   readonly name: string
   readonly code: string
   readonly errors: number
+  /** Where the case's file goes, under the run's folder; a numbered file by default. */
+  readonly file?: string
 }
 
 const cross = (places: Record<string, (write: string) => string>, errors: number): ReadonlyArray<Case> =>
@@ -133,20 +135,56 @@ const KEPT_REFUSED = {
   "a recursive fs.promises.mkdir": `void fs.promises.mkdir(kept.path, { recursive: true })`,
   "a mkdtempSync": `mkdtempSync(join(kept.path, "x-"))`,
   "a promises mkdtemp": `void mkdtemp("/nonexistent/loop-probe-x")`,
+  "a recursive mkdirSync, options in a const": `const deepOptions = { recursive: true }; mkdirSync(kept.path, deepOptions)`,
+  "a recursive mkdirSync, a shorthand recursive from a const": `const recursive = true; mkdirSync(kept.path, { recursive })`,
+  "a recursive mkdirSync, a spread of a const": `const deepSpread = { recursive: true }; mkdirSync(kept.path, { ...deepSpread })`,
+  "a mkdirSync, a spread it cannot read": `mkdirSync(kept.path, { ...options })`,
+  "a mkdirSync, options a parameter": `const makeIn = (given: object) => mkdirSync(kept.path, given)`,
+  "a mkdirSync, options a let": `let loose = { recursive: false }; mkdirSync(kept.path, loose)`,
+  "a recursive mkdirSync, held in a const": `const makeDir = fs.mkdirSync; makeDir(kept.path, { recursive: true })`,
+  "a mkdtempSync, renamed by a destructuring": `const { mkdtempSync: makeTemp } = fs; makeTemp(join(kept.path, "x-"))`,
+  "a cpSync": `cpSync("/nonexistent/loop-probe-x", join(kept.path, "a/b"))`,
+  "a cpSync, recursive: false": `cpSync("/nonexistent/loop-probe-x", join(kept.path, "a/b"), { recursive: false })`,
+  "a fs.promises.cp": `void fs.promises.cp("/nonexistent/loop-probe-x", join(kept.path, "a"))`,
+  "a Bun.write": `void Bun.write(join(kept.path, "a/b"), "x")`,
+  "a Bun.write, createPath: true": `void Bun.write(join(kept.path, "a"), "x", { createPath: true })`,
   "a tmpdir()": `void join(tmpdir(), "x")`,
   "an os.tmpdir()": `void os.tmpdir()`,
 }
+
+/** The refused forms that are refused in a file with no Kept as well: they make a folder straight under tmpdir(). */
+const LOOSE_REFUSED = new Set(["a tmpdir()", "an os.tmpdir()"])
 
 /** Calls a Kept file may make. */
 const KEPT_ALLOWED = {
   "a plain mkdirSync": `mkdirSync(join(kept.path, "a"))`,
   "a mkdirSync, recursive: false": `mkdirSync(join(kept.path, "a"), { recursive: false })`,
   "a mkdirSync with a mode": `mkdirSync(join(kept.path, "a"), { mode: 0o700 })`,
-  "a mkdirSync with a spread": `mkdirSync(join(kept.path, "a"), { ...options })`,
+  "a mkdirSync with a mode for options": `mkdirSync(join(kept.path, "a"), 0o700)`,
+  "a mkdirSync, recursive: false in a const": `const flatOptions = { recursive: false }; mkdirSync(join(kept.path, "a"), flatOptions)`,
+  "a mkdirSync, a shorthand recursive: false from a const": `const recursive = false; mkdirSync(join(kept.path, "a"), { recursive })`,
+  "a mkdirSync, a spread of a const with no recursive": `const modeOnly = { mode: 0o700 }; mkdirSync(join(kept.path, "a"), { ...modeOnly })`,
+  "a mkdirSync, recursive: false after a spread that sets it": `mkdirSync(join(kept.path, "a"), { ...{ recursive: true }, recursive: false })`,
   "a kept.dir": `const d = kept.dir("run-")`,
   "a recursive rmSync": `rmSync(join(kept.path, "a"), { recursive: true, force: true })`,
   "another call's recursive option": `other(kept.path, { recursive: true })`,
+  "a copyFileSync": `copyFileSync("/nonexistent/loop-probe-x", join(kept.path, "a"))`,
+  "a Bun.write, createPath: false": `void Bun.write(join(kept.path, "a"), "x", { createPath: false })`,
+  "another object's write": `stream.write(join(kept.path, "a"))`,
 }
+
+/** Forms that stand at a module's top (imports), each a whole file, and the refusals each earns. */
+const KEPT_FILES: ReadonlyArray<Case> = [
+  { name: "a mkdtempSync renamed on import", code: `import { mkdtempSync as makeTemp } from "node:fs"\n${KEPT}\nmakeTemp(join(kept.path, "x-"))`, errors: 1 },
+  { name: "a recursive mkdirSync renamed on import", code: `import { mkdirSync as makeDir } from "node:fs"\n${KEPT}\nmakeDir(kept.path, { recursive: true })`, errors: 1 },
+  { name: "a renamed import called before it is imported", code: `${KEPT}\nmakeTemp(join(kept.path, "x-"))\nimport { mkdtempSync as makeTemp } from "node:fs"`, errors: 1 },
+  { name: "a cpSync renamed on import", code: `import { cpSync as copy } from "node:fs"\n${KEPT}\ncopy("/nonexistent/loop-probe-x", join(kept.path, "a"))`, errors: 1 },
+  { name: "keptScratch renamed on import", code: `import { keptScratch as holdSuite } from "./scratch.ts"\nconst kept = holdSuite(true, "case-")\nmkdirSync(kept.path, { recursive: true })`, errors: 1 },
+  { name: "a tmpdir renamed on import, in a file with no Kept", code: `import { tmpdir as systemTemp } from "node:os"\nvoid systemTemp()`, errors: 1 },
+  { name: "a harmless import renamed to a refused name", code: `import { join as mkdtempSync } from "node:path"\n${KEPT}\nmkdtempSync(kept.path, "a")`, errors: 0 },
+  { name: "tests/scratch.ts, which makes the folders", code: `mkdtempSync(\`\${tmpdir()}/x-\`)\nmkdirSync(\`\${tmpdir()}/y\`, { recursive: true })`, errors: 0, file: "helper/tests/scratch.ts" },
+  { name: "a scratch.ts outside tests/", code: `void tmpdir()`, errors: 1, file: "helper/other/scratch.ts" },
+]
 
 /** Where the statement stands in its file. */
 const KEPT_PLACES = {
@@ -161,16 +199,20 @@ const keptCross = (statements: Readonly<Record<string, string>>, errors: number)
     Object.entries(KEPT_PLACES).map(([place, wrap]) => ({ name: `${form} in ${place}`, code: wrap(statement), errors })),
   )
 
-/** The same call with no Kept in its file: kept-suite-folders leaves it alone. */
+/** The same call with no Kept in its file: kept-suite-folders leaves it alone, but for tmpdir(). */
 const noKept = (statement: string) => statement.replaceAll("kept.path", `"/nonexistent/loop-probe-x"`).replaceAll(`kept.dir("run-")`, `"/nonexistent/loop-probe-x"`)
 
 const KEPT_CASES: ReadonlyArray<Case> = [
   ...keptCross(KEPT_REFUSED, 1),
   ...keptCross(KEPT_ALLOWED, 0),
-  ...Object.entries(KEPT_REFUSED).map(([form, statement]) => ({ name: `${form} in a file with no Kept`, code: noKept(statement), errors: 0 })),
+  ...Object.entries(KEPT_REFUSED).map(([form, statement]) => ({ name: `${form} in a file with no Kept`, code: noKept(statement), errors: LOOSE_REFUSED.has(form) ? 1 : 0 })),
+  ...KEPT_FILES,
   { name: "a file that only imports keptScratch", code: `import { keptScratch } from "./scratch.ts"\nmkdirSync("/nonexistent/loop-probe-x", { recursive: true })`, errors: 0 },
   { name: "every refused form in one Kept file", code: `${KEPT}\n${Object.values(KEPT_REFUSED).join("\n")}`, errors: Object.keys(KEPT_REFUSED).length },
 ]
+
+/** A Kept case's file, under the run's folder. */
+const keptFile = (each: Case, index: number) => each.file ?? `kept-${index}.test.ts`
 
 let dir = ""
 /** The rule's diagnostics by case file, from one oxlint run over every case. */
@@ -179,14 +221,18 @@ const found = new Map<string, number>()
 beforeAll(async () => {
   dir = mkdtempSync(path.join(tmpdir(), "lint-test-env-"))
   CASES.forEach((each, index) => writeFileSync(path.join(dir, `case-${index}.test.ts`), `${each.code}\n`))
-  KEPT_CASES.forEach((each, index) => writeFileSync(path.join(dir, `kept-${index}.test.ts`), `${each.code}\n`))
+  KEPT_CASES.forEach((each, index) => {
+    const file = path.join(dir, keptFile(each, index))
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, `${each.code}\n`)
+  })
   const config = path.join(dir, "oxlintrc.json")
   writeFileSync(config, JSON.stringify({ jsPlugins: [path.join(ROOT, "lint/test-env.ts")], rules: { "dotfiles/no-module-env-in-tests": "error", "dotfiles/kept-suite-folders": "error" } }))
   const child = Bun.spawn([path.join(ROOT, "node_modules/.bin/oxlint"), "-c", config, "--format", "json", dir], { cwd: ROOT, stdout: "pipe", stderr: "pipe" })
   const [out] = await Promise.all([new Response(child.stdout).text(), child.exited])
   const report = JSON.parse(out) as { readonly diagnostics: ReadonlyArray<{ readonly code: string; readonly filename: string }> }
   for (const diagnostic of report.diagnostics) {
-    const key = `${diagnostic.code} ${path.basename(diagnostic.filename)}`
+    const key = `${diagnostic.code} ${path.relative(dir, path.resolve(ROOT, diagnostic.filename))}`
     found.set(key, (found.get(key) ?? 0) + 1)
   }
 })
@@ -206,7 +252,7 @@ describe("no-module-env-in-tests", () => {
 describe("kept-suite-folders", () => {
   KEPT_CASES.forEach((each, index) => {
     test(`${each.name}: ${each.errors} refused`, () => {
-      expect({ code: each.code, errors: found.get(`${KEPT_CODE} kept-${index}.test.ts`) ?? 0 }).toEqual({ code: each.code, errors: each.errors })
+      expect({ code: each.code, errors: found.get(`${KEPT_CODE} ${keptFile(each, index)}`) ?? 0 }).toEqual({ code: each.code, errors: each.errors })
     })
   })
 })
