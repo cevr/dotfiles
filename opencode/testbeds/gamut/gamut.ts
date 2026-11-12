@@ -51,6 +51,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
+import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
 
@@ -916,7 +917,7 @@ const prepareAndLaunch = async (
 
   await $`bun install --silent`.cwd(paths.work).quiet()
   // A git repo so the agent can diff, and so a subagent's edits are recoverable.
-  await $`git init -q`.cwd(paths.work).quiet()
+  gitInit(paths.work, ["-q"])
   await $`git add -A`.cwd(paths.work).quiet()
   await $`git -c user.name=gamut -c user.email=gamut@local commit -q -m ${"ledgerline: red suite with six open tasks"}`
     .cwd(paths.work)
