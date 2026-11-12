@@ -405,10 +405,10 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 `request.settings.cacheTTL` that `cmd/anthropic-auth`'s `http.request` hook
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
-routes each subagent call to a role, starts a new Opus start the pace holds on
+routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog` and `resume`.
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -2635,7 +2635,7 @@ Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
 Every role is an OpenCode subagent; its model is the config's.
 `bun run daily` binds every role (planner, implementor, verifier, worker)
-to the newest Claude Opus. Codex is the fallback, on the ChatGPT
+to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the fallback, on the ChatGPT
 subscription OpenCode signs in to itself (`opencode auth login openai`),
 used only when the pace holds a new Opus start.
 
@@ -2655,6 +2655,19 @@ there, and the next new start tries Opus first again. The parent's answer
 starts with `orchestrate: this agent runs on <model>, the Codex fallback
 (<why>).`, and the call log's `call` line carries the same `fallback`.
 No Codex bridge, MCP server or thread tools are involved.
+
+The planner goes on the newest Fable first (the owner's call, 2026-11-12:
+"Fable is our planner"). `bun run daily` writes it from the model catalog,
+never a pinned id, as orchestrate's `planner: { model }` option. A new
+planner start that names no model of its own runs on it at the planner's
+effort (medium); a follow-up keeps its model. When the host does not offer
+it, its pace holds it (Fable's own week spent, or the pool's pace), or over
+the Sabbath, the start takes the chain above, Opus then Codex, and its line
+carries `first: { model, fellBack }` saying why. No other role has a first
+model, so an implementor, verifier or worker never starts on Fable. The
+option replaced the planner A/B of 2026-11-10 (`experiment`, half the
+planner units on Fable); `models.ts --experiment` still reads that run's
+lines, which carry an arm.
 
 ## Pace and effort
 

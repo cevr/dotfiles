@@ -122,7 +122,9 @@ export const residentConfig: Json = { experimental: { location_idle_timeout: fal
 
 /**
  * Each role's model: the newest Opus, the verifier too (the skill's Models rule). Codex is the
- * fallback the orchestrate mod moves a held start to; no role is bound to it.
+ * fallback the orchestrate mod moves a held start to; no role is bound to it. The planner goes
+ * on the newest Fable first (`plannerModel`, the orchestrate entry's `planner`): its Opus here is
+ * the second step of its chain, and what it runs on without the orchestrate mod.
  */
 export const roleModels = (catalog: Catalog): Record<string, string> => {
   const newest = (provider: string, family: string) => {
@@ -175,32 +177,25 @@ export const poolEntry = (pool: string, gent: string | undefined, fleet?: { read
   },
 })
 
-/** The model experiment orchestrate runs (mods/orchestrate/experiment.ts): a share of one role's units on another model. */
-export interface Experiment {
-  readonly role: string
-  readonly model: string
-  readonly share: number
-}
-
 /**
- * The planner on the newest Fable for half the units, Opus for the rest: an A/B the model eval
- * (`models.ts --experiment`) compares (the owner's call, 2026-11-10, until 2026-11-16; Opus also
- * when the pool holds Fable).
- * None when the catalog has no Fable release.
+ * The planner's first model: the newest Fable release (the owner's call, 2026-11-12: "Fable is
+ * our planner"). Orchestrate starts every new planner on it at the planner's effort, and on the
+ * role's own model (Opus), then Codex, when the pool holds it. None when the catalog has no
+ * Fable release: the planner then runs on Opus like every role.
  */
-export const plannerExperiment = (catalog: Catalog): Experiment | undefined => {
+export const plannerModel = (catalog: Catalog): string | undefined => {
   const fable = newestRelease(catalog, "anthropic", "claude-fable")
-  return fable === undefined ? undefined : { role: "planner", model: `anthropic/${fable}`, share: 0.5 }
+  return fable === undefined ? undefined : `anthropic/${fable}`
 }
 
 /**
  * Orchestrate's plugin entry: a Codex provider's new agents take the pool's pace first, which
  * paces OpenAI on the ChatGPT account (`poolEntry`'s `paced`); the admission script answers only
- * when the pool has no measure of it. With `experiment`, the model experiment runs.
+ * when the pool has no measure of it. With `planner`, the planner's first model.
  */
-export const orchestrateEntry = (orchestrate: string, experiment?: Experiment): PluginEntry => ({
+export const orchestrateEntry = (orchestrate: string, planner?: string): PluginEntry => ({
   package: orchestrate,
-  options: { codex: { pool: true }, ...(experiment === undefined ? {} : { experiment }) },
+  options: { codex: { pool: true }, ...(planner === undefined ? {} : { planner: { model: planner } }) },
 })
 
 /**
@@ -376,11 +371,11 @@ if (import.meta.main) {
   const gent = gentAuthDir()
   const pool = pluginDir("pool")
   const catalog = await loadCatalog(fork)
-  const experiment = plannerExperiment(catalog)
+  const planner = plannerModel(catalog)
   const server: PluginEntry[] = [
     auth,
     poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
-    orchestrateEntry(pluginDir("orchestrate"), experiment),
+    orchestrateEntry(pluginDir("orchestrate"), planner),
     pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
@@ -420,6 +415,6 @@ if (import.meta.main) {
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
-  console.log(experiment === undefined ? "experiment: none (no Fable in the catalog)" : `experiment: ${experiment.role} ${experiment.model} on ${experiment.share * 100}% of units`)
+  console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
   console.log(restart.exitCode === 0 ? "background service restarted" : `service restart exited ${restart.exitCode}: ${restart.stderr.toString().trim()}`)
 }

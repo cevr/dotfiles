@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, installedRecord, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, installedRecord, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -122,20 +122,21 @@ describe("the pool's fleet", () => {
     expect(mergeServer({ plugins: [`${MODS}/orchestrate`] }, [entry], {}, [MODS]).plugins).toEqual([entry])
   })
 
-  test("orchestrate's entry carries the planner experiment, and replaces an earlier run's options whole", () => {
+  test("orchestrate's entry names the newest Fable as the planner's first model, and replaces an earlier run's options whole", () => {
     const catalog = { anthropic: { models: {
       "claude-fable-5-1": { family: "claude-fable", release_date: "2026-09-01" },
       "claude-fable-5-2": { family: "claude-fable", release_date: "2026-11-09" },
       "claude-opus-5-5": { family: "claude-opus", release_date: "2026-09-22" },
     } } }
-    const experiment = plannerExperiment(catalog as never)
-    expect(experiment).toEqual({ role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 })
-    const entry = orchestrateEntry(`${MODS}/orchestrate`, experiment)
-    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 } } })
+    const planner = plannerModel(catalog as never)
+    expect(planner).toBe("anthropic/claude-fable-5-2")
+    const entry = orchestrateEntry(`${MODS}/orchestrate`, planner)
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, planner: { model: "anthropic/claude-fable-5-2" } } })
+    // The planner A/B's option an earlier run wrote goes with its entry.
     const earlier = { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-1", share: 0.2 } } }
     expect(mergeServer({ plugins: [earlier, "/x"] }, [entry], {}, [MODS]).plugins).toEqual([entry, "/x"])
-    // A catalog with no Fable runs no experiment, and the entry names none.
-    expect(plannerExperiment({ anthropic: { models: {} } } as never)).toBeUndefined()
+    // A catalog with no Fable names no first model, and the entry names none: the planner runs on Opus.
+    expect(plannerModel({ anthropic: { models: {} } } as never)).toBeUndefined()
     expect(mergeServer({ plugins: [earlier] }, [orchestrateEntry(`${MODS}/orchestrate`, undefined)], {}, [MODS]).plugins).toEqual([
       { package: `${MODS}/orchestrate`, options: { codex: { pool: true } } },
     ])
