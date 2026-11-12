@@ -10,7 +10,10 @@
 // in a file that calls keptScratch, every form its header lists is refused, at
 // module scope, in a describe body, in a test body and before the Kept, bare,
 // as a member or renamed; in a file with no Kept only tmpdir() is, and not in
-// tests/scratch.ts; the safe forms in a Kept file are left alone.
+// tests/scratch.ts; the safe forms in a Kept file are left alone. Bun.write is
+// refused through every alias of Bun the scope manager resolves, and a write on
+// an object it cannot read; a TMPDIR read and a /tmp path are refused in every
+// file but tests/scratch.ts.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -236,6 +239,52 @@ const KEPT_ALLOWED = {
   "another object's write": `stream.write(join(kept.path, "a"))`,
 }
 
+/** A Bun.write that makes the target's parents, on a Bun the statement before it names. */
+const WRITE_ARGS = `(join(kept.path, "a/b"), "x")`
+
+/** Bun reached through an alias (batch aq, On base), and a `write` on an object the rule cannot read: each refused in a Kept file. */
+const BUN_ALIASES: ReadonlyArray<Case> = [
+  { name: "Bun held in a const", code: `${KEPT}\nconst B = Bun\nvoid B.write${WRITE_ARGS}`, errors: 1 },
+  { name: "Bun as a namespace import of bun", code: `import * as r from "bun"\n${KEPT}\nvoid r.write${WRITE_ARGS}`, errors: 1 },
+  { name: "Bun as the default import of bun", code: `import b from "bun"\n${KEPT}\nvoid b.write${WRITE_ARGS}`, errors: 1 },
+  { name: "Bun as globalThis.Bun", code: `${KEPT}\nvoid globalThis.Bun.write${WRITE_ARGS}`, errors: 1 },
+  { name: "Bun as globalThis.Bun in a const", code: `${KEPT}\nconst B = globalThis.Bun\nvoid B.write${WRITE_ARGS}`, errors: 1 },
+  { name: "Bun destructured from globalThis", code: `${KEPT}\nconst { Bun: B } = globalThis\nvoid B.write${WRITE_ARGS}`, errors: 1 },
+  { name: "Bun held in a const held in a const", code: `${KEPT}\nconst A = Bun\nconst B = A\nvoid B["write"]${WRITE_ARGS}`, errors: 1 },
+  { name: "write destructured from Bun held in a const", code: `${KEPT}\nconst B = Bun\nconst { write } = B\nvoid write${WRITE_ARGS}`, errors: 1 },
+  { name: "write held in a const from Bun held in a const", code: `${KEPT}\nconst B = Bun\nconst w = B.write\nvoid w${WRITE_ARGS}`, errors: 1 },
+  { name: "write destructured from a namespace import of bun", code: `import * as r from "bun"\n${KEPT}\nconst { write } = r\nvoid write${WRITE_ARGS}`, errors: 1 },
+  { name: "write on a parameter the rule cannot read", code: `${KEPT}\nconst viaParameter = (b: typeof Bun) => b.write${WRITE_ARGS}`, errors: 1 },
+  { name: "write on a let the rule cannot read", code: `${KEPT}\nlet B = Bun\nvoid B.write${WRITE_ARGS}`, errors: 1 },
+  { name: "write on a computed member the rule cannot read", code: `${KEPT}\nconst key = pick()\nvoid globalThis[key].write${WRITE_ARGS}`, errors: 1 },
+  { name: "write on a loop's const the rule cannot read", code: `${KEPT}\nfor (const b of [Bun]) void b.write${WRITE_ARGS}`, errors: 1 },
+  { name: "write destructured from a loop's const the rule cannot read", code: `${KEPT}\nfor (const b of [Bun]) { const { write } = b; void write${WRITE_ARGS} }`, errors: 1 },
+  { name: "Bun held in a const, createPath: false", code: `${KEPT}\nconst B = Bun\nvoid B.write(join(kept.path, "a"), "x", { createPath: false })`, errors: 0 },
+  { name: "write on a parameter, createPath: false", code: `${KEPT}\nconst viaParameter = (b: typeof Bun) => b.write(join(kept.path, "a"), "x", { createPath: false })`, errors: 0 },
+  { name: "write on a const holding another object", code: `${KEPT}\nconst out = process.stdout\nout.write("x")`, errors: 0 },
+  { name: "write on a namespace import of another module", code: `import * as s from "./stream.ts"\n${KEPT}\nvoid s.write${WRITE_ARGS}`, errors: 0 },
+  { name: "Bun held in a const, in a file with no Kept", code: `const B = Bun\nvoid B.write("/nonexistent/loop-probe-x/a", "x")`, errors: 0 },
+]
+
+/** TMPDIR read and /tmp named, in a file with no Kept: each refused in tests/ but in tests/scratch.ts. */
+const TEMP_PATHS: ReadonlyArray<Case> = [
+  { name: "process.env.TMPDIR", code: `void process.env.TMPDIR`, errors: 1 },
+  { name: "Bun.env.TMPDIR", code: `void Bun.env.TMPDIR`, errors: 1 },
+  { name: `process.env["TMPDIR"]`, code: `void process.env["TMPDIR"]`, errors: 1 },
+  { name: "process?.env?.TMPDIR", code: `void process?.env?.TMPDIR`, errors: 1 },
+  { name: "TMPDIR on an env held in a const", code: `const env = process.env\nvoid env.TMPDIR`, errors: 1 },
+  { name: "TMPDIR destructured", code: `const { TMPDIR } = process.env\nvoid TMPDIR`, errors: 1 },
+  { name: "TMPDIR destructured and renamed", code: `const { TMPDIR: temp } = Bun.env\nvoid temp`, errors: 1 },
+  { name: "a /tmp/ string", code: `void join("/tmp/x", "y")`, errors: 1 },
+  { name: "a bare /tmp string", code: `void join("/tmp", "y")`, errors: 1 },
+  { name: "a /private/tmp/ string", code: `void join("/private/tmp/x", "y")`, errors: 1 },
+  { name: "a /tmp/ template", code: "const id = pick()\nvoid `/tmp/${id}`", errors: 1 },
+  { name: "TMPDIR set in a child's env", code: `const dir = pick()\nvoid { ...process.env, TMPDIR: dir }`, errors: 0 },
+  { name: "a path that starts like /tmp", code: `void join("/tmpfiles", "/nonexistent/loop-probe-x/tmp/x")`, errors: 0 },
+  { name: "a template with /tmp later", code: "const id = pick()\nvoid `/nonexistent/${id}/tmp/x`", errors: 0 },
+  { name: "TMPDIR and /tmp in tests/scratch.ts", code: `void process.env.TMPDIR\nvoid "/tmp/x"`, errors: 0, file: "temp-helper/tests/scratch.ts" },
+]
+
 /** Forms that stand at a module's top (imports), each a whole file, and the refusals each earns. */
 const KEPT_FILES: ReadonlyArray<Case> = [
   { name: "r1 M1 p1: options through a parameter named as a const", code: `${KEPT}\nconst options = { recursive: false }\nconst make = (options: object) => mkdirSync(kept.path, options)\nmake({ recursive: true })`, errors: 1 },
@@ -250,6 +299,8 @@ const KEPT_FILES: ReadonlyArray<Case> = [
   { name: "a harmless import renamed to a refused name", code: `import { join as mkdtempSync } from "node:path"\n${KEPT}\nmkdtempSync(kept.path, "a")`, errors: 0 },
   { name: "tests/scratch.ts, which makes the folders", code: `mkdtempSync(\`\${tmpdir()}/x-\`)\nmkdirSync(\`\${tmpdir()}/y\`, { recursive: true })`, errors: 0, file: "helper/tests/scratch.ts" },
   { name: "a scratch.ts outside tests/", code: `void tmpdir()`, errors: 1, file: "helper/other/scratch.ts" },
+  ...BUN_ALIASES,
+  ...TEMP_PATHS,
 ]
 
 /** Where the statement stands in its file. */

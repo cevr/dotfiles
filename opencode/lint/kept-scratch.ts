@@ -6,6 +6,10 @@
 // - `tmpdir()`: a folder straight under the system's temp directory is the test's to
 //   remove, and one it forgets stays. Take it from `scratch(prefix)` (a test or a
 //   suite) or `keptScratch` (an e2e suite).
+// - a read of `TMPDIR`, on any object (`process.env.TMPDIR`, `Bun.env["TMPDIR"]`,
+//   `const { TMPDIR } = process.env`): the same folder by another road.
+// - a string or template literal that starts with `/tmp` or `/private/tmp`: the
+//   shared temp folder by its path.
 // In a file that calls keptScratch, these too are refused, at any depth:
 // - a recursive `mkdirSync`/`mkdir`: it makes every missing parent, so one that runs
 //   after the suite's end makes the suite's folder again, and nothing removes it.
@@ -20,7 +24,10 @@
 // - `cpSync`/`cp`: it makes the target's missing parents whatever its options. Copy a
 //   file with `copyFileSync`, which makes none.
 // - `Bun.write`, unless its options read `createPath: false`: it makes the target's
-//   parents by default.
+//   parents by default. Bun is followed through its binding: `globalThis.Bun`,
+//   `import * as b from "bun"`, `import b from "bun"`, a const holding or
+//   destructuring it. A `write` on an object the rule cannot read (a parameter, a
+//   `let`, a computed key) is refused the same way, since it may be Bun.
 // - `mkdtempSync`/`mkdtemp` and `tmpdir()`: a folder beside the suite's, which its
 //   end never removes. Take it from `kept.dir(prefix)`.
 // The callee is matched by name, bare (`mkdirSync(…)`) or as a member (`fs.mkdirSync(…)`,
@@ -51,7 +58,16 @@ interface Node {
   readonly id?: Node
   readonly init?: Node
   readonly left?: Node
+  readonly quasis?: ReadonlyArray<Quasi>
 }
+
+/** A template literal's text between its expressions. */
+interface Quasi {
+  readonly value: { readonly cooked?: string }
+}
+
+/** The stand-in for a template literal with no text. */
+const NO_QUASI: Quasi = { value: { cooked: "" } }
 
 /** An object literal's or pattern's member: `key: value`, or a spread / rest (whose type is not "Property"). */
 interface Property {
@@ -149,10 +165,51 @@ const resolve = (files: Bindings, node: Node = NONE, depth = 0): Node => {
   return resolve(files, init, depth + 1)
 }
 
-/** `Bun.write` for the key `write` taken from `Bun` (or from "bun"); the key itself for anything else. */
+/** The object name of one the rule cannot read: a `write` taken from it may be Bun's. */
+const UNREAD = "?"
+
+/** `Bun.write` for the key `write` taken from Bun; `?.write` for one taken from an object the rule cannot read; the key itself for anything else. */
 const qualified = (key: string, from: string): string => {
-  if (key === "write" && (from === "Bun" || from === "bun")) return "Bun.write"
+  if (key === "write" && from === "Bun") return "Bun.write"
+  if (key === "write" && from === UNREAD) return `${UNREAD}.write`
   return key
+}
+
+/**
+ * The object a member is taken from, by its binding: "Bun" for Bun itself however reached (the global,
+ * `globalThis.Bun`, `import * as b from "bun"`, `import b from "bun"`, a const holding or destructuring
+ * any of those), UNREAD for a binding the rule cannot read (a parameter, a `let`, a computed key), and
+ * any other name for anything else (a global, another module's import, a member, a call's result).
+ */
+const objectName = (files: Bindings, node: Node, depth = 0): string => {
+  // No node is a const with no value of its own, a loop's (`for (const s of streams)`): the rule cannot read it.
+  if (node === NONE) return UNREAD
+  const at = bare(node)
+  if (at.type === "MemberExpression") return nameOf(at.property, at.computed) || UNREAD
+  if (at.type !== "Identifier") return ""
+  const definition = files.of(at)
+  if (definition.type === "") return String(at.name)
+  if (definition.type === "ImportBinding") return importedObject(definition)
+  if (definition.type !== "Variable" || (definition.parent || NONE).kind !== "const" || depth >= DEPTH) return UNREAD
+  const id = definition.node.id || NONE
+  if (id.type === "Identifier") return objectName(files, definition.node.init || NONE, depth + 1)
+  if (id.type === "ObjectPattern") return patternKey(id, String(at.name))
+  return UNREAD
+}
+
+/** The module object an import binds: Bun for the namespace or default of "bun", the imported name otherwise. */
+const importedObject = (definition: Definition): string => {
+  const whole = definition.node.type === "ImportNamespaceSpecifier" || definition.node.type === "ImportDefaultSpecifier"
+  if (whole) return moduleObject(definition)
+  return nameOf(definition.node.imported) || "module"
+}
+
+/** The key a const destructuring binds `local` from: `const { Bun: local } = globalThis` → Bun; UNREAD for a key it cannot name. */
+const patternKey = (pattern: Node, local: string): string => {
+  for (const property of pattern.properties || []) {
+    if (property.type === "Property" && target(property.value) === local) return nameOf(property.key, property.computed) || UNREAD
+  }
+  return UNREAD
 }
 
 /** The name a call's callee ends in: `f(…)` → f, `a.f(…)` and `a["f"](…)` → f, `Bun.write(…)` → Bun.write; renames followed. */
@@ -160,7 +217,7 @@ const calleeName = (files: Bindings, callee: Node = NONE, depth = 0): string => 
   const at = bare(callee)
   if (at.type === "Identifier") return identifierName(files, at, depth)
   if (at.type !== "MemberExpression") return ""
-  return qualified(nameOf(at.property, at.computed), nameOf(bare(at.object)))
+  return qualified(nameOf(at.property, at.computed), objectName(files, at.object || NONE))
 }
 
 /** The name a called identifier stands for, by its binding: an import's name, a destructured key, a const's callee, or itself. */
@@ -170,20 +227,27 @@ const identifierName = (files: Bindings, identifier: Node, depth: number): strin
   if (definition.type === "ImportBinding") return imported(definition, name)
   if (definition.type !== "Variable" || (definition.parent || NONE).kind !== "const" || depth >= DEPTH) return name
   const id = definition.node.id || NONE
-  if (id.type === "ObjectPattern") return destructured(id, definition.node.init || NONE, name)
+  if (id.type === "ObjectPattern") return destructured(id, objectName(files, definition.node.init || NONE, depth + 1), name)
   return calleeName(files, definition.node.init || NONE, depth + 1) || name
+}
+
+/** The module an import comes from, as an object: Bun for "bun". */
+const moduleObject = (definition: Definition): string => {
+  const source = nameOf((definition.parent || NONE).source)
+  if (source === "bun") return "Bun"
+  return source
 }
 
 /** The name an import binds `local` to: `import { a as local } from "m"` → a (`write` from "bun" → Bun.write). */
 const imported = (definition: Definition, local: string): string => {
   const name = nameOf(definition.node.imported) || local
-  return qualified(name, nameOf((definition.parent || NONE).source))
+  return qualified(name, moduleObject(definition))
 }
 
 /** The key a const destructuring binds `local` to: `const { a: local } = from` → a (`write` from Bun → Bun.write). */
-const destructured = (pattern: Node, from: Node, local: string): string => {
+const destructured = (pattern: Node, from: string, local: string): string => {
   for (const property of pattern.properties || []) {
-    if (property.type === "Property" && target(property.value) === local) return qualified(nameOf(property.key, property.computed) || local, nameOf(bare(from)))
+    if (property.type === "Property" && target(property.value) === local) return qualified(nameOf(property.key, property.computed) || local, from)
   }
   return local
 }
@@ -250,9 +314,20 @@ const refusal = (files: Bindings, call: Node, name: string, kept: boolean): stri
   if (MKDIR.has(name) && !off(files, args[1] || NONE, "recursive")) return RECURSIVE
   if (COPY.has(name)) return PARENTS
   if (name === "Bun.write" && setting(files, args[2] || NONE, "createPath") !== "false") return PARENTS
+  if (name === `${UNREAD}.write` && setting(files, args[2] || NONE, "createPath") !== "false") return UNREAD_WRITE
   if (TEMP.has(name)) return OUTSIDE
   return ""
 }
+
+const UNREAD_WRITE =
+  "A Kept suite calls no `write` on an object the rule cannot read (a parameter, a `let`, a computed key): it may be Bun, whose write makes the target's parents. Call Bun.write by name with `{ createPath: false }`, or hold the object in a const."
+const TMPDIR_READ =
+  "A test reads no TMPDIR: a folder under it is the test's to remove, and one it forgets stays. Take one from tests/scratch.ts: scratch(prefix), or keptScratch for an e2e suite."
+const TMP_LITERAL =
+  "A test names no path under /tmp: a folder there is shared with every other run, and one it forgets stays. Take one from tests/scratch.ts: scratch(prefix), or keptScratch for an e2e suite; a path that must not exist is /nonexistent/…."
+
+/** A path under the system's shared /tmp (or macOS's /private/tmp). */
+const TMP_PATH = /^\/(private\/)?tmp(\/|$)/
 
 /** The file that makes the scratch folders, and so the one file under tests/ that calls tmpdir(). */
 const HELPER = /(^|[\\/])tests[\\/]scratch\.ts$/
@@ -260,13 +335,33 @@ const HELPER = /(^|[\\/])tests[\\/]scratch\.ts$/
 const keptSuiteFolders = {
   create: (context: Context) => {
     const calls: Array<Node> = []
+    const helper = HELPER.test(context.filename)
+    /** Reports `node` with `message`, anywhere but in the helper. */
+    const refuse = (node: Node, message: string) => {
+      if (!helper) context.report({ node, message })
+    }
     return {
       CallExpression: (node: Node) => {
         calls.push(node)
       },
+      MemberExpression: (node: Node) => {
+        if (nameOf(node.property, node.computed) === "TMPDIR") refuse(node, TMPDIR_READ)
+      },
+      ObjectPattern: (node: Node) => {
+        for (const property of node.properties || []) {
+          if (property.type === "Property" && nameOf(property.key, property.computed) === "TMPDIR") refuse(node, TMPDIR_READ)
+        }
+      },
+      Literal: (node: Node) => {
+        if (TMP_PATH.test(nameOf(node))) refuse(node, TMP_LITERAL)
+      },
+      TemplateLiteral: (node: Node) => {
+        const head = (node.quasis || [])[0] || NO_QUASI
+        if (TMP_PATH.test(String(head.value.cooked))) refuse(node, TMP_LITERAL)
+      },
       // A file's Kept may come after its first mkdir, so the verdict waits for the file's end.
       "Program:exit": () => {
-        if (HELPER.test(context.filename)) return
+        if (helper) return
         const files = bindings(context)
         const named = calls.map((call) => ({ call, name: calleeName(files, call.callee) }))
         const kept = named.some((each) => each.name === "keptScratch")
