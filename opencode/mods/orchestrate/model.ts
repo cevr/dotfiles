@@ -49,6 +49,7 @@ import {
   type Cadence,
   type Command as MachineCommand,
   type Event as MachineEvent,
+  Drop,
   HandBack,
   handBackOf as stepHandBackOf,
   Land,
@@ -795,6 +796,8 @@ export class Machines extends Context.Service<
     readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
     /** The Rifts a land of `root` answered green. */
     readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) => Effect.Effect<void>
+    /** `root` logged `unit` dropped: the unit ends, and the findings it held go with it (machine.ts `Drop`). */
+    readonly dropped: (input: { readonly root: string; readonly unit: string }) => Effect.Effect<void>
     /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
     /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
@@ -843,13 +846,38 @@ export const machineLayer = (config: MachineConfig) =>
           ),
         )
 
+      /** A `changes` hand-back's findings as its report gives them, or why they are not known. */
+      const readReport = (report: string | undefined) =>
+        Effect.gen(function* () {
+          if (report === undefined) return { unread: { why: "its hand-back names no findings report" } }
+          const read = yield* findings.read(report)
+          return read._tag === "Read" ? { findings: read.findings } : { unread: { report, why: read.why } }
+        })
+
+      /** The hand-back a step's session's last words say, as the machine takes it: a verifier's `changes` with its report read. */
+      const saidBy = (agent: string, sessionID: string) =>
+        Effect.gen(function* () {
+          const words = yield* sessions.lastWordsOf(sessionID)
+          const back = Option.fromNullishOr(stepHandBackOf(agent, words))
+          if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict !== "changes") return back
+          return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))) }))
+        })
+
+      /** A verifier whose verdict a reconcile read from its last words, before its idle was seen: its batch, session and verdict. */
+      interface Heard {
+        readonly batch: string
+        readonly child: string
+        readonly verdict: HandBack["verdict"]
+      }
+
       /**
        * The ledger can miss an end (a restart, a cancelled latch, a child that never handed back): each
-       * implementor and the verifier that no longer works is handed back as `none` before a decision reads them.
-       * An implementor whose session's last words hand its unit back says so first: a land made the moment it
-       * handed back would otherwise end it ahead of its own hand-back (the ledger of 2026-11-12, batch af).
+       * implementor and the verifier that no longer works is handed back before a decision reads them, with the
+       * hand-back its session's last words say, else `none`. A land made the moment a step handed back would
+       * otherwise end it ahead of its own hand-back (the ledger of 2026-11-12, batch af, for an implementor; the
+       * same race lost a verifier's verdict). Each verifier verdict read so goes into `heard`, to be concluded.
        */
-      const reconcile = (root: string, state: MachineState) =>
+      const reconcile = (root: string, state: MachineState, heard: Array<Heard>) =>
         Effect.gen(function* () {
           const dead: Array<MachineCommand> = []
           for (const [name, unit] of Object.entries(state.units)) {
@@ -857,17 +885,14 @@ export const machineLayer = (config: MachineConfig) =>
             dead.push(HandBack.make({ role: "implementor", name, verdict: yield* lastVerdictOf(name, Option.fromNullishOr(unit.child)) }))
           }
           const verifier = state.verifier
-          if (verifier !== undefined && !(yield* working(root, "verifier", verifier.batch, verifier.child)))
-            dead.push(HandBack.make({ role: "verifier", name: verifier.batch, verdict: "none" }))
-          return dead
-        })
-
-      /** A `changes` hand-back's findings as its report gives them, or why they are not known. */
-      const readReport = (report: string | undefined) =>
-        Effect.gen(function* () {
-          if (report === undefined) return { unread: { why: "its hand-back names no findings report" } }
-          const read = yield* findings.read(report)
-          return read._tag === "Read" ? { findings: read.findings } : { unread: { report, why: read.why } }
+          if (verifier === undefined || (yield* working(root, "verifier", verifier.batch, verifier.child))) return dead
+          const said = yield* Effect.forEach(Option.toArray(Option.fromNullishOr(verifier.child)), (child) =>
+            Effect.map(saidBy("verifier", child), Option.map((back) => ({ back, child }))),
+          )
+          const own = Option.filter(Option.flatten(Option.fromIterable(said)), ({ back }) => back.name === verifier.batch)
+          if (Option.isNone(own)) return [...dead, HandBack.make({ role: "verifier", name: verifier.batch, verdict: "none" })]
+          heard.push({ batch: verifier.batch, child: own.value.child, verdict: own.value.back.verdict })
+          return [...dead, own.value.back]
         })
 
       /** Each unresolved verdict whose report reads now: its findings, read again before a decision. */
@@ -897,6 +922,51 @@ export const machineLayer = (config: MachineConfig) =>
       const now = Clock.currentTimeMillis
       const warnedNote = (decided: Decided) => (decided.warned === undefined ? [] : [decided.warned.message])
 
+      /**
+       * Says what recording the fleet target did where the orchestrator reads it: the run's log.md,
+       * the server's log, and, when nothing was published, the root's context for its next turn.
+       */
+      const toldFleet = Effect.fn("Machines.toldFleet")(function* (root: string, batch: string, report: Option.Option<string>, directory: Option.Option<string>, outcome: FleetOutcome) {
+        for (const line of fleetLineOf(batch, outcome, yield* now)) {
+          if (outcome._tag === "Refused") yield* Effect.logWarning(line)
+          else yield* Effect.logInfo(line)
+          const entries = Option.toArray(report).map((near) => Option.match(directory, { onNone: () => ({ near, line }), onSome: (dir) => ({ near, line, directory: dir }) }))
+          yield* Effect.forEach(entries, (entry) => records.log(entry), { discard: true })
+          if (outcome._tag === "Refused") yield* remind.remind(root, { text: line, description: FLEET_DESCRIPTION }).pipe(Effect.ignore)
+        }
+      })
+
+      /**
+       * A verifier's verdict the ledger recorded, once: it adds the root's drift to its run's log.md (its report's
+       * run), and an accepted one records the fleet target its batch file names, apart from the hand-back. The
+       * ledger records a verdict once (it ends the verifier), so whichever reads it first, the idle hand-back or a
+       * reconcile, concludes it.
+       */
+      const conclude = Effect.fn("Machines.conclude")(function* (root: string, at: number, ended: Heard) {
+        const words = yield* sessions.lastWordsOf(ended.child)
+        const report = reportOf(words)
+        const directory = yield* sessions.directoryOf(ended.child)
+        if (ended.verdict === "accepted")
+          yield* fleet.record({ report: Option.fromNullishOr(report), batch: ended.batch }).pipe(
+            Effect.flatMap((outcome) => toldFleet(root, ended.batch, Option.fromNullishOr(report), Option.fromNullishOr(directory), outcome)),
+            Effect.forkDetach,
+          )
+        if (ended.verdict === "none" || report === undefined) return
+        const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
+        yield* records.log({ near: report, line, ...(directory === undefined ? {} : { directory }) })
+      })
+
+      /**
+       * `decide`, on a fresh record of the verdicts its reconcile reads from verifiers' last words, each concluded
+       * once `decide` ends, whatever it came to: the hand-backs come first in its commands and never refuse, so a
+       * call the machine refuses after them has still recorded them.
+       */
+      const reconciled = <A, E, R>(root: string, at: number, decide: (heard: Array<Heard>) => Effect.Effect<A, E, R>) =>
+        Effect.suspend(() => {
+          const heard: Array<Heard> = []
+          return decide(heard).pipe(Effect.ensuring(Effect.suspend(() => Effect.forEach(heard, (each) => conclude(root, at, each), { discard: true }))))
+        })
+
       const start = Effect.fn("Machines.start")(function* (input: { readonly root: string; readonly key: string; readonly input: unknown }) {
         if (typeof input.input !== "object" || input.input === null) return { notes: [] }
         const fields = input.input as Record<string, unknown>
@@ -911,20 +981,22 @@ export const machineLayer = (config: MachineConfig) =>
         const at = yield* now
         let notes: ReadonlyArray<string> = []
         let prompt: string | undefined
-        const decided = yield* ledger.decide(
-          input.root,
-          at,
-          (state) =>
-            Effect.gen(function* () {
-              const dead = command.role === "verifier" ? yield* reconcile(input.root, state) : []
-              // An unresolved verdict's report that reads now opens its findings first: this start may fold them.
-              const read = yield* reread(state)
-              const seen = yield* advance(state, read, at)
-              notes = notesOf(seen, command, at, config.cadence)
-              prompt = verifierPromptOf(seen, command)
-              return [...dead, ...read, command]
-            }),
-          config.mode,
+        const decided = yield* reconciled(input.root, at, (heard) =>
+          ledger.decide(
+            input.root,
+            at,
+            (state) =>
+              Effect.gen(function* () {
+                const dead = command.role === "verifier" ? yield* reconcile(input.root, state, heard) : []
+                // An unresolved verdict's report that reads now opens its findings first: this start may fold them.
+                const read = yield* reread(state)
+                const seen = yield* advance(state, read, at)
+                notes = notesOf(seen, command, at, config.cadence)
+                prompt = verifierPromptOf(seen, command)
+                return [...dead, ...read, command]
+              }),
+            config.mode,
+          ),
         )
         inFlight.set(input.key, { root: input.root, role: command.role, name: command.name })
         return { notes: [...warnedNote(decided), ...notes], ...(prompt === undefined ? {} : { prompt }) }
@@ -953,11 +1025,14 @@ export const machineLayer = (config: MachineConfig) =>
 
       const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) {
         const command = Land.make({ rifts: input.rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
-        const decided = yield* ledger.decide(
-          input.root,
-          yield* now,
-          (state) => Effect.all([reconcile(input.root, state), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read, command])),
-          config.mode,
+        const at = yield* now
+        const decided = yield* reconciled(input.root, at, (heard) =>
+          ledger.decide(
+            input.root,
+            at,
+            (state) => Effect.all([reconcile(input.root, state, heard), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read, command])),
+            config.mode,
+          ),
         )
         return { notes: warnedNote(decided) }
       })
@@ -966,18 +1041,8 @@ export const machineLayer = (config: MachineConfig) =>
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
       })
 
-      /**
-       * Says what recording the fleet target did where the orchestrator reads it: the run's log.md,
-       * the server's log, and, when nothing was published, the root's context for its next turn.
-       */
-      const toldFleet = Effect.fn("Machines.toldFleet")(function* (root: string, batch: string, report: Option.Option<string>, directory: Option.Option<string>, outcome: FleetOutcome) {
-        for (const line of fleetLineOf(batch, outcome, yield* now)) {
-          if (outcome._tag === "Refused") yield* Effect.logWarning(line)
-          else yield* Effect.logInfo(line)
-          const entries = Option.toArray(report).map((near) => Option.match(directory, { onNone: () => ({ near, line }), onSome: (dir) => ({ near, line, directory: dir }) }))
-          yield* Effect.forEach(entries, (entry) => records.log(entry), { discard: true })
-          if (outcome._tag === "Refused") yield* remind.remind(root, { text: line, description: FLEET_DESCRIPTION }).pipe(Effect.ignore)
-        }
+      const dropped = Effect.fn("Machines.dropped")(function* (input: { readonly root: string; readonly unit: string }) {
+        yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Drop.make({ unit: input.unit })])).pipe(Effect.ignore)
       })
 
       const handBack = Effect.fn("Machines.handBack")(function* (sessionID: string) {
@@ -985,32 +1050,24 @@ export const machineLayer = (config: MachineConfig) =>
         if (agent === undefined || !isStep(agent)) return
         const root = yield* sessions.parentOf(sessionID)
         if (root === undefined) return
-        const words = yield* sessions.lastWordsOf(sessionID)
-        const back = stepHandBackOf(agent, words)
-        if (back === undefined) return
         // A verifier's `changes` opens the findings its report holds: each folds into the next batch. A report that
         // does not read, or none named, leaves the verdict unresolved: never an empty set of findings.
-        const said = back.role === "verifier" && back.verdict === "changes" ? HandBack.make({ ...back, ...(yield* readReport(reportOf(words))) }) : back
+        const back = yield* saidBy(agent, sessionID)
+        if (Option.isNone(back)) return
+        const said = back.value
         // The session that handed back is the step's: a step started before its session was known gets it here.
         const at = yield* now
         const decided = yield* ledger.decide(root, at, () => Effect.succeed([said])).pipe(Effect.orElseSucceed(() => undefined))
-        // Each verdict adds the root's drift to its run's log.md (its report's run); an accepted one records the fleet target its batch file names, apart from the hand-back.
+        // A verdict a reconcile read first was concluded there: the ledger then decides this hand-back to nothing.
         const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
-        const report = reportOf(words)
-        const directory = yield* sessions.directoryOf(sessionID)
-        if (ended?.verdict === "accepted")
-          yield* fleet.record({ report: Option.fromNullishOr(report), batch: ended.batch }).pipe(
-            Effect.flatMap((outcome) => toldFleet(root, ended.batch, Option.fromNullishOr(report), Option.fromNullishOr(directory), outcome)),
-            Effect.forkDetach,
-          )
-        if (ended === undefined || ended.verdict === "none" || report === undefined) return
-        const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
-        yield* records.log({ near: report, line, ...(directory === undefined ? {} : { directory }) })
+        if (ended !== undefined) yield* conclude(root, at, { batch: ended.batch, child: sessionID, verdict: ended.verdict })
       })
 
       const brief = Effect.fn("Machines.brief")(function* (root: string) {
         const at = yield* now
-        const decided = yield* ledger.decide(root, at, (state) => Effect.all([reconcile(root, state), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read]))).pipe(Effect.orElseSucceed(() => undefined))
+        const decided = yield* reconciled(root, at, (heard) =>
+          ledger.decide(root, at, (state) => Effect.all([reconcile(root, state, heard), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read]))),
+        ).pipe(Effect.orElseSucceed(() => undefined))
         const state = decided?.state ?? (yield* ledger.state(root))
         const run = briefOf(state, at, config.cadence)
         if (run === "") return run
@@ -1030,7 +1087,7 @@ export const machineLayer = (config: MachineConfig) =>
         )
       })
 
-      return { start, started, resolve, land, landed, handBack, brief, compacted }
+      return { start, started, resolve, land, landed, dropped, handBack, brief, compacted }
     }),
   )
 
