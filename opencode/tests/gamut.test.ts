@@ -4,8 +4,7 @@
 // needs OPENCODE_DEV, the fork, like tests/prime.test.ts.
 import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
@@ -45,6 +44,7 @@ import {
   waitStep,
 } from "../testbeds/gamut/gamut.ts"
 import { replyEvents, SIM_COMMAND, SIM_TITLE, simReply } from "../testbeds/gamut/sim-model.ts"
+import { scratch } from "./scratch.ts"
 
 const root = join(import.meta.dir, "..")
 
@@ -189,7 +189,7 @@ describe("the run's config", () => {
   })
 
   test("the TUI plugins load by absolute path from cli.json, Prime first, with the Prime theme", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ocg-plugins-"))
+    const dir = scratch("ocg-plugins-").path
     try {
       for (const name of ["aaa", "prime", "zzz", "server-only", "no-package"]) mkdirSync(join(dir, name))
       const tui = JSON.stringify({ exports: { "./tui": "./src/index.tsx" } })
@@ -243,7 +243,7 @@ describe("the run's config", () => {
   })
 
   test("a gent store with no account the pool can use is refused, saying why", () => {
-    const dir = mkdtempSync(join(tmpdir(), "gamut-gent-"))
+    const dir = scratch("gamut-gent-").path
     try {
       expect(() => gentAccounts(dir)).toThrow(`gent holds no Claude account the pool can use at ${dir}; sign in to one in gent`)
       mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
@@ -490,7 +490,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
   // Made in beforeAll: a skipped describe still runs its body, so a dir made here would leak.
   let state = ""
   beforeAll(() => {
-    state = join(mkdtempSync(join(tmpdir(), "ocg-gamut-e2e-")), "state.json")
+    state = join(scratch("ocg-gamut-e2e-").path, "state.json")
   })
   const gamut = (...args: string[]) => {
     const run = Bun.spawnSync(["bun", join(root, "testbeds/gamut/gamut.ts"), ...args], {

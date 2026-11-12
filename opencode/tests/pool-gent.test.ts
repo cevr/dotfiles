@@ -6,7 +6,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   CREDENTIAL_SOURCES,
@@ -20,6 +19,7 @@ import {
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, openGentStore, type GentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const ready = gentAvailable()
 if (!ready) {
@@ -27,7 +27,7 @@ if (!ready) {
 }
 
 const HOUR = 3_600_000
-const root = mkdtempSync(join(tmpdir(), "pool-gent-"))
+const root = scratch("pool-gent-").path
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const fingerprint = (token: string) => createHash("sha256").update(token).digest("hex").slice(0, 16)

@@ -10,10 +10,10 @@
 // scenarios/cache-compaction.ts runs /compact between two turns: the summary
 // request's miss sits under the compaction's row, not at the next turn's end.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/cache.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -52,7 +52,7 @@ const ledgerOf = (out: string) => {
 
 describe.skipIf(!fork)("the cache mod in a real TUI", () => {
   test("a shell call that outlives the cache ends its turn on a priced miss row, and the sidebar sums it", async () => {
-    const out = mkdtempSync(join(tmpdir(), "cache-scenario-"))
+    const out = scratch("cache-scenario-").path
     try {
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
         cwd: join(import.meta.dir, ".."),
@@ -96,7 +96,7 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
   }, 150_000)
 
   test("an agent's own 2s cache lifetime expires the prefix its model would keep an hour", async () => {
-    const out = mkdtempSync(join(tmpdir(), "cache-role-scenario-"))
+    const out = scratch("cache-role-scenario-").path
     try {
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
         cwd: join(import.meta.dir, ".."),
@@ -128,7 +128,7 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
   }, 150_000)
 
   test("a compaction's miss sits under the compaction, not under the turn after it", async () => {
-    const out = mkdtempSync(join(tmpdir(), "cache-compaction-scenario-"))
+    const out = scratch("cache-compaction-scenario-").path
     try {
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/cache-compaction.ts"], {
         cwd: join(import.meta.dir, ".."),

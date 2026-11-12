@@ -6,18 +6,18 @@
 // what to do instead. The plugin on its own is tested beside its code in
 // mods/web and cmd/web.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./web/run.ts"
 import { BIG_PATH, MISSING_PATH, PDF_PATH, PDF_TEXT, STEADY_URL } from "./web/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/web.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "web-e2e-"))
+const scratch = scratchDir("web-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/web/run.ts. */

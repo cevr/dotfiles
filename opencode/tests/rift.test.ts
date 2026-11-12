@@ -9,12 +9,12 @@
 // own are tested beside their code in mods/rift, cmd/rift, mods/tool-names
 // and cmd/tool-names.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./rift/run.ts"
 import { BRANCH, COMMIT_SUBJECT, DONE, LAND_SUBJECT, LAND_TASK, TASK } from "./rift/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/rift.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -23,7 +23,7 @@ const riftHere = process.platform === "darwin" && Bun.which("rift") !== null
 if (!riftHere) console.warn("tests/rift.test.ts: the OpenCode runs skip. They need macOS and the rift CLI.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "rift-e2e-"))
+const scratch = scratchDir("rift-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/rift/run.ts. */
