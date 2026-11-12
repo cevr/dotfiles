@@ -127,11 +127,15 @@ export const observe = (before: Readings, load: HostLoad, now: number): Readings
 
 const atLeast = (from: number, now: number, duration: Duration.Duration): boolean => Duration.isGreaterThanOrEqualTo(Duration.millis(now - from), duration)
 
-/** Whether this server's readings have stayed under the cores for SETTLE by `now`: the minute check's rule. */
-export const settled = (readings: Readings, now: number): boolean => Option.exists(readings.calmSince, (since) => atLeast(since, now, SETTLE))
-
-/** Whether no reading in the SETTLE before `now` was at or past the cores: a land's rule. */
+/** Whether no reading in the SETTLE before `now`, by any reader on the host, was at or past the cores: a land's rule. */
 export const quiet = (readings: Readings, now: number): boolean => !Option.exists(readings.loadedAt, (at) => !atLeast(at, now, SETTLE))
+
+/**
+ * Whether this plugin instance's own readings have stayed under the cores for SETTLE by `now`, and no reader
+ * on the host (another instance, through the kept `loadedAt`) read one at or past them since: the minute
+ * check's rule.
+ */
+export const settled = (readings: Readings, now: number): boolean => Option.exists(readings.calmSince, (since) => atLeast(since, now, SETTLE)) && quiet(readings, now)
 
 /**
  * The rule, over the readings with the one just taken: a land runs it when no reading in the last SETTLE was
@@ -149,20 +153,23 @@ const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => uni
 
 const minutesOf = (duration: Duration.Duration): number => Math.round(Duration.toMinutes(duration))
 
-/** Why the load holds a step back: the reading now, else the last one at or past the cores. */
+/** Why the load holds a step back: the reading now, else the newest one at or past the cores and how long ago it came. */
 const loadWords = (load: HostLoad, readings: Readings, now: number): string => {
-  if (overloaded(load)) return `the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores.`
+  if (overloaded(load)) return `the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores`
   const ago = Option.getOrElse(Option.map(readings.loadedAt, (at) => Math.round((now - at) / Duration.toMillis(Duration.minutes(1)))), () => 0)
-  return `the 1-minute load is ${load.load.toFixed(1)}, but it was at or past the host's ${load.cores} cores ${ago} min ago.`
+  return `the 1-minute load is ${load.load.toFixed(1)}, but it was at or past the host's ${load.cores} cores ${ago} min ago`
 }
 
 /** The wake a land whose post-land step is deferred sends. */
 export const deferredText = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
   [
-    `rift land: the post-land step after ${branches(unitsOf(owed))} is owed: ${loadWords(load, readings, now)}`,
+    `rift land: the post-land step after ${branches(unitsOf(owed))} is owed: ${loadWords(load, readings, now)}.`,
     `It runs once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes (read every ${minutesOf(CHECK_EVERY)} min), or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; a later land's step replaces it. This session is woken with its report.`,
   ].join(" ")
 
-/** The line that heads the report of a step a land ran past the load. */
-export const forcedLine = (owed: OwedPostLand, load: HostLoad, now: number): string =>
-  `rift land: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${load.load.toFixed(1)} on ${load.cores} cores), nice'd like every check.`
+/**
+ * The line that heads the report of a step a land ran past the load, worded as the deferred wake words it:
+ * the reading now when it is at or past the cores, else the earlier one that held the step back.
+ */
+export const forcedLine = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
+  `rift land: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${loadWords(load, readings, now)}), nice'd like every check.`

@@ -3,7 +3,7 @@
 // steps of a land and the repository's checks, the workbox's own scripts,
 // the directory each session runs in and the notices that wake one. Each states its failure; `laws.ts` states
 // what every implementation owes.
-import { Context, type Effect, Schema } from "effect"
+import { Context, type Effect, type Option, Schema } from "effect"
 import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Started, Unit } from "./land.ts"
 import type { Debts } from "./owed.ts"
 import type { Workspace } from "./workspace.ts"
@@ -109,10 +109,28 @@ export class PostLandDebts extends Context.Service<
   {
     /** What was last written; `noDebts` before the first write, and when what was written cannot be read. */
     readonly read: Effect.Effect<Debts, RiftFailed>
-    /** Replaces what is kept with `debts`. */
-    readonly write: (debts: Debts) => Effect.Effect<void, RiftFailed>
+    /**
+     * Replaces what is kept with `change` of it, read and written as one step against every other writer on
+     * the host (each plugin instance, each process); answers what it wrote.
+     */
+    readonly update: (change: (debts: Debts) => Debts) => Effect.Effect<Debts, RiftFailed>
   }
 >()("dotfiles-opencode/rift/PostLandDebts") {}
+
+/**
+ * The host's one post-land claim: whoever holds it runs the owed post-land steps, every Git step in the
+ * post-land Rift included; every rift plugin instance on the host (one per directory OpenCode serves) and
+ * every process share it.
+ */
+export class PostLandClaim extends Context.Service<
+  PostLandClaim,
+  {
+    /** Runs `effect` holding the claim, waiting while another holder has it. */
+    readonly hold: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | RiftFailed, R>
+    /** Runs `effect` holding the claim when it is free; answers none at once, running nothing, when another holder has it. */
+    readonly holdIfFree: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<Option.Option<A>, E | RiftFailed, R>
+  }
+>()("dotfiles-opencode/rift/PostLandClaim") {}
 
 /** A message to a session, read at its next step; an idle session wakes for it. */
 export interface Notice {

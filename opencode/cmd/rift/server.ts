@@ -31,7 +31,7 @@ import * as ProcessLanding from "@dotfiles/opencode-rift/process/landing"
 import * as ProcessRifts from "@dotfiles/opencode-rift/process/rifts"
 import * as ProcessWorkbox from "@dotfiles/opencode-rift/process/workbox"
 import { RIFT_DESCRIPTION, RiftInput } from "@dotfiles/opencode-rift/rift"
-import type { Landing, Notices, PostLandDebts, Rifts, SessionDirectories, Workbox } from "@dotfiles/opencode-rift/service"
+import type { Landing, Notices, PostLandClaim, PostLandDebts, Rifts, SessionDirectories, Workbox } from "@dotfiles/opencode-rift/service"
 
 /** OpenCode's worktree tools, by their registry ids; the rift tool replaces them. */
 export const WORKTREE_TOOLS = ["opencode_worktree_create", "opencode_worktree_list", "opencode_worktree_remove"] as const
@@ -42,7 +42,7 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = Rifts | SessionDirectories | Landing | Notices | Workbox | PostLandDebts
+export type Externals = Rifts | SessionDirectories | Landing | Notices | Workbox | PostLandDebts | PostLandClaim
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]

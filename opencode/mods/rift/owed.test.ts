@@ -39,9 +39,9 @@ const landExpected = (waited: number, loaded: Option.Option<number>): Verdict =>
   return "defer"
 }
 
-/** The minute check's verdict: calm for the whole settle window, else still owed. */
-const checkExpected = (calm: Option.Option<number>): Verdict => {
-  if (Option.exists(calm, (ago) => ago >= settle)) return "run"
+/** The minute check's verdict: its own readings calm for the whole settle window and none at or past the cores in it from any reader (another plugin instance's, kept with the owed steps), else still owed. */
+const checkExpected = (calm: Option.Option<number>, loaded: Option.Option<number>): Verdict => {
+  if (Option.exists(calm, (ago) => ago >= settle) && !Option.exists(loaded, (ago) => ago < settle)) return "run"
   return "defer"
 }
 
@@ -65,7 +65,7 @@ describe("verdict", () => {
 
   test("the minute check runs the step once the readings stayed calm for the settle window, and never forces it", () => {
     const wrong = pairs.flatMap(({ waited, loaded, calm }) => {
-      const expected = checkExpected(calm)
+      const expected = checkExpected(calm, loaded)
       const got = verdict(owedFor(waited), readingsOf(loaded, calm), NOW, "settled")
       if (got === expected) return []
       return [{ waited, loaded: Option.getOrNull(loaded), calm: Option.getOrNull(calm), expected, got }]
