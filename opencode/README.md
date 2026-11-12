@@ -2784,7 +2784,14 @@ packages). Moving the root's `effect` breaks every real-OpenCode scenario in
 the plugin, and `scripts/effect-debt.test.ts` holds opencode-drive to the
 versions it pins. The kept rules are the 20 recommended rules it had
 no finding of, and `requireSuppressionReason` (a suppression names its rule
-and gives a reason after ` -- `). Two files keep one finding each a newer
+and gives a reason after ` -- `). Rules enabled since, each once its findings
+were fixed, with a generated test over the real config: `noTestGlobals` (no
+test writes the process's env or globals; `scripts/effect-isolation.test.ts`),
+and `noReduceAccumulatorCopy`, `preferEffectFn`, `preferPredicateIsTagged` and
+`requireNamedEffectFn` (a reducer builds its own local list, a spanned
+generator is a named `Effect.fn`, a check of several tags is
+`Predicate.isTagged`, and every `Effect.fn` has a stable name;
+`scripts/effect-small-rules.test.ts`). Two files keep one finding each a newer
 commit brought, as an exact-file override in `.oxlintrc.json` and a budget:
 `mods/orchestrate/machine.ts` (`maxHalsteadDifficulty`) and
 `mods/pool/memory/fleet-claims.test.ts` (`noReflectApply`). Its warnings are
@@ -2821,6 +2828,7 @@ its reason, and only for a capability no installed Effect service offers:
 | `scripts/effect-debt.ts` | `noGlobals`, `noNodeBuiltinImport` | the lint subprocess adapter: the root has no Effect platform layer, so it spawns git and oxlint with `Bun.spawn` and reads and writes files itself |
 | `scripts/effect-debt.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge (no Effect test runner is installed) and a real-process harness building throwaway workspaces |
 | `scripts/effect-isolation.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces and child `bun test` runs |
+| `scripts/effect-small-rules.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces for real oxlint runs |
 
 No other rule can be exempted (`EXEMPTABLE` in the script): a test-global
 write, a fixed wait, a module mock, a swallowed failure or a style rule is

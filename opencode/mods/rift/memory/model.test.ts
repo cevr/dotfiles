@@ -2,7 +2,7 @@
 // the Rifts and what the model reads back. It sits here because the domain
 // fence keeps the root's files off its folders.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Predicate } from "effect"
 import * as MemoryLanding from "./landing.ts"
 import * as MemoryNotices from "./notices.ts"
 import * as MemoryRifts from "./rifts.ts"
@@ -49,7 +49,7 @@ const calls = (made: Bench | MemoryRifts.World, inputs: ReadonlyArray<RiftInput>
           answers.push(
             yield* tool.run(sessionID, input).pipe(
               Effect.map((answer) => answer.text),
-              Effect.catch((failure) => Effect.succeed(`${failure._tag === "RiftFailed" || failure._tag === "SessionUnreadable" ? "failed" : "refused"}: ${Model.explain(failure)}`)),
+              Effect.catch((failure) => Effect.succeed(`${Predicate.isTagged(failure, "RiftFailed") || Predicate.isTagged(failure, "SessionUnreadable") ? "failed" : "refused"}: ${Model.explain(failure)}`)),
             ),
           )
         // The background accept checks finish before the tool goes.

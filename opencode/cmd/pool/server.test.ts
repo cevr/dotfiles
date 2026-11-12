@@ -266,14 +266,14 @@ const start = (
     yield* make(externals === "test" ? testLayers(state, published) : externals).effect(host)
 
     /** One model request of a session: the headers the pool sets on it. */
-    const send = Effect.fn(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
+    const send = Effect.fn("PoolServerTest.send")(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
       const headers: Record<string, string> = {}
       yield* (yield* registered(hooks, "model.request"))({ sessionID, agent, model: { ...model, providerID }, kind, headers })
       return headers
     })
     /** One model request of a session: the login the pool names on it. */
     const request = (...args: Parameters<typeof send>) => send(...args).pipe(Effect.map((headers) => headers[CREDENTIAL_HEADER]))
-    const respond = Effect.fn(function* (status: number, sessionID = "ses_1") {
+    const respond = Effect.fn("PoolServerTest.respond")(function* (status: number, sessionID = "ses_1") {
       yield* (yield* registered(hooks, "http.response"))({
         sessionID,
         agent: "build",
@@ -284,16 +284,16 @@ const start = (
       })
     })
     /** The host's retry decision after the pool saw the failed request. */
-    const retry = Effect.fn(function* (decision: unknown = { retry: false }, sessionID = "ses_1") {
+    const retry = Effect.fn("PoolServerTest.retry")(function* (decision: unknown = { retry: false }, sessionID = "ses_1") {
       const event: Record<string, unknown> = { sessionID, agent: "build", model, error: { type: "api" }, attempt: 1, decision }
       yield* (yield* registered(hooks, "retry"))(event)
       return event.decision
     })
-    const idle = Effect.fn(function* (sessionID: string) {
+    const idle = Effect.fn("PoolServerTest.idle")(function* (sessionID: string) {
       yield* (yield* registered(hooks, "experimental.idle"))({ sessionID, background: [] })
     })
     const method = (name: string) => Effect.flatMap(registered(rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, name))
-    const pace = Effect.fn(function* (providerID: string, sessionID?: string) {
+    const pace = Effect.fn("PoolServerTest.pace")(function* (providerID: string, sessionID?: string) {
       return (yield* (yield* method("pace"))({ providerID, ...(sessionID === undefined ? {} : { sessionID }) })) as Pace
     })
     const resets = Effect.gen(function* () {
@@ -302,7 +302,7 @@ const start = (
     const status = Effect.gen(function* () {
       return (yield* (yield* method("status"))({})) as PoolsStatus
     })
-    const session = Effect.fn(function* (query: unknown) {
+    const session = Effect.fn("PoolServerTest.session")(function* (query: unknown) {
       return (yield* (yield* method("session"))(query)) as SessionAnswer
     })
     /** A host event or a published reading, taken in before the test goes on. */
@@ -311,10 +311,10 @@ const start = (
     const alerts = Effect.gen(function* () {
       return (yield* (yield* method("alerts"))({})) as Alerts
     })
-    const logins = Effect.fn(function* (query: unknown) {
+    const logins = Effect.fn("PoolServerTest.logins")(function* (query: unknown) {
       return (yield* (yield* method("logins"))(query)) as SessionLogins
     })
-    const started = Effect.fn(function* (input: unknown) {
+    const started = Effect.fn("PoolServerTest.started")(function* (input: unknown) {
       return yield* (yield* method("started"))(input)
     })
     const report = Effect.gen(function* () {
@@ -327,7 +327,7 @@ const start = (
       return (yield* (yield* method("limits"))({})) as LimitsAnswer
     })
     /** A response of `providerID`'s model came back carrying `headers`. */
-    const responded = Effect.fn(function* (providerID: string, headers: Record<string, string>, sessionID = "ses_1") {
+    const responded = Effect.fn("PoolServerTest.responded")(function* (providerID: string, headers: Record<string, string>, sessionID = "ses_1") {
       yield* (yield* registered(hooks, "http.response"))({
         sessionID,
         agent: "build",
@@ -338,7 +338,7 @@ const start = (
       })
     })
     /** A frame of `providerID`'s websocket came in. */
-    const received = Effect.fn(function* (providerID: string, frame: string, sessionID = "ses_1") {
+    const received = Effect.fn("PoolServerTest.received")(function* (providerID: string, frame: string, sessionID = "ses_1") {
       yield* (yield* registered(hooks, "experimental.ws.receive"))({ sessionID, agent: "build", model: { ...model, providerID }, kind: "primary", frame })
     })
     return {

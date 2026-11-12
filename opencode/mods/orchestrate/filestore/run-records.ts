@@ -34,18 +34,17 @@ export const layer = Layer.succeed(RunRecords, {
     ),
   see: (runDir, version) =>
     Effect.tryPromise(() => writeFile(join(runDir, SEEN_FILE), `${version}\n`)).pipe(Effect.ignore, Effect.withSpan("RunRecords.see")),
-  departures: (runDir) =>
-    Effect.gen(function* () {
-      const entries = yield* Effect.tryPromise(() => readdir(runDir, { withFileTypes: true })).pipe(Effect.orElseSucceed(() => []))
-      const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name).sort()
-      const found = yield* Effect.forEach(files, (file) =>
-        Effect.tryPromise(() => readFile(join(runDir, file), "utf8")).pipe(
-          Effect.map((text) => departuresOf(file, text)),
-          Effect.orElseSucceed((): ReadonlyArray<string> => []),
-        ),
-      )
-      return found.flat()
-    }).pipe(Effect.withSpan("RunRecords.departures")),
+  departures: Effect.fn("RunRecords.departures")(function* (runDir) {
+    const entries = yield* Effect.tryPromise(() => readdir(runDir, { withFileTypes: true })).pipe(Effect.orElseSucceed(() => []))
+    const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name).sort()
+    const found = yield* Effect.forEach(files, (file) =>
+      Effect.tryPromise(() => readFile(join(runDir, file), "utf8")).pipe(
+        Effect.map((text) => departuresOf(file, text)),
+        Effect.orElseSucceed((): ReadonlyArray<string> => []),
+      ),
+    )
+    return found.flat()
+  }),
   log: ({ near, line, directory }) =>
     Effect.sync(() => {
       const file = near.startsWith("~/") ? join(homedir(), near.slice(2)) : isAbsolute(near) ? near : directory === undefined ? undefined : resolve(directory, near)

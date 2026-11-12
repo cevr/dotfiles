@@ -65,14 +65,14 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
     ).effect(host)
 
     /** One spawn through the shell's `create.before` hooks, as OpenCode resolves it: what it spawns afterwards. */
-    const spawn = Effect.fn(function* (command: string, shell = "/bin/zsh") {
+    const spawn = Effect.fn("GuardServerTest.spawn")(function* (command: string, shell = "/bin/zsh") {
       const invocation: Invocation = { command, cwd: "/work/app", timeout: 0, shell, env: { PATH: "/usr/bin" } }
       for (const hook of shellHooks["create.before"] ?? []) yield* hook(invocation)
       return invocation
     })
 
     /** One tool call through the `execute.before` hooks: the refusal's message, or undefined when it may run. */
-    const call = Effect.fn(function* (tool: string, input: unknown, sessionID = "ses_1") {
+    const call = Effect.fn("GuardServerTest.call")(function* (tool: string, input: unknown, sessionID = "ses_1") {
       const event: Record<string, unknown> = { tool, sessionID, agent: "build", messageID: "msg", id: "call", input }
       for (const hook of hooks["execute.before"] ?? []) {
         const exit = yield* Effect.exit(hook(event))

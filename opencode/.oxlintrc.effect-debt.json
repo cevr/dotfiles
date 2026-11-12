@@ -123,6 +123,15 @@
         "effect/noEffectRunInTests": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/effect-small-rules.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }
