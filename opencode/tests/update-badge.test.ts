@@ -186,8 +186,8 @@ describe.skipIf(!fork)("the update notice", () => {
   /** The service, started once for every case, with Prime as the TUI's look. */
   const boot = () =>
     (booted ??= (async () => {
-      const daily = dirname(upstreamFile(home, env.XDG_STATE_HOME))
-      for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode"), join(home, ".local"), env.XDG_STATE_HOME, daily]) mkdirSync(dir)
+      const state = join(home, ".local/state")
+      for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode"), join(home, ".local"), state, dirname(upstreamFile(home, state))]) mkdirSync(dir)
       writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify({}))
       writeFileSync(
         join(home, ".config/opencode/cli.json"),
