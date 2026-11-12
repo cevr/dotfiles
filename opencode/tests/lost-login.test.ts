@@ -4,6 +4,7 @@
 // command that signs it in again, and as a toast; a refresh that succeeds
 // clears both. scenarios/lost-login.ts drives it.
 import { describe, expect, test } from "bun:test"
+import { Array as Arr } from "effect"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
@@ -33,8 +34,9 @@ describe.skipIf(!fork)("a lost gent login in the TUI", () => {
     expect(section).toEqual([first, first + 1, first + 2])
     // The command, wrapped in the sidebar's column, names the store's directory
     // (not gent's default one) and alpha's slot. Compared without the wrapping's spaces.
+    // The command runs until the sidebar's first blank row, however many rows its paths wrap to.
     const column = rows[first + 1]?.indexOf("alpha") ?? -1
-    const wrapped = rows.slice(first + 2, first + 9).map((row) => row.slice(column)).join("")
+    const wrapped = Arr.takeWhile(rows.slice(first + 2).map((row) => row.slice(column)), (row) => row.trim() !== "").join("")
     const command = `GENT_AUTH_DIRECTORY=${join(out, "gent-auth")} gent auth login anthropic --method "Sign in to a Claude account" --slot alpha`
     const squeeze = (text: string) => text.replace(/\s+/g, "")
     expect(squeeze(wrapped)).toStartWith(squeeze(`sign in again in gent: ${command}`))
