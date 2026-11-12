@@ -8,6 +8,9 @@
  *   in the conversation, else `ROOT_UNTOLD`.
  * - anything else (the other location's session): `IDLE` at once.
  *
+ * `hold()` keeps the asking task's answer to its letter back until its
+ * release is called, so the run can watch the root while the subagent works.
+ *
  * @module
  */
 
@@ -31,6 +34,26 @@ export const QUESTION = {
   header: "Cache store",
   options: [{ label: "SQLite" }, { label: "Redis" }],
   assume: "SQLite",
+}
+
+/** A session message as the SDK's `sessions.context` lists it, as much as the run and the test read. */
+export interface Message {
+  readonly type?: string
+  readonly metadata?: { readonly source?: string; readonly notice?: unknown }
+}
+/** A session's messages, from `sessions.context`'s answer (a list, or `{ messages }`). */
+export const messagesOf = (context: unknown): ReadonlyArray<Message> => {
+  const list = Array.isArray(context) ? context : (context as { messages?: unknown } | undefined)?.messages
+  return Array.isArray(list) ? (list as ReadonlyArray<Message>) : []
+}
+/** OpenCode's idle report of a subagent, in its parent. */
+export const isReport = (message: Message) => message.type === "synthetic" && message.metadata?.source === "subagent"
+/** The questions plugin's notice to a root that its subagent's question was answered. */
+export const isNotice = (message: Message) => message.metadata?.source === "questions" && message.metadata.notice !== undefined
+/** Whether an assistant turn follows the last message that `is` matches. */
+export const answeredAfter = (messages: ReadonlyArray<Message>, is: (message: Message) => boolean) => {
+  const at = messages.findLastIndex(is)
+  return at >= 0 && messages.slice(at + 1).some((message) => message.type === "assistant")
 }
 
 interface ChatMessage {
@@ -77,6 +100,23 @@ const events = (answer: Reply, model: string, id: string): string => {
 /** Serves the scripted model. */
 export const serve = () => {
   let served = 0
+  // While held, the asking task's answer to its letter waits: the run checks what happens before the subagent reports again.
+  let held: Promise<void> | undefined
+  const hold = () => {
+    let release = () => {}
+    held = new Promise<void>((resolve) => {
+      release = () => {
+        held = undefined
+        resolve()
+      }
+    })
+    return release
+  }
+  const isLetterTurn = (request: ChatRequest) => {
+    const messages = request.messages ?? []
+    const task = text(messages.find((message) => message.role === "user")?.content).trim()
+    return task.endsWith(ASK_TASK) && messages.some((message) => text(message.content).includes(LETTER))
+  }
   const reply = (request: ChatRequest): Reply => {
     const messages = request.messages ?? []
     const system = messages
@@ -100,10 +140,15 @@ export const serve = () => {
       if (request.method !== "POST" || !url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 })
       const body = (await request.json()) as ChatRequest
       served += 1
+      if (held !== undefined && isLetterTurn(body)) await held
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },
   })
-  return { server }
+  return {
+    server,
+    /** Holds the asking task's answer to its letter until the returned release is called. */
+    hold,
+  }
 }
