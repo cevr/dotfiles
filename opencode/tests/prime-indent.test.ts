@@ -81,6 +81,12 @@ describe.skipIf(!fork)("every transcript row starts in one column in the Prime l
     expect(columns(frame, kinds)).toEqual(Object.fromEntries(Object.keys(kinds).map((kind) => [kind, call])))
   })
 
+  test("low, unfolded: the first call sits on the row right under `− N commands`, no blank row between (the owner's pick)", () => {
+    const frame = frames["indent-low"]!
+    const summary = frame.indexOf(row(frame, /^− \d+ commands?/).line)
+    expect(frame.slice(summary, summary + 2).map((line) => line.trim())).toEqual(["− 3 commands, 1 tool", TURN.call])
+  })
+
   test("low, unfolded: the calls it holds sit on medium's rails and gaps, row for row, up to the notice", () => {
     expect(turn(frames["indent-low"]!)).toEqual(turn(frames["indent-medium"]!))
   })
