@@ -276,12 +276,132 @@ export const layer = (host: Host) =>
   )
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
-type SessionInfo = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 type ProviderID = Parameters<Plugin.Context["provider"]["get"]>[0]["providerID"]
+type AgentID = Parameters<Plugin.Context["agent"]["get"]>[0]["agentID"]
+
+/** A session's record, as the plugin reads it (`Session.Info`). */
+export interface SessionRecord {
+  readonly id: string
+  readonly parentID?: string
+  readonly title?: string
+  readonly location: Place
+  readonly time: { readonly busy?: DateTime.Utc; readonly idle?: DateTime.Utc }
+}
+
+/** A cache setting as the catalog holds it (`Provider.Settings`), the lifetime alone. */
+interface CacheSettings {
+  readonly cache?: { readonly ttl?: string }
+}
+
+/** A model's catalog entry, as the plugin reads it (`Model.Info`). */
+export interface CatalogModel {
+  readonly providerID: string
+  readonly id: string
+  readonly modelID: string
+  readonly canonical?: string
+  readonly settings?: CacheSettings
+  readonly limit: { readonly context: number; readonly input?: number }
+  readonly cost: ReadonlyArray<{
+    readonly tier?: { readonly size: number }
+    readonly input: number
+    readonly output: number
+    readonly cache: { readonly read: number; readonly write: number }
+  }>
+}
+
+/** A provider's catalog entry, as the plugin reads it (`Provider.Info`). */
+export interface CatalogProvider {
+  readonly id: string
+  readonly settings?: CacheSettings
+}
+
+/** An agent, as the plugin reads it (`Agent.Info`): its request settings may name its own lifetime. */
+export interface CatalogAgent {
+  readonly id: string
+  readonly request: { readonly settings?: CacheSettings & { readonly cacheTTL?: unknown } }
+}
+
+/** Which location a catalog read is for. */
+interface At {
+  readonly location: { readonly directory: string }
+}
+
+/**
+ * The plugin context, as far as the plugin reads it: `Plugin.Context` is one. Narrow, so a test can stand in for
+ * the reads it checks and nothing else.
+ */
+export interface Reads {
+  readonly location: Pick<Plugin.Context["location"], "directory" | "workspaceID">
+  readonly session: Pick<Plugin.Context["session"], "get" | "context" | "compact"> & {
+    readonly list: (
+      input: Parameters<Plugin.Context["session"]["list"]>[0],
+    ) => Effect.Effect<{ readonly data: ReadonlyArray<SessionRecord> }, unknown>
+  }
+  readonly model: { readonly list: (input: At) => Effect.Effect<{ readonly data: ReadonlyArray<CatalogModel> }, unknown> }
+  readonly provider: {
+    readonly list: (input: At) => Effect.Effect<{ readonly data: ReadonlyArray<CatalogProvider> }, unknown>
+    readonly get: (input: At & { readonly providerID: ProviderID }) => Effect.Effect<{ readonly data: CatalogProvider }, unknown>
+  }
+  readonly agent: {
+    readonly list: (input: At) => Effect.Effect<{ readonly data: ReadonlyArray<CatalogAgent> }, unknown>
+    readonly get: (input: At & { readonly agentID: AgentID }) => Effect.Effect<{ readonly data: CatalogAgent }, unknown>
+  }
+}
+
+/**
+ * A model as the decisions read it, from its catalog entry and its provider's: the one projection both the reads
+ * and the catalog's key take, so the key holds every field a decision reads.
+ */
+export const modelViewOf = (model: CatalogModel, provider?: CatalogProvider): ModelView => {
+  const { context, input } = model.limit
+  return {
+    providerID: model.providerID,
+    canonical: model.canonical,
+    modelID: model.modelID,
+    ttl: model.settings?.cache?.ttl ?? provider?.settings?.cache?.ttl,
+    // As the fork's compaction reads it: the input limit within the context window.
+    window: input && context ? Math.min(input, context) : input || context,
+    rates: model.cost.map(
+      (cost): Rate => ({
+        tier: cost.tier?.size,
+        input: cost.input,
+        output: cost.output,
+        cacheRead: cost.cache.read,
+        cacheWrite: cost.cache.write,
+      }),
+    ),
+  }
+}
+
+/** The agent's own cache lifetime (`request.settings.cacheTTL`), when it sets one as text. */
+export const agentTTLOf = (agent: CatalogAgent) => {
+  const ttl = agent.request.settings?.cacheTTL
+  return typeof ttl === "string" ? ttl : undefined
+}
+
+/**
+ * What the decisions read of a location's catalog: every model's view under its reference, and every agent's own
+ * lifetime. Equal for two catalogs exactly when every read of a model or an agent answers alike.
+ */
+export const catalogOf = (catalog: {
+  readonly models: ReadonlyArray<CatalogModel>
+  readonly providers: ReadonlyArray<CatalogProvider>
+  readonly agents: ReadonlyArray<CatalogAgent>
+}) => ({
+  models: catalog.models.map((model) => [
+    model.providerID,
+    model.id,
+    modelViewOf(
+      model,
+      catalog.providers.find((provider) => provider.id === model.providerID),
+    ),
+  ]),
+  agents: catalog.agents.map((agent) => [agent.id, agentTTLOf(agent)]),
+})
 
 const millis = (time: DateTime.Utc | undefined) => (time === undefined ? undefined : DateTime.toEpochMillis(time))
 
-const sessionView = (session: SessionInfo): SessionView => ({
+const sessionView = (session: SessionRecord): SessionView => ({
   id: session.id,
   parentID: session.parentID,
   title: session.title,
@@ -306,9 +426,9 @@ interface CompactHost {
 const RECENT = 50
 
 /** The host's reads and compaction through the plugin context. */
-export const fromContext = (ctx: Plugin.Context) => {
+export const hostOf = (ctx: Reads): Host => {
   const location = { directory: ctx.location.directory }
-  return layer({
+  return {
     location: { directory: ctx.location.directory, workspaceID: ctx.location.workspaceID },
     session: (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(sessionView)),
     messages: (sessionID) =>
@@ -338,55 +458,22 @@ export const fromContext = (ctx: Plugin.Context) => {
         if (model === undefined) return undefined
         // A provider that cannot be read fails the read: its lifetime may be the one the request was sent with.
         const provider = yield* ctx.provider.get({ providerID: ref.providerID as ProviderID, location: { directory } })
-        const { context, input } = model.limit
-        return {
-          providerID: model.providerID,
-          canonical: model.canonical,
-          modelID: model.modelID,
-          ttl: model.settings?.cache?.ttl ?? provider.data.settings?.cache?.ttl,
-          // As the fork's compaction reads it: the input limit within the context window.
-          window: input && context ? Math.min(input, context) : input || context,
-          rates: model.cost.map(
-            (cost): Rate => ({
-              tier: cost.tier?.size,
-              input: cost.input,
-              output: cost.output,
-              cacheRead: cost.cache.read,
-              cacheWrite: cost.cache.write,
-            }),
-          ),
-        }
+        return modelViewOf(model, provider.data)
       }),
     agentTTL: (agentID, directory) =>
-      ctx.agent.get({ agentID: Agent.ID.make(agentID), location: { directory } }).pipe(
-        Effect.map((agent) => {
-          const ttl = agent.data.request.settings?.["cacheTTL"]
-          return typeof ttl === "string" ? ttl : undefined
-        }),
-      ),
-    // What `model` and `agentTTL` read, for every entry, in the catalog's own order.
+      ctx.agent.get({ agentID: Agent.ID.make(agentID), location: { directory } }).pipe(Effect.map((agent) => agentTTLOf(agent.data))),
+    // What `model` and `agentTTL` read, for every entry, through the same projections.
     catalog: Effect.all(
-      [ctx.model.list({ location }), ctx.provider.list({ location }), ctx.agent.list({ location })],
+      { models: ctx.model.list({ location }), providers: ctx.provider.list({ location }), agents: ctx.agent.list({ location }) },
       { concurrency: "unbounded" },
-    ).pipe(
-      Effect.map(([models, providers, agents]) => ({
-        models: models.data.map((model) => [
-          model.providerID,
-          model.id,
-          model.modelID,
-          model.canonical,
-          model.settings?.cache?.ttl,
-          model.limit,
-          model.cost,
-        ]),
-        providers: providers.data.map((provider) => [provider.id, provider.settings?.cache?.ttl]),
-        agents: agents.data.map((agent) => [agent.id, agent.request.settings?.["cacheTTL"]]),
-      })),
-    ),
+    ).pipe(Effect.map(({ models, providers, agents }) => catalogOf({ models: models.data, providers: providers.data, agents: agents.data }))),
     roots: ctx.session.list({ parentID: null, directory: ctx.location.directory, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
     compact: (sessionID) => {
       const host: CompactHost = ctx.session
       return host.compact({ sessionID: sessionID as SessionID, reason: "auto" })
     },
-  })
+  }
 }
+
+/** The OpenCode Sessions through the plugin context. */
+export const fromContext = (ctx: Reads) => layer(hostOf(ctx))
