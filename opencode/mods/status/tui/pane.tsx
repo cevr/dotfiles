@@ -10,7 +10,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "../pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
 import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
@@ -152,7 +152,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
         <For each={snapshot()?.runs} fallback={muted(snapshot() ? "No run dir in this repo." : "Loading runs…")}>
           {(run) => (
             <box flexDirection="column">
-              <text fg={theme().text.base}>{run.name}</text>
+              <text fg={theme().text.base}>{runLine(run)}</text>
               <For each={run.units} fallback={muted("No unit logs.")}>{(unit) => muted(unitLine(unit))}</For>
             </box>
           )}
