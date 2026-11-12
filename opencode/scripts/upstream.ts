@@ -51,6 +51,12 @@ export interface Options {
   /** `--dry-run`: fetch and say what would merge, change nothing. */
   readonly dryRun: boolean
   readonly checks: Checks
+  /**
+   * Runs a green merge's change to the fork checkout (the fast-forward of prime-look and the install
+   * after it) and answers what it answered: `unlocked` runs it as is; a land's post-land step holds the
+   * land's checks lock around it, since the land's gate and accept read the checkout.
+   */
+  readonly landing: <A>(step: () => A) => A
   /** The merge worktree's directory. */
   readonly worktree: string
   /** The report a conflict or a red check writes, removed once the fork is current again. */
@@ -133,6 +139,9 @@ const reportHeader = (options: Options, title: string, upstream: string, base: s
   "",
 ]
 
+/** `Options.landing` with no lock: the step runs as is. */
+export const unlocked = <A>(step: () => A): A => step()
+
 /** Runs the step; never throws for a merge that cannot land, only for a broken fork checkout. */
 export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   const { fork, log } = options
@@ -213,7 +222,16 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   // Fast-forward prime-look where it is checked out (the working tree follows), else the ref alone,
   // compared against where the merge started so a branch that moved meanwhile is never overwritten.
   const holder = checkedOut(run, fork, BRANCH)
-  const moved = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, merge, base) : git(holder, "merge", "--ff-only", merge)
+  const moved = options.landing(() => {
+    const forwarded = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, merge, base) : git(holder, "merge", "--ff-only", merge)
+    // The push runs the fork's pre-push check (lint, typecheck) in the checkout, whose packages are
+    // still the old merge's: install the merged lockfile first, or a package upstream changed fails it.
+    if (forwarded.ok && holder !== undefined && existsSync(join(holder, "bun.lock"))) {
+      const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, env: { ...run.env }, stdout: "pipe", stderr: "pipe" })
+      if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed before the push: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
+    }
+    return forwarded
+  })
   if (!moved.ok) {
     const reason = `could not fast-forward ${BRANCH}${holder === undefined ? "" : ` in ${holder}`}: ${moved.err || moved.out}`
     log(`upstream: the merge is green but ${reason}`)
@@ -221,12 +239,6 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
     return { kind: "stuck", reason, merge, upstream }
   }
   rmSync(options.report, { force: true })
-  // The push runs the fork's pre-push check (lint, typecheck) in the checkout, whose packages are
-  // still the old merge's: install the merged lockfile first, or a package upstream changed fails it.
-  if (holder !== undefined && existsSync(join(holder, "bun.lock"))) {
-    const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, env: { ...run.env }, stdout: "pipe", stderr: "pipe" })
-    if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed before the push: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
-  }
   const pushed = git(fork, "push", "--quiet", "origin", BRANCH)
   log(
     pushed.ok

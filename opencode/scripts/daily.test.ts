@@ -6,7 +6,7 @@ import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { scratch as scratchDir } from "../tests/scratch.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
-import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
+import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
@@ -258,6 +258,7 @@ describe("the upstream merge", () => {
         calls.push(dir)
         return { ok: true }
       },
+      landing: unlocked,
       worktree: join(root, "state/upstream-merge"),
       report: join(root, "state/upstream-conflict.md"),
       log: () => {},
@@ -279,16 +280,24 @@ describe("the upstream merge", () => {
     expect(existsSync(f.options().report)).toBe(false)
   })
 
-  test("a clean merge whose checks pass fast-forwards prime-look to it and pushes it to origin", async () => {
+  test("a clean merge whose checks pass fast-forwards prime-look to it inside `landing` alone, then pushes it to origin", async () => {
     using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     commitTo(f.origin, "prime-look", { "c.txt": "ours\n" })
     git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
     const before = f.head(f.fork, "prime-look")
-    const outcome = await mergeUpstream(f.options())
+    const seen: string[] = []
+    const landing = <A>(step: () => A): A => {
+      seen.push(f.head(f.fork, "prime-look"))
+      const answer = step()
+      seen.push(f.head(f.fork, "prime-look"), f.head(f.origin, "prime-look"))
+      return answer
+    }
+    const outcome = await mergeUpstream(f.options({ landing }))
     expect(outcome).toMatchObject({ kind: "merged", from: before, commits: 1, pushed: true })
     const merge = f.head(f.fork, "prime-look")
     expect(merge).not.toBe(before)
+    expect(seen).toEqual([before, merge, before])
     // A merge commit: ours first, upstream's second, checked in the worktree, never in the fork.
     expect(git(f.fork, "rev-list", "--parents", "-n", "1", merge).split(" ")).toEqual([merge, before, f.head(f.upstream, "dev")])
     expect(f.calls).toEqual([f.options().worktree])
@@ -322,10 +331,18 @@ describe("the upstream merge", () => {
     using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     const before = f.head(f.fork, "prime-look")
+    const landed: string[] = []
     const outcome = await mergeUpstream(
-      f.options({ checks: async () => ({ ok: false, check: "typecheck packages/tui", log: "error TS2304: Cannot find name 'x'" }) }),
+      f.options({
+        checks: async () => ({ ok: false, check: "typecheck packages/tui", log: "error TS2304: Cannot find name 'x'" }),
+        landing: (step) => {
+          landed.push("called")
+          return step()
+        },
+      }),
     )
     expect(outcome).toMatchObject({ kind: "red", check: "typecheck packages/tui" })
+    expect(landed).toEqual([])
     expect(f.head(f.fork, "prime-look")).toBe(before)
     expect(f.head(f.origin, "prime-look")).toBe(before)
     expect(f.head(f.fork, HELD_BRANCH)).toBe(outcome.kind === "red" ? outcome.merge : "")

@@ -10,7 +10,7 @@ import { closeSync, mkdirSync, openSync } from "node:fs"
 import { platform } from "node:os"
 import { dirname } from "node:path"
 import { dlopen, FFIType } from "bun:ffi"
-import { Data, Effect, Match, Schedule, type Scope } from "effect"
+import { Data, Effect, Match, Option, Schedule, type Scope } from "effect"
 import { RiftFailed } from "../service.ts"
 
 /** Many shared holders at once, or one exclusive holder alone. */
@@ -65,6 +65,48 @@ export const hold = (file: string, mode: LockMode): Effect.Effect<void, RiftFail
       ),
     ),
   )
+
+/** The lock file a land named in `file`, none when it is empty (a run by hand). */
+const named = (file: string): Option.Option<string> => Option.filter(Option.some(file), (path) => path !== "")
+
+/**
+ * For a script outside Effect (a repository's post-land step): runs `step`, a promise, holding the lock
+ * on `file` exclusively, or as is when `file` is empty.
+ */
+export const exclusively =
+  (file: string) =>
+  <A>(step: () => Promise<A>): Promise<A> =>
+    Effect.runPromise(
+      Option.match(named(file), {
+        onNone: () => Effect.promise(step),
+        onSome: (path) => holding([[path, "exclusive"]], Effect.promise(step)),
+      }),
+    )
+
+/**
+ * For a script outside Effect: runs `step`, a synchronous one, holding the lock on `file` exclusively, or
+ * as is when `file` is empty. It blocks its thread while it waits for the lock: a script's step has
+ * nothing else to do meanwhile.
+ */
+export const exclusivelySync =
+  (file: string) =>
+  <A>(step: () => A): A =>
+    Option.match(named(file), {
+      onNone: step,
+      onSome: (path) =>
+        Effect.runSync(
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              mkdirSync(dirname(path), { recursive: true })
+              const descriptor = openSync(path, "a+")
+              flock(descriptor, OPERATIONS.exclusive)
+              return descriptor
+            }),
+            () => Effect.sync(step),
+            (descriptor) => Effect.sync(() => closeSync(descriptor)),
+          ),
+        ),
+    })
 
 /** Runs `effect` holding each lock of `locks`, taken in order. */
 export const holding = <A, E, R>(locks: ReadonlyArray<readonly [string, LockMode]>, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | RiftFailed, R> =>

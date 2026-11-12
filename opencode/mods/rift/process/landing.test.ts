@@ -2,13 +2,13 @@
 // bare origin, a warm source, an integration clone and two Rift clones on
 // their branches. The lock file is a Bun workspace's, so installs need no
 // network.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, promises, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
 import { Landing } from "../service.ts"
-import { hold, type LockMode } from "./flock.ts"
+import { exclusively, exclusivelySync, hold, type LockMode } from "./flock.ts"
 import * as ProcessLanding from "./landing.ts"
 
 const ENV = {
@@ -279,6 +279,41 @@ describe("process Landing", () => {
         expect(yield* waits(landing, "gate", locks.checks)).toEqual({ early: false, before: false, code: 0, after: true })
         expect(yield* waits(landing, "accept", locks.accept)).toEqual({ early: false, before: false, code: 0, after: true })
         expect(yield* waits(landing, "accept", locks.checks)).toEqual({ early: false, before: false, code: 0, after: true })
+      }),
+    )
+  })
+
+  test("a post-land script's exclusively waits for a lock another holder has, and runs its step once it lets go; exclusivelySync holds it through its step; an empty name runs the step as is", () => {
+    const made = bench()
+    const file = join(made.scratch, "locks", "checks.lock")
+    const note = join(made.scratch, "note")
+    writeFileSync(note, "noted")
+    /** What another process sees of `file` now: whether it can take it exclusively at once. */
+    const seenFromOutside = () =>
+      sh(
+        made.scratch,
+        "bun",
+        "-e",
+        [
+          'import { dlopen, FFIType } from "bun:ffi"; import { openSync } from "node:fs"',
+          'const libc = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6"',
+          "const { flock } = dlopen(libc, { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } }).symbols",
+          `console.log(flock(openSync("${file}", "a+"), 2 | 4) === 0)`,
+        ].join("\n"),
+      )
+    return made.run(() =>
+      Effect.gen(function* () {
+        const held = yield* Deferred.make<string>()
+        const release = yield* Deferred.make<string>()
+        yield* Effect.forkChild(Effect.scoped(hold(file, "exclusive").pipe(Effect.andThen(Deferred.succeed(held, "held")), Effect.andThen(Deferred.await(release)))))
+        yield* Deferred.await(held)
+        const waiting = yield* Effect.forkChild(Effect.promise(() => exclusively(file)(() => promises.readFile(note, "utf8"))))
+        expect(Option.isSome(yield* Fiber.join(waiting).pipe(Effect.timeoutOption("300 millis")))).toBe(false)
+        yield* Deferred.succeed(release, "released")
+        expect(yield* Fiber.join(waiting)).toBe("noted")
+        expect(exclusivelySync(file)(seenFromOutside)).toBe("false")
+        expect(seenFromOutside()).toBe("true")
+        expect(exclusivelySync("")(() => "as is")).toBe("as is")
       }),
     )
   })
