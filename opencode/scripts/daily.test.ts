@@ -1,6 +1,6 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { describe, expect, test } from "bun:test"
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
@@ -197,26 +197,22 @@ describe("the role models", () => {
 describe("the upstream merge", () => {
   // Real git on local repositories: `upstream` and `origin` are bare repos beside the fork, so
   // nothing touches the network. A scratch git config keeps the owner's hooks and signing out.
-  const saved = { ...process.env }
-  beforeAll(() => {
-    Object.assign(process.env, {
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_AUTHOR_NAME: "daily test",
-      GIT_AUTHOR_EMAIL: "daily@test.invalid",
-      GIT_COMMITTER_NAME: "daily test",
-      GIT_COMMITTER_EMAIL: "daily@test.invalid",
-    })
-  })
-  afterAll(() => {
-    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
-      if (saved[key] === undefined) delete process.env[key]
-      else process.env[key] = saved[key]
-    }
-  })
+  /** The test's own git env: a scratch config handed to each child, never written to this process's env. */
+  const env = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "daily test",
+    GIT_AUTHOR_EMAIL: "daily@test.invalid",
+    GIT_COMMITTER_NAME: "daily test",
+    GIT_COMMITTER_EMAIL: "daily@test.invalid",
+  }
+  /** `mergeUpstream` and `syncFork` run git with the process's env, so each repository's own config keeps the owner's identity, signing and hooks out of their commits and pushes. */
+  const repoConfig = (hooks: string) =>
+    `[user]\n\tname = daily test\n\temail = daily@test.invalid\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[core]\n\thooksPath = ${hooks}\n`
 
   const git = (dir: string, ...args: string[]) => {
-    const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env: process.env, stdout: "pipe", stderr: "pipe" })
+    const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env, stdout: "pipe", stderr: "pipe" })
     if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
     return ran.stdout.toString().trim()
   }
@@ -248,6 +244,9 @@ describe("the upstream merge", () => {
     const fork = join(root, "fork")
     git(root, "clone", "--quiet", "--branch", "prime-look", origin, fork)
     git(fork, "remote", "add", "upstream", upstream)
+    const hooks = join(root, "no-hooks")
+    mkdirSync(hooks)
+    for (const config of [join(upstream, "config"), join(origin, "config"), join(fork, ".git/config")]) appendFileSync(config, repoConfig(hooks))
     const calls: string[] = []
     const options = (overrides: Partial<UpstreamOptions> = {}): UpstreamOptions => ({
       fork,
@@ -313,7 +312,7 @@ describe("the upstream merge", () => {
     expect(readFileSync(f.options().report, "utf8")).toContain("- a.txt")
     // No merge left half-done in the worktree, and the fork's own tree untouched.
     expect(existsSync(join(f.options().worktree, ".git"))).toBe(true)
-    expect(Bun.spawnSync(["git", "-C", f.options().worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).exitCode).not.toBe(0)
+    expect(Bun.spawnSync(["git", "-C", f.options().worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"], { env }).exitCode).not.toBe(0)
     expect(readFileSync(join(f.fork, "a.txt"), "utf8")).toBe("ours\n")
   })
 
@@ -339,7 +338,7 @@ describe("the upstream merge", () => {
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     expect(await mergeUpstream(f.options({ host: "bite-cristian" }))).toMatchObject({ kind: "skipped" })
     expect(await mergeUpstream(f.options({ skip: true }))).toEqual({ kind: "skipped", reason: "--no-upstream" })
-    expect(Bun.spawnSync(["git", "-C", f.fork, "rev-parse", "-q", "--verify", "refs/remotes/upstream/dev"]).exitCode).not.toBe(0)
+    expect(Bun.spawnSync(["git", "-C", f.fork, "rev-parse", "-q", "--verify", "refs/remotes/upstream/dev"], { env }).exitCode).not.toBe(0)
     expect(existsSync(f.options().worktree)).toBe(false)
   })
 
