@@ -1,4 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { afterAll, onTestFinished } from "bun:test"
+import { randomBytes } from "node:crypto"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { Effect } from "effect"
 
@@ -24,64 +26,91 @@ export type Body = () => PromiseLike<void> | void
 
 /**
  * An e2e suite's directory: its scenarios' frames, logs and media, kept for triage when the suite
- * fails and removed when it passes. Made only when the suite runs (`describe.skipIf(!runs)`), since
- * Bun reads a skipped suite's body but runs none of its hooks or tests; a skipped suite gets "" and
- * makes nothing.
+ * fails and removed when it passes. It is made when the suite's first setup or test starts, so a
+ * skipped suite, or one a `-t` filter leaves with nothing to run, makes none.
  */
 export interface Kept {
-  /** The suite's directory. */
+  /** The suite's directory; "" for a suite that does not run. */
   readonly path: string
   /** A fresh directory inside it, for one scenario's output. */
   readonly dir: (prefix: string) => string
-  /** A test's body that counts toward the suite: a failure keeps the directory and names it in its error. */
+  /** A test's body: a failure, or a timeout it never returns from, keeps the directory and names it. */
   readonly test: (body: Body) => () => Promise<void>
-  /** A `beforeAll` body: a failure keeps the directory and names it in its error; it does not count as a test. */
+  /** A `beforeAll` body: a failure, or a timeout, keeps the directory and names it. */
   readonly setup: (body: Body) => () => Promise<void>
-  /** Ends the suite: removes the directory unless a test or setup failed, or names it if one did. */
+  /** Ends the suite: removes the directory, or keeps and names it when a setup or test failed or never returned. */
   readonly done: () => void
 }
 
-const suiteDirectory = (runs: boolean, prefix: string) => {
+/** Where a kept directory is named, so triage finds its frames and logs. */
+const keptLine = (path: string) => `(its frames and logs, kept: ${path})`
+
+/** A suite's directory name, unique but not made yet; "" for a suite that does not run. */
+const suitePath = (runs: boolean, prefix: string) => {
   if (!runs) return ""
-  return mkdtempSync(`${tmpdir()}/${prefix}`)
+  return `${tmpdir()}/${prefix}${randomBytes(4).toString("hex")}`
 }
 
-/** The suite directory of a `describe.skipIf(!runs)` suite; with `closesItself`, the suite calls `done` in its own `afterAll`, else the last test to settle does. */
+/** Whether one body has returned, so a test that ends first ran out of time. */
+interface Settled {
+  settled: boolean
+}
+
+/**
+ * The directory of a `describe.skipIf(!runs)` suite. The suite ends at its `afterAll`, whatever a
+ * `-t` filter left out: keptScratch registers one that calls `done`, or, with `closesItself`, the
+ * suite calls `done` last in its own `afterAll`, after what it stops still writes there.
+ */
 export const keptScratch = (runs: boolean, prefix: string, closesItself = false): Kept => {
-  const path = suiteDirectory(runs, prefix)
-  const state = { pending: 0, failed: false, closed: false }
+  const path = suitePath(runs, prefix)
+  const state = { failed: false, running: 0, closed: false }
+  const make = () => {
+    if (path !== "") mkdirSync(path, { recursive: true })
+  }
   const done = () => {
     if (state.closed || path === "") return
     state.closed = true
-    if (state.failed) console.error(`kept the failed suite's frames and logs: ${path}`)
+    if (state.failed || state.running > 0) console.error(`kept the failed suite's frames and logs: ${path}`)
     else removeScratch(path)
   }
   /** A failure keeps the directory; an Error's message names it. */
   const named = <E,>(error: E) => {
     state.failed = true
-    if (error instanceof Error) error.message = `${error.message}\n(its frames and logs, kept: ${path})`
+    if (error instanceof Error) error.message = `${error.message}\n${keptLine(path)}`
     return error
   }
-  const run = (body: Body, counted: boolean): Promise<void> =>
-    Effect.runPromise(
+  /** Runs a body; one Bun gives up on at its timeout stays running, which `done` reads as a failure. */
+  const run = (body: Body, each: Settled): Promise<void> => {
+    make()
+    state.running += 1
+    return Effect.runPromise(
       Effect.tryPromise({ try: async () => body(), catch: (error) => named(error) }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (!counted) return
-            state.pending -= 1
-            if (state.pending === 0 && !closesItself) done()
+            state.running -= 1
+            each.settled = true
           }),
         ),
       ),
     )
+  }
+  if (runs && !closesItself) afterAll(done)
   return {
     path,
-    dir: (inner) => mkdtempSync(`${path}/${inner}`),
-    test: (body) => {
-      state.pending += 1
-      return () => run(body, true)
+    dir: (inner) => {
+      make()
+      return mkdtempSync(`${path}/${inner}`)
     },
-    setup: (body) => () => run(body, false),
+    test: (body) => () => {
+      const each: Settled = { settled: false }
+      onTestFinished(() => {
+        if (each.settled) return
+        state.failed = true
+        console.error(`a test outlived its timeout ${keptLine(path)}`)
+      })
+      return run(body, each)
+    },
+    setup: (body) => () => run(body, { settled: false }),
     done,
   }
 }
