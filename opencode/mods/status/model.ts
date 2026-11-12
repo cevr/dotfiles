@@ -5,7 +5,7 @@
 import { Context, Effect, Layer, Result } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { AgentCalls, live } from "./agent-calls.ts"
-import { unitsOf } from "./run-table.ts"
+import { driftOf, unitsOf } from "./run-table.ts"
 import { CallLog, RunTables } from "./service.ts"
 import type { Snapshot } from "./status.ts"
 
@@ -28,7 +28,12 @@ export const layer = Layer.effect(
           [
             callLog.events.pipe(Effect.map((events) => live(fold(AgentCalls, events))), Effect.result),
             runTables.list(directory).pipe(
-              Effect.map((tables) => tables.map((run) => ({ name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units: unitsOf(run.table) }))),
+              Effect.map((tables) =>
+                tables.map((run) => {
+                  const drift = driftOf(run.table)
+                  return { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units: unitsOf(run.table), ...(drift === undefined ? {} : { drift }) }
+                }),
+              ),
               Effect.result,
             ),
           ],

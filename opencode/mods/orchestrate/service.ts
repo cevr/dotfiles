@@ -3,6 +3,7 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
+import type { Drift } from "./drift.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
@@ -236,6 +237,7 @@ export interface Decided {
  * Each root's batch machine, kept as lines (`{ at, sessionID, kind, ... }`,
  * one per event or refusal), its state the fold of its lines.
  * - `state`: the root's state now; the initial state for a root with no line.
+ * - `drift`: how far the root drifted from the machine, scored from its lines (drift.ts); clean for a root with no line.
  * - `decide`: under the store's one lock (every ledger on the store shares it), `plan` reads the state and gives the
  *   commands to decide, each on the state the last left; each one's events
  *   are lines. A refused command is a `Refused` line, changes nothing, and
@@ -246,6 +248,7 @@ export class Ledger extends Context.Service<
   Ledger,
   {
     readonly state: (sessionID: string) => Effect.Effect<MachineState>
+    readonly drift: (sessionID: string) => Effect.Effect<Drift>
     readonly decide: <E, R>(
       sessionID: string,
       now: number,
@@ -312,6 +315,10 @@ export class Skill extends Context.Service<
  * - `seen`: the skill version the run last saw (`SEEN_FILE`); none when never recorded.
  * - `see`: record it. Never fails: a lost record costs one repeated note.
  * - `departures`: the "Departs from" lines in the run's own top-level Markdown files, `<file>:<line>: <text>`.
+ * - `log`: append one line to the run's own log.md, the run being the one holding `near` (a verifier's report:
+ *   `<run dir>/batch-<k>-findings.md`, or a unit's `<run dir>/<unit>/round-N-findings.md`, a unit dir being one
+ *   that holds spec.md), relative to `directory` when not absolute (`~/` is home). Never fails: a path that
+ *   names no directory writes nothing, and a lost line costs the run one drift reading.
  */
 export class RunRecords extends Context.Service<
   RunRecords,
@@ -319,6 +326,7 @@ export class RunRecords extends Context.Service<
     readonly seen: (runDir: string) => Effect.Effect<string | undefined>
     readonly see: (runDir: string, version: string) => Effect.Effect<void>
     readonly departures: (runDir: string) => Effect.Effect<ReadonlyArray<string>>
+    readonly log: (input: { readonly near: string; readonly line: string; readonly directory?: string }) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/RunRecords") {}
 

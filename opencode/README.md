@@ -405,10 +405,10 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 `request.settings.cacheTTL` that `cmd/anthropic-auth`'s `http.request` hook
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
-routes each subagent call to a role, starts a new Opus start the pace holds on
+routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, and stops agent work over the Sabbath. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog`, `skill`, `ledger`, `cadence`, `guard` and `experiment`.
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence` and `guard`.
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -2599,7 +2599,7 @@ Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
 Every role is an OpenCode subagent; its model is the config's.
 `bun run daily` binds every role (planner, implementor, verifier, worker)
-to the newest Claude Opus. Codex is the fallback, on the ChatGPT
+to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the fallback, on the ChatGPT
 subscription OpenCode signs in to itself (`opencode auth login openai`),
 used only when the pace holds a new Opus start.
 
@@ -2619,6 +2619,21 @@ there, and the next new start tries Opus first again. The parent's answer
 starts with `orchestrate: this agent runs on <model>, the Codex fallback
 (<why>).`, and the call log's `call` line carries the same `fallback`.
 No Codex bridge, MCP server or thread tools are involved.
+
+The planner goes on the newest Fable first (the owner's call, 2026-11-12:
+"Fable is our planner"). `bun run daily` writes it from the model catalog,
+never a pinned id, as orchestrate's `planner: { model }` option. A new
+planner start that names no model of its own runs on it at the planner's
+effort (medium); a follow-up keeps its model. When the host does not offer
+it, or its pace holds it (Fable's own week spent, or the pool's pace), the
+start takes the chain above, Opus then Codex, and its line carries
+`first: { model, fellBack }` saying why. Over the Sabbath the planner does
+what every role does: it latches on its own model, Fable, asking no pace, and
+when work resumes its open takes the same chain. No other role has a first
+model, so an implementor, verifier or worker never starts on Fable. The
+option replaced the planner A/B of 2026-11-10 (`experiment`, half the
+planner units on Fable); `models.ts --experiment` still reads that run's
+lines, which carry an arm.
 
 ## Pace and effort
 
@@ -2728,13 +2743,13 @@ bun run accept:affected   # the real-OpenCode tests that reach what changed
 bun run accept            # all of them, in parallel
 ```
 
-`bun run gate` (`scripts/gate.ts`) links the fork, then runs four legs at
-once: oxlint, `bun run agents -- --check`, `bun check` over the root and
+`bun run gate` (`scripts/gate.ts`) links the fork, then runs five legs at
+once: oxlint, the Effect debt ratchet, `bun run agents -- --check`, `bun check` over the root and
 every `mods/*` and `cmd/*` project, and the unit tests (every `*.test.ts`
 outside `tests/`) with `bun test --parallel`. A unit test file that passed is
 skipped while the key over what it reaches is unchanged: its package, the
 packages its `package.json` depends on, and the shared inputs (the root
-manifest, lock file, bunfig, tsconfig, the gate's scripts, Bun's version and
+manifest, lock file, bunfig, tsconfig, the lint policy, the gate's scripts, Bun's version and
 the fork's commit, diff and lock file). `scripts/reach.ts` derives that
 reach; `bun scripts/gate.ts --all` ignores the cache.
 
@@ -2757,9 +2772,53 @@ drive run still alive 5 s after the run ends is a leak, which it names, stops
 and fails the run on. It only ever names the run's own descendants, never the
 owner's servers or TUIs.
 
-`bun run lint` is oxlint: its errors are the layout fence (`.oxlintrc.json`,
-one import override per context; see `ARCHITECTURE.md`), and its warnings are
-advice. `git diff --check` checks patch whitespace. The typecheck links every
+`bun run lint` is oxlint, then the Effect debt ratchet. oxlint's errors are the
+layout fence (`.oxlintrc.json`, one import override per context; see
+`ARCHITECTURE.md`) and the rules of `oxlint-plugin-effect` the workspace
+already keeps (the plugin is pinned; it needs `effect` 4.1, so the root's
+`effect` is 4.1.0, the fork's, and `package.json`'s `overrides` move
+opencode-drive's `@effect/platform-node` to 4.1.0 with it): the 20 recommended rules it had
+no finding of, and `requireSuppressionReason` (a suppression names its rule
+and gives a reason after ` -- `). Two files keep one finding each a newer
+commit brought, as an exact-file override in `.oxlintrc.json` and a budget:
+`mods/orchestrate/machine.ts` (`maxHalsteadDifficulty`) and
+`mods/pool/memory/fleet-claims.test.ts` (`noReflectApply`). Its warnings are
+advice. `settings.effect.testFiles` names the test code beyond `*.test.*`
+(`tests/`, `scenarios/`, `laws.ts`, benchmarks, fakes), for the rules that
+treat tests apart.
+
+Every other recommended rule is debt, held by `scripts/effect-debt.ts`
+(`bun run debt`, also the gate's `debt` leg). `.oxlintrc.effect-debt.json`
+runs the pinned preset, unchanged, over every source file git tracks or would
+track, and `effect-debt.json` is the reviewed policy: the plugin and oxlint
+versions, the preset's rules, the ignores and test globs it was measured with,
+the host exemptions, and a budget per exact file and rule (plus
+`directive/suppression`, each file's count of lint suppressions, so a new one
+cannot hide debt). `--check` fails unless every count equals its own budget: a
+new file or rule has none, one file's fixes never pay for another's debt, and
+a fix fails until its budget is lowered in the same change
+(`bun scripts/effect-debt.ts --tighten` lowers budgets to the counts and never
+raises one). It also fails, never passing on an empty scan, when oxlint exits
+with an error, prints no report, cannot parse a file, loads a different number
+of rules, skips a source file, reports an unknown rule, or when the versions,
+preset, ignores or test globs drift between `package.json`, the installed
+packages, both configs and the policy. Nested configs are ignored.
+`bun run debt` prints the counts per rule and area, `--counts` per file as
+JSON, and `--measure` the unmodified preset's counts (no test globs, no
+exemptions). `--bootstrap` wrote the first policy and refuses once one exists.
+
+A host exemption switches one rule off for one exact file, in both
+`.oxlintrc.effect-debt.json`'s overrides and the policy's `exemptions` with
+its reason, and only for a capability no installed Effect service offers:
+
+| File | Rules | Why |
+| --- | --- | --- |
+| `scripts/effect-debt.ts` | `noGlobals`, `noNodeBuiltinImport` | the lint subprocess adapter: the root has no Effect platform layer, so it spawns git and oxlint with `Bun.spawn` and reads and writes files itself |
+| `scripts/effect-debt.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge (no Effect test runner is installed) and a real-process harness building throwaway workspaces |
+
+No other rule can be exempted (`EXEMPTABLE` in the script): a test-global
+write, a fixed wait, a module mock, a swallowed failure or a style rule is
+fixed or stays budgeted. `git diff --check` checks patch whitespace. The typecheck links every
 workspace package (`mods/*`, `cmd/*`, `decider`) to the fork's installed host
 packages; run `bun run link-fork` before and after `bun install` (an install
 drops the links), and install only when changing the lock file. Link-fork, and

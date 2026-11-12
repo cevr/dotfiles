@@ -18,14 +18,16 @@
     "accept:affected": "bun scripts/accept.ts --affected",
     "gamut": "bun testbeds/gamut/gamut.ts",
     "daily": "bun scripts/daily.ts",
-    "lint": "oxlint"
+    "lint": "oxlint && bun scripts/effect-debt.ts --check",
+    "debt": "bun scripts/effect-debt.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@xterm/headless": "6.0.0",
-    "effect": "4.0.1",
+    "effect": "4.1.0",
     "opencode-drive": "2.4.0",
     "oxlint": "1.89.0",
+    "oxlint-plugin-effect": "0.32.1",
     "zigpty": "0.2.1"
   },
   "peerDependencies": {
@@ -34,5 +36,9 @@
   "dependencies": {
     "@streamparser/json": "0.0.26",
     "oxc-parser": "0.157.0"
+  },
+  "overrides": {
+    "@effect/platform-node": "4.1.0",
+    "@effect/platform-node-shared": "4.1.0"
   }
 }

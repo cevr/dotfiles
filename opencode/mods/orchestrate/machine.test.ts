@@ -156,6 +156,14 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       const cover = !BATCH.test(command.name) && named !== undefined && (named.state === "ready" || shadow.pending.has(command.name)) ? [command.name] : coverOf(shadow)
       for (const unit of cover) {
         const slot = shadow.units.get(unit)
+        // A ready unit covered with no land seen was landed by hand: the start stands for its land, and the
+        // findings folded into it go to this verifier as folded.
+        if (slot?.state === "ready" && !shadow.pending.has(unit))
+          for (const [key, finding] of shadow.findings)
+            if (finding.into === unit) {
+              shadow.carried.set(key, { batch: finding.batch, into: unit })
+              shadow.findings.delete(key)
+            }
         // A covered unit whose next round took its slot over keeps that round's state.
         if (slot !== undefined && (slot.state === "landed" || (slot.state === "ready" && !shadow.pending.has(unit)))) shadow.units.set(unit, { ...slot, state: "verify", since: now })
       }
@@ -184,6 +192,8 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       shadow.covering = []
       if (command.verdict === "none") return
       shadow.carried.clear()
+      // A finding folded into a unit the verdict took out was checked already.
+      for (const [key, finding] of shadow.findings) if (finding.into !== undefined && !shadow.units.has(finding.into)) shadow.findings.delete(key)
       // A `changes` whose findings did not read is unresolved, never an empty set.
       if (command.verdict === "changes" && command.findings === undefined) shadow.unresolved.add(command.name)
       if (command.verdict === "changes") for (const key of command.findings ?? []) shadow.findings.set(key, { batch: command.name, into: undefined })
@@ -565,6 +575,41 @@ describe("the machine's stories", () => {
     expect(state.findings).toBeUndefined()
     const departed = await run([[impl("auth"), 0], [ready("auth"), MIN], [Landed.make({ rifts: ["auth"] }), 2 * MIN], [Start.make({ role: "verifier", name: "batch-1", round: 1, direct: false }), 3 * MIN], [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["auth/M1"] }), 4 * MIN], [impl("search"), 5 * MIN], [ready("search"), 6 * MIN], [Land.make({ rifts: ["search"], departs: "known limit" }), 7 * MIN]])
     expect(departed.last).toEqual({ events: [expect.objectContaining({ _tag: "Departed", rule: "FindingUnfolded", why: "known limit" })] })
+  })
+
+  // The ledger of 2026-11-12: tui-reexec landed by hand (a fork-only land the plugin never saw), so its batch
+  // verifier's start stood for the land; the findings folded into its round stayed open past the accepted verdict,
+  // on a unit no longer in the state, and every later land was refused FindingUnfolded until the root departed.
+  test("a verifier over a unit landed by hand checks the findings folded into it, and its accepted verdict leaves none to hold the next land", async () => {
+    const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+    const first: Array<readonly [Command, number]> = [
+      [impl("tui"), 0],
+      [ready("tui"), MIN],
+      [verifier("batch-j"), 2 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-j", verdict: "changes", findings: ["tui/B1", "tui/M1"] }), 3 * MIN],
+      [impl("tui", 2), 4 * MIN],
+      [ready("tui"), 5 * MIN],
+    ]
+    const started = await run([...first, [verifier("batch-l"), 6 * MIN]])
+    expect(started.last).toMatchObject({ events: [{ _tag: "VerifierStarted", units: ["tui"], findings: ["tui/B1 → tui", "tui/M1 → tui"] }] })
+    expect(started.state.findings).toBeUndefined()
+    expect(Object.keys(started.state.carried ?? {})).toEqual(["tui/B1", "tui/M1"])
+    expect(verifierPromptOf((await run(first)).state, verifier("batch-l"))).toContain("batch-j tui/B1 → tui")
+    const accepted: Array<readonly [Command, number]> = [...first, [verifier("batch-l"), 6 * MIN], [HandBack.make({ role: "verifier", name: "batch-l", verdict: "accepted" }), 7 * MIN]]
+    const after = await run([...accepted, [impl("push"), 8 * MIN], [ready("push"), 9 * MIN], [Land.make({ rifts: ["push"] }), 10 * MIN]])
+    expect(after.last).toEqual({ events: [] })
+    expect(after.state.findings).toBeUndefined()
+  })
+
+  test("a checkpoint written before that fix heals at the next verdict: a finding folded into a unit no longer in the state goes", async () => {
+    const stale: MachineState = {
+      units: { push: { state: "landed", round: 1, since: T0, direct: false } },
+      unverified: ["push"],
+      findings: { "tui/B1": { batch: "batch-j", into: "tui" }, "push/M1": { batch: "batch-j" } },
+    }
+    const started = evolve(stale, [{ _tag: "VerifierStarted", batch: "batch-m", units: ["push"], at: T0 + MIN }])
+    const ended = evolve(started, [{ _tag: "VerifierEnded", batch: "batch-m", verdict: "accepted", at: T0 + 2 * MIN }])
+    expect(ended.findings).toEqual({ "push/M1": { batch: "batch-j" } })
   })
 
   // Round 1, M2 (the verifier's property, promoted): the pending verdict is the batch's and its verifier's, not

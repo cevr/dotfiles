@@ -118,7 +118,7 @@ describe("the Pushes aggregate", () => {
 
   test("time and a closed run end a push, and nothing of it is kept", () => {
     const start = pushes([
-      [T0, StartPush.make({ goal: "a", scope: { host: "mac", run: "ergo" }, allowance: { max: 1, asNeeded: false }, by: "asked" })],
+      [T0, StartPush.make({ goal: "a", scope: { host: "mac", sessionID: "ses_0", run: "ergo" }, allowance: { max: 1, asNeeded: false }, by: "asked" })],
       [T0, StartPush.make({ goal: "b", scope: { host: "mac", sessionID: "ses_1" }, endsAt: T0 + HOUR, allowance: { max: 1, asNeeded: false }, by: "asked" })],
     ])
     const early = pushes([[T0 + 30 * MINUTE, Tick.make({ closedRuns: [] })]], start.state)
@@ -146,6 +146,50 @@ describe("the Pushes aggregate", () => {
     const covered = pushes([[T0, StartPush.make({ goal: "ergo", scope: { host: "mac" }, allowance: { max: 1, asNeeded: false }, by: "asked" })], [T0, ask]])
     expect(covered.events.map((event) => event._tag)).toEqual(["PushStarted"])
     expect(pushes([[T0 + 2 * HOUR, EndPush.make({ id: "nope", why: "x" })]], yes.state).events).toEqual([])
+  })
+})
+
+describe("a run's question", () => {
+  const random = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  test("property: over any askers and answers within a week, at most one question per host and run, and none after a no", () => {
+    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      const next = random(seed)
+      let state = Pushes.initial
+      let at = T0
+      let asked = 0
+      let declined = false
+      for (let step = 0; step < 20; step++) {
+        at += Math.floor(next() * 8 * HOUR)
+        if (at - T0 >= WEEK) break
+        const session = `ses_orch_${Math.floor(next() * 4)}`
+        const scope = { host: "workbox", sessionID: session, run: "ergo" }
+        const ask = AskPush.make({ goal: "run ergo", scope, allowance: { max: 1, asNeeded: true }, sessionID: session, question: "?" })
+        const decided = pushes([[at, ask]], state)
+        state = decided.state
+        const now = decided.events.filter((event) => event._tag === "PushAsked").length
+        if (declined) expect(now).toBe(0)
+        asked += now
+        if (next() < 0.5) {
+          const answered = pushes([[at + MINUTE, TakePushAnswer.make({ key: scopeKey(scope), answer: NOT_NOW })]], state)
+          declined ||= answered.events.length > 0
+          state = answered.state
+        }
+      }
+      expect(asked).toBeLessThanOrEqual(1)
+    }
+  })
+
+  test("a push for the run, from whichever session, covers the run's question", () => {
+    const started = pushes([[T0, StartPush.make({ goal: "ergo", scope: { host: "workbox", sessionID: "ses_orch_1", run: "ergo" }, allowance: { max: 1, asNeeded: false }, by: "asked" })]])
+    const ask = (run: string) =>
+      AskPush.make({ goal: run, scope: { host: "workbox", sessionID: "ses_orch_2", run }, allowance: { max: 1, asNeeded: true }, sessionID: "ses_orch_2", question: "?" })
+    expect(pushes([[T0 + HOUR, ask("ergo")]], started.state).events).toEqual([])
+    expect(pushes([[T0 + HOUR, ask("other")]], started.state).events.map((event) => event._tag)).toEqual(["PushAsked"])
   })
 })
 
@@ -194,6 +238,32 @@ describe("a push's resets", () => {
       settled.state,
     )
     expect(later.events.some((event) => event._tag === "ClaimDue")).toBe(false)
+  })
+
+  test("one at a time across the host: two pools each holding a start, two resets approved, one claim", () => {
+    const other: PoolView = { ...pool([spent("c", [grant("g-c", T0 + 30 * DAY, FULL)])]), id: "anthropic-2" }
+    const { events } = resets([
+      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_child", hard: true })],
+      [T0, NoteWait.make({ pool: "anthropic-2", sessionID: "ses_child", hard: true })],
+      [T0 + MINUTE, Review.make({ pools: [pool([spent("a", [grant("g-a", T0 + 30 * DAY, FULL)])]), other], pushes: [grantFor({ allowance: { max: 2, asNeeded: false } })] })],
+    ])
+    expect(events.filter((event) => event._tag === "ClaimDue")).toHaveLength(1)
+  })
+
+  test("a session's push spends nothing on a spent week: a held start in its tree that the reset cannot free claims nothing", () => {
+    // A Fable start held by the spent Fable week: a weekly reset gives the week back, but not Fable's share, so the start stays held.
+    const view = pool([
+      account(
+        "a",
+        [window("5h", 0.2, T0 + 2 * HOUR), window("7d", 1, T0 + 4 * DAY), { ...window("7d:Fable", 1, T0 + 4 * DAY), ofWeekly: 0.3 }],
+        [grant("g-a", T0 + 30 * DAY, WEEKLY)],
+      ),
+    ])
+    const fable = { hard: true, root: "ses_root", model: "claude-fable-5-2" }
+    const scoped = [grantFor({ scope: { host: "workbox", sessionID: "ses_root" } })]
+    expect(waitThen(view, fable, scoped).events.some((event) => event._tag === "ClaimDue")).toBe(false)
+    // A push of the whole host claims the week back on the same readings: its spent week is the host's to spend.
+    expect(waitThen(view, fable).events.some((event) => event._tag === "ClaimDue")).toBe(true)
   })
 
   test("by value: a reset that would expire before its week resets first, then the most week given back, then the most days left; Fable only when Fable is out", () => {

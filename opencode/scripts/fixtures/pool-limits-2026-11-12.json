@@ -1,0 +1,962 @@
+{
+ "mac": {
+  "at": 1794449770365,
+  "since": 1793877626076,
+  "readings": [
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "own": true,
+    "reading": {
+     "at": 1794449648954,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794549599875
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794549599876,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "own": true,
+    "reading": {
+     "at": 1794449649124,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.5,
+       "resetAt": 1794819600057
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.06,
+       "resetAt": 1794819600057,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.03
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "own": true,
+    "reading": {
+     "at": 1794449757718,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.95,
+       "resetAt": 1794491999659
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794491999660,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-6",
+    "own": true,
+    "reading": {
+     "at": 1794449649339,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.1,
+       "resetAt": 1795028400248
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0,
+       "resetAt": 1795028400000,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "own": true,
+    "reading": {
+     "at": 1794449649649,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.01,
+       "resetAt": 1795053600425
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.01,
+       "resetAt": 1795053600425,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "own": true,
+    "reading": {
+     "at": 1794449649833,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794628799769
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.13,
+       "resetAt": 1794628799769,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.07
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "own": true,
+    "reading": {
+     "at": 1794449650040,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.76,
+       "resetAt": 1794664799928
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.09,
+       "resetAt": 1794664799928,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.05
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "own": false,
+    "reading": {
+     "at": 1794449648954,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794549599875
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794549599876,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "own": false,
+    "reading": {
+     "at": 1794449649124,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.5,
+       "resetAt": 1794819600057
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.06,
+       "resetAt": 1794819600057,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.03
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "own": false,
+    "reading": {
+     "at": 1794449046568,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.95,
+       "resetAt": 1794491999510
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794491999510,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-6",
+    "own": false,
+    "reading": {
+     "at": 1794449649339,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.1,
+       "resetAt": 1795028400248
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0,
+       "resetAt": 1795028400000,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "own": false,
+    "reading": {
+     "at": 1794449649649,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.01,
+       "resetAt": 1795053600425
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.01,
+       "resetAt": 1795053600425,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "own": false,
+    "reading": {
+     "at": 1794449649833,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794628799769
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.13,
+       "resetAt": 1794628799769,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.07
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "own": false,
+    "reading": {
+     "at": 1794449650040,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.76,
+       "resetAt": 1794664799928
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.09,
+       "resetAt": 1794664799928,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.05
+      }
+     ]
+    }
+   }
+  ],
+  "claims": [],
+  "uses": [
+   {
+    "at": 1794449757718,
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 47131,
+     "output": 6096298,
+     "cacheRead": 1086350903,
+     "cacheWrite": 29341385
+    }
+   },
+   {
+    "at": 1794449757458,
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 20905,
+     "output": 7102864,
+     "cacheRead": 1305050744,
+     "cacheWrite": 34650976
+    }
+   },
+   {
+    "at": 1794449758149,
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 22995,
+     "output": 5211858,
+     "cacheRead": 1033805333,
+     "cacheWrite": 26663419
+    }
+   },
+   {
+    "at": 1794449758294,
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 16011,
+     "output": 4352252,
+     "cacheRead": 1026438894,
+     "cacheWrite": 21178555
+    }
+   },
+   {
+    "at": 1794449758294,
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "model": "claude-haiku-4-5",
+    "tokens": {
+     "input": 3,
+     "output": 4,
+     "cacheRead": 0,
+     "cacheWrite": 19229
+    }
+   },
+   {
+    "at": 1794449757718,
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "model": "claude-haiku-4-5",
+    "tokens": {
+     "input": 3,
+     "output": 4,
+     "cacheRead": 0,
+     "cacheWrite": 19230
+    }
+   },
+   {
+    "at": 1794449757577,
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 8500,
+     "output": 2829841,
+     "cacheRead": 625239013,
+     "cacheWrite": 12898882
+    }
+   },
+   {
+    "at": 1794449758294,
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 308,
+     "output": 316992,
+     "cacheRead": 31257286,
+     "cacheWrite": 1499091
+    }
+   },
+   {
+    "at": 1794449757458,
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 494,
+     "output": 342154,
+     "cacheRead": 44174447,
+     "cacheWrite": 1077334
+    }
+   },
+   {
+    "at": 1794449757718,
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 212,
+     "output": 217951,
+     "cacheRead": 19000331,
+     "cacheWrite": 563451
+    }
+   },
+   {
+    "at": 1794449757577,
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 240,
+     "output": 196270,
+     "cacheRead": 22058941,
+     "cacheWrite": 573530
+    }
+   },
+   {
+    "at": 1794449758149,
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 200,
+     "output": 141856,
+     "cacheRead": 19131081,
+     "cacheWrite": 312733
+    }
+   },
+   {
+    "at": 1794449757882,
+    "pool": "anthropic",
+    "credentialID": "acct-6",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 2006,
+     "output": 785107,
+     "cacheRead": 187535759,
+     "cacheWrite": 3911484
+    }
+   },
+   {
+    "at": 1794449758015,
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 10,
+     "output": 852,
+     "cacheRead": 82071,
+     "cacheWrite": 46792
+    }
+   }
+  ],
+  "unplaced": {}
+ },
+ "workbox": {
+  "at": 1794449828183,
+  "since": 1793877268084,
+  "readings": [
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "own": true,
+    "reading": {
+     "at": 1794449757458,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794549600399
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794549600399,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "own": true,
+    "reading": {
+     "at": 1794449757577,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.5,
+       "resetAt": 1794819599530
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.06,
+       "resetAt": 1794819599530,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.03
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "own": true,
+    "reading": {
+     "at": 1794449757718,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.95,
+       "resetAt": 1794491999659
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794491999660,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-6",
+    "own": true,
+    "reading": {
+     "at": 1794449757882,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.1,
+       "resetAt": 1795028399824
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0,
+       "resetAt": 1795028400000,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "own": true,
+    "reading": {
+     "at": 1794449758015,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.01,
+       "resetAt": 1795053599957
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.02,
+       "resetAt": 1795053599957,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.01
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "own": true,
+    "reading": {
+     "at": 1794449758149,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794628800092
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.13,
+       "resetAt": 1794628800092,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.07
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "own": true,
+    "reading": {
+     "at": 1794449758294,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.76,
+       "resetAt": 1794664800237
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.09,
+       "resetAt": 1794664800237,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.05
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "own": false,
+    "reading": {
+     "at": 1794449757458,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794549600399
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794549600399,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "own": false,
+    "reading": {
+     "at": 1794449757577,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.5,
+       "resetAt": 1794819599530
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.06,
+       "resetAt": 1794819599530,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.03
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "own": false,
+    "reading": {
+     "at": 1794449757718,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.95,
+       "resetAt": 1794491999659
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.11,
+       "resetAt": 1794491999660,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.06
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-6",
+    "own": false,
+    "reading": {
+     "at": 1794449757882,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.1,
+       "resetAt": 1795028399824
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0,
+       "resetAt": 1795028400000,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "own": false,
+    "reading": {
+     "at": 1794449758015,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.01,
+       "resetAt": 1795053599957
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.02,
+       "resetAt": 1795053599957,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.01
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "own": false,
+    "reading": {
+     "at": 1794449758149,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.86,
+       "resetAt": 1794628800092
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.13,
+       "resetAt": 1794628800092,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.07
+      }
+     ]
+    }
+   },
+   {
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "own": false,
+    "reading": {
+     "at": 1794449758294,
+     "windows": [
+      {
+       "name": "7d",
+       "utilization": 0.76,
+       "resetAt": 1794664800237
+      },
+      {
+       "name": "7d:Fable",
+       "utilization": 0.09,
+       "resetAt": 1794664800237,
+       "ofWeekly": 0.5,
+       "weeklyUsed": 0.05
+      }
+     ]
+    }
+   }
+  ],
+  "claims": [],
+  "uses": [
+   {
+    "at": 1794449757718,
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 73035,
+     "output": 9380908,
+     "cacheRead": 2168579217,
+     "cacheWrite": 66217345
+    }
+   },
+   {
+    "at": 1794449757458,
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 45790,
+     "output": 13501909,
+     "cacheRead": 3168990963,
+     "cacheWrite": 95379381
+    }
+   },
+   {
+    "at": 1794449758149,
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 48456,
+     "output": 12148156,
+     "cacheRead": 2923385479,
+     "cacheWrite": 75190795
+    }
+   },
+   {
+    "at": 1794449758294,
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 35318,
+     "output": 10801524,
+     "cacheRead": 2514942808,
+     "cacheWrite": 69581531
+    }
+   },
+   {
+    "at": 1794449757577,
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 25891,
+     "output": 7207847,
+     "cacheRead": 1692504329,
+     "cacheWrite": 52252270
+    }
+   },
+   {
+    "at": 1794449757458,
+    "pool": "anthropic",
+    "credentialID": "acct-2",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 320,
+     "output": 170899,
+     "cacheRead": 30555874,
+     "cacheWrite": 878601
+    }
+   },
+   {
+    "at": 1794449757718,
+    "pool": "anthropic",
+    "credentialID": "acct-1",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 348,
+     "output": 182703,
+     "cacheRead": 30640028,
+     "cacheWrite": 568689
+    }
+   },
+   {
+    "at": 1794449758149,
+    "pool": "anthropic",
+    "credentialID": "acct-3",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 640,
+     "output": 381431,
+     "cacheRead": 54181550,
+     "cacheWrite": 1704890
+    }
+   },
+   {
+    "at": 1794449758294,
+    "pool": "anthropic",
+    "credentialID": "acct-4",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 82,
+     "output": 55316,
+     "cacheRead": 5497886,
+     "cacheWrite": 221250
+    }
+   },
+   {
+    "at": 1794449757577,
+    "pool": "anthropic",
+    "credentialID": "acct-5",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 42,
+     "output": 64891,
+     "cacheRead": 1821721,
+     "cacheWrite": 163610
+    }
+   },
+   {
+    "at": 1794449757882,
+    "pool": "anthropic",
+    "credentialID": "acct-6",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 8014,
+     "output": 1379699,
+     "cacheRead": 262473060,
+     "cacheWrite": 9955865
+    }
+   },
+   {
+    "at": 1794449758015,
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "model": "claude-opus-5-5",
+    "tokens": {
+     "input": 234,
+     "output": 54330,
+     "cacheRead": 10107264,
+     "cacheWrite": 375364
+    }
+   },
+   {
+    "at": 1794449758015,
+    "pool": "anthropic",
+    "credentialID": "acct-7",
+    "model": "claude-fable-5-2",
+    "tokens": {
+     "input": 140,
+     "output": 36762,
+     "cacheRead": 5294081,
+     "cacheWrite": 316435
+    }
+   }
+  ],
+  "unplaced": {}
+ }
+}
