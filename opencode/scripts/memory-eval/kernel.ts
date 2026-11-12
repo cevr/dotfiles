@@ -220,8 +220,7 @@ const hostModules = (
       env: () => pending,
       text: async () => done().stdout,
       lines: async () => done().stdout.split("\n"),
-      // Bun.$ is awaited as it is: its promise is a thenable.
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- Bun.$ is awaited as it is: its promise is a thenable, so the stand-in is one too.
       then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => {
         try {
           return Promise.resolve(resolve(done()))

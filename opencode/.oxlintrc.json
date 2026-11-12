@@ -7,8 +7,46 @@
     "media/**"
   ],
   "jsPlugins": [
-    "./lint/test-env.ts"
+    "./lint/test-env.ts",
+    "./lint/node_modules/oxlint-plugin-effect/dist/plugin.js"
   ],
+  "settings": {
+    "effect": {
+      "testFiles": [
+        "tests/**",
+        "scenarios/**",
+        "mods/*/laws.ts",
+        "**/*.bench.ts",
+        "mods/git/process/fake-gh.ts",
+        "mods/herdr/herdr/fake-server.ts",
+        "mods/kernel/catalog.fixture.ts",
+        "testbeds/gamut/sim-model.ts"
+      ]
+    }
+  },
+  "rules": {
+    "effect/maxHalsteadDifficulty": ["error", { "max": 79 }],
+    "effect/noAliasTestLayer": "error",
+    "effect/noEagerAcquire": "error",
+    "effect/noEffectBind": "error",
+    "effect/noEffectBunTestItCall": "error",
+    "effect/noEffectDo": "error",
+    "effect/noLintEvasion": "error",
+    "effect/noManagedRuntimeInEffect": "error",
+    "effect/noPerCallCacheConstruction": "error",
+    "effect/noPointFreeLog": "error",
+    "effect/noReflectApply": "error",
+    "effect/noRepoTempDirectory": "error",
+    "effect/noRunCollectOnUnboundedStream": "error",
+    "effect/noSequentialEffectAll": "error",
+    "effect/noSharedTestHome": "error",
+    "effect/noSilentCatchAll": "error",
+    "effect/noUnknownTypeAliases": "error",
+    "effect/noWidenThenAssert": "error",
+    "effect/preferCatchTag": "error",
+    "effect/requireForceKillAfter": "error",
+    "effect/requireSuppressionReason": "error"
+  },
   "overrides": [
     {
       "files": [
@@ -912,6 +950,22 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "files": [
+        "mods/orchestrate/machine.ts"
+      ],
+      "rules": {
+        "effect/maxHalsteadDifficulty": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/pool/memory/fleet-claims.test.ts"
+      ],
+      "rules": {
+        "effect/noReflectApply": "off"
       }
     }
   ]

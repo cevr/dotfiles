@@ -1,8 +1,8 @@
 // `bun run gate`: the check every change passes before it is pushed.
 //
-// It links the fork's modules (scripts/link-fork.ts), then runs four legs at
+// It links the fork's modules (scripts/link-fork.ts), then runs five legs at
 // once and fails if any fails:
-// - lint: oxlint over the whole workspace;
+// - lint: oxlint over the whole workspace; debt: `scripts/effect-debt.ts --check`, its per-file Effect rule budgets;
 // - agents: `scripts/agents.ts --check`, mods/orchestrate/agents.json against the skill;
 // - types: every project (the root and each mods/*, cmd/* package) with
 //   `bun check`, all of them every time;
@@ -106,6 +106,7 @@ const unit = async (): Promise<Leg> => {
 
 const legs = await Promise.all([
   run("lint", [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet"]),
+  run("debt", [process.execPath, "scripts/effect-debt.ts", "--check"]),
   run("agents", [process.execPath, "scripts/agents.ts", "--check"]),
   types(),
   unit(),
