@@ -28,7 +28,9 @@ test("a root that holds nothing keeps only its newest departures within the wind
   const departed = (at: number) => lineOfEvent("root", Departed.make({ rule: "LandPartial", why: `at ${at}`, at }))
   const lines = [departed(T), "not a line", departed(T + 30 * MIN), departed(T + 40 * MIN), departed(T + 50 * MIN)]
   const kept = compact(DEFAULT_CADENCE, retention, T + 75 * MIN, lines)
-  expect(kept.map((line) => line.why)).toEqual([`at ${T + 40 * MIN}`, `at ${T + 50 * MIN}`])
+  expect(kept.filter((line) => line.kind === "Departed").map((line) => line.why)).toEqual([`at ${T + 40 * MIN}`, `at ${T + 50 * MIN}`])
+  // The departures it drops still count: its drift's tally comes last.
+  expect(kept.at(-1)).toMatchObject({ kind: "Drift", counts: { offCadence: 4 } })
 })
 
 test("a ledger written when starts recorded a workspace still reads: the workspace is dropped, the unit kept", () => {

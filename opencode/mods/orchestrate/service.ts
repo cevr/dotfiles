@@ -3,6 +3,7 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
+import type { Drift } from "./drift.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
@@ -236,6 +237,7 @@ export interface Decided {
  * Each root's batch machine, kept as lines (`{ at, sessionID, kind, ... }`,
  * one per event or refusal), its state the fold of its lines.
  * - `state`: the root's state now; the initial state for a root with no line.
+ * - `drift`: how far the root drifted from the machine, scored from its lines (drift.ts); clean for a root with no line.
  * - `decide`: under the store's one lock (every ledger on the store shares it), `plan` reads the state and gives the
  *   commands to decide, each on the state the last left; each one's events
  *   are lines. A refused command is a `Refused` line, changes nothing, and
@@ -246,6 +248,7 @@ export class Ledger extends Context.Service<
   Ledger,
   {
     readonly state: (sessionID: string) => Effect.Effect<MachineState>
+    readonly drift: (sessionID: string) => Effect.Effect<Drift>
     readonly decide: <E, R>(
       sessionID: string,
       now: number,

@@ -909,5 +909,10 @@ export const ledgerLaws = (name: string, make: () => LedgerProbe) =>
       const refusals = probe.lines().filter((line) => line.sessionID === "drift" && line.kind === "Refused")
       expect(refusals.length).toBeLessThan(30)
       expect(refusals.at(-1)?.at).toBe(new Date(steps.at(-1)!.at).toISOString())
+      // The refusals it dropped still count in the root's drift: its tally outlives them.
+      const refused = reference.filter((outcome, index) => steps[index]!.root === "drift" && "refused" in outcome).length
+      const drift = await check(probe.open(retention), Effect.flatMap(Ledger, (ledger) => ledger.drift("drift")))
+      expect(drift.counts.refused + drift.counts.stale).toBe(refused)
+      expect(refused).toBeGreaterThan(30)
     })
   })
