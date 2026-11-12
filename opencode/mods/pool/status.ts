@@ -75,7 +75,7 @@ export type AccountStatus = typeof AccountStatus.Type
 
 /** A store outside OpenCode whose logins join a pool: what it lists, and the labels it leaves alone. */
 export const SourceStatus = Schema.Struct({
-  kind: Schema.Literal("gent"),
+  kind: Schema.Literal("store"),
   dir: Schema.String,
   accounts: Schema.Array(Schema.String),
   skipped: Schema.Array(Schema.Struct({ label: Schema.String, reason: Schema.String })),
@@ -107,7 +107,7 @@ export type SessionQuery = typeof SessionQuery.Type
  * The account a session is on: `placed` when its newest primary request went
  * out on it, `next` when it has sent none yet and this is the pool's pick for
  * its first. `label` is the login's name as its store lists it (an OpenCode
- * login's label, a gent account's slot), never a token.
+ * login's label, a login store account's slot), never a token.
  */
 export const SessionAccount = Schema.Struct({
   pool: Schema.String,
@@ -133,7 +133,7 @@ export type RefreshCause = typeof RefreshCause.Type
 
 /**
  * A pooled login whose refresh token the token endpoint refused: it serves
- * nothing until its owner signs in again, with `command`, in the store that
+ * nothing until its owner signs it in again, into `slot`, the file that
  * holds it. `since` is the first refusal (epoch ms).
  */
 export const LostLogin = Schema.Struct({
@@ -141,7 +141,7 @@ export const LostLogin = Schema.Struct({
   credentialID: Schema.String,
   label: Schema.String,
   since: Schema.Number,
-  command: Schema.String,
+  slot: Schema.String,
 })
 export type LostLogin = typeof LostLogin.Type
 

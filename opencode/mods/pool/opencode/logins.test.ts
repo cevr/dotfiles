@@ -30,17 +30,17 @@ loginsLaws("OpenCode's Logins", (world) =>
 test("an outside store's login is named by the store's own label", () => {
   const pool = PoolId.make("anthropic")
   const store: OpenCodeLogins.Store = {
-    dir: "/gent",
-    listing: Effect.succeed({ accounts: ["gent:claude-max-2"], skipped: [] }),
-    label: (credentialID) => (credentialID.startsWith("gent:") ? credentialID.slice("gent:".length) : undefined),
+    dir: "/store",
+    listing: Effect.succeed({ accounts: ["store:claude-max-2"], skipped: [] }),
+    label: (credentialID) => (credentialID.startsWith("store:") ? credentialID.slice("store:".length) : undefined),
     lost: Effect.succeed([]),
     refreshes: Effect.succeed({ failures: 0, pausedUntil: 0 }),
   }
   return Effect.runPromise(
     Effect.gen(function* () {
       const logins = yield* Logins
-      expect(yield* logins.list(pool, true)).toEqual(["cred-a", "gent:claude-max-2"])
-      expect(yield* logins.label(pool, "gent:claude-max-2")).toBe("claude-max-2")
+      expect(yield* logins.list(pool, true)).toEqual(["cred-a", "store:claude-max-2"])
+      expect(yield* logins.label(pool, "store:claude-max-2")).toBe("claude-max-2")
       expect(yield* logins.label(pool, "cred-a")).toBe("Claude OAuth • 0123ABCD")
     }).pipe(
       Effect.provide(
@@ -58,18 +58,18 @@ test("an outside store's login is named by the store's own label", () => {
 
 test("each outside store reports its lost logins and its run of failed refreshes, under its directory", () => {
   const pool = PoolId.make("anthropic")
-  const lost = { credentialID: "gent:work", label: "work", since: 5, command: "gent auth login anthropic --slot work" }
+  const lost = { credentialID: "store:work", label: "work", since: 5, slot: "/store/.slots/anthropic/work" }
   const record = { failingSince: 1, lastFailureAt: 4, failures: 3, cause: { status: 429 }, pausedUntil: 9 }
   const store: OpenCodeLogins.Store = {
-    dir: "/gent",
-    listing: Effect.succeed({ accounts: ["gent:work"], skipped: [] }),
+    dir: "/store",
+    listing: Effect.succeed({ accounts: ["store:work"], skipped: [] }),
     label: () => undefined,
     lost: Effect.succeed([lost]),
     refreshes: Effect.succeed(record),
   }
   return Effect.runPromise(
     Effect.gen(function* () {
-      expect(yield* (yield* Logins).refreshes(pool)).toEqual([{ dir: "/gent", lost: [lost], record }])
+      expect(yield* (yield* Logins).refreshes(pool)).toEqual([{ dir: "/store", lost: [lost], record }])
     }).pipe(
       Effect.provide(OpenCodeLogins.layer<OpenCodeLogins.Connection>({ connections: () => Effect.succeed([]), status: () => Effect.void }, () => [store])),
     ),

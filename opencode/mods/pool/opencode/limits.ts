@@ -25,6 +25,7 @@ import {
   type Use,
 } from "../limits.ts"
 import type { QuotaReading } from "../quota.ts"
+import { renameValue } from "../legacy-ids.ts"
 import { Limits } from "../service.ts"
 import type { Storage } from "./ledger.ts"
 import { PAGE } from "./ledger.ts"
@@ -64,7 +65,8 @@ export const stateOf = (file: unknown): LimitsState | undefined => {
 
 const readFile = (path: string): unknown => {
   try {
-    return JSON.parse(readFileSync(path, "utf8"))
+    // A file an older pool wrote names store logins by their legacy id; the next write renames it.
+    return renameValue(JSON.parse(readFileSync(path, "utf8")))
   } catch {
     return undefined
   }

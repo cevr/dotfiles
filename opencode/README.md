@@ -42,8 +42,8 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
 (`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
@@ -163,7 +163,7 @@ It makes no live model request.
 
 ## Prime
 
-`cmd/prime` is the Prime look's TUI plugin (`gent.prime`), the composition
+`cmd/prime` is the Prime look's TUI plugin (`dotfiles-opencode.prime`), the composition
 root of `mods/prime`. `daily` loads it first in `cli.json`, with the Prime
 theme. The mod has three parts.
 
@@ -787,15 +787,15 @@ default. A malformed one stops the plugin at setup, with a message that
 names it. Other mods read it over its `dotfiles-opencode.pool` RPC
 (`status.ts`, `@dotfiles/opencode-pool/status`): orchestrate asks `pace`, and the `/pool`
 pane draws `status`, and the sidebar asks `session` for the login a session
-is on (or would go out on next), by its label, and `alerts` for gent's lost logins
+is on (or would go out on next), by its label, and `alerts` for the login store's lost logins
 and failing refreshes.
 
-A gent login is lost while its file holds a refresh token the token endpoint
-refused; `alerts` names it with the gent command that signs it in again. A
-gent store's refreshes are failing when every one has failed for
+A store login is lost while its file holds a refresh token the token endpoint
+refused; `alerts` names it with the slot file to sign it in to again. A
+login store's refreshes are failing when every one has failed for
 `refreshOutageMinutes` (default 10), a paused trade included; `alerts` names
 how long, how many tries and what the endpoint last said. A successful
-refresh ends both (`alerts.ts`, `gent/store.ts`).
+refresh ends both (`alerts.ts`, `store/store.ts`).
 
 A prompt cache is per login, so a session moved to another login writes its
 whole prompt again. While a session's cache lives (from its newest request
@@ -849,7 +849,7 @@ The model, in the domain files at `mods/pool`'s root:
   account's status (`accounts.ts`), quota readings and the quota RPC's
   contract (`quota.ts`), pace admission (`pace.ts`) and the pool's own RPC
   (`status.ts`).
-- Contracts: the integration's logins and a gent store's (`Logins`), the
+- Contracts: the integration's logins and a login store's (`Logins`), the
   auth plugin's quota RPC (`Quota`) and the ledger in the plugin's storage
   (`Ledger`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. OpenCode runs a copy of the plugin per
@@ -857,8 +857,15 @@ The model, in the domain files at `mods/pool`'s root:
   while the stored mark is the one it saw expire: the copy serving the session
   may have written a newer one, which a restart reads back. `opencode/` implements them over the
   plugin's integration, RPC and storage; `memory/` holds the in-memory
-  ones the seam tests use. `gent/store.ts` reads and refreshes gent's
-  store in place, under gent's lock, byte-compatible with gent. It
+  ones the seam tests use. `store/store.ts` reads and refreshes the login
+  store in place (one JSON slot file per label, under
+  `<dir>/.slots/anthropic/`, a sign-in owned by the store when its metadata
+  names an `owner`), under the store's SQLite lock
+  (`<dir>/.locks/anthropic.lock.db`), byte-compatible with the files on
+  disk. A login is `store:<label>`; its id had the legacy prefix in
+  `legacy-ids.ts` before the store's rename: the plugin rewrites the old ids in its storage once at
+  start (`opencode/migrate.ts`), and the limit file at its next write
+  (`legacy-ids.ts`). It
   refreshes a token five minutes (plus up to two, fixed per label) before
   it expires, serves a still-good token when the refresh cannot happen
   now, spaces trades from one store three seconds apart, and gives the
@@ -956,7 +963,7 @@ The model, in the domain files at `mods/queue`'s root:
 
 ## Git
 
-`mods/git` ports gent's `@gent/git`; its plugins are `cmd/git` (`server.ts`
+`mods/git`'s plugins are `cmd/git` (`server.ts`
 and `tui.tsx`). The TUI plugin adds a Git section to the session sidebar
 (`tui/sidebar.tsx`, lines from `sidebar.ts`):
 
@@ -1040,7 +1047,7 @@ stand-in `gh` (`process/fake-gh.ts`).
 
 ## Btw
 
-`mods/btw` ports gent's `/btw`; its plugin is `cmd/btw` (`tui.tsx`, with no
+`mods/btw`'s plugin is `cmd/btw` (`tui.tsx`, with no
 server half). `/btw <question>` (alias `/side`, or the palette's "Ask on the
 side") forks the session on screen as it is now, a running turn included,
 and asks the fork the question in the session's panel, beside the
@@ -1098,14 +1105,14 @@ The model, in the domain files at `mods/btw`'s root:
   `side-questions`, the last 200 sessions); `memory/` holds the ones the
   tests use. `tui/` is the controller and the pane.
 
-From gent: the note is a hidden synthetic message, not part of the prompt;
+The note is a hidden synthetic message, not part of the prompt;
 the bring-back carries the question and the answer, since OpenCode has no
 tool that reads another session; the pane is the host's session panel, not
 a dock. `tests/btw.test.ts` runs `scenarios/btw.ts`.
 
 ## Skills
 
-`mods/skills` ports gent's `$` skill mentions; its plugins are
+`mods/skills` adds `$` skill mentions; its plugins are
 `cmd/skills` (`server.ts` and `tui.tsx`). Typing `$` at the start of a word
 in the composer opens a popup of the skills, beside `/` for commands and `@`
 for files, which stay as they were. Typing filters it, and Enter inserts
@@ -1118,7 +1125,7 @@ $review:global Review any change, the user's way      global · shadowed
 $
 ```
 
-Skills have two tiers, as in gent. A local skill is the project's: a
+Skills have two tiers. A local skill is the project's: a
 `.opencode/skills`, `.opencode/skill`, `.claude/skills` or `.agents/skills`
 folder in the working directory or a parent. A global skill is the user's:
 OpenCode's config directory, `~/.claude/skills`, `~/.agents/skills`. When
@@ -1152,7 +1159,7 @@ How it is built:
 - The popup needs the fork's `ui.autocomplete` (a plugin trigger in the
   composer). Without it there is no popup; typed tokens still attach.
 
-From gent: the skill comes in the prompt as an attachment rather than an
+The skill comes in the prompt as an attachment rather than an
 instruction to call the skill tool. OpenCode keeps one skill per id and which
 copy holds a plain id two of them share depends on the order its skill
 plugins register, so the plain id is held for the local copy only when this
@@ -1163,7 +1170,7 @@ plugin's transform runs last; `$<id>` itself always attaches `<id>:local`.
 
 `cmd/herdr` is a TUI plugin that tells [herdr](https://herdr.dev) what the
 session on screen is doing, so its pane shows working, blocked and idle like
-Claude's. It ports gent's `@gent/herdr` reporter. It judges the current
+Claude's. It judges the current
 route's root session and every subagent it started:
 
 - `blocked` while a permission (first) or a question form waits, with a
@@ -1340,7 +1347,7 @@ is sent, and a second press with nothing waiting interrupts nothing.
 
 `cmd/cache` is a TUI and a server plugin that show when a request paid again
 for a prompt prefix the previous request had cached, why, and what it cost.
-The TUI half ports gent's `@gent/cache`. A turn that lost a large prefix (20k tokens or
+In the TUI half, a turn that lost a large prefix (20k tokens or
 $0.10) ends on a row such as:
 
 ```
@@ -1450,7 +1457,7 @@ call's `workdir` and each `cd` before the command, with `~` and `$HOME`
 expanded. It reads every command of a line (after `;`, `&&`, `||`, `|`, a
 newline or a subshell), skips `sudo`, `env`, `VAR=1`, `nohup` and `command`
 prefixes, takes neither quoted text nor a heredoc body for a command, and reads the script of
-`sh -c`, `bash -c` and `eval`, as gent's guard floor does. When it cannot
+`sh -c`, `bash -c` and `eval`. When it cannot
 tell where a call runs, or whether a path is a repository, it refuses.
 
 It refuses a kill by pattern that would reach OpenCode: `pkill`, `killall`
@@ -2012,8 +2019,8 @@ pairing and the refusals over real HTTP in one process.
 
 ## Background questions
 
-`mods/questions` lets an agent ask the owner something without stopping,
-ported from gent's `ask_user_async`. Its plugins are `cmd/questions`
+`mods/questions` lets an agent ask the owner something without stopping.
+Its plugins are `cmd/questions`
 (`server.ts` and `tui.tsx`); neither takes options.
 
 The server adds the `ask_user_async` tool, a direct tool (a kernel cell calls
@@ -2211,7 +2218,7 @@ form, its answer wakes the role, and the orchestrator reads the notice.
 ## Wakes
 
 `mods/wake` lets a session set itself an alarm or poll a command and be woken
-by it, ported from gent's `wake`. Its plugin is `cmd/wake` (`server.ts`;
+by it. Its plugin is `cmd/wake` (`server.ts`;
 Prime's dock draws the pending wakes, and its composer panel's Wakes and
 Monitors tabs list and cancel them over the `pending` and `cancel` RPCs,
 a monitor's row with its newest check's output). The server takes options: `backstop` (`"cron"`, the default, or
@@ -2375,12 +2382,9 @@ result waking the parent); `tests/prime-fallback.test.ts` runs
 `scenarios/prime-fallback.ts` (a worker the pace holds starts at once on the
 Codex fallback, and the call log says why).
 
-Where it departs from gent: a fire that went late still starts a turn and
-says how late (gent turns an alarm more than 10 minutes late into a notice);
-there is no automatic resume of the turn the alarm interrupted; the monitor's
-period is `intervalSeconds` (gent's `everySeconds`); tool names take `_`
-where gent's take `.`, which Anthropic refuses; the OS backstop and
-`newSession` are new.
+A fire that went late still starts a turn and says how late; there is no
+automatic resume of the turn the alarm interrupted; the monitor's period is
+`intervalSeconds`; tool names take `_`, never `.`, which Anthropic refuses.
 
 A subagent, and so each of orchestrate's roles, is refused: a role answers to
 the session that started it and ends with it, so it waits on CI with a
@@ -2527,8 +2531,8 @@ Transcripts are not copied: they stay searchable in OpenCode's own database.
 
 ## The code kernel
 
-`mods/kernel` gives the model a `kernel` tool, `{ code, description?, reset? }`, ported
-from gent's `cell`. `description` is a few words in the present tense saying
+`mods/kernel` gives the model a `kernel` tool, `{ code, description?, reset? }`.
+`description` is a few words in the present tense saying
 what the cell does (`Merge the skill-dollar worker`), for the transcript;
 the tool's input schema and its text ask for one whenever a cell calls tools
 or changes anything. It is optional, so calls made before it still decode. It runs TypeScript in one Bun process per session, so
@@ -2806,7 +2810,7 @@ hold names the extra: `the pool's weekly pace is over (90.0% spent across 2
 accounts, +30.0% for 3 agents started in the last 10 min)`. It opens when the
 oldest start settles. A report also carries the host's readings. A peer's
 newer reading of a login this pool lists (the same credential id, such as
-`gent:<label>`) replaces the older one.
+`store:<label>`) replaces the older one.
 
 The transport is SSH over the tailnet. No port opens, and no token or
 password crosses. A host reads a peer by running
@@ -2988,11 +2992,10 @@ drops the links), and install only when changing the lock file. Link-fork, and
 with it the gate, typecheck, accept and daily, first checks that `OPENCODE_DEV`
 is an OpenCode checkout on this machine whose `packages/tui/node_modules` all
 resolve (`scripts/fork.ts`), and stops before touching anything when it is not:
-a Mac path on the workbox would leave every TUI plugin without `solid-js`. The gent pool
-integration tests (`GENT_SUITES` in `tests/gent/store.ts`) need gent's checkout and assume
-no path for it: with `GENT_SOURCE` unset, or naming no directory, they skip, and
-`bun run accept` ends with one `SKIPPED: gent suites (…): no gent checkout (…)` line. Set
-`GENT_SOURCE` to a gent checkout to run them.
+a Mac path on the workbox would leave every TUI plugin without `solid-js`. The pool's
+login store suites (`tests/pool-store*.test.ts`, `tests/pool-fleet.test.ts`) write their store
+in its slot-file format into their scratch directory (`tests/store/store.ts`), so they need
+no other checkout.
 
 The deterministic acceptance seams are the session API (the guard, compaction
 at the agents' window, the Sabbath, held starts and subagent pace), the pool RPC and quota

@@ -21,12 +21,12 @@ export interface RefreshRecord {
   readonly pausedUntil: number
 }
 
-/** A login of an outside store that needs a sign-in there, and the command that does it. Never a token. */
+/** A login of an outside store that needs a sign-in again, and its slot file. Never a token. */
 export interface StoreLostLogin {
   readonly credentialID: string
   readonly label: string
   readonly since: number
-  readonly command: string
+  readonly slot: string
 }
 
 /** What one outside store of a pool reports: its lost logins and how its refreshes go. */

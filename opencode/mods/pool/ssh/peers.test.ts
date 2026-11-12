@@ -33,7 +33,7 @@ const report: Report = {
   readings: [
     {
       pool: "anthropic",
-      credentialID: "gent:work",
+      credentialID: "store:work",
       reading: { at: 1_799_999_950_000, status: "allowed", windows: [{ name: "7d", utilization: 0.4, resetAt: 1_800_300_000_000 }] },
     },
   ],

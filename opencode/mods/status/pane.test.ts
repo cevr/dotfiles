@@ -19,22 +19,22 @@ describe("accountRows", () => {
       anthropic: {
         accounts: [
           {
-            credentialID: "gent:alpha",
+            credentialID: "store:alpha",
             reading: { windows: [{ name: "5h", utilization: 0.234, resetAt: now + 3_600_000 }, { name: "7d", utilization: 0.44 }] },
           },
-          { credentialID: "gent:beta", hold: { kind: "usage-limit", until: now + 7_200_000 } },
+          { credentialID: "store:beta", hold: { kind: "usage-limit", until: now + 7_200_000 } },
         ],
       },
     }
     expect(accountRows(pools)).toEqual([
       {
         held: false,
-        title: "anthropic / gent:alpha · available",
+        title: "anthropic / store:alpha · available",
         windows: ["  5h 23% · reset 2026-11-04 16:00Z", "  7d 44% · reset unknown"],
       },
       {
         held: true,
-        title: "anthropic / gent:beta · held (usage-limit) until 2026-11-04 17:00Z",
+        title: "anthropic / store:beta · held (usage-limit) until 2026-11-04 17:00Z",
         windows: ["  5h unknown · reset unknown", "  7d unknown · reset unknown"],
       },
     ])
@@ -45,7 +45,7 @@ describe("accountRows", () => {
       anthropic: {
         accounts: [
           {
-            credentialID: "gent:alpha",
+            credentialID: "store:alpha",
             reading: {
               windows: [
                 { name: "7d", utilization: 0.5 },
@@ -54,7 +54,7 @@ describe("accountRows", () => {
               resets: { available: 2, nextExpiresAt: Date.parse("2026-11-30T20:04:00Z") },
             },
           },
-          { credentialID: "gent:beta", reading: { windows: [], resets: { available: 0 } } },
+          { credentialID: "store:beta", reading: { windows: [], resets: { available: 0 } } },
         ],
       },
       openai: { accounts: [{ credentialID: "chatgpt", reading: { windows: [], resets: { available: 1 } } }] },
@@ -75,7 +75,7 @@ describe("accountRows", () => {
       anthropic: {
         accounts: [
           {
-            credentialID: "gent:alpha",
+            credentialID: "store:alpha",
             reading: {
               windows: [],
               resets: {
@@ -113,7 +113,7 @@ describe("accountRows", () => {
       anthropic: {
         accounts: [
           {
-            credentialID: "gent:beta",
+            credentialID: "store:beta",
             live: 0,
             load: 2,
             noRoom: true,
@@ -129,7 +129,7 @@ describe("accountRows", () => {
       Option.some([
         {
           held: true,
-          title: "anthropic / gent:beta · held (usage-limit) until 2026-11-04 15:00Z",
+          title: "anthropic / store:beta · held (usage-limit) until 2026-11-04 15:00Z",
           windows: ["  5h 100% · reset 2026-11-04 15:00Z", "  7d unknown · reset unknown"],
         },
       ]),
