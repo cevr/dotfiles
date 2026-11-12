@@ -51,7 +51,7 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
     ).effect(host)
 
     /** One call of the rift tool: its text, or `error: <message>`. */
-    const call = Effect.fn(function* (input: Record<string, unknown>) {
+    const call = Effect.fn("RiftServerTest.call")(function* (input: Record<string, unknown>) {
       const tool = tools.get("rift")
       if (tool === undefined || tool === "builtin") return "no rift tool"
       // The input is decoded with the tool's own schema first, as the host does before it calls the tool.

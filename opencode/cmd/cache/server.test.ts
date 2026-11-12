@@ -66,7 +66,7 @@ const start = (ledger: Memory.MemoryLedger) =>
      * lifetime in headers, then `http.request`, which the auth plugin reaches first and strips them from, unless
      * `kept` (this plugin's hook first, or no auth plugin).
      */
-    const send = Effect.fn(function* (
+    const send = Effect.fn("CacheServerTest.send")(function* (
       sessionID: string,
       json: unknown,
       options: { readonly kind?: string; readonly login?: string; readonly ttl?: string; readonly kept?: boolean } = {},

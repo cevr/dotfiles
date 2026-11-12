@@ -104,7 +104,7 @@ const start = (
     yield* make(() => sessionsLayer({ ...state.host, location: { directory: at.directory ?? "/work" } })).effect(host)
     yield* settle
 
-    const hook = Effect.fn(function* (name: string, event: Record<string, unknown>) {
+    const hook = Effect.fn("IdleCompactServerTest.hook")(function* (name: string, event: Record<string, unknown>) {
       for (const callback of hooks[name] ?? []) yield* callback(event)
     })
     const emit = (type: string, sessionID: string) => PubSub.publish(events, { type, data: { sessionID } }).pipe(Effect.andThen(settle))
@@ -118,7 +118,7 @@ const start = (
      * for `streams`, its usage is recorded, and the execution ends. With `requests`, that many in a row, as a turn
      * that calls tools runs them.
      */
-    const turn = Effect.fn(function* (
+    const turn = Effect.fn("IdleCompactServerTest.turn")(function* (
       sessionID: string,
       usage: { readonly input?: number; readonly read?: number; readonly write?: number } = {},
       options: {
@@ -150,7 +150,7 @@ const start = (
     })
 
     /** Moves the test clock to `at` ms, letting each timer due on the way fire. */
-    const until = Effect.fn(function* (at: number) {
+    const until = Effect.fn("IdleCompactServerTest.until")(function* (at: number) {
       const current = yield* now
       if (at > current) yield* TestClock.adjust(at - current)
       yield* settle

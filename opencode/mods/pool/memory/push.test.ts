@@ -219,7 +219,7 @@ describe("asked push", () => {
 
 describe("proactive push", () => {
   const queued = (state: string, count: number): RunWork => ({ name: "ergo", units: Array.from({ length: count }, (_, at) => ({ unit: `u${at}`, state })) })
-  const setUp = Effect.fn(function* () {
+  const setUp = Effect.fn("PushStoreTest.setUp")(function* () {
     const w = world()
     w.owner.parents.set("ses_orchestrator", "ses_owner")
     // Weeks nearly spent with days to go, a weekly reset each: 10% of room against six units (60% of a week).

@@ -68,7 +68,7 @@ const start = (options: Record<string, unknown> = {}) =>
         Effect.catch((error) => Effect.succeed({ ok: false as const, text: error.message })),
       )
     /** One request's system prompt as the hooks of its kind leave it: `context` for a primary request. */
-    const request = Effect.fn(function* (sessionID: string, kind: "context" | "compaction" | "generate" | "title" = "context") {
+    const request = Effect.fn("MemoryServerTest.request")(function* (sessionID: string, kind: "context" | "compaction" | "generate" | "title" = "context") {
       const event: ContextEvent = { sessionID, system: [{ type: "text", text: "the host's instructions" }] }
       for (const hook of hooks.get(kind) ?? []) yield* hook(event)
       return event.system.map((part) => part.text)

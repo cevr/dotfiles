@@ -27,30 +27,30 @@ export const layer = (keyed: Keyed, nonce: () => string, timeoutMs = TIMEOUT_MS)
     Effect.gen(function* () {
       const store = yield* PairStore
 
-      const call = <A>(peer: string, route: string, input: unknown, decode: (text: string) => Option.Option<A>) =>
-        Effect.gen(function* () {
-          const pairs = yield* store.read
-          const entry = Object.hasOwn(pairs.peers, peer) ? pairs.peers[peer] : undefined
-          if (entry === undefined || pairs.name === undefined) return yield* new PeerUnreachable({ peer, message: "not paired with this host" })
-          const body = JSON.stringify(input)
-          const headers = sign(pairs.name, entry.secret, { method: "POST", path: route, body }, yield* Clock.currentTimeMillis, nonce(), keyed)
-          const reply = yield* Effect.tryPromise({
-            try: async () => {
-              const response = await fetch(new URL(route, entry.url), {
-                method: "POST",
-                headers: { ...headers, "content-type": "application/json" },
-                body,
-                signal: AbortSignal.timeout(timeoutMs),
-              })
-              return { status: response.status, text: await response.text() }
-            },
-            catch: (cause) => new PeerUnreachable({ peer, message: `${entry.url} did not answer: ${cause instanceof Error ? cause.message : String(cause)}` }),
-          })
-          if (reply.status !== 200) return yield* new PeerUnreachable({ peer, message: `it answered ${reply.status}: ${reasonOf(reply.text)}` })
-          const decoded = decode(reply.text)
-          if (Option.isNone(decoded)) return yield* new PeerUnreachable({ peer, message: "its answer is not mail's" })
-          return decoded.value
-        }).pipe(Effect.withSpan("Peers.call", { attributes: { peer, route } }))
+      const call = Effect.fn("Peers.call")(function* <A>(peer: string, route: string, input: unknown, decode: (text: string) => Option.Option<A>) {
+        yield* Effect.annotateCurrentSpan({ peer, route })
+        const pairs = yield* store.read
+        const entry = Object.hasOwn(pairs.peers, peer) ? pairs.peers[peer] : undefined
+        if (entry === undefined || pairs.name === undefined) return yield* new PeerUnreachable({ peer, message: "not paired with this host" })
+        const body = JSON.stringify(input)
+        const headers = sign(pairs.name, entry.secret, { method: "POST", path: route, body }, yield* Clock.currentTimeMillis, nonce(), keyed)
+        const reply = yield* Effect.tryPromise({
+          try: async () => {
+            const response = await fetch(new URL(route, entry.url), {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body,
+              signal: AbortSignal.timeout(timeoutMs),
+            })
+            return { status: response.status, text: await response.text() }
+          },
+          catch: (cause) => new PeerUnreachable({ peer, message: `${entry.url} did not answer: ${cause instanceof Error ? cause.message : String(cause)}` }),
+        })
+        if (reply.status !== 200) return yield* new PeerUnreachable({ peer, message: `it answered ${reply.status}: ${reasonOf(reply.text)}` })
+        const decoded = decode(reply.text)
+        if (Option.isNone(decoded)) return yield* new PeerUnreachable({ peer, message: "its answer is not mail's" })
+        return decoded.value
+      })
 
       return Peers.of({
         names: store.read.pipe(Effect.map((pairs) => Object.keys(pairs.peers).toSorted())),

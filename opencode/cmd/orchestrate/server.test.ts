@@ -222,7 +222,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     }
 
     /** One tool call through the `execute.before` hooks: the input the tool then runs with, or the refusal. */
-    const call = Effect.fn(function* (tool: string, sessionID: string, input: unknown = {}) {
+    const call = Effect.fn("OrchestrateServerTest.call")(function* (tool: string, sessionID: string, input: unknown = {}) {
       const event: Record<string, unknown> = { tool, sessionID, agent: "build", messageID: "msg", id: "call", input }
       for (const hook of hooks["execute.before"] ?? []) {
         const exit = yield* Effect.exit(hook(event))
@@ -234,7 +234,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       return { refused: undefined, input: event.input }
     })
     /** A subagent call returning through the `execute.after` hooks. */
-    const finish = Effect.fn(function* (result: Record<string, unknown>) {
+    const finish = Effect.fn("OrchestrateServerTest.finish")(function* (result: Record<string, unknown>) {
       const event = { tool: "subagent", sessionID: "root", agent: "build", messageID: "msg", id: "call", input: {}, ...result }
       for (const hook of hooks["execute.after"] ?? []) yield* hook(event)
     })
@@ -244,7 +244,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       return lines.map(({ at: _, ...line }) => JSON.stringify(line))
     }
     /** The session ends its turn with nothing pending: the host's `experimental.idle` hook, with what still runs for it. */
-    const idle = Effect.fn(function* (sessionID: string, background: ReadonlyArray<unknown> = []) {
+    const idle = Effect.fn("OrchestrateServerTest.idle")(function* (sessionID: string, background: ReadonlyArray<unknown> = []) {
       for (const hook of hooks["experimental.idle"] ?? []) yield* hook({ sessionID, background })
     })
     /** An input reaching a session's inbox: the owner's prompt, or a synthetic message with `metadata`. */
