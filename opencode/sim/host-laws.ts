@@ -16,7 +16,8 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Provider } from "@opencode/schema/provider"
-import type { SessionID } from "@opencode/schema/session-id"
+import { AbsolutePath } from "@opencode/schema/schema"
+import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
@@ -103,6 +104,9 @@ const count = (text: string, part: string) => text.split(part).length - 1
 /** A short wait on the host's clock: long enough for work that would start to start. */
 const settle = Effect.sleep("2 seconds")
 
+/** A gap on the host's clock between two session writes, so their update times differ (the store keeps ms). */
+const STEP = "20 millis"
+
 /** A session list's "no parent", as the fork's API takes it and idle compaction asks for its roots (JSON null). */
 const ROOT = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null")
 
@@ -158,6 +162,15 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(count(yield* contextText(ctx, session.id), "heard prompt") === 1, "the session does not hold the model's answer to the prompt")
         const info = yield* ctx.session.get({ sessionID: session.id })
         yield* ensure(info.id === session.id, "get answered another session")
+        // A prompt with an id (wake's): a second admission of the id is not taken again.
+        const once = { sessionID: session.id, id: SessionMessage.ID.make("msg_lawpromptonce001"), text: "law: prompt once" }
+        yield* probe.turn(session.id, ctx.session.prompt(once))
+        yield* ctx.session.prompt(once).pipe(Effect.ignore)
+        yield* settle
+        const asked = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(asked.length === 2, `the two prompts, the second with a repeated id, brought ${asked.length} requests`)
+        const held = count(yield* contextText(ctx, session.id), "law: prompt once")
+        yield* ensure(held === 1, `the session holds the prompt with an id ${held} times`)
       }),
   },
   {
@@ -256,22 +269,47 @@ export const LAWS: ReadonlyArray<Law> = [
   },
   {
     name: LAW.sessions,
-    operations: ["session.create", "session.list", "session.get", "session.update"],
-    check: (ctx) =>
+    operations: ["session.create", "session.list", "session.get", "session.update", "session.prompt"],
+    // Every argument our plugins pass to session.list (idle-compact: parentID, ROOT with directory,
+    // order "desc", limit) and the key it sorts by: the last update (an update or an admitted prompt
+    // bumps it), newest first by default.
+    check: (ctx, probe) =>
       Effect.gen(function* () {
+        const ids = (list: { readonly data: ReadonlyArray<{ readonly id: string }> }) => list.data.map((session) => session.id).join(",")
+        // A session created as wake creates one: its own id, a location and metadata; created again, the same session.
+        const chosen = { id: SessionID.make("ses_lawchosen0000001"), location: { directory: ctx.location.directory }, title: "law chosen", metadata: { law: "chosen" } }
+        const made = yield* ctx.session.create(chosen)
+        const again = yield* ctx.session.create({ ...chosen, metadata: { law: "again" } })
+        const found = yield* ctx.session.get({ sessionID: chosen.id })
+        yield* ensure(made.id === chosen.id && again.id === chosen.id, `create with an id answered ${made.id} and ${again.id}`)
+        yield* ensure(found.location.directory === ctx.location.directory, `the chosen session is in ${found.location.directory}`)
+        yield* ensure(Schema.is(Schema.Struct({ law: Schema.Literal("chosen") }))(found.metadata), "the chosen session's metadata is not the first create's")
         const parent = yield* fresh(ctx)
-        const child = yield* ctx.session.create({ parentID: parent.id, title: "law child" })
+        const older = yield* ctx.session.create({ parentID: parent.id, title: "law older child" })
+        yield* Effect.sleep(STEP)
+        const newer = yield* ctx.session.create({ parentID: parent.id, title: "law newer child" })
         const children = yield* ctx.session.list({ parentID: parent.id })
-        yield* ensure(children.data.map((session) => session.id).join(",") === child.id, "the parent's children are not its one child")
+        yield* ensure(ids(children) === `${newer.id},${older.id}`, `with no order the children were ${ids(children)}, not the newer child first`)
         const roots = yield* ctx.session.list({ parentID: ROOT, directory: ctx.location.directory })
         yield* ensure(
           roots.data.some((session) => session.id === parent.id),
           "the roots miss the parent",
         )
-        yield* ensure(!roots.data.some((session) => session.id === child.id), "the roots list a child")
-        yield* ctx.session.update({ sessionID: child.id, metadata: { law: "kept" } })
-        const info = yield* ctx.session.get({ sessionID: child.id })
+        yield* ensure(!roots.data.some((session) => session.id === older.id), "the roots list a child")
+        const elsewhere = yield* ctx.session.list({ parentID: ROOT, directory: AbsolutePath.make(`${ctx.location.directory}-elsewhere`) })
+        yield* ensure(!elsewhere.data.some((session) => session.id === parent.id), "the roots of another directory list the parent")
+        yield* Effect.sleep(STEP)
+        yield* ctx.session.update({ sessionID: older.id, metadata: { law: "kept" } })
+        const info = yield* ctx.session.get({ sessionID: older.id })
         yield* ensure(Schema.is(Schema.Struct({ law: Schema.Literal("kept") }))(info.metadata), "get does not answer the updated metadata")
+        const latest = yield* ctx.session.list({ parentID: parent.id, order: "desc", limit: 1 })
+        yield* ensure(ids(latest) === older.id, `desc limit 1 after the older child's update was ${ids(latest)}, not the updated child`)
+        const ascending = yield* ctx.session.list({ parentID: parent.id, order: "asc" })
+        yield* ensure(ids(ascending) === `${newer.id},${older.id}`, `asc after the update was ${ids(ascending)}`)
+        yield* Effect.sleep(STEP)
+        yield* probe.turn(newer.id, ctx.session.prompt({ sessionID: newer.id, text: "law: list order" }))
+        const prompted = yield* ctx.session.list({ parentID: parent.id, order: "desc", limit: 1 })
+        yield* ensure(ids(prompted) === newer.id, `desc limit 1 after a prompt to the newer child was ${ids(prompted)}`)
       }),
   },
   {

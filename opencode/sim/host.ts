@@ -157,6 +157,12 @@ export interface Session {
   metadata: JsonObject
   busy: Option.Option<number>
   idle: Option.Option<number>
+  /**
+   * The last update, as the fork's projector bumps `time_updated` (packages/core/src/session/projector.ts):
+   * at creation, an inbox admission, a step's start and end, a rename and a metadata update; never for an
+   * execution's start or end or a compaction. `session.list` orders by it.
+   */
+  updated: number
   readonly messages: Array<Message>
   readonly inbox: Array<InboxItem>
   /** Every inbox id ever admitted: the first admission of an id wins. */
@@ -374,11 +380,22 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     trace.push(line({ t: runtime.now() - start, kind, ...recordOf(data) }))
   }
 
-  /** An id in the host's shape: the prefix, a counter, then letters the seed picks. */
+  /**
+   * An id in the host's shape: the prefix, a counter, then letters the seed picks. A session id's counter
+   * descends, as the fork's session ids do (packages/schema/src/session-id.ts `descending()`); every other
+   * id's ascends.
+   */
   const mint = (prefix: string) => {
     state.counter += 1
     const letters = Array.from({ length: 6 }, () => ALPHABET[below(runtime.world, ALPHABET.length)]).join("")
-    return `${prefix}${state.counter.toString().padStart(5, "0")}${letters}`
+    let counter = state.counter
+    if (prefix === "ses_") counter = 99_999 - state.counter
+    return `${prefix}${counter.toString().padStart(5, "0")}${letters}`
+  }
+
+  /** Marks the session updated now, where the fork's projector bumps its `time_updated`. */
+  const touch = (session: Session) => {
+    session.updated = runtime.now()
   }
 
   /** A host fiber (an execution, a background shell, a title): it lives until it ends or the host goes down. */
@@ -567,7 +584,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const title = (session: Session) => {
     if (Option.isSome(session.title) || Option.isSome(session.parentID)) return
     session.title = Option.some("")
-    spawn(request(session, "title").pipe(Effect.map(({ reply }) => void (session.title = Option.some(textOf(reply))))))
+    spawn(
+      request(session, "title").pipe(
+        Effect.map(({ reply }) => {
+          session.title = Option.some(textOf(reply))
+          touch(session)
+        }),
+      ),
+    )
   }
 
   /** One step: a primary request, its assistant message, and its tool call's answer; whether the turn goes on. */
@@ -575,7 +599,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     Effect.gen(function* () {
       title(session)
       session.held = Option.none()
+      touch(session)
       const { reply, startedAt } = yield* request(session, "primary")
+      touch(session)
       const usage = reply.usage ?? USAGE
       const used = callOf(reply)
       const messageID = mint("msg_")
@@ -678,6 +704,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     Effect.gen(function* () {
       if (session.admitted.has(item.id)) return record("admission-repeated", { sessionID: session.id, id: item.id })
       session.admitted.add(item.id)
+      touch(session)
       session.inbox.push(item)
       record("admitted", { sessionID: session.id, id: item.id, type: item.type, resume: item.resume, text: inboxText(item) })
       yield* publish({ type: "session.inbox.enqueued", data: { sessionID: session.id, inboxID: item.id } })
@@ -716,6 +743,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         metadata: { ...input.metadata },
         busy: Option.none(),
         idle: Option.none(),
+        updated: runtime.now(),
         messages: [],
         inbox: [],
         admitted: new Set(),
@@ -783,6 +811,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   return {
     trace,
     asked,
+    touch,
     sessions,
     storage,
     hooks,

@@ -208,8 +208,14 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       const parentMatches = input.parentID === void 0 || parent === (input.parentID ?? "")
       return parentMatches && (input.directory === void 0 || session.directory === input.directory)
     })
-    let ordered = matching
-    if (input.order === "desc") ordered = matching.toReversed()
+    // As the fork's store (packages/core/src/session/store.ts `list`): by last update, newest first unless
+    // `order: "asc"`, the id string breaking a tie the same way; then `limit`.
+    const ascending = Order.combine(
+      Order.mapInput(Order.Number, (session: (typeof matching)[number]) => session.updated),
+      Order.mapInput(Order.String, (session: (typeof matching)[number]) => session.id),
+    )
+    const orders = { asc: ascending, desc: Order.flip(ascending) }
+    const ordered = matching.toSorted(orders[input.order ?? "desc"])
     return { data: ordered.slice(0, input.limit ?? ordered.length).map(host.infoOf) }
   }
 
@@ -295,6 +301,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           host.sessionOr(parsed.sessionID).pipe(
             Effect.map((found) => {
               found.metadata = { ...(parsed.metadata ?? found.metadata) }
+              host.touch(found)
               host.record("session-updated", { sessionID: found.id, metadata: found.metadata })
               return host.infoOf(found)
             }),

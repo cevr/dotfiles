@@ -21,7 +21,7 @@ export const LAW_FOLDER = "law"
 
 export const LAW = {
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",
-  prompt: "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it",
+  prompt: "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, and a second admission of its id is not taken again",
   steer: "a synthetic message with resume wakes an idle session into an execution that reads it, and a second admission of its id is not taken again",
   notice: "a synthetic message without resume starts no execution, and the next prompt's execution reads it",
   compact:
@@ -29,7 +29,8 @@ export const LAW = {
   request: "model.request runs before each request of the plugin's sessions, with the request's kind",
   tools: "a tool a transform adds is offered, and a built-in tool it removes is not",
   rpc: "an RPC method a plugin registers answers a call with its JSON",
-  sessions: "sessions list by parent and directory, and an update's metadata is what get answers",
+  sessions:
+    "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
   catalog: "the catalog lists the configured model, its provider and the build agent, and refuses ones it does not have",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
 }
