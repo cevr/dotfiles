@@ -4,6 +4,7 @@
 // row; a failure or cancel in the warning tone. At All (Ctrl+O)
 // it is everything the host draws today: a rule with its label and usage,
 // then the summary or the error (compaction.ts).
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { createMemo, createSignal, For, Match, onCleanup, Show, Switch, type Accessor } from "solid-js"
 import { SPINNER, SPINNER_MS } from "../chrome.ts"
 import { compactionAt, compactionBlock, compactionLine } from "../compaction.ts"
@@ -16,10 +17,10 @@ import { GUTTER } from "./transcript.tsx"
 /** A braille spinner frame that turns while `on` holds. */
 function useSpinner(on: Accessor<boolean>) {
   const [frame, setFrame] = createSignal(0)
-  const timer = setInterval(() => {
+  const stop = TuiClock.every(SPINNER_MS, () => {
     if (on()) setFrame((value) => (value + 1) % SPINNER.length)
-  }, SPINNER_MS)
-  onCleanup(() => clearInterval(timer))
+  })
+  onCleanup(stop)
   return () => SPINNER[frame()] ?? ""
 }
 

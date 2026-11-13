@@ -6,6 +6,7 @@
 // Enter shows the highlighted entry whole, ctrl+d cancels it as `wake_cancel`
 // does. The words are ../wakes.ts; the tab mounts only while it is the active
 // one, so its keys bind only then.
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { spinner } from "@dotfiles/opencode-subagents/line"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { wakeLine, widths } from "../panel.ts"
@@ -37,7 +38,7 @@ export function WakeTab(props: { readonly host: Host; readonly sessionID: string
 
   const detail = () => {
     const entry = current()
-    const now = reading()?.now ?? Date.now()
+    const now = reading()?.now ?? TuiClock.now()
     if (entry) {
       const shown = wakeDetail(entry, now)
       props.host.showDetail(shown.title, shown.message)

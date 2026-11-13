@@ -73,6 +73,27 @@
     },
     {
       "files": [
+        "mods/prime/tui/**",
+        "mods/prime/opencode/**",
+        "mods/escape/**",
+        "cmd/prime/**",
+        "cmd/escape/**"
+      ],
+      "rules": {
+        "dotfiles/tui-clock-only": "error"
+      }
+    },
+    {
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.tsx"
+      ],
+      "rules": {
+        "dotfiles/tui-clock-only": "off"
+      }
+    },
+    {
+      "files": [
         "decider/*.ts"
       ],
       "rules": {

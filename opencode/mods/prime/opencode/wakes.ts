@@ -6,6 +6,7 @@
 // Also the composer tabs' cancel, over the same RPC.
 // A latch is a held subagent start, which the subagent rows show: the dock's
 // wake item leaves it out.
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { Cancelled, CHANGED, WAKES } from "@dotfiles/opencode-wake/wake"
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
@@ -85,14 +86,14 @@ export function readWakes(context: Plugin.Context, sessionID: Accessor<string | 
       }
     }
     void refresh()
-    const timer = setInterval(() => void refresh(), POLL_MS)
+    const unpoll = TuiClock.every(POLL_MS, () => void refresh())
     const stop = context.data.listen((event) => {
       const changed = decodeChanged(event.details)
       if (Option.isSome(changed) && changed.value.data.sessionID === id) void refresh()
     })
     onCleanup(() => {
       abort.abort()
-      clearInterval(timer)
+      unpoll()
       stop()
     })
   })

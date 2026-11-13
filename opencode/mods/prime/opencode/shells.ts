@@ -3,6 +3,7 @@
 // fresh from the host's shell routes each time it opens. ctrl+k kills the
 // highlighted running command and lists again; Enter shows its output's tail,
 // and closing that returns to the list. The words are ../shells.ts.
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import type { Plugin } from "@opencode/plugin/tui"
 import { sessionShells, shellOption, shellTitle, type ShellEntry } from "../shells.ts"
 
@@ -44,7 +45,7 @@ export async function openShells(context: Plugin.Context, sessionID: string, cur
       ),
     ),
   )
-  const now = Date.now()
+  const now = TuiClock.now()
   const running = new Set(shells.filter((shell) => shell.status === "running").map((shell) => shell.id))
   const picked = await context.ui.dialog.select({
     title: shells.length === 0 ? "Shells · none in this session" : "Shells",
