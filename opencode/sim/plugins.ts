@@ -8,6 +8,7 @@
 import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credential-sources"
 import { make as makeAuth, makeShared } from "@dotfiles/opencode-cmd-anthropic-auth/server"
 import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
+import Questions from "@dotfiles/opencode-cmd-questions/server"
 import { LIVE_STORE_HOST, type StoreHost, liveWith, make as makePool } from "@dotfiles/opencode-cmd-pool/server"
 import * as MemoryPeers from "@dotfiles/opencode-pool/memory/peers"
 import type * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
@@ -56,6 +57,9 @@ export const wake = (world: World) => {
 
 /** The idle compaction plugin as OpenCode loads it: `cmd/idle-compact/server.ts`'s default export, wholly on the plugin context. */
 export const idleCompact = IdleCompact
+
+/** The questions plugin as OpenCode loads it: `cmd/questions/server.ts`'s default export, wholly on the plugin context. */
+export const questions = Questions
 
 /**
  * The pool (`cmd/pool/server.ts`'s `make`) on the world: OpenCode's adapters on its context, as the plugin

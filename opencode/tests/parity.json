@@ -76,6 +76,29 @@
         }
       ]
     },
+    "tests/pool-resets.test.ts": {
+      "simulated": "cmd/pool/pool-resets.sim.test.ts",
+      "tests": [
+        {
+          "name": "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
+          "expects": 17,
+          "carried": "real",
+          "why": "the world has no ChatGPT backend yet (tests/fake-chatgpt.ts's usage and consume endpoints) nor its provider laws"
+        },
+        {
+          "name": "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+          "expects": 16,
+          "carried": "both",
+          "why": "real too until the RPC and integration laws have run on real OpenCode and a provider law covers the claim endpoint"
+        },
+        {
+          "name": "one spent week with two weekly resets about to expire spends one: the reading after it shows the week back, so the second is kept",
+          "expects": 3,
+          "carried": "both",
+          "why": "real too until the RPC and integration laws have run on real OpenCode and a provider law covers the claim endpoint"
+        }
+      ]
+    },
     "tests/pool-store.test.ts": {
       "simulated": "cmd/pool/pool-store.sim.test.ts",
       "tests": [
