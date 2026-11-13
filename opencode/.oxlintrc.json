@@ -85,11 +85,31 @@
     },
     {
       "files": [
+        "mods/**",
+        "cmd/**"
+      ],
+      "rules": {
+        "dotfiles/tui-dirs-only": "error"
+      }
+    },
+    {
+      "files": [
+        "mods/pool/ssh/push.ts",
+        "mods/pool/ssh/report.ts",
+        "mods/pool/ssh/lease.ts"
+      ],
+      "rules": {
+        "dotfiles/tui-dirs-only": "off"
+      }
+    },
+    {
+      "files": [
         "**/*.test.ts",
         "**/*.test.tsx"
       ],
       "rules": {
-        "dotfiles/tui-clock-only": "off"
+        "dotfiles/tui-clock-only": "off",
+        "dotfiles/tui-dirs-only": "off"
       }
     },
     {

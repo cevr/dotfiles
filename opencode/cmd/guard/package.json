@@ -8,6 +8,7 @@
     "./server": "./server.ts"
   },
   "dependencies": {
+    "@dotfiles/decider": "workspace:*",
     "@dotfiles/opencode-guard": "workspace:*"
   }
 }

@@ -32,7 +32,7 @@
  * Options: `backstop: "off"` keeps the OS jobs in memory (scenarios, tests);
  * `bun` and `opencode` name those programs by path.
  */
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Plugin, Tool } from "@opencode/plugin/effect"
@@ -101,7 +101,7 @@ const bunOf = (options: Options, home: string) => options.bun ?? Bun.which("bun"
 
 /** Where jobs run: their own processes, whose end calls the service through the backstop's script unless the backstop is off. */
 export const runnerOf = (options: Options, env: Readonly<Record<string, string | undefined>> = process.env): Layer.Layer<Runner> => {
-  const home = env.HOME ?? homedir()
+  const home = env.HOME ?? TuiDirs.dirs().home
   return ProcessRunner.layer({
     root: path.join(env.XDG_STATE_HOME ?? path.join(home, ".local", "state"), "opencode-job"),
     bun: bunOf(options, home),
@@ -116,7 +116,7 @@ export const runnerOf = (options: Options, env: Readonly<Record<string, string |
 /** The OS backstop the options pick. */
 export const backstopOf = (options: Options, env: Readonly<Record<string, string | undefined>> = process.env): Layer.Layer<Backstop> => {
   if (options.backstop === "off") return MemoryBackstop.layer(MemoryBackstop.empty())
-  const home = env.HOME ?? homedir()
+  const home = env.HOME ?? TuiDirs.dirs().home
   return CronBackstop.layer({
     bun: bunOf(options, home),
     script: SCRIPT,

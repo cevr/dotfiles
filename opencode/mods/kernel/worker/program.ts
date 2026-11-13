@@ -27,7 +27,7 @@
  * @module
  */
 import { createRequire } from "node:module"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { resolve } from "node:path"
 import { types } from "node:util"
 import type { Evaluation, Json, Listing, Request, Response, Snapshot, SnapshotBinding } from "../frame.ts"
@@ -234,7 +234,7 @@ const installHostGlobal = (name: string, value: unknown, what: string) => {
 
 /** A path as `attach` names it: `~/` is the home directory, a relative path is under `directory`. */
 const absolutePath = (directory: string, path: string) =>
-  path === "~" || path.startsWith("~/") ? resolve(homedir(), `.${path.slice(1)}`) : resolve(directory, path)
+  path === "~" || path.startsWith("~/") ? resolve(TuiDirs.dirs().home, `.${path.slice(1)}`) : resolve(directory, path)
 
 /**
  * `attach(...paths)` inside the cell: records each path for the host and

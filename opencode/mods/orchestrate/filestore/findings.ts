@@ -9,7 +9,7 @@
 // headings, as `<unit>/<id>`, the unit being its directory's name. A `changes`
 // file with no id is one finding, the unit's own.
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { Effect, Layer } from "effect"
 import { Findings, type FindingsRead } from "../service.ts"
@@ -39,7 +39,7 @@ export const unitFindings = (unit: string, text: string): ReadonlyArray<string> 
 }
 
 const expand = (path: string, from: string) => {
-  const home = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path
+  const home = path.startsWith("~/") ? join(TuiDirs.dirs().home, path.slice(2)) : path
   return isAbsolute(home) ? home : resolve(from, home)
 }
 

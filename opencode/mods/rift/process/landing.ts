@@ -9,7 +9,8 @@
 // committed when the install rewrote it. `rift.regenerate` runs after every
 // batch's merges, and what it rewrote is committed.
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
-import { availableParallelism, homedir, loadavg } from "node:os"
+import { availableParallelism, loadavg } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Effect, Layer } from "effect"
@@ -52,7 +53,7 @@ type LockFiles = ReturnType<typeof lockFiles>
  * This host's land logs and their lock files, `${XDG_CACHE_HOME:-~/.cache}/rift-land` read from `env`: the one
  * place the rift tool (cmd/rift) and a script that takes its locks (scripts/daily.ts) find them.
  */
-export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "rift-land")
+export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_HOME"] || join(TuiDirs.dirs().home, ".cache"), "rift-land")
 
 /**
  * This host's land locks for a script that changes what a land's checks read outside any land (`bun run

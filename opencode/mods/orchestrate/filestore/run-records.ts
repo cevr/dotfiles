@@ -5,7 +5,7 @@
 // run's own log.md, where each verdict adds the root's drift (drift.ts).
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs"
 import { readdir, readFile, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { Effect, Layer } from "effect"
 import { RunRecords } from "../service.ts"
@@ -47,7 +47,7 @@ export const layer = Layer.succeed(RunRecords, {
   }),
   log: ({ near, line, directory }) =>
     Effect.sync(() => {
-      const file = near.startsWith("~/") ? join(homedir(), near.slice(2)) : isAbsolute(near) ? near : directory === undefined ? undefined : resolve(directory, near)
+      const file = near.startsWith("~/") ? join(TuiDirs.dirs().home, near.slice(2)) : isAbsolute(near) ? near : directory === undefined ? undefined : resolve(directory, near)
       if (file === undefined) return
       const runDir = runDirOf(file)
       if (!isDirectory(runDir)) return
