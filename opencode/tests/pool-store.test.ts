@@ -82,6 +82,14 @@ const failure = async (run: Promise<unknown>): Promise<StoreCredentialError> => 
   throw new Error("expected the resolve to fail")
 }
 
+/** `use` while the slot directory refuses writes (mode 0500), its mode put back however `use` ends. */
+const readOnly = <A, E>(slots: string, use: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => chmodSync(slots, 0o500)),
+    () => use,
+    () => Effect.sync(() => chmodSync(slots, 0o700)),
+  )
+
 describe("the pool's source over a login store", () => {
   test("a stale token is refreshed once and written back in the store's exact shape, mode 0600", async () => {
     const account = fakeAccount()
@@ -137,37 +145,46 @@ describe("the pool's source over a login store", () => {
     // Both asked while the other's refresh (1.5 s at the endpoint) could be in flight: a real race.
     expect(Math.abs(outputs[0]!.began - outputs[1]!.began)).toBeLessThan(1000)
   }, 30_000)
-  test("a refresh whose write failed is held, and written later only over the login it replaced", async () => {
-    const { dir, fake, source, trades, file } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000 })
-    const slots = join(dir, ".slots/anthropic")
-    const before = file("alpha")
-    chmodSync(slots, 0o500)
-    const error = await failure(source.resolve(`${STORE_PREFIX}alpha`))
-    chmodSync(slots, 0o700)
-    expect(error.kind).toBe("persist")
-    expect(file("alpha")).toBe(before)
-    expect(readdirSync(slots)).toEqual(["alpha"])
+  it.live("a refresh whose write failed is held, and written later only over the login it replaced", () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const { dir, fake, source, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
+      const slots = join(dir, ".slots/anthropic")
+      const alpha = `${STORE_PREFIX}alpha`
+      const before = file("alpha")
+      // The store's directory refuses the write: the new token serves all the same, and the file keeps the old login.
+      const served = yield* readOnly(slots, Effect.promise(() => source.resolve(alpha)))
+      expect(served.access).toBe(fake.tokens("alpha").access)
+      expect(file("alpha")).toBe(before)
+      expect(readdirSync(slots)).toEqual(["alpha"])
 
-    // The held tokens land on the next request, with no second refresh.
-    const resolved = await source.resolve(`${STORE_PREFIX}alpha`)
-    expect(resolved.access).toBe(fake.tokens("alpha").access)
-    expect(JSON.parse(file("alpha")).refresh).toBe(fake.tokens("alpha").refresh)
-    expect(trades()).toBe(1)
-  })
+      // The held tokens land on the next request, with no second refresh.
+      const resolved = yield* Effect.promise(() => source.resolve(alpha))
+      expect(resolved.access).toBe(fake.tokens("alpha").access)
+      expect(Option.map(Option.fromNullishOr(decodeStoredOAuth(file("alpha"))), (stored) => stored.refresh)).toEqual(
+        Option.some(fake.tokens("alpha").refresh),
+      )
+      expect(trades()).toBe(1)
+    }),
+  )
 
-  test("a held refresh is dropped when another process wrote another login meanwhile", async () => {
-    const { dir, store, source, trades } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000 })
-    const slots = join(dir, ".slots/anthropic")
-    chmodSync(slots, 0o500)
-    expect((await failure(source.resolve(`${STORE_PREFIX}alpha`))).kind).toBe("persist")
-    chmodSync(slots, 0o700)
+  it.live("a held refresh is dropped when another process wrote another login meanwhile", () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const { dir, fake, store, source, trades } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
+      const slots = join(dir, ".slots/anthropic")
+      const alpha = `${STORE_PREFIX}alpha`
+      expect((yield* readOnly(slots, Effect.promise(() => source.resolve(alpha)))).access).toBe(fake.tokens("alpha").access)
 
-    const theirs = { ...fakeAccount(), expires: Date.now() + 8 * HOUR }
-    await store.signIn("alpha", theirs, { signedInAt: 1_800_000_000_000 })
-    expect(await source.resolve(`${STORE_PREFIX}alpha`)).toEqual({ access: theirs.access, expires: theirs.expires })
-    expect((await store.get("alpha"))?.refresh).toBe(theirs.refresh)
-    expect(trades()).toBe(1)
-  })
+      const theirs = { ...fakeAccount(), expires: now + 8 * HOUR }
+      yield* Effect.promise(() => store.signIn("alpha", theirs, { signedInAt: 1_800_000_000_000 }))
+      expect(yield* Effect.promise(() => source.resolve(alpha))).toEqual({ access: theirs.access, expires: theirs.expires })
+      expect(Option.map(Option.fromNullishOr(yield* Effect.promise(() => store.get("alpha"))), (stored) => stored.refresh)).toEqual(
+        Option.some(theirs.refresh),
+      )
+      expect(trades()).toBe(1)
+    }),
+  )
 
   it.live("a refresh whose write failed keeps the store's lock: no other holder trades the spent refresh token", () =>
     Effect.gen(function* () {
@@ -175,17 +192,22 @@ describe("the pool's source over a login store", () => {
       const { dir, fake, source, tokenURL, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
       const slots = join(dir, ".slots/anthropic")
       const alpha = `${STORE_PREFIX}alpha`
-      chmodSync(slots, 0o500)
-      expect((yield* Effect.promise(() => failure(source.resolve(alpha)))).kind).toBe("persist")
-      const rotated = fake.tokens("alpha")
-
-      // Another holder of the store (its own state of it, its own SQLite connection) must refresh the same login:
-      // it waits on the lock, and never reads the spent refresh token to trade it.
       const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
-      expect((yield* Effect.promise(() => failure(theirs.resolve(alpha)))).kind).toBe("busy")
+      const { served, busy } = yield* readOnly(
+        slots,
+        Effect.all({
+          // The new token serves though its write failed.
+          served: Effect.promise(() => source.resolve(alpha)),
+          // Another holder of the store (its own state of it, its own SQLite connection) must refresh the same
+          // login: it waits on the lock, and never reads the spent refresh token to trade it.
+          busy: Effect.promise(() => failure(theirs.resolve(alpha))),
+        }),
+      )
+      const rotated = fake.tokens("alpha")
+      expect(served.access).toBe(rotated.access)
+      expect(busy.kind).toBe("busy")
       expect(trades()).toBe(1)
 
-      chmodSync(slots, 0o700)
       expect((yield* Effect.promise(() => source.resolve(alpha))).access).toBe(rotated.access)
       expect(Option.map(Option.fromNullishOr(decodeStoredOAuth(file("alpha"))), (stored) => stored.refresh)).toEqual(Option.some(rotated.refresh))
       expect((yield* Effect.promise(() => theirs.resolve(alpha))).access).toBe(rotated.access)
