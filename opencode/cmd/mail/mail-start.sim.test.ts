@@ -43,6 +43,8 @@ describe("the mail listener from the service's start", () => {
       const address = () => Option.fromNullishOr(pairs.read().url)
       yield* world.until(() => Option.isSome(address()), 60_000, 10)
       const url = Option.getOrElse(address(), () => "")
+      // Its own address, on the port it was given (port 0: the first free one).
+      expect(url).toBe(`http://${ADDRESS.workbox}:${MemoryNet.FIRST_FREE_PORT}`)
       const body = Schema.encodeSync(ParcelJson)({ to: "ses_nobody", from: { id: "ses_mac", title: "Mac main" }, replyTo: { id: "ses_mac", title: "Mac main" }, body: "hello", wake: false })
       const headers = sign("mac", SECRET, { method: "POST", path: ROUTES.receive, body }, world.now(), "n".repeat(22), keyed)
       const response = yield* Hosts.run(world, network.net(ADDRESS.mac).post(new URL(ROUTES.receive, url).href, { headers, body }, 10_000))
