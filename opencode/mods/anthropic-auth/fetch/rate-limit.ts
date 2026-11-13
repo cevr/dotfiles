@@ -1,7 +1,7 @@
 // A 429 from Anthropic, read far enough to name what it means. The body is
 // read within a bound of bytes, chunks and time; past any of them, or when it
 // is not Anthropic's error shape, the response goes on byte for byte as it came.
-import { Effect } from "effect"
+import { Clock, Context, Duration, Effect, Fiber } from "effect"
 import { contentLength, isJsonMediaType } from "../content-headers.ts"
 import {
   MAX_RATE_LIMIT_BODY_BYTES,
@@ -42,17 +42,36 @@ const guardedRead = (reader: ByteReader): Promise<ByteReadOutcome> =>
 
 const TIMED_OUT = Symbol("timed-out")
 
+/**
+ * The time a probe reads by: the host's clock, from the context the probe runs
+ * in, so a simulated host's clock bounds it as OpenCode's does.
+ */
+interface ProbeClock {
+  readonly now: () => number
+  /** A wait of `ms` on the clock, and its cancel. */
+  readonly after: (ms: number) => { readonly elapsed: Promise<void>; readonly cancel: () => void }
+}
+
+const probeClock = (context: Context.Context<never>): ProbeClock => {
+  const clock = Context.get(context, Clock.Clock)
+  return {
+    now: () => clock.currentTimeMillisUnsafe(),
+    after: (ms) => {
+      const fiber = Effect.runForkWith(context)(clock.sleep(Duration.millis(ms)))
+      return { elapsed: Effect.runPromise(Effect.asVoid(Fiber.await(fiber))), cancel: () => fiber.interruptUnsafe() }
+    },
+  }
+}
+
 /** `operation`'s outcome, or `TIMED_OUT` once `timeoutMs` passes first. */
 async function beforeTimeout(
   operation: Promise<ByteReadOutcome>,
   timeoutMs: number,
+  clock: ProbeClock,
 ): Promise<ByteReadOutcome | typeof TIMED_OUT> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs)
-  })
-  const outcome = await Promise.race([operation, timeout])
-  if (timer) clearTimeout(timer)
+  const timer = clock.after(timeoutMs)
+  const outcome = await Promise.race([operation, timer.elapsed.then((): typeof TIMED_OUT => TIMED_OUT)])
+  timer.cancel()
   return outcome
 }
 
@@ -142,13 +161,13 @@ function decode(decoder: TextDecoder, bytes?: Uint8Array): string | undefined {
   }
 }
 
-async function probeBody(response: Response, timeoutMs: number): Promise<BodyProbe> {
+async function probeBody(response: Response, timeoutMs: number, clock: ProbeClock): Promise<BodyProbe> {
   if (!response.body) return { type: "passthrough", response }
   const reader: ByteReader = response.body.getReader()
   const decoder = new TextDecoder("utf-8", { fatal: true })
   const chunks: Uint8Array[] = []
   const parts: string[] = []
-  const deadline = Date.now() + timeoutMs
+  const deadline = clock.now() + timeoutMs
   const passthrough = (pending?: Promise<ByteReadOutcome>, error?: unknown): BodyProbe => ({
     type: "passthrough",
     response: replayResponse(response, reader, chunks, pending, false, error),
@@ -157,10 +176,10 @@ async function probeBody(response: Response, timeoutMs: number): Promise<BodyPro
   let total = 0
 
   while (true) {
-    const remaining = deadline - Date.now()
+    const remaining = deadline - clock.now()
     if (remaining <= 0) return passthrough()
     const operation = guardedRead(reader)
-    const outcome = await beforeTimeout(operation, remaining)
+    const outcome = await beforeTimeout(operation, remaining, clock)
     if (outcome === TIMED_OUT) return passthrough(operation)
     if (!outcome.ok) return passthrough(undefined, outcome.error)
     const result = outcome.result
@@ -195,13 +214,13 @@ async function probeBody(response: Response, timeoutMs: number): Promise<BodyPro
   }
 }
 
-async function enhance(response: Response, connection: string, options: RateLimitOptions): Promise<RateLimitEnhancement> {
+async function enhance(response: Response, connection: string, options: RateLimitOptions, clock: ProbeClock): Promise<RateLimitEnhancement> {
   const unknown = { response, category: "unknown-rate-limit" as const }
   if (response.status !== 429 || !response.body || !isJsonMediaType(response.headers)) return unknown
   const declaredLength = contentLength(response.headers)
   if (declaredLength !== undefined && declaredLength > MAX_RATE_LIMIT_BODY_BYTES) return unknown
 
-  const probe = await probeBody(response, probeTimeout(options.probeTimeoutMs))
+  const probe = await probeBody(response, probeTimeout(options.probeTimeoutMs), clock)
   if (probe.type === "passthrough") return { response: probe.response, category: "unknown-rate-limit" }
 
   const diagnostic = rateLimitDiagnostic(probe.text, response.headers, connection)
@@ -226,4 +245,5 @@ export const enhanceRateLimitResponse = (
   response: Response,
   connection: string,
   options: RateLimitOptions = {},
-): Effect.Effect<RateLimitEnhancement> => Effect.promise(() => enhance(response, connection, options))
+): Effect.Effect<RateLimitEnhancement> =>
+  Effect.context<never>().pipe(Effect.flatMap((context) => Effect.promise(() => enhance(response, connection, options, probeClock(context)))))

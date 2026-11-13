@@ -3,13 +3,26 @@
 // server serves, reads the same fleet. One key per start, so two instances
 // recording at once both keep theirs, and one per peer:
 // `fleet/start/<at, 15 digits>/<random>` and `fleet/peer/<name, URI-encoded>`.
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Random, Schema } from "effect"
 import { type Event, type FleetState, Peer } from "../fleet.ts"
 import { FleetStore } from "../service.ts"
 import { Start } from "../status.ts"
 import { PAGE, type Storage } from "./ledger.ts"
 
 const STARTS = "fleet/start/"
+
+/**
+ * A start's own key part, a version 4 UUID drawn from the host's random (a
+ * seeded one on the simulated host): two starts at one instant on two
+ * instances keep apart.
+ */
+const startId = Effect.all(Array.from({ length: 4 }, () => Random.nextIntBetween(0, 0xffff_ffff))).pipe(
+  Effect.map((words) => {
+    const hex = words.map((word) => word.toString(16).padStart(8, "0")).join("")
+    const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+  }),
+)
 const PEERS = "fleet/peer/"
 
 const atKey = (at: number) => String(Math.max(0, Math.floor(at))).padStart(15, "0")
@@ -54,7 +67,7 @@ export const layer = (storage: Storage) =>
         const write = (() => {
           switch (event._tag) {
             case "StartRecorded":
-              return storage.set(`${STARTS}${atKey(event.start.at)}/${crypto.randomUUID()}`, encodeStart(event.start))
+              return startId.pipe(Effect.flatMap((id) => storage.set(`${STARTS}${atKey(event.start.at)}/${id}`, encodeStart(event.start))))
             case "StartsExpired":
               return scanAll(storage, STARTS).pipe(
                 Effect.flatMap((entries) =>
