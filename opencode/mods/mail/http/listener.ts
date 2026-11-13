@@ -16,7 +16,7 @@
 // The network is the `Net` service: `bunListen` here is its real listener
 // (Bun's server), a memory one (memory/net.ts) the simulated hosts'.
 import { Clock, Duration, Effect, Option, Schedule, Schema, type Scope } from "effect"
-import { accept, authenticate, type Keyed, type Pairs, SKEW_MS } from "../pairing.ts"
+import { accept, authenticate, HEADERS, type Keyed, type Pairs, SKEW_MS } from "../pairing.ts"
 import { isWildcard, ListAsk, PairAsk, Parcel, ROUTES, urlOf, type Arrival } from "../peer.ts"
 import type { SessionCard } from "../directory.ts"
 import { type Address, Net, NetFailed, PairStore, type Received, Tokens, type Wire } from "../service.ts"
@@ -45,6 +45,7 @@ export const answerer = (handlers: Handlers, keyed: Keyed) =>
     const store = yield* PairStore
     const tokens = yield* Tokens
     const seen = new Map<string, number>()
+    const started = yield* Clock.currentTimeMillis
     const refuse = (route: string, from: string, reason: string, status: number) =>
       Effect.logWarning(`mail listener: refused ${route} from ${from}: ${reason}`).pipe(Effect.as(json({ reason }, status)))
 
@@ -68,6 +69,8 @@ export const answerer = (handlers: Handlers, keyed: Keyed) =>
       for (const [nonce, until] of seen) if (until <= now) seen.delete(nonce)
       const auth = authenticate(yield* store.read, request, now, (nonce) => seen.has(nonce), keyed)
       if (!auth.ok) return yield* refuse(request.path, request.address, auth.reason, 401)
+      // The nonces seen are this listener's alone: one signed before it started could be a replay it cannot tell.
+      if (Number(request.header(HEADERS.time)) < started) return yield* refuse(request.path, auth.peer, "the request was signed before this listener started", 401)
       seen.set(auth.nonce, now + 2 * SKEW_MS)
       if (request.path === ROUTES.list) {
         const ask = Schema.decodeUnknownOption(Schema.fromJsonString(ListAsk))(request.body)
