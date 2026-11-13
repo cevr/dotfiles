@@ -70,6 +70,8 @@ export interface Asked {
   readonly sessionID: string
   readonly text: string
   readonly step: number
+  /** The user texts of the session's transcript, in order: what a chat-completions request carries. */
+  readonly users: ReadonlyArray<string>
 }
 /** The scripted model: the steps of the next model step, given the prompt; none ends the run. */
 export type Model = (asked: Asked) => ReadonlyArray<Step>
@@ -277,13 +279,13 @@ export type Served = (typeof SERVED)[number]
 const isServed = (identifier: string): identifier is Served => SERVED.some((each) => each === identifier)
 
 /**
- * The catalog: the agents a fresh project has (build and plan, and the worker
+ * The catalog: the agents a fresh project has (build and plan, the general subagent, and the worker
  * the orchestrate plugin adds), and the one scripted model, as opencode-drive names it
  * (its default config's `simulation/gpt-sim-model`, which the real scenarios run on).
  */
 export const MODEL_REF: ModelRef = { id: "gpt-sim-model", providerID: "simulation" }
 const agent = (name: string, mode: Agent.Info["mode"]): Agent.Info => ({ ...Agent.Info.default(Agent.ID.make(name)), mode })
-const AGENTS = [agent("build", "primary"), agent("plan", "primary"), agent("worker", "subagent")]
+const AGENTS = [agent("build", "primary"), agent("plan", "primary"), agent("general", "subagent"), agent("worker", "subagent")]
 const MODEL = { ...ModelInfo.Info.default(Provider.ID.make(MODEL_REF.providerID), ModelInfo.ID.make(MODEL_REF.id)), name: "Simulated Model", limit: { context: 128_000, output: 16_000 } }
 const PROVIDER = { ...Provider.Info.empty(Provider.ID.make(MODEL_REF.providerID)), name: "Simulation" }
 const sameModel = (a: ModelRef, b: ModelRef) => a.id === b.id && a.providerID === b.providerID && a.variant === b.variant
@@ -389,6 +391,12 @@ export const make = (options: Options) => {
   const requests: Array<Took> = []
   const unserved: Array<string> = []
   const held: Array<() => void> = []
+  /**
+   * Idle sessions a steer woke, whose run starts once the requests in flight now are answered: the real
+   * server starts a woken run on a fiber of its own, so steers the client sends in the same breath (the
+   * escape plugin switches every queued prompt to steer, one request each) are all in its first step.
+   */
+  const woken = new Set<string>()
   /** How each shell call the model started ended, in order. */
   const shellExits: Array<"killed"> = []
   const events: Array<string> = []
@@ -471,7 +479,7 @@ export const make = (options: Options) => {
   const pending = (sessionID: string): Array<Pending> => inbox.get(sessionID) ?? []
 
   const startStep = (run: Running) => {
-    const steps = options.model({ sessionID: run.sessionID, text: run.prompt, step: run.step })
+    const steps = options.model({ sessionID: run.sessionID, text: run.prompt, step: run.step, users: userTexts(run.sessionID) })
     if (steps.length === 0) return finish(run)
     const info = Option.fromUndefinedOr(sessions.get(run.sessionID))
     const agentName = Option.match(info, { onNone: () => "build", onSome: (each) => each.agent })
@@ -588,6 +596,9 @@ export const make = (options: Options) => {
     running.delete(run.sessionID)
     emit("session.execution.succeeded", { sessionID: run.sessionID }, false)
     touch(run.sessionID, { idle: now() })
+    // As core's projector records the run's end (session/projector.ts projectIdle).
+    const info = sessions.get(run.sessionID)
+    if (info) info.outcome = "succeeded"
     settled(run.sessionID)
     if (pending(run.sessionID).length > 0) start(run.sessionID)
   }
@@ -744,9 +755,22 @@ export const make = (options: Options) => {
       item.delivery = delivery
       emit("session.inbox.delivery.changed", { sessionID, inboxID, delivery })
     }
-    // Steering wakes an idle session's execution; a running one takes the steer at its next step.
-    if (delivery === "steer" && !running.has(sessionID)) start(sessionID)
+    // Steering wakes an idle session's execution (once the requests in flight are answered); a running one takes the steer at its next step.
+    if (delivery === "steer" && !running.has(sessionID)) woken.add(sessionID)
     return noContent()
+  }
+
+  /** The user texts of the session's transcript, in order. */
+  const userTexts = (sessionID: string): ReadonlyArray<string> =>
+    list(sessionID)
+      .filter((message): message is UserMessage => message.type === "user")
+      .map((message) => message.text)
+
+  /** Starts the run of each session a steer woke. */
+  const wake = () => {
+    const due = Array.from(woken)
+    woken.clear()
+    for (const sessionID of due) if (!running.has(sessionID)) start(sessionID)
   }
 
   const withSession = (sessionID: string, serve: (info: SessionInfo) => Response) =>
@@ -893,7 +917,7 @@ export const make = (options: Options) => {
     session,
     enqueue,
     interrupt,
-    /** Ends a stalled step: the rest of the model's text, then the run goes on. */
+    /** Ends a stalled step: the rest of the model's text (its first, if the step had none yet), then the run goes on. */
     release: (sessionID: string, rest = "") => {
       const found = Option.fromUndefinedOr(running.get(sessionID)).pipe(Option.filter((run) => run.hold === "stall"))
       if (Option.isNone(found)) return
@@ -906,6 +930,7 @@ export const make = (options: Options) => {
         run.text = part.text
         emit("session.text.delta", { sessionID, assistantMessageID: run.message.id, ordinal, delta: rest })
       }
+      if (rest !== "" && part?.type !== "text") streamText(run, rest, { type: "text", text: "" })
       endStep(run, "stop")
     },
     /** The server stops answering: requests from now on stay open until `answer`. */
@@ -922,10 +947,11 @@ export const make = (options: Options) => {
     /** The events to send the client now: none while silent (the stream stalls with the rest). */
     take: (): ReadonlyArray<Sent> => {
       if (state.silent) return []
+      if (state.inflight === state.parked) wake()
       return outbox.splice(0)
     },
     /** Whether the double owes the client anything it will send without time moving. */
-    busy: () => state.inflight - state.parked > 0 || (!state.silent && outbox.length > 0),
+    busy: () => state.inflight - state.parked > 0 || (!state.silent && (outbox.length > 0 || woken.size > 0)),
     /** How many requests the double holds open on purpose: the harness does not wait on them. */
     parked: () => state.parked,
     /** What the double still owes, for a message. */
@@ -933,6 +959,7 @@ export const make = (options: Options) => {
     /** The seed ends: every parked request is answered (503) and every long poll woken, so none outlives its seed. */
     close: () => {
       state.silent = false
+      woken.clear()
       // A session left running would stay running in the client's store past its seed, and the
       // store's backstop recheck would read it again in a later seed: each one ends here.
       for (const sessionID of Array.from(running.keys())) {
