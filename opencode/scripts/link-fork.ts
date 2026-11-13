@@ -67,7 +67,7 @@ function readAnchor() {
   }
 }
 const children = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => path.join(dir, name)) : [])
-const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider"), path.join(root, "sim")].filter(
+const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider"), path.join(root, "sim"), path.join(root, "sim-tui")].filter(
   (dir) => existsSync(path.join(dir, "package.json")),
 )
 
@@ -87,6 +87,12 @@ const ours = (link: string | undefined): link is string =>
 /** The fork's Effect platform packages, built on the same `effect` the TUI's modules link: sim/ reads files through them. */
 const PLATFORM = "packages/util/node_modules/@effect"
 const platformModules = path.normalize(PLATFORM) + path.sep
+
+/** sim-tui's extra links: the fork TUI's test folder (its fixture and preload) and the protocol package, by where they sit from the anchor. */
+const SIM_TUI: ReadonlyArray<readonly [string, string]> = [
+  ["@opencode-tui/test", "../test"],
+  ["@opencode/protocol", "../../protocol"],
+]
 
 /** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
 const prune = (dir: string) => {
@@ -123,8 +129,24 @@ for (const dir of packages) {
   prune(modules)
   merge(target, modules)
   const platform = path.join(checked.fork, PLATFORM)
-  if (path.basename(dir) === "sim" && existsSync(platform)) {
+  if ((path.basename(dir) === "sim" || path.basename(dir) === "sim-tui") && existsSync(platform)) {
     mkdirSync(path.join(modules, "@effect"), { recursive: true })
     merge(platform, path.join(modules, "@effect"))
   }
+  if (path.basename(dir) === "sim-tui") for (const [name, under] of SIM_TUI) linkThrough(path.join(modules, name), under)
+}
+
+/**
+ * sim-tui runs the fork's own TUI test fixture and encodes through the fork's protocol, neither a
+ * module the TUI package installs: linked through the anchor (`<anchor>/..` is the fork's
+ * packages/tui, the link text kept un-normalized so the anchor resolves first).
+ */
+function linkThrough(link: string, under: string) {
+  mkdirSync(path.dirname(link), { recursive: true })
+  const text = `${path.relative(path.dirname(link), anchor)}/${under}`
+  const current = linkOf(link)
+  if (current === text) return
+  if (current !== undefined && ours(current)) rmSync(link)
+  else if (current !== undefined) return
+  symlinkSync(text, link)
 }

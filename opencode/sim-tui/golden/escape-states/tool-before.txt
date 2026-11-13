@@ -1,0 +1,40 @@
+                                           helper rename  $0.00
+
+  opencode vlocal
+  model simulation/gpt-sim-model
+  cwd ~/files
+
+ ┃ Rename the helper.
+
+  Working on it
+
+  ○ Running sleep 60 · 6s
+
+  ⠧ Executing · 6s
+
+  Press ctrl+b to move running work to the background
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ┃
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ⦿ UI  Theme  Tools  Experiments

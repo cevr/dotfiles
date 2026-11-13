@@ -47,6 +47,7 @@
       "name": "@dotfiles/opencode-cmd-escape",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-escape": "workspace:*",
       },
     },
@@ -317,6 +318,7 @@
       "name": "@dotfiles/opencode-prime",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-cache": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
@@ -406,6 +408,10 @@
         "@dotfiles/opencode-idle-compact": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
+    },
+    "sim-tui": {
+      "name": "@dotfiles/opencode-sim-tui",
+      "version": "0.0.0",
     },
   },
   "packages": {
@@ -500,6 +506,8 @@
     "@dotfiles/opencode-rift": ["@dotfiles/opencode-rift@workspace:mods/rift"],
 
     "@dotfiles/opencode-sim": ["@dotfiles/opencode-sim@workspace:sim"],
+
+    "@dotfiles/opencode-sim-tui": ["@dotfiles/opencode-sim-tui@workspace:sim-tui"],
 
     "@dotfiles/opencode-skills": ["@dotfiles/opencode-skills@workspace:mods/skills"],
 
