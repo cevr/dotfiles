@@ -14,6 +14,17 @@ space with the startup volumes (elastic, no quota): it adds no capacity.
 
 ## Migrate
 
+### Before
+
+While Herdr still runs, record which OpenCode session each pane has open ([pane-restore](../../pane-restore/README.md)):
+
+```sh
+bun ~/Developer/personal/dotfiles/pane-restore/main.ts save
+bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
+```
+
+### Move
+
 1. Quit everything that uses `~/Developer`: editors, agent sessions, dev servers, herdr panes and shells inside it. `migrate.sh` lists what remains and stops.
 2. Open a new terminal in `~` and run:
 
@@ -34,6 +45,20 @@ The script:
 7. Moves the old tree and the old bun cache to `~/.Trash`. Empty the Trash to reclaim the space.
 
 Paths do not change, so rift's database, git worktree links and agent sessions stay valid. On a new Mac, run `setup.sh` before you clone anything.
+
+### After
+
+Check that every saved session still opens, then put each OpenCode session back in its pane, now an `hc` terminal:
+
+```sh
+bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
+hcm apply                                                     # if the tabs are not in hc yet
+bun ~/Developer/personal/dotfiles/pane-restore/main.ts restore
+herdr server stop                                             # from a terminal outside Herdr
+hcm resume
+```
+
+`restore` labels each moved pane's terminal with `opencode --session <id>`, and `hcm resume` types it once. Nothing is fixed by hand in Herdr.
 
 ## Trade-offs
 
