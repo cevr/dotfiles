@@ -1,0 +1,18 @@
+# Starts the OpenCode service at boot (linger is on), so the mail listener and
+# the wakes are up without a login. The launcher loads the resident location
+# and the server moves itself into its own opencode-service-<pid>.scope, so
+# this is a oneshot that stays active after the launcher exits.
+[Unit]
+Description=OpenCode service (serve --service and the resident location)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/opencode service start
+ExecStop=%h/.local/bin/opencode service stop
+
+[Install]
+WantedBy=default.target

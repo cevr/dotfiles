@@ -80,7 +80,9 @@ git_ -C "$lib" add lib.ts
 git_ -C "$lib" commit -m init
 head -c $((32 * 1024 * 1024)) /dev/urandom > "$lib/.git/objects/big.pack"
 r1=$src/personal/.rifts/lib/r1
-r2=$src/personal/.rifts/lib/r2
+# The rift of a rift sorts before its parent, so only the wait-for-parent rule
+# makes it a clone (copied first, its parent is not on the volume yet).
+r2=$src/personal/.rifts/lib/a-child
 mkdir -p "${r1%/*}"
 cp -c -p -R "$lib" "$r1"
 cp -c -p -R "$r1" "$r2"
@@ -102,37 +104,26 @@ echo stray > "$src/work/stray/file"
 # Enough directories for the after check's 38 watches.
 for i in $(seq 1 40); do mkdir -p "$src/personal/many/d$i"; done
 
-# preflight: a shell inside the tree and a process with a file of it open both block.
-(cd "$src/work" && exec sleep 60) &
-cwd_pid=$!
-tail -f "$app/src/index.ts" > /dev/null &
-file_pid=$!
-started=("$cwd_pid" "$file_pid")
-sleep 0.5
-if out=$("$here/migrate.sh" preflight "$src" 2>&1); then fail "preflight passed while pids $cwd_pid and $file_pid used the tree"; fi
-grep -q "pid $cwd_pid " <<< "$out" || fail "preflight missed the shell inside the tree: $out"
-grep -q "pid $file_pid " <<< "$out" || fail "preflight missed the open file: $out"
-grep -q 'quit ' <<< "$out" || fail "preflight printed nothing to quit: $out"
-stop_started
-"$here/migrate.sh" preflight "$src" > /dev/null || fail 'preflight still blocked once its holders quit'
-
 # launchd-due: an agent whose script imports from the tree and fires inside the window
 # is due; one naming the tree in its plist but firing after the window is "later"; one
 # that never refers to the tree is not listed.
 agents=$work/agents
 mkdir -p "$agents"
 echo "import { scheduled } from \"$src/personal/dotfiles/backstop.ts\"" > "$work/job.ts"
+# plist DIR LABEL SCRIPT CALENDAR_JSON
 plist() {
-    plutil -create xml1 "$agents/$1.plist"
-    plutil -insert Label -string "$1" "$agents/$1.plist"
-    plutil -insert ProgramArguments -array "$agents/$1.plist"
-    plutil -insert ProgramArguments -string /usr/bin/true -append "$agents/$1.plist"
-    plutil -insert ProgramArguments -string "$2" -append "$agents/$1.plist"
-    plutil -insert StartCalendarInterval -json "$3" "$agents/$1.plist"
+    local file=$1/$2.plist
+    mkdir -p "$1"
+    plutil -create xml1 "$file"
+    plutil -insert Label -string "$2" "$file"
+    plutil -insert ProgramArguments -array "$file"
+    plutil -insert ProgramArguments -string /usr/bin/true -append "$file"
+    plutil -insert ProgramArguments -string "$3" -append "$file"
+    plutil -insert StartCalendarInterval -json "$4" "$file"
 }
-plist test.nightly "$work/job.ts" '{"Hour":3,"Minute":15}'
-plist test.monday "$src/personal/x.sh" '{"Weekday":1,"Hour":9,"Minute":0}'
-plist test.other /usr/bin/true '{"Hour":3,"Minute":15}'
+plist "$agents" test.nightly "$work/job.ts" '{"Hour":3,"Minute":15}'
+plist "$agents" test.monday "$src/personal/x.sh" '{"Weekday":1,"Hour":9,"Minute":0}'
+plist "$agents" test.other /usr/bin/true '{"Hour":3,"Minute":15}'
 # Saturday 2026-11-14 16:25 local; 36 hours reach Monday 04:25.
 window=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-14 16:25:00' +%s)
 due=$(bun "$here/launchd-due.ts" "$src" 36 "$agents" "$window")
@@ -140,6 +131,73 @@ nightly=$(awk -F '\t' '$1 == "test.nightly" { print $3 }' <<< "$due")
 [[ $nightly == "$(date -u -r "$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-15 03:15:00' +%s)" +%Y-%m-%dT%H:%M:00.000Z)" ]] || fail "nightly agent not due Sunday 03:15: $due"
 grep -q $'^test.monday\tunloaded\tlater\t' <<< "$due" || fail "monday agent should be later: $due"
 grep -q '^test.other' <<< "$due" && fail "an agent that never refers to the tree was listed: $due"
+
+# preflight refuses for each kind of holder it knows, one at a time, and prints what to
+# quit; with none it passes. Every input is scratch: the OpenCode config, the Syncthing
+# config, the launch agents directory and the loaded labels.
+none=$work/none
+pf() {
+    DEVELOPER_MIGRATE_OPENCODE_CONFIG=${pf_opencode:-$none} DEVELOPER_MIGRATE_SYNCTHING_CONFIG=${pf_syncthing:-$none} \
+        DEVELOPER_MIGRATE_LAUNCH_AGENTS=${pf_agents:-$none} DEVELOPER_LAUNCHD_LOADED=${pf_loaded:-} \
+        "$here/migrate.sh" preflight "$src" 2>&1
+}
+# refuses KIND PATTERN: preflight exits 1 and its output matches PATTERN.
+refused=0
+refuses() {
+    local out
+    if out=$(pf); then fail "preflight passed with a $1 holder: $out"; fi
+    grep -Eq "$2" <<< "$out" || fail "preflight's $1 refusal did not say what to quit: $out"
+    refused=$((refused + 1))
+}
+mkdir -p "$work/bin"
+# A link, not a copy: macOS kills a copied system binary; through the link the process
+# is named syncthing, which is what `pgrep -x syncthing` matches.
+ln -s /bin/sleep "$work/bin/syncthing"
+
+# process: a shell inside the tree and a process with a file of it open.
+(cd "$src/work" && exec sleep 60) &
+cwd_pid=$!
+tail -f "$app/src/index.ts" > /dev/null &
+file_pid=$!
+started=("$cwd_pid" "$file_pid")
+sleep 0.5
+refuses process "pid $cwd_pid .*"
+out=$(pf) || true
+grep -q "pid $file_pid " <<< "$out" || fail "preflight missed the open file: $out"
+stop_started
+
+# service: an OpenCode service whose config loads plugins from the tree.
+echo "{\"plugin\": [\"$src/personal/dotfiles/opencode/cmd/wake\"]}" > "$work/opencode.json"
+(exec -a 'opencode serve --service' sleep 60) &
+started=("$!")
+sleep 0.3
+pgrep -f -- ' serve --service' | grep -qx "${started[0]}" || fail 'the fake OpenCode service is not running'
+pf_opencode=$work/opencode.json refuses service 'quit: opencode service stop'
+stop_started
+
+# syncthing: a running Syncthing with a folder inside the tree.
+echo "<configuration><folder id=\"dotfiles\" path=\"$src/personal/dotfiles\"></folder></configuration>" > "$work/syncthing.xml"
+"$work/bin/syncthing" 60 &
+started=("$!")
+sleep 0.3
+pgrep -x syncthing | grep -qx "${started[0]}" || fail 'the fake syncthing is not running as syncthing'
+pf_syncthing=$work/syncthing.xml refuses syncthing "Syncthing syncs $src/personal/dotfiles"
+stop_started
+
+# agent: a loaded agent whose script imports from the tree, due within the run (hourly).
+plist "$work/agents-due" test.hourly "$work/job.ts" '{"Minute":0}'
+pf_agents=$work/agents-due pf_loaded=test.hourly refuses agent 'launch agent test.hourly .* is due'
+# A loaded agent due after the run is a note, not a refusal; unloaded, it is not named.
+far=$((($(date +%-m) + 5) % 12 + 1))
+plist "$work/agents-later" test.later "$work/job.ts" "{\"Month\":$far,\"Day\":1,\"Hour\":0,\"Minute\":0}"
+out=$(pf_agents=$work/agents-later pf_loaded=test.later pf) || fail "a loaded agent due after the run blocked: $out"
+grep -q 'note: launch agent test.later' <<< "$out" || fail "no note for a loaded agent due later: $out"
+out=$(pf_agents=$work/agents-due pf) || fail "an unloaded agent blocked: $out"
+
+# One row above for each kind preflight refuses for (each `busy=1` in migrate.sh).
+kinds=$(grep -c 'busy=1' "$here/migrate.sh")
+((refused == kinds)) || fail "preflight refuses for $kinds kinds of holder, the test covers $refused"
+pf > /dev/null || fail 'preflight still blocked once its holders quit'
 
 hdiutil create -quiet -size 1g -fs APFS -type SPARSE -volname devtest "$work/img"
 mkdir -p "$mnt"
@@ -157,11 +215,12 @@ grep -q 1.2.4 "$mnt/personal/.rifts/app/feature/node_modules/pkg/package.json" |
 [[ $(xattr -p com.example.tag "$mnt/personal/app/src/index.ts") == kept ]] || fail 'extended attribute lost'
 [[ $(stat -f %i "$mnt/personal/app/link-a") == $(stat -f %i "$mnt/personal/app/link-b") ]] || fail 'hard link split'
 [[ ! -e $mnt/personal/app/.worktrees/inner/.worktrees ]] || fail 'worktree cloned into itself'
-[[ $(cat "$mnt/personal/.rifts/lib/r2/lib.ts") == 'lib 2' ]] || fail 'rift of a rift kept its parent bytes'
-git -C "$mnt/personal/.rifts/lib/r2" rev-parse HEAD > /dev/null 2>&1 || fail 'rift .git directory is not a repository'
+[[ $(cat "$mnt/personal/.rifts/lib/a-child/lib.ts") == 'lib 2' ]] || fail 'rift of a rift kept its parent bytes'
+git -C "$mnt/personal/.rifts/lib/a-child" rev-parse HEAD > /dev/null 2>&1 || fail 'rift .git directory is not a repository'
 # Unshared: 64 MiB x3, 32 MiB x2 (notes), 32 MiB x3 (lib .git), 16 MiB x2 (work) = 384 MiB.
 # Shared: 64 + 32 + 32 + 16 = 144 MiB.
-((used < 190 * 1024)) || fail "clones were not shared: $((used / 1024)) MiB used"
+# One unshared 32 MiB rift (a rift of a rift copied before its parent) would cross 160.
+((used < 160 * 1024)) || fail "clones were not shared: $((used / 1024)) MiB used"
 
 run > /dev/null || fail 'rerun failed'
 

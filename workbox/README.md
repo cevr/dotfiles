@@ -16,22 +16,50 @@ Run this command to verify the installed state:
 ~/Developer/personal/dotfiles/workbox/bootstrap.sh --check
 ```
 
-The base VM must already have Bun, Claude, Herdr, MongoDB, Redis, Syncthing,
+The base VM must already have Bun, Claude, MongoDB, Redis, Syncthing,
 Tailscale, and the Bite repository. The bootstrap installs the workbox shell,
-pinned Bun tools, the Hunk Herdr plugin, Sideshow, agent settings, S3 backups,
-health checks, update checks, security updates, the Tailscale SSH service, and
-swap protection. It configures `systemd-resolved` with public fallback servers.
-It protects Tailscale, the DNS resolver, and the Tailscale SSH service from
-workload memory pressure. It caps user sessions, which hold Herdr and every
-agent, at 52 GB of memory and 1 GB of swap. It caps `/dev/shm` at 8 GB because
-no process owns its files and the kernel cannot reclaim them. It also keeps the Bite Herdr server active after a VM
-restart. It mounts a fixed 60 GB Btrfs workspace file system at `/workspaces`.
-It uses `/workspaces/.cache/turbo` as a local Turbo cache.
+pinned Bun tools, herdr-core (`hc`) when it is missing, Sideshow, agent settings,
+S3 backups, health checks, update checks, security updates, the Tailscale SSH
+service, and swap protection. It configures `systemd-resolved` with public
+fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
+service from workload memory pressure. It caps user sessions, which hold the
+terminals and every agent, at 52 GB of memory and 1 GB of swap. It caps
+`/dev/shm` at 8 GB because no process owns its files and the kernel cannot
+reclaim them. It starts the herdr-core core and the OpenCode service at boot. It
+mounts a fixed 60 GB Btrfs workspace file system at `/workspaces`. It uses
+`/workspaces/.cache/turbo` as a local Turbo cache.
 
-Press `Ctrl+B`, then `H`, to open the current worktree in a Hunk tab.
-Press `Ctrl+B`, then `S`, to send saved notes to the source agent.
-These bindings replace the default focus-left and focus-down bindings.
-Herdr and Hunk both use the Rose Pine theme.
+## Terminals: herdr-core
+
+herdr-core (`hc`, herdr.dev/core) holds the workbox's terminals. Its core
+(`herdr-core serve`) runs in a transient user unit that hc makes itself,
+`hc-serve-<hash>.service` in `app.slice`, with `OOMPolicy=continue` and
+`KillMode=process`: the core keeps running when the kernel kills a terminal's
+program for memory, and each terminal's holder (`herdr-core hold`, in its own
+`hc-hold-<hash>.service`) keeps its program running through a core restart.
+Linger is on, so the core outlives every login.
+
+A transient unit is gone after a reboot. `hc-core.service`, a oneshot enabled at
+`default.target`, runs `hc server start` at boot; hc moves the core into its own
+unit and the oneshot exits, so the core never lives in `hc-core.service`'s
+cgroup. Kept terminals (`hc keep`) come back as shells. `hc server start` leaves
+a running core alone, so starting the unit again is safe. Update hc with
+`hc update`; terminals keep running.
+
+Reach it with `ssh -t bite-workbox hc` (hc's picker, any client), or from the
+Mac with `--on workbox` and addresses such as `workbox/t7` once
+`hc machine add bite-workbox --name workbox` has run there.
+
+Herdr ran the terminals before. Its unit (`herdr-bite.service`), its config and
+`migrate-herdr-to-systemd` stay in this directory, no longer enabled or used by
+bootstrap, as the rollback path until `herdr-retire`. Roll back with
+`systemctl --user enable --now herdr-bite.service` after `hc kill` on the hc
+shells, so no session is open twice.
+
+`opencode.service`, also a oneshot at `default.target`, runs
+`opencode service start` at boot; the server moves itself into its own scope.
+
+Hunk uses the Rose Pine theme.
 
 ## S3 backups
 
@@ -75,12 +103,14 @@ noncurrent snapshot objects after 14 days.
   Your own skills go in `skills/.own-skills`.
 - `install-bun-tools` restores the pinned Bun CLI versions.
 - `install-node` installs the exact Node version from `package.json`.
-- `migrate-herdr-to-systemd` moves a live Herdr session under its user service.
+- `migrate-herdr-to-systemd` moves a live Herdr session under its user service
+  (rollback only, until `herdr-retire`).
 - `cleanup-mosh-servers` removes disconnected Mosh servers.
 
 The release valve targets Bite test daemons, Bun, TypeScript compiler and Go
 toolchain groups, Go test binaries, and detached Bite test workers. Apply mode
-uses four bounded stop passes. It does not stop Codex, Herdr, Sideshow, SSH,
+uses four bounded stop passes. It does not stop Codex, the herdr-core core and
+its terminal holders, Herdr, Sideshow, SSH,
 Tailscale, MongoDB, Redis, Syncthing, or system services. It returns a failure
 if a protected agent continues to start new workload groups.
 
@@ -136,17 +166,17 @@ evicts the oldest entries at the start of a run once the cache passes
 `TURBO_CACHE_MAX_SIZE` (2 GB). Turbo uses two
 concurrent tasks by default on this workbox.
 
-The Herdr service keeps running when the kernel kills a pane process for excess
-memory use. It does not restart when another Herdr server already owns the
-session. Systemd stops repeated unknown start failures after three attempts in
-60 seconds.
+The Herdr service (rollback only) keeps running when the kernel kills a pane
+process for excess memory use. It does not restart when another Herdr server
+already owns the session. Systemd stops repeated unknown start failures after
+three attempts in 60 seconds.
 
 The Mosh server wrapper gives each new server a 15-minute signal timeout. The
 cleanup timer sends the Mosh stale-session signal every 15 minutes. Connected
 servers ignore the signal. Disconnected servers exit. The cleanup skips legacy
 servers that do not have the signal timeout.
 
-Preview the Herdr migration:
+Preview the Herdr migration (rollback only):
 
 ```sh
 migrate-herdr-to-systemd --dry-run

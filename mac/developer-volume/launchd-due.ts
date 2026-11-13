@@ -57,7 +57,11 @@ const nextFire = (calendars: Array<Calendar>): Date | undefined => {
   return undefined
 }
 
+// DEVELOPER_LAUNCHD_LOADED (labels, space-separated) counts those as loaded without
+// asking launchd: test.sh's scratch agents are never really loaded.
+const assumedLoaded = new Set((process.env.DEVELOPER_LAUNCHD_LOADED ?? "").split(" ").filter((label) => label !== ""))
 const loaded = (label: string): boolean => {
+  if (assumedLoaded.has(label)) return true
   const uid = process.getuid?.() ?? 0
   return Bun.spawnSync(["launchctl", "print", `gui/${uid}/${label}`], { stdout: "ignore", stderr: "ignore" }).exitCode === 0
 }

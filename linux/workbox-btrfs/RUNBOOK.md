@@ -33,8 +33,19 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
 
 ## The window
 
-4. **Before hook: save the panes.** Run the pane-restore unit's save command
-   here, so herdr panes and their OpenCode sessions come back in step 7.
+4. **Before hook: save the panes**, while herdr-bite and the OpenCode service
+   still run, so the panes and their OpenCode sessions come back in step 7
+   ([pane-restore](../../pane-restore/README.md)):
+
+   ```sh
+   bun ~/Developer/personal/dotfiles/pane-restore/main.ts save --session bite
+   bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
+   ```
+
+   `save` writes each pane's workspace, tab, folder and OpenCode session to
+   `~/.local/state/pane-restore/<host>-<time>.json` (`--session bite`: herdr's
+   `bite` session, not its stopped default). `check` exits 1 and names any
+   saved session the service cannot open.
 5. `$d/migrate.sh convert` (as `exedev`, ~1 to 3 min a lane: a snapshot, then
    the warm step) makes a Rift of each released or clean worktree. A worktree
    still in use is skipped with its process named; stop it and rerun.
@@ -58,8 +69,35 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
    5. starts the units it stopped and runs `check.sh`.
    Follow it from a new ssh session once it ends, or with
    `sudo tail -f /var/lib/workbox-btrfs/migrate.log`.
-7. **After hook: restore the panes.** Reconnect, run the pane-restore unit's
-   restore command. Paths are unchanged, so OpenCode finds its sessions.
+7. **After hook: restore the panes.** Reconnect with a plain ssh shell. Paths
+   are unchanged, so OpenCode finds its sessions; herdr-bite came back with the
+   panes as plain shells. While the panes live in herdr (today):
+
+   ```sh
+   bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
+   bun ~/Developer/personal/dotfiles/pane-restore/main.ts restore --herdr
+   ```
+
+   `restore --herdr` takes the newest save and runs `opencode --session <id>`
+   (`herdr --session bite pane run`) in each saved pane that is an idle shell
+   (`herdr pane process-info`). It skips a pane that runs anything, or whose
+   session is already open in another pane, prints `restored`, `skipped` or
+   `failed` for each pane, and exits 1 if any failed. A second run types
+   nothing.
+
+   After the cutover to herdr-core (hc), the panes go to hc instead:
+
+   ```sh
+   bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
+   hcm apply                                  # if the tabs are not in hc yet
+   bun ~/Developer/personal/dotfiles/pane-restore/main.ts restore
+   herdr --session bite server stop           # from a shell outside herdr
+   hcm resume
+   ```
+
+   `restore` labels each moved tab's hc terminal `migrate.resume=opencode
+   --session <id>`, and `hcm resume` types it once. hcm reads herdr 0.9.5
+   snapshots; the workbox runs herdr 0.9.1, so update herdr before this path.
 8. `sudo $d/check.sh`: every line `ok`. Then use the box for a while.
 
 ## After the window

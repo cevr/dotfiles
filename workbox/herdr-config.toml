@@ -4,17 +4,6 @@ onboarding = false
 name = "rose-pine"
 
 auto_switch = false
-[[keys.command]]
-key = "prefix+h"
-type = "plugin_action"
-command = "cvr.herdr-hunk.open"
-description = "open Hunk review"
-
-[[keys.command]]
-key = "prefix+s"
-type = "plugin_action"
-command = "cvr.herdr-hunk.send"
-description = "send Hunk notes"
 
 [ui.sound]
 enabled = false

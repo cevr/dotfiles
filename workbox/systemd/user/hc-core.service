@@ -1,0 +1,18 @@
+# Starts the herdr-core (hc) core at boot, so its kept terminals come back
+# without a login (linger is on). hc moves the core into a transient unit of
+# its own (hc-serve-<hash>.service in app.slice, OOMPolicy=continue,
+# KillMode=process), so this oneshot only triggers the start and exits; the
+# core never lives in this unit's cgroup. A user unit, so it starts after
+# /home/exedev is mounted. `hc server start` leaves a running core alone.
+[Unit]
+Description=Start the herdr-core (hc) core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/hc server start
+
+[Install]
+WantedBy=default.target
