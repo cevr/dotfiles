@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "workspaces": [
+    {"id": "w1R", "custom_name": "prs", "identity_cwd": "/home/exedev", "tabs": [
+      {"custom_name": null, "layout": {"Pane": 1}, "panes": {"1": {"cwd": "/home/exedev",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixturePrs01"]}}}}
+    ]},
+    {"id": "w1S", "custom_name": "ergo", "identity_cwd": "/home/exedev", "tabs": [
+      {"custom_name": null, "layout": {"Pane": 1}, "panes": {"1": {"cwd": "/home/exedev",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixtureErgo02"]}}}}
+    ]},
+    {"id": "w1T", "custom_name": "perf", "identity_cwd": "/home/exedev", "tabs": [
+      {"custom_name": null, "layout": {"Pane": 1}, "panes": {"1": {"cwd": "/home/exedev",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixturePerf03"]}}}}
+    ]},
+    {"id": "w1V", "custom_name": "sync-engine", "identity_cwd": "/home/exedev", "tabs": [
+      {"custom_name": null, "layout": {"Pane": 1}, "panes": {"1": {"cwd": "/home/exedev",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixtureSync04"]}}}}
+    ]},
+    {"id": "w1W", "custom_name": "sentry-factory", "identity_cwd": "/home/exedev", "tabs": [
+      {"custom_name": null, "layout": {"Pane": 1}, "panes": {"1": {"cwd": "/home/exedev",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixtureSentry05"]}}}}
+    ]}
+  ]
+}

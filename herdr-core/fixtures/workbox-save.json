@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "host": "Workbox",
+  "machine": null,
+  "time": "2026-11-14T21:20:00.000Z",
+  "panes": [
+    {"workspace": {"id": "w1R", "label": "prs"}, "tab": {"id": "w1R:t1", "label": "1", "index": 0}, "from": "w1R/0", "pane": "w1R:p1", "cwd": "/home/exedev", "session": "ses_fixturePrsNewer01", "source": "argv"},
+    {"workspace": {"id": "w1S", "label": "ergo"}, "tab": {"id": "w1S:t1", "label": "1", "index": 0}, "from": "w1S/0", "pane": "w1S:p1", "cwd": "/home/exedev", "session": "ses_fixtureErgo02", "source": "herdr-state"},
+    {"workspace": {"id": "w1T", "label": "perf"}, "tab": {"id": "w1T:t1", "label": "1", "index": 0}, "from": "w1T/0", "pane": "w1T:p1", "cwd": "/home/exedev", "session": "ses_fixturePerf03", "source": "herdr-state"},
+    {"workspace": {"id": "w1V", "label": "sync-engine"}, "tab": {"id": "w1V:t1", "label": "1", "index": 0}, "from": "w1V/0", "pane": "w1V:p1", "cwd": "/home/exedev", "session": "ses_fixtureSync04", "source": "herdr-state"},
+    {"workspace": {"id": "w1W", "label": "sentry-factory"}, "tab": {"id": "w1W:t1", "label": "1", "index": 0}, "from": "w1W/0", "pane": "w1W:p1", "cwd": "/home/exedev", "session": "ses_fixtureSentry05", "source": "herdr-state"}
+  ]
+}
