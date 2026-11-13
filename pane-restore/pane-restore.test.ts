@@ -1,7 +1,7 @@
 // pane-restore against a fake herdr, a fake hc and a fake OpenCode server
 // (fake.ts): the shims on PATH run it, so the CLI runs exactly as on a host.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { hostname, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { World } from "./fake.ts"
@@ -115,6 +115,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  rmSync(root, { recursive: true, force: true })
   root = ""
 })
 
@@ -284,5 +285,97 @@ describe("restore", () => {
       "opencode --session ses_A2",
       "opencode --session ses_B6",
     ])
+  })
+})
+
+describe("restore --herdr", () => {
+  /** herdr after a restart: the saved panes are back as idle shells unless a test says otherwise. */
+  const restarted = (w: World, processes: Record<string, string[][]> = {}) => {
+    w.herdr.processes = { "wA:p1P": [["-zsh"]], "wA:p2": [["-zsh"]], "wB:p6": [["-zsh"]], "wB:p7": [["-zsh"]], ...processes }
+    w.calls = []
+    return w
+  }
+  const runs = () => readWorld().calls.filter((c) => c[0] === "herdr" && c.includes("run"))
+
+  test("starts `opencode --session <id>` in each saved pane that is an idle shell, and skips one that runs something", () => {
+    const { path } = saved(run("save").stdout)
+    const w = restarted(readWorld(), { "wA:p2": [["vim", "notes.md"]] })
+    w.herdr.snapshot = { ...snapshot, panes: snapshot.panes.filter((p) => p.pane_id !== "wB:p6") }
+    writeWorld(w)
+
+    const first = run("restore", "--herdr", path)
+    expect(first.code).toBe(1)
+    expect(first.stdout).toContain("restored wA:p1P: opencode --session ses_A1")
+    expect(first.stdout).toContain("skipped wA:p2: runs vim")
+    expect(first.stdout).toContain("failed wB:p6: pane not found")
+    expect(first.stdout).not.toContain("wB:p7")
+    expect(first.stdout).toContain("1 restored, 1 skipped, 1 failed")
+    expect(runs()).toEqual([["herdr", "pane", "run", "wA:p1P", "opencode --session ses_A1"]])
+    expect(readWorld().calls.some((c) => c[0] === "hc")).toBe(false)
+
+    // Run again: the pane now runs that session, so nothing is typed twice.
+    const again = readWorld()
+    again.calls = []
+    writeWorld(again)
+    const second = run("restore", "--herdr", path)
+    expect(second.stdout).toContain("skipped wA:p1P: already open")
+    expect(runs()).toEqual([])
+  })
+
+  test("skips a session already open in another pane, and fails one the server lost", () => {
+    const { path } = saved(run("save").stdout)
+    const w = restarted(readWorld(), { "wB:p7": [[OPENCODE, "-s", "ses_A1"]] })
+    w.opencode.sessions = ["ses_A1", "ses_A2"]
+    writeWorld(w)
+    const result = run("restore", "--herdr", path)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toContain("skipped wA:p1P: already open in wB:p7")
+    expect(result.stdout).toContain("restored wA:p2: opencode --session ses_A2")
+    expect(result.stdout).toContain("failed wB:p6: session ses_B6 does not open through the server")
+    expect(runs()).toEqual([["herdr", "pane", "run", "wA:p2", "opencode --session ses_A2"]])
+  })
+
+  test("exits 0 when every saved session is back", () => {
+    const { path } = saved(run("save").stdout)
+    writeWorld(restarted(readWorld()))
+    const result = run("restore", "--herdr", path)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("3 restored, 0 skipped, 0 failed")
+  })
+
+  test("targets the herdr the save read: a machine's newest save, or the named session", () => {
+    run("save", "--machine", "Workbox")
+    const w = readWorld()
+    w.herdr.machines!.Workbox!.processes = { "w1:pF": [["-zsh"]] }
+    w.calls = []
+    writeWorld(w)
+    const machine = run("restore", "--herdr", "--machine", "Workbox")
+    expect(machine.code).toBe(0)
+    expect(runs()).toEqual([["herdr", "--machine", "Workbox", "pane", "run", "w1:pF", "opencode --session ses_W1"]])
+
+    mkdirSync(join(root, "home/.config/herdr/sessions/bite"), { recursive: true })
+    writeFileSync(join(root, "home/.config/herdr/sessions/bite/session.json"), JSON.stringify(herdrState))
+    const { path } = saved(run("save", "--session", "bite").stdout)
+    writeWorld(restarted(readWorld()))
+    const named = run("restore", "--herdr", path)
+    expect(named.stdout).toContain("3 restored, 0 skipped, 0 failed")
+    expect(readWorld().calls.filter((c) => c[0] === "herdr").every((c) => c[1] === "--session" && c[2] === "bite")).toBe(true)
+  })
+})
+
+describe("runbooks", () => {
+  const book = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8")
+  const CLI = "bun ~/Developer/personal/dotfiles/pane-restore/main.ts"
+
+  test("the Mac runbook saves and checks before the move, and checks and restores after", () => {
+    const mac = book("mac/developer-volume/RUNBOOK.md")
+    const needed = [`${CLI} save`, `${CLI} check`, `${CLI} restore`, "hcm apply", "hcm resume"]
+    expect(needed.filter((text) => !mac.includes(text))).toEqual([])
+  })
+
+  test("the workbox runbook saves herdr's bite session, and restores into herdr now or hc after the cutover", () => {
+    const workbox = book("linux/workbox-btrfs/RUNBOOK.md")
+    const needed = [`${CLI} save --session bite`, `${CLI} check`, `${CLI} restore --herdr`, `${CLI} restore\n`, "hcm apply", "hcm resume"]
+    expect(needed.filter((text) => !workbox.includes(text))).toEqual([])
   })
 })
