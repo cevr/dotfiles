@@ -13,7 +13,7 @@
 // it publishes and the hooks it runs. The probe (`probeOf`) is made of the
 // same: it counts each session's executions from the host's events and the
 // model's requests from the `model.request` hook.
-import { Integration, type Plugin } from "@opencode/plugin/effect"
+import { Integration, type Plugin, Tool } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
@@ -22,7 +22,22 @@ import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { CLIENT, ELSEWHERE_FOLDER, LAW, LAW_FOLDER, LAW_LOGIN, LAW_SOCKET, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+import {
+  CLIENT,
+  ELSEWHERE_FOLDER,
+  LAW,
+  LAW_FOLDER,
+  LAW_LOGIN,
+  LAW_SHELL,
+  LAW_SOCKET,
+  RATE_LIMITED,
+  REFUSAL,
+  REFUSED,
+  REPAIRED,
+  SPAWNED,
+  UNAUTHORIZED,
+  USAGE_LIMITED,
+} from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -128,6 +143,9 @@ const frameType = (frame: string) =>
     onNone: () => "?",
     onSome: (event) => event.type,
   })
+
+/** A shell call's command, from a tool call's input as a hook sees it: none when the input is not an object holding one. */
+const decodeCommand = Schema.decodeUnknownOption(Schema.Struct({ command: Schema.String }))
 
 /** A provider's 429 with `body`, as the law puts it in place of an answer. */
 const limited = (body: string) => new Response(body, { status: 429, headers: { "content-type": "application/json" } })
@@ -754,6 +772,64 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* settle
         const events = new Set(yield* Ref.get(seen))
         yield* ensure(events.has("provider.updated") && events.has("model.updated"), `the transform published ${[...events].join(",")} for this location`)
+      }),
+  },
+  {
+    name: LAW.toolHook,
+    operations: ["tool.hook", "shell.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const repaired = yield* fresh(ctx)
+        const refused = yield* fresh(ctx)
+        const ours = new Set<string>([repaired.id, refused.id])
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        const spawned = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.tool.hook("execute.before", (event) =>
+          Effect.gen(function* () {
+            if (!ours.has(event.sessionID)) return
+            const command = Option.match(decodeCommand(event.input), { onNone: () => "an input not an object", onSome: (input) => input.command })
+            yield* Ref.update(seen, (all) => [...all, `${event.tool} ${command}`])
+            if (event.sessionID === refused.id) return yield* Effect.fail(new Tool.Error({ message: REFUSAL }))
+          }),
+        )
+        yield* ctx.shell.hook("create.before", (invocation) => Effect.when(Ref.update(spawned, (all) => [...all, invocation.command]), Effect.succeed(invocation.command.includes("law-"))))
+        yield* probe.turn(repaired.id, ctx.session.prompt({ sessionID: repaired.id, text: "law: call bash" }))
+        yield* probe.turn(refused.id, ctx.session.prompt({ sessionID: refused.id, text: "law: call refused" }))
+        const hooked = (yield* Ref.get(seen)).join(", ")
+        yield* ensure(hooked === `shell echo ${REPAIRED}, shell echo ${REFUSED}`, `execute.before saw ${hooked}`)
+        const ran = (yield* Ref.get(spawned)).join(", ")
+        yield* ensure(ran === `echo ${REPAIRED}`, `the shell spawned ${ran}`)
+        const first = yield* contextText(ctx, repaired.id)
+        yield* ensure(count(first, "so this ran as") >= 1, "the repaired call's answer does not name the tool that ran")
+        yield* ensure(count(first, "heard call bash") === 1, "the model did not answer once after the repaired call")
+        const second = yield* contextText(ctx, refused.id)
+        yield* ensure(count(second, REFUSAL) >= 1, "the model does not read the hook's refusal")
+        yield* ensure(count(second, "heard call refused") === 1, "the model did not answer once after the refused call")
+      }),
+  },
+  {
+    name: LAW.shellHook,
+    operations: ["shell.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const command = `echo ${SPAWNED}`
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.shell.hook("create.before", (invocation) =>
+          Effect.sync(() => {
+            if (invocation.command === command) invocation.shell = LAW_SHELL
+          }),
+        )
+        yield* ctx.shell.hook("create.before", (invocation) =>
+          Effect.when(
+            Ref.update(seen, (all) => [...all, `${invocation.command} ${invocation.shell} ${invocation.cwd.endsWith(`/${LAW_FOLDER}`)}`]),
+            Effect.succeed(invocation.command === command),
+          ),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: call shell" }))
+        const spawned = (yield* Ref.get(seen)).join(", ")
+        yield* ensure(spawned === `${command} ${LAW_SHELL} true`, `the second create.before hook saw ${spawned}`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard call shell") === 1, "the model did not answer once after the shell call")
       }),
   },
   {

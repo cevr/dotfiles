@@ -10,10 +10,12 @@
   "dependencies": {
     "@dotfiles/opencode-anthropic-auth": "workspace:*",
     "@dotfiles/opencode-cmd-anthropic-auth": "workspace:*",
+    "@dotfiles/opencode-cmd-guard": "workspace:*",
     "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
     "@dotfiles/opencode-cmd-pool": "workspace:*",
     "@dotfiles/opencode-cmd-questions": "workspace:*",
     "@dotfiles/opencode-cmd-wake": "workspace:*",
+    "@dotfiles/opencode-guard": "workspace:*",
     "@dotfiles/opencode-idle-compact": "workspace:*",
     "@dotfiles/opencode-pool": "workspace:*",
     "@dotfiles/opencode-questions": "workspace:*",

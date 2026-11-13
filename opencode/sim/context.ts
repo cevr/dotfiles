@@ -42,6 +42,8 @@ export const OPERATIONS = [
   "event.subscribe",
   "tool.transform",
   "tool.list",
+  "tool.hook",
+  "shell.hook",
   "rpc",
   "rpc.register",
   "session.hook",
@@ -401,6 +403,24 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     return { data: ordered.slice(0, input.limit ?? ordered.length).map(host.infoOf) }
   }
 
+  /**
+   * A hook of another domain than the session's, kept in the host's hooks under `prefix:name`: only the names the
+   * world runs (`modelled`); registering any other is an unmodelled reach.
+   */
+  const domainHook =
+    (prefix: string, modelled: ReadonlySet<string>) =>
+    (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>): Effect.Effect<{ readonly dispose: Effect.Effect<void> }, never, Scope.Scope> => {
+      if (!modelled.has(name)) return unmodelled(`ctx.${prefix}.hook(${name})`)()
+      return registration(
+        (): Hook => {
+          const hook = { instance, directory: loaded.directory, name: `${prefix}:${name}`, callback }
+          host.hooks.push(hook)
+          return hook
+        },
+        (hook) => void host.hooks.splice(host.hooks.indexOf(hook), 1),
+      )
+    }
+
   const session = {
     hook: (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) =>
       registration(
@@ -552,7 +572,10 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           },
         ),
       list: () => Effect.sync(() => [...host.toolsOf(loaded.directory).keys()].map((name) => ({ id: name, name }))),
+      // `execute.after` is the repair's alone in the world (host.ts `runTool`); a plugin's is not modelled.
+      hook: domainHook("tool", new Set(["execute.before"])),
     },
+    shell: { hook: domainHook("shell", new Set(["create.before"])) },
     rpc: Object.assign(client, { register }),
     session,
     model: { list: () => Effect.sync(() => ({ data: host.models })) },

@@ -7,7 +7,12 @@
 // `opencode/` adapters on the world's plugin context.
 import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credential-sources"
 import { make as makeAuth, makeShared } from "@dotfiles/opencode-cmd-anthropic-auth/server"
+import { make as makeGuard, sessionsOf } from "@dotfiles/opencode-cmd-guard/server"
 import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
+import type { ProcessInfo } from "@dotfiles/opencode-guard/kill"
+import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
+import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
+import { Processes, ProcessesUnreadable } from "@dotfiles/opencode-guard/service"
 import Questions from "@dotfiles/opencode-cmd-questions/server"
 import { LIVE_STORE_HOST, type StoreHost, liveWith, make as makePool } from "@dotfiles/opencode-cmd-pool/server"
 import * as Lease from "@dotfiles/opencode-pool/lease"
@@ -58,6 +63,61 @@ export const wake = (world: World, runner: MemoryRunner.MemoryRunner = MemoryRun
     ),
   )
 }
+
+/**
+ * The machine the guard reads beside OpenCode: its process table, the repositories on disk, and the launchers it
+ * writes, each with the fault a test may turn on at any instant: `ps` that fails, a launcher that cannot be written.
+ */
+export interface GuardMachine {
+  processes: ReadonlyArray<ProcessInfo>
+  psFails: boolean
+  readonly repos: ReadonlyArray<string>
+  /** Each launcher written, by its path (`/launchers/<n>/<name>`). */
+  readonly launchers: Map<string, string>
+  launchersFail: boolean
+  /** Whether a systemd scope runs here: never on the world's machine unless a test says so. */
+  readonly scope: boolean
+}
+
+export const guardMachine = (input: { readonly processes: ReadonlyArray<ProcessInfo>; readonly repos?: ReadonlyArray<string> }): GuardMachine => ({
+  processes: input.processes,
+  psFails: false,
+  repos: input.repos ?? [],
+  launchers: new Map(),
+  launchersFail: false,
+  scope: false,
+})
+
+/**
+ * The guard (`cmd/guard/server.ts`'s `make`) on the world: where a session runs and whether it is a subagent through
+ * its own OpenCode adapters on the world's context (`sessionsOf`); the process table, the repositories and the
+ * launchers are the `machine`'s, under the guard's memory doubles' rules (`mods/guard/memory`, held by `mods/guard/laws.ts`).
+ */
+export const guard = (machine: GuardMachine) =>
+  makeGuard((ctx) =>
+    Layer.mergeAll(
+      sessionsOf(ctx),
+      MemoryRepoRoots.layer({ repos: machine.repos }),
+      // The memory launchers read `unwritable` at each write: the machine's fault, as it is now.
+      MemoryLaunchers.layer({
+        written: machine.launchers,
+        scope: machine.scope,
+        get unwritable() {
+          return machine.launchersFail
+        },
+      }),
+      Layer.succeed(
+        Processes,
+        Processes.of({
+          list: () =>
+            Effect.suspend(() => {
+              if (machine.psFails) return Effect.fail(new ProcessesUnreadable({ message: "ps exited 1" }))
+              return Effect.succeed(machine.processes)
+            }),
+        }),
+      ),
+    ),
+  )
 
 /** The idle compaction plugin as OpenCode loads it: `cmd/idle-compact/server.ts`'s default export, wholly on the plugin context. */
 export const idleCompact = IdleCompact

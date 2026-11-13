@@ -93,18 +93,18 @@ export type Externals = Launchers | Processes | RepoRoots | Scopes | SessionDire
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
-/** The outside systems as the filesystem and OpenCode provide them. */
-export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> => {
+/** Where a session runs and whether it is a subagent, as OpenCode's sessions say: the same on any host. */
+export const sessionsOf = (ctx: Plugin.Context): Layer.Layer<SessionDirectories | Subagents> => {
   const get = (sessionID: string) => ctx.session.get({ sessionID: sessionID as SessionID })
   return Layer.mergeAll(
-    FilesystemRepoRoots.layer,
-    FilesystemLaunchers.layer(options.launchers),
-    PsProcesses.layer(),
-    ProcessScopes.layer(),
     OpenCodeSessionDirectories.layer((sessionID) => get(sessionID).pipe(Effect.map((session) => session.location.directory))),
     OpenCodeSubagents.layer((sessionID) => get(sessionID).pipe(Effect.map((session) => session.parentID))),
   )
 }
+
+/** The outside systems as the filesystem and OpenCode provide them. */
+export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
+  Layer.mergeAll(FilesystemRepoRoots.layer, FilesystemLaunchers.layer(options.launchers), PsProcesses.layer(), ProcessScopes.layer(), sessionsOf(ctx))
 
 /** The plugin on `externals`: the live systems in OpenCode, memory layers in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
