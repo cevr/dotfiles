@@ -51,6 +51,7 @@ import * as Locations from "./locations.ts"
 import * as Subagents from "./subagents.ts"
 import { below, type JsonObject, line, plain, record as recordOf, type Runtime, type SimError } from "./runtime.ts"
 import { framesOf } from "./socket.ts"
+import * as System from "./system.ts"
 
 // ── The model ──
 
@@ -79,6 +80,8 @@ export interface Request {
   readonly agent: string
   /** The conversation the request carries, as text: each message in order. */
   readonly text: string
+  /** The system prompt the request carries: its parts, as the request hooks left them, one per line. */
+  readonly system: string
   /** The tool names the request offers. */
   readonly tools: ReadonlyArray<string>
 }
@@ -94,6 +97,8 @@ export interface Asked {
   readonly sessionID: string
   readonly kind: Kind
   readonly text: string
+  /** Its system prompt's parts, one per line. */
+  readonly system: string
 }
 
 /** The usage a reply reports when it names none: 100 prompt tokens, 400 read from the cache, 500 written. */
@@ -349,6 +354,7 @@ export type HookInput =
   | SocketReceiveInput
   | ToolBeforeInput
   | ShellCreateInput
+  | System.SystemInput
 
 /** The hook names of the tool registry and the shell, as the world keeps them beside the session's. */
 export const TOOL_BEFORE = "tool:execute.before"
@@ -398,7 +404,15 @@ export interface Options {
   readonly provider?: { readonly id: string; readonly baseURL: string; readonly handle: (request: WebRequest) => Effect.Effect<Response, SimError> }
   /** The logins OpenCode holds, by integration: each connection with its credential, the first one active. */
   readonly integrations?: { readonly [integrationID: string]: ReadonlyArray<Login> }
+  /**
+   * The project a directory is in, as the fork's project id names it (one per repository, every clone and worktree of
+   * it alike). Default: every directory is outside a repository, the fork's `global` project.
+   */
+  readonly projects?: (directory: string) => string
 }
+
+/** The fork's project for a directory outside any repository (packages/schema/src/project-id.ts `global`). */
+export const GLOBAL_PROJECT = "global"
 
 /** A login OpenCode holds for an integration: its connection and its OAuth credential. */
 export interface Login {
@@ -503,6 +517,7 @@ interface SessionTime {
 /** A session as `session.get` answers it. */
 interface SessionInfo {
   readonly id: string
+  readonly projectID: string
   agent?: string
   model?: ModelRef
   parentID?: string
@@ -637,9 +652,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    * request, as the host's `hooks.trigger` does in the model request's build and its HTTP call.
    */
   const runRequestHooks = (
-    name: "model.request" | "http.request" | "http.response" | "experimental.ws.receive",
+    name: "model.request" | "http.request" | "http.response" | "experimental.ws.receive" | System.RequestHook,
     session: Session,
-    event: ModelRequestInput | HttpRequestInput | HttpResponseInput | SocketReceiveInput,
+    event: ModelRequestInput | HttpRequestInput | HttpResponseInput | SocketReceiveInput | System.SystemInput,
     detail: JsonObject = {},
   ) =>
     Effect.gen(function* () {
@@ -744,6 +759,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     event: { readonly kind: Kind; readonly baseURL: string; readonly headers: { readonly [key: string]: string } },
     tools: ReadonlyArray<string>,
     extra: string,
+    system: ReadonlyArray<string>,
   ) =>
     Effect.gen(function* () {
       const scope = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session) }
@@ -752,7 +768,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const sent = new Request(`${event.baseURL}/messages`, {
         method: "POST",
         headers: { ...event.headers, "content-type": "application/json", "anthropic-version": "2023-06-01" },
-        body: Http.bodyOf({ model: scope.model.id, system: "You are OpenCode.", messages, tools }),
+        body: Http.bodyOf({ model: scope.model.id, system, messages, tools }),
       })
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
       yield* runRequestHooks("http.request", session, before)
@@ -800,15 +816,27 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       { discard: true },
     )
 
-  /** One model request: the hook, the request in the trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure. */
+  /** A plugin's hook read what the world does not model: recorded for the world to fail on. */
+  const reached = (path: string) => {
+    unmodelled.push(path)
+    record("unmodelled", { path })
+  }
+
+  /**
+   * One model request: its kind's request hook on its system parts (sim/system.ts), `model.request`, the request in the
+   * trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure.
+   */
   const attempt = (session: Session, kind: Kind, extra = "") =>
     Effect.gen(function* () {
+      const prompted = System.eventOf({ sessionID: session.id, agent: requestAgent(session), model: requestModel(session) }, System.HOOK_OF[kind], reached)
+      yield* runRequestHooks(System.HOOK_OF[kind], session, prompted)
+      const system = System.textsOf(prompted)
       const event = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session), kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
       yield* runRequestHooks("model.request", session, event, { requestKind: kind })
       const startedAt = runtime.now()
       const text = [...contextOf(session).map(renderOf), extra].filter((part) => part !== "").join("\n")
       record("request", { sessionID: session.id, requestKind: kind })
-      asked.push({ at: startedAt - start, sessionID: session.id, kind, text })
+      asked.push({ at: startedAt - start, sessionID: session.id, kind, text, system: system.join("\n") })
       const tools = Arr.filter([...toolsOf(session.directory).keys()], () => kind === "primary")
       const outcome = yield* Option.match(
         Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === event.model.providerID),
@@ -816,12 +844,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
           onNone: () =>
             streaming.pipe(
               Effect.andThen(
-                Effect.sync((): Reply => options.script({ sessionID: session.id, kind, agent: event.agent, text, tools: [...toolsOf(session.directory).keys()] })),
+                Effect.sync((): Reply =>
+                  options.script({ sessionID: session.id, kind, agent: event.agent, text, system: system.join("\n"), tools: [...toolsOf(session.directory).keys()] }),
+                ),
               ),
               Effect.tap((reply) => Effect.when(overSocket(session, event, reply), Effect.succeed(kind === "primary" && socketed(event.model)))),
               Effect.map((reply): Result.Result<Reply, Http.Failure> => Result.succeed(reply)),
             ),
-          onSome: (provider) => overHttp(session, provider, event, tools, extra),
+          onSome: (provider) => overHttp(session, provider, event, tools, extra, system),
         },
       )
       Result.match(outcome, {
@@ -973,7 +1003,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    */
   const beforeTool = (session: Session, messageID: string, used: ToolCall) =>
     Effect.gen(function* () {
-      const event: ToolBeforeInput = { tool: used.name, sessionID: session.id, agent: AGENT, messageID, id: used.id, input: used.input }
+      const event: ToolBeforeInput = { tool: used.name, sessionID: session.id, agent: requestAgent(session), messageID, id: used.id, input: used.input }
       repair(session, event)
       for (const hook of hooks.filter((entry) => entry.name === TOOL_BEFORE && entry.directory === session.directory)) {
         const exit = yield* Effect.exit(hook.callback(event))
@@ -1292,6 +1322,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     if (Option.isSome(session.idle)) time.idle = DateTime.makeUnsafe(session.idle.value)
     const info: SessionInfo = {
       id: session.id,
+      projectID: Option.match(Option.fromNullishOr(options.projects), { onNone: () => GLOBAL_PROJECT, onSome: (projects) => projects(session.directory) }),
       location: { directory: session.directory },
       metadata: { ...session.metadata },
       time,

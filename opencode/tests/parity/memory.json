@@ -1,0 +1,23 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/memory.test.ts": {
+      "simulated": "cmd/memory/memory.sim.test.ts",
+      "tests": [
+        {
+          "name": "a note saved and repeated is one note; the next session starts with it, the same on every request; the CLI reads it",
+          "expects": 18,
+          "carried": "simulated",
+          "why": "the plugin's root and the CLI on one memory file on the world; the host's side is the law 'the context hook runs on each primary request's system prompt…' (the hook, its system prompt the same on each request, the part reaching the model, no hook on a title, one project), and two stores on one SQLite file is mods/memory/sqlite/store.test.ts"
+        },
+        {
+          "name": "an id, a limit and tags sent as strings are read as the number and the list; a word for an id is refused",
+          "expects": 9,
+          "carried": "both",
+          "why": "real too: the host's words for a tool input its schema refuses ('Invalid arguments for tool …') are no law yet; the world's law model makes no tool calls"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

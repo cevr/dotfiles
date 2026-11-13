@@ -90,6 +90,8 @@ export const LAW = {
   report:
     "an execution of a session with a parent that ends with an answer tells the parent in one synthetic message, `source: subagent`, carrying the answer under the child's title, and it wakes the parent into an execution that reads it",
   located: "a plugin hears its own location's session events and not those of a session in another location",
+  system:
+    "the context hook runs on each primary request's system prompt, the same on each of a session's, and the compaction hook on a compaction's, neither on a title's, and the model reads a part they add; a location's sessions share one project",
 }
 
 /** The folder beside the law folder the `located` law runs a session in: real OpenCode's run makes it. */

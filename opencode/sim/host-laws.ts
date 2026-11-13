@@ -893,6 +893,55 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(!heard.has(elsewhere.id), "the plugin heard a session in another location")
       }),
   },
+  {
+    // Memory's digest rides on it: the part the hooks add is in every request of the session that sends the conversation.
+    name: LAW.system,
+    operations: ["session.hook", "session.get", "session.compact"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        // No title given, so the host asks the model for one: the title request runs neither hook.
+        const session = yield* ctx.session.create({})
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        /** The system prompt each primary request's context hook was given, before it added its part. */
+        const prompts = yield* Ref.make<ReadonlyArray<string>>([])
+        const hooked = (name: "context" | "compaction") => (event: { readonly sessionID: string; system: Array<{ type: "text"; text: string }> }) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id) return
+            const instructed = event.system.some((part) => part.text.trim() !== "")
+            yield* Ref.update(seen, (all) => [...all, `${name} ${String(instructed)}`])
+            if (name === "context") yield* Ref.update(prompts, (all) => [...all, event.system.map((part) => part.text).join("\n")])
+            event.system.push({ type: "text", text: `law: ${name} part` })
+          })
+        yield* ctx.session.hook("context", hooked("context"))
+        yield* ctx.session.hook("compaction", hooked("compaction"))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: system" }))
+        const text = yield* contextText(ctx, session.id)
+        yield* ensure(count(text, "heard context part|system") === 1, "the model did not read the part the context hook added before the prompt")
+        // A second turn: the host gives the hook the same system prompt, so a part added last keeps the cached prefix.
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: system again" }))
+        const given = yield* Ref.get(prompts)
+        yield* ensure(given.length === 2 && given[0] === given[1], `the context hook was given ${given.length} system prompts, ${new Set(given).size} distinct`)
+        yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id, reason: "auto" }))
+        const kinds = (kind: string) => probe.requests.pipe(Effect.map((all) => all.filter((request) => request.sessionID === session.id && request.kind === kind).length))
+        for (let waited = 0; (yield* kinds("title")) === 0; waited += 100) {
+          if (waited > 60_000) return yield* Effect.fail(new LawBroken({ message: "the host asked for no title within 60 s" }))
+          yield* Effect.sleep("100 millis")
+        }
+        yield* settle
+        const lines = yield* Ref.get(seen)
+        const ran = (name: string) => lines.filter((entry) => entry === `${name} true`).length
+        yield* ensure(lines.every((entry) => entry.endsWith(" true")), `a hook saw a system prompt without the host's instructions: ${lines.join(", ")}`)
+        const primary = yield* kinds("primary")
+        yield* ensure(ran("context") === primary && primary === 2, `the context hook ran ${ran("context")} times for ${primary} primary requests`)
+        const compactions = yield* kinds("compaction")
+        yield* ensure(ran("compaction") === compactions && compactions === 1, `the compaction hook ran ${ran("compaction")} times for ${compactions} compaction requests`)
+        const first = yield* ctx.session.get({ sessionID: session.id })
+        const other = yield* ctx.session.get({ sessionID: (yield* fresh(ctx)).id })
+        // Which project is the host's (a repository's id, or `global` outside one): the real run's law folder sits in a
+        // repository, so only the sharing is a law.
+        yield* ensure(first.projectID !== "" && first.projectID === other.projectID, `two sessions of one location are in projects ${first.projectID} and ${other.projectID}`)
+      }),
+  },
 ]
 
 /** A subagent's report in its parent, as `session.context` lists it, as much as the law reads. */
