@@ -4,12 +4,12 @@
 // without a law: every one of them is named by one.
 import type { Plugin } from "@opencode/plugin/effect"
 import { describe, expect } from "bun:test"
-import { Array as Arr, Effect, Predicate, type Schema } from "effect"
+import { Array as Arr, Effect, Option, Predicate, Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
 import { LAWS } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, callFor, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe from "./server.ts"
 import * as World from "./world.ts"
 
@@ -26,6 +26,16 @@ const textsOf = (value: Schema.Json): ReadonlyArray<string> => {
   return Object.entries(value).flatMap(([key, inner]) => Arr.filter([inner], () => TEXTS.has(key)).flatMap(textsOf))
 }
 
+/** A messages body's messages, as the host sends them: each one's content blocks. */
+const Messages = Schema.Array(Schema.Struct({ content: Schema.Array(Schema.Struct({ type: Schema.String })) }))
+
+/** How many tool results a messages body carries: the `tool_result` blocks of its messages. */
+const toolResults = (messages: Schema.Json): number =>
+  Option.match(Schema.decodeUnknownOption(Messages)(messages), {
+    onNone: () => 0,
+    onSome: (all) => all.flatMap((message) => message.content).filter((block) => block.type === "tool_result").length,
+  })
+
 /**
  * The law model over HTTP, as real OpenCode's scripted model answers (tests/host-laws/real.ts): a turn offers tools,
  * a compaction asks for the summary, a title is the rest; each answered as law-names.ts `answer` says.
@@ -33,7 +43,11 @@ const textsOf = (value: Schema.Json): ReadonlyArray<string> => {
 const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
   const text = textsOf(body["messages"] ?? []).join("\n")
   const tools = body["tools"]
-  if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: answer("primary", text) }
+  if (Array.isArray(tools) && tools.length > 0) {
+    const call = callFor("primary", text, toolResults(body["messages"] ?? []))
+    if (call !== void 0) return { kind: "ok", tool: { name: call.name, input: call.input } }
+    return { kind: "ok", text: answer("primary", text) }
+  }
   if (text.includes("summarize the conversation above")) return { kind: "ok", text: answer("compaction", text) }
   return { kind: "ok", text: answer("title", text) }
 }

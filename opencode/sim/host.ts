@@ -22,6 +22,16 @@
 //   execution of its own: a `compaction` request (or the summary the host
 //   held from a background compaction, with no request), then a completed
 //   compaction message. The context starts at the newest completed one.
+// - A tool call runs the host's input repair first (packages/core/src/plugin/
+//   tool-input-repair.ts: `bash` runs as `shell` when no `bash` tool is
+//   offered, its answer then naming `shell`; an input sent as a JSON string of
+//   an object is parsed), then the registry's `execute.before` hooks of the
+//   session's location's copies in the order they registered, each on the
+//   call as the one before left it (packages/core/src/tool.ts); a failure
+//   refuses the call and is what the model reads.
+// - The shell runs its `create.before` hooks on each command it spawns, each
+//   seeing the program the one before left (packages/core/src/shell.ts
+//   `create`); the command runs as they leave it, with that program.
 // - A background shell's end steers a notice into its session, which wakes it.
 // - Plugin storage is the host's, per plugin id, and outlives a restart.
 // - Events reach every copy, hooks only the session's location's.
@@ -31,7 +41,7 @@ import { Agent } from "@opencode/schema/agent"
 import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Result, Schema } from "effect"
+import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Predicate, Queue, Result, Schema } from "effect"
 import * as Http from "./http.ts"
 import { below, type JsonObject, line, plain, record as recordOf, type Runtime, type SimError } from "./runtime.ts"
 
@@ -279,7 +289,39 @@ export interface RetryInput {
   decision: RetryDecision
 }
 
-export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput
+/** A tool call as the registry's `execute.before` hooks see it (`@opencode/plugin/effect/tool` `ToolHooks`): a hook may rename the tool and replace its input. */
+export interface ToolBeforeInput {
+  tool: string
+  readonly sessionID: string
+  readonly agent: string
+  readonly messageID: string
+  readonly id: string
+  input: unknown
+}
+
+/** A command the shell is about to spawn, as its `create.before` hooks see it (`@opencode/plugin/effect/shell` `ShellCreateBefore`). */
+export interface ShellCreateInput {
+  command: string
+  cwd: string
+  timeout: number
+  shell: string
+  env: Record<string, string>
+}
+
+export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput | ToolBeforeInput | ShellCreateInput
+
+/** The hook names of the tool registry and the shell, as the world keeps them beside the session's. */
+export const TOOL_BEFORE = "tool:execute.before"
+export const SHELL_CREATE = "shell:create.before"
+
+/** A command the world's shell spawned: the session, the command as it ran, the program it ran with, where. */
+export interface Spawned {
+  readonly at: number
+  readonly sessionID: string
+  readonly command: string
+  readonly shell: string
+  readonly cwd: string
+}
 
 export interface Hook {
   readonly instance: number
@@ -301,6 +343,8 @@ export interface Options {
   readonly latency?: readonly [number, number]
   /** What the shell and a monitor's checks run. */
   readonly processes?: (command: string, now: number) => Process
+  /** The program the shell spawns a command with before any `create.before` hook (the config's shell); default `/bin/zsh`. */
+  readonly shell?: string
   /** The fork records a compaction's `reason`; a host without it records every compaction `manual`. */
   readonly compactionReason?: boolean
   /** Background compaction: a session idle with a prompt at or past `trigger` and under `ceiling` gets a summary written ahead. */
@@ -345,7 +389,22 @@ export const SCHEDULES = [
   "opencode_schedule_delete",
 ]
 
-const ShellInput = Schema.Struct({ command: Schema.String, background: Schema.optional(Schema.Boolean) })
+const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optional(Schema.String), background: Schema.optional(Schema.Boolean) })
+
+/** The program the shell runs a command with when the options name none. */
+export const SHELL = "/bin/zsh"
+
+/**
+ * Tool names a model carries over from other harnesses, run as the host's own tool when no tool has that name, as the
+ * fork's input repair does (packages/core/src/plugin/tool-input-repair.ts `aliases`).
+ */
+const ALIASES: ReadonlyMap<string, string> = new Map([["bash", "shell"]])
+
+/** An input a model sent as a JSON string of an object, which the repair parses (its "stringified root object"). */
+const decodeObjectText = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))
+
+/** The note the repair adds to an aliased call's answer, in the fork's words. */
+export const aliasNote = (called: string, ran: string) => `There is no "${called}" tool, so this ran as "${ran}". Call "${ran}" directly.`
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 const AGENT = "build"
@@ -434,6 +493,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const directories = new Map<number, string>()
   const fibers = new Set<Fiber.Fiber<unknown, unknown>>()
   const processes = options.processes ?? PROCESSES
+  const shellProgram = options.shell ?? SHELL
+  /** Every command the shell spawned, in order. */
+  const spawned: Array<Spawned> = []
   const latency = options.latency ?? [100, 2_000]
   const models = options.models ?? [SIM_MODEL]
   const model = options.model ?? MODEL
@@ -730,12 +792,36 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     return shell
   }
 
-  /** The built-in shell: foreground runs it and answers its output; background starts it and answers at once. */
-  const shellTool = (session: Session, input: Schema.Json) =>
+  /**
+   * The shell's spawn: its `create.before` hooks of the session's location's copies, in the order they registered, on
+   * one invocation, each seeing what the one before left (packages/core/src/shell.ts `create`); then the command as the
+   * hooks left it runs with the program they left, in the trace. The hooks may not fail (the shell domain has no failures).
+   */
+  const spawnShell = (session: Session, command: string, workdir: Option.Option<string>) =>
     Effect.gen(function* () {
-      const decoded = Schema.decodeUnknownExit(ShellInput)(input)
+      const invocation: ShellCreateInput = {
+        command,
+        cwd: Option.match(workdir, {
+          onNone: () => session.directory,
+          onSome: (dir) => Option.getOrElse(Option.liftPredicate(dir, (absolute) => absolute.startsWith("/")), () => `${session.directory}/${dir}`),
+        }),
+        timeout: 0,
+        shell: shellProgram,
+        env: { TERM: "xterm-256color", OPENCODE_TERMINAL: "1" },
+      }
+      for (const hook of hooks.filter((entry) => entry.name === SHELL_CREATE && entry.directory === session.directory)) yield* Effect.orDie(hook.callback(invocation))
+      const ran: Spawned = { at: runtime.now() - start, sessionID: session.id, command: invocation.command, shell: invocation.shell, cwd: invocation.cwd }
+      spawned.push(ran)
+      record("spawned", { sessionID: session.id, command: ran.command, shell: ran.shell, cwd: ran.cwd })
+      return ran
+    })
+
+  /** The built-in shell: foreground runs it and answers its output; background starts it and answers at once. */
+  const shellTool = (session: Session, call: ToolBeforeInput) =>
+    Effect.gen(function* () {
+      const decoded = Schema.decodeUnknownExit(ShellInput)(call.input)
       if (Exit.isFailure(decoded)) return { output: "Error: invalid shell input", error: true }
-      const { command } = decoded.value
+      const { command } = yield* spawnShell(session, decoded.value.command, Option.fromNullishOr(decoded.value.workdir))
       if (decoded.value.background === true) return { output: `Started ${background(session, command).id} in the background: \`${command}\``, error: false }
       const run = processes(command, runtime.now())
       yield* Effect.sleep(run.ms)
@@ -743,7 +829,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     })
 
   /** A plugin's tool: its input decoded with its own schema, then its execute on the call's context. */
-  const pluginTool = (session: Session, messageID: string, used: ToolCall, tool: Tool.Info) =>
+  const pluginTool = (session: Session, messageID: string, used: { readonly id: string; readonly name: string; readonly input: unknown }, tool: Tool.Info) =>
     Effect.gen(function* () {
       if (!Schema.isSchema(tool.input)) return yield* Effect.die(new Error(`sim: ${used.name}'s input is not an Effect schema; the world decodes only those`))
       const decoded = Schema.decodeUnknownExit(tool.input)(used.input)
@@ -760,15 +846,59 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return { output: `Error: ${causeText(result.cause)}`, error: true }
     })
 
+  /**
+   * The host's input repair, the first `execute.before` hook (the fork's `ToolInputRepairPlugin` is first among the
+   * internal plugins, before any config plugin): a name with no tool runs as its alias's tool when that is offered, and
+   * an input sent as a JSON string of an object is parsed. Its other repairs (numeric and boolean strings, nested
+   * fields) are not modelled: such an input reaches the tool as the model sent it.
+   */
+  const repair = (session: Session, event: ToolBeforeInput) => {
+    const offered = toolsOf(session.directory)
+    const alias = ALIASES.get(event.tool)
+    if (!offered.has(event.tool) && alias !== void 0 && offered.has(alias)) event.tool = alias
+    if (!offered.has(event.tool)) return
+    if (Predicate.isString(event.input)) event.input = Option.getOrElse(decodeObjectText(event.input), () => event.input)
+  }
+
+  /**
+   * The registry's `execute.before` hooks of the session's location's copies, after the repair, in the order they
+   * registered, on one event (packages/core/src/tool.ts `beforeExecute`): the call as they leave it, or the first
+   * failure's message, which refuses it before the tool runs. A hook that dies is not modelled: it dies here.
+   */
+  const beforeTool = (session: Session, messageID: string, used: ToolCall) =>
+    Effect.gen(function* () {
+      const event: ToolBeforeInput = { tool: used.name, sessionID: session.id, agent: AGENT, messageID, id: used.id, input: used.input }
+      repair(session, event)
+      for (const hook of hooks.filter((entry) => entry.name === TOOL_BEFORE && entry.directory === session.directory)) {
+        const exit = yield* Effect.exit(hook.callback(event))
+        if (Exit.isFailure(exit)) {
+          if (!exit.cause.reasons.some((reason) => reason._tag === "Fail")) return yield* Effect.failCause(exit.cause).pipe(Effect.orDie)
+          return Result.fail(causeText(exit.cause))
+        }
+      }
+      return Result.succeed(event)
+    })
+
   /** One tool call: its answer, in the trace with its input. */
   const runTool = (session: Session, messageID: string, used: ToolCall) =>
     Effect.gen(function* () {
       record("tool", { sessionID: session.id, name: used.name, input: used.input })
-      const offered = toolsOf(session.directory).get(used.name)
-      let answer: Answer = { output: `Error: unknown tool ${used.name}`, error: true }
-      if (offered !== void 0 && Option.isSome(offered)) answer = yield* pluginTool(session, messageID, used, offered.value)
-      else if (offered !== void 0 && used.name === "shell") answer = yield* shellTool(session, used.input)
-      else if (offered !== void 0) answer = { output: `Error: ${used.name} is not modelled in the world`, error: true }
+      const before = yield* beforeTool(session, messageID, used)
+      let answer: Answer = { output: "", error: true }
+      if (Result.isFailure(before)) {
+        answer = { output: `Error: ${before.failure}`, error: true }
+        record("tool-refused", { sessionID: session.id, name: used.name, message: before.failure })
+      } else {
+        const { tool: name, input } = before.success
+        if (name !== used.name || input !== used.input) record("tool-hooked", { sessionID: session.id, name, input: plain(input) })
+        const offered = toolsOf(session.directory).get(name)
+        answer = { output: `Error: unknown tool ${name}`, error: true }
+        if (offered !== void 0 && Option.isSome(offered)) answer = yield* pluginTool(session, messageID, { id: used.id, name, input }, offered.value)
+        else if (offered !== void 0 && name === "shell") answer = yield* shellTool(session, before.success)
+        else if (offered !== void 0) answer = { output: `Error: ${name} is not modelled in the world`, error: true }
+        // The repair's `execute.after`: an aliased call's answer names the tool that ran.
+        if (name !== used.name) answer = { ...answer, output: `${answer.output}\n\n${aliasNote(used.name, name)}` }
+      }
       record("tool-answer", { sessionID: session.id, name: used.name, output: answer.output, error: answer.error })
       return answer
     })
@@ -1083,6 +1213,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     activations,
     catalogNotFound,
     processes,
+    spawned,
     record,
     mint,
     publish,

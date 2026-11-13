@@ -17,7 +17,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
-import { type Asked, type Message, makeHost, type Session, type Options, type Process, START } from "./host.ts"
+import { type Asked, type Message, makeHost, type Session, type Options, type Process, type Spawned, START } from "./host.ts"
 import * as Provider from "./provider.ts"
 import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
 
@@ -33,7 +33,12 @@ export {
   type Script,
   say,
   SIM_MODEL,
+  SHELL,
+  SHELL_CREATE,
+  type Spawned,
   START,
+  TOOL_BEFORE,
+  aliasNote,
   USAGE,
   type Usage,
 } from "./host.ts"
@@ -166,6 +171,10 @@ export const make = (worldOptions: WorldOptions) => {
     /** The owners of the timers still set. */
     timers: () => runtime.timers(),
     isUp: () => host.state.up,
+    /** Every command the world's shell spawned, as its `create.before` hooks left it. */
+    spawned: (): ReadonlyArray<Spawned> => host.spawned,
+    /** How many hooks of `name` (a session hook's name, or `TOOL_BEFORE`, `SHELL_CREATE`) the live copies hold. */
+    hooked: (name: string) => host.hooks.filter((hook) => hook.name === name).length,
     /** What a command prints in the world's shell at `now`. */
     processes: (command: string, now: number): Process => host.processes(command, now),
     /** The session's context, as `session.context` answers it, before the views. */

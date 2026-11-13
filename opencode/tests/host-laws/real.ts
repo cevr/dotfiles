@@ -12,9 +12,9 @@
 // and Bun's platform layer; it imports nothing of the fork's at compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
-import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
+import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Match, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { answer, BROKEN, callFor, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, type LawCall, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -28,17 +28,22 @@ const Content = Schema.Union([Schema.String, Schema.Array(Schema.Struct({ text: 
 type Content = typeof Content.Type
 const ChatRequest = Schema.Struct({
   model: Schema.optional(Schema.String),
-  messages: Schema.optional(Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.optional(Content) }))),
+  // A message may carry no content, or `null` (an assistant's tool call): no text.
+  messages: Schema.optional(Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.OptionFromOptionalNullOr(Content) }))),
 })
 type ChatRequest = typeof ChatRequest.Type
 const Json = Schema.fromJsonString(Schema.Unknown)
 const toJson = Schema.encodeSync(Json)
 
-/** A message's text: its string, or its parts' texts. */
-const textOf = (content: Content = ""): string => {
-  if (Predicate.isString(content)) return content
-  return content.map((part) => part.text ?? "").join("")
-}
+/** A message's text: its string, or its parts' texts; none for no content. */
+const textOf = (content: Option.Option<Content>): string =>
+  Option.match(content, {
+    onNone: () => "",
+    onSome: (present) => {
+      if (Predicate.isString(present)) return present
+      return present.map((part) => part.text ?? "").join("")
+    },
+  })
 
 /** A request's kind as the host means it: a title by its system prompt, a compaction by OpenCode's summary prompt. */
 const kindOf = (request: ChatRequest) => {
@@ -53,10 +58,19 @@ const kindOf = (request: ChatRequest) => {
 interface Delta {
   readonly role?: string
   readonly content?: string
+  readonly tool_calls?: ReadonlyArray<{
+    readonly index: number
+    readonly id: string
+    readonly type: "function"
+    readonly function: { readonly name: string; readonly arguments: string }
+  }>
 }
 
-/** The answer as OpenAI-compatible stream events, with a usage. */
-const events = (text: string, model: string, id: string) => {
+/** The answer: text, or a law's tool call (law-names.ts `callFor`). */
+type Reply = { readonly kind: "text"; readonly text: string } | { readonly kind: "tool"; readonly call: LawCall }
+
+/** The answer as OpenAI-compatible stream events, with a usage. A tool call's arguments are its input as JSON: a string input stays a string. */
+const events = (reply: Reply, model: string, id: string) => {
   const chunk = (delta: Delta, finish: Option.Option<string>) => ({
     id,
     object: "chat.completion.chunk",
@@ -65,13 +79,26 @@ const events = (text: string, model: string, id: string) => {
     choices: [{ index: 0, delta, finish_reason: Option.getOrUndefined(finish) }],
   })
   const usage = { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010 }
-  const list = [
-    chunk({ role: "assistant", content: "" }, Option.none()),
-    chunk({ content: text }, Option.none()),
-    chunk({}, Option.some("stop")),
-    { id, object: "chat.completion.chunk", created: 0, model, choices: [], usage },
-  ]
+  const body = Match.value(reply).pipe(
+    Match.when({ kind: "text" }, (text) => [chunk({ content: text.text }, Option.none()), chunk({}, Option.some("stop"))]),
+    Match.when({ kind: "tool" }, (tool) => [
+      chunk({ tool_calls: [{ index: 0, id: `call_${id}`, type: "function", function: { name: tool.call.name, arguments: toJson(tool.call.input) } }] }, Option.none()),
+      chunk({}, Option.some("tool_calls")),
+    ]),
+    Match.exhaustive,
+  )
+  const list = [chunk({ role: "assistant", content: "" }, Option.none()), ...body, { id, object: "chat.completion.chunk", created: 0, model, choices: [], usage }]
   return [...list.map((event) => `data: ${toJson(event)}\n\n`), "data: [DONE]\n\n"].join("")
+}
+
+/** The reply to a request: a law's call while its prompt waits for one, else the words `answer` gives. */
+const replyTo = (request: ChatRequest): Reply => {
+  const messages = request.messages ?? []
+  const text = messages.map((message) => textOf(message.content)).join("\n")
+  const kind = kindOf(request)
+  const call = callFor(kind, text, messages.filter((message) => message.role === "tool").length)
+  if (call !== void 0) return { kind: "tool", call }
+  return { kind: "text", text: answer(kind, text) }
 }
 
 /** The scripted model: each chat completion answered as the world's model answers it. */
@@ -80,9 +107,8 @@ const model = (served: { count: number }) =>
     const request = yield* HttpServerRequest.HttpServerRequest
     if (request.method !== "POST" || !request.url.endsWith("/chat/completions")) return HttpServerResponse.text("not found", { status: 404 })
     const body = yield* HttpServerRequest.schemaBodyJson(ChatRequest)
-    const text = (body.messages ?? []).map((message) => textOf(message.content)).join("\n")
     served.count += 1
-    return HttpServerResponse.text(events(answer(kindOf(body), text), body.model ?? "sim", `law${served.count}`), {
+    return HttpServerResponse.text(events(replyTo(body), body.model ?? "sim", `law${served.count}`), {
       contentType: "text/event-stream",
       headers: { "cache-control": "no-cache" },
     })

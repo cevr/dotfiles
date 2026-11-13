@@ -10,6 +10,35 @@ export const answer = (kind: "primary" | "compaction" | "title", text: string) =
   return `heard ${[...text.matchAll(/law: ([a-z ]+[a-z])/g)].map((match) => match[1]).join("|")}`
 }
 
+/** A tool call a law's prompt asks the model for: the prompt's marker, the tool the model names, its input as the model sends it. */
+export interface LawCall {
+  readonly marker: string
+  readonly name: string
+  readonly input: string | { readonly [key: string]: string }
+}
+
+/** What the shell prints for each law's call, and what the model sends. */
+export const REPAIRED = "law-repaired"
+export const REFUSED = "law-refused"
+export const SPAWNED = "law-spawned"
+/** The words a law's execute.before hook refuses a call with. */
+export const REFUSAL = "law: the hook refused this call"
+/** The program a law's create.before hook runs a command with: on every machine the laws run on. */
+export const LAW_SHELL = "/bin/sh"
+
+export const LAW_CALLS: ReadonlyArray<LawCall> = [
+  // As a model carries it over from another harness: the name `bash`, the input a JSON string.
+  { marker: "law: call bash", name: "bash", input: `{"command":"echo ${REPAIRED}"}` },
+  { marker: "law: call refused", name: "shell", input: { command: `echo ${REFUSED}` } },
+  { marker: "law: call shell", name: "shell", input: { command: `echo ${SPAWNED}` } },
+]
+
+/** The call a primary request answers with: the one its conversation's prompt asks for, while no tool has answered in it yet. */
+export const callFor = (kind: "primary" | "compaction" | "title", text: string, toolResults: number) => {
+  if (kind !== "primary" || toolResults > 0) return void 0
+  return LAW_CALLS.find((call) => text.includes(call.marker))
+}
+
 /** The model's summary when the host compacts. */
 export const SUMMARY = "## Objective\n- law: the session's summary"
 
@@ -42,6 +71,10 @@ export const LAW = {
   integration:
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
   provider: "a provider a transform turns on is in the provider list",
+  toolHook:
+    "execute.before runs before a tool call of the plugin's sessions after the host's input repair (a bash call with its input a JSON string reaches it as shell with the input an object, and its answer names shell), and a failure it fails with refuses the call: the tool does not run and the model reads the failure's message",
+  shellHook:
+    "create.before sees each command the shell tool spawns, in the session's directory and in the order the hooks registered, each seeing the program the one before it left",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
 }
 
