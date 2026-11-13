@@ -107,12 +107,15 @@ const output = (command: string, args: ReadonlyArray<string>, env: Readonly<Reco
 /** A file's text at a commit, from opencode/. */
 const at = (commit: string, file: string) => output("git", ["show", `${commit}:./${file}`]).pipe(Effect.map((run) => run.stdout))
 
-/** The test names a file declares: each title literal `test(` or `seeded(` opens with. */
-export const declared = (source: string) => [...source.matchAll(/\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded)\(\s*"([^"]+)"/g)].map((match) => match[1] ?? "")
+/** A test's title: the literal `test(`, `seeded(`, or effect-bun-test's `it.live(` or `it.effect(` opens with. */
+const TITLE = /\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded|it\.(?:live|effect))\(\s*"([^"]+)"/g
+
+/** The test names a file declares: each title literal a test opens with. */
+export const declared = (source: string) => [...source.matchAll(TITLE)].map((match) => match[1] ?? "")
 
 /** The `expect(` calls in each declared test's body: from its title to the next title, or the end. */
 export const expects = (source: string) => {
-  const titles = [...source.matchAll(/\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded)\(\s*"([^"]+)"/g)]
+  const titles = [...source.matchAll(TITLE)]
   return new Map(
     titles.map((match, index) => {
       const end = titles[index + 1]?.index ?? source.length
@@ -146,6 +149,19 @@ describe("no assertion lost", () => {
           Object.fromEntries(entry.tests.map((item) => [item.name, counts.get(item.name) ?? -1])),
         )
       }
+    }),
+  )
+
+  live("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
+    Effect.sync(() => {
+      const source = [
+        'test("plain", async () => { expect(1) })',
+        'seeded("seeded", () => { expect(1); expect(2) })',
+        'it.live("live", () =>\n  Effect.gen(function* () { expect(1) }))',
+        'it.effect("effect", () => Effect.void)',
+      ].join("\n")
+      expect(declared(source)).toEqual(["plain", "seeded", "live", "effect"])
+      expect(Object.fromEntries(expects(source))).toEqual({ plain: 1, seeded: 2, live: 1, effect: 0 })
     }),
   )
 
