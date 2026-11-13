@@ -209,10 +209,13 @@ export interface Options {
   readonly login: (credentialID: string) => Effect.Effect<Login | undefined, unknown>
   /** The usage endpoint; another one for tests. */
   readonly url?: string
+  /** How a request reaches the endpoint: the platform's `fetch`, or a test's network. */
+  readonly fetch?: (url: string, init: RequestInit) => Promise<Response>
 }
 
 export const make = (options: Options) =>
   Effect.gen(function* () {
+    const send = options.fetch ?? fetch
     const held = new Map<string, QuotaReading>()
     const published = yield* PubSub.unbounded<{ readonly credentialID: string; readonly reading: QuotaReading }>()
 
@@ -234,7 +237,7 @@ export const make = (options: Options) =>
     const get = (url: string, login: Login) =>
       Effect.gen(function* () {
         const response = yield* Effect.tryPromise((signal) =>
-          fetch(url, {
+          send(url, {
             headers: headersOf(login),
             signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
           }),
@@ -270,7 +273,7 @@ export const make = (options: Options) =>
         const login = yield* options.login(input.credentialID)
         if (login === undefined) return { outcome: "signed-out", message: "not a ChatGPT login" } satisfies ClaimAnswer
         const response = yield* Effect.tryPromise((signal) =>
-          fetch(consumeUrl(options.url ?? USAGE_URL), {
+          send(consumeUrl(options.url ?? USAGE_URL), {
             method: "POST",
             headers: { ...headersOf(login), "content-type": "application/json" },
             body: JSON.stringify({ redeem_request_id: input.requestID, credit_id: input.creditID }),

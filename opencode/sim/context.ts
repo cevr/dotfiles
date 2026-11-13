@@ -6,8 +6,9 @@
 // world's next operation fails with its name, so a plugin can never pass on a
 // host the world made up.
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream } from "effect"
-import { type Handler, type Hook, type HookInput, type Host, type HostEvent, type Subscriber } from "./host.ts"
+import { Provider } from "@opencode/schema/provider"
+import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
+import { type Handler, type Hook, type HookInput, type Host, type HostEvent, type Login, type Subscriber } from "./host.ts"
 import { type JsonObject, plain } from "./runtime.ts"
 
 /** A plugin as OpenCode loads it: its definition, where, and its options. */
@@ -19,6 +20,14 @@ export interface Loaded {
 
 type Storage = Plugin.Context["storage"]
 type ToolEditor = Parameters<Parameters<Plugin.Context["tool"]["transform"]>[0]>[0]
+type IntegrationEditor = Parameters<Parameters<Plugin.Context["integration"]["transform"]>[0]>[0]
+/** A mark an integration reports on a login: `needs_auth` asks its owner to sign in again. */
+interface Mark {
+  readonly status: "needs_auth"
+  readonly message: string
+  readonly url?: string
+}
+type ProviderEditor = Parameters<Parameters<Plugin.Context["provider"]["transform"]>[0]>[0]
 
 /** The operations the world's plugin context offers, by path: the static test holds a law to each one. */
 export const OPERATIONS = [
@@ -47,6 +56,10 @@ export const OPERATIONS = [
   "provider.get",
   "agent.list",
   "agent.get",
+  "provider.transform",
+  "integration.get",
+  "integration.transform",
+  "integration.connection",
 ] as const
 
 /** Property names a runtime probes on any object (a promise check, a JSON or inspect hook): not a plugin's reach. */
@@ -181,7 +194,12 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       Effect.sync(() => {
         host.rpcs.set(definition.id, handlers)
         host.record("rpc-registered", { id: definition.id, instance })
-        const emit = <D>(name: string, data: D) => Effect.sync(() => host.record("rpc-event", { id: definition.id, name, data }))
+        /** An event of the RPC: every client subscribed to its name gets its data, as JSON across the wire. */
+        const emit = <D>(name: string, data: D) =>
+          Effect.gen(function* () {
+            host.record("rpc-event", { id: definition.id, name })
+            for (const subscriber of host.rpcEvents.get(definition.id) ?? []) if (subscriber.name === name) yield* Queue.offer(subscriber.queue, plain(data))
+          })
         return { dispose: Effect.void, events: { emit } }
       }),
       () =>
@@ -190,16 +208,141 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         }),
     )
 
-  /** A client of an RPC: any method name, answered as the host answers it (a method no plugin registered fails). */
+  /** A client's subscription to one of an RPC's events: its data as they are emitted, for the subscription's life. */
+  const rpcEvents = (id: string) => ({
+    subscribe: (name: string) =>
+      Stream.unwrap(
+        Effect.acquireRelease(
+          Effect.gen(function* () {
+            const subscriber = { name, queue: yield* Queue.unbounded<Schema.Json>() }
+            const all = host.rpcEvents.get(id) ?? new Set()
+            host.rpcEvents.set(id, all)
+            all.add(subscriber)
+            return subscriber
+          }),
+          (subscriber) => Effect.sync(() => void host.rpcEvents.get(id)?.delete(subscriber)),
+        ).pipe(Effect.map((subscriber) => Stream.fromQueue(subscriber.queue))),
+      ),
+  })
+
+  /** A client of an RPC: any method name, answered as the host answers it (a method no plugin registered fails), and its events. */
   const client = (definition: { readonly id: string }) =>
     new Proxy(
       {},
       {
         get: (_target, method) => {
           if (Predicate.isSymbol(method) || PROBES.has(method)) return void 0
+          if (method === "events") return rpcEvents(definition.id)
           return <I>(input: I) => host.callRpc(definition.id, method, plain(input))
         },
       },
+    )
+
+  /** A login as the integration lists it. */
+  const connectionOf = (marks: ReadonlyMap<string, Schema.Json>) => (login: Login) => ({
+    type: "credential" as const,
+    id: login.id,
+    label: login.label,
+    method: "oauth" as const,
+    ...Option.match(Option.fromNullishOr(marks.get(login.id)), { onNone: () => ({}), onSome: (status) => ({ status }) }),
+  })
+
+  const IntegrationInput = Schema.Struct({ integrationID: Schema.String })
+  const integrationOf = (integrationID: string) =>
+    Effect.fromOption(Option.fromNullishOr(host.integrations.get(integrationID))).pipe(Effect.mapError(() => host.catalogNotFound("integration")))
+
+  const integration = {
+    get: <I>(input: I) =>
+      parse(
+        IntegrationInput,
+        "integration.get",
+      )(input).pipe(
+        Effect.flatMap(({ integrationID }) =>
+          integrationOf(integrationID).pipe(
+            Effect.map((held) => ({ data: { id: integrationID, name: integrationID, methods: [], connections: held.logins.map(connectionOf(held.marks)) } })),
+          ),
+        ),
+      ),
+    transform: (callback: (editor: IntegrationEditor) => void) =>
+      registration(
+        () =>
+          callback({
+            list: () => [...host.integrations.keys()].map((id) => ({ id, name: id })),
+            get: (id) => Option.getOrUndefined(Option.map(Option.fromNullishOr(host.integrations.get(id)), () => ({ id, name: id }))),
+            update: (id) => void unmodelled(`ctx.integration.transform: editor.update(${id})`),
+            remove: (id) => void unmodelled(`ctx.integration.transform: editor.remove(${id})`),
+            method: {
+              list: () => [],
+              update: (method) => host.record("integration-method", { integrationID: method.integrationID, method: method.method.type, instance }),
+              remove: (integrationID) => void unmodelled(`ctx.integration.transform: editor.method.remove(${integrationID})`),
+            },
+          }),
+        () => void 0,
+      ),
+    connection: {
+      active: (integrationID: string) =>
+        Effect.sync(() =>
+          Option.getOrUndefined(
+            Option.flatMap(Option.fromNullishOr(host.integrations.get(integrationID)), (held) =>
+              Option.flatMap(held.active, (id) => Option.map(Option.fromNullishOr(held.logins.find((login) => login.id === id)), connectionOf(held.marks))),
+            ),
+          ),
+        ),
+      resolve: (connection: { readonly type: string; readonly id?: string }) =>
+        Effect.sync(() => {
+          for (const held of host.integrations.values())
+            for (const login of held.logins)
+              if (connection.type === "credential" && login.id === connection.id)
+                return {
+                  type: "oauth" as const,
+                  methodID: Option.getOrElse(Option.fromNullishOr(login.methodID), () => "claude-max"),
+                  access: login.access,
+                  refresh: login.refresh,
+                  expires: login.expires,
+                  ...Option.match(Option.fromNullishOr(login.metadata), { onNone: () => ({}), onSome: (metadata) => ({ metadata }) }),
+                }
+          return void 0
+        }),
+      /** A mark on a login, or its clearing: the integration lists it on the connection until it is cleared. */
+      status: (input: { readonly integrationID: string; readonly connection: { readonly type: string; readonly id?: string }; readonly status?: Mark }) =>
+        Effect.sync(() => {
+          const id = input.connection.id ?? ""
+          const mark = Option.fromNullishOr(input.status)
+          host.record("connection-status", { integrationID: input.integrationID, credentialID: id, status: Option.match(mark, { onNone: () => "", onSome: (set) => set.status }) })
+          const held = host.integrations.get(input.integrationID)
+          Option.match(mark, { onNone: () => held?.marks.delete(id), onSome: (set) => held?.marks.set(id, plain(set)) })
+        }),
+    },
+  }
+
+  /** A provider as the catalog records it: its activation, no models of its own. */
+  const recordOf = (id: string) => ({
+    provider: { ...Provider.Info.empty(Provider.ID.make(id)), activation: host.activations.get(id) ?? "auto" },
+    models: new Map(),
+  })
+
+  /** The catalog's transform: a plugin may turn a provider on (`activation`); nothing else is modelled. */
+  const providerTransform = (callback: (editor: ProviderEditor) => void) =>
+    registration(
+      () =>
+        callback({
+          list: () => [...host.activations.keys()].map(recordOf),
+          get: (id) => Option.getOrUndefined(Option.map(Option.fromNullishOr(host.activations.get(id)), () => recordOf(id))),
+          update: (id, change) => {
+            const provider: Types.DeepMutable<Provider.Info> = { ...recordOf(id).provider }
+            change(provider)
+            host.activations.set(id, provider.activation)
+            host.record("provider-updated", { id, activation: provider.activation, instance })
+          },
+          add: (input) => void unmodelled(`ctx.provider.transform: editor.add(${input.info.id})`),
+          remove: (id) => void unmodelled(`ctx.provider.transform: editor.remove(${id})`),
+          models: {
+            set: (id) => void unmodelled(`ctx.provider.transform: editor.models.set(${id})`),
+            update: (id, model) => void unmodelled(`ctx.provider.transform: editor.models.update(${id}, ${model})`),
+            remove: (id, model) => void unmodelled(`ctx.provider.transform: editor.models.remove(${id}, ${model})`),
+          },
+        }),
+      () => void 0,
     )
 
   const list = (input: typeof ListInput.Type) => {
@@ -327,7 +470,9 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     rpc: Object.assign(client, { register }),
     session,
     model: { list: () => Effect.sync(() => ({ data: host.models })) },
+    integration,
     provider: {
+      transform: providerTransform,
       list: () => Effect.sync(() => ({ data: host.providers() })),
       get: <I>(input: I) =>
         parse(
@@ -363,5 +508,7 @@ export const isContext = (value: Modelled): value is Modelled & Plugin.Context =
     const [domain = "", operation] = path.split(".")
     const found = Object.getOwnPropertyDescriptor(value, domain)?.value
     if (operation === void 0) return found !== void 0
-    return Predicate.isFunction(Object.getOwnPropertyDescriptor(found, operation)?.value)
+    const inner: unknown = Object.getOwnPropertyDescriptor(found, operation)?.value
+    // `integration.connection` is a domain of its own: its operations are the integration's.
+    return Predicate.isFunction(inner) || Predicate.isObject(inner)
   })

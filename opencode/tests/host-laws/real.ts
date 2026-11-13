@@ -12,9 +12,9 @@
 // and Bun's platform layer; it imports nothing of the fork's at compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
-import { Array as Arr, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
+import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -91,6 +91,15 @@ const model = (served: { count: number }) =>
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
 interface Embedded {
   readonly location: { readonly get: (input: { location: { directory: string } }) => Promise<object> }
+  readonly credential: {
+    readonly create: (input: {
+      readonly id: string
+      readonly integrationID: string
+      readonly label: string
+      readonly value: { readonly [key: string]: string | number }
+      readonly activate: boolean
+    }) => Promise<object>
+  }
   readonly close: () => Promise<void>
 }
 interface CreateOptions {
@@ -159,6 +168,20 @@ const run = Effect.gen(function* () {
     }),
     (embedded) => Effect.promise(() => embedded.close()),
   )
+
+  // The login the integration law reads, held before the probe starts, as `opencode auth import` holds one.
+  const now = yield* Clock.currentTimeMillis
+  yield* Effect.tryPromise({
+    try: () =>
+      opencode.credential.create({
+        id: LAW_LOGIN.id,
+        integrationID: "anthropic",
+        label: LAW_LOGIN.label,
+        value: { type: "oauth", methodID: "claude-max", access: LAW_LOGIN.access, refresh: LAW_LOGIN.refresh, expires: now + 8 * 3_600_000 },
+        activate: true,
+      }),
+    catch: (cause) => new RealRunFailed({ message: "the law login was not held", cause }),
+  })
 
   // The host starts a copy of each config plugin for each Location it opens: this one for the law folder.
   yield* Effect.tryPromise({

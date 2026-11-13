@@ -58,6 +58,130 @@
           "why": "real too: the late ◈ row waits for sim-tui, and a real server restart is no law yet"
         }
       ]
+    },
+    "tests/pool-failover.test.ts": {
+      "simulated": "cmd/pool/pool-failover.sim.test.ts",
+      "tests": [
+        {
+          "name": "without the pool, the same refusal ends the run: the host does not retry a plan limit",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too while the real file stays: the HTTP, retry and refused laws kept on real OpenCode at 2b837b55, but the parity check reads every manifest file, so the real file leaves with a check that allows a deleted one (sim-tui)"
+        },
+        {
+          "name": "the first login's plan-limit 429 holds it, and the run goes out on the second",
+          "expects": 11,
+          "carried": "both",
+          "why": "real too while the real file stays: the HTTP, retry, refused and integration laws kept on real OpenCode at 2b837b55, but the parity check reads every manifest file, so the real file leaves with a check that allows a deleted one (sim-tui)"
+        }
+      ]
+    },
+    "tests/pool-resets.test.ts": {
+      "simulated": "cmd/pool/pool-resets.sim.test.ts",
+      "tests": [
+        {
+          "name": "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
+          "expects": 17,
+          "carried": "both",
+          "why": "real too: a ChatGPT login's metadata (its accountID) through integration.connection.resolve is no host law yet; the backend is under sim/chatgpt-laws.ts"
+        },
+        {
+          "name": "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+          "expects": 16,
+          "carried": "both",
+          "why": "real too while the Codex name keeps the real file: the RPC and integration laws kept on real OpenCode at 2b837b55 and a provider law covers the claim endpoint"
+        },
+        {
+          "name": "one spent week with two weekly resets about to expire spends one: the reading after it shows the week back, so the second is kept",
+          "expects": 3,
+          "carried": "both",
+          "why": "real too while the Codex name keeps the real file: the RPC and integration laws kept on real OpenCode at 2b837b55 and a provider law covers the claim endpoint"
+        }
+      ]
+    },
+    "tests/pool-store.test.ts": {
+      "simulated": "cmd/pool/pool-store.sim.test.ts",
+      "tests": [
+        { "name": "the store source refreshes at Claude Code's token endpoint", "expects": 1, "carried": "simulated" },
+        { "name": "a 429's log line names who limited the request, and never more than the error's words", "expects": 3, "carried": "simulated" },
+        {
+          "name": "lists the accounts the store owns by label, and says why it leaves the rest alone",
+          "expects": 5,
+          "carried": "simulated",
+          "why": "listing a directory is the files laws' (mods/pool/store/files-laws.ts), on the disk and the memory slots alike"
+        },
+        { "name": "serves each slot's own token, read again for every request", "expects": 6, "carried": "simulated" },
+        {
+          "name": "a stale token is refreshed once and written back in the store's exact shape, mode 0600",
+          "expects": 9,
+          "carried": "both",
+          "why": "real too: the slot file's mode 0600 is the disk's, and no files law reads a mode"
+        },
+        {
+          "name": "two processes refreshing the same stale slot at once make one refresh call",
+          "expects": 4,
+          "carried": "both",
+          "why": "real too: two OS processes on one SQLite lock; the files law holds the lock's one holder within a process only"
+        },
+        { "name": "in one process too, concurrent requests for a stale slot share one refresh", "expects": 2, "carried": "simulated" },
+        {
+          "name": "a token another process refreshed while the pool waited for its lock is read again, not refreshed again",
+          "expects": 2,
+          "carried": "simulated",
+          "why": "the lock's one holder and the poll's give-up are the files laws'"
+        },
+        {
+          "name": "another process, waiting for the lock while the pool refreshes, reads the pool's write and writes nothing",
+          "expects": 3,
+          "carried": "simulated",
+          "why": "the lock's one holder and a whole write are the files laws'"
+        },
+        { "name": "a refresh the endpoint could not answer writes nothing and may be tried again", "expects": 5, "carried": "simulated" },
+        { "name": "a rate-limited refresh pauses every account of the store until retry-after", "expects": 6, "carried": "simulated" },
+        { "name": "a refresh the endpoint refused writes nothing and asks for a new sign-in", "expects": 3, "carried": "simulated" },
+        {
+          "name": "a refresh whose write failed is held, and written later only over the login it replaced",
+          "expects": 6,
+          "carried": "both",
+          "why": "real too: a write the disk refuses (a read-only directory) leaving the file as it was is no files law yet"
+        },
+        {
+          "name": "a held refresh is dropped when another process wrote another login meanwhile",
+          "expects": 4,
+          "carried": "both",
+          "why": "real too: a write the disk refuses leaving the file as it was is no files law yet"
+        },
+        { "name": "a token the provider rejected is refreshed next time, only while the store still holds it", "expects": 4, "carried": "simulated" },
+        {
+          "name": "gives up on a lock another process holds too long, with a time to try again",
+          "expects": 2,
+          "carried": "simulated",
+          "why": "the give-up with a time to try again is the files law 'a lock held through every poll gives up busy', on the disk too"
+        },
+        { "name": "registers with the registry the auth plugin reads, and leaves it on dispose", "expects": 4, "carried": "simulated" }
+      ]
+    },
+    "tests/pool-store-opencode.test.ts": {
+      "simulated": "cmd/pool/pool-store-opencode.sim.test.ts",
+      "tests": [
+        {
+          "name": "the turn goes out on the store slot the pool picked, and fails over to the next store slot",
+          "expects": 12,
+          "carried": "both",
+          "why": "real too: the slot file's mode 0600 is the disk's, and no files law reads a mode (the HTTP, retry, refused and provider laws kept on real OpenCode at 2b837b55)"
+        }
+      ]
+    },
+    "tests/pool-store-refresh.test.ts": {
+      "simulated": "cmd/pool/pool-store-refresh.sim.test.ts",
+      "tests": [
+        {
+          "name": "the turn completes on the second account, with no error row",
+          "expects": 12,
+          "carried": "both",
+          "why": "real too: OpenCode's log file through the plugin's loggers is no law yet (the HTTP, retry and refused laws kept on real OpenCode at 2b837b55)"
+        }
+      ]
     }
   },
   "retired": []
