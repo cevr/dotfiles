@@ -50,19 +50,9 @@ ln -sf "$DOTFILES_DIR/pure" ~/.zsh/pure
 mkdir -p ~/.config/lazygit
 ln -sf "$DOTFILES_DIR/lazygit.yml" ~/.config/lazygit/config.yml
 
-# Herdr (same config and plugins as the workbox)
+# Herdr (same config as the workbox)
 mkdir -p ~/.config/herdr
 ln -sf "$DOTFILES_DIR/workbox/herdr-config.toml" ~/.config/herdr/config.toml
-if command -v herdr >/dev/null 2>&1; then
-  while IFS=' ' read -r source ref; do
-    [ -n "$source" ] || continue
-    if [ -n "$ref" ]; then
-      herdr plugin install "$source" --ref "$ref" --yes
-    else
-      herdr plugin install "$source" --yes
-    fi
-  done < "$DOTFILES_DIR/workbox/herdr-plugins.txt"
-fi
 
 # Claude settings (TeamClaude manages the account pool)
 mkdir -p ~/.claude ~/.config
