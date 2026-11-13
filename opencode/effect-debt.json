@@ -495,7 +495,7 @@
     "mods/memory/note.ts": {"effect/noArrayFilterMap":1,"effect/noNullish":3,"effect/noTernary":1},
     "mods/memory/notebook.test.ts": {"effect/noAs":1},
     "mods/memory/notebook.ts": {"effect/noGlobals":1,"effect/noTernary":3,"effect/preferMatchTagsExhaustive":1},
-    "mods/memory/opencode/sessions.test.ts": {"effect/noAsyncFunction":4,"effect/noEffectRunInTests":3,"effect/noKnownValueWidening":1,"effect/noNewError":1,"effect/noNullish":1,"effect/noTernary":1},
+    "mods/memory/opencode/sessions.test.ts": {"effect/noEffectRunInTests":1,"effect/noKnownValueWidening":1,"effect/noNewError":1,"effect/noNullish":1,"effect/noTernary":1},
     "mods/memory/opencode/sessions.ts": {"effect/noNullish":3,"effect/noRuntimeTypeof":2},
     "mods/memory/service.ts": {"effect/noNullish":1},
     "mods/memory/sqlite/store.test.ts": {"effect/noAsyncFunction":3,"effect/noEffectRunInTests":2,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":1},

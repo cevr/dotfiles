@@ -47,6 +47,9 @@ import * as SqliteStore from "@dotfiles/opencode-memory/sqlite/store"
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
+/** A tool's or hook's session id, as the host's session calls take it. */
+const idOf = (sessionID: string) => sessionID as SessionID
+
 const withDefault =
   <A>(fallback: A) =>
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
@@ -73,7 +76,10 @@ export const liveWith =
   (ctx: Plugin.Context, options: Options): Layer.Layer<Externals, MemoryStoreFailed> =>
     Layer.merge(
       files(options.path ?? SqliteStore.defaultPath()),
-      OpenCodeSessions.layer((sessionID) => ctx.session.get({ sessionID: sessionID as SessionID })),
+      OpenCodeSessions.layer(
+        (sessionID) => ctx.session.get({ sessionID: idOf(sessionID) }),
+        (sessionID, metadata) => ctx.session.update({ sessionID: idOf(sessionID), metadata }),
+      ),
     )
 
 /** The outside systems on this host: its memory file on disk and OpenCode's sessions. */

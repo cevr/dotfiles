@@ -6,7 +6,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import type { Bucket, Note } from "../note.ts"
 import { MemoryStoreFailed, NoteStore, type Reading } from "../service.ts"
 
@@ -150,6 +150,8 @@ export const make = (db: Database): NoteStore["Service"] => {
           return { text: kept?.text ?? text, fresh }
         })(),
       ),
+    keptDigest: (sessionID) =>
+      run("keptDigest", () => Option.map(Option.fromNullishOr(db.query<{ text: string }, [string]>("SELECT text FROM digests WHERE session = ?").get(sessionID)), (row) => row.text)),
   })
 }
 

@@ -1,7 +1,7 @@
 // What every NoteStore owes, as a shared test suite. Each implementation's test
 // beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, type Layer } from "effect"
+import { Effect, type Layer, Option } from "effect"
 import { type Draft, matchQuery, visible } from "./note.ts"
 import { NoteStore } from "./service.ts"
 
@@ -104,6 +104,18 @@ export const noteStoreLaws = (name: string, fresh: () => Layer.Layer<NoteStore, 
           expect(yield* store.keepDigest("ses_1", "second", 2_000)).toEqual({ text: "first", fresh: false })
           expect(yield* store.keepDigest("ses_2", "", 2_000)).toEqual({ text: "", fresh: true })
           expect(yield* store.keepDigest("ses_2", "later", 3_000)).toEqual({ text: "", fresh: false })
+        }),
+      ))
+
+    test("keptDigest answers a session's kept digest, none before it is kept", () =>
+      check(
+        Effect.gen(function* () {
+          const store = yield* NoteStore
+          expect(yield* store.keptDigest("ses_1")).toEqual(Option.none())
+          yield* store.keepDigest("ses_1", "first", 1_000)
+          expect(yield* store.keptDigest("ses_1")).toEqual(Option.some("first"))
+          yield* store.keepDigest("ses_2", "", 1_000)
+          expect(yield* store.keptDigest("ses_2")).toEqual(Option.some(""))
         }),
       ))
   })
