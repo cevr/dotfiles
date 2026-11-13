@@ -1,3 +1,4 @@
+// accept: deep (24.8 s alone on a quiet host: 1-minute load 12.3–17.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-subagents.ts with the Prime look against an OpenCode
 // checkout and asserts on its frames: a session's running subagents open by
 // keyboard and by mouse, each reads like the main session, and Up, Left and

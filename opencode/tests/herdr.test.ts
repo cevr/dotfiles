@@ -1,3 +1,4 @@
+// accept: deep (15.7 s alone on a quiet host: 1-minute load 9.8–13.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Real OpenCode, the real herdr reporter (cmd/herdr), a scripted model and a
 // fake herdr socket: scenarios/herdr.ts runs one turn with a shell call while
 // the TUI believes it runs in herdr pane wtest:p1, and herdr hears the session

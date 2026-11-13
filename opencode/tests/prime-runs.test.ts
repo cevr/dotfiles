@@ -1,3 +1,4 @@
+// accept: deep (16.0 s alone on a quiet host: 1-minute load 10.0–11.9 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-runs.ts with the Prime look against an OpenCode checkout
 // and asserts where a run of calls breaks: each model step is a group of its
 // own, so a step's parallel calls share one header, the next step opens its

@@ -1,3 +1,4 @@
+// accept: deep (19.2 s alone on a quiet host: 1-minute load 20.0–23.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode, the real questions plugin (and the real
 // kernel), a scripted model that asks through `ask_user_async` directly or
 // from a kernel cell, and a background subagent that asks too. The tray and

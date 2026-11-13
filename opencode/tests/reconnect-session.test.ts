@@ -1,3 +1,4 @@
+// accept: deep (247.2 s alone on a quiet host: 1-minute load 11.9–40.8 on 12 cores; it restarts a service from source in about twelve cases, each with an 8 s booting window)
 // A TUI attached to the background service keeps its session across a
 // service restart. The owner's TUIs are `opencode -s <id>` on the service
 // `daily` restarts on every install; the TUI reconnects by itself and must

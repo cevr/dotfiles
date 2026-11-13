@@ -1,3 +1,4 @@
+// accept: deep (17.3 s alone on a quiet host: 1-minute load 13.7–15.7 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-thoughts.ts with the Prime look against an OpenCode checkout
 // and asserts on its frames: a step's thought is the first `thinking` node of
 // that step's tree, a thought-only step is a one-node tree, and a finished

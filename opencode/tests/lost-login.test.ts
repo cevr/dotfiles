@@ -1,3 +1,4 @@
+// accept: deep (30.9 s alone on a quiet host: 1-minute load 6.7–7.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode, the real pool and status plugins, a login
 // store on disk and a fake token endpoint. A pooled store login whose refresh
 // token the endpoint refuses shows in the sidebar's Pool section, with the

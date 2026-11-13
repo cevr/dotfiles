@@ -1,3 +1,4 @@
+// accept: deep (53.5 s alone on a quiet host: 1-minute load 5.6–12.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // gamut's pure parts (arguments, presets, config, environment, the run's
 // database, the wait), the scripted model, and one end-to-end run of the
 // commands against a real OpenCode on the `sim` preset. The end-to-end test
