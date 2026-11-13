@@ -29,6 +29,7 @@ type Host = Parameters<(typeof Kernel)["effect"]>[0]
 
 /** The kernel tool as the host's editor receives it: only what the tests read. */
 interface Added {
+  readonly name: string
   readonly execute: (input: { code: string; reset?: boolean }, context: unknown) => Effect.Effect<{ readonly content: string | ReadonlyArray<Tool.Content> }, Tool.Error>
   readonly options?: {
     readonly runtime?: { readonly describe: (tools: ReadonlyArray<Reached>) => string; readonly direct?: ReadonlyArray<string> }
@@ -78,7 +79,8 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
         list: () => Effect.succeed([...(world.tools ?? []), { id: "kernel", description: "itself", input: {}, execute: () => Effect.die("not called") }]),
         transform: (callback: (editor: { add: (tool: Added) => void }) => void) =>
           Effect.sync(() => {
-            callback({ add: (tool) => void (added = tool) })
+            // The plugin adds the subagents tool beside the kernel; the tests call the kernel.
+            callback({ add: (tool) => void (tool.name === "kernel" && (added = tool)) })
             return { dispose: Effect.void }
           }),
       },
@@ -482,7 +484,8 @@ describe("as the runtime", () => {
             }),
         }
         const { call, fail } = yield* start({}, { tools: [readTool] })
-        expect(yield* call("(await tools.subagent({ prompt: 'x' })).output", { runtime })).toBe("done")
+        // The subagent tool's result reaches the cell as its handle (mods/kernel/worker/subagent-handle.ts).
+        expect(yield* call("const h = await tools.subagent({ prompt: 'x' }); [h.sessionID, h.state]", { runtime })).toBe('[ "ses_child", "running" ]')
         expect(yield* call("tools.list().map((tool) => tool.id).join()", { runtime })).toBe("read,subagent")
         expect(yield* fail("await tools.read({ path: 'a' })", { runtime })).toContain("It is the Sabbath")
         expect(calls).toEqual([

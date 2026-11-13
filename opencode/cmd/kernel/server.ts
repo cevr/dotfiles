@@ -28,6 +28,11 @@
  *   the fork's `options.runtime`. The tools `direct` names are offered beside
  *   it with their own definitions (the runtime's `direct`), left off its
  *   list, and still reached from a cell; the set is frozen per session too.
+ * - `tools.subagent(input)` in a cell resolves to a live handle whose methods
+ *   wait on, read and stop the subagent (mods/kernel/worker/subagent-handle.ts),
+ *   through the `subagents` tool the plugin adds beside the kernel: a session
+ *   lists, reads, waits on and stops its own subagents, and only its own
+ *   (mods/kernel/subagents.ts). A stop is the host's own session interrupt.
  * - Without `codeOnly` it is a direct tool beside the others (`codemode:
  *   false`), whose calls skip the hooks; with `denyExecute`, every agent the
  *   plugins define denies code mode's `execute`.
@@ -52,6 +57,7 @@ import type { Files, Sessions, Snapshots, Workers } from "@dotfiles/opencode-ker
 import { KernelSessionId } from "@dotfiles/opencode-kernel/session"
 import * as OpenCodeSessions from "@dotfiles/opencode-kernel/opencode/sessions"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
+import * as OpenCodeSubagents from "@dotfiles/opencode-kernel/opencode/subagents"
 import * as OpenCodeToolbox from "@dotfiles/opencode-kernel/opencode/toolbox"
 import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
 
@@ -130,6 +136,8 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       const catalogs = yield* Frozen.make((tools) => description(options, tools), description(options, []), ctx.storage)
 
       yield* ctx.tool.transform((editor) => {
+        // The session's own subagents, listed, waited on and stopped: a cell's subagent handle calls it.
+        editor.add(OpenCodeSubagents.tool(ctx))
         editor.add({
           name: "kernel",
           description: description(options),

@@ -93,6 +93,7 @@ export type SessionsWorld = Readonly<
       readonly parentID?: string
       readonly agent?: string
       readonly started?: boolean
+      readonly stopped?: boolean
       readonly latch?: unknown
       readonly directory?: string
       /** The text its last answer wrote. */
@@ -108,6 +109,7 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
       child: { parentID: "root", agent: "verifier", lastWords: "verifier auth r1: accepted /work/tmp/orchestrate/web/auth/round-1-findings.md" },
       blank: { parentID: "", agent: "" },
       ran: { parentID: "root", agent: "worker", started: true },
+      stopped: { parentID: "root", agent: "implementor", started: true, stopped: true },
       latched: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000 } },
       cancelled: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000, cancelledAt: 2_000 } },
       failed: { parentID: "root", agent: "worker", latch: { hold: "sabbath", reason: "rest", opensAt: 9_000, at: 1_000, failed: "gone" } },
@@ -143,6 +145,16 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
           const sessions = yield* Sessions
           expect(yield* sessions.startedOf("ran")).toBe(true)
           expect(yield* sessions.startedOf("latched")).toBe(false)
+        }),
+      ))
+
+    test("a session whose last turn was stopped is stopped; one that ran to its end, never ran or cannot be read is not", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.stoppedOf("stopped")).toBe(true)
+          for (const id of ["ran", "latched", "missing"]) expect(yield* sessions.stoppedOf(id)).toBe(false)
         }),
       ))
 
