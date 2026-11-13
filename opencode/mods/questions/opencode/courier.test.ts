@@ -36,7 +36,7 @@ courierLaws(
 describe("delivering through the host", () => {
   test("an answer goes as a steer that wakes the session", async () => {
     const calls: Array<Synthetic> = []
-    const courier = layer(host(new Map([["ses_a", []]]), calls), () => "msg_1")
+    const courier = layer(host(new Map([["ses_a", []]]), calls), Effect.succeed("msg_1"))
     await Effect.runPromise(
       Courier.use((service) => service.deliver("ses_a", "msg_1", { text: "A", description: "answered · Q → A", metadata: { source: "questions", answers: [] } })).pipe(
         Effect.provide(courier),
@@ -49,7 +49,7 @@ describe("delivering through the host", () => {
 
   test("a notice goes as a steer that does not wake the session", async () => {
     const calls: Array<Synthetic> = []
-    const courier = layer(host(new Map([["ses_root", []]]), calls), () => "msg_2")
+    const courier = layer(host(new Map([["ses_root", []]]), calls), Effect.succeed("msg_2"))
     await Effect.runPromise(
       Courier.use((service) => service.notify("ses_root", "msg_2", { text: "N", description: "x's question q1 answered · Q → A", metadata: { source: "questions", answers: [] } })).pipe(
         Effect.provide(courier),
