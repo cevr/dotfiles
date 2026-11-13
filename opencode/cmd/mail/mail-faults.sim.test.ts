@@ -13,12 +13,13 @@
 // no answer lost) to another session is delivered; no pairing secret reaches a
 // model. Each seed runs twice and the two runs' traces are byte-equal.
 import { describe } from "bun:test"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
 import * as MemoryPairs from "@dotfiles/opencode-mail/memory/pairs"
 import { DEFAULT_PORT, ROUTES } from "@dotfiles/opencode-mail/peer"
 import * as Hosts from "../../sim/hosts.ts"
 import * as Plugins from "../../sim/plugins.ts"
+import * as Read from "../../sim/readings.ts"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -35,6 +36,7 @@ const WORK = "/scratch/work"
 const HOSTS = ["mac", "workbox"] as const
 type HostName = (typeof HOSTS)[number]
 const ADDRESS: Record<HostName, string> = { mac: "100.64.0.1", workbox: "100.64.0.2" }
+const OTHER: Record<HostName, HostName> = { mac: "workbox", workbox: "mac" }
 const SECRET = "k".repeat(43)
 
 type Command =
@@ -61,18 +63,17 @@ const commandsOf = (seed: number): ReadonlyArray<Command> => {
   return Array.from({ length: 10 + below(random, 21) }, () => commandOf(below(random, 15), random))
 }
 
-/** The model: `mail-send <id> <text>` last messages that id; a tool's result or a letter closes the turn. */
+/** The model: a user's `mail-send <id> <text>` messages that id; anything else (a tool's result, a letter) closes the turn. */
 const model =
-  (host: { world?: World.World }): World.Script =>
+  (worlds: ReadonlyMap<HostName, World.World>, host: HostName): World.Script =>
   (request) => {
     if (request.kind === "title") return World.say("Mail")
-    const last = Option.fromNullishOr(host.world?.context(request.sessionID).at(-1))
-    const send = Option.flatMap(last, (message) =>
-      Option.fromNullishOr(message.type === "user" ? /mail-send (ses_[A-Za-z0-9]+) (\S+)/.exec(message.text) : null),
-    )
-    return Option.match(send, {
+    const said = Read.last(Option.fromNullishOr(worlds.get(host)), request.sessionID).pipe(Option.filter((spoken) => spoken.role === "user"))
+    const to = Option.flatMap(said, (spoken) => Read.group(/mail-send (ses_[A-Za-z0-9]+) \S+/, spoken.text))
+    const text = Option.flatMap(said, (spoken) => Read.group(/mail-send ses_[A-Za-z0-9]+ (\S+)/, spoken.text))
+    return Option.match(Option.all([to, text]), {
       onNone: () => World.say("done"),
-      onSome: (match) => World.call(`call_${match[2]}`, "message", { to: match[1] ?? "", text: match[2] ?? "" }),
+      onSome: ([id, tag]) => World.call(`call_${tag}`, "message", { to: id, text: tag }),
     })
   }
 
@@ -80,116 +81,173 @@ const model =
 const paired = (name: HostName, other: HostName) =>
   MemoryPairs.make({ name, peers: { [other]: { url: `http://${ADDRESS[other]}:${DEFAULT_PORT}`, secret: SECRET, paired: World.START } }, invites: [] })
 
-/** One run of `commands` on `seed`: both hosts' traces. */
-const run = (seed: number, commands: ReadonlyArray<Command>, expect: Seed.Seeded["expect"]) =>
+interface Session {
+  readonly host: HostName
+  readonly id: string
+}
+
+interface Letter {
+  readonly tag: string
+  readonly to: string
+  readonly from: string
+  /** Sent with nothing cut and no answer lost. */
+  readonly sound: boolean
+}
+
+/** One run's hosts, network and sessions, and what has been sent and which faults are on. */
+interface Run {
+  readonly network: MemoryNet.Network
+  readonly worlds: ReadonlyMap<HostName, World.World>
+  readonly mac: World.World
+  readonly sessions: ReadonlyArray<Session>
+  readonly cut: Set<HostName>
+  readonly lost: Set<HostName>
+  readonly sent: Array<Letter>
+}
+
+/** Both hosts on one network, the mail plugin listening on each, two sessions on each. */
+const boot = (seed: number) =>
   Effect.gen(function* () {
-    const network = MemoryNet.make({ latency: Effect.sleep("20 millis") })
-    const holders: Record<HostName, { world?: World.World }> = { mac: {}, workbox: {} }
-    const mac = World.make({ seed, script: model(holders.mac), latency: [100, 400] })
-    const workbox = Hosts.beside(mac, { script: model(holders.workbox), latency: [100, 400] })
-    const worlds: Record<HostName, World.World> = { mac, workbox }
-    holders.mac.world = mac
-    holders.workbox.world = workbox
-    const pairs: Record<HostName, MemoryPairs.MemoryPairs> = { mac: paired("mac", "workbox"), workbox: paired("workbox", "mac") }
-    for (const name of HOSTS) yield* worlds[name].load(Plugins.mail(network, pairs[name], ADDRESS[name]), { directory: WORK, options: { listen: { hostname: ADDRESS[name] } } })
-    const sessions: ReadonlyArray<{ readonly host: HostName; readonly id: string }> = [
+    const network = MemoryNet.make({ latencyMs: 20 })
+    const worlds = new Map<HostName, World.World>()
+    const mac = World.make({ seed, script: model(worlds, "mac"), latency: [100, 400] })
+    const workbox = Hosts.beside(mac, { script: model(worlds, "workbox"), latency: [100, 400] })
+    worlds.set("mac", mac).set("workbox", workbox)
+    for (const [name, world] of worlds)
+      yield* world.load(Plugins.mail(network, paired(name, OTHER[name]), ADDRESS[name]), {
+        directory: WORK,
+        options: { listen: { hostname: ADDRESS[name] } },
+      })
+    const sessions: ReadonlyArray<Session> = [
       { host: "mac", id: yield* mac.session(WORK, { title: "Mac one" }) },
       { host: "mac", id: yield* mac.session(WORK, { title: "Mac two" }) },
       { host: "workbox", id: yield* workbox.session(WORK, { title: "Workbox one" }) },
       { host: "workbox", id: yield* workbox.session(WORK, { title: "Workbox two" }) },
     ]
-    const faults = { cut: new Set<HostName>(), lost: new Set<HostName>() }
-    const sent: Array<{ readonly tag: string; readonly to: string; readonly from: string; readonly sound: boolean }> = []
-    const rest = () => sessions.every((session) => worlds[session.host].sessions.get(session.id)?.running !== true)
-    const settle = mac.until(rest, 10 * 60_000, 100)
-
-    /** The letters with `tag` each session holds. */
-    const holding = (tag: string) =>
-      sessions.map(
-        (session) =>
-          worlds[session.host].messages(session.id).filter((message) => message.type === "synthetic" && message.text.endsWith(`\n${tag}`)).length,
-      )
-    const receiptOf = (from: string, tag: string) =>
-      Option.fromNullishOr(
-        sessions
-          .flatMap((session) => worlds[session.host].messages(session.id))
-          .find((message) => message.type === "tool" && message.callID === `call_${tag}` && from !== ""),
-      )
-
-    const check = () => {
-      for (const letter of sent) {
-        const held = holding(letter.tag)
-        const at = sessions.findIndex((session) => session.id === letter.to)
-        // At most once, and only by the session it was sent to.
-        expect({ tag: letter.tag, held: held.filter((count, index) => index !== at && count > 0) }).toEqual({ tag: letter.tag, held: [] })
-        expect({ tag: letter.tag, once: (held[at] ?? 0) <= 1 }).toEqual({ tag: letter.tag, once: true })
-        const receipt = receiptOf(letter.from, letter.tag)
-        const delivered = Option.exists(receipt, (message) => message.type === "tool" && !message.error && message.output.startsWith("Delivered"))
-        if (delivered) expect({ tag: letter.tag, receiptHeld: held[at] }).toEqual({ tag: letter.tag, receiptHeld: 1 })
-        if (letter.sound && letter.to !== letter.from) expect({ tag: letter.tag, soundDelivered: delivered }).toEqual({ tag: letter.tag, soundDelivered: true })
-      }
-      const requests = [...mac.asked(), ...workbox.asked()].map((asked) => asked.text).join("\n")
-      expect(requests.includes(SECRET)).toBe(false)
-    }
-
-    for (const [index, command] of commands.entries()) {
-      if (command.type === "send") {
-        const from = sessions[command.from] ?? sessions[0]
-        const to = sessions[command.to] ?? sessions[0]
-        const tag = `letter${index}`
-        const sound = faults.cut.size === 0 && faults.lost.size === 0
-        sent.push({ tag, to: to?.id ?? "", from: from?.id ?? "", sound })
-        yield* worlds[from?.host ?? "mac"].prompt(from?.id ?? "", `mail-send ${to?.id} ${tag}`)
-      }
-      if (command.type === "cut") {
-        network.cut(ADDRESS[command.host], command.off)
-        if (command.off) faults.cut.add(command.host)
-        else faults.cut.delete(command.host)
-      }
-      if (command.type === "lose") {
-        network.lose(ADDRESS[command.host], command.losing)
-        if (command.losing) faults.lost.add(command.host)
-        else faults.lost.delete(command.host)
-      }
-      if (command.type === "reload") yield* worlds[command.host].restart
-      if (command.type === "replay") {
-        const last = network
-          .sent()
-          .filter((request) => request.from === ADDRESS[command.host] && request.url.endsWith(ROUTES.receive))
-          .at(-1)
-        if (last !== undefined)
-          yield* Hosts.command(worlds[command.host], network.net(ADDRESS[command.host]).post(last.url, { headers: last.headers, body: last.body }, 10_000))
-      }
-      if (command.type === "advance") yield* mac.advance(command.ms)
-      yield* settle
-      // A reload's listener binds again within its retry: let it.
-      check()
-    }
-    return `${mac.trace()}\n----\n${workbox.trace()}`
+    const run: Run = { network, worlds, mac, sessions, cut: new Set(), lost: new Set(), sent: [] }
+    return run
   })
+
+const worldOf = (run: Run, host: HostName) => Option.getOrElse(Option.fromNullishOr(run.worlds.get(host)), () => run.mac)
+
+/** The letters with `tag` each session holds. */
+const holding = (run: Run, tag: string) =>
+  run.sessions.map(
+    (session) =>
+      worldOf(run, session.host)
+        .messages(session.id)
+        .filter((message) => message.type === "synthetic" && message.text.endsWith(`\n${tag}`)).length,
+  )
+
+/** Whether the sender's message tool said the letter was delivered. */
+const delivered = (run: Run, tag: string) =>
+  run.sessions
+    .flatMap((session) => worldOf(run, session.host).messages(session.id))
+    .some((message) => message.type === "tool" && message.callID === `call_${tag}` && !message.error && message.output.startsWith("Delivered"))
+
+/** The invariants, with every session at rest. */
+const check = (run: Run, expect: Seed.Seeded["expect"]) => {
+  for (const letter of run.sent) {
+    const held = holding(run, letter.tag)
+    const at = run.sessions.findIndex((session) => session.id === letter.to)
+    const own = Option.getOrElse(Option.fromNullishOr(held[at]), () => 0)
+    // At most once, and only by the session it was sent to.
+    expect({ tag: letter.tag, held: held.filter((count, index) => index !== at && count > 0) }).toEqual({ tag: letter.tag, held: [] })
+    expect({ tag: letter.tag, once: own <= 1 }).toEqual({ tag: letter.tag, once: true })
+    const receipt = delivered(run, letter.tag)
+    if (receipt) expect({ tag: letter.tag, receiptHeld: own }).toEqual({ tag: letter.tag, receiptHeld: 1 })
+    if (letter.sound && letter.to !== letter.from) expect({ tag: letter.tag, soundDelivered: receipt }).toEqual({ tag: letter.tag, soundDelivered: true })
+  }
+  const requests = [...run.worlds.values()].flatMap((world) => world.asked().map((asked) => asked.text)).join("\n")
+  expect(requests.includes(SECRET)).toBe(false)
+}
+
+/** A session messages another, the letter tagged by the command's index. */
+const send = (run: Run, index: number, from: Session, to: Session) => {
+  const tag = `letter${index}`
+  run.sent.push({ tag, to: to.id, from: from.id, sound: run.cut.size === 0 && run.lost.size === 0 })
+  return worldOf(run, from.host).prompt(from.id, `mail-send ${to.id} ${tag}`)
+}
+
+/** A fault on or off, on the network and in the run's record. */
+const fault = (faults: Set<HostName>, host: HostName, on: boolean) => {
+  if (on) faults.add(host)
+  else faults.delete(host)
+}
+
+/** The host posts again the last parcel it sent, headers and all. */
+const replay = (run: Run, host: HostName) =>
+  Option.match(Option.fromNullishOr(run.network.sent().filter((request) => request.from === ADDRESS[host] && request.url.endsWith(ROUTES.receive)).at(-1)), {
+    onNone: () => Effect.void,
+    onSome: (last) => Hosts.command(worldOf(run, host), run.network.net(ADDRESS[host]).post(last.url, { headers: last.headers, body: last.body }, 10_000)),
+  })
+
+const apply = (run: Run, index: number, command: Command): Effect.Effect<unknown, World.SimError> => {
+  switch (command.type) {
+    case "send":
+      return Option.match(Option.all([Option.fromNullishOr(run.sessions[command.from]), Option.fromNullishOr(run.sessions[command.to])]), {
+        onNone: () => Effect.void,
+        onSome: ([from, to]) => send(run, index, from, to),
+      })
+    case "cut":
+      return Effect.sync(() => {
+        run.network.cut(ADDRESS[command.host], command.off)
+        fault(run.cut, command.host, command.off)
+      })
+    case "lose":
+      return Effect.sync(() => {
+        run.network.lose(ADDRESS[command.host], command.losing)
+        fault(run.lost, command.host, command.losing)
+      })
+    case "reload":
+      return worldOf(run, command.host).restart
+    case "replay":
+      return replay(run, command.host)
+    case "advance":
+      return run.mac.advance(command.ms)
+  }
+}
+
+/** One run of `commands` on `seed`, checked after each: both hosts' traces. */
+const run = (seed: number, commands: ReadonlyArray<Command>, expect: Seed.Seeded["expect"]) =>
+  Effect.gen(function* () {
+    const state = yield* boot(seed)
+    const rest = () => state.sessions.every((session) => Read.idle(worldOf(state, session.host), session.id))
+    for (const [index, command] of commands.entries()) {
+      yield* apply(state, index, command)
+      // A reload's listener binds again within its retry: the wait lets it.
+      yield* state.mac.until(rest, 10 * 60_000, 100)
+      check(state, expect)
+    }
+    return [...state.worlds.values()].map((world) => world.trace()).join("\n----\n")
+  })
+
+const Refusal = Schema.fromJsonString(Schema.Struct({ reason: Schema.String }))
 
 describe("session mail over a faulty network", () => {
   seeded("a parcel replayed after the receiving host's reload is refused, and its letter is held once", ({ seed, expect }) =>
     Effect.gen(function* () {
-      const network = MemoryNet.make({ latency: Effect.sleep("20 millis") })
-      const holder: { world?: World.World } = {}
-      const mac = World.make({ seed, script: model(holder) })
-      holder.world = mac
+      const network = MemoryNet.make({ latencyMs: 20 })
+      const worlds = new Map<HostName, World.World>()
+      const mac = World.make({ seed, script: model(worlds, "mac") })
       const workbox = Hosts.beside(mac, { script: () => World.say("read") })
-      const pairs = { mac: paired("mac", "workbox"), workbox: paired("workbox", "mac") }
-      yield* mac.load(Plugins.mail(network, pairs.mac, ADDRESS.mac), { directory: WORK, options: { listen: { hostname: ADDRESS.mac } } })
-      yield* workbox.load(Plugins.mail(network, pairs.workbox, ADDRESS.workbox), { directory: WORK, options: { listen: { hostname: ADDRESS.workbox } } })
+      worlds.set("mac", mac).set("workbox", workbox)
+      yield* mac.load(Plugins.mail(network, paired("mac", "workbox"), ADDRESS.mac), { directory: WORK, options: { listen: { hostname: ADDRESS.mac } } })
+      yield* workbox.load(Plugins.mail(network, paired("workbox", "mac"), ADDRESS.workbox), { directory: WORK, options: { listen: { hostname: ADDRESS.workbox } } })
       const target = yield* workbox.session(WORK, { title: "Workbox one" })
       const sender = yield* mac.session(WORK, { title: "Mac one" })
       yield* mac.prompt(sender, `mail-send ${target} replayed`)
-      yield* mac.until(() => workbox.messages(target).some((message) => message.type === "synthetic"), 60_000)
-      const parcel = network.sent().filter((request) => request.url.endsWith(ROUTES.receive)).at(-1)
-      expect(parcel).toBeDefined()
+      yield* mac.until(() => Read.synthetic(workbox, target, "mail").length > 0, 60_000)
+      const parcel = Option.fromNullishOr(network.sent().filter((request) => request.url.endsWith(ROUTES.receive)).at(-1))
+      expect(Option.isSome(parcel)).toBe(true)
       yield* workbox.restart
       yield* mac.advance(1_000)
-      const replayed = yield* Hosts.run(mac, network.net(ADDRESS.mac).post(parcel?.url ?? "", { headers: parcel?.headers ?? {}, body: parcel?.body ?? "" }, 10_000))
-      expect([replayed.status, replayed.body]).toEqual([401, JSON.stringify({ reason: "the request was signed before this listener started" })])
-      expect(workbox.messages(target).filter((message) => message.type === "synthetic")).toHaveLength(1)
+      const replayed = yield* Option.match(parcel, {
+        onNone: () => Effect.succeed({ status: 0, body: '{"reason":"nothing sent"}' }),
+        onSome: (sent) => Hosts.run(mac, network.net(ADDRESS.mac).post(sent.url, { headers: sent.headers, body: sent.body }, 10_000)),
+      })
+      expect([replayed.status, Schema.decodeUnknownSync(Refusal)(replayed.body)]).toEqual([401, { reason: "the request was signed before this listener started" }])
+      expect(Read.synthetic(workbox, target, "mail")).toHaveLength(1)
     }),
   )
 

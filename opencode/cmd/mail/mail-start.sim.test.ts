@@ -11,12 +11,12 @@
 // through the launcher daily writes, loads the resident location, so the
 // plugin starts with the service.
 import { describe } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
 import * as MemoryPairs from "@dotfiles/opencode-mail/memory/pairs"
 import { keyed } from "@dotfiles/opencode-mail/node/keyed"
 import { sign } from "@dotfiles/opencode-mail/pairing"
-import { ROUTES } from "@dotfiles/opencode-mail/peer"
+import { Parcel, ROUTES } from "@dotfiles/opencode-mail/peer"
 import * as Hosts from "../../sim/hosts.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
@@ -29,19 +29,21 @@ const ADDRESS = { workbox: "100.64.0.2", mac: "100.64.0.1" }
 const SECRET = "s".repeat(43)
 
 const Answer = Schema.fromJsonString(Schema.Unknown)
+const ParcelJson = Schema.fromJsonString(Parcel)
 
 describe("the mail listener from the service's start", () => {
   seeded("a fresh service, with no client, session or turn, accepts a signed delivery from a paired host", ({ seed, expect }) =>
     Effect.gen(function* () {
       const world = World.make({ seed, script: () => World.say("") })
-      const network = MemoryNet.make({ latency: Effect.sleep("5 millis") })
+      const network = MemoryNet.make({ latencyMs: 5 })
       const pairs = MemoryPairs.make({ name: "workbox", peers: { mac: { url: `http://${ADDRESS.mac}:9`, secret: SECRET, paired: world.now() } }, invites: [] })
       yield* world.load(Plugins.mail(network, pairs, ADDRESS.workbox), { directory: "/home/resident", options: { listen: { hostname: ADDRESS.workbox, port: 0 } } })
 
       // Nothing else asks the host anything.
-      yield* world.until(() => typeof pairs.read().url === "string", 60_000, 10)
-      const url = pairs.read().url ?? ""
-      const body = JSON.stringify({ to: "ses_nobody", from: { id: "ses_mac", title: "Mac main" }, replyTo: { id: "ses_mac", title: "Mac main" }, body: "hello", wake: false })
+      const address = () => Option.fromNullishOr(pairs.read().url)
+      yield* world.until(() => Option.isSome(address()), 60_000, 10)
+      const url = Option.getOrElse(address(), () => "")
+      const body = Schema.encodeSync(ParcelJson)({ to: "ses_nobody", from: { id: "ses_mac", title: "Mac main" }, replyTo: { id: "ses_mac", title: "Mac main" }, body: "hello", wake: false })
       const headers = sign("mac", SECRET, { method: "POST", path: ROUTES.receive, body }, world.now(), "n".repeat(22), keyed)
       const response = yield* Hosts.run(world, network.net(ADDRESS.mac).post(new URL(ROUTES.receive, url).href, { headers, body }, 10_000))
       // Authenticated and handled: a session this server lacks is `unknown`, not a refusal.

@@ -95,6 +95,9 @@ export const probeOf = (ctx: Plugin.Context) =>
 
 const fresh = (ctx: Plugin.Context) => ctx.session.create({ title: "law" })
 
+/** A session as `session.get` answers it. */
+type SessionInfo = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
+
 /** What a session's context holds, as one JSON text, for a law to look into. */
 const contextText = (ctx: Plugin.Context, sessionID: SessionID) =>
   ctx.session.context({ sessionID }).pipe(Effect.flatMap((messages) => Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(messages)))
@@ -564,11 +567,11 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(Schema.is(Schema.Struct({ _tag: Schema.Literal("Session.NotFoundError") }))(refused), "a synthetic message to an unknown id did not fail as not found")
 
         const session = yield* fresh(ctx)
-        const millis = (time: DateTime.Utc | undefined) => Option.map(Option.fromNullishOr(time), DateTime.toEpochMillis)
-        const runs = (info: { readonly time: { readonly busy?: DateTime.Utc | undefined; readonly idle?: DateTime.Utc | undefined } }) =>
-          Option.match(millis(info.time.busy), {
+        const runs = (info: SessionInfo) =>
+          Option.match(Option.map(Option.fromNullishOr(info.time.busy), DateTime.toEpochMillis), {
             onNone: () => false,
-            onSome: (busy) => Option.match(millis(info.time.idle), { onNone: () => true, onSome: (idle) => busy > idle }),
+            onSome: (busy) =>
+              Option.match(Option.map(Option.fromNullishOr(info.time.idle), DateTime.toEpochMillis), { onNone: () => true, onSome: (idle) => busy > idle }),
           })
         const seen = yield* Ref.make<ReadonlyArray<boolean>>([])
         const steered = yield* Ref.make(false)

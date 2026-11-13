@@ -7,7 +7,7 @@
 // listener answers on its own fibers, with the services it listened with (its
 // clock, its logger, its plugin copy), in the scope it listened in: a request
 // it is answering when that scope closes is cut off, and its sender sees the
-// connection close. A request takes `latency` each way, on the clock of the
+// connection close. A request takes `latencyMs` each way, on the clock of the
 // fiber that sends it.
 //
 // Faults, for a test to set: a host `cut` off the wire (what it sends and what
@@ -43,8 +43,8 @@ const target = (url: string) =>
 const headerOf = (headers: Readonly<Record<string, string>>) => (name: string) =>
   Option.getOrUndefined(Option.map(Option.fromNullishOr(Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())), ([, value]) => value))
 
-export const make = (options: { readonly latency?: Effect.Effect<void> } = {}) => {
-  const latency = Option.getOrElse(Option.fromNullishOr(options.latency), () => Effect.void)
+export const make = (options: { readonly latencyMs?: number } = {}) => {
+  const latency = Effect.sleep(Option.getOrElse(Option.fromNullishOr(options.latencyMs), () => 0))
   const listening = new Map<string, Listening>()
   const cut = new Set<string>()
   const lost = new Set<string>()
