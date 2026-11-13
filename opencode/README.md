@@ -2979,8 +2979,12 @@ Bun's version, the fork's path, commit, diff and lock file, the ledger's
 version), not the lint policy or the gate. A file is **due** when the ledger
 holds no pass with its current key younger than 24 h, so a fork change makes
 every file due, and a pass expires after a day (the daily run). A pass needs
-exit 0, tests that ran with none failed or skipped (without `OPENCODE_DEV` the
-real-OpenCode tests skip: no pass), no leaked server and no bun test flags.
+exit 0, tests that ran with none failed, no leaked server and no bun test
+flags. A skipped test means no pass unless the file declares it with
+`// accept: may skip <n> (<why>)` and `OPENCODE_DEV` is set: then up to `<n>`
+tests may skip, as long as one ran (`tests/idle-compact.test.ts` runs one of
+two cases by the fork's version). An undeclared skip, or any skip without
+`OPENCODE_DEV`, is owed.
 Inputs outside `opencode/` are in no key: `tests/orchestrate.test.ts` reads
 `../skills/orchestrate`, so a skill change reaches it only through the 24 h
 expiry.

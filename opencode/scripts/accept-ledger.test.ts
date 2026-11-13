@@ -6,7 +6,8 @@
 // move the clock up to 30 h; a land run with drawn durations, load and
 // failures; an owed run; a run killed at a drawn write; a corrupt ledger) and
 // after each one the real pure functions must agree with the model (I1 to I8 of
-// the unit's spec). A failure names the seed and the command.
+// the unit's spec, and I9: a skip the file does not declare never passes). A
+// failure names the seed and the command.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
 import * as Accept from "./accept-ledger.ts"
@@ -60,7 +61,12 @@ interface File {
   readonly packages: ReadonlyArray<string>
   readonly outside: ReadonlyArray<string>
   readonly names: ReadonlyArray<string>
+  /** How many of its 3 tests it declares it may skip (`// accept: may skip <n> (<why>)`), 0 when it declares none. */
+  readonly declared: number
 }
+
+/** Each run of a file in the model has this many tests. */
+const TESTS = 3
 
 /** What each scenario names: a scenario a file drives names a package, which the file then reaches. */
 const scenarioNames = (draw: Draw) => new Map(["scenarios/one.ts", "scenarios/two.ts"].map((file) => [file, [draw.pick(PACKAGES)]]))
@@ -72,11 +78,14 @@ const fileOf = (draw: Draw, name: string, scenarios: ReadonlyMap<string, Readonl
   const own = PACKAGES.filter(() => draw.chance(0.4))
   const packages = [...new Set([...own, ...driven])]
   const names = [...new Set([...own.filter(() => draw.chance(0.6)), ...driven])]
-  return { name, marker, deep: marker !== "", packages, outside, names }
+  return { name, marker, deep: marker !== "", packages, outside, names, declared: draw.pick([0, 0, 1, 2]) }
 }
 
-/** The text the real functions read: the marker, the packages it names, the scenarios it drives. */
-const textOf = (file: File) => `// ${file.name}\n${file.marker}${file.names.map((dir) => `// drives ${dir}\n`).join("")}${file.outside.map((each) => `// "${each}"\n`).join("")}`
+/** The skip marker a file's text carries, none when it declares no skip. */
+const skipLine = (file: File) => Arr.filter([`// accept: may skip ${file.declared} (its condition rules a case out)\n`], () => file.declared > 0).join("")
+
+/** The text the real functions read: the markers, the packages it names, the scenarios it drives. */
+const textOf = (file: File) => `// ${file.name}\n${file.marker}${skipLine(file)}${file.names.map((dir) => `// drives ${dir}\n`).join("")}${file.outside.map((each) => `// "${each}"\n`).join("")}`
 
 /** What `reach` gives for a file: itself, every file of each package it reaches (tests, benches and Markdown too), and the outside files. */
 const reachOf = (file: File) => new Set([file.name, ...file.packages.flatMap((dir) => [loaded(dir), ...packageOnly(dir)]), ...file.outside])
@@ -176,18 +185,21 @@ const playLand = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
   const order = Accept.landOrder(selection.run, near, (file) => Accept.estimate(ledger, file))
   const width = Accept.landWidth(CORES, draw.unit() * 30, Option.none())
   const window = Accept.windowOf(Accept.BUDGET_MS)
-  // Short files cycle the pool's slots, so starts fall all through the window; long ones meet the stop.
-  const durations = new Map(order.map((file) => [file, draw.below(draw.pick([15_000, 70_000]))]))
+  // Short files cycle the pool's slots, so starts fall all through the window; long ones meet the stop; and
+  // some free a slot between the start bound and the stop, where no file may start.
+  const durations = new Map(order.map((file) => [file, draw.pick([draw.below(15_000), draw.below(70_000), 45_500 + draw.below(1500)])]))
   const played = Accept.simulate(order, (file) => durations.get(file) ?? 0, width, window, draw.below(3000))
   const failing = new Set(order.filter(() => draw.chance(0.2)))
   const ran = [...played.ran].sort((left, right) => left.end - right.end)
+  const skips: Array<string> = []
   const ended = ran.map((slot): Accept.Outcome => {
     if (slot.stopped) return { file: slot.file, status: "owed", why: "budget", detail: "stopped" }
     if (failing.has(slot.file)) return { file: slot.file, status: "failed", ms: slot.end - slot.start, reason: "drawn" }
-    return { file: slot.file, status: "passed", ms: slot.end - slot.start }
+    return finished(draw, byName.get(slot.file)!, slot.end - slot.start, skips)
   })
   const unstarted = played.unstarted.map((file): Accept.Outcome => ({ file, status: "owed", why: "budget", detail: "not started" }))
   const problems = [
+    ...skips,
     ...ran.filter((slot) => !(slot.start < 45_000)).map((slot) => `I4: ${slot.file} started at ${slot.start} ms`),
     ...ran.filter((slot) => slot.end > 50_000).map((slot) => `I4: ${slot.file} ran to ${slot.end} ms, past the stop`),
     ...unless(window.stopAt === 50_000 && window.startBy === 45_000, `I4: the window is ${window.startBy}/${window.stopAt}`),
@@ -207,11 +219,28 @@ const orderProblems = (order: ReadonlyArray<string>, near: ReadonlyArray<string>
 /** An owed run on the model: every due file, drawn failures, no deadline. */
 const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: ReadonlyMap<string, string>, failures: boolean): Played => {
   const selection = Accept.select("owed", candidatesOf(model, keys), ledger, model.now)
+  const byName = new Map(model.files.map((file) => [file.name, file]))
+  const skips: Array<string> = []
   const ended = selection.run.map((file): Accept.Outcome => {
     if (failures && draw.chance(0.2)) return { file, status: "failed", ms: 1000, reason: "drawn" }
-    return { file, status: "passed", ms: 1000 }
+    return finished(draw, byName.get(file)!, 1000, skips)
   })
-  return { ended, selection, problems: [] }
+  return { ended, selection, problems: skips }
+}
+
+/**
+ * A file that ran to its end without a failure, through the real verdict, with a drawn number of skipped tests
+ * and a drawn fork. I9: it passes only when it skipped nothing, or (with the fork) no more than it declares and not
+ * every test; an undeclared skip, or any skip without the fork, never passes.
+ */
+const finished = (draw: Draw, file: File, ms: number, problems: Array<string>): Accept.Outcome => {
+  const skipped = draw.pick([0, 0, 0, 0, 1, 2, TESTS])
+  const forked = draw.chance(0.85)
+  const report = Option.some({ tests: TESTS, failures: 0, skipped })
+  const outcome = Accept.verdict({ file: file.name, code: 0, report, leaked: false, ms, recordable: true, forked, declared: Accept.declaredSkips(textOf(file)) })
+  const expected = skipped === 0 || (forked && skipped <= file.declared && skipped < TESTS)
+  problems.push(...unless((outcome.status === "passed") === expected, `I9: ${file.name} skipped ${skipped} of ${TESTS} (declares ${file.declared}, fork ${forked}) and ended ${outcome.status}`))
+  return outcome
 }
 
 /** Plays a run's outcomes into the ledger on the model's disk, one whole write each, stopping at a drawn kill. */
@@ -357,7 +386,7 @@ const playSeed = (seed: number): ReadonlyArray<string> => {
 }
 
 describe("the acceptance ledger against its model", () => {
-  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I8`, () => {
+  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I9`, () => {
     const problems = Array.from({ length: SEEDS }, (_, seed) => playSeed(seed + 1)).flat()
     expect(problems.slice(0, 5)).toEqual([])
   })
@@ -374,22 +403,37 @@ describe("the acceptance ledger against its model", () => {
     expect([Accept.landWidth(12, 2, Option.none()), Accept.landWidth(12, 80, Option.none()), Accept.landWidth(12, 0, Option.some(3))]).toEqual([10, 4, 3])
   })
 
-  test("a pass needs exit 0, tests that ran and none failed, no skip without the fork, no leak and no narrowing flags", () => {
+  test("a pass needs exit 0, tests that ran and none failed, no skip but declared ones with the fork, no leak and no narrowing flags", () => {
     const report = (tests: number, failures: number, skipped: number) => Accept.parseReport(`<testsuites name="bun test" tests="${tests}" assertions="1" failures="${failures}" skipped="${skipped}" time="1">`)
-    const base = { file: "tests/x.test.ts", code: 0, report: report(3, 0, 0), leaked: false, ms: 10, recordable: true, forked: true }
+    const base = { file: "tests/x.test.ts", code: 0, report: report(3, 0, 0), leaked: false, ms: 10, recordable: true, forked: true, declared: 0 }
     const statuses = [
       base,
       { ...base, code: 1 },
       { ...base, report: report(3, 1, 0) },
-      { ...base, report: report(3, 0, 3) },
+      { ...base, report: report(3, 0, 3), declared: 3 },
       { ...base, report: report(3, 0, 1) },
-      { ...base, report: report(3, 0, 1), forked: false },
+      { ...base, report: report(3, 0, 1), declared: 1 },
+      { ...base, report: report(3, 0, 2), declared: 1 },
+      { ...base, report: report(3, 0, 1), declared: 1, forked: false },
       { ...base, forked: false },
       { ...base, report: report(0, 0, 0) },
       { ...base, report: Accept.parseReport("") },
       { ...base, leaked: true },
       { ...base, recordable: false },
     ].map((finish) => Accept.verdict(finish).status)
-    expect(statuses).toEqual(["passed", "failed", "failed", "owed", "passed", "owed", "passed", "owed", "failed", "failed", "owed"])
+    expect(statuses).toEqual(["passed", "failed", "failed", "owed", "owed", "passed", "owed", "owed", "passed", "owed", "failed", "failed", "owed"])
+  })
+
+  test("a skip is declared by the marker line with a count and a reason, nothing else", () => {
+    expect(
+      [
+        "// accept: may skip 1 (the fork's version picks one case)\n",
+        "x\n// accept: may skip 2 (two hosts)\n",
+        "// accept: may skip 1\n",
+        "// accept: may skip one (why)\n",
+        'const note = "// accept: may skip 1 (why)"\n',
+        "",
+      ].map(Accept.declaredSkips),
+    ).toEqual([1, 2, 0, 0, 0, 0])
   })
 })

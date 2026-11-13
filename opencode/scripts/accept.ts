@@ -244,7 +244,7 @@ const runFile = Effect.fn("Accept.runFile")(function* (run: Run, file: string) {
     return Accept.owe(file, ended.why.value, `stopped after ${seconds(ms)}`)
   }
   const leakedAny = yield* leaked(running.watching.stop(), Accept.leakGrace(window, elapsed()))
-  const outcome = Accept.verdict({ file, code: ended.code, report: Accept.parseReport(Option.getOrElse(disk.read(report), () => "")), leaked: leakedAny, ms, recordable: rest.length === 0, forked: Boolean(ENV.OPENCODE_DEV) })
+  const outcome = Accept.verdict({ file, code: ended.code, report: Accept.parseReport(Option.getOrElse(disk.read(report), () => "")), leaked: leakedAny, ms, recordable: rest.length === 0, forked: Boolean(ENV.OPENCODE_DEV), declared: Accept.declaredSkips(run.text(file)) })
   if (outcome.status === "failed") yield* say(ended.output, `accept: failed ${file} in ${seconds(ms)}: ${outcome.reason}`)
   else yield* say(`accept: ${outcome.status} ${file} in ${seconds(ms)}`)
   settle(run, outcome)

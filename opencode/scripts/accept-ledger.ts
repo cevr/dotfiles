@@ -267,9 +267,17 @@ export interface Finish {
   readonly recordable: boolean
   /** Whether OPENCODE_DEV named a checked fork: without one, any skipped test means the file did not prove itself. */
   readonly forked: boolean
+  /** How many skipped tests the file declares (`declaredSkips`); a skip past it means no pass. */
+  readonly declared: number
 }
 
-/** A finished file's outcome: a pass needs exit 0, a report with tests and no failure, no skip without the fork (with it, not every test skipped), no leak, and no narrowing flags. */
+/** The marker of a file that skips some cases by design: `// accept: may skip <n> (<why>)`. */
+export const SKIP_MARKER = /^\/\/ accept: may skip (\d+) \((.+)\)$/m
+
+/** How many tests a file declares it may skip, with a reason; 0 without the marker. */
+export const declaredSkips = (text: string) => Option.getOrElse(Option.map(Option.fromNullishOr(SKIP_MARKER.exec(text)), (match) => Number(match[1])), () => 0)
+
+/** A finished file's outcome: a pass needs exit 0, a report with tests and no failure, no skip but those the file declares (none without the fork, never all), no leak, and no narrowing flags. */
 export const verdict = (finish: Finish): Outcome => {
   const { file, ms } = finish
   if (finish.leaked) return { file, status: "failed", ms, reason: "it left an OpenCode server or drive run behind" }
@@ -278,9 +286,10 @@ export const verdict = (finish: Finish): Outcome => {
     onNone: () => ({ file, status: "failed", ms, reason: "bun test wrote no report" }),
     onSome: (report): Outcome => {
       if (report.failures > 0) return { file, status: "failed", ms, reason: `${report.failures} tests failed` }
-      // With the fork a file may skip a case its own condition rules out (idle-compact runs one of two by the fork's
-      // version), as long as one ran; without it a skip is the fork's tests skipping, and never passes.
-      if (report.skipped >= report.tests || (report.skipped > 0 && !finish.forked))
+      // With the fork a file may skip only the cases it declares (`// accept: may skip <n> (<why>)`: idle-compact runs
+      // one of two by the fork's version), and one must run; an undeclared skip is an assertion lost, and never passes.
+      // Without the fork a skip is the fork's tests skipping, and never passes.
+      if (report.skipped >= report.tests || report.skipped > finish.declared || (report.skipped > 0 && !finish.forked))
         return owe(file, "skipped", `${report.skipped} of ${report.tests} tests skipped: no pass recorded`)
       if (!finish.recordable) return owe(file, "skipped", "bun test flags narrowed it: no pass recorded")
       return { file, status: "passed", ms }
