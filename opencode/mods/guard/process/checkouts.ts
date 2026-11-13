@@ -28,15 +28,22 @@ export const mountPointOf = (df: string): Option.Option<string> => {
 const mountOf = (line: string): Option.Option<readonly [string, string]> =>
   Option.map(Option.fromNullishOr(/ on (.+) type (\S+) \(/.exec(line) ?? / on (.+) \(([^,)]+)[,)]/.exec(line)), (match) => [match[1] ?? "", match[2] ?? ""] as const)
 
-/** The file system type `mount` lists for the mount point; the last line for the point wins, as the last mount over it does. */
-export const filesystemOf = (mounts: string, point: string): Option.Option<string> =>
-  Option.map(
-    Arr.findLast(
-      Arr.flatMap(mounts.split("\n"), (line) => Option.toArray(mountOf(line))),
-      ([at]) => at === point,
-    ),
+/** Whether the mount at `at` holds `point`: it is `point`, or a directory above it. */
+const holds = (at: string, point: string) => at === point || at === "/" || point.startsWith(`${at}/`)
+
+/**
+ * The file system type `mount` lists for the mount point, else for the nearest mount above it: df names a btrfs
+ * subvolume (the workbox's `/workspaces/ergo`) as a mount point that `mount` does not list. The last line for a point
+ * wins, as the last mount over it does.
+ */
+export const filesystemOf = (mounts: string, point: string): Option.Option<string> => {
+  const holding = Arr.flatMap(mounts.split("\n"), (line) => Option.toArray(Option.filter(mountOf(line), ([at]) => holds(at, point))))
+  const nearest = Arr.reduce(holding, 0, (deepest, [at]) => Math.max(deepest, at.length))
+  return Option.map(
+    Arr.findLast(holding, ([at]) => at.length === nearest),
     ([, type]) => type,
   )
+}
 
 export interface Options {
   /** The `workrift` to list warm sources with: a name on PATH or a path. None found, no warm sources. */

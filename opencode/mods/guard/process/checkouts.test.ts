@@ -78,15 +78,19 @@ describe("reading df and mount", () => {
     expect(ProcessCheckouts.mountPointOf("Filesystem")).toEqual(Option.none())
   })
 
-  test("the type is mount's for that point, in Linux's and macOS's forms, the last mount over it winning", () => {
+  test("the type is mount's for that point, else for the nearest mount above it, in Linux's and macOS's forms, the last mount over it winning", () => {
     const linux = [
-      "/dev/vda on / type ext4 (rw,relatime)",
-      "/dev/loop0 on /workspaces type btrfs (rw,relatime,compress=zstd:3,discard=async)",
+      "/dev/vda on / type ext4 (rw,relatime,stripe=4)",
+      "/var/lib/bite-workspaces.btrfs on /workspaces type btrfs (rw,noatime,compress=zstd:3,discard=async,noacl,space_cache=v2,subvolid=5,subvol=/)",
       "tmpfs on /workspaces/tmp type tmpfs (rw)",
     ].join("\n")
     expect(ProcessCheckouts.filesystemOf(linux, "/")).toEqual(Option.some("ext4"))
     expect(ProcessCheckouts.filesystemOf(linux, "/workspaces")).toEqual(Option.some("btrfs"))
-    expect(ProcessCheckouts.filesystemOf(linux, "/home")).toEqual(Option.none())
+    // df names a btrfs subvolume (the workbox's warm source) as its own mount point; mount lists only /workspaces.
+    expect(ProcessCheckouts.filesystemOf(linux, "/workspaces/ergo")).toEqual(Option.some("btrfs"))
+    expect(ProcessCheckouts.filesystemOf(linux, "/workspaces/tmpdir")).toEqual(Option.some("btrfs"))
+    expect(ProcessCheckouts.filesystemOf(linux, "/home")).toEqual(Option.some("ext4"))
+    expect(ProcessCheckouts.filesystemOf("", "/home")).toEqual(Option.none())
     const mac = [
       "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)",
       "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)",
