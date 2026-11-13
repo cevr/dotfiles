@@ -23,6 +23,10 @@ export interface RiftBench {
   readonly stash: (path: string) => Effect.Effect<void>
   /** Moves the Rift at `path` to a new branch, as work in it would. */
   readonly switchTo: (path: string, branch: string) => Effect.Effect<void>
+  /** The warm source's HEAD commit, in full: a commit a new Rift can be detached at. */
+  readonly head: Effect.Effect<string>
+  /** A commit the repository and its origin lack. */
+  readonly missing: string
 }
 
 /** Runs `body` over a fresh bench, its Rifts provided, the bench's scope closed after; for an implementation's own cases too. */
@@ -124,6 +128,27 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             const ambiguous = yield* Effect.flip(find("run/lexer"))
             expect(ambiguous).toBeInstanceOf(AmbiguousRift)
             expect(ambiguous._tag === "AmbiguousRift" && ambiguous.matches).toEqual([`${lexer} (branch run/lexer)`, `${parser} (branch run/lexer)`])
+          }),
+        ),
+      timeout,
+    )
+
+    test(
+      "a Rift created at a commit is detached there; at a commit the repository lacks it fails RiftFailed and leaves no Rift",
+      () =>
+        check(bench, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const head = yield* made.head
+            const path = yield* rifts.create({ source: made.source, from: made.inside, name: "verify-batch-1", branch: "verify-batch-1", at: head })
+            const workspace = yield* rifts.inspect(path)
+            expect(workspace.branch).toBeUndefined()
+            expect(workspace.head.length).toBeGreaterThan(0)
+            expect(head.startsWith(workspace.head)).toBe(true)
+            const failed = yield* Effect.flip(rifts.create({ source: made.source, from: made.inside, name: "verify-batch-2", branch: "verify-batch-2", at: made.missing }))
+            expect(failed).toBeInstanceOf(RiftFailed)
+            expect(failed.message).toContain("was removed")
+            expect(yield* rifts.list(made.source)).toEqual([path])
           }),
         ),
       timeout,

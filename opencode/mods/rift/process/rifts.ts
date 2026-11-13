@@ -6,7 +6,7 @@
 // carrying what it printed.
 import { constants, copyFileSync, existsSync, readdirSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines } from "./command.ts"
@@ -97,19 +97,45 @@ export const layer = (options: Options) => {
     }
   })
 
+  /** Whether `at` names a commit in the checkout at `path`. */
+  const hasCommit = (path: string, at: string) =>
+    spawn(["git", "-C", path, "rev-parse", "--verify", "--quiet", `${at}^{commit}`], path).pipe(Effect.map((ran) => ran.code === 0))
+
+  /**
+   * Detaches a fresh Rift at `at`, fetching origin first when it lacks the commit (and asking origin for its default
+   * branch when `at` is `origin/HEAD`). A detach that fails removes the Rift, so no half-made one is left.
+   */
+  const detach = (path: string, at: string) =>
+    Effect.gen(function* () {
+      if (!(yield* hasCommit(path, at))) {
+        yield* spawn(["git", "-C", path, "fetch", "--quiet", "origin"], path)
+        if (at === "origin/HEAD") yield* spawn(["git", "-C", path, "remote", "set-head", "origin", "--auto"], path)
+      }
+      if (!(yield* hasCommit(path, at))) return yield* new RiftFailed({ operation: "git switch", message: `no commit ${at} here or on origin` })
+      yield* git(path, "switch", "--quiet", "--detach", at)
+    }).pipe(
+      Effect.catch((error: RiftFailed) =>
+        remove(path).pipe(
+          Effect.ignore,
+          Effect.andThen(Effect.fail(new RiftFailed({ operation: error.operation, message: `the Rift ${path} was removed: ${error.message}` }))),
+        ),
+      ),
+    )
+
   const create = Effect.fn("Rifts.create")(function* (request: CreateRequest) {
     if (options.workrift) {
       // From the caller's checkout, so workrift imports its gh stack metadata; the source is named outright.
       const out = yield* run(["workrift", "create", request.branch], existing(request.from), { WORKRIFT_SOURCE: request.source })
       const path = lines(out).at(-1)
       if (path === undefined) return yield* new RiftFailed({ operation: "workrift create", message: "it printed no workspace path" })
+      yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.void, onSome: (at) => detach(path, at) })
       return path
     }
     const out = yield* run(["rift", "create", request.source, "--copy-all", "--name", request.name], request.source)
     const path = lines(out).at(-1)
     if (path === undefined) return yield* new RiftFailed({ operation: "rift create", message: "it printed no workspace path" })
     if (existsSync(join(path, ".git"))) yield* restorePacks(path, request.source)
-    yield* checkout(path, request.branch)
+    yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.asVoid(checkout(path, request.branch)), onSome: (at) => detach(path, at) })
     return path
   })
 
