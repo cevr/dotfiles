@@ -206,15 +206,15 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       }
       if (command.role !== "verifier" || shadow.verifier !== command.name) return
       for (const unit of inState(shadow, "verify")) {
-        // A dead verifier gave no verdict: its units are landed and unverified again.
-        if (command.verdict === "none") shadow.units.set(unit, { ...shadow.units.get(unit)!, state: "landed", since: now })
+        // A dead or stopped verifier gave no verdict: its units are landed and unverified again.
+        if (command.verdict === "none" || command.verdict === "stopped") shadow.units.set(unit, { ...shadow.units.get(unit)!, state: "landed", since: now })
         else shadow.units.delete(unit)
       }
       shadow.verifier = undefined
       // A dead verifier's batch still waits for a verdict.
-      if (command.verdict === "none") for (const unit of shadow.covering) shadow.pending.add(unit)
+      if (command.verdict === "none" || command.verdict === "stopped") for (const unit of shadow.covering) shadow.pending.add(unit)
       shadow.covering = []
-      if (command.verdict === "none") return
+      if (command.verdict === "none" || command.verdict === "stopped") return
       shadow.carried.clear()
       // A finding folded into a unit the verdict took out was checked already; one folded into a unit that ended is settled.
       for (const [key, finding] of shadow.findings) if (finding.into !== undefined && !shadow.units.has(finding.into)) shadow.findings.delete(key)
@@ -308,13 +308,13 @@ const command = (random: () => number, shadow: Shadow): Command => {
     const rift = pick([{}, {}, { rift: `/home/me/.rifts/repo/${name}-${round}` }, { rift: `/home/me/.rifts/repo/${name}-${round}` }, { rift: `/home/me/.rifts/repo/scratch-${Math.floor(random() * 7)}` }])
     return Start.make({ role: "implementor", name, round, direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }), ...rift })
   }
-  if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "stuck", "none"] as const) })
+  if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "stuck", "none", "stopped"] as const) })
   if (roll < 0.68) {
     const name = random() < 0.7 ? `batch-${1 + Math.floor(random() * 3)}` : pick(UNITS)
     return Start.make({ role: "verifier", name, round: 1, direct: false, ...departs })
   }
   if (roll < 0.78) {
-    const verdict = pick(["accepted", "changes", "changes", "stuck", "none"] as const)
+    const verdict = pick(["accepted", "changes", "changes", "stuck", "none", "stopped"] as const)
     const findings = inState(shadow, "verify").flatMap((unit) => (random() < 0.5 ? [`${unit}/M${1 + Math.floor(random() * 2)}`] : []))
     // A `changes` whose report did not read carries no findings (now and then saying why): unresolved, not empty.
     const read = random() < 0.75

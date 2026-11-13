@@ -538,6 +538,43 @@ was dropped. The host keeps the 100 newest ended background shells and the
 25 newest ended foreground ones, and sweeps output files after 7 days. The
 server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 
+### Subagents
+
+A session lists, reads, waits on and stops its own subagents with the
+`subagents` tool, which the kernel plugin adds beside the kernel
+(`mods/kernel/subagents.ts`, `mods/kernel/opencode/subagents.ts`), so a
+session without the kernel has it too: `{ action: "list" }`, `{ action:
+"get", sessionID }` (its state and last message), `{ action: "wait",
+sessionID, ms? }` (10 min by default) and `{ action: "stop", sessionID }`.
+A state is `running`, `done`, `stopped` or `failed`, read off the host's
+session (its newest execution still runs, else its last outcome). Only the
+session's own descendants are reachable; any other session is refused with
+`… is not a subagent of this session`. A stop interrupts each of the
+subagent's own running subagents, deepest first, then its turn, through the
+host's own `session.interrupt`, and waits up to 30 s for each to settle; the
+host settles it as cancelled, so the parent hears it once in a `<subagent
+state="cancelled">` notice and never as finished. A stop of one that does not
+run changes nothing. Its background shells keep running: no plugin API
+cancels a session's jobs or queued prompts short of deleting it, and a
+shell's end wakes it again.
+
+In a kernel cell, `await tools.subagent({ agent, description, prompt })`
+resolves to a live handle (`mods/kernel/worker/subagent-handle.ts`):
+`.sessionID`, `.description`, `.agent`, `.state`, `.message`, `.note`, and
+`.wait(ms?)`, `.stop()`, `.read()`, `.refresh()`, each a `subagents` call
+with its sessionID that updates the handle in place and resolves to it.
+`await tools.subagent.handle(sessionID)` rebuilds one (after a kernel
+restart, which keeps a handle's data but not its methods), and `await
+tools.subagent.list()` gives one per subagent. Orchestrate reads a stopped
+step's session as handed back `stopped`, never as the verdict an earlier
+turn wrote; a stopped verifier gave no verdict.
+
+```ts
+const probe = await tools.subagent({ agent: "worker", description: "probe", prompt: "…" })
+await probe.wait(60_000) // probe.state, probe.message
+if (probe.state === "running") await probe.stop()
+```
+
 ## Orchestrate
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is

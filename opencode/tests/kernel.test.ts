@@ -3,12 +3,15 @@
 // file through `tools.read`, `denyExecute` keeps code mode's `execute` from
 // the model, an image a cell attaches reaches the next request, and with the
 // memory mod loaded its tools are offered beside the kernel and called directly, and a cell's
-// shell handle keeps a command's output through a wait. The kernel on its own is tested beside its code in mods/kernel.
+// shell handle keeps a command's output through a wait, and a cell's subagent
+// handle stops a real child mid-turn (its parent hears it cancelled once) and
+// is refused a session that is no descendant. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, SHELL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -80,6 +83,27 @@ const droppedAlpha = (result: Result & { base: string }) => {
   const dropped = readFileSync(join(result.base, "machine.jsonl"), "utf8").split("\n").filter((entry) => entry.includes('"kind":"UnitDropped"'))
   expect(dropped).toHaveLength(1)
   expect(dropped[0]).toContain('"unit":"alpha"')
+}
+
+/** A message of the session's context that carries text, as a `<subagent>` notice is one. */
+const Notice = Schema.Struct({ type: Schema.Literal("synthetic"), text: Schema.String })
+const noticesOf = (result: Result) => Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(result.messages).filter(Schema.is(Notice)).map((notice) => notice.text)
+
+/**
+ * The stop run's cell saw its child running past a short wait, stopped once and then unchanged, and a stop of its own
+ * session refused; the parent heard one cancelled notice and none of a finish; the child asked the model once.
+ */
+const stoppedChild = (result: Result) => {
+  const [cell] = toolParts(result.messages)
+  expect(cell?.state.status).toBe("completed")
+  expect((cell?.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(
+    /^waited: running, still running after 1500 ms\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\); nothing to stop\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
+  )
+  const notices = noticesOf(result).filter((text) => text.startsWith("<subagent "))
+  expect(notices).toHaveLength(1)
+  expect(notices[0]).toContain('state="cancelled"')
+  // The child's one model request is its stalled turn: nothing ran it again after the stop.
+  expect(result.seen.filter((request) => request.task.endsWith(STALL_TASK) && request.tools.length > 0)).toHaveLength(1)
 }
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
@@ -224,6 +248,13 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // OpenCode runs every subagent in the background: the call ends as the worker starts, so it logs `running`.
       expect(calls.filter((call) => call.kind === "done").map((call) => call.status)).toEqual(["running"])
     },
+    RUN_MS,
+  )
+
+  test(
+    "a cell's subagent handle stops a real child mid-turn: it reads stopped, the parent hears one cancelled notice and no completion, and a stop of a session that is no descendant (its own) is refused",
+    () =>
+      run("stop", { task: `${SELF}\n${STOP_TASK}`, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, stoppedChild),
     RUN_MS,
   )
 

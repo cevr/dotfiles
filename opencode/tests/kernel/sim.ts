@@ -86,6 +86,35 @@ export const SUBAGENT_TASK = "kernel subagent"
 /** One kernel call that starts a subagent from a cell and prints why it could not. */
 export const SUBAGENT_CELL = `try {\n  await tools.subagent({ agent: "worker", description: "probe from a cell", prompt: "Say hi" })\n  console.log("started")\n} catch (error) {\n  console.log("refused: " + (error instanceof Error ? error.message : String(error)))\n}`
 
+/** A subagent's task the model never finishes: its one request's answer streams a first chunk and then holds. */
+export const STALL_TASK = "kernel stall"
+/** Where a task names its own session, which the run replaces with the session's id (run.ts). */
+export const SELF = "{self}"
+/** The stop task, after its own session's id: `<sessionID>\nkernel stop`. */
+export const STOP_TASK = "kernel stop"
+/**
+ * One kernel call that starts a worker on the stall task, waits on it past a short limit, stops it twice, then
+ * asks the subagents tool to stop its own session, no subagent of itself; it prints a line of what each step did.
+ */
+const stopCell = (task: string) =>
+  [
+    `const seen = []`,
+    `const h = await tools.subagent({ agent: "worker", description: "stop probe", prompt: "${STALL_TASK}" })`,
+    `await h.wait(1500)`,
+    "seen.push(`waited: ${h.state}, ${h.note}`)",
+    `await h.stop()`,
+    "seen.push(`stopped: ${h.state}, ${h.note}`)",
+    `await h.stop()`,
+    "seen.push(`again: ${h.state}, ${h.note}`)",
+    `try {`,
+    `  await tools.subagents({ action: "stop", sessionID: "${task.slice(0, -STOP_TASK.length).trim()}" })`,
+    `  seen.push("other: stopped")`,
+    `} catch (error) {`,
+    "  seen.push(`other: ${error.message}`)",
+    `}`,
+    `seen.join("\\n")`,
+  ].join("\n")
+
 /** The drop task, after its shell line: `<line>\nkernel drop`. */
 export const DROP_TASK = "kernel drop"
 /**
@@ -146,6 +175,7 @@ export const cells = (file: string) => [
 /** The tasks that run one kernel cell and then close, each with its cell (from the task's text). */
 const ONE_CELL: ReadonlyArray<readonly [string, (task: string) => string]> = [
   [SUBAGENT_TASK, () => SUBAGENT_CELL],
+  [STOP_TASK, stopCell],
   [DROP_TASK, dropCell],
   [SHELL_TASK, () => SHELL_CELL],
   [ATTACH_TASK, () => ATTACH_CELL],
@@ -226,7 +256,16 @@ export const serve = (file: string) => {
         })(),
       })
       served += 1
-      return new Response(events(reply(body, file), body.model ?? "sim", `sim${served}`), {
+      const system = messages.filter((message) => message.role === "system").map((message) => text(message.content)).join("\n")
+      const model = body.model ?? "sim"
+      // The stall task's answer opens (its first event, the assistant's role) and never ends, until the request is aborted.
+      if (firstUser(messages).endsWith(STALL_TASK) && !system.includes("You name conversations")) {
+        const opening = `${events({ kind: "text", text: "" }, model, `sim${served}`).split("\n\n")[0]}\n\n`
+        return new Response(new ReadableStream({ start: (controller) => controller.enqueue(new TextEncoder().encode(opening)) }), {
+          headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+        })
+      }
+      return new Response(events(reply(body, file), model, `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },

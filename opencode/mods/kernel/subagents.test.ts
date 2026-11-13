@@ -30,12 +30,13 @@ const stored = (id: string, parent: Option.Option<string>, busy: Option.Option<n
   ended: Deferred.makeUnsafe<void>(),
 })
 
-/** A tree: root has children a (running, with a running grandchild g) and b (done); other is another root's child. */
+/** A tree: root has children a (running, over a running g, over a running gg) and b (done); other is another root's child. */
 const tree = (): Map<string, Stored> =>
   new Map([
     ["root", stored("root", Option.none(), NONE, Option.none(), "")],
     ["a", stored("a", Option.some("root"), Option.some(10), Option.none(), "")],
     ["g", stored("g", Option.some("a"), Option.some(11), Option.none(), "")],
+    ["gg", stored("gg", Option.some("g"), Option.some(12), Option.none(), "")],
     ["b", stored("b", Option.some("root"), Option.some(1), Option.some([2, "succeeded"]), "b done")],
     ["elsewhere", stored("elsewhere", Option.none(), NONE, Option.none(), "")],
     ["other", stored("other", Option.some("elsewhere"), Option.some(5), Option.none(), "")],
@@ -91,10 +92,10 @@ describe("a stop", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const world = memory(tree())
-        expect(yield* world.subagents.stop("root", "a")).toMatchObject({ sessionID: "a", state: "stopped", note: "stopped; stopped 1 of its own subagents too" })
-        expect(world.interrupted).toEqual(["g", "a"])
+        expect(yield* world.subagents.stop("root", "a")).toMatchObject({ sessionID: "a", state: "stopped", note: "stopped; stopped 2 of its own subagents too" })
+        expect(world.interrupted).toEqual(["gg", "g", "a"])
         expect(yield* world.subagents.stop("root", "a")).toMatchObject({ state: "stopped", note: "it was not running (stopped); nothing to stop" })
-        expect(world.interrupted).toEqual(["g", "a"])
+        expect(world.interrupted).toEqual(["gg", "g", "a"])
       }),
     ))
 
@@ -112,7 +113,7 @@ describe("a stop", () => {
       Effect.gen(function* () {
         const world = memory(tree())
         expect(yield* world.subagents.stop("root", "g")).toMatchObject({ state: "stopped" })
-        expect(world.interrupted).toEqual(["g"])
+        expect(world.interrupted).toEqual(["gg", "g"])
         const pairs: ReadonlyArray<readonly [string, string]> = [
           ["root", "other"],
           ["a", "root"],
@@ -125,7 +126,7 @@ describe("a stop", () => {
             `${target} is not a subagent of this session: a session reaches only its own subagents.`,
           ])
         expect(yield* refusal(world.subagents.stop("root", "nope"))).toEqual(["SubagentRefused", "No session nope."])
-        expect(world.interrupted).toEqual(["g"])
+        expect(world.interrupted).toEqual(["gg", "g"])
       }),
     ))
 })

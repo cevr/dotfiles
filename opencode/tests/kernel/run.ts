@@ -10,7 +10,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { HELLO, PIXEL_FILE, PIXEL_PNG, serve, type Seen } from "./sim.ts"
+import { HELLO, PIXEL_FILE, PIXEL_PNG, SELF, serve, type Seen } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -93,7 +93,8 @@ const opencode = await OpenCode.create({
 
 try {
   const session = await opencode.sessions.create({ location: { directory: work } })
-  await opencode.sessions.prompt({ sessionID: session.id, text: spec.task })
+  // A task names the session itself by `SELF`: a session that is no subagent of its own.
+  await opencode.sessions.prompt({ sessionID: session.id, text: spec.task.replace(SELF, session.id) })
   await opencode.experimental.session.wait({ sessionID: session.id })
   const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
