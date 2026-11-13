@@ -1,0 +1,16 @@
+{
+  "name": "@dotfiles/opencode-sim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The simulated OpenCode host for server plugins: one seed drives a virtual clock, the fibers' order and the ids, and our composition roots run on it together (world.ts); the seed runner (seed.ts); the host laws it shares with real OpenCode (host-laws.ts).",
+  "exports": {
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
+    "@dotfiles/opencode-cmd-wake": "workspace:*",
+    "@dotfiles/opencode-idle-compact": "workspace:*",
+    "@dotfiles/opencode-wake": "workspace:*"
+  }
+}

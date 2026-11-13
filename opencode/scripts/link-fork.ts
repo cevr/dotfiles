@@ -67,7 +67,7 @@ function readAnchor() {
   }
 }
 const children = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => path.join(dir, name)) : [])
-const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider")].filter(
+const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider"), path.join(root, "sim")].filter(
   (dir) => existsSync(path.join(dir, "package.json")),
 )
 
@@ -82,7 +82,11 @@ const linkOf = (file: string) => {
 
 /** A link through an anchor, or (from an older run) straight into a fork's packages/tui/node_modules: ours to repoint or remove. */
 const ours = (link: string | undefined): link is string =>
-  link !== undefined && link !== "real" && (link.includes(path.sep + ANCHORS + path.sep) || link.includes(forkModules))
+  link !== undefined && link !== "real" && (link.includes(path.sep + ANCHORS + path.sep) || link.includes(forkModules) || link.includes(platformModules))
+
+/** The fork's Effect platform packages, built on the same `effect` the TUI's modules link: sim/ reads files through them. */
+const PLATFORM = "packages/util/node_modules/@effect"
+const platformModules = path.normalize(PLATFORM) + path.sep
 
 /** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
 const prune = (dir: string) => {
@@ -118,4 +122,9 @@ for (const dir of packages) {
   mkdirSync(modules, { recursive: true })
   prune(modules)
   merge(target, modules)
+  const platform = path.join(checked.fork, PLATFORM)
+  if (path.basename(dir) === "sim" && existsSync(platform)) {
+    mkdirSync(path.join(modules, "@effect"), { recursive: true })
+    merge(platform, path.join(modules, "@effect"))
+  }
 }
