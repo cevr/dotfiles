@@ -39,11 +39,11 @@ const registry: { [key: symbol]: Clock } = globalThis
 registry[KEY] ??= system
 
 /** The clock in force: the installed one, else the system's. */
-export const current = (): Clock => registry[KEY]
+export const current = (): Clock => registry[KEY] ?? system
 
 /** Makes `clock` the clock every plugin reads from now on; the returned function puts the one before it back. */
 export const install = (clock: Clock) => {
-  const before = registry[KEY]
+  const before = current()
   registry[KEY] = clock
   return () => {
     registry[KEY] = before

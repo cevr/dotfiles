@@ -4,14 +4,16 @@
 // cmd/escape/setup.ts are refused, as is each form the rule's header lists;
 // the clock's own calls, a property named like a timer, a dated `new Date(x)`
 // and a test file are left alone, and a file outside the seam's folders is
-// never read by the rule.
-import { expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import path from "node:path"
+// never read by the rule. Its test registers through sim-tui/effect-test.ts:
+// lint resolves the fork's Effect, whose types are not effect-bun-test's.
+import { describe, expect } from "bun:test"
+import { Effect, FileSystem, Path, Schema, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { platformTest } from "../sim-tui/effect-test.ts"
 
-const ROOT = path.resolve(import.meta.dir, "..")
 const CODE = "dotfiles(tui-clock-only)"
+/** One oxlint run over a few files. */
+const TIMEOUT_MS = 60_000
 
 /** Each planted file, by its path under the tree, and how many diagnostics it must get. */
 const FILES: ReadonlyArray<readonly [string, string, number]> = [
@@ -47,29 +49,40 @@ const FILES: ReadonlyArray<readonly [string, string, number]> = [
   ["mods/other/free.ts", "export const a = Date.now()", 0],
 ]
 
-test("tui-clock-only refuses a raw timer or clock in the seam's folders and nothing else", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "lint-tui-clock-"))
-  try {
-    for (const [file, code] of FILES) {
-      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true })
-      writeFileSync(path.join(dir, file), `${code}\n`)
-    }
-    const repo = JSON.parse(readFileSync(path.join(ROOT, ".oxlintrc.json"), "utf8")) as {
-      readonly overrides: ReadonlyArray<{ readonly files: ReadonlyArray<string>; readonly rules: Record<string, unknown> }>
-    }
-    const overrides = repo.overrides.filter((each) => "dotfiles/tui-clock-only" in each.rules)
-    const config = path.join(dir, "oxlintrc.json")
-    writeFileSync(config, JSON.stringify({ jsPlugins: [path.join(ROOT, "lint/test-env.ts")], overrides }))
-    const child = Bun.spawn([path.join(ROOT, "node_modules/.bin/oxlint"), "-c", config, "--format", "json", dir], { cwd: dir, stdout: "pipe", stderr: "pipe" })
-    const [out] = await Promise.all([new Response(child.stdout).text(), child.exited])
-    const report = JSON.parse(out) as { readonly diagnostics: ReadonlyArray<{ readonly code: string; readonly filename: string }> }
-    const found = new Map<string, number>()
-    for (const diagnostic of report.diagnostics.filter((each) => each.code === CODE)) {
-      const file = path.relative(dir, path.resolve(dir, diagnostic.filename))
-      found.set(file, (found.get(file) ?? 0) + 1)
-    }
-    expect(FILES.map(([file]) => [file, found.get(file) ?? 0])).toEqual(FILES.map(([file, , errors]) => [file, errors]))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
+const Override = Schema.Struct({ files: Schema.Array(Schema.String), rules: Schema.Record(Schema.String, Schema.Unknown) })
+const Repo = Schema.fromJsonString(Schema.Struct({ overrides: Schema.Array(Override) }))
+const Report = Schema.fromJsonString(Schema.Struct({ diagnostics: Schema.Array(Schema.Struct({ code: Schema.String, filename: Schema.String })) }))
+const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+
+describe("tui-clock-only", () => {
+  platformTest(
+    "it refuses a raw timer or clock in the seam's folders and nothing else",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const root = path.dirname(yield* path.fromFileUrl(new URL(".", import.meta.url)))
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "lint-tui-clock-" })
+      for (const [file, code] of FILES) {
+        yield* fs.makeDirectory(path.dirname(path.join(dir, file)), { recursive: true })
+        yield* fs.writeFileString(path.join(dir, file), `${code}\n`)
+      }
+      const repo = yield* fs.readFileString(path.join(root, ".oxlintrc.json")).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Repo)))
+      const overrides = repo.overrides.filter((each) => "dotfiles/tui-clock-only" in each.rules)
+      const config = path.join(dir, "oxlintrc.json")
+      yield* fs.writeFileString(config, toJson({ jsPlugins: [path.join(root, "lint/test-env.ts")], overrides }))
+      const command = ChildProcess.make(path.join(root, "node_modules/.bin/oxlint"), ["-c", config, "--format", "json", dir], { cwd: dir, stdin: "ignore", forceKillAfter: "3 seconds" })
+      const child = yield* spawner.spawn(command)
+      const out = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString)
+      yield* child.exitCode
+      const report = yield* Schema.decodeUnknownEffect(Report)(out)
+      const found = new Map<string, number>()
+      for (const diagnostic of report.diagnostics.filter((each) => each.code === CODE)) {
+        const file = path.relative(dir, path.resolve(dir, diagnostic.filename))
+        found.set(file, (found.get(file) ?? 0) + 1)
+      }
+      expect(FILES.map(([file]) => [file, found.get(file) ?? 0])).toEqual(FILES.map(([file, , errors]) => [file, errors]))
+    }),
+    TIMEOUT_MS,
+  )
 })

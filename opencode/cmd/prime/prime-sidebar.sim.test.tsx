@@ -95,12 +95,14 @@ const composer = (lines: ReadonlyArray<string> = []) => {
 }
 const sidebarOf = (frame: ReadonlyArray<string> = []) => frame.map((line) => line.slice(WIDE - SIDEBAR)).join("\n")
 const golden = (frames: Record<string, ReadonlyArray<string>>, names: ReadonlyArray<string>) =>
-  names.flatMap((name) => Golden.same(frames[name], Golden.frame("prime-sidebar", `sidebar-${name}`)).map((line) => `${name} ${line}`))
+  Effect.forEach(names, (name) => Effect.map(Golden.check("prime-sidebar", `sidebar-${name}`, frames[name]), (lines) => lines.map((line) => `${name} ${line}`))).pipe(
+    Effect.map((each) => each.flat()),
+  )
 
 seeded("wide, the sidebar holds the session and the dock counts the worker", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    expect(golden(frames, ["wide", "wide-again"])).toEqual([])
+    expect(yield* golden(frames, ["wide", "wide-again"])).toEqual([])
     for (const frame of [frames.wide, frames["wide-again"]]) {
       expect(sidebarOf(frame)).toContain("money worker")
       expect(composer(frame)[0]).toStartWith(" ◆ 1 subagent  ·")
@@ -119,7 +121,7 @@ seeded("wide, with the sidebar open, the worker's row stays beneath the composer
 seeded("narrow, there is no sidebar and the worker's row is back under the count", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    expect(golden(frames, ["narrow"])).toEqual([])
+    expect(yield* golden(frames, ["narrow"])).toEqual([])
     const shown = composer(frames.narrow)
     expect(shown[0]).toStartWith(" ◆ 1 subagent  ·")
     expect(shown[1]).toMatch(new RegExp(`${ROW.source}Check the money parser first\\. · \\d+s$`))

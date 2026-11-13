@@ -80,7 +80,7 @@ const play = (seed: number) =>
 seeded("just after sending, the Dock shows no Escape hint", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    expect(Golden.same(frames["cancel-hint"], Golden.frame("prime-escape", "cancel-hint"))).toEqual([])
+    expect(yield* Golden.check("prime-escape", "cancel-hint", frames["cancel-hint"])).toEqual([])
     expect(dock(frames["cancel-hint"] ?? [])).toMatch(/\S/)
     expect(dock(frames["cancel-hint"] ?? [])).not.toContain("esc ")
   }),
@@ -89,7 +89,7 @@ seeded("just after sending, the Dock shows no Escape hint", ({ seed, expect }) =
 seeded("Escape at 1 s: the prompt leaves the transcript and is back in the composer", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    expect(Golden.same(frames.cancelled, Golden.frame("prime-escape", "cancelled"))).toEqual([])
+    expect(yield* Golden.check("prime-escape", "cancelled", frames.cancelled)).toEqual([])
     const { transcript, composer } = split(frames.cancelled ?? [])
     expect(transcript.join("\n")).not.toContain(ASK)
     expect(transcript.join("\n")).not.toContain(PARTIAL)
@@ -101,7 +101,7 @@ seeded("Escape at 1 s: the prompt leaves the transcript and is back in the compo
 seeded("7 s after sending, the Dock still shows no Escape hint", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    expect(Golden.same(frames["interrupt-hint"], Golden.frame("prime-escape", "interrupt-hint"))).toEqual([])
+    expect(yield* Golden.check("prime-escape", "interrupt-hint", frames["interrupt-hint"])).toEqual([])
     expect(dock(frames["interrupt-hint"] ?? [])).not.toContain("esc ")
   }),
 )
@@ -109,7 +109,7 @@ seeded("7 s after sending, the Dock still shows no Escape hint", ({ seed, expect
 seeded("Escape at 7 s interrupts: the prompt and its partial answer stay", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    expect(Golden.same(frames.interrupted, Golden.frame("prime-escape", "interrupted"))).toEqual([])
+    expect(yield* Golden.check("prime-escape", "interrupted", frames.interrupted)).toEqual([])
     const { transcript, composer } = split(frames.interrupted ?? [])
     expect(transcript.slice(-3)).toEqual([` ┃ ${ASK}`, `  ${PARTIAL}`, "  ■ Interrupted"])
     expect(composer).toBe(" ┃")

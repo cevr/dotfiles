@@ -5,63 +5,69 @@
 // toast, a session still running, a timer's phase, a draft) shows here as a
 // trace that depends on what ran before it.
 //
-// Each run is a `bun test` of its own, in a process group of its own, killed
-// if it outlives RUN_MS.
-import { expect, test } from "bun:test"
-import { spawn } from "node:child_process"
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import path from "node:path"
+// Each run is a `bun test` of its own, in a process group of its own, stopped
+// with its group if it outlives RUN_MS or when its test ends.
+import { describe, expect } from "bun:test"
+import { Data, Effect, Fiber, FileSystem, Option, Path, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { TRACE_ENV } from "./app.ts"
+import { platformTest } from "./effect-test.ts"
 
-const ROOT = path.resolve(import.meta.dir, "..")
 const FILES = ["cmd/prime/prime-escape.sim.test.tsx", "cmd/prime/prime-sidebar.sim.test.tsx", "cmd/escape/escape-states.sim.test.tsx"]
 // Seed 1 is the first after the boot in both runs; the seeds after it are the ones a seed before could reach.
 const ALONE = [2, 3, 4]
 const RUN_MS = 300_000
 
-/** Runs `file` with `env` added, writing its seeds' traces to a new folder; returns the folder. */
-const run = (file: string, env: Record<string, string>) =>
-  new Promise<string>((resolve, reject) => {
-    const traces = mkdtempSync(path.join(tmpdir(), "sim-tui-isolation-"))
-    const child = spawn("bun", ["test", "--timeout", String(RUN_MS), `./${file}`], {
-      cwd: ROOT,
-      env: { ...process.env, ...env, [TRACE_ENV]: traces },
-      stdio: ["ignore", "ignore", "pipe"],
-      detached: true,
-      // A run that outlives its limit is killed (it starts no process of its own: the TUI runs in it).
-      timeout: RUN_MS,
-      killSignal: "SIGKILL",
+/** A run of a file that did not pass. */
+class RunFailed extends Data.TaggedError("RunFailed")<{ readonly message: string }> {}
+
+/** Runs `file` with `seed` alone (or every seed), writing its seeds' traces to a new folder; returns the folder. */
+const run = (file: string, seed: Option.Option<number>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const root = path.dirname(yield* path.fromFileUrl(new URL(".", import.meta.url)))
+    const traces = yield* fs.makeTempDirectoryScoped({ prefix: "sim-tui-isolation-" })
+    const env = Option.match(seed, { onNone: () => ({ [TRACE_ENV]: traces }), onSome: (one) => ({ [TRACE_ENV]: traces, SIM_SEED: String(one) }) })
+    const command = ChildProcess.make(process.execPath, ["test", "--timeout", String(RUN_MS), `./${file}`], {
+      cwd: root,
+      env,
+      extendEnv: true,
+      stdin: "ignore",
+      forceKillAfter: "3 seconds",
     })
-    const errors: Array<string> = []
-    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk.toString()))
-    child.on("exit", (code) => {
-      if (code === 0) resolve(traces)
-      else reject(new Error(`${file} ${JSON.stringify(env)} exited ${code}:\n${errors.join("").slice(-2_000)}`))
-    })
+    // The child runs in a process group of its own; the scope's end stops the group.
+    const child = yield* spawner.spawn(command)
+    const errors = yield* child.stderr.pipe(Stream.decodeText(), Stream.mkString, Effect.forkScoped)
+    const code = yield* child.exitCode.pipe(Effect.timeoutOption(RUN_MS))
+    if (Option.isSome(code) && code.value === 0) return traces
+    const said = yield* Fiber.join(errors).pipe(Effect.timeoutOption("5 seconds"), Effect.orElseSucceed(() => Option.none<string>()))
+    const tail = Option.getOrElse(said, () => "").slice(-2_000)
+    return yield* new RunFailed({ message: `${file} ${Option.match(seed, { onNone: () => "(every seed)", onSome: (one) => `SIM_SEED=${one}` })} exited ${Option.getOrElse(code, () => "none: past its time")}:\n${tail}` })
   })
 
-const read = (dir: string) => new Map(readdirSync(dir).map((name) => [name, readFileSync(path.join(dir, name), "utf8")]))
+/** Each trace file in `dir`, by name. */
+const read = (dir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const names = yield* fs.readDirectory(dir)
+    return new Map(yield* Effect.forEach(names, (name) => Effect.map(fs.readFileString(path.join(dir, name)), (trace) => [name, trace] as const)))
+  })
 
-for (const file of FILES)
-  test(
-    `${file}: seeds ${ALONE.join(", ")} alone give the traces they give in the full run`,
-    async () => {
-      const folders: Array<string> = []
-      try {
-        const full = await run(file, {})
-        folders.push(full)
-        const everyone = read(full)
+describe("seeds alone give the traces they give in the full run", () => {
+  for (const file of FILES)
+    platformTest(
+      `${file}: seeds ${ALONE.join(", ")} alone give the traces they give in the full run`,
+      Effect.gen(function* () {
+        const everyone = yield* read(yield* run(file, Option.none()))
         for (const seed of ALONE) {
-          const alone = await run(file, { SIM_SEED: String(seed) })
-          folders.push(alone)
-          const traces = read(alone)
+          const traces = yield* read(yield* run(file, Option.some(seed)))
           expect(traces.size).toBeGreaterThan(0)
           for (const [name, trace] of traces) expect({ name, trace }).toEqual({ name, trace: everyone.get(name) ?? "(not in the full run)" })
         }
-      } finally {
-        for (const folder of folders) rmSync(folder, { recursive: true, force: true })
-      }
-    },
-    RUN_MS * (ALONE.length + 1),
-  )
+      }),
+      RUN_MS * (ALONE.length + 1),
+    )
+})

@@ -97,7 +97,9 @@ const split = (lines: ReadonlyArray<string> = []) => {
   return { transcript: lines.slice(0, hint).filter((line) => line.trim() !== ""), composer: lines[hint + 1] ?? "" }
 }
 const golden = (which: Case, frames: Record<string, ReadonlyArray<string>>, names: ReadonlyArray<string>) =>
-  names.flatMap((name) => Golden.same(frames[name], Golden.frame("escape-states", `${which}-${name}`)).map((line) => `${name} ${line}`))
+  Effect.forEach(names, (name) => Effect.map(Golden.check("escape-states", `${which}-${name}`, frames[name]), (lines) => lines.map((line) => `${name} ${line}`))).pipe(
+    Effect.map((each) => each.flat()),
+  )
 
 for (const which of ["steer", "queue"] as const)
   seeded(
@@ -105,7 +107,7 @@ for (const which of ["steer", "queue"] as const)
     ({ seed, expect }) =>
       Effect.gen(function* () {
         const frames = yield* play(seed, which)
-        expect(golden(which, frames, ["before", "after", "again"])).toEqual([])
+        expect(yield* golden(which, frames, ["before", "after", "again"])).toEqual([])
         expect(split(frames.before).transcript.join("\n")).toContain("Executing")
         const { transcript, composer } = split(frames.after)
         expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
@@ -118,7 +120,7 @@ for (const which of ["steer", "queue"] as const)
 seeded("a running shell call: one Escape cancels it and interrupts", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* play(seed, "tool")
-    expect(golden("tool", frames, ["before", "after"])).toEqual([])
+    expect(yield* golden("tool", frames, ["before", "after"])).toEqual([])
     expect(frames.tool).toEqual(["interrupted"])
     expect(split(frames.after).transcript.slice(-2)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted"])
   }),
@@ -127,7 +129,7 @@ seeded("a running shell call: one Escape cancels it and interrupts", ({ seed, ex
 seeded("a draft in the composer: one Escape interrupts and the draft stays", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* play(seed, "draft")
-    expect(golden("draft", frames, ["before", "after"])).toEqual([])
+    expect(yield* golden("draft", frames, ["before", "after"])).toEqual([])
     const { transcript, composer } = split(frames.after)
     expect(transcript.at(-1)).toBe("  ■ Interrupted")
     expect(composer).toBe(" ┃ half a thought")
@@ -137,7 +139,7 @@ seeded("a draft in the composer: one Escape interrupts and the draft stays", ({ 
 seeded("the server does not answer: the TUI says so instead of doing nothing", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* play(seed, "offline")
-    expect(golden("offline", frames, ["before", "after"])).toEqual([])
+    expect(yield* golden("offline", frames, ["before", "after"])).toEqual([])
     expect((frames.before ?? []).join("\n")).not.toContain("Still running")
     expect((frames.after ?? []).join("\n").replace(/\s*┃\s*/g, " ")).toContain("Still running 5 s after Escape: the server has not")
   }),

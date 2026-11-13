@@ -23,7 +23,7 @@ const Platform = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 
 /** Each line of `text` that names a wall-time source, as `<line>: <text>`. */
 export const wallTime = (text: string) =>
-  text.split("\n").flatMap((line, index) => (WALL.some((pattern) => pattern.test(line)) ? [`${index + 1}: ${line.trim()}`] : []))
+  text.split("\n").flatMap((line, index) => [`${index + 1}: ${line.trim()}`].filter(() => WALL.some((pattern) => pattern.test(line))))
 
 /** Every file under `dir` (a path from opencode/) that `keep` takes, node_modules and dot folders aside. */
 const files = (dir: string, keep: (name: string) => boolean): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
