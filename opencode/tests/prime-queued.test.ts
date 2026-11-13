@@ -1,3 +1,4 @@
+// accept: one at a time (its scenario waits on second-scale answer and summary timers).
 // Runs scenarios/prime-queued.ts with the Prime look against an OpenCode
 // checkout and asserts how prompts sent during an automatic compaction read:
 // two steers and one prompt sent to the queue wait in one list above the

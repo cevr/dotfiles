@@ -1,3 +1,4 @@
+// accept: one at a time (its scenario waits a stall plus seconds, by the clock).
 // Runs scenarios/escape-subagent.ts with the Prime look and the escape plugin
 // against an OpenCode checkout, and asserts that Escape is layered in a running
 // subagent's view: the first press only puts its Subagents picker away (the

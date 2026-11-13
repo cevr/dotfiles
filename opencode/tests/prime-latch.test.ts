@@ -1,3 +1,4 @@
+// accept: one at a time (its scenario holds and retries on second-scale timers).
 // Runs scenarios/prime-latch.ts with the Prime look, the orchestrate and
 // wakes plugins and a stand-in pool against an OpenCode checkout: a worker
 // started in the foreground while the pace holds latches instead of being

@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds when the summary lands against the next turn).
 // Runs scenarios/prime-precompute.ts with the Prime look against an OpenCode
 // checkout, background compaction on, and asserts that an automatic
 // compaction swaps in the summary the host wrote in the background: one

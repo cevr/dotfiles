@@ -1,3 +1,4 @@
+// accept: one at a time (its scenario times a slow answer against a short deadline).
 // Runs scenarios/prime-idle-send.ts with the Prime look against an OpenCode
 // checkout and asserts, frame by frame, that a prompt sent to an idle session
 // never shows as a queued row: it enters the transcript as the reader's

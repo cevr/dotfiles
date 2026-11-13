@@ -1,3 +1,4 @@
+// accept: one at a time (it runs gamut's real TUI end to end under deadlines).
 // gamut's pure parts (arguments, presets, config, environment, the run's
 // database, the wait), the scripted model, and one end-to-end run of the
 // commands against a real OpenCode on the `sim` preset. The end-to-end test

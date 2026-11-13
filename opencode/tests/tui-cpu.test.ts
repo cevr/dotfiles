@@ -1,3 +1,4 @@
+// accept: one at a time (it measures the TUI's CPU share).
 // Runs scenarios/tui-cpu.ts with the Prime look and our other TUI plugins, in
 // a terminal wide enough for the host's sidebar, against an OpenCode checkout,
 // and holds the TUI's CPU to a budget while a session with a long transcript

@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds when the idle compaction fires against its due time).
 // Idle compaction in real OpenCode (the fork, through its SDK) on the scripted
 // model, on a 20 s cache and a 5 s margin: a large session that goes idle is
 // not compacted while its cache has time left, and is compacted through

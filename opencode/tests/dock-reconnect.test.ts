@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds how soon the dock settles after the TUI's first read).
 // A subagent row leaves "running" once a service restart ends its turn.
 //
 // The owner's report (2026-11-10): an install restarted the service while two

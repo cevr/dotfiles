@@ -8,9 +8,16 @@
 // checkout itself is outside this repository: run `bun run accept` after one.
 //
 // Usage: bun scripts/accept.ts [--affected [base]] [--list] [--parallel=N] [tests/<name>.test.ts ...] [-- <bun test flags>]
-// --list prints the files it would run and exits; named acceptance files narrow the run to them.
+// --list prints the run's phases and their files and exits; named acceptance files narrow the run to them.
 //
-// One run at a time per machine: each run already fills every core, so a second
+// The files run in two phases (scripts/accept-plan.ts): first a parallel pool
+// as wide as the cores the host's 1-minute load leaves free at the start (at
+// most N with --parallel=N, at least one), then, once the pool has ended, the
+// files marked `// accept: one at a time` (those that measure time or wait on a
+// real TUI under a deadline), one at a time, so the run's own load never
+// starves them.
+//
+// One run at a time per machine: each run already fills every free core, so a second
 // one waits for the lock (ACCEPT_LOCK, default $TMPDIR/opencode-accept.lock)
 // instead of starving the machine and the owner's own OpenCode windows.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -19,6 +26,7 @@ import path from "node:path"
 import { $ } from "bun"
 import { listing, type Proc, servers, stop, survivors, table, watch } from "./leaks.ts"
 import { checkFork } from "./fork.ts"
+import { heading, plan, poolWidth, requestedWidth } from "./accept-plan.ts"
 import { acceptanceTests, load, packageOf, reach, ROOT, SHARED } from "./reach.ts"
 
 /** How long a finished run's processes have to end before one still running counts as leaked. */
@@ -28,18 +36,17 @@ const argv = process.argv.slice(2)
 const rest = argv.includes("--") ? argv.slice(argv.indexOf("--") + 1) : []
 const own = argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv
 const affected = own.includes("--affected")
-const parallel = own.find((arg) => arg.startsWith("--parallel"))
+const requested = requestedWidth(own)
+if (!requested.ok) fail(requested.problem)
 const CACHE = path.join(ROOT, "node_modules/.cache/gate")
 mkdirSync(CACHE, { recursive: true })
 
-if (!process.env.OPENCODE_DEV) console.warn("accept: OPENCODE_DEV is not set, so the real-OpenCode tests skip. Point it at the fork.")
+const fork = process.env.OPENCODE_DEV
+if (!fork) console.warn("accept: OPENCODE_DEV is not set, so the real-OpenCode tests skip. Point it at the fork.")
 else {
   // A fork that is not installed here would fail every real-OpenCode test for a reason none of them names.
-  const checked = checkFork(process.env.OPENCODE_DEV)
-  if ("problem" in checked) {
-    console.error(`accept: ${checked.problem}`)
-    process.exit(1)
-  }
+  const checked = checkFork(fork)
+  if ("problem" in checked) fail(checked.problem)
 }
 
 const workspace = await load()
@@ -70,8 +77,11 @@ if (affected) {
 /** The acceptance files named on the command line (`tests/<name>.test.ts`): the run takes those alone. */
 const chosen = own.filter((arg) => files.includes(arg))
 if (chosen.length > 0) files = files.filter((file) => chosen.includes(file))
+const cores = os.availableParallelism()
+const load1 = Math.max(0, ...os.loadavg().slice(0, 1))
+const phases = plan(files, (file) => readFileSync(path.join(ROOT, file), "utf8"), poolWidth(cores, load1, requested.width))
 if (own.includes("--list")) {
-  for (const file of files) console.log(file)
+  console.log(phases.flatMap((phase) => [heading(phase, cores, load1), ...phase.files]).join("\n"))
   process.exit(0)
 }
 
@@ -116,43 +126,62 @@ process.on("exit", release)
 const env = { ...process.env }
 delete env.ANTHROPIC_BASE_URL
 const timings = path.join(CACHE, "accept-timings.json")
-// The run is a process group of its own, so a signal to accept stops every test
-// process with it; `watch` follows its descendants, the ones that leave the
-// group too, and what is still running after it ends is a leak (scripts/leaks.ts).
-const child = Bun.spawn(
-  [
-    process.execPath,
-    "test",
-    parallel ?? "--parallel",
-    "--timeout",
-    "300000",
-    `--timings=${timings}`,
-    "--update-timings",
-    ...rest,
-    ...files.map((file) => `./${file}`),
-  ],
-  { cwd: ROOT, env, stdout: "inherit", stderr: "inherit", detached: true },
-)
-const watching = watch(child.pid)
+// Each phase's run is a process group of its own, so a signal to accept stops
+// every test process with it; `watch` follows its descendants, the ones that
+// leave the group too, and what is still running after it ends is a leak (scripts/leaks.ts).
+/** The phase running now, while one is. */
+const running: Array<{ readonly child: ReturnType<typeof Bun.spawn>; readonly watching: ReturnType<typeof watch> }> = []
 let stopping = false
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.on(signal, () => {
     if (stopping) return
     stopping = true
-    try {
-      process.kill(-child.pid, "SIGTERM")
-    } catch {
-      // The run's group is gone already.
-    }
+    for (const current of running)
+      try {
+        process.kill(-current.child.pid, "SIGTERM")
+      } catch {
+        // The run's group is gone already.
+      }
     // A test's own process groups are outside the run's: its servers are stopped by name.
-    void stop(servers(survivors(watching.stop(), table()))).finally(() => {
+    void stop(running.flatMap((current) => servers(survivors(current.watching.stop(), table())))).finally(() => {
       release()
       process.exit(130)
     })
   })
-const code = await child.exited
-if (stopping) await new Promise(() => {})
-process.exit((await leaked(watching.stop())) ? code || 1 : code)
+
+// The first phase's failure is the run's exit code; a later phase still runs.
+const codes: Array<number> = []
+for (const phase of phases) {
+  console.log(heading(phase, cores, load1))
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "test",
+      `--parallel=${phase.width}`,
+      "--timeout",
+      "300000",
+      `--timings=${timings}`,
+      "--update-timings",
+      ...rest,
+      ...phase.files.map((file) => `./${file}`),
+    ],
+    { cwd: ROOT, env, stdout: "inherit", stderr: "inherit", detached: true },
+  )
+  const watching = watch(child.pid)
+  running.push({ child, watching })
+  const exited = await child.exited
+  if (stopping) await new Promise(() => {})
+  running.pop()
+  const leakedAny = await leaked(watching.stop())
+  codes.push(leakedAny ? Math.max(exited, 1) : exited)
+}
+process.exit(codes.reduce((first, each) => first || each, 0))
+
+/** Ends the run before it starts, naming why. */
+function fail(problem: string): never {
+  console.error(`accept: ${problem}`)
+  return process.exit(1)
+}
 
 /** Whether the run left a server or drive behind; stops those and names every survivor. */
 async function leaked(seen: ReadonlyArray<Proc>): Promise<boolean> {

@@ -1,3 +1,4 @@
+// accept: one at a time (it counts the TUI's paints in a time window).
 // Runs scenarios/tui-paint.ts against an OpenCode checkout and holds an idle
 // orchestrator's TUI to at most 2 frames a second: the root idle with an alarm
 // pending and three background workers running, in the owner's TUI (Prime and

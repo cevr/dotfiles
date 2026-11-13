@@ -2967,7 +2967,15 @@ the fork's commit, diff and lock file). `scripts/reach.ts` derives that
 reach; `bun scripts/gate.ts --all` ignores the cache.
 
 The acceptance tests in `tests/` run real OpenCode, so they are not in the
-gate. `bun run accept` runs them all in parallel; `bun run accept:affected
+gate. `bun run accept` runs them all: first a parallel pool as wide as the
+cores the host's 1-minute load leaves free at the start (at least one, at most
+`--parallel=N`), then, once the pool has ended, the files marked
+`// accept: one at a time (<why>)` one by one. A file carries that marker when
+it measures time, counts frames or waits on a real TUI or service under a
+deadline, so neither the pool's load nor the host's starves it;
+`scripts/accept.test.ts` fails when a file whose text, or the scenario it
+drives, measures elapsed time, names a deadline under 30 s or bounds a time
+lacks it (`scripts/accept-plan.ts`). `bun run accept:affected
 [base]` runs those that reach a file changed since `base` (default: the merge
 base with origin/main), following the scenarios, run scripts and plugin
 paths they name, and all of them when a shared input changed. A fork change

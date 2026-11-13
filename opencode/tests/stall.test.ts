@@ -1,3 +1,4 @@
+// accept: one at a time (it measures a stall against a two-second threshold).
 // The stall watchdog in a real OpenCode service: the fork's own
 // `serve --service` in a scratch home, with the stall plugin and a test-only
 // plugin whose RPC `block` busy-waits on the server's main thread for the

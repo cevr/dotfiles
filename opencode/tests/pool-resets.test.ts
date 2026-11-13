@@ -1,3 +1,4 @@
+// accept: one at a time (it holds a reset for a short window and waits under deadlines).
 // Rate-limit resets end to end: the fork's own `serve --service` with the
 // Anthropic auth plugin, the pool and the questions plugin, against the fake
 // Anthropic API (Claude logins, each with a reset grant) and the fake

@@ -1,3 +1,4 @@
+// accept: one at a time (it waits for a quiet window of seconds on a real TUI).
 // The TUI says when it runs an older build than its service.
 //
 // The owner (2026-11-11): an install restarts the service onto the new build

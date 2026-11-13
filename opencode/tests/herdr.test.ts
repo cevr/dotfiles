@@ -1,3 +1,4 @@
+// accept: one at a time (it drives a real herdr server and TUI under the scenario's deadlines; it ran red under batch bi's load).
 // Real OpenCode, the real herdr reporter (cmd/herdr), a scripted model and a
 // fake herdr socket: scenarios/herdr.ts runs one turn with a shell call while
 // the TUI believes it runs in herdr pane wtest:p1, and herdr hears the session

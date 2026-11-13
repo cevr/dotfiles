@@ -1,3 +1,4 @@
+// accept: one at a time (its scenario reads the frame seconds after Escape, by the clock).
 // Runs scenarios/escape-states.ts once per case with the Prime look and the
 // escape plugin against an OpenCode checkout, and asserts that one Escape on a
 // busy session stops its run in every state, never drops the prompt the user
