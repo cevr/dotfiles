@@ -595,6 +595,14 @@ export const LAWS: ReadonlyArray<Law> = [
         const text = yield* contextText(ctx, session.id)
         yield* ensure(count(text, "law: steered while running") === 1, `the session holds the steer ${count(text, "law: steered while running")} times`)
         yield* ensure(count(text, "heard running|steered while running") === 1, "no request after the steer carried it")
+
+        // A parcel that arrives twice comes under one id (mods/mail/model.ts receive): the first admission wins.
+        const once = { id: SessionMessage.ID.make(`msg_mail_law_${session.id}`), sessionID: session.id, text: "law: a parcel twice", description: "law", resume: true }
+        yield* probe.turn(session.id, ctx.session.synthetic(once))
+        yield* ctx.session.synthetic(once)
+        yield* settle
+        const held = count(yield* contextText(ctx, session.id), "law: a parcel twice")
+        yield* ensure(held === 1, `a synthetic admitted twice under one id is held ${held} times`)
       }),
   },
 ]

@@ -43,7 +43,7 @@ export const LAW = {
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
   provider: "a provider a transform turns on is in the provider list",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
-  mail: "get and synthetic of an id the host lacks fail as not found; get answers a running session busy after idle, and its last update; a steer admitted while it runs is read by its next request",
+  mail: "get and synthetic of an id the host lacks fail as not found; get answers a running session busy after idle, and its last update; a steer admitted while it runs is read by its next request; a synthetic admitted twice under one id is held once",
 }
 
 /** The login both hosts hold for the integration law: no real token. */

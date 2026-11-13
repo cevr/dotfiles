@@ -5,14 +5,18 @@
 //
 // The network is the `Net` service: `liveNet` is the real one (Bun's server,
 // fetch), a memory one (memory/net.ts) the simulated hosts'.
-import { Clock, Effect, Layer, Option, Schema } from "effect"
+import { Clock, Duration, Effect, Layer, Option, Schedule, Schema } from "effect"
 import { type Keyed, sign } from "../pairing.ts"
-import { Arrival, Cards, ROUTES } from "../peer.ts"
+import { Arrival, Cards, RESIGNS, ROUTES, SIGNED_BEFORE_START } from "../peer.ts"
 import { Net, NetFailed, PairStore, Peers, PeerUnreachable, Tokens, type Wire } from "../service.ts"
 import { bunListen } from "./listener.ts"
 
 /** How long a peer has to answer. */
 export const TIMEOUT_MS = 10_000
+
+/** How many times a parcel that got no answer is sent again, and how long after. */
+export const RESENDS = 2
+export const RESEND_AFTER = Duration.seconds(1)
 
 const reasonOf = (text: string): string => {
   try {
@@ -52,16 +56,26 @@ export const layer = (keyed: Keyed, timeoutMs = TIMEOUT_MS) =>
       const net = yield* Net
       const tokens = yield* Tokens
 
-      const call = Effect.fn("Peers.call")(function* <A>(peer: string, route: string, input: unknown, decode: (text: string) => Option.Option<A>) {
+      /** `route` on `peer`, signed; `resends` times more when no answer comes (a route the peer takes once whatever it is sent). */
+      const call = Effect.fn("Peers.call")(function* <A>(peer: string, route: string, input: unknown, decode: (text: string) => Option.Option<A>, resends: number) {
         yield* Effect.annotateCurrentSpan({ peer, route })
         const pairs = yield* store.read
         const entry = Object.hasOwn(pairs.peers, peer) ? pairs.peers[peer] : undefined
         if (entry === undefined || pairs.name === undefined) return yield* new PeerUnreachable({ peer, message: "not paired with this host" })
+        const name = pairs.name
         const body = JSON.stringify(input)
-        const headers = sign(pairs.name, entry.secret, { method: "POST", path: route, body }, yield* Clock.currentTimeMillis, yield* tokens.token(16), keyed)
-        const reply = yield* net
-          .post(new URL(route, entry.url).href, { headers, body }, timeoutMs)
-          .pipe(Effect.mapError((failure) => new PeerUnreachable({ peer, message: `${entry.url} did not answer: ${failure.message}` })))
+        const attempt = Effect.gen(function* () {
+          const headers = sign(name, entry.secret, { method: "POST", path: route, body }, yield* Clock.currentTimeMillis, yield* tokens.token(16), keyed)
+          return yield* net.post(new URL(route, entry.url).href, { headers, body }, timeoutMs)
+        })
+        // A listener that started after this request was signed refuses it unread: sign it again, fresh. No answer
+        // (a lost answer, a listener closed while answering, nothing listening while it reloads): send it again, signed
+        // fresh, where the peer takes the request once however often it arrives.
+        const reply = yield* attempt.pipe(
+          Effect.repeat({ while: (wire) => wire.status === 401 && reasonOf(wire.body) === SIGNED_BEFORE_START, times: RESIGNS }),
+          Effect.retry({ times: resends, schedule: Schedule.spaced(RESEND_AFTER) }),
+          Effect.mapError((failure) => new PeerUnreachable({ peer, message: `${entry.url} did not answer: ${failure.message}` })),
+        )
         if (reply.status !== 200) return yield* new PeerUnreachable({ peer, message: `it answered ${reply.status}: ${reasonOf(reply.body)}` })
         const decoded = decode(reply.body)
         if (Option.isNone(decoded)) return yield* new PeerUnreachable({ peer, message: "its answer is not mail's" })
@@ -70,8 +84,10 @@ export const layer = (keyed: Keyed, timeoutMs = TIMEOUT_MS) =>
 
       return Peers.of({
         names: store.read.pipe(Effect.map((pairs) => Object.keys(pairs.peers).toSorted())),
-        sessions: (peer, scope) => call(peer, ROUTES.list, scope, decodeCards),
-        deliver: (peer, parcel) => call(peer, ROUTES.receive, parcel, decodeArrival),
+        sessions: (peer, scope) => call(peer, ROUTES.list, scope, decodeCards, 0),
+        // One id for every try of this parcel: the peer holds it once.
+        deliver: (peer, parcel) =>
+          tokens.token(16).pipe(Effect.flatMap((id) => call(peer, ROUTES.receive, { id, ...parcel }, decodeArrival, RESENDS))),
       })
     }),
   )

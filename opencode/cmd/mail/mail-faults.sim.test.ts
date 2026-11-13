@@ -5,13 +5,16 @@
 // (on its host or the other), a host cut off the network or put back, a host
 // whose answers are lost on the way back or not, a reload of a host's plugins
 // (its listener closes and binds again), a replay of the last parcel a host
-// sent, and time passing.
+// sent, and time passing; one send in three has its addressee's host reload
+// while the parcel is on its way (before it is signed, in flight, or after).
 //
 // After each command, every session at rest: a letter is held at most once,
 // and only by the session it was sent to; a receipt that says delivered names
 // the session that holds it, once; a send on a sound network (nothing cut,
-// no answer lost) to another session is delivered; no pairing secret reaches a
-// model. Each seed runs twice and the two runs' traces are byte-equal.
+// no answer lost) to another session is delivered; a send to another session
+// whose hosts are not cut off is held exactly once, across reloads, replays
+// and lost answers; no pairing secret reaches a model. Each seed runs twice
+// and the two runs' traces are byte-equal.
 import { describe } from "bun:test"
 import { Effect, Option, Schema } from "effect"
 import * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
@@ -27,8 +30,12 @@ import * as World from "../../sim/world.ts"
 /**
  * Seeds a wider sweep (21 to 400) found failing, replayed on every run: a parcel replayed after the receiving host's
  * reload was taken again, its nonce forgotten with the listener that saw it (fixed in mods/mail/http/listener.ts).
+ * Then 6, 79, 91, 100 (1 to 120) and 160, 212 (to 500): a parcel signed before its addressee's reload, refused by
+ * the new listener (or its refusal or answer lost), was never held; and 385 (to 400) without the resend (the sender
+ * signs again and sends again, and the receiving host holds a parcel once by its id: mods/mail/http/peers.ts,
+ * mods/mail/model.ts).
  */
-const PAST = [46, 61, 84, 101, 113]
+const PAST = [46, 61, 84, 101, 113, 6, 79, 91, 100, 160, 212, 385]
 
 const { seeded } = Seed.runner("cmd/mail/mail-faults.sim.test.ts", { past: PAST })
 
@@ -40,16 +47,21 @@ const OTHER: Record<HostName, HostName> = { mac: "workbox", workbox: "mac" }
 const SECRET = "k".repeat(43)
 
 type Command =
-  | { readonly type: "send"; readonly from: number; readonly to: number }
+  | { readonly type: "send"; readonly from: number; readonly to: number; readonly reloadAfter: Option.Option<number> }
   | { readonly type: "cut"; readonly host: HostName; readonly off: boolean }
   | { readonly type: "lose"; readonly host: HostName; readonly losing: boolean }
   | { readonly type: "reload"; readonly host: HostName }
   | { readonly type: "replay"; readonly host: HostName }
   | { readonly type: "advance"; readonly ms: number }
 
-const commandOf = (pick: number, random: ReturnType<typeof generator>): Command => {
+type Random = ReturnType<typeof generator>
+
+/** Whether the addressee's host reloads while a send is on its way, and how many ms after the prompt: one send in three. */
+const reloadOf = (during: Random): Option.Option<number> => Option.liftPredicate(below(during, 700), () => below(during, 3) === 0)
+
+const commandOf = (pick: number, random: Random, during: Random): Command => {
   const host = HOSTS[below(random, 2)] ?? "mac"
-  if (pick < 8) return { type: "send", from: below(random, 4), to: below(random, 4) }
+  if (pick < 8) return { type: "send", from: below(random, 4), to: below(random, 4), reloadAfter: reloadOf(during) }
   if (pick < 10) return { type: "cut", host, off: below(random, 2) === 0 }
   if (pick < 12) return { type: "lose", host, losing: below(random, 2) === 0 }
   if (pick < 13) return { type: "reload", host }
@@ -57,10 +69,14 @@ const commandOf = (pick: number, random: ReturnType<typeof generator>): Command 
   return { type: "advance", ms: 1_000 * below(random, 60) }
 }
 
-/** Up to 30 commands, the seed choosing each. */
+/**
+ * Up to 30 commands, the seed choosing each. Whether a send's addressee reloads on the way is drawn from a stream of its
+ * own, so the commands a seed chose before that was drawn stay the same (PAST keeps replaying what it found).
+ */
 const commandsOf = (seed: number): ReadonlyArray<Command> => {
   const random = generator(`mail-faults:${seed}`)
-  return Array.from({ length: 10 + below(random, 21) }, () => commandOf(below(random, 15), random))
+  const during = generator(`mail-faults:${seed}:reload-during`)
+  return Array.from({ length: 10 + below(random, 21) }, () => commandOf(below(random, 15), random, during))
 }
 
 /** The model: a user's `mail-send <id> <text>` messages that id; anything else (a tool's result, a letter) closes the turn. */
@@ -92,6 +108,8 @@ interface Letter {
   readonly from: string
   /** Sent with nothing cut and no answer lost. */
   readonly sound: boolean
+  /** Neither its sender's host nor its addressee's cut off when sent: the parcel can arrive, an answer lost or not. */
+  readonly reachable: boolean
 }
 
 /** One run's hosts, network and sessions, and what has been sent and which faults are on. */
@@ -157,16 +175,26 @@ const check = (run: Run, expect: Seed.Seeded["expect"]) => {
     const receipt = delivered(run, letter.tag)
     if (receipt) expect({ tag: letter.tag, receiptHeld: own }).toEqual({ tag: letter.tag, receiptHeld: 1 })
     if (letter.sound && letter.to !== letter.from) expect({ tag: letter.tag, soundDelivered: receipt }).toEqual({ tag: letter.tag, soundDelivered: true })
+    // A parcel that can arrive is held exactly once, whatever reloads, replays or lost answers came between.
+    if (letter.reachable && letter.to !== letter.from) expect({ tag: letter.tag, heldOnce: own }).toEqual({ tag: letter.tag, heldOnce: 1 })
   }
   const requests = [...run.worlds.values()].flatMap((world) => world.asked().map((asked) => asked.text)).join("\n")
   expect(requests.includes(SECRET)).toBe(false)
 }
 
-/** A session messages another, the letter tagged by the command's index. */
-const send = (run: Run, index: number, from: Session, to: Session) => {
+/**
+ * A session messages another, the letter tagged by the command's index; with `reloadAfter`, the addressee's host
+ * reloads that many ms after the prompt, before, while or after the parcel is on its way.
+ */
+const send = (run: Run, index: number, from: Session, to: Session, reloadAfter: Option.Option<number>) => {
   const tag = `letter${index}`
-  run.sent.push({ tag, to: to.id, from: from.id, sound: run.cut.size === 0 && run.lost.size === 0 })
-  return worldOf(run, from.host).prompt(from.id, `mail-send ${to.id} ${tag}`)
+  const reachable = from.host === to.host || (!run.cut.has(from.host) && !run.cut.has(to.host))
+  run.sent.push({ tag, to: to.id, from: from.id, sound: run.cut.size === 0 && run.lost.size === 0, reachable })
+  const prompted = worldOf(run, from.host).prompt(from.id, `mail-send ${to.id} ${tag}`)
+  return Option.match(reloadAfter, {
+    onNone: () => prompted,
+    onSome: (ms) => prompted.pipe(Effect.andThen(run.mac.advance(ms)), Effect.andThen(worldOf(run, to.host).restart)),
+  })
 }
 
 /** A fault on or off, on the network and in the run's record. */
@@ -187,7 +215,7 @@ const apply = (run: Run, index: number, command: Command): Effect.Effect<unknown
     case "send":
       return Option.match(Option.all([Option.fromNullishOr(run.sessions[command.from]), Option.fromNullishOr(run.sessions[command.to])]), {
         onNone: () => Effect.void,
-        onSome: ([from, to]) => send(run, index, from, to),
+        onSome: ([from, to]) => send(run, index, from, to, command.reloadAfter),
       })
     case "cut":
       return Effect.sync(() => {
@@ -248,6 +276,32 @@ describe("session mail over a faulty network", () => {
       })
       expect([replayed.status, Schema.decodeUnknownSync(Refusal)(replayed.body)]).toEqual([401, { reason: "the request was signed before this listener started" }])
       expect(Read.synthetic(workbox, target, "mail")).toHaveLength(1)
+    }),
+  )
+
+  seeded("a parcel that got no answer is sent again, and its letter is held once with a delivered receipt", ({ seed, expect }) =>
+    Effect.gen(function* () {
+      const network = MemoryNet.make({ latencyMs: 20 })
+      const worlds = new Map<HostName, World.World>()
+      const mac = World.make({ seed, script: model(worlds, "mac") })
+      const workbox = Hosts.beside(mac, { script: () => World.say("read") })
+      worlds.set("mac", mac).set("workbox", workbox)
+      yield* mac.load(Plugins.mail(network, paired("mac", "workbox"), ADDRESS.mac), { directory: WORK, options: { listen: { hostname: ADDRESS.mac } } })
+      yield* workbox.load(Plugins.mail(network, paired("workbox", "mac"), ADDRESS.workbox), { directory: WORK, options: { listen: { hostname: ADDRESS.workbox } } })
+      const target = yield* workbox.session(WORK, { title: "Workbox one" })
+      const sender = yield* mac.session(WORK, { title: "Mac one" })
+      const parcels = () => network.sent().filter((request) => request.url.endsWith(ROUTES.receive))
+      // The first try goes to a workbox cut off the wire: it never arrives, and no answer comes.
+      network.cut(ADDRESS.workbox, true)
+      yield* mac.prompt(sender, `mail-send ${target} resent`)
+      yield* mac.until(() => parcels().length > 0, 60_000, 10)
+      // Past its latency, the first try is lost on the cut wire; then the workbox is back.
+      yield* mac.advance(1_000)
+      network.cut(ADDRESS.workbox, false)
+      yield* mac.until(() => Read.idle(mac, sender) && Read.synthetic(workbox, target, "mail").length > 0, 60_000)
+      expect(parcels().length).toBeGreaterThanOrEqual(2)
+      expect(Read.synthetic(workbox, target, "mail")).toHaveLength(1)
+      expect(Read.answers(mac, sender, "message")).toEqual([`Delivered to session "Workbox one" (${target}) on host workbox. It was idle and is now reading it.`])
     }),
   )
 

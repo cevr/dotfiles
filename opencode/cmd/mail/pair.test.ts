@@ -89,8 +89,10 @@ describe("pairing two hosts", async () => {
     expect(await mac.run(Effect.flatMap(Peers, (peers) => peers.deliver("workbox", parcel("ses_w1"))))).toMatchObject({ outcome: "delivered", to: { id: "ses_w1" } })
     expect(await workbox.run(Effect.flatMap(Peers, (peers) => peers.deliver("mac", parcel("ses_m1"))))).toMatchObject({ outcome: "delivered", to: { id: "ses_m1" } })
     expect(await workbox.run(Effect.flatMap(Peers, (peers) => peers.deliver("mac", parcel("ses_none"))))).toEqual({ outcome: "unknown" })
-    expect(workbox.received).toEqual([{ peer: "mac", parcel: parcel("ses_w1") }])
-    expect(mac.received).toEqual([{ peer: "workbox", parcel: parcel("ses_m1") }])
+    // Each parcel goes with an id of its own, which the receiving host holds it once by.
+    const id = expect.stringMatching(/^[A-Za-z0-9_-]{22}$/)
+    expect(workbox.received).toEqual([{ peer: "mac", parcel: { ...parcel("ses_w1"), id } }])
+    expect(mac.received).toEqual([{ peer: "workbox", parcel: { ...parcel("ses_m1"), id } }])
   })
 
   test("an unpaired host, a forged signature and a replay are refused with 401 and logged", async () => {
