@@ -28,10 +28,12 @@
 import { Tool } from "@opencode/schema/tool"
 import type { SimulationProtocol } from "@opencode/simulation/protocol"
 import { Agent } from "@opencode/schema/agent"
+import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Schema } from "effect"
-import { below, type JsonObject, line, plain, record as recordOf, type Runtime } from "./runtime.ts"
+import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Result, Schema } from "effect"
+import * as Http from "./http.ts"
+import { below, type JsonObject, line, plain, record as recordOf, type Runtime, type SimError } from "./runtime.ts"
 
 // ── The model ──
 
@@ -65,6 +67,9 @@ export interface Request {
 }
 
 export type Script = (request: Request) => Reply
+
+/** An HTTP request, as the fetch API has it (this module's `Request` is a model request). */
+type WebRequest = globalThis.Request
 
 /** A request as the world kept it: when it started, ms since the world's start. */
 export interface Asked {
@@ -127,6 +132,14 @@ export type Message =
       readonly status: "completed"
       readonly summary: string
       readonly reason: Reason
+    }
+  | {
+      /** A step that failed and was not retried: the error the transcript shows. */
+      readonly type: "error"
+      readonly id: string
+      readonly created: number
+      readonly tag: string
+      readonly message: string
     }
 
 export type Reason = "auto" | "manual"
@@ -229,7 +242,35 @@ export interface IdleInput {
   readonly background: ReadonlyArray<{ readonly kind: "shell"; readonly sessionID: string; readonly shellID: string; readonly command: string }>
 }
 
-export type HookInput = ModelRequestInput | IdleInput
+export interface HttpRequestInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: { readonly providerID: string; readonly id: string }
+  readonly kind: Kind
+  request: WebRequest
+}
+
+export interface HttpResponseInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: { readonly providerID: string; readonly id: string }
+  readonly kind: Kind
+  readonly request: WebRequest
+  response: Response
+}
+
+export type RetryDecision = { readonly retry: false } | { readonly retry: true; readonly delay: number }
+
+export interface RetryInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: { readonly providerID: string; readonly id: string }
+  readonly error: { readonly type: string; readonly message: string }
+  readonly attempt: number
+  decision: RetryDecision
+}
+
+export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput
 
 export interface Hook {
   readonly instance: number
@@ -258,6 +299,22 @@ export interface Options {
   /** `experimental.schedules` on: the schedule tools are built in. */
   readonly schedules?: boolean
   readonly models?: ReadonlyArray<CatalogModel>
+  /** The model sessions run on; default `sim/sim-model`, answered by `script`. */
+  readonly model?: { readonly providerID: string; readonly id: string }
+  /** The world's provider for `model`'s provider: its requests go over HTTP to it, through the HTTP hooks (sim/http.ts). */
+  readonly provider?: { readonly id: string; readonly baseURL: string; readonly handle: (request: WebRequest) => Effect.Effect<Response, SimError> }
+  /** The logins OpenCode holds, by integration: each connection with its credential, the first one active. */
+  readonly integrations?: { readonly [integrationID: string]: ReadonlyArray<Login> }
+}
+
+/** A login OpenCode holds for an integration: its connection and its OAuth credential. */
+export interface Login {
+  readonly id: string
+  readonly label: string
+  readonly access: string
+  readonly refresh: string
+  /** Epoch ms. */
+  readonly expires: number
 }
 
 /** 2001-09-09T01:46:40Z: every world's clock starts here unless told otherwise, years from any wall-clock reading. */
@@ -280,6 +337,8 @@ const ShellInput = Schema.Struct({ command: Schema.String, background: Schema.op
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 const AGENT = "build"
 const MODEL = { providerID: "sim", id: "sim-model" }
+/** Where the host sends a provider's model requests before a hook moves them: Anthropic's API, as the fork's catalog names it. */
+const BASE_URL = "https://api.anthropic.com/v1"
 
 /** A tool's answer as the model reads it. */
 export interface Answer {
@@ -364,9 +423,21 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const processes = options.processes ?? PROCESSES
   const latency = options.latency ?? [100, 2_000]
   const models = options.models ?? [SIM_MODEL]
+  const model = options.model ?? MODEL
   const state = { up: true, counter: 0 }
   /** What a plugin reached for that the world does not model: the world's next operation fails naming it. */
   const unmodelled: Array<string> = []
+  /** The logins OpenCode holds, by integration, in order, and the active one's id. */
+  const integrations = new Map(
+    Object.entries(options.integrations ?? {}).map(([id, logins]) => [id, { logins: [...logins], active: Option.fromNullishOr(logins[0]?.id), marks: new Map<string, Schema.Json>() }] as const),
+  )
+  /** Each RPC's event subscribers, by its id: a registered handler's `events.emit` reaches them. */
+  const rpcEvents = new Map<string, Set<{ readonly name: string; readonly queue: Queue.Queue<Schema.Json> }>>()
+  /** What plugins changed in the catalog and the integrations' methods: recorded, as a transform's effect. */
+  const activations = new Map<string, Provider.Activation>([
+    ["anthropic", "auto"],
+    ["openai", "auto"],
+  ])
   const catalogNotFound = (what: string) => new CatalogNotFound({ message: `${what} not found` })
 
   /** Appends one trace line: its virtual time, its kind, its data as JSON. */
@@ -395,6 +466,16 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         if (Option.match(subscriber.types, { onNone: () => true, onSome: (types) => types.has(event.type) })) yield* Queue.offer(subscriber.queue, event)
     })
 
+  /**
+   * Runs an HTTP hook of the session's location's copies on one event, in the order they registered: each sees
+   * what the one before left. A hook that fails fails the request, as the host's `hooks.trigger` does.
+   */
+  const runHttpHooks = (name: "http.request" | "http.response", session: Session, event: HttpRequestInput | HttpResponseInput) =>
+    Effect.gen(function* () {
+      record("hook", { name, sessionID: session.id })
+      for (const hook of hooks.filter((entry) => entry.name === name && entry.directory === session.directory)) yield* Effect.orDie(hook.callback(event))
+    })
+
   /** Runs the hook `name` of the session's location's copies, in the order they registered; a failing hook is the host's log, not the turn's end. */
   const runHooks = (name: string, session: Session, input: HookInput, detail: JsonObject = {}) =>
     Effect.gen(function* () {
@@ -418,6 +499,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         return `tool ${message.callID} ${message.name}: ${message.output}`
       case "compaction":
         return `compaction: ${message.summary}`
+      case "error":
+        return `error ${message.tag}: ${message.message}`
     }
   }
 
@@ -444,19 +527,133 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
 
   const textOf = (reply: Reply) => reply.items.flatMap(itemText).join("")
 
-  /** One model request: the hook, the request in the trace, the stream's time, the script's reply. */
-  const request = (session: Session, kind: Kind, extra = "") =>
+  /** The stream's time: the seed picks within the latency. */
+  const streaming = Effect.suspend(() => {
+    const [low, high] = latency
+    return Effect.sleep(low + below(runtime.world, Math.max(1, high - low + 1)))
+  })
+
+  /** The conversation as Anthropic's messages API carries it. */
+  const wireOf = (message: Message): ReadonlyArray<{ readonly role: "user" | "assistant"; readonly content: ReadonlyArray<Schema.Json> }> => {
+    switch (message.type) {
+      case "user":
+      case "synthetic":
+        return [{ role: "user", content: [{ type: "text", text: message.text }] }]
+      case "compaction":
+        return [{ role: "user", content: [{ type: "text", text: message.summary }] }]
+      case "error":
+        return []
+      case "tool":
+        return [{ role: "user", content: [{ type: "tool_result", tool_use_id: message.callID, content: message.output }] }]
+      case "assistant":
+        return Option.match(message.call, {
+          onNone: () => [{ role: "assistant" as const, content: [{ type: "text", text: message.text }] }],
+          onSome: (used) => [{ role: "assistant" as const, content: [{ type: "tool_use", id: used.id, name: used.name, input: used.input }] }],
+        })
+    }
+  }
+
+  /** A request over HTTP to the world's provider, through the HTTP hooks of the session's location's copies: the reply, or the failure. */
+  const overHttp = (
+    session: Session,
+    provider: NonNullable<Options["provider"]>,
+    event: { readonly kind: Kind; readonly baseURL: string; readonly headers: { readonly [key: string]: string } },
+    tools: ReadonlyArray<string>,
+    extra: string,
+  ) =>
     Effect.gen(function* () {
-      yield* runHooks("model.request", session, { sessionID: session.id, agent: AGENT, model: MODEL, kind, headers: {} }, { requestKind: kind })
+      const scope = { sessionID: session.id, agent: AGENT, model }
+      const conversation = contextOf(session).flatMap(wireOf)
+      const messages = [...conversation, ...Arr.filter([{ role: "user" as const, content: [{ type: "text", text: extra }] }], () => extra !== "")]
+      const sent = new Request(`${event.baseURL}/messages`, {
+        method: "POST",
+        headers: { ...event.headers, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: Http.bodyOf({ model: model.id, system: "You are OpenCode.", messages, tools }),
+      })
+      const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
+      yield* runHttpHooks("http.request", session, before)
+      const answered = yield* Effect.exit(provider.handle(before.request))
+      yield* streaming
+      if (Exit.isFailure(answered)) return Result.fail(Http.unreachable(String(answered.cause)))
+      const after: HttpResponseInput = { ...scope, kind: event.kind, request: before.request, response: answered.value }
+      yield* runHttpHooks("http.response", session, after)
+      const text = yield* Http.textOf(after.response)
+      if (!after.response.ok) return Result.fail(Http.classify(after.response.status, after.response.headers, text))
+      const streamed = Http.readStream(text)
+      const items = streamed.items.map((item): Item => {
+        if (item.type === "text") return { type: "textDelta", text: item.text }
+        return { type: "toolCall", index: 0, id: item.id, name: item.name, input: item.input }
+      })
+      return Result.succeed<Reply>({ items, usage: streamed.usage })
+    })
+
+  /** One model request: the hook, the request in the trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure. */
+  const attempt = (session: Session, kind: Kind, extra = "") =>
+    Effect.gen(function* () {
+      const event = { sessionID: session.id, agent: AGENT, model, kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
+      yield* runHooks("model.request", session, event, { requestKind: kind })
       const startedAt = runtime.now()
       const text = [...contextOf(session).map(renderOf), extra].filter((part) => part !== "").join("\n")
       record("request", { sessionID: session.id, requestKind: kind })
       asked.push({ at: startedAt - start, sessionID: session.id, kind, text })
-      const [low, high] = latency
-      yield* Effect.sleep(low + below(runtime.world, Math.max(1, high - low + 1)))
-      const reply = options.script({ sessionID: session.id, kind, agent: AGENT, text, tools: [...toolsOf(session.directory).keys()] })
-      record("reply", { sessionID: session.id, requestKind: kind, items: reply.items })
-      return { reply, startedAt }
+      const tools = Arr.filter([...toolsOf(session.directory).keys()], () => kind === "primary")
+      const outcome = yield* Option.match(
+        Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === model.providerID),
+        {
+          onNone: () =>
+            streaming.pipe(
+              Effect.andThen(
+                Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script({ sessionID: session.id, kind, agent: AGENT, text, tools: [...toolsOf(session.directory).keys()] }))),
+              ),
+            ),
+          onSome: (provider) => overHttp(session, provider, event, tools, extra),
+        },
+      )
+      Result.match(outcome, {
+        onSuccess: (reply) => record("reply", { sessionID: session.id, requestKind: kind, items: reply.items }),
+        onFailure: (failure) => record("request-failed", { sessionID: session.id, requestKind: kind, ...failure }),
+      })
+      return { outcome, startedAt }
+    })
+
+  /** One model request that must answer (a compaction's, a title's): a failure answers nothing. */
+  const request = (session: Session, kind: Kind, extra = "") =>
+    attempt(session, kind, extra).pipe(
+      Effect.map(({ outcome, startedAt }) => ({ reply: Result.getOrElse(outcome, (): Reply => ({ items: [] })), startedAt })),
+    )
+
+  /**
+   * A primary request and its retries: each failure goes to the `retry` hook with the policy's decision
+   * (sim/http.ts), and a retry waits its gap and asks again, the `model.request` hook running again.
+   */
+  const primary = (session: Session) =>
+    Effect.gen(function* () {
+      for (let retries = 0; ; retries += 1) {
+        const { outcome, startedAt } = yield* attempt(session, "primary")
+        if (Result.isSuccess(outcome)) return Result.succeed({ reply: outcome.success, startedAt })
+        const failure = outcome.failure
+        const gap = Http.gapOf(runtime, retries, failure)
+        if (Option.isNone(gap)) return Result.fail(failure)
+        const event: RetryInput = {
+          sessionID: session.id,
+          agent: AGENT,
+          model,
+          error: { type: failure.tag, message: failure.message },
+          attempt: retries + 2,
+          decision: Option.match(Option.liftPredicate(gap.value, () => failure.retryable), {
+            onNone: (): RetryDecision => ({ retry: false }),
+            onSome: (delay): RetryDecision => ({ retry: true, delay }),
+          }),
+        }
+        yield* runHooks("retry", session, event, { attempt: event.attempt })
+        const decision = event.decision
+        record("retry-decision", { sessionID: session.id, ...decision })
+        if (!decision.retry) return Result.fail(failure)
+        let delay = gap.value
+        if (Number.isFinite(decision.delay) && decision.delay >= 0) delay = Math.ceil(decision.delay)
+        yield* publish({ type: "session.retry.scheduled", data: { sessionID: session.id, attempt: event.attempt, at: runtime.now() + delay } })
+        yield* Effect.sleep(delay)
+      }
     })
 
   /** A background shell: it runs on its own; its end steers a notice into the session, which wakes it. */
@@ -570,12 +767,19 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     spawn(request(session, "title").pipe(Effect.map(({ reply }) => void (session.title = Option.some(textOf(reply))))))
   }
 
-  /** One step: a primary request, its assistant message, and its tool call's answer; whether the turn goes on. */
+  /** One step: a primary request, its assistant message, and its tool call's answer; whether the turn goes on, or it failed. */
   const step = (session: Session) =>
     Effect.gen(function* () {
       title(session)
       session.held = Option.none()
-      const { reply, startedAt } = yield* request(session, "primary")
+      const answered = yield* primary(session)
+      if (Result.isFailure(answered)) {
+        const failure = answered.failure
+        session.messages.push({ type: "error", id: mint("msg_"), created: runtime.now(), tag: failure.tag, message: failure.message })
+        record("step-failed", { sessionID: session.id, tag: failure.tag })
+        return "failed" as const
+      }
+      const { reply, startedAt } = answered.success
       const usage = reply.usage ?? USAGE
       const used = callOf(reply)
       const messageID = mint("msg_")
@@ -586,10 +790,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         text: textOf(reply),
         call: used,
         tokens: { input: usage.input, cache: { read: usage.read, write: usage.write } },
-        model: MODEL,
+        model,
         agent: AGENT,
       })
-      if (Option.isNone(used)) return false
+      if (Option.isNone(used)) return "answered" as const
       const answer = yield* runTool(session, messageID, used.value)
       session.messages.push({
         type: "tool",
@@ -600,14 +804,13 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         output: answer.output,
         error: answer.error,
       })
-      return true
+      return "called" as const
     })
 
-  /** The execution's body: compactions and steps until a step answers with text and nothing resumable waits. */
-  /** The turn: compactions and steps until a step answers with text; whether it did model work (not only control work). */
+  /** The turn: compactions and steps until a step answers with text; whether it did model work (not only control work), or a step failed. */
   const turn = (session: Session) =>
     Effect.gen(function* () {
-      for (let stepped = false; ;) {
+      for (let stepped: "control" | "model" = "control"; ;) {
         const first = session.inbox[0]
         if (first?.type === "compaction") {
           session.inbox.shift()
@@ -617,9 +820,11 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
           continue
         }
         const taken = yield* deliver(session)
-        if (taken === 0 && !stepped) return stepped
-        stepped = true
-        if (!(yield* step(session))) return stepped
+        if (taken === 0 && stepped === "control") return stepped
+        stepped = "model"
+        const outcome = yield* step(session)
+        if (outcome === "failed") return outcome
+        if (outcome === "answered") return stepped
       }
     })
 
@@ -633,16 +838,20 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       session.running = true
       session.busy = Option.some(runtime.now())
       yield* publish({ type: "session.execution.started", data: { sessionID: session.id } })
-      while (yield* turn(session)) {
+      let ended: "control" | "model" | "failed" = yield* turn(session)
+      while (ended === "model") {
         yield* runHooks("experimental.idle", session, {
           sessionID: session.id,
           background: session.shells.map((shell) => ({ kind: "shell", sessionID: session.id, shellID: shell.id, command: shell.command })),
         })
         if (!session.inbox.some((item) => item.resume)) break
+        ended = yield* turn(session)
       }
       session.idle = Option.some(runtime.now())
       session.running = false
-      yield* publish({ type: "session.execution.succeeded", data: { sessionID: session.id } })
+      // A failed step ends the execution failed: `experimental.idle` does not run after a failure.
+      if (ended === "failed") yield* publish({ type: "session.execution.failed", data: { sessionID: session.id } })
+      else yield* publish({ type: "session.execution.succeeded", data: { sessionID: session.id } })
       precompute(session)
       wake(session)
     })
@@ -754,7 +963,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   }
 
   /** The catalog's providers: one per provider the models name. */
-  const providers = () => [...new Set(models.map((model) => model.providerID))].map((id) => ({ id }))
+  const providers = () =>
+    [...new Set([...models.map((entry) => entry.providerID), ...[...activations].flatMap(([id, activation]) => Arr.filter([id], () => activation === "enabled"))])].map(
+      (id) => ({ id }),
+    )
 
   /** Calls an RPC method across the wire: JSON in, JSON out. */
   const callRpc = (id: string, method: string, input: Schema.Json) =>
@@ -794,6 +1006,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     models,
     state,
     unmodelled,
+    integrations,
+    rpcEvents,
+    activations,
     catalogNotFound,
     processes,
     record,

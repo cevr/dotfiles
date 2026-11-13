@@ -298,13 +298,18 @@ const storeSources = (options: Options, context: Context.Context<never>) =>
           new StoreSource({ dir: source.dir, context, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
       )
 
-/** The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's storage. */
-export const live = (
-  ctx: Plugin.Context,
-  options: Options,
-  sources: ReadonlyArray<StoreSource>,
-  chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
-): Layer.Layer<Externals | Limits | PushStore | Workload> =>
+/**
+ * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
+ * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
+ */
+export const liveWith =
+  (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) =>
+  (
+    ctx: Plugin.Context,
+    options: Options,
+    sources: ReadonlyArray<StoreSource>,
+    chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
+  ): Layer.Layer<Externals | Limits | PushStore | Workload> =>
     Layer.mergeAll(
       LimitsLive.layer(ctx.storage, options.limitsFile ?? LimitsLive.defaultPath()),
       LoginsLive.layer(
@@ -327,7 +332,7 @@ export const live = (
         }
       }),
       LedgerLive.layer(ctx.storage),
-      PeersLive.layer(options.fleet.peers),
+      peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
       FleetStoreLive.layer(ctx.storage),
       // And the same resets, so a hold is worked once on the host.
@@ -338,6 +343,9 @@ export const live = (
       // The host's load, and the orchestrate runs of this directory from the status plugin (reached at each call: it may start after the pool).
       WorkloadLive.layer(() => Effect.suspend(() => ctx.rpc(STATUS).status({}))),
     )
+
+/** The outside systems as OpenCode provides them, the peers over SSH. */
+export const live = liveWith(PeersLive.layer)
 
 /** The questions plugin's RPC and the host's sessions, as the pool asks the owner through them. */
 const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {

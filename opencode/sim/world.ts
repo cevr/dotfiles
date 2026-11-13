@@ -18,6 +18,7 @@ import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
 import { type Asked, type Message, makeHost, type Session, type Options, type Process, START } from "./host.ts"
+import * as Provider from "./provider.ts"
 import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
 
 export {
@@ -38,21 +39,31 @@ export {
 } from "./host.ts"
 export { SimError } from "./runtime.ts"
 
+/** The model a world with Anthropic in it runs its sessions on, as the real files configure it. */
+export const ANTHROPIC_MODEL = { providerID: "anthropic", id: "claude-haiku-4-5" }
+/** Where the host sends Anthropic's requests before a hook moves them, as the fork's catalog names it. */
+const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+
 interface Instance {
   readonly loaded: Loaded
   readonly scope: Scope.Closeable
   readonly number: number
 }
 
-export const make = (options: Options) => {
-  const start = options.start ?? START
+export interface WorldOptions extends Options {
+  /** Anthropic as part of the world (sim/provider.ts): sessions run on `anthropic/claude-haiku-4-5` and their requests go to it over HTTP. */
+  readonly anthropic?: Omit<Provider.Options, "seed">
+}
+
+export const make = (worldOptions: WorldOptions) => {
+  const start = worldOptions.start ?? START
   const logs: Array<LogLine & { readonly at: number }> = []
   /** Timers that fired for a copy already closed: none, unless a restart leaks one. */
   const stale: Array<number> = []
   const instances: Array<Instance> = []
   const loads: Array<Loaded> = []
   const runtime = makeRuntime({
-    seed: options.seed,
+    seed: worldOptions.seed,
     start,
     log: (entry) => {
       logs.push({ ...entry, at: runtime.now() })
@@ -62,6 +73,19 @@ export const make = (options: Options) => {
       if (owner === 0 || instances.some((instance) => instance.number === owner)) return
       stale.push(owner)
       host.record("stale-timer", { owner })
+    },
+  })
+  const provider = Option.map(Option.fromNullishOr(worldOptions.anthropic), (anthropic) => Provider.make({ ...anthropic, seed: worldOptions.seed }, () => runtime.now()))
+  const options: Options = Option.match(provider, {
+    onNone: () => worldOptions,
+    onSome: (served) => {
+      const model = worldOptions.model ?? ANTHROPIC_MODEL
+      // A provider on an API key is configured at the world's origin; Anthropic's logins reach it through the auth plugin's hook.
+      const baseURL = Option.match(Option.liftPredicate(`${Provider.ORIGIN}/v1`, () => worldOptions.anthropic?.anonymous === true), {
+        onNone: () => ANTHROPIC_BASE_URL,
+        onSome: (origin) => origin,
+      })
+      return { ...worldOptions, model, provider: { id: model.providerID, baseURL, handle: served.handle } }
     },
   })
   const host = makeHost(options, runtime, start)
@@ -121,6 +145,8 @@ export const make = (options: Options) => {
   return {
     start,
     runtime,
+    /** The world's Anthropic: what it received, each account's tokens. Fails a world made without one. */
+    provider: () => Option.getOrThrowWith(provider, () => new SimError({ message: "this world has no provider: make it with `anthropic`" })),
     sessions: host.sessions,
     storage: host.storage,
     record: host.record,

@@ -18,7 +18,7 @@
 // The plugins see the same clock and a seeded `Random` (Effect's
 // `Random.withSeed`); the world's own choices draw from a second generator on
 // the same seed, so a plugin's ids do not move when the world draws.
-import { Array as Arr, Clock, Context, Data, Duration, Effect, Exit, type Fiber, Logger, Option, Random, References, type Scheduler, Schema } from "effect"
+import { Array as Arr, Clock, Context, Data, Duration, Effect, Exit, type Fiber, Logger, Option, Random, References, Scheduler, Schema } from "effect"
 
 /** A run the world cannot finish: it waits outside the world, it does not settle, or it failed. */
 export class SimError extends Data.TaggedError("SimError")<{ readonly message: string }> {}
@@ -33,6 +33,14 @@ export const generator = (seed: string | number): Random.Random =>
 
 /** A whole number in [0, n). */
 export const below = (random: Random.Random, n: number) => Math.min(n - 1, Math.floor(random.nextDoubleUnsafe() * n))
+
+/** The platform's own macrotask queue, as Effect's default scheduler reaches it: outside the world's. */
+const platform = new Scheduler.MixedScheduler().makeDispatcher()
+
+/** One turn of the JS event loop: every promise already settling settles in it; no clock is read. */
+const eventLoopTurn = Effect.callback<void>((resume) => {
+  platform.scheduleTask(() => resume(Effect.void), 0)
+})
 
 /** How many tasks one drain may run before the world calls it a livelock. */
 export const DRAIN_LIMIT = 2_000_000
@@ -163,11 +171,23 @@ export const makeRuntime = (options: RuntimeOptions) => {
       Effect.provide(Logger.layer([logger])),
     )
 
-  /** Runs every fiber until none has work left. */
-  const settle = Effect.suspend(() => {
+  /** Runs the ready fibers until none has work left at this instant. */
+  const drain = Effect.suspend(() => {
     if (scheduler.drain()) return Effect.void
     return Effect.fail(new SimError({ message: `livelock: ${DRAIN_LIMIT} tasks ran without the world settling` }))
   })
+
+  /**
+   * Runs every fiber until none has work left: drains, then gives the JS
+   * event loop one turn so a promise the plugins' code awaits on memory alone
+   * (a body read, the world's provider answering) resolves, its fiber ready
+   * again, and drains again, until a turn readies none. No clock moves in a
+   * turn; a promise that waits on real I/O stays pending, and `run` says so.
+   */
+  const settle: Effect.Effect<void, SimError> = drain.pipe(
+    Effect.andThen(eventLoopTurn),
+    Effect.andThen(Effect.suspend(() => Effect.when(settle, Effect.sync(() => scheduler.ready.length > 0)).pipe(Effect.asVoid))),
+  )
 
   /** Starts `effect` as a fiber of the world; it runs when the world settles. */
   const fork = <A, E>(effect: Effect.Effect<A, E>) => Effect.runFork(provide(effect), { scheduler })
