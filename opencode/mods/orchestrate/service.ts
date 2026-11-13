@@ -5,6 +5,7 @@ import { Context, type Effect, type Option, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Drift } from "./drift.ts"
 import type { FleetOutcome } from "./fleet.ts"
+import type { HeavyReading } from "./heavy.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
@@ -363,6 +364,26 @@ export class Fleet extends Context.Service<
   Fleet,
   { readonly record: (input: { readonly report: Option.Option<string>; readonly batch: string }) => Effect.Effect<FleetOutcome> }
 >()("dotfiles-opencode/orchestrate/Fleet") {}
+
+// ── The heavy-check footer (heavy.ts) ──
+
+/** The host's load or its heavy agents could not be read. */
+export class HostUnread extends Schema.TaggedError<HostUnread>()("HostUnread", { reason: Schema.String }) {}
+
+/**
+ * The host the agents run their heavy checks on.
+ * - `cores`: its count of cores. Never fails.
+ * - `read`: its load now, and the heavy agents (implementors and verifiers) working on it now, every root's on
+ *   the host, `except` (the agent being prompted, by its session) not counted. A start whose session no longer
+ *   works does not count, however its log reads.
+ */
+export class HeavyHost extends Context.Service<
+  HeavyHost,
+  {
+    readonly cores: Effect.Effect<number>
+    readonly read: (except: Option.Option<string>) => Effect.Effect<HeavyReading, HostUnread>
+  }
+>()("dotfiles-opencode/orchestrate/HeavyHost") {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
 export class Tell extends Context.Service<
