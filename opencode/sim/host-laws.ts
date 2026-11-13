@@ -30,6 +30,7 @@ import {
   LAW_FOLDER,
   lawCall,
   LAW_LOGIN,
+  LAW_MOVED,
   LAW_SOL,
   LAW_SHELL,
   LAW_SOCKET,
@@ -159,6 +160,15 @@ const fresh = (ctx: Plugin.Context) => ctx.session.create({ title: "law" })
 
 /** A session as `session.get` answers it. */
 type SessionInfo = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
+/** A compaction's ended event's summary (a started one has none). */
+const Summary = Schema.Struct({ text: Schema.String })
+/** A text part of an assistant message's content. */
+const TextPart = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })
+/** An assistant message of a session's context, by its content's parts. */
+const AssistantText = Schema.Struct({
+  type: Schema.Literal("assistant"),
+  content: Schema.Array(Schema.Unknown),
+})
 
 /** What a session's context holds, as one JSON text, for a law to look into. */
 const contextText = (ctx: Plugin.Context, sessionID: SessionID) =>
@@ -245,6 +255,11 @@ export const LAWS: ReadonlyArray<Law> = [
         const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
         yield* ensure(primary.length === 1, `the prompt brought ${primary.length} requests`)
         yield* ensure(count(yield* contextText(ctx, session.id), "heard prompt") === 1, "the session does not hold the model's answer to the prompt")
+        // The answer is the assistant message's text content, as a plugin reads a session's last words.
+        const answers = (yield* ctx.session.context({ sessionID: session.id })).flatMap((message) =>
+          Option.toArray(Schema.decodeUnknownOption(AssistantText)(message)).flatMap((assistant) => assistant.content.flatMap((part) => Option.toArray(Option.liftPredicate(part, Schema.is(TextPart))).map((text) => text.text))),
+        )
+        yield* ensure(answers.includes("heard prompt"), `the assistant's text content was ${answers.join(" / ")}`)
         const info = yield* ctx.session.get({ sessionID: session.id })
         yield* ensure(info.id === session.id, "get answered another session")
         // A prompt with an id (wake's): a second admission of the id is not taken again.
@@ -320,28 +335,6 @@ export const LAWS: ReadonlyArray<Law> = [
         )(messages[0])
         yield* ensure(Option.isSome(first), "the context does not start at a completed automatic compaction")
         yield* ensure((yield* ran) === 1, "experimental.idle ran after the compaction alone")
-      }),
-  },
-  {
-    name: LAW.compacted,
-    operations: ["event.subscribe", "session.compact"],
-    // Orchestrate tells a root its machine once the root's compaction ends, once per event id.
-    check: (ctx, probe) =>
-      Effect.gen(function* () {
-        const ended = yield* Ref.make<ReadonlyArray<{ readonly id: string; readonly sessionID: string; readonly reason: string }>>([])
-        yield* Effect.forkScoped(
-          ctx.event
-            .subscribe({ types: ["session.compaction.ended"] })
-            .pipe(Stream.runForEach((event) => Ref.update(ended, (all) => [...all, { id: String(event.id), sessionID: event.data.sessionID, reason: event.data.reason }]))),
-          { startImmediately: true },
-        )
-        const session = yield* fresh(ctx)
-        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the compaction" }))
-        yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id, reason: "auto" }))
-        yield* settle
-        const mine = (yield* Ref.get(ended)).filter((event) => event.sessionID === session.id)
-        yield* ensure(mine.length === 1, `the compaction published session.compaction.ended ${mine.length} times`)
-        yield* ensure(mine.every((event) => event.reason === "auto" && event.id !== "" && event.id !== "undefined"), `the event was ${JSON.stringify(mine)}`)
       }),
   },
   {
@@ -1125,9 +1118,80 @@ export const LAWS: ReadonlyArray<Law> = [
             if (event.sessionID === session.id) event.messages.push({ role: "user", content: [{ type: "text", text: "law: kept for the summary" }] })
           }),
         )
+        const seen = yield* Ref.make<ReadonlyArray<{ readonly id: string; readonly type: string; readonly text: string }>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.compaction.started", "session.compaction.ended"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.when(
+                Ref.update(seen, (all) => [...all, { id: event.id, type: event.type, text: Option.getOrElse(Option.map(Schema.decodeUnknownOption(Summary)(event.data), (data) => data.text), () => "") }]),
+                Effect.succeed(event.data.sessionID === session.id),
+              ),
+            ),
+          ),
+          { startImmediately: true },
+        )
         yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the hooked compaction" }))
         yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id }))
         yield* ensure(count(yield* contextText(ctx, session.id), KEPT_IN_SUMMARY) === 1, "the compaction request did not carry the hook's message")
+        // The compaction's start and end are one event each, each with an id of its own; the end carries the summary.
+        const events = yield* Ref.get(seen)
+        const types = events.map((event) => event.type).join(",")
+        yield* ensure(types === "session.compaction.started,session.compaction.ended", `the compaction published ${types}`)
+        yield* ensure(events[0]?.id !== events[1]?.id && events.every((event) => event.id !== ""), `the compaction events' ids were ${events.map((event) => event.id).join(",")}`)
+        yield* ensure(events[1]?.text.includes(KEPT_IN_SUMMARY) === true, "the compaction's ended event does not carry its summary")
+      }),
+  },
+  {
+    name: LAW.move,
+    operations: ["session.move", "session.get", "session.prompt", "session.context", "event.subscribe"],
+    // The test host makes the folder beside the law folder (tests/host-laws/real.ts); the world keeps no folders.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const home = ctx.location.directory
+        const away = AbsolutePath.make(`${home}${LAW_MOVED}`)
+        const moves = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.moved"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.when(Ref.update(moves, (all) => [...all, event.data.location.directory]), Effect.succeed(event.data.sessionID === session.id)),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the move" }))
+        const ownRequests = probe.requests.pipe(Effect.map((all) => all.filter((request) => request.sessionID === session.id).length))
+        /** Moves the idle session to `directory`, and waits until it is there. */
+        const moveTo = (directory: AbsolutePath) =>
+          Effect.gen(function* () {
+            yield* ctx.session.move({ sessionID: session.id, directory })
+            for (let waited = 0; (yield* ctx.session.get({ sessionID: session.id })).location.directory !== directory; waited += 100) {
+              if (waited > 10_000) return yield* Effect.fail(new LawBroken({ message: `the session is not in ${directory} 10 s after the move` }))
+              yield* Effect.sleep("100 millis")
+            }
+          })
+        /** Prompts the session, and waits until the model's answer is in its context: the prompt and the answer both name `heard`. */
+        const answered = (text: string, heard: string) =>
+          Effect.gen(function* () {
+            yield* ctx.session.prompt({ sessionID: session.id, text })
+            for (let waited = 0; count(yield* contextText(ctx, session.id), heard) < 2; waited += 100) {
+              if (waited > 60_000) return yield* Effect.fail(new LawBroken({ message: `the moved session did not answer "${text}" within 60 s` }))
+              yield* Effect.sleep("100 millis")
+            }
+            yield* settle
+          })
+        const before = yield* ownRequests
+        yield* moveTo(away)
+        yield* settle
+        yield* ensure((yield* ownRequests) === before, "the move of an idle session asked the model")
+        // Moved, its turn is the new location's: this copy's model.request hook does not see it.
+        yield* answered("law: after the move", "after the move")
+        yield* ensure((yield* ownRequests) === before, "this location's model.request hook ran for a session moved away")
+        yield* moveTo(home)
+        yield* answered("law: back home", "back home")
+        yield* ensure((yield* ownRequests) > before, "this location's model.request hook did not run for a session moved back")
+        const seen = (yield* Ref.get(moves)).join(",")
+        yield* ensure(seen === `${away},${home}`, `the session.moved events were ${seen}`)
       }),
   },
   {

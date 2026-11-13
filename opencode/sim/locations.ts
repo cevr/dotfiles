@@ -10,7 +10,9 @@
 // The world's events are of two kinds: a session's (`data.sessionID` names
 // it), routed to its session's directory, and a form's reply, which the host
 // publishes in the location of the form's session, so it routes the same.
-// An event with no session the world knows is global.
+// An event with no session the world knows is global. A session's move
+// (`session.moved`) is heard in both its source and its destination, as the
+// move law (host-laws.ts `move`) reads it on real OpenCode.
 import { Option, Schema } from "effect"
 import type { JsonObject } from "./runtime.ts"
 

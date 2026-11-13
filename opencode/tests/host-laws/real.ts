@@ -26,6 +26,7 @@ import {
   KEPT,
   LAW_FOLDER,
   LAW_LOGIN,
+  LAW_MOVED,
   LAW_SOL,
   LAW_SOCKET,
   type LawCall,
@@ -290,6 +291,8 @@ const run = Effect.gen(function* () {
   yield* fs.makeDirectory(law, { recursive: true })
   // The `located` law's other location, beside the law folder.
   yield* fs.makeDirectory(path.join(base, ELSEWHERE_FOLDER), { recursive: true })
+  // The move law's folder, beside the law folder.
+  yield* fs.makeDirectory(`${law}${LAW_MOVED}`, { recursive: true })
   yield* fs.makeDirectory(config, { recursive: true })
 
   yield* HttpServer.serveEffect(model({ count: 0 }))

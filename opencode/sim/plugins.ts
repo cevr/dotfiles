@@ -40,14 +40,15 @@ import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
-import { Branches, Findings, type FindingsRead, StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
+import { findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
+import { Branches, Findings, StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
 import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
 import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
 import * as MemoryQueue from "@dotfiles/opencode-queue/memory/store"
 import { make as makeStatus } from "@dotfiles/opencode-cmd-status/server"
 import * as StatusCallLog from "@dotfiles/opencode-status/memory/call-log"
 import { RunTables, RunsUnreadable } from "@dotfiles/opencode-status/service"
-import { Data, Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import type { World } from "./world.ts"
 
 /** A check in the world's shell: the command's answer at this instant, after the time it runs (at most `timeoutMs`). */
@@ -146,10 +147,13 @@ export interface OrchestrateDoubles {
   readonly lines?: Array<CallLine>
   /** The Codex admission's answer for a model and role; none fails open, as the script with no admission line does. */
   readonly codex?: (model: string, role: string) => Option.Option<Pace>
+  /** The machine's ledger lines: one array is one ledger, shared by the copies (each location's, each restart's) given it. */
+  readonly ledger?: Array<unknown>
+  /** The files a verifier's report and its unit findings are read from, by absolute path; a path not in it does not read. */
+  readonly files?: ReadonlyMap<string, string>
 }
 
-/** The findings reader's answers. */
-const Reads = Data.taggedEnum<FindingsRead>()
+const NO_FILES: ReadonlyMap<string, string> = new Map()
 
 /** A call log line as the file holds it: JSON. */
 const LineJson = Schema.fromJsonString(Schema.Unknown)
@@ -175,9 +179,10 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
   return makeOrchestrate((ctx, options, start, background) =>
     Layer.mergeAll(
       hosted(ctx, start, background),
-      MemoryLedger.layer(options.cadence, []),
-      // No report reads, no Rift has a branch, no unit's log.md is found: the world keeps no files and runs no git or log.ts.
-      Layer.succeed(Findings, Findings.of({ read: (report) => Effect.succeed(Reads.Unread({ why: `the report ${report} does not read` })) })),
+      MemoryLedger.layer(options.cadence, doubles.ledger ?? []),
+      // A report reads from the files the test holds, by the plugin's own reader; no Rift has a branch, no unit's log.md
+      // is found: the world runs no git or log.ts.
+      Layer.succeed(Findings, Findings.of({ read: (report) => Effect.sync(() => findingsIn(report, (path) => (doubles.files ?? NO_FILES).get(path))) })),
       Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
       Layer.succeed(UnitLogs, UnitLogs.of({ find: () => Effect.succeed(void 0), append: () => Effect.void, drops: () => Effect.succeed([]) })),
       CallLogTest.layer(lines),
