@@ -542,6 +542,23 @@
       "rules": {
         "effect/noGlobals": "off"
       }
+    },
+    {
+      "files": [
+        "formal/check.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "formal/orchestrate/story.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
     }
   ]
 }
