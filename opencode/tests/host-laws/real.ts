@@ -310,10 +310,14 @@ const run = Effect.gen(function* () {
   const lines: Array<string> = []
   const asks: Array<string> = []
   const warnings: Array<string> = []
+  /** The host's warnings that it could not load the probe: a plugin load failure that names the probe's folder. */
+  const unloaded: Array<string> = []
   const note = (entry: LogEntry) => {
     if (entry.level !== "warn" && entry.level !== "error" && entry.level !== "fatal") return
-    warnings.push(`${entry.level}: ${entry.message}${Option.match(Option.fromUndefinedOr(entry.cause), { onNone: () => "", onSome: (cause) => ` (${String(cause).slice(0, 400)})` })}`)
+    const said = `${entry.level}: ${entry.message}${Option.match(Option.fromUndefinedOr(entry.cause), { onNone: () => "", onSome: (cause) => ` (${String(cause).slice(0, 400)})` })}`
+    warnings.push(said)
     if (warnings.length > KEPT_WARNINGS) warnings.shift()
+    if (entry.message.includes("failed to load plugin") && String(entry.cause).includes(probe)) unloaded.push(said)
   }
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
@@ -367,18 +371,20 @@ const run = Effect.gen(function* () {
     ),
   )
   yield* drain.pipe(
+    // The wait ends at the probe's `done`, or at once when the host says it could not load the probe (each law has its
+    // own limit in the probe, sim/server.ts, so a law that hangs names itself there).
     Effect.andThen(
       Effect.suspend(() => {
-        if (Arr.contains(lines, DONE)) return Effect.void
+        if (Arr.contains(lines, DONE) || unloaded.length > 0) return Effect.void
         return Effect.fail(new RealRunFailed({ message: "the probe has not finished" }))
       }),
     ),
     Effect.retry({ schedule: Schedule.spaced(POLL), times: LIMIT / POLL }),
     Effect.ignore,
   )
-  // A probe that did not finish leaves a line saying how far it got and what the host warned of, for the test to show.
-  if (!Arr.contains(lines, DONE))
-    lines.push(`the probe did not finish in ${LIMIT / 1000} s, after ${lines.length} outcome lines; the host's last warnings and errors:\n${warnings.join("\n")}`)
+  // A probe that did not finish leaves a line saying why and what the host warned of, for the test to show.
+  if (unloaded.length > 0) lines.push(`the host did not load the probe (${probe}): ${unloaded.join("\n")}`)
+  else if (!Arr.contains(lines, DONE))    lines.push(`the probe did not finish in ${LIMIT / 1000} s, after ${lines.length} outcome lines; the host's last warnings and errors:\n${warnings.join("\n")}`)
   yield* fs.writeFileString(path.join(base, "result.json"), toJson({ lines }))
 })
 

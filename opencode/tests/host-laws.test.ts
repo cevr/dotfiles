@@ -5,7 +5,7 @@
 // world does for a plugin, real OpenCode does too. It needs OPENCODE_DEV (the
 // fork), as every real acceptance run has it.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Config, Deferred, Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
+import { Clock, Config, Deferred, Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { KEPT, NAMES, outcome } from "../sim/law-names.ts"
@@ -19,8 +19,8 @@ const Result = Schema.fromJsonString(Schema.Struct({ lines: Schema.Array(Schema.
 /** A child's whole output, as text. */
 const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 
-/** The probe's outcome lines from one real boot; a failed run is one line that says how it failed. */
-const boot = Effect.gen(function* () {
+/** The probe's outcome lines from one real boot with the probe package in `probe`; a failed run is one line that says how it failed. */
+const boot = (probe: string) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
@@ -44,7 +44,7 @@ const boot = Effect.gen(function* () {
       OPENCODE_DISABLE_MODELS_FETCH: "1",
       SIM_REAL_BASE: base,
       SIM_REAL_FORK: path.resolve(fork),
-      SIM_REAL_PROBE: path.join(ROOT, "sim"),
+      SIM_REAL_PROBE: probe,
     },
     extendEnv: false,
     stdin: "ignore",
@@ -73,7 +73,7 @@ const lines = Effect.gen(function* () {
   if (Option.isSome(shared.boot)) return yield* Deferred.await(shared.boot.value)
   const started = yield* Deferred.make<ReadonlyArray<string>>()
   shared.boot = Option.some(started)
-  yield* Deferred.complete(started, boot)
+  yield* Deferred.complete(started, boot(`${ROOT}/sim`))
   return yield* Deferred.await(started)
 })
 
@@ -88,4 +88,21 @@ describe("the host laws in real OpenCode", () => {
         }),
       400_000,
     )
+
+  live(
+    "a probe the host cannot load ends the run within a minute, naming the load failure",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const probe = yield* fs.makeTempDirectoryScoped({ prefix: "host-laws-unloadable-" })
+        yield* fs.writeFileString(`${probe}/package.json`, '{"name":"host-laws-unloadable","type":"module","exports":{"./server":"./server.ts"}}')
+        yield* fs.writeFileString(`${probe}/server.ts`, 'import "@dotfiles/no-such-package-x"\nexport default {}\n')
+        const from = yield* Clock.currentTimeMillis
+        const said = yield* boot(probe)
+        const took = (yield* Clock.currentTimeMillis) - from
+        expect({ lines: said.length, unloaded: said.join("\n").includes(`the host did not load the probe (${probe})`), named: said.join("\n").includes("no-such-package-x") }).toEqual({ lines: 1, unloaded: true, named: true })
+        expect(took).toBeLessThan(60_000)
+      }).pipe(Effect.scoped),
+    400_000,
+  )
 })

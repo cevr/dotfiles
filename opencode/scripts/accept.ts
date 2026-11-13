@@ -51,7 +51,7 @@ import { $, type Subprocess } from "bun"
 import { Console, Deferred, Effect, Fiber, Option } from "effect"
 import { holdingIfFree } from "../mods/rift/process/flock.ts"
 import { descendants, listing, type Proc, servers, stop, survivors, table, watch, type Watch } from "./leaks.ts"
-import { checkFork } from "./fork.ts"
+import { readyFork } from "./fork.ts"
 import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
@@ -699,7 +699,7 @@ const main = Effect.fn("Accept.main")(function* () {
   if (!ENV.OPENCODE_DEV) yield* say("accept: OPENCODE_DEV is not set, so the real-OpenCode tests skip and record no pass. Point it at the fork.")
   else {
     // A fork that is not installed here would fail every real-OpenCode test for a reason none of them names.
-    const checked = checkFork(ENV.OPENCODE_DEV)
+    const checked = readyFork(ENV.OPENCODE_DEV)
     if ("problem" in checked) return yield* refuse(checked.problem)
     // Each package reaches the fork's modules through link-fork's links, and one added since this checkout last
     // linked has none: real OpenCode then fails to load a plugin a test gives it (the host laws' probe in sim/,

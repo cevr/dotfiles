@@ -130,6 +130,12 @@ export const DONE = "sim-law: done"
  */
 export const CLIENT = "sim-law: client "
 
+/**
+ * How long one law may run on the host's clock, ms: past it the law breaks, naming the limit, and the next law runs.
+ * A law's own turns wait up to 60 s each; on real OpenCode all of them together take about 20 s.
+ */
+export const LAW_LIMIT_MS = 120_000
+
 /** A law's own outcome line among a run's lines, or, with none, every line, to show what happened. */
 export const outcome = (all: ReadonlyArray<string>, name: string) => {
   const own = all.filter((line) => line === `${KEPT}${name}` || line.startsWith(`${BROKEN}${name}:`))

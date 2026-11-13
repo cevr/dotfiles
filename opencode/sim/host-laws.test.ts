@@ -6,11 +6,11 @@ import type { Plugin } from "@opencode/plugin/effect"
 import { describe, expect } from "bun:test"
 import { Array as Arr, Effect, Option, Predicate, Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
-import { ClientAsk, LAWS } from "./host-laws.ts"
+import { ClientAsk, type Law, LAWS, probeOf } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, callFor, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, LAW_SOCKET, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
-import Probe from "./server.ts"
+import { answer, BROKEN, callFor, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LIMIT_MS, LAW_LOGIN, LAW_SOCKET, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import Probe, { runLaws } from "./server.ts"
 import * as World from "./world.ts"
 
 const { seeded } = Seed.runner("sim/host-laws.test.ts")
@@ -60,12 +60,12 @@ const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
 const lawsOn = (seed: number) =>
   Option.match(Option.fromNullishOr(runs.get(seed)), {
     onSome: Effect.succeed,
-    onNone: () => runLaws(seed).pipe(Effect.tap((lines) => Effect.sync(() => runs.set(seed, lines)))),
+    onNone: () => playLaws(seed).pipe(Effect.tap((lines) => Effect.sync(() => runs.set(seed, lines)))),
   })
 const runs = new Map<number, ReadonlyArray<string>>()
 
 /** One world on `seed` with the probe loaded for the law folder, run until it has run every law: its log. */
-const runLaws = (seed: number) =>
+const playLaws = (seed: number) =>
   Effect.gen(function* () {
     // The model goes over HTTP, as on real OpenCode, so the HTTP and retry laws have a wire to hook; the integration law a login.
     const world = World.make({
@@ -135,6 +135,30 @@ describe("the host laws on the world", () => {
       }
       yield* world.load(walker, { directory: "/scratch/walk" })
       expect(offered.toSorted()).toEqual([...OPERATIONS].toSorted())
+    }),
+  )
+
+  Seed.effect(
+    "a law that never ends breaks on its time limit, naming it, and the laws after it still run",
+    Effect.gen(function* () {
+      const world = World.make({ seed: 1, script: () => World.say("") })
+      const laws: ReadonlyArray<Law> = [
+        { name: "hangs", operations: [], check: () => Effect.never },
+        { name: "after", operations: [], check: () => Effect.void },
+      ]
+      const runner: Plugin.Plugin = {
+        id: "dotfiles-opencode.sim-law-limit",
+        effect: (ctx) =>
+          Effect.gen(function* () {
+            const probe = yield* probeOf(ctx)
+            yield* Effect.forkScoped(runLaws(laws, ctx, probe))
+          }),
+      }
+      yield* world.load(runner, { directory: `/scratch/${LAW_FOLDER}` })
+      const took = yield* world.until(() => world.logs().some((line) => line.message === DONE), 20 * 60_000, 1_000)
+      expect(world.logs().flatMap(lawLine)).toEqual([`${BROKEN}hangs: ran past its limit of ${LAW_LIMIT_MS / 1000} s on the host's clock`, `${KEPT}after`])
+      // A hang names itself within about two minutes of the host's clock, not after the real run's 300 s.
+      expect(took).toBeLessThan(125_000)
     }),
   )
 })

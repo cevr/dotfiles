@@ -4,11 +4,13 @@
 // workspace (its root is the folder above the script), against a scratch fork.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { homedir, tmpdir } from "node:os"
+import { join, relative } from "node:path"
 
 /** A fork path that exists on no machine, like a Mac path on the workbox. */
 const ELSEWHERE = "/nonexistent/loop-probe-x/.rifts/opencode/prime-look"
+/** opencode/: the real scripts run from it. */
+const OPENCODE = join(import.meta.dir, "..")
 
 let scratch: string
 let workspace: string
@@ -27,11 +29,12 @@ const makeFork = (dir: string, options: { readonly checkout?: boolean } = {}) =>
   return dir
 }
 
-const run = (dev: string | undefined) => {
+/** A run of `script` (the scratch workspace's link-fork) with `args`, from the folder above its scripts/, its anchors in the scratch folder. */
+const run = (dev: string | undefined, script = join(workspace, "scripts/link-fork.ts"), ...args: ReadonlyArray<string>) => {
   const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DEV: dev, OPENCODE_FORK_ANCHORS: join(scratch, "state/opencode-fork") }
   if (dev === undefined) delete env.OPENCODE_DEV
-  const child = Bun.spawnSync([process.execPath, join(workspace, "scripts/link-fork.ts")], { cwd: workspace, env, stdout: "pipe", stderr: "pipe" })
-  return { code: child.exitCode, err: child.stderr.toString() }
+  const child = Bun.spawnSync([process.execPath, script, ...args], { cwd: join(script, "../.."), env, stdout: "pipe", stderr: "pipe" })
+  return { code: child.exitCode, out: child.stdout.toString(), err: child.stderr.toString() }
 }
 
 /** Every entry of every package's node_modules, one level into scopes, with its link text. */
@@ -151,15 +154,10 @@ describe("link-fork", () => {
   })
 
   test("accept runs the same check, before it runs or lists any test", () => {
-    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "accept.ts"), "--list"], {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, OPENCODE_DEV: ELSEWHERE },
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    expect(child.exitCode).not.toBe(0)
-    expect(child.stdout.toString()).toBe("")
-    expect(child.stderr.toString()).toContain(`accept: OPENCODE_DEV is '${ELSEWHERE}', which does not exist`)
+    const child = run(ELSEWHERE, join(OPENCODE, "scripts/accept.ts"), "--list")
+    expect(child.code).not.toBe(0)
+    expect(child.out).toBe("")
+    expect(child.err).toContain(`accept: OPENCODE_DEV is '${ELSEWHERE}', which does not exist`)
   })
 
   test("repairs the links an earlier run left into a fork that is gone, the ones the new fork lacks too", () => {
@@ -240,5 +238,36 @@ describe("link-fork, sim-tui's extra links", () => {
     expect(code).not.toBe(0)
     expect(err).toContain("@opencode/protocol")
     expect(lstatSync(join(forkModules(), "@opencode/protocol")).isSymbolicLink()).toBe(true)
+  })
+})
+
+describe("the scripts that take the fork besides link-fork", () => {
+  /** The stray an older link-fork wrote into the fork's modules: relative to a checkout, through the anchors folder. */
+  const stray = () => {
+    const link = join(fork, "packages/tui/node_modules/@opencode/protocol")
+    symlinkSync("../../../../../../../.local/state/opencode-fork/Developer/personal/dotfiles/opencode/modules/../../protocol", link)
+  }
+  /** A run of opencode/'s `name` with `args`, OPENCODE_DEV at the scratch fork. */
+  const script = (name: string, ...args: ReadonlyArray<string>) => run(fork, join(OPENCODE, "scripts", name), ...args)
+  /** Whether the fork's modules still hold the stray. */
+  const strayLeft = () => readdirSync(join(fork, "packages/tui/node_modules/@opencode")).includes("protocol")
+
+  test("accept removes link-fork's old stray before its check, then reaches link-fork, whose refusal it names, before it lists any test", () => {
+    stray()
+    // This checkout's anchor, a folder where a link belongs: link-fork refuses before it touches any package.
+    mkdirSync(join(scratch, "state/opencode-fork", relative(homedir(), OPENCODE), "modules"), { recursive: true })
+    const { code, out, err } = script("accept.ts", "--list")
+    expect({ code, out, stray: strayLeft() }).toEqual({ code: 1, out: "", stray: false })
+    expect(err).toContain("accept: link-fork failed:")
+    expect(err).toContain("is not a link: move it away")
+    expect(err).not.toContain("point nowhere")
+  })
+
+  test("daily removes link-fork's old stray before its check, and goes on to the fork's next check", () => {
+    stray()
+    const { code, err } = script("daily.ts")
+    expect({ code, stray: strayLeft() }).toEqual({ code: 1, stray: false })
+    expect(err).toContain("expected packages/cli/script/build.ts")
+    expect(err).not.toContain("point nowhere")
   })
 })
