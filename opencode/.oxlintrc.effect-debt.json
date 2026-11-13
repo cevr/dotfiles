@@ -516,6 +516,32 @@
       "rules": {
         "effect/noGlobals": "off"
       }
+    },
+    {
+      "files": [
+        "mods/rift/memory/land-receipts.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rift/process/land-receipts.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/receipt.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
     }
   ]
 }

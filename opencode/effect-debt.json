@@ -178,7 +178,12 @@
     {"file":"mods/cache/filestore/ping-log.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so the bun:test case reads its scratch log with Effect.runPromise"},
     {"file":"mods/cache/keepalive.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs the arming rule with Effect.runSync"},
     {"file":"mods/cache/laws.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test law runs its case over the log's fresh Layer with Effect.runPromise"},
-    {"file":"mods/cache/fetch/pinger.ts","rule":"effect/noGlobals","reason":"network adapter: the keepalive's pings go out on the runtime's fetch, the Pinger contract's one live implementation; the mod has no Effect HTTP client layer"}
+    {"file":"mods/cache/fetch/pinger.ts","rule":"effect/noGlobals","reason":"network adapter: the keepalive's pings go out on the runtime's fetch, the Pinger contract's one live implementation; the mod has no Effect HTTP client layer"},
+    {"file":"mods/rift/memory/land-receipts.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs the rift tool over the memory services with Effect.runPromise"},
+    {"file":"mods/rift/process/land-receipts.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs a land over scratch git repositories with Effect.runPromise"},
+    {"file":"mods/rift/process/land-receipts.test.ts","rule":"effect/noNodeBuiltinImport","reason":"test scratch adapter: the mod has no Effect platform layer, so the case lays out its scratch repositories and reads the marks and receipts they leave with node:fs, node:os and node:path"},
+    {"file":"mods/rift/process/land-receipts.test.ts","rule":"effect/noGlobals","reason":"real-process harness: the case runs scripts/receipt.ts with Bun.spawnSync and this process's env, as a Rift's round would, and parses the land record as written"},
+    {"file":"scripts/receipt.ts","rule":"effect/noGlobals","reason":"CLI adapter: the root has no Effect platform layer, so the script reads its argv, env and cwd from process, runs each command with Bun.spawn, says its verdict on console.error and exits with process.exit"}
   ],
   "budgets": {
     "cmd/anthropic-auth/server.test.ts": {"effect/noAs":47,"effect/noAsyncFunction":561,"effect/noChainedTypeAssertions":15,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":2,"effect/noGlobals":194,"effect/noKnownValueWidening":4,"effect/noModuleMocks":26,"effect/noNewError":15,"effect/noNewPromise":37,"effect/noNullish":34,"effect/noObjectParameters":1,"effect/noPromiseChainsInTests":8,"effect/noTernary":6,"effect/noThrowStatement":12,"effect/noTryCatch":46,"effect/noUnknownParameters":14,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":1},
@@ -744,7 +749,7 @@
     "mods/rift/memory/rifts.ts": {"effect/noNullish":8,"effect/noTernary":3},
     "mods/rift/memory/session-directories.ts": {"effect/noNullish":2,"effect/noTernary":2},
     "mods/rift/memory/workbox.ts": {"effect/noNullish":2,"effect/noTernary":2},
-    "mods/rift/model.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":33,"effect/noRuntimeTypeof":1,"effect/noTernary":19,"effect/preferTaggedConstructors":1},
+    "mods/rift/model.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":27,"effect/noRuntimeTypeof":1,"effect/noTernary":18,"effect/preferTaggedConstructors":1},
     "mods/rift/opencode/notices.test.ts": {"effect/noAsyncFunction":3,"effect/noEffectRunInTests":1,"effect/noNewError":1},
     "mods/rift/opencode/notices.ts": {"effect/noUnsafeDictionaryType":1},
     "mods/rift/opencode/session-directories.test.ts": {"effect/noNewError":1,"effect/noNullish":2,"effect/noTernary":2},
@@ -928,7 +933,7 @@
     "scripts/pool-limits.test.ts": {"effect/noAs":2,"effect/noGlobals":4,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noTestLifecycleHooks":1},
     "scripts/pool-limits.ts": {"effect/noAs":2,"effect/noConditionalEmptyObjectSpread":2,"effect/noGlobals":19,"effect/noKnownValueWidening":2,"effect/noNewError":1,"effect/noNodeBuiltinImport":1,"effect/noNullish":10,"effect/noTernary":10,"effect/noThrowStatement":1,"effect/noTryCatch":1,"effect/noUnsafeDictionaryType":1},
     "scripts/post-land.test.ts": {"effect/noAs":1,"effect/noAsyncFunction":34,"effect/noFixedWaitInTests":1,"effect/noGlobals":10,"effect/noModulePathFacts":1,"effect/noNewPromise":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":4,"effect/noTestLifecycleHooks":1,"effect/noTryCatch":2},
-    "scripts/post-land.ts": {"effect/noAsyncFunction":4,"effect/noGlobals":5,"effect/noModulePathFacts":1,"effect/noNewError":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":5,"effect/noTernary":3,"effect/noThrowStatement":1},
+    "scripts/post-land.ts": {"effect/noAsyncFunction":3,"effect/noGlobals":5,"effect/noModulePathFacts":1,"effect/noNewError":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":5,"effect/noTernary":3,"effect/noThrowStatement":1},
     "scripts/reach.ts": {"effect/maxCognitiveComplexity":1,"effect/noAs":2,"effect/noAsyncFunction":5,"effect/noGlobals":3,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":3,"effect/noNullish":16,"effect/noTernary":4,"effect/noTryCatch":3},
     "scripts/tool-inputs.test.ts": {"effect/noAs":2,"effect/noGlobals":1,"effect/noKnownValueWidening":1,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":1,"effect/noUnknownParameters":2,"effect/noUnsafeDictionaryType":1},
     "scripts/typecheck.ts": {"effect/noGlobals":5,"effect/noModulePathFacts":2,"effect/noNodeBuiltinImport":2,"effect/noNullish":1,"effect/noTernary":1},

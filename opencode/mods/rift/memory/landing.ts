@@ -1,8 +1,9 @@
 // Landing held in memory, for the model's tests: each repository's config,
 // each Rift's own changes, the merge of each branch, the checks, the push,
 // and the steps taken, in order, for the test to read.
-import { Clock, Effect, Layer } from "effect"
+import { Clock, Effect, Layer, Match, Option } from "effect"
 import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Unit } from "../land.ts"
+import { type LandRecord, type Receipt, Standing, standing } from "../receipt.ts"
 import { Landing, RiftFailed } from "../service.ts"
 
 export interface World {
@@ -28,6 +29,12 @@ export interface World {
   postLandHold: Effect.Effect<void>
   /** What each gate and accept check runs before it ends, standing for a long run; at first, nothing. */
   readonly checkHold: Record<"gate" | "accept", Effect.Effect<void>>
+  /** Each Rift's round receipt standing, by its path; absent: none (`Missing`). */
+  readonly standings: Map<string, Standing>
+  /** Each checkout's head, by its path; absent: `head-<its name>`. */
+  readonly heads: Map<string, string>
+  /** Each land's record, in order. */
+  readonly records: Array<LandRecord>
   /** The host's load the post-land step reads first; absent: idle on 8 cores. */
   load: HostLoad | undefined
   /** Every load reading taken, with its time on the Effect clock. */
@@ -40,7 +47,12 @@ export interface World {
   pushes: number
   /** Each branch whose own push fails, to what Git says. */
   readonly branchFails: Map<string, string>
-  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`, `load`, `post-land <path> <RIFT_LAND_BASE> <RIFT_LAND_HEAD>`, `ended post-land <path>`. */
+  /**
+   * The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it
+   * rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path>
+   * <RIFT_LAND_BASE>`, `load`, `post-land <path> <RIFT_LAND_BASE> <RIFT_LAND_HEAD>`, `ended post-land <path>`, and
+   * by receipts: `standing <path>`, `focus <path> <command>`, `merge-check <path> <RIFT_LAND_BASE>`, `record <head>`.
+   */
   readonly steps: Array<string>
 }
 
@@ -48,7 +60,15 @@ export const config = (
   main: string,
   gate: string | undefined,
   accept: string | undefined,
-  options: { readonly push?: boolean; readonly pushBranches?: boolean; readonly generated?: ReadonlyArray<string>; readonly regenerate?: string; readonly postLand?: string } = {},
+  options: {
+    readonly push?: boolean
+    readonly pushBranches?: boolean
+    readonly generated?: ReadonlyArray<string>
+    readonly regenerate?: string
+    readonly postLand?: string
+    readonly mergeCheck?: string
+    readonly focus?: string
+  } = {},
 ): LandConfig => ({
   main,
   gate,
@@ -58,6 +78,18 @@ export const config = (
   push: options.push ?? true,
   pushBranches: options.pushBranches ?? false,
   postLand: options.postLand,
+  mergeCheck: Option.fromUndefinedOr(options.mergeCheck),
+  focus: Option.fromUndefinedOr(options.focus),
+})
+
+/** A green round receipt of `path` at `head`, as a Rift's round gate writes one. */
+export const receiptOf = (path: string, head: string, kind: Receipt["kind"] = "round", code = 0): Receipt => ({
+  repo: path,
+  head,
+  tree: `tree-${head}`,
+  kind,
+  checks: [{ command: "bun run gate --focused", code, seconds: 3 }],
+  at: "2026-11-13T12:00:00.000Z",
 })
 
 export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World => ({
@@ -72,6 +104,9 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   postLandEnvs: [],
   postLandHold: Effect.void,
   checkHold: { gate: Effect.void, accept: Effect.void },
+  standings: new Map(),
+  heads: new Map(),
+  records: [],
   load: undefined,
   readings: [],
   pushFails: undefined,
@@ -141,5 +176,40 @@ export const layer = (state: World) =>
         return `def5678 tip of ${unit.branch}`
       }),
       sync: (path) => Effect.sync(() => void state.steps.push(`sync ${path}`)),
+      standing: (path) =>
+        Effect.sync(() => {
+          state.steps.push(`standing ${path}`)
+          return Option.getOrElse(Option.fromUndefinedOr(state.standings.get(path)), () => Standing.Missing())
+        }),
+      changed: (path) => Effect.succeed([`${path}/changed.ts`]),
+      headOf: (path) => Effect.sync(() => headIn(state, path)),
+      receipted: (path, kind, command, env) =>
+        Effect.sync(() => {
+          const label = RECEIPTED[kind]
+          state.steps.push(Match.value(kind).pipe(
+            Match.when("round", () => `focus ${path} ${command}`),
+            Match.when("merge", () => `merge-check ${path} ${env["RIFT_LAND_BASE"]}`),
+            Match.orElse(() => `accept ${path} ${env["RIFT_LAND_BASE"]}`),
+          ))
+          const scripted = Option.getOrElse(Option.fromUndefinedOr(state.checks.get(`${path} ${label}`)), () => ({ code: 0, output: "1 pass\n" }))
+          const receipt = { ...receiptOf(path, headIn(state, path), kind), checks: [{ command, code: scripted.code, seconds: 3 }] }
+          if (kind === "round") state.standings.set(path, standing(Option.some(receipt), { head: receipt.head, tree: receipt.tree }))
+          return { ran: { ...scripted, seconds: 3, log: `/logs/${label}.log` }, receipt }
+        }).pipe(Effect.tap(() => state.checkHold[HOLD[kind]])),
+      record: (landed) =>
+        Effect.sync(() => {
+          state.steps.push(`record ${landed.head}`)
+          state.records.push(landed)
+          return `/logs/receipts/${landed.head}.land.json`
+        }),
     }),
   )
+
+/** The check label a receipted run of each kind is scripted by in `checks`. */
+const RECEIPTED = { round: "focus", merge: "merge", accept: "accept" } as const
+
+/** The hold (`checkHold`) a receipted run of each kind runs before it ends: a land's own checks the gate's, the accept check its own. */
+const HOLD = { round: "gate", merge: "gate", accept: "accept" } as const
+
+/** The head of the checkout at `path`, as the world says, else one named for it. */
+const headIn = (state: World, path: string): string => Option.getOrElse(Option.fromUndefinedOr(state.heads.get(path)), () => `head-${path.split("/").at(-1)}`)

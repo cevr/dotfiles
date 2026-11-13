@@ -15,9 +15,14 @@
 // default branch, every Rift stays, and each one is answered green or red (a
 // conflict reds only its Rift; a red check reds every Rift it ran on), its
 // own branch pushed when green and `rift.pushBranches` is set.
+// A repository that sets `rift.mergeCheck` lands by receipts (receipt.ts) instead of `rift.gate`: each
+// Rift brings the receipt of its round's proof (one without a current one runs `rift.focus` in its Rift, or
+// is not landed), the merged tree runs the one quick merge check, and the accept check runs after, in a Rift
+// of its own (ACCEPT), a receipt for the next verifier that holds no merge and no next land.
 // This file holds the rules and the words the model reads; model.ts runs the
 // steps.
-import { Schema } from "effect"
+import { Array as Arr, Match, Option, Schema } from "effect"
+import type { Covered } from "./receipt.ts"
 
 /** The Rift every batch is merged in, one per warm source, kept between batches. */
 export const INTEGRATION = "integrate"
@@ -67,7 +72,28 @@ export interface LandConfig {
    * past the max wait.
    */
   readonly postLand: string | undefined
+  /**
+   * `rift.mergeCheck`: the quick check of a merged batch (typecheck, and lint of the changed files), run in the
+   * integration Rift with RIFT_LAND_BASE set. When set, a land, pushed or checked, lands by receipts
+   * (receipt.ts) and never runs `rift.gate` on the batch: each Rift's current round receipt is taken (one
+   * without runs its focused gate in the land), the merged tree runs this check unless the land fast-forwarded
+   * to one Rift's own checked head, and the accept check (the full suite) runs in its own Rift (ACCEPT) in the
+   * background, a receipt for the next verifier that holds no merge and no next land.
+   */
+  readonly mergeCheck: Option.Option<string>
+  /**
+   * `rift.focus`: a Rift's focused gate, `{paths}` the files it changed (absolute) and `{threads}` its share,
+   * which a land by receipts runs in a Rift holding no current receipt. Unset, such a Rift is not landed (a
+   * pushed land stops, a checked one reds it): it brings its receipt, and the full gate never runs for it.
+   */
+  readonly focus: Option.Option<string>
 }
+
+/**
+ * The Rift a land by receipts runs its accept check in, one per warm source, kept and put at origin's newest
+ * default branch before each run: the integration Rift is free for the next land once the push is done.
+ */
+export const ACCEPT = "land-accept"
 
 /** A post-land step's run: the check's run, and the report it wrote, when it wrote one. */
 export interface PostLanded extends Ran {
@@ -142,7 +168,7 @@ export class LandRefused extends Schema.TaggedError<LandRefused>()("LandRefused"
 /** A batch stopped at one step; nothing was pushed. `path` is the Rift whose merge stopped it, else the integration Rift. */
 export class LandStopped extends Schema.TaggedError<LandStopped>()("LandStopped", {
   path: Schema.String,
-  step: Schema.Literals(["start", "merge", "conflict", "install", "regenerate", "gate", "push"]),
+  step: Schema.Literals(["start", "merge", "conflict", "install", "regenerate", "gate", "focus", "merge-check", "push"]),
   detail: Schema.String,
 }) {}
 
@@ -174,6 +200,67 @@ export const landedText = (landed: Landed, integration: string, accepting: boole
           `Then the repository's post-land step (rift.postLand) runs in the background${accepting ? " after the accept check" : ""}, in its own Rift (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`,
         ]
       : []),
+  ].join("\n")
+}
+
+/** A batch pushed by receipts (`rift.mergeCheck`): how each Rift was covered, and the merge check's run when it ran. */
+export interface ReceiptLanded extends Omit<Landed, "gate"> {
+  readonly covered: ReadonlyArray<Covered>
+  readonly merge: Option.Option<Ran>
+  /** The file the land's record went to: what it took and ran, for the next batch's verifier. */
+  readonly record: string
+}
+
+/** How a Rift was covered, as its line says it. */
+const COVER: Readonly<Record<Covered["by"], string>> = {
+  held: "its receipt",
+  missing: "no receipt, so its focused gate ran in the land",
+  moved: "its head moved since its receipt, so its focused gate ran in the land",
+  red: "its receipt was red, so its focused gate ran in the land",
+}
+
+const coverLine = (covered: Covered): string =>
+  `  ${covered.branch}: ${COVER[covered.by]}: ${covered.receipt.checks.length} check(s) green at ${covered.receipt.head.slice(0, 9)} (${covered.receipt.at})`
+
+/**
+ * How a Rift writes the receipt of its round's proof (focused tests, mutants killed, a model run, real-host
+ * laws, a verifier's verdict) at its head, for any repository: run in the Rift.
+ */
+export const RECEIPT_CLI = "bun <dotfiles>/opencode/scripts/receipt.ts -- '<command>' …, or --attest '<proof>' for one already made"
+
+/** A checked land by receipts' line on its accept check. */
+export const ACCEPT_APART = `The accept check runs in the background in its own Rift (${ACCEPT}), a receipt for the next batch's verifier; its result holds no Rift, and this session is woken with it.`
+
+/** A land by receipts' lines: each Rift's cover, the merge check, and where the record went. */
+export const receiptLines = (covered: ReadonlyArray<Covered>, merge: Option.Option<Ran>, record: string): ReadonlyArray<string> => [
+  ...covered.map(coverLine),
+  Option.match(merge, {
+    onNone: () => "No merge check: the land fast-forwarded to the one Rift's own checked head.",
+    onSome: (ran) => Match.value(ran.code).pipe(
+      Match.when(0, () => `The merge check passed in ${ran.seconds}s; log: ${ran.log}`),
+      Match.orElse(() => `The merge check FAILED (exit ${ran.code}) in ${ran.seconds}s; log: ${ran.log}`),
+    ),
+  }),
+  `Receipts recorded: ${record}`,
+]
+
+/** The answer to a land that pushed by receipts. */
+export const receiptLandedText = (landed: ReceiptLanded, accepting: boolean, postLand: boolean): string => {
+  const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
+  return [
+    `Landed ${landed.units.length} Rift(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; by their receipts, no full gate).`,
+    ...receiptLines(landed.covered, landed.merge, landed.record),
+    ...Arr.map(Arr.filter([landed.locks], Arr.isReadonlyArrayNonEmpty), (locks) => `Installed or regenerated and committed: ${locks.join(", ")}.`),
+    ...Arr.map(Arr.filter([removed], Arr.isReadonlyArrayNonEmpty), (gone) => `To the trash: ${gone.map((unit) => unit.path).join(", ")}.`),
+    ...landed.kept.map((kept) => `Kept ${kept.path}: ${kept.why}`),
+    Match.value(accepting).pipe(
+      Match.when(true, () => `The accept check runs in the background in its own Rift (${ACCEPT}) on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result. The next land need not wait for it.`),
+      Match.orElse(() => "No rift.accept is configured, so no check runs after the push."),
+    ),
+    ...Arr.filter(
+      [`Then the repository's post-land step (rift.postLand) runs in the background, in its own Rift (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`],
+      () => postLand,
+    ),
   ].join("\n")
 }
 
@@ -269,6 +356,10 @@ export const explainLand = (failure: GateMissing | LandRefused | LandStopped): s
           return `Merging ${failure.path} conflicts with the batch; nothing was pushed and the merge was aborted. Merge the default branch into it, resolve these, commit, and land again:\n${failure.detail}`
         case "gate":
           return `The gate failed on the batch in ${failure.path}; nothing was pushed.\n${failure.detail}`
+        case "focus":
+          return `The focused gate of ${failure.path} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the Rift and land again:\n${failure.detail}`
+        case "merge-check":
+          return `The merge check failed on the merged batch in ${failure.path}; nothing was pushed. Route each failure to the Rift whose diff it touches:\n${failure.detail}`
         case "push":
           return `The push from ${failure.path} failed: ${failure.detail}`
         default:

@@ -67,7 +67,7 @@ const bench = () => {
   const integration = clone("integrate", "integrate")
   const x = clone("feat-x", "feat/x")
   const y = clone("feat-y", "feat/y")
-  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false, postLand: undefined }
+  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false, postLand: undefined, mergeCheck: Option.none(), focus: Option.none() }
   const run = <A, E>(use: (landing: typeof Landing.Service) => Effect.Effect<A, E>, logs = join(scratch, "logs")) =>
     Effect.runPromise(Effect.flatMap(Landing, use).pipe(Effect.provide(ProcessLanding.layer({ logs, env: ENV }))))
   return { scratch, origin, source, integration, x, y, settings, run }
@@ -81,6 +81,7 @@ describe("process Landing", () => {
     sh(made.source, "git", "config", "--add", "rift.generated", "other.json")
     sh(made.source, "git", "config", "rift.regenerate", "ls pkgs > gen.txt")
     sh(made.source, "git", "config", "rift.postLand", "bun scripts/post-land.ts")
+    sh(made.source, "git", "config", "rift.mergeCheck", 'bun scripts/gate.ts --merge "$RIFT_LAND_BASE"')
     expect(await made.run((landing) => landing.config(made.source))).toEqual({
       main: "main",
       gate: "bun run gate",
@@ -90,6 +91,8 @@ describe("process Landing", () => {
       push: true,
       pushBranches: false,
       postLand: "bun scripts/post-land.ts",
+      mergeCheck: Option.some('bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'),
+      focus: Option.none(),
     })
     sh(made.source, "git", "config", "workrift.main", "trunk")
     // A repository that lands through pull requests: Git's own booleans.
