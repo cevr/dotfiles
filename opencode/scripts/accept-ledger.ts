@@ -116,12 +116,16 @@ export const tierOf = (text: string): Tier => {
 /** Which files a run takes: `land` the due land files, `owed` every due file, `all` every file. */
 export type Mode = "land" | "owed" | "all"
 
-/** Why a file is owed: a deep file in a land run, past a land run's budget, skipped tests, left out by naming, stopped by a signal, or only listed. */
-export type Why = "deep" | "budget" | "skipped" | "unnamed" | "signal" | "listed"
+/**
+ * Why a file is owed: a deep file in a land run, past a land run's budget, skipped tests, left out by naming,
+ * stopped by a signal, only listed, stopped to give the lock to a land run, or a file that bounds a time in a
+ * deep run without `--settled`.
+ */
+export type Why = "deep" | "budget" | "skipped" | "unnamed" | "signal" | "listed" | "yielded" | "unsettled"
 
-/** Where a file ended: run and passed or failed, owed (with why), or skipped because it passed before with its key unchanged. */
+/** Where a file ended: run and passed (`second`: on its second run, after a failed first, at that 1-minute load), failed, owed (with why), or skipped because it passed before with its key unchanged. */
 export type Outcome =
-  | { readonly file: string; readonly status: "passed"; readonly ms: number }
+  | { readonly file: string; readonly status: "passed"; readonly ms: number; readonly second?: number }
   | { readonly file: string; readonly status: "failed"; readonly ms: number; readonly reason: string }
   | { readonly file: string; readonly status: "owed"; readonly why: Why; readonly detail: string }
   | { readonly file: string; readonly status: "before" }
@@ -280,7 +284,7 @@ export const declaredSkips = (text: string) => Option.getOrElse(Option.map(Optio
 /** A finished file's outcome: a pass needs exit 0, a report with tests and no failure, no skip but those the file declares (none without the fork, never all), no leak, and no narrowing flags. */
 export const verdict = (finish: Finish): Outcome => {
   const { file, ms } = finish
-  if (finish.leaked) return { file, status: "failed", ms, reason: "it left an OpenCode server or drive run behind" }
+  if (finish.leaked) return { file, status: "failed", ms, reason: LEAKED }
   if (finish.code !== 0) return { file, status: "failed", ms, reason: `bun test exited ${finish.code}` }
   return Option.match(finish.report, {
     onNone: () => ({ file, status: "failed", ms, reason: "bun test wrote no report" }),
@@ -311,7 +315,12 @@ const WHYS: ReadonlyArray<readonly [Why, string]> = [
   ["unnamed", "not named"],
   ["signal", "stopped by a signal"],
   ["listed", "listed, not run"],
+  ["yielded", "yielded to a land run"],
+  ["unsettled", "waits for a settled host"],
 ]
+
+/** How the closing line and the deep report say why a file is owed. */
+export const whyWords = (why: Why) => Option.getOrElse(Option.map(Arr.findFirst(WHYS, ([each]) => each === why), ([, said]) => said), () => why)
 
 /** The counts the closing line states. */
 export interface Counts {
@@ -347,11 +356,10 @@ export const closing = (mode: Mode, outcomes: ReadonlyArray<Outcome>, seconds: n
   const counts = countsOf(outcomes)
   const count = (why: Why) => Option.getOrElse(Option.fromUndefinedOr(counts.why.get(why)), () => 0)
   const reasons = WHYS.flatMap(([why, said]) => Arr.filter([`${count(why)} ${said}`], () => why === "deep" || why === "budget" || count(why) > 0))
-  const words = (why: Why) => Option.getOrElse(Option.map(Arr.findFirst(WHYS, ([each]) => each === why), ([, said]) => said), () => why)
   // A listed file is already on its own `due:` line.
   const owedLines = owedOf(outcomes)
     .filter((outcome) => outcome.why !== "listed")
-    .map((outcome) => `  owed: ${outcome.file} (${[words(outcome.why), outcome.detail].filter(Boolean).join(": ")})`)
+    .map((outcome) => `  owed: ${outcome.file} (${[whyWords(outcome.why), outcome.detail].filter(Boolean).join(": ")})`)
   const before = Arr.filter([`accept: ${counts.before} files passed before with their keys unchanged; skipped`], () => counts.before > 0)
   return [
     ...before,
@@ -391,13 +399,38 @@ export interface Shares {
 const seconds = (ms: number) => (ms / 1000).toFixed(1)
 
 /**
+ * The files allowed past the 60 s deep share on a quiet host, each with the unit that brings it under or
+ * removes it. The list only shrinks: scripts/accept.test.ts fails a listed file that no longer exists.
+ */
+export const SLOW_DEEP: ReadonlyArray<readonly [string, string]> = [
+  ["tests/reconnect-session.test.ts", "accept-slow-reconnect"],
+  ["tests/escape-states.test.ts", "sim-tui"],
+  ["tests/pool-resets.test.ts", "sim-server"],
+  ["tests/wake.test.ts", "sim-server-rest"],
+  ["tests/idle-compact.test.ts", "sim-server-rest"],
+  ["tests/tui-cpu.test.ts", "real-smoke"],
+]
+
+const slowUnit = (file: string) => Option.map(Arr.findFirst(SLOW_DEEP, ([each]) => each === file), ([, unit]) => unit)
+
+/**
  * The shares a run broke. In a land run a land file at or over its 20 s share fails the run on a
- * quiet host and is only reported on a loaded one; in other runs a file over the 60 s deep share is reported.
+ * quiet host and is only reported on a loaded one; in other runs a file over the 60 s deep share fails it
+ * on a quiet host unless SLOW_DEEP lists it, and is only reported otherwise.
  */
 export const shares = (mode: Mode, timed: ReadonlyArray<Timed>, quiet: boolean): Shares => {
   if (mode !== "land") {
     const over = timed.filter((each) => each.ms > DEEP_SHARE_MS)
-    return { broken: [], reported: over.map((each) => `accept: ${each.file} took ${seconds(each.ms)} s of its ${DEEP_SHARE_MS / 1000} s deep share (reported; judged from the deep tier on)`) }
+    const judged = over.filter((each) => quiet && Option.isNone(slowUnit(each.file)))
+    const told = (each: Timed) =>
+      Option.match(slowUnit(each.file), {
+        onSome: (unit) => `accept: ${each.file} took ${seconds(each.ms)} s of its ${DEEP_SHARE_MS / 1000} s deep share (listed slow until ${unit} lands)`,
+        onNone: () => `accept: ${each.file} took ${seconds(each.ms)} s of its ${DEEP_SHARE_MS / 1000} s deep share on a loaded host: reported, not judged`,
+      })
+    return {
+      broken: judged.map((each) => `accept: ${each.file} took ${seconds(each.ms)} s of its ${DEEP_SHARE_MS / 1000} s deep share on a quiet host: speed it up or simulate it`),
+      reported: over.flatMap((each) => Arr.filter([told(each)], () => !judged.includes(each))),
+    }
   }
   const over = timed.filter((each) => each.tier === "land" && each.ms >= LAND_SHARE_MS)
   if (quiet)
@@ -411,11 +444,86 @@ export const shares = (mode: Mode, timed: ReadonlyArray<Timed>, quiet: boolean):
 /** The run's exit code: 1 when a file failed or a share broke; owed files never fail it. */
 export const exitOf = (outcomes: ReadonlyArray<Outcome>, broken: ReadonlyArray<string>) => Number(broken.length > 0 || outcomes.some((outcome) => outcome.status === "failed"))
 
-/** Who holds the machine's accept lock: `<lock>/owner.json`. */
-const Owner = Schema.Struct({ pid: Schema.Finite, root: Schema.String })
+/** Who holds the machine's accept lock (`<lock>.owner.json`, written by the holder beside the lock): its pid, its checkout and its run's mode. */
+const Owner = Schema.Struct({ pid: Schema.Finite, root: Schema.String, mode: Schema.Literals(["land", "owed", "all"]) })
+export type Owner = typeof Owner.Type
 const OwnerJson = Schema.fromJsonString(Owner)
 export const encodeOwner = Schema.encodeSync(OwnerJson)
 export const decodeOwner = Schema.decodeUnknownOption(OwnerJson)
+
+/** Why a file that leaked failed: it gets no second run, so a second run's pass never hides a leak. */
+export const LEAKED = "it left an OpenCode server or drive run behind"
+
+/** A deep run without `--settled` holds back the files that bound a time: owed, `waits for a settled host`. */
+export const holdTiming = (selection: Selection, serial: (file: string) => boolean, settledHost: boolean): Selection => {
+  if (settledHost) return selection
+  const held = selection.run.filter(serial)
+  return { run: selection.run.filter((file) => !serial(file)), settled: [...selection.settled, ...held.map((file) => owe(file, "unsettled"))] }
+}
+
+/** The files a deep run runs once more, alone, at its end: those that failed, but not by a leak. */
+export const secondRuns = (outcomes: ReadonlyArray<Outcome>): ReadonlyArray<string> =>
+  outcomes.flatMap((outcome) => Arr.filter([outcome.file], () => outcome.status === "failed" && outcome.reason !== LEAKED))
+
+/** A file's outcome after its second run at `load`: a pass is a pass marked `second` with that load; anything else stands as the second run ended. */
+export const afterSecond = (second: Outcome, load: number): Outcome => {
+  if (second.status === "passed") return { ...second, second: load }
+  if (second.status === "failed") return { ...second, reason: `failed twice; the second time: ${second.reason}` }
+  return second
+}
+
+/** A pass on a second run: the file and the load it ran at. */
+export const secondLoad = (outcome: Outcome): Option.Option<readonly [string, number]> => {
+  if (outcome.status !== "passed") return Option.none()
+  return Option.map(Option.fromUndefinedOr(outcome.second), (load) => [outcome.file, load] as const)
+}
+
+/** Each file's last outcome, in the order the files first appear: a file run again (after a yield, a second run) ends as its last run did. */
+export const latest = (outcomes: ReadonlyArray<Outcome>): ReadonlyArray<Outcome> => {
+  const last = new Map(outcomes.map((outcome) => [outcome.file, outcome]))
+  return [...last.values()]
+}
+
+/** One file in a deep run's machine-readable outcome (`--json`). */
+const DeepFile = Schema.Struct({
+  file: Schema.String,
+  status: Schema.Literals(["passed", "failed", "owed", "before"]),
+  why: Schema.String,
+  seconds: Schema.Finite,
+  log: Schema.String,
+  second: Schema.Boolean,
+})
+export type DeepFile = typeof DeepFile.Type
+
+/** A deep run's machine-readable outcome: the checkout's head, the host, the load at the start and the end, and each file. */
+export const DeepReport = Schema.Struct({
+  head: Schema.String,
+  host: Schema.String,
+  load: Schema.Struct({ start: Schema.Finite, end: Schema.Finite }),
+  files: Schema.Array(DeepFile),
+})
+export type DeepReport = typeof DeepReport.Type
+const DeepReportJson = Schema.fromJsonString(DeepReport)
+export const encodeDeepReport = Schema.encodeSync(DeepReportJson)
+export const decodeDeepReport = Schema.decodeUnknownOption(DeepReportJson)
+
+/** An outcome as the deep report states it, with the log it wrote (none for a file not run). */
+export const deepFile = (outcome: Outcome, log: string): DeepFile => {
+  const base = { file: outcome.file, status: outcome.status, why: "", seconds: 0, log: "", second: false }
+  switch (outcome.status) {
+    case "passed":
+      return Option.match(secondLoad(outcome), {
+        onNone: () => ({ ...base, seconds: outcome.ms / 1000, log }),
+        onSome: ([, load]) => ({ ...base, why: `passed on its second run at load ${load.toFixed(1)}`, seconds: outcome.ms / 1000, log, second: true }),
+      })
+    case "failed":
+      return { ...base, why: outcome.reason, seconds: outcome.ms / 1000, log }
+    case "owed":
+      return { ...base, why: [whyWords(outcome.why), outcome.detail].filter(Boolean).join(": ") }
+    case "before":
+      return base
+  }
+}
 
 /** A glob split at its first segment with a wildcard: where to scan from, and the pattern under it. */
 export const globRoot = (pattern: string) => {
