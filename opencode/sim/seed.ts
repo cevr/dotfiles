@@ -13,14 +13,15 @@
 //   cores) the wall time is the host's, not the file's. The wall time is
 //   reported beside it, never judged.
 // - A test (`seeded`, and `effect`) has `TIMEOUT_MS` of wall time, the
-//   runner's own, with bun's timeout `TIMEOUT_GRACE_MS` past it. An `effect`
-//   body runs on an AbortSignal that fires at the runner's timeout; a seeded
-//   test reads its deadline on the runner's live clock before each seed (a
-//   seed may hold bun's fake timers, which would move a signal's timer on
-//   virtual time). Either way a test past it is interrupted and stops playing
-//   seeds; it fails naming its timeout, and the next test never sees its seeds
-//   run. Without it, bun would fail the test
-//   and move on while the body went on against a shared world.
+//   runner's own, with bun's timeout `TIMEOUT_GRACE_MS` past it. The body runs
+//   raced against the runner's timeout, so a test past it is
+//   interrupted where it stands, mid-seed too, and stops playing seeds; it
+//   fails naming its timeout, and the next test never sees its seeds run.
+//   Without it, bun would fail the test and move on while the body went on
+//   against a shared world. The timeout is another process's wall time
+//   (`wall-clock.ts`): a seed may hold bun's fake timers (sim-tui's TUI files
+//   hold them from their boot on), under which every timer of the process
+//   fires on the test's virtual advances, not on wall time.
 // - Each body gets `expect`, which counts its calls. With `SIM_EXPECTS=1` the
 //   runner runs one seed and prints `sim-expects <file> <test name> <calls>`
 //   after each test, which scripts/accept-parity.test.ts reads.
@@ -32,6 +33,7 @@
 // a seed is that seed's.
 import { expect as bunExpect, test } from "bun:test"
 import { Cause, Clock, Config, Console, Data, Effect, Exit, Option } from "effect"
+import { wallTime } from "./wall-clock.ts"
 
 export const SEEDS = 20
 /** CPU time a simulated file's seeds may take together. */
@@ -72,12 +74,21 @@ export interface Seeded {
 }
 
 /**
- * `body` run within `timeoutMs` of wall time: on an AbortSignal that fires at `timeoutMs`, so a body past it is
- * interrupted where it stands and plays nothing more into the next test; the test fails naming `label` and the
- * timeout. bun's own timeout for the test sits `TIMEOUT_GRACE_MS` later, so the runner's ends it first.
+ * `body` run within `timeoutMs` of wall time, real or fake timers alike: raced against `wallTime(timeoutMs)`
+ * (`wall-clock.ts`), so a body past it is interrupted where it stands and plays nothing more into the next test; the
+ * test fails naming `label` and the timeout. bun's own timeout for the test sits `TIMEOUT_GRACE_MS` later, so the
+ * runner's ends it first.
  */
 export const bounded = <A, E>(label: string, timeoutMs: number, body: Effect.Effect<A, E>): Promise<A> =>
-  Effect.runPromiseExit(body, { signal: AbortSignal.timeout(timeoutMs) }).then((exit) => outcome(label, timeoutMs, exit))
+  Effect.runPromiseExit(
+    Effect.raceFirst(
+      body,
+      wallTime(timeoutMs).pipe(Effect.andThen(Effect.fail(new SeedFailed({ message: timedOut(label, timeoutMs) })))),
+    ),
+  ).then((exit) => outcome(label, timeoutMs, exit))
+
+/** The failure of a test past the runner's timeout. */
+const timedOut = (label: string, timeoutMs: number) => `${label}: past its ${timeoutMs} ms timeout; its seeds were stopped`
 
 /** A bounded body's exit as its test's outcome: an interrupt alone is the runner's timeout, named. */
 const outcome = <A, E>(label: string, timeoutMs: number, exit: Exit.Exit<A, E>): Promise<A> =>
@@ -86,7 +97,7 @@ const outcome = <A, E>(label: string, timeoutMs: number, exit: Exit.Exit<A, E>):
       onSuccess: (value): Effect.Effect<A, E | SeedFailed> => Effect.succeed(value),
       onFailure: (cause): Effect.Effect<A, E | SeedFailed> => {
         if (!Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
-        return Effect.fail(new SeedFailed({ message: `${label}: past its ${timeoutMs} ms timeout; its seeds were stopped` }))
+        return Effect.fail(new SeedFailed({ message: timedOut(label, timeoutMs) }))
       },
     }),
   )
@@ -149,23 +160,15 @@ export const runner = (file: string, options: { readonly past?: ReadonlyArray<nu
   const seeded = <E>(name: string, body: (run: Seeded) => Effect.Effect<void, E>) =>
     test(
       name,
-      // Not on an AbortSignal: a seeded body may hold bun's fake timers (sim-tui's TUI files hold them from their
-      // boot on), and a timer armed under them fires on the test's virtual advances, not on wall time (sim-tui's 16
-      // seeds move past 240 s of virtual time in 4 s). The deadline is read on the runner's live clock before each
-      // seed instead, which a body under fake timers gives back the wall time it took.
       () =>
-        Effect.runPromiseExit(
+        bounded(
+          `${file}: ${name}`,
+          timeoutMs,
           Effect.gen(function* () {
-            const started = yield* Clock.currentTimeMillis
-            const calls = yield* Effect.forEach(yield* runSeeds, (seed) =>
-              Effect.gen(function* () {
-                if ((yield* Clock.currentTimeMillis) - started > timeoutMs) return yield* Effect.interrupt
-                return yield* once(file, spent, name, seed, body)
-              }),
-            )
+            const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
             if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
           }),
-        ).then((exit) => outcome(`${file}: ${name}`, timeoutMs, exit)),
+        ),
       timeoutMs + TIMEOUT_GRACE_MS,
     )
   return { seeded }
