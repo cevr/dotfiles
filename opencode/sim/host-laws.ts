@@ -19,7 +19,7 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Data, DateTime, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
 import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
@@ -549,6 +549,49 @@ export const LAWS: ReadonlyArray<Law> = [
           "the options are not the configured ones",
         )
         yield* ensure(ctx.location.directory.endsWith(`/${LAW_FOLDER}`), `the location was ${ctx.location.directory}`)
+      }),
+  },
+  {
+    // What mail reads of a session and the inbox it writes to (mods/mail/opencode/sessions.ts).
+    name: LAW.mail,
+    operations: ["session.get", "session.synthetic", "session.hook", "session.prompt"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const nowhere = SessionID.make("ses_lawnowhere000001")
+        const missing = yield* Effect.flip(ctx.session.get({ sessionID: nowhere }))
+        yield* ensure(Schema.is(Schema.Struct({ _tag: Schema.Literal("Session.NotFoundError") }))(missing), "get of an unknown id did not fail as not found")
+        const refused = yield* Effect.flip(ctx.session.synthetic({ sessionID: nowhere, text: "law: nowhere", description: "law", resume: true }))
+        yield* ensure(Schema.is(Schema.Struct({ _tag: Schema.Literal("Session.NotFoundError") }))(refused), "a synthetic message to an unknown id did not fail as not found")
+
+        const session = yield* fresh(ctx)
+        const millis = (time: DateTime.Utc | undefined) => Option.map(Option.fromNullishOr(time), DateTime.toEpochMillis)
+        const runs = (info: { readonly time: { readonly busy?: DateTime.Utc | undefined; readonly idle?: DateTime.Utc | undefined } }) =>
+          Option.match(millis(info.time.busy), {
+            onNone: () => false,
+            onSome: (busy) => Option.match(millis(info.time.idle), { onNone: () => true, onSome: (idle) => busy > idle }),
+          })
+        const seen = yield* Ref.make<ReadonlyArray<boolean>>([])
+        const steered = yield* Ref.make(false)
+        yield* ctx.session.hook("model.request", (input) =>
+          Effect.gen(function* () {
+            if (input.sessionID !== session.id || input.kind !== "primary") return
+            const info = yield* ctx.session.get({ sessionID: session.id })
+            yield* Ref.update(seen, (all) => [...all, runs(info)])
+            if (yield* Ref.getAndSet(steered, true)) return
+            yield* ctx.session.synthetic({ sessionID: session.id, text: "law: steered while running", description: "law", resume: true })
+          }).pipe(Effect.orDie),
+        )
+        yield* Effect.sleep(STEP)
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: running" }))
+        const during = yield* Ref.get(seen)
+        yield* ensure(during.length >= 2 && during.every((running) => running), `while it ran, get answered running ${during.join(",")}`)
+        const rested = yield* ctx.session.get({ sessionID: session.id })
+        yield* ensure(!runs(rested), "get answered running once the session rested")
+        const updated = DateTime.toEpochMillis(rested.time.updated)
+        yield* ensure(updated > DateTime.toEpochMillis(session.time.updated), "the session's last update did not move with its turn")
+        const text = yield* contextText(ctx, session.id)
+        yield* ensure(count(text, "law: steered while running") === 1, `the session holds the steer ${count(text, "law: steered while running")} times`)
+        yield* ensure(count(text, "heard running|steered while running") === 1, "no request after the steer carried it")
       }),
   },
 ]

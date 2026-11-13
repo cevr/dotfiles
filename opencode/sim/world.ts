@@ -225,7 +225,7 @@ export const make = (worldOptions: WorldOptions) => {
       return startAll.pipe(Effect.andThen(run(Effect.sync(host.resume))))
     }),
     /** A new root session in `directory`: its id. */
-    session: (directory: string, input: { readonly id?: string; readonly parentID?: string } = {}) =>
+    session: (directory: string, input: { readonly id?: string; readonly parentID?: string; readonly title?: string } = {}) =>
       run(host.createSession({ directory, ...input })).pipe(Effect.map((session) => session.id)),
     /** The owner sends `text` to the session: a prompt, which wakes it. */
     prompt: (sessionID: string, text: string) =>

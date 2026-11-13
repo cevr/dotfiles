@@ -397,6 +397,8 @@ const causeText = <E>(cause: Cause.Cause<E>) => {
 
 /** A session's busy and idle times, as `session.get` answers them. */
 interface SessionTime {
+  /** The last update (`Session.Info.time.updated`, packages/schema/src/session.ts), which `session.list` orders by. */
+  readonly updated: DateTime.Utc
   busy?: DateTime.Utc
   idle?: DateTime.Utc
 }
@@ -1011,7 +1013,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
 
   /** The session as `session.get` answers it. */
   const infoOf = (session: Session) => {
-    const time: SessionTime = {}
+    const time: SessionTime = { updated: DateTime.makeUnsafe(session.updated) }
     if (Option.isSome(session.busy)) time.busy = DateTime.makeUnsafe(session.busy.value)
     if (Option.isSome(session.idle)) time.idle = DateTime.makeUnsafe(session.idle.value)
     const info: SessionInfo = {
