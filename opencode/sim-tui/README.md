@@ -14,15 +14,21 @@ runner (`sim/seed.ts`) unchanged.
   `seed` runs one seed on a fresh double and a fresh session in that app; the
   `Tui` it hands the body has `type`, `press`, `resize`, `advance`, `until`,
   `settle`, `text`, `frame` and `trace`. `runner(file, count)` is the seed
-  runner on the file's first `count` seeds. `BOOT_TEST` and `CLOSE_TEST` open
+  runner on the file's first `count` seeds. `bootTest` and `closeTest` open
   and close a file (first and last test), so no lifecycle hook is needed.
 - `server.ts`: the double. Sessions, messages, parts, the inbox, shells and a
-  scripted model (`Model`: the steps a prompt plays: `Text`, `Reasoning`,
-  `Stall`, `Shell`, `Subagent`). Every answer and event goes through the
+  scripted model (`Model`: the steps a prompt plays, made by `text`, `reasoning`,
+  `stall`, `shell` and `subagent`; none ends the run). Every answer and event goes through the
   fork's own schemas (decoded, then encoded): a shape the real server would
   not send fails. `SERVED` lists the routes it answers; a route outside it
   and outside the fixture's defaults (`FIXTURE_ROUTES`) fails the settle
   naming it.
+- `client-laws.ts`: what the double does, as laws a server keeps; run on the
+  double (`client-laws.test.ts`) and on real OpenCode
+  (`tests/client-laws.test.ts`, over `law-server.ts`). Every served route and
+  event kind is named by a law.
+- `effect-test.ts`: a test whose body is an Effect. sim-tui resolves the
+  fork's Effect, whose types are not effect-bun-test's.
 - `golden.ts`, `golden/`: each converted frame's text from one real run of
   its scenario at the base, and the masks (a wall-time duration, a drawn id,
   the working directory, a glyph animated in wall time).
@@ -49,9 +55,9 @@ runner (`sim/seed.ts`) unchanged.
 - `crypto.getRandomValues` draws from the seed (ids are the fork's
   `Identifier`).
 - OpenTUI's tree-sitter client, which answers from a worker thread in wall
-  time, is replaced by OpenTUI's `MockTreeSitterClient` (no syntax colours);
-  `node:perf_hooks`' `monitorEventLoopDelay` reads no delay (the DevTools
-  bar's dot).
+  time, is replaced by OpenTUI's `MockTreeSitterClient` (no syntax colours).
+- The DevTools bar's UI dot reads the host's real event-loop delay: a frame
+  carries it as `○`, in no colour of its own.
 
 ## Between seeds
 
@@ -65,6 +71,7 @@ TUI keeps state by call id.
 ## Budget
 
 `sim/seed.ts` gives a file 5 s of wall time for all its seeds. The first boot
-of a file is reported on its own line (`sim-tui boot <file>: N ms`) and fails
-past 4 s on a quiet host (load under 12). A file whose 20 seeds do not fit
+of a file is reported on its own line (`sim-tui boot <file>: wall, cpu, load`)
+and fails past 4 s on a quiet host (load under 12); its seeds are reported at
+the close (`sim-tui seeds <file>: …`). A file whose 20 seeds do not fit
 takes the largest count that does (`escape-states`: 4).
