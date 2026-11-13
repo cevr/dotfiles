@@ -514,7 +514,7 @@ export const shutdown = Effect.gen(function* () {
     const app = harness.booted.value
     const load = yield* loadNow
     const { wall, cpu, seeds } = app.spent
-    yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, cpu ${Math.round(cpu)} ms of its ${Seed.BUDGET_MS}, wall ${Math.round(wall)} ms (reported, not judged; load ${load.toFixed(1)})`)
+    yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, cpu ${Math.round(cpu)} ms (sim/seed.ts judges a file's seeds on it), wall ${Math.round(wall)} ms (reported, not judged; load ${load.toFixed(1)})`)
     yield* close(app)
   }
   harness.release()
