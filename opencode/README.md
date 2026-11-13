@@ -1316,7 +1316,8 @@ made when the TUI opens it.
 
 ## Escape
 
-`cmd/escape` is a TUI plugin that makes one Escape on a busy session stop
+`cmd/escape` is a TUI plugin (and a small server one, see Waiting prompts as
+one) that makes one Escape on a busy session stop
 its run, taking back the prompt just sent. Within the grace (5 s after the
 session's newest prompt with text was sent), Escape with an empty composer
 stops the run, reverts the session to before the prompt and puts its text
@@ -1324,8 +1325,10 @@ back in the composer: it runs the host's own `session.undo`. Past the grace,
 with a draft in the composer or with no editor focused, it interrupts
 (`session.interrupt` with `resume`), and the prompt and its partial answer
 stay. A prompt still waiting in the session's inbox (queued, or a steer the
-model has not read) comes back to the composer whatever the grace, appended
-to any draft, and the turn it waited behind is interrupted in the same press
+model has not read) comes back to the composer whatever the grace, with
+every other prompt waiting there (one text, oldest first, a newline between,
+attachments and all; see Waiting prompts as one), appended to any draft, and
+the turn it waited behind is interrupted in the same press
 (without `resume`, so the inbox is not resumed ahead of the take-back): a
 prompt sent while the model works is never dropped, and the run never keeps
 going behind it. When the taken-back run called a shell, a toast says
@@ -1419,6 +1422,41 @@ a turn stuck in a shell call, one prompt queued and one in the composer;
 the call is cut, the turn reads `■ Interrupted`, both prompts go out after
 it, the queued one first, each once in the transcript and in what the model
 is sent, and a second press with nothing waiting interrupts nothing.
+
+### Waiting prompts as one
+
+Prompts that wait behind a turn act as one prompt. When a session goes idle
+with two or more prompts queued for after the turn (leader+Enter,
+`◌ after the turn`), they arrive as one user message: the texts in the order
+queued, a newline between, each one's attachments in order (an @mention
+keeps its place in its own text). One queued prompt goes out as it was.
+Steers (`◌ queued`) keep their own delivery, each its own message at the
+next step, and a queued compaction or move still runs where it was queued:
+only the prompts before it merge. The server half, `cmd/escape/server.ts`,
+answers the fork's `experimental.queue.deliver` session hook, which offers
+the queued user prompts at each idle boundary and merges as many as the
+plugin takes (the fork's `queue-merge` branch, `SessionInbox.promote`); on a
+host without it each queued prompt goes out alone.
+
+Up on the composer's first row, with prompts waiting (queued or steers), takes
+them all back into the composer instead of walking the history: one text,
+oldest first, a newline between, after any draft (on a new line), with their
+attachments; the inbox is empty after and nothing is sent. Escape on a waiting
+prompt takes them the same way. With nothing waiting, or with the cursor below
+the first row, Up is the host's. The take-back is the fork's
+`ui.composer.takeBack` (`packages/tui/src/prompt/take-back.ts`): it reads
+each prompt back (its images as bytes, before the cancel releases them),
+cancels it, and appends the ones the server cancelled, so a prompt the
+session took meanwhile goes out once and is not also in the composer
+(`N waiting prompts were not taken back: sent already, or the server did not
+answer`). The Up layer is `dotfiles.escape.take`, base mode at priority 2,
+above the composer's own history layer, on only while prompts wait
+(`firstRow` and the toasts in `mods/escape/take.ts`).
+`tests/queue-merge.test.ts` runs `scenarios/queue-merge.ts` per case: three
+queued prompts arrive as one message with two newlines; Up on the empty
+composer takes the three back as three lines, the queue empty and no request
+sent; Escape does the same and interrupts; Up with nothing queued walks the
+history.
 
 ## Cache
 

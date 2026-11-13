@@ -4,9 +4,13 @@
 // within the grace, the client's interrupt after it or over a draft, both for
 // a pending prompt behind a running turn, the host's own handling when the
 // session is idle, and a toast whenever the press does not take: a refused
-// interrupt, or a session still running STOP_MS later.
-// tests/prime-escape.test.ts and tests/escape-states.test.ts run it in OpenCode.
+// interrupt, or a session still running STOP_MS later. Escape on a waiting
+// prompt, and Up on the composer's first row with prompts waiting, take every
+// waiting prompt back through the fork's ui.composer.takeBack, joined by a newline.
+// tests/prime-escape.test.ts, tests/escape-states.test.ts and
+// tests/queue-merge.test.ts run it in OpenCode.
 import { describe, expect, test } from "bun:test"
+import { Effect, Option } from "effect"
 import { STOP_MS } from "@dotfiles/opencode-escape/escape"
 import type { InboxItem, Message } from "@dotfiles/opencode-escape/opencode/view"
 import { SEND_COMMAND } from "@dotfiles/opencode-escape/send"
@@ -25,8 +29,10 @@ import {
   SETTLING,
   setup,
   SUBMIT,
+  TAKE_COMMAND,
   UNDO,
 } from "./setup.ts"
+import { left } from "@dotfiles/opencode-escape/take"
 
 interface Session {
   parentID?: string
@@ -37,6 +43,9 @@ interface Session {
 
 const SENT = 1_000_000
 
+/** A focused composer holding `plainText`, the cursor at `cursorOffset` on visual row `row` (scrolled by none). */
+const editor = (plainText: string, cursorOffset = plainText.length, row = 0) => ({ plainText, cursorOffset, scrollY: 0, visualCursor: { visualRow: row } })
+
 /** The plugin set up on a stand-in TUI showing `sessionID`, with `options`. */
 const start = (options: Record<string, unknown> = {}) => {
   const sessions: Record<string, Session> = {
@@ -46,7 +55,10 @@ const start = (options: Record<string, unknown> = {}) => {
   const state = {
     now: SENT,
     sessionID: "ses_root",
-    editor: { plainText: "" } as { plainText: string } | null,
+    editor: editor("") as ReturnType<typeof editor> | null,
+    /** Inbox ids the host's take-back leaves (sent meanwhile); the message the whole take-back fails with. */
+    left: new Set<string>(),
+    takeFailure: Option.none<string>(),
     refuse: undefined as Error | undefined,
     /** Whether the server admits a prompt the host's prompt.queue sends (its enqueued event follows). */
     admits: true,
@@ -62,6 +74,8 @@ const start = (options: Record<string, unknown> = {}) => {
   /** Every call the plugin made of the host, in order: what the race guards are about. */
   const calls: Array<string> = []
   const toasts: Array<{ message: string; variant: string; duration?: number }> = []
+  /** Each take-back the plugin asked the host for. */
+  const takes: Array<{ sessionID: string; inboxIDs: ReadonlyArray<string>; separator?: string }> = []
   const timers: Array<{ at: number; run: () => void }> = []
   /** The plugin's event subscriptions, by event type. */
   const listeners: Record<string, Array<(event: Enqueued & Ended) => void>> = {}
@@ -76,7 +90,7 @@ const start = (options: Record<string, unknown> = {}) => {
     if (id !== QUEUE || !state.editor?.plainText) return
     const inboxID = `msg_q${++minted}`
     const sessionID = state.sessionID
-    state.editor = { plainText: "" }
+    state.editor = editor("")
     sessions[sessionID]!.pending.push({ id: inboxID, type: "user", delivery: "queue", time: { created: state.now } })
     if (state.admits) queueMicrotask(() => emit("session.inbox.enqueued", { data: { sessionID, inboxID, item: { type: "user" } } }))
   }
@@ -136,14 +150,33 @@ const start = (options: Record<string, unknown> = {}) => {
     ui: {
       router: { current: () => ({ type: "session", sessionID: state.sessionID }) },
       toast: { show: (input) => void toasts.push(input) },
+      composer: {
+        // The host's API is a promise; the stand-in builds its answer as an Effect and runs it to one.
+        takeBack: (input) =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              takes.push(input)
+              calls.push(`take ${input.inboxIDs.join(",")}`)
+              if (Option.isSome(state.takeFailure)) return yield* Effect.fail(state.takeFailure.value)
+              const session = sessions[input.sessionID]!
+              session.pending = session.pending.filter((item) => !input.inboxIDs.includes(item.id) || state.left.has(item.id))
+              return { left: input.inboxIDs.filter((id) => state.left.has(id)) }
+            }),
+          ),
+      },
     },
   }
   setup(host, { now: () => state.now, after: (ms, run) => void timers.push({ at: state.now + ms, run }) })
-  const [base, sendLayer] = layers
+  const [base, upLayer, sendLayer] = layers
   /** Escape through the layer active in the current view: `false` falls through to the host. */
   const press = (layer = base) => {
     if (layer?.enabled?.() === false) return "inactive"
     return layer?.commands.find((command) => command.bind === "escape")?.run()
+  }
+  /** Up through its layer: `inactive` when the layer is off, `false` falls through to the host's history. */
+  const up = () => {
+    if (upLayer?.enabled?.() === false) return "inactive"
+    return upLayer?.commands.find((command) => command.bind === "up")?.run()
   }
   /** Ctrl+Enter: `false` falls through to the host (its newline). */
   const send = () => sendLayer?.commands.find((command) => command.id === SEND_COMMAND)?.run()
@@ -161,7 +194,7 @@ const start = (options: Record<string, unknown> = {}) => {
     await flush()
   }
   const messages = () => toasts.map((toast) => toast.message)
-  return { host, sessions, state, layers, base, dispatched, interrupts, moves, calls, toasts, messages, press, send, flush, advance, end, begin }
+  return { host, sessions, state, layers, base, dispatched, interrupts, moves, calls, toasts, takes, messages, press, up, send, flush, advance, end, begin }
 }
 
 /** A prompt waiting in the inbox: `queue` for after the turn, `steer` for its next step. */
@@ -172,9 +205,11 @@ describe("escape plugin", () => {
     const { layers } = start()
     expect(layers.map((layer) => [layer.mode ?? "base", layer.priority, layer.commands.map((command) => command.bind)])).toEqual([
       ["base", 1, ["escape"]],
+      ["base", 2, ["up"]],
       ["base", 1, ["ctrl+return,<leader>f"]],
     ])
-    expect(layers[1]?.commands[0]?.id).toBe(SEND_COMMAND)
+    expect(layers[1]?.commands[0]?.id).toBe(TAKE_COMMAND)
+    expect(layers[2]?.commands[0]?.id).toBe(SEND_COMMAND)
   })
 
   test("Escape at 1 s runs the host's session.undo once; a second press while it settles says so and does nothing else", () => {
@@ -210,7 +245,7 @@ describe("escape plugin", () => {
 
   test("a draft interrupts the busy session and stays in the composer: nothing is taken back into it", () => {
     const run = start()
-    run.state.editor = { plainText: "half a thought" }
+    run.state.editor = editor("half a thought")
     run.state.now = SENT + 1_000
     expect(run.press()).toBeUndefined()
     expect(run.interrupts).toEqual([{ sessionID: "ses_root", resume: true }])
@@ -225,25 +260,45 @@ describe("escape plugin", () => {
     expect([...run.dispatched, ...run.interrupts]).toEqual([])
   })
 
-  test("a pending prompt behind a running turn comes back through session.undo and the turn stops, the inbox not resumed", () => {
+  test("a pending prompt behind a running turn comes back with every other waiting one, oldest first, joined by a newline, and the turn stops, the inbox not resumed", async () => {
     const run = start()
-    run.sessions.ses_root!.messages.push({ id: "msg_2", type: "user", text: "Also update the docs.", time: { created: SENT + 6_000 } })
-    run.sessions.ses_root!.pending = [{ id: "msg_2", type: "user" }]
+    run.sessions.ses_root!.messages.push({ id: "msg_3", type: "user", text: "Also update the docs.", time: { created: SENT + 6_000 } })
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_3", "queue", SENT + 6_000), waitingPrompt("msg_2", "steer", SENT + 5_000)]
     run.state.now = SENT + 60_000
     run.press()
-    expect(run.dispatched).toEqual([UNDO])
-    expect(run.interrupts).toEqual([{ sessionID: "ses_root", resume: false }])
+    await run.flush()
+    expect(run.takes).toEqual([{ sessionID: "ses_root", inboxIDs: ["msg_2", "msg_3"], separator: "\n" }])
+    expect(run.calls).toEqual(["take msg_2,msg_3", "interrupt false"])
+    expect(run.dispatched).toEqual([])
     expect(run.toasts).toEqual([])
   })
 
-  test("an idle session's parked prompt comes back through session.undo alone", () => {
+  test("an idle session's parked prompt comes back alone, and nothing is interrupted", async () => {
     const run = start()
     run.sessions.ses_root!.status = "idle"
     run.sessions.ses_root!.pending = [{ id: "msg_1", type: "user" }]
     run.state.now = SENT + 60_000
     run.press()
-    expect(run.dispatched).toEqual([UNDO])
+    await run.flush()
+    expect(run.calls).toEqual(["take msg_1"])
     expect(run.interrupts).toEqual([])
+  })
+
+  test("a take-back that fails, or leaves a prompt sent meanwhile, says so", async () => {
+    const run = start()
+    run.sessions.ses_root!.status = "idle"
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_1", "queue", SENT)]
+    run.state.left.add("msg_1")
+    run.press()
+    await run.flush()
+    expect(run.messages()).toEqual([left(1)])
+    const failed = start()
+    failed.sessions.ses_root!.status = "idle"
+    failed.sessions.ses_root!.pending = [waitingPrompt("msg_1", "queue", SENT)]
+    failed.state.takeFailure = Option.some("Unable to connect")
+    failed.press()
+    await failed.flush()
+    expect(failed.messages()).toEqual(["Could not take the waiting prompts back: Unable to connect"])
   })
 
   test("a session that stops says nothing more", async () => {
@@ -285,6 +340,8 @@ describe("escape plugin", () => {
     const parked = start()
     parked.sessions.ses_root!.status = "idle"
     parked.sessions.ses_root!.pending = [{ id: "msg_1", type: "user" }]
+    // The server never answers the take-back: the prompt stays in the inbox.
+    parked.host.ui.composer.takeBack = () => Effect.runPromise(Effect.never)
     parked.press()
     await parked.advance(STOP_MS)
     expect(parked.messages()).toEqual([NOT_TAKEN])
@@ -310,9 +367,9 @@ describe("escape plugin", () => {
   test("in a subagent's view, its picker put away, Escape goes back to the parent through the host's session.parent and never interrupts the subagent", async () => {
     const run = start()
     run.state.sessionID = "ses_child"
-    run.state.editor = { plainText: "" }
+    run.state.editor = editor("")
     expect(run.press()).toBeUndefined()
-    run.state.editor = { plainText: "Check the cents too." }
+    run.state.editor = editor("Check the cents too.")
     expect(run.press()).toBeUndefined()
     run.sessions.ses_child!.status = "idle"
     expect(run.press()).toBeUndefined()
@@ -327,7 +384,7 @@ describe("Ctrl+Enter", () => {
   test("on an idle session it submits the composer, as Enter does, and interrupts nothing", async () => {
     const run = start()
     run.sessions.ses_root!.status = "idle"
-    run.state.editor = { plainText: "Ship it." }
+    run.state.editor = editor("Ship it.")
     expect(run.send()).toBeUndefined()
     await run.flush()
     expect(run.dispatched).toEqual([SUBMIT])
@@ -380,19 +437,19 @@ describe("Ctrl+Enter", () => {
   test("a draft goes to the queue through the host first; the interrupt waits for the server to admit it, then it goes out after the older prompts", async () => {
     const run = start()
     run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
-    run.state.editor = { plainText: "Stop and fix the test instead." }
+    run.state.editor = editor("Stop and fix the test instead.")
     run.send()
     // Until the server's echo, nothing is interrupted.
     expect(run.calls).toEqual([QUEUE])
     await run.flush()
     expect(run.calls).toEqual([QUEUE, "interrupt false", "steer msg_2", "steer msg_q1"])
-    expect(run.state.editor).toEqual({ plainText: "" })
+    expect(run.state.editor?.plainText).toBe("")
   })
 
   test("a draft the host refuses to queue (a shell command, a slash command) interrupts nothing and says so", async () => {
     const run = start()
     run.state.admits = false
-    run.state.editor = { plainText: "!ls" }
+    run.state.editor = editor("!ls")
     run.send()
     await run.advance(STOP_MS - 1)
     expect(run.interrupts).toEqual([])
@@ -459,7 +516,7 @@ describe("Ctrl+Enter", () => {
     expect(steers.sessions.ses_root!.status).toBe("running")
     expect(steers.toasts).toEqual([])
     const queued = start()
-    queued.state.editor = { plainText: "Stop and fix the test instead." }
+    queued.state.editor = editor("Stop and fix the test instead.")
     queued.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
     queued.send()
     await queued.advance(50)
@@ -502,12 +559,69 @@ describe("Ctrl+Enter", () => {
   test("in a running subagent's view it queues the draft to that subagent, interrupts it, and sends what waits", async () => {
     const run = start()
     run.state.sessionID = "ses_child"
-    run.state.editor = { plainText: "Stop and check the cents." }
+    run.state.editor = editor("Stop and check the cents.")
     run.sessions.ses_child!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
     expect(run.send()).toBeUndefined()
     await run.flush()
     expect(run.calls).toEqual([QUEUE, "interrupt false", "steer msg_2", "steer msg_q1"])
     expect(run.interrupts).toEqual([{ sessionID: "ses_child", resume: false }])
     expect(run.sessions.ses_root!.pending).toEqual([])
+  })
+})
+
+describe("Up", () => {
+  test("with prompts waiting, Up on the composer's first row takes them all back, oldest first, joined by a newline; nothing is sent", async () => {
+    const run = start()
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_4", "queue", SENT + 3), waitingPrompt("msg_2", "steer", SENT + 1), waitingPrompt("msg_3", "queue", SENT + 2)]
+    run.state.editor = editor("")
+    expect(run.up()).toBeUndefined()
+    await run.flush()
+    expect(run.takes).toEqual([{ sessionID: "ses_root", inboxIDs: ["msg_2", "msg_3", "msg_4"], separator: "\n" }])
+    expect(run.calls).toEqual(["take msg_2,msg_3,msg_4"])
+    expect(run.sessions.ses_root!.pending).toEqual([])
+    // Nothing waits: Up is the host's history again.
+    expect(run.up()).toBe("inactive")
+  })
+
+  test("over a draft, from anywhere on its first row, it takes them too; off the first row Up is the host's", async () => {
+    const run = start()
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
+    run.state.editor = editor("line one\nline two", 14, 1)
+    expect(run.up()).toBe(false)
+    run.state.editor = editor("line one\nline two", 3, 0)
+    expect(run.up()).toBeUndefined()
+    await run.flush()
+    expect(run.calls).toEqual(["take msg_2"])
+  })
+
+  test("with nothing waiting the layer is off, and another route leaves Up to the host", () => {
+    const run = start()
+    expect(run.up()).toBe("inactive")
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
+    run.host.ui.router.current = () => ({ type: "home" })
+    expect(run.up()).toBe("inactive")
+    expect(run.calls).toEqual([])
+  })
+
+  test("a prompt the session took between the layer turning on and the press leaves Up to the host", () => {
+    const run = start()
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
+    expect(run.layers[1]?.enabled?.()).toBe(true)
+    run.sessions.ses_root!.pending = []
+    expect(run.layers[1]?.commands[0]?.run()).toBe(false)
+    expect(run.calls).toEqual([])
+  })
+
+  test("a composer scrolled past its first line is not on the first row", () => {
+    const run = start()
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
+    run.state.editor = { ...editor("one\ntwo\nthree", 9, 0), scrollY: 2 }
+    expect(run.up()).toBe(false)
+  })
+
+  test("a program's synthetic note waiting in the inbox is not the reader's: Up leaves it", () => {
+    const run = start()
+    run.sessions.ses_root!.pending = [{ id: "msg_n", type: "synthetic", time: { created: SENT } }]
+    expect(run.up()).toBe("inactive")
   })
 })

@@ -43,8 +43,8 @@ export interface Message {
   readonly time: { readonly created: number }
 }
 
-/** The focused text editor, as `context.renderer.currentFocusedEditor` gives it. */
-export type Editor = { readonly plainText: string } | null | undefined
+/** The focused text editor, as `context.renderer.currentFocusedEditor` gives it, with any other `Fields` a reader needs. */
+export type Editor<Fields extends object = object> = ({ readonly plainText: string } & Fields) | null | undefined
 
 /** The route the TUI shows, as `context.ui.router.current()` returns it. */
 export type Route = { readonly type: "session"; readonly sessionID: string } | { readonly type: string }

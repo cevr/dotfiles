@@ -445,6 +445,7 @@ if (import.meta.main) {
     pluginDir("web"),
     pluginDir("memory"),
     pluginDir("stall"),
+    pluginDir("escape"),
     updateEntry(pluginDir("update"), settings),
     BUILTIN_SCHEDULE_OFF,
   ]
