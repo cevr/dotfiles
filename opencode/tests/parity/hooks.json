@@ -1,0 +1,35 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/guard.test.ts": {
+      "simulated": "cmd/guard/guard.sim.test.ts",
+      "tests": [
+        {
+          "name": "a direct shell call of git reset --hard is refused in the guard's words, a cell cannot reach the shell, and a harmless command runs",
+          "expects": 12,
+          "carried": "simulated",
+          "why": "the tools offered, the refusal in the guard's words, that the reset never reaches the shell, the harmless command's one run as written and the closing turn are simulated (12 expects at one seed), on the laws 'execute.before runs before a tool call…' and 'create.before sees each command…'; what only the real host proves stays real under its own name: a cell cannot reach the shell while the kernel (a Bun worker) is not the runtime, and the repository on disk keeps its HEAD and dirty file"
+        },
+        {
+          "name": "a subagent's shell call opening with sleep 60 is refused in the guard's words, and the root's sleep runs",
+          "expects": 15,
+          "carried": "simulated",
+          "why": "the child's refusal in the guard-sleep words with its wait hint, that it never reaches the shell, and the root's sleep running are simulated on a child session (15 expects at one seed); what only the real host proves stays real under its own name: a session the fork's subagent tool starts is one the guard knows as a subagent"
+        },
+        {
+          "name": "a heavy command runs niced under its command as written, a light one at the run's niceness, and a kill by a pattern that matches the server is refused",
+          "expects": 13,
+          "carried": "simulated",
+          "why": "the commands as written, the program each spawns with (one launcher named as the shell, its `exec nice -n 10` text, the shell itself for a light one) and the kill's refusal are simulated (17 expects at one seed); what only the real host proves stays real under its own name: the niceness a launcher really runs at, the launcher file on disk, and the host's own `ps` showing the server"
+        },
+        {
+          "name": "a kernel cell's tools.shell call of git reset --hard is refused in the guard's words, and its harmless command runs",
+          "expects": 7,
+          "carried": "real",
+          "why": "the kernel's cell runs in a Bun worker and calls the shell through the runtime: no world operation models either"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

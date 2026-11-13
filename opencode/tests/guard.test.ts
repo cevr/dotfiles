@@ -1,34 +1,26 @@
 // accept: deep (56.4 s alone on a quiet host: 1-minute load 9.8–12.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The guard in real OpenCode (the fork, through its SDK) on the scripted
-// model, beside the kernel. `git reset --hard` is refused as a direct shell
-// call and as a kernel cell's `tools.shell` call; the work repository's HEAD
-// and its dirty file stay as they were, and a harmless command still runs.
-// A heavy command runs niced through a launcher while its command reads as
-// written, and a kill by a pattern that matches the server is refused.
-// Every shell call runs in a git repository the run makes in a scratch dir.
-// The guard on its own is tested beside its code in mods/guard and cmd/guard.
+// model, beside the kernel: what only the real host proves. The guard's
+// decisions (what is refused in which words, what reaches the shell and with
+// which program, a subagent's long sleep) run on the simulated host in
+// cmd/guard/guard.sim.test.ts and guard-faults.sim.test.ts, and
+// tests/parity/hooks.json says which name went where. Here: a kernel cell
+// cannot reach the shell unless the kernel is the runtime, and as the runtime
+// its `tools.shell` call goes through the guard (the kernel runs in a Bun
+// worker the world does not model); the work repository's HEAD and dirty file
+// stay as they were on disk; a session the fork's subagent tool starts is a
+// subagent to the guard; a heavy command's launcher is a file on disk that
+// really runs it niced; the host's own `ps` shows the server a kill by
+// pattern would hit. Every shell call runs in a git repository the run makes
+// in a scratch dir. The guard on its own is tested beside its code in
+// mods/guard and cmd/guard.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { getPriority } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"
 import type { Result, Spec } from "./guard/run.ts"
-import {
-  CELL_TASK,
-  CHILD_SLEEP,
-  DIRECT_TASK,
-  DONE,
-  HARMLESS,
-  HARMLESS_FILE,
-  HARMLESS_OUT,
-  HEAVY_NICE,
-  killByPattern,
-  LIGHT_NICE,
-  POLICY_TASK,
-  RESET,
-  ROOT_SLEEP,
-  SLEEP_TASK,
-} from "./guard/sim.ts"
+import { CELL_TASK, CHILD_SLEEP, DIRECT_TASK, DONE, HARMLESS_FILE, HARMLESS_OUT, HEAVY_NICE, killByPattern, LIGHT_NICE, POLICY_TASK, SLEEP_TASK } from "./guard/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -109,80 +101,61 @@ const untouched = (result: Result & { work: string }) => {
 const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
+  // Real alone: the kernel's cell runs in a Bun worker, and the repository is on disk. The direct call's refusal and
+  // that the reset never reaches the shell are simulated (cmd/guard/guard.sim.test.ts, the direct case).
   test(
-    "a direct shell call of git reset --hard is refused in the guard's words, a cell cannot reach the shell, and a harmless command runs",
+    "while the kernel is not the runtime, a cell cannot reach the shell, and after a refused reset the work repository keeps its HEAD and dirty file",
     async () => {
       const result = await run("direct", { task: DIRECT_TASK, codeOnly: false })
-      expect(result.seen.find((item) => item.task === DIRECT_TASK)?.tools).toContain("shell")
-      const [reset, cell, harmless, ...rest] = toolParts(result.messages)
-      expect(rest).toEqual([])
-      expect(reset?.name).toBe("shell")
-      expect(reset?.state.input.command).toBe(RESET)
-      expect(reset?.state.status).toBe("error")
-      expect(said(reset)).toContain(REFUSAL)
+      const cell = toolParts(result.messages).find((part) => part.name === "kernel")
       // Without the runtime a cell's call would skip the guard's hook, so the kernel keeps the shell from it.
-      expect(cell?.name).toBe("kernel")
       expect(said(cell)).toContain("refused: tools.shell is not a tool here.")
-      expect(harmless?.name).toBe("shell")
-      expect(harmless?.state.input.command).toBe(HARMLESS)
-      expect(harmless?.state.status).toBe("completed")
-      expect(said(harmless)).toContain(HARMLESS_OUT)
       untouched(result)
     },
     RUN_MS,
   )
 
+  // Real alone: the fork's subagent tool makes the child session, and the guard must know it as a subagent from what
+  // OpenCode says of it. The refusal's words and the root's sleep are simulated on a child session the world makes
+  // (cmd/guard/guard.sim.test.ts, the sleep case).
   test(
-    "a subagent's shell call opening with sleep 60 is refused in the guard's words, and the root's sleep runs",
+    "a session the subagent tool starts is a subagent to the guard: its shell call opening with sleep 60 is refused",
     async () => {
       const result = await run("sleep", { task: SLEEP_TASK, codeOnly: false })
-      const [subagent, rootSleep, ...rest] = toolParts(result.messages)
-      expect(rest).toEqual([])
-      expect(subagent?.name).toBe("subagent")
+      const subagent = toolParts(result.messages).find((part) => part.name === "subagent")
       expect(subagent?.state.status).toBe("completed")
-      expect(rootSleep?.name).toBe("shell")
-      expect(rootSleep?.state.input.command).toBe(ROOT_SLEEP)
-      expect(rootSleep?.state.status).toBe("completed")
-      expect(said(rootSleep)).not.toContain("guard-sleep")
       const children = Object.values(result.children)
       expect(children).toHaveLength(1)
-      const [childSleep, ...childRest] = toolParts(children[0])
-      expect(childRest).toEqual([])
-      expect(childSleep?.name).toBe("shell")
-      expect(childSleep?.state.input.command).toBe(CHILD_SLEEP)
+      const childSleep = toolParts(children[0]).find((part) => part.state.input.command === CHILD_SLEEP)
       expect(childSleep?.state.status).toBe("error")
       expect(said(childSleep)).toContain("guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
-      expect(said(childSleep)).toContain("wait\\\", id, ms })")
-      expect(said(childSleep)).not.toContain("child slept")
     },
     RUN_MS,
   )
 
+  // Real alone: the niceness a process runs at, the launcher file on disk, and the host's own process table (`ps`)
+  // listing the server. Which program each command spawns with and the launcher's text are simulated
+  // (cmd/guard/guard.sim.test.ts, the policy case).
   test(
-    "a heavy command runs niced under its command as written, a light one at the run's niceness, and a kill by a pattern that matches the server is refused",
+    "a heavy command's launcher is a file on disk named as the shell, and runs it 10 nicer than a light one; the real process table shows the server a kill by pattern would hit",
     async () => {
       const result = await run("policy", { task: POLICY_TASK, codeOnly: false })
-      const [heavy, light, kill, ...rest] = toolParts(result.messages)
-      expect(rest).toEqual([])
+      const parts = toolParts(result.messages)
+      const heavy = parts.find((part) => part.state.input.command === HEAVY_NICE)
+      const light = parts.find((part) => part.state.input.command === LIGHT_NICE)
+      const kill = parts.find((part) => part.state.input.command === killByPattern(join(scratch, "policy/spec.json")))
+      expect(kill?.state.status).toBe("error")
+      expect(said(kill)).toContain("would also kill the OpenCode server this session runs on")
       // The run's process, and so OpenCode's shells, start at this test's niceness; the guard adds 10, up to the
       // system's highest niceness (20 on macOS, 19 on Linux).
       const base = getPriority()
-      expect(light?.state.input.command).toBe(LIGHT_NICE)
-      expect(light?.state.status).toBe("completed")
       expect(niceness(light)).toBe(base)
-      // The model's call and the tool part show the command as the model wrote it: only the program that runs it changed.
-      expect(heavy?.state.input.command).toBe(HEAVY_NICE)
-      expect(heavy?.state.status).toBe("completed")
       expect(niceness(heavy)).toBe(Math.min(base + 10, process.platform === "darwin" ? 20 : 19))
       const launchers = join(scratch, "policy/home/.cache/opencode/guard-launchers")
       // One launcher, named as the shell it stands in for, so OpenCode reads the command in that shell's dialect.
       const written = readdirSync(launchers).flatMap((hash) => readdirSync(join(launchers, hash)))
       expect(written).toHaveLength(1)
       expect(written[0]).toMatch(/^(ba|z|da|k)?sh$/)
-      expect(kill?.name).toBe("shell")
-      expect(kill?.state.input.command).toBe(killByPattern(join(scratch, "policy/spec.json")))
-      expect(kill?.state.status).toBe("error")
-      expect(said(kill)).toContain("would also kill the OpenCode server this session runs on")
     },
     RUN_MS,
   )
