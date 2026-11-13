@@ -371,7 +371,7 @@ const response = (status: number, body: Option.Option<string>) =>
   )
 const noContent = () => response(NO_CONTENT, Option.none())
 /** An error answer, as the real server's: a JSON body under its status. */
-const failure = (status: number, tag: string, message: string) => response(status, Option.some(toJson({ _tag: tag, message })))
+const failure = (status: number, tag: string, message: string, more: { readonly type?: string } = {}) => response(status, Option.some(toJson({ _tag: tag, ...more, message })))
 /** The goal RPC's answer when the session has no goal. */
 const NO_GOAL = '{"output":null}'
 const notFound = (sessionID: string) => failure(404, "SessionNotFoundError", `Session not found: ${sessionID}`)
@@ -393,6 +393,10 @@ export const make = (options: Options) => {
   const shellExits: Array<"killed"> = []
   const events: Array<string> = []
   const sequences = new Map<string, number>()
+  // The sessions that chose their own agent and model, as the real server keeps them: a switch to the one
+  // chosen says nothing. A session made with none (`own: false`, as a bare session.create makes one) says
+  // so at every agent switch, and at its first model switch, even to the default.
+  const chosen = new Set<string>()
   /** Answers and events the fork's schemas refused: each fails the test's next step. */
   const broken: Array<string> = []
   const state = { silent: false, inflight: 0, parked: 0, titles: (prompt: string) => prompt.split(/\s+/).slice(0, 3).join(" ").toLowerCase() }
@@ -433,8 +437,12 @@ export const make = (options: Options) => {
   }
 
   /** Adds a session (a root, or a child under `parentID`) as the server holds it after `session.create`. */
-  const session = (input: { readonly title?: string; readonly parentID?: string; readonly agent?: string } = {}) => {
+  const session = (input: { readonly title?: string; readonly parentID?: string; readonly agent?: string; readonly own?: boolean } = {}) => {
     const sessionID = id("ses")
+    if (input.own ?? true) {
+      chosen.add(`${sessionID} agent`)
+      chosen.add(`${sessionID} model`)
+    }
     const info: SessionInfo = {
       id: sessionID,
       projectID: PROJECT,
@@ -711,7 +719,7 @@ export const make = (options: Options) => {
     const previousModel = info.model
     if (identifier === "session.switchAgent")
       Option.map(
-        Option.fromUndefinedOr(body.agent).pipe(Option.filter((next) => next !== previousAgent)),
+        Option.fromUndefinedOr(body.agent).pipe(Option.filter((next) => next !== previousAgent || !chosen.has(`${sessionID} agent`))),
         (next) => {
           info.agent = next
           emit("session.agent.selected", { sessionID, agent: next, previous: previousAgent })
@@ -719,9 +727,10 @@ export const make = (options: Options) => {
       )
     if (identifier === "session.switchModel")
       Option.map(
-        Option.fromUndefinedOr(body.model).pipe(Option.filter((next) => !sameModel(next, previousModel))),
+        Option.fromUndefinedOr(body.model).pipe(Option.filter((next) => !sameModel(next, previousModel) || !chosen.has(`${sessionID} model`))),
         (next) => {
           info.model = next
+          chosen.add(`${sessionID} model`)
           emit("session.model.selected", { sessionID, model: next, previous: previousModel })
         },
       )
@@ -821,10 +830,11 @@ export const make = (options: Options) => {
     "model.list": () => Effect.succeed(json("model.list", { location: catalogLocation, data: [MODEL] })),
     "provider.list": () => Effect.succeed(json("provider.list", { location: catalogLocation, data: [PROVIDER] })),
     "server.info": () => Effect.succeed(json("server.info", INFO)),
-    // No plugin of ours runs on the double's server: an RPC to one fails as the real server's does with none loaded; the goal RPC answers no goal.
+    // No plugin of ours runs on the double's server: an RPC to one fails as the real server's does with none loaded (400, rpc.unavailable); the goal RPC answers no goal.
     "rpc.call": ({ params }) => {
       if (params.get("rpcID") === "opencode.goal") return Effect.succeed(response(200, Option.some(NO_GOAL)))
-      return Effect.succeed(failure(404, "RpcNotFoundError", `No RPC ${params.get("rpcID") ?? ""}`))
+      const rpcID = params.get("rpcID") ?? ""
+      return Effect.succeed(failure(400, "RpcError", `RPC is unavailable: ${rpcID}`, { type: "rpc.unavailable" }))
     },
   } satisfies { readonly [K in Served]: (call: Call) => Effect.Effect<Response> }
 

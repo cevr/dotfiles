@@ -64,7 +64,8 @@ const double = (): LawServer => {
       return { status: answered.value.status, body: Option.flatMap(Option.liftPredicate(text, (value) => value !== ""), Schema.decodeUnknownOption(Json)) }
     })
   return {
-    session: Effect.sync(() => server.session()),
+    // As a bare session.create makes one: no agent or model of its own.
+    session: Effect.sync(() => server.session({ own: false })),
     call: (made): Effect.Effect<Answer, LawServerError> => call(made),
     sent: Effect.as(drain, sent),
     settle: Effect.andThen(Effect.all([Effect.yieldNow, Effect.yieldNow, Effect.yieldNow]), drain),

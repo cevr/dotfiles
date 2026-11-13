@@ -108,7 +108,7 @@ const Interrupted = Schema.Struct({ interrupted: Schema.Literal(true) })
 const Item = Schema.Struct({ data: Schema.Struct({ id: Schema.String }) })
 const Inbox = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String, delivery: Schema.String })) })
 const Idle = Schema.Struct({ data: Schema.Struct({ time: Schema.Struct({ idle: Schema.optional(Schema.Number) }) }) })
-const Tagged = Schema.Struct({ _tag: Schema.String })
+const Unavailable = Schema.Struct({ _tag: Schema.Literal("RpcError"), type: Schema.Literal("rpc.unavailable") })
 const Goal = Schema.Struct({ output: Schema.Null })
 
 /** The ids of the session's messages of `type`. */
@@ -169,7 +169,8 @@ export const LAWS: ReadonlyArray<Law> = [
         ]
         const messages = yield* server.call(get(`/api/session/${sessionID}/message`))
         const types = Option.match(read(MessageList, messages), { onNone: () => [], onSome: (list) => list.data.map((message) => message.type) })
-        if (types.toSorted().join(",") !== "assistant,user") failures.push(`messages: ${shown(messages)}`)
+        // The real transcript holds more kinds (its idle marker); the law reads the two the TUI draws.
+        if (types.filter((type) => type === "user" || type === "assistant").toSorted().join(",") !== "assistant,user") failures.push(`messages: ${shown(messages)}`)
         for (const id of yield* messagesOf(server, sessionID, "assistant"))
           failures.push(...expectStatus("message", yield* server.call(get(`/api/session/${sessionID}/message/${id}`)), 200))
         failures.push(...expectStatus("get", yield* server.call(get(`/api/session/${sessionID}`)), 200))
@@ -226,7 +227,7 @@ export const LAWS: ReadonlyArray<Law> = [
         const failures = [...expectStatus("steer", yield* server.call({ method: "PATCH", path, body: Option.some({ delivery: "steer" }) }), 204)]
         yield* server.settle
         failures.push(...inOrder(yield* kindsOf(server, sessionID, from), ["session.inbox.delivery.changed"]))
-        const missing = yield* server.call({ method: "PATCH", path: `/api/session/${sessionID}/inbox/inb_missing`, body: Option.some({ delivery: "steer" }) })
+        const missing = yield* server.call({ method: "PATCH", path: `/api/session/${sessionID}/inbox/msg_missing`, body: Option.some({ delivery: "steer" }) })
         failures.push(...expectStatus("an item the inbox does not hold", missing, 409))
         return failures
       }),
@@ -251,23 +252,25 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
-    name: "switching a session to another agent or model says so; switching to the one it has says nothing",
+    name: "a session made with no agent or model of its own says so at every agent switch and at its first model switch; then a switch to the model it has says nothing",
     routes: ["session.switchAgent", "session.switchModel"],
     kinds: ["session.agent.selected", "session.model.selected"],
     run: (server) =>
       Effect.gen(function* () {
         const sessionID = yield* server.session
+        yield* server.settle
+        const agent = post(`/api/session/${sessionID}/agent`, { agent: "plan" })
+        const model = post(`/api/session/${sessionID}/model`, { model: server.model })
         const from = (yield* server.sent).length
-        const failures = [
-          ...expectStatus("same agent", yield* server.call(post(`/api/session/${sessionID}/agent`, { agent: "build" })), 204),
-          ...expectStatus("same model", yield* server.call(post(`/api/session/${sessionID}/model`, { model: server.model })), 204),
-        ]
+        // A new session has no agent or model of its own: the first switch to either sets it, and says so.
+        const failures = [...expectStatus("other agent", yield* server.call(agent), 204), ...expectStatus("a model", yield* server.call(model), 204)]
         yield* server.settle
-        const quiet = yield* kindsOf(server, sessionID, from)
-        if (quiet.length > 0) failures.push(`a switch to the same said: ${quiet.join(", ")}`)
-        failures.push(...expectStatus("other agent", yield* server.call(post(`/api/session/${sessionID}/agent`, { agent: "plan" })), 204))
+        failures.push(...inOrder(yield* kindsOf(server, sessionID, from), ["session.agent.selected", "session.model.selected"]))
+        const again = (yield* server.sent).length
+        failures.push(...expectStatus("same agent", yield* server.call(agent), 204), ...expectStatus("same model", yield* server.call(model), 204))
         yield* server.settle
-        failures.push(...inOrder(yield* kindsOf(server, sessionID, from), ["session.agent.selected"]))
+        const said = yield* kindsOf(server, sessionID, again)
+        if (said.join(",") !== "session.agent.selected") failures.push(`the switches to the same said: ${said.join(", ")}, not session.agent.selected alone`)
         return failures
       }),
   },
@@ -324,7 +327,7 @@ export const LAWS: ReadonlyArray<Law> = [
       ),
   },
   {
-    name: "an RPC to a plugin the server has not loaded fails 404 RpcNotFoundError; the goal RPC answers no goal",
+    name: "an RPC to a plugin the server has not loaded fails 400 rpc.unavailable; the goal RPC answers no goal",
     routes: ["rpc.call"],
     kinds: [],
     run: (server) =>
@@ -332,8 +335,8 @@ export const LAWS: ReadonlyArray<Law> = [
         const sessionID = yield* server.session
         const missing = yield* server.call(post("/api/rpc/dotfiles-opencode.wake/pending", { input: { sessionIDs: [sessionID] } }))
         const goal = yield* server.call(post("/api/rpc/opencode.goal/get", { input: { sessionID } }))
-        const failures = [...expectStatus("missing RPC", missing, 404), ...expectStatus("goal", goal, 200)]
-        if (!Option.exists(read(Tagged, missing), (found) => found._tag === "RpcNotFoundError")) failures.push(`missing RPC answered ${shown(missing)}`)
+        const failures = [...expectStatus("missing RPC", missing, 400), ...expectStatus("goal", goal, 200)]
+        if (Option.isNone(read(Unavailable, missing))) failures.push(`missing RPC answered ${shown(missing)}`)
         if (Option.isNone(read(Goal, goal))) failures.push(`goal answered ${shown(goal)}`)
         return failures
       }),
