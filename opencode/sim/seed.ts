@@ -2,7 +2,8 @@
 // itself with the command that replays it, and a file's seeds share one CPU
 // budget.
 //
-// - `SEEDS` (20) fixed seeds by default. `SIM_SEED=<n>` runs that seed alone.
+// - `SEEDS` (20) fixed seeds by default, then the file's past failing seeds
+//   (`runner(file, { past })`). `SIM_SEED=<n>` runs that seed alone.
 // - A failure fails with `SIM_SEED=<n> bun test <file>: <what failed>`.
 // - A simulated file has `BUDGET_MS` (5 s) of CPU time for all its seeds
 //   together; the test that passes it fails, saying the CPU and wall time the
@@ -32,13 +33,21 @@ export const EXPECTS = "sim-expects"
 /** A seed that failed, or a file past its budget. */
 export class SeedFailed extends Data.TaggedError("SeedFailed")<{ readonly message: string }> {}
 
-/** The seeds a run uses: `SIM_SEED` alone, one under `SIM_EXPECTS`, else 1 to `SEEDS`. */
-export const seeds = Effect.gen(function* () {
-  const one = yield* Config.option(Config.Int("SIM_SEED"))
-  if (Option.isSome(one)) return [one.value]
-  if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) return [1]
-  return Array.from({ length: SEEDS }, (_, index) => index + 1)
-})
+/**
+ * The seeds a run uses: `SIM_SEED` alone, one under `SIM_EXPECTS`, else 1 to `SEEDS` and then the file's past
+ * failing seeds (`past`), each once.
+ */
+export const seedsOf = (past: ReadonlyArray<number>) =>
+  Effect.gen(function* () {
+    const one = yield* Config.option(Config.Int("SIM_SEED"))
+    if (Option.isSome(one)) return [one.value]
+    if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) return [1]
+    const fixed = Array.from({ length: SEEDS }, (_, index) => index + 1)
+    return [...fixed, ...[...new Set(past)].filter((seed) => seed > SEEDS).sort((a, b) => a - b)]
+  })
+
+/** `seedsOf` a file with no past failing seeds. */
+export const seeds = seedsOf([])
 
 export interface Seeded {
   readonly seed: number
@@ -90,15 +99,20 @@ export const once = <E>(file: string, spent: Spent, name: string, seed: number, 
     return count.calls
   })
 
-/** A file's runner (`file` as `bun test` names it from opencode/): `seeded(name, body)` registers a test that runs `body` on every seed, within the file's budget. */
-export const runner = (file: string) => {
+/**
+ * A file's runner (`file` as `bun test` names it from opencode/): `seeded(name, body)` registers a test that runs
+ * `body` on every seed, within the file's budget. `past` holds the seeds past 1 to `SEEDS` that once failed the file
+ * (a wider sweep found them): every run replays them too.
+ */
+export const runner = (file: string, options: { readonly past?: ReadonlyArray<number> } = {}) => {
   const spent: Spent = { cpu: 0, wall: 0 }
+  const runSeeds = seedsOf(options.past ?? [])
 
   const seeded = <E>(name: string, body: (run: Seeded) => Effect.Effect<void, E>) =>
     test(name, () =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const calls = yield* Effect.forEach(yield* seeds, (seed) => once(file, spent, name, seed, body))
+          const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
           if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
         }),
       ),
