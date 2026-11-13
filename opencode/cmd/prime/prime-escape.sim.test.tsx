@@ -5,11 +5,10 @@
 // prompt leaves the transcript and is back in the composer), at 7 s it
 // interrupts (the prompt and its partial answer stay); the Dock shows no Escape
 // hint. The model streams its first words and stalls, as scenarios/prime-escape.ts's does.
-import { Effect } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
-import type { Model } from "../../sim-tui/server.ts"
+import { type Model, stall, text } from "../../sim-tui/server.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/prime/prime-escape.sim.test.tsx"
@@ -18,11 +17,11 @@ const SEEDS = 20
 const { seeded } = App.runner(FILE, SEEDS)
 const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime", "cmd/escape"], width: 106, height: 40 }
 
-Seed.effect(App.BOOT_TEST, App.boot(BOOT))
+App.bootTest(BOOT)
 
 const ASK = "Rename the helper."
 const PARTIAL = "Working on it"
-const model: Model = () => [{ _tag: "Text", text: PARTIAL }, { _tag: "Stall" }]
+const model: Model = () => [text(PARTIAL), stall]
 const title = () => "helper rename"
 
 /** The rows above the composer (the transcript, down to Prime's hint line) and the composer's first row. */
@@ -33,7 +32,7 @@ const split = (frame: ReadonlyArray<string>) => {
 /** The Dock's top row: the tray, right above its rule. */
 const dock = (frame: ReadonlyArray<string>) => {
   const rule = frame.findLastIndex((line) => /^ ─{20,}$/.test(line))
-  return rule >= 1 ? (frame[rule - 1] ?? "") : ""
+  return frame[rule - 1] ?? ""
 }
 
 /**
@@ -41,16 +40,16 @@ const dock = (frame: ReadonlyArray<string>) => {
  * seed: the four tests read the same run, as the real tests read one replay.
  */
 const played = new Map<number, Record<string, ReadonlyArray<string>>>()
-const scenario = (seed: number) => {
-  const done = played.get(seed)
-  if (done !== undefined) return Effect.succeed(done)
-  return play(seed).pipe(Effect.tap((frames) => Effect.sync(() => played.set(seed, frames))))
-}
+const scenario = (seed: number) =>
+  Option.match(Option.fromUndefinedOr(played.get(seed)), {
+    onSome: Effect.succeed,
+    onNone: () => play(seed).pipe(Effect.tap((frames) => Effect.sync(() => played.set(seed, frames)))),
+  })
 const play = (seed: number) =>
   App.seed(BOOT, { key: "prime-escape", seed, model, title }, (tui) =>
     Effect.gen(function* () {
       const frames: Record<string, ReadonlyArray<string>> = {}
-      const has = (text: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(text)
+      const has = (shown: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(shown)
       /** Waits until `ms` after `start`, as the real scenario's `at`. */
       const at = (start: number, ms: number) => tui.advance(Math.max(0, start + ms - tui.elapsed()))
       const first = tui.elapsed()
@@ -117,4 +116,4 @@ seeded("Escape at 7 s interrupts: the prompt and its partial answer stay", ({ se
   }),
 )
 
-Seed.effect(App.CLOSE_TEST, App.shutdown)
+App.closeTest()

@@ -6,11 +6,10 @@
 // narrow, with no sidebar, it is there too. scenarios/prime-sidebar.ts step for
 // step: the model starts one background worker (the orchestrate plugin's worker
 // role, on opencode-drive's gpt-sim-model), which thinks and holds.
-import { Effect } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
-import { MODEL_REF, type Model } from "../../sim-tui/server.ts"
+import { MODEL_REF, type Model, reasoning, stall, subagent, text } from "../../sim-tui/server.ts"
 
 const FILE = "cmd/prime/prime-sidebar.sim.test.tsx"
 /** Seeds this file runs: 20 fit its 5 s budget (measured at load 26). */
@@ -30,7 +29,7 @@ const BOOT: App.BootOptions = {
   config: { session: { verbosity: "medium" } },
 }
 
-Seed.effect(App.BOOT_TEST, App.boot(BOOT))
+App.bootTest(BOOT)
 
 const ASK = "Fix the money parser with one worker."
 const STARTED = "A worker is on it."
@@ -38,21 +37,20 @@ const TITLE = "money worker"
 const WORKER = { id: "call_fix", description: "Fix money parsing", prompt: "Worker brief.", thought: "Check the money parser first." }
 const ROW = /^ [◇◈◆] worker gpt  Fix money parsing  /
 
-const model: Model = ({ text, step }) => {
+const model: Model = ({ text: prompt, step }) => {
   // The worker thinks, then holds, so it runs throughout.
-  if (text.includes(WORKER.prompt)) return [{ _tag: "Reasoning", text: WORKER.thought }, { _tag: "Stall" }]
+  if (prompt.includes(WORKER.prompt)) return [reasoning(WORKER.thought), stall]
   if (step === 0)
     return [
-      {
-        _tag: "Subagent",
+      subagent({
         id: WORKER.id,
         input: { description: WORKER.description, prompt: WORKER.prompt, background: true },
         title: WORKER.description,
         agent: "worker",
         model: MODEL_REF,
-      },
+      }),
     ]
-  return [{ _tag: "Text", text: STARTED }, { _tag: "Stall" }]
+  return [text(STARTED), stall]
 }
 
 /**
@@ -60,16 +58,16 @@ const model: Model = ({ text, step }) => {
  * same run, as the real tests read one replay).
  */
 const played = new Map<number, Record<string, ReadonlyArray<string>>>()
-const scenario = (seed: number) => {
-  const done = played.get(seed)
-  if (done !== undefined) return Effect.succeed(done)
-  return play(seed).pipe(Effect.tap((frames) => Effect.sync(() => played.set(seed, frames))))
-}
+const scenario = (seed: number) =>
+  Option.match(Option.fromUndefinedOr(played.get(seed)), {
+    onSome: Effect.succeed,
+    onNone: () => play(seed).pipe(Effect.tap((frames) => Effect.sync(() => played.set(seed, frames)))),
+  })
 const play = (seed: number) =>
   App.seed(BOOT, { key: "prime-sidebar", seed, model, title: () => TITLE }, (tui) =>
     Effect.gen(function* () {
       const frames: Record<string, ReadonlyArray<string>> = {}
-      const has = (text: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(text)
+      const has = (shown: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(shown)
       const running = has("◆ 1 subagent ")
       // The row once it shows the worker's thought.
       const row = has(`worker gpt  ${WORKER.description}  ${WORKER.thought} · `)
@@ -90,12 +88,12 @@ const play = (seed: number) =>
   )
 
 /** The composer area: from the dock's count line to the end, left of the sidebar column. */
-const composer = (frame: ReadonlyArray<string> | undefined) => {
-  const lines = frame ?? []
+const composer = (lines: ReadonlyArray<string> = []) => {
   const dock = lines.findIndex((line) => / ◆ \d+ subagents?  ·/.test(line))
-  return dock < 0 ? [] : lines.slice(dock).map((line) => line.slice(0, WIDE - SIDEBAR))
+  if (dock < 0) return []
+  return lines.slice(dock).map((line) => line.slice(0, WIDE - SIDEBAR))
 }
-const sidebarOf = (frame: ReadonlyArray<string> | undefined) => (frame ?? []).map((line) => line.slice(WIDE - SIDEBAR)).join("\n")
+const sidebarOf = (frame: ReadonlyArray<string> = []) => frame.map((line) => line.slice(WIDE - SIDEBAR)).join("\n")
 const golden = (frames: Record<string, ReadonlyArray<string>>, names: ReadonlyArray<string>) =>
   names.flatMap((name) => Golden.same(frames[name], Golden.frame("prime-sidebar", `sidebar-${name}`)).map((line) => `${name} ${line}`))
 
@@ -128,4 +126,4 @@ seeded("narrow, there is no sidebar and the worker's row is back under the count
   }),
 )
 
-Seed.effect(App.CLOSE_TEST, App.shutdown)
+App.closeTest()

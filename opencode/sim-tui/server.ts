@@ -13,39 +13,57 @@
 // - A route the double does not serve, and that is not one of the fork
 //   fixture's defaults (`FIXTURE_ROUTES`), is recorded and fails the test's next
 //   step naming it (`unserved`).
-// - `silent`: the double stops answering (the requests stay open) while time moves.
+// - `silence`: the double stops answering (the requests stay open) while time moves.
 //
 // Ids are the fork's own (Identifier) on the virtual clock, their random part drawn
 // from the seed by the harness; times are the virtual clock's.
-import { Schema } from "effect"
+import { Array as Arr, Effect, Exit, Option, Predicate, Schema } from "effect"
+import { HttpServerResponse } from "effect/http"
 import { ClientApi } from "@opencode/protocol/client"
+import type { OpenCodeEvent as ClientEvent } from "@opencode/client"
 import { EventManifest } from "@opencode/schema/event-manifest"
 import { Agent } from "@opencode/schema/agent"
 import { Identifier } from "@opencode/schema/identifier"
-import { Model } from "@opencode/schema/model"
+import { Model as ModelInfo } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 
 /** The fixture's location (the fork's tui-client.ts `directory` and project). */
 export const DIRECTORY = "/tmp/opencode/packages/tui"
 export const PROJECT = "proj_test"
 
+/** A model as a session names it. */
+export type ModelRef = { readonly id: string; readonly providerID: string; readonly variant?: string }
+
 /** One thing the scripted model does in a step. */
-export type Step =
-  | { readonly _tag: "Text"; readonly text: string }
-  | { readonly _tag: "Reasoning"; readonly text: string }
+export const Step = Schema.TaggedUnion({
+  Text: { text: Schema.String },
+  Reasoning: { text: Schema.String },
   /** The model holds here until the run is interrupted (or `release`d). */
-  | { readonly _tag: "Stall" }
+  Stall: {},
   /** A shell call a controller holds (opencode-drive's `tools.control`, as the scenarios run it) until the run is interrupted. */
-  | { readonly _tag: "Shell"; readonly id: string; readonly command: string; readonly description: string }
+  Shell: { id: Schema.String, command: Schema.String, description: Schema.String },
   /** A background subagent call: a child session starts on `input.prompt`; the model answers it as any session (by `Asked.sessionID`). */
-  | {
-      readonly _tag: "Subagent"
-      readonly id: string
-      readonly input: Readonly<Record<string, string | boolean>>
-      readonly title: string
-      readonly agent: string
-      readonly model: { readonly id: string; readonly providerID: string }
-    }
+  Subagent: {
+    id: Schema.String,
+    input: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])),
+    title: Schema.String,
+    agent: Schema.String,
+    model: Schema.Struct({ id: Schema.String, providerID: Schema.String }),
+  },
+})
+export type Step = typeof Step.Type
+type Subagent = typeof Step.cases.Subagent.Type
+
+/** The model streams `text`. */
+export const text = (value: string): Step => Step.cases.Text.make({ text: value })
+/** The model thinks `text`. */
+export const reasoning = (value: string): Step => Step.cases.Reasoning.make({ text: value })
+/** The model holds until the run is interrupted or released. */
+export const stall: Step = Step.cases.Stall.make({})
+/** A shell call that runs until the run is interrupted. */
+export const shell = (input: { readonly id: string; readonly command: string; readonly description: string }): Step => Step.cases.Shell.make(input)
+/** A background subagent call. */
+export const subagent = (input: Omit<Subagent, "_tag">): Step => Step.cases.Subagent.make(input)
 
 /** What a request to the model carries: the session, its agent and the prompt it answers. */
 export interface Asked {
@@ -53,40 +71,118 @@ export interface Asked {
   readonly text: string
   readonly step: number
 }
-/** The scripted model: the steps of the next model step, given the prompt, or none to end the run. */
-export type Model = (asked: Asked) => ReadonlyArray<Step> | undefined
+/** The scripted model: the steps of the next model step, given the prompt; none ends the run. */
+export type Model = (asked: Asked) => ReadonlyArray<Step>
 
 export interface Took {
   readonly at: number
   readonly method: string
   readonly path: string
-  readonly body?: unknown
+  /** The request's body as it came, empty for none. */
+  readonly body: string
 }
 
-/** The fixture's fetch hook: an answer, or undefined for the fixture's own default. */
-export type Handler = (url: URL, request: Request) => Promise<Response | undefined>
+/** The double's answer to a request: a response, or none for the fixture's own default. */
+export type Handler = (url: URL, request: Request) => Promise<Option.Option<Response>>
 
 /** A random source: an integer in [0, n). */
 export type Draw = (n: number) => number
 
-type Json = Record<string, unknown>
-type Message = Json & { readonly id: string; readonly type: string }
+type Input = Readonly<Record<string, string | boolean>>
+type Tokens = { readonly input: number; readonly output: number; readonly reasoning: number; readonly cache: { readonly read: number; readonly write: number } }
+type ErrorInfo = { readonly type: string; readonly message: string }
+
+type ToolState =
+  | { readonly status: "running"; readonly input: Input; readonly metadata: { readonly sessionID?: string } }
+  | { readonly status: "completed"; readonly input: Input; readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly metadata: { readonly sessionID: string; readonly status: string; readonly truncated: boolean } }
+  | { readonly status: "error"; readonly input: Input; readonly error: ErrorInfo }
+
+interface TextPart {
+  readonly type: "text"
+  text: string
+}
+interface ReasoningPart {
+  readonly type: "reasoning"
+  text: string
+  readonly time: { readonly created: number }
+}
+interface ToolPart {
+  readonly type: "tool"
+  readonly id: string
+  readonly name: string
+  readonly executed: boolean
+  state: ToolState
+  time: { readonly created: number; readonly ran: number; readonly completed?: number }
+}
+type Part = TextPart | ReasoningPart | ToolPart
+
+interface AssistantMessage {
+  readonly id: string
+  readonly type: "assistant"
+  time: { readonly created: number; readonly firstToken?: number; readonly streamed?: number; readonly completed?: number }
+  readonly agent: string
+  readonly model: ModelRef
+  readonly content: Array<Part>
+  finish?: string
+  rawFinish?: string
+  cost?: number
+  tokens?: Tokens
+  error?: ErrorInfo
+}
+interface UserMessage {
+  readonly id: string
+  readonly type: "user"
+  readonly time: { readonly created: number }
+  readonly text: string
+}
+interface IdleMessage {
+  readonly id: string
+  readonly type: "idle"
+  readonly time: { readonly created: number }
+  readonly outcome: "interrupted"
+}
+type Message = AssistantMessage | UserMessage | IdleMessage
+
+type Delivery = "steer" | "queue"
 interface Pending {
   readonly id: string
   readonly sessionID: string
   readonly time: { readonly created: number }
   readonly type: "user"
   readonly payload: { readonly text: string }
-  delivery: "steer" | "queue"
+  delivery: Delivery
 }
+
+interface SessionTime {
+  readonly created: number
+  updated: number
+  idle?: number
+  busy?: number
+  viewed?: number
+}
+interface SessionInfo {
+  readonly id: string
+  parentID?: string
+  readonly projectID: string
+  agent: string
+  model: ModelRef
+  readonly cost: number
+  readonly tokens: Tokens
+  readonly time: SessionTime
+  title?: string
+  readonly location: { readonly directory: string }
+  outcome?: string
+  revert?: { readonly messageID: string; readonly files: ReadonlyArray<string> }
+}
+
 interface Running {
   readonly sessionID: string
   readonly prompt: string
   step: number
-  message: Message & { content: Array<Json> }
+  message: AssistantMessage
   text: string
-  hold?: "stall" | "shell"
-  shell?: { readonly toolID: string; readonly part: Json }
+  hold: "none" | "stall" | "shell"
+  shell: Option.Option<ToolPart>
 }
 
 /** The routes the fork's fixture (packages/tui/test/fixture/tui-client.ts) answers when the double does not. */
@@ -101,44 +197,56 @@ export const FIXTURE_ROUTES: ReadonlyArray<string> = [
 ]
 const FIXTURE_PATTERNS = [/^\/api\/session\/[^/]+\/permission$/, /^\/api\/session\/[^/]+\/form$/, /^\/api\/experimental\/session\/[^/]+\/terminal$/]
 
+/** A schema the double encodes through: every success and event schema of the client API needs no service. */
+const isCodec = (schema: unknown): schema is Schema.Codec<unknown, unknown> => Schema.isSchema(schema)
+
 interface Endpoint {
   readonly identifier: string
   readonly method: string
-  readonly path: string
   readonly pattern: RegExp
   readonly params: ReadonlyArray<string>
-  readonly success: Schema.Top
+  readonly success: Schema.Codec<unknown, unknown>
 }
 const endpoints: ReadonlyArray<Endpoint> = Object.values(ClientApi.groups).flatMap((group) =>
   Object.values(group.endpoints).map((endpoint) => {
-    const params = [...endpoint.path.matchAll(/:(\w+)/g)].map((match) => match[1] ?? "")
-    const pattern = new RegExp(`^${endpoint.path.replace(/:\w+/g, "([^/]+)")}$`)
-    const [success] = [...endpoint.success] as ReadonlyArray<Schema.Top>
-    return { identifier: endpoint.identifier, method: endpoint.method, path: endpoint.path, pattern, params, success: success ?? Schema.Void }
+    const route = String(endpoint.path)
+    const params = Array.from(route.matchAll(/:(\w+)/g), (match) => match[1] ?? "")
+    const pattern = new RegExp(`^${route.replace(/:\w+/g, "([^/]+)")}$`)
+    const success = Arr.head(Arr.filter(Array.from(endpoint.success), isCodec)).pipe(Option.getOrElse((): Schema.Codec<unknown, unknown> => Schema.Void))
+    return { identifier: endpoint.identifier, method: endpoint.method, pattern, params, success }
   }),
 )
 /** The client API's endpoint a request reaches, with its path parameters. */
-export const endpointOf = (method: string, path: string) => {
-  for (const endpoint of endpoints) {
-    if (endpoint.method !== method) continue
-    const match = endpoint.pattern.exec(path)
-    if (match) return { endpoint, params: Object.fromEntries(endpoint.params.map((name, index) => [name, decodeURIComponent(match[index + 1] ?? "")])) }
-  }
-  return undefined
-}
+export const endpointOf = (method: string, path: string) =>
+  Arr.findFirst(endpoints, (endpoint) => endpoint.method === method && endpoint.pattern.test(path)).pipe(
+    Option.map((endpoint) => {
+      const match = Option.fromNullishOr(endpoint.pattern.exec(path)).pipe(Option.getOrElse((): ReadonlyArray<string> => []))
+      return { endpoint, params: new Map(endpoint.params.map((name, index) => [name, decodeURIComponent(match[index + 1] ?? "")])) }
+    }),
+  )
+
 /**
  * A wire value through `schema` and back: it must decode as the client would read it, and what goes out is what
  * the schema encodes (a field the schema does not know is dropped, as the real server never sends one).
  */
-const roundTrip = (schema: Schema.Top, value: unknown) =>
-  Schema.encodeUnknownSync(schema as Schema.Codec<unknown, unknown>)(Schema.decodeUnknownSync(schema as Schema.Codec<unknown, unknown>)(value))
+const roundTrip = <A>(schema: Schema.Codec<unknown, unknown>, value: A) =>
+  Effect.runSyncExit(Schema.decodeUnknownEffect(schema)(value).pipe(Effect.flatMap(Schema.encodeUnknownEffect(schema))))
 
-/** An event kind's newest definition in the server's manifest. */
-const definitionOf = (type: string) => {
-  const definition = EventManifest.Server.get(type)
-  if (definition === undefined) throw new Error(`the server's event manifest has no ${type}`)
-  return definition
-}
+const Json = Schema.fromJsonString(Schema.Unknown)
+const toJson = Schema.encodeSync(Json)
+
+/** The fields of a request body the double reads; any other is ignored, as the real server's decoder does with a field it has no use for. */
+const Body = Schema.Struct({
+  text: Schema.optionalKey(Schema.String),
+  id: Schema.optionalKey(Schema.String),
+  delivery: Schema.optionalKey(Schema.Literals(["steer", "queue"])),
+  messageID: Schema.optionalKey(Schema.String),
+  idle: Schema.optionalKey(Schema.Number),
+  agent: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.Struct({ id: Schema.String, providerID: Schema.String, variant: Schema.optionalKey(Schema.String) })),
+})
+type Body = typeof Body.Type
+const decodeBody = Schema.decodeUnknownExit(Schema.fromJsonString(Body))
 
 /** The routes the double itself serves, by the client API's endpoint identifier; each is named by a client law. */
 export const SERVED = [
@@ -149,6 +257,7 @@ export const SERVED = [
   "session.message",
   "session.inbox.list",
   "session.inbox.cancel",
+  "session.inbox.update",
   "session.prompt",
   "session.interrupt",
   "session.wait",
@@ -164,29 +273,24 @@ export const SERVED = [
   "provider.list",
   "server.info",
 ] as const
+export type Served = (typeof SERVED)[number]
+const isServed = (identifier: string): identifier is Served => SERVED.some((each) => each === identifier)
 
 /**
  * The catalog: the agents a fresh project has (build and plan, and the worker
  * the orchestrate plugin adds), and the one scripted model, as opencode-drive names it
  * (its default config's `simulation/gpt-sim-model`, which the real scenarios run on).
  */
-export const MODEL_REF = { id: "gpt-sim-model", providerID: "simulation" } as const
+export const MODEL_REF: ModelRef = { id: "gpt-sim-model", providerID: "simulation" }
 const agent = (name: string, mode: Agent.Info["mode"]): Agent.Info => ({ ...Agent.Info.default(Agent.ID.make(name)), mode })
 const AGENTS = [agent("build", "primary"), agent("plan", "primary"), agent("worker", "subagent")]
-const MODEL = { ...Model.Info.default(Provider.ID.make(MODEL_REF.providerID), Model.ID.make(MODEL_REF.id)), name: "Simulated Model", limit: { context: 128_000, output: 16_000 } }
+const MODEL = { ...ModelInfo.Info.default(Provider.ID.make(MODEL_REF.providerID), ModelInfo.ID.make(MODEL_REF.id)), name: "Simulated Model", limit: { context: 128_000, output: 16_000 } }
 const PROVIDER = { ...Provider.Info.empty(Provider.ID.make(MODEL_REF.providerID)), name: "Simulation" }
-/** `value` as JSON with its keys in order: two values the same but for key order read the same. */
-const canonical = (value: unknown): string =>
-  Array.isArray(value)
-    ? `[${value.map(canonical).join(",")}]`
-    : typeof value === "object" && value !== null
-      ? `{${Object.entries(value).toSorted(([a], [b]) => a.localeCompare(b)).map(([key, each]) => `${JSON.stringify(key)}:${canonical(each)}`).join(",")}}`
-      : JSON.stringify(value)
+const sameModel = (a: ModelRef, b: ModelRef) => a.id === b.id && a.providerID === b.providerID && a.variant === b.variant
 
 /** The server's info as the fixture answers it, but for a local build's version, as the real drive runs one (so the TUI's own build matches it). */
 const INFO = { version: "local", pid: 0, urls: [], paths: { tmp: "/tmp" }, capabilities: { persistentPty: true } }
 const catalogLocation = { directory: DIRECTORY, project: { id: PROJECT, directory: "/tmp/opencode", canonical: "/tmp/opencode" } }
-export type Served = (typeof SERVED)[number]
 
 /** The event kinds the double sends; each is named by a client law. */
 export const EVENTS = [
@@ -195,6 +299,7 @@ export const EVENTS = [
   "session.inbox.enqueued",
   "session.inbox.delivered",
   "session.inbox.cancelled",
+  "session.inbox.delivery.changed",
   "session.execution.started",
   "session.execution.succeeded",
   "session.execution.interrupted",
@@ -222,28 +327,75 @@ export const EVENTS = [
 ] as const
 export type EventKind = (typeof EVENTS)[number]
 
+/** An event before it is encoded. */
+interface Wire<D> {
+  readonly id: string
+  readonly created: number
+  readonly type: string
+  readonly data: D
+  location?: { readonly directory: string }
+  durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+}
+
+/** How a text or a reasoning part streams: its part, and the kinds of its start and its pieces. */
+const STREAMS = {
+  text: { started: "session.text.started", delta: "session.text.delta" },
+  reasoning: { started: "session.reasoning.started", delta: "session.reasoning.delta" },
+} as const
+
+/** A step's finish: by whether it called a tool. */
+const FINISHES = ["stop", "tool-calls"] as const
+
+/** The wire's finish reason for a step's finish. */
+const RAW_FINISH = { stop: "stop", "tool-calls": "tool_calls" } as const
+
+/** An event as the double sends it: its wire form, as the client reads it. */
+export type Sent = ClientEvent
+/** A wire value that is an event of a kind the double sends, encoded by its schema. */
+const isClientEvent = (value: unknown): value is ClientEvent =>
+  Predicate.hasProperty(value, "type") && EVENTS.some((kind) => kind === value.type)
+
 export interface Options {
   readonly draw: Draw
   readonly now: () => number
   readonly model: Model
 }
 
+const NO_CONTENT = 204
+const response = (status: number, body: Option.Option<string>) =>
+  HttpServerResponse.toWeb(
+    Option.match(body, {
+      onNone: () => HttpServerResponse.empty({ status }),
+      onSome: (value) => HttpServerResponse.text(value, { status, contentType: "application/json" }),
+    }),
+  )
+const noContent = () => response(NO_CONTENT, Option.none())
+/** An error answer, as the real server's: a JSON body under its status. */
+const failure = (status: number, tag: string, message: string) => response(status, Option.some(toJson({ _tag: tag, message })))
+/** The goal RPC's answer when the session has no goal. */
+const NO_GOAL = '{"output":null}'
+const notFound = (sessionID: string) => failure(404, "SessionNotFoundError", `Session not found: ${sessionID}`)
+const finishOf = (finish: "stop" | "tool-calls") => RAW_FINISH[finish]
+
 /** The double for one seed: its state, the requests it took and the events it queued for the TUI. */
 export const make = (options: Options) => {
   const { draw, now } = options
-  const sessions = new Map<string, Json>()
+  const sessions = new Map<string, SessionInfo>()
   const messages = new Map<string, Array<Message>>()
   const inbox = new Map<string, Array<Pending>>()
   const running = new Map<string, Running>()
   const waiters = new Map<string, Array<() => void>>()
-  const outbox: Array<Json> = []
+  const outbox: Array<Sent> = []
   const requests: Array<Took> = []
   const unserved: Array<string> = []
   const held: Array<() => void> = []
   /** How each shell call the model started ended, in order. */
   const shellExits: Array<"killed"> = []
   const events: Array<string> = []
-  let silent = false
+  const sequences = new Map<string, number>()
+  /** Answers and events the fork's schemas refused: each fails the test's next step. */
+  const broken: Array<string> = []
+  const state = { silent: false, inflight: 0, parked: 0, titles: (prompt: string) => prompt.split(/\s+/).slice(0, 3).join(" ").toLowerCase() }
   const location = { directory: DIRECTORY }
 
   /**
@@ -253,41 +405,38 @@ export const make = (options: Options) => {
    */
   const id = (prefix: string) => `${prefix}_${Identifier.create(prefix === "ses", now())}`
 
-  const emit = (type: EventKind, data: Json, located = true) => {
-    const definition = definitionOf(type)
-    // A durable event carries its place in its aggregate's log, as the real server's do.
-    const durable =
-      definition.durability === "durable"
-        ? (() => {
-            const aggregateID = String(data[definition.durable.aggregate] ?? "")
-            const seq = sequences.get(aggregateID) ?? 0
-            sequences.set(aggregateID, seq + 1)
-            return { durable: { aggregateID, seq, version: definition.durable.version } }
-          })()
-        : {}
-    const event = { id: id("evt"), created: now(), type, ...(located ? { location } : {}), data, ...durable }
-    try {
-      outbox.push(roundTrip(definition, event) as Json)
-    } catch (cause) {
-      broken.push(`the event ${type} does not encode: ${String(cause)}`)
-    }
+  /** Queues `type` about `sessionID` for the client; `located` events carry the session's location. */
+  const emit = <D extends { readonly sessionID: string }>(type: EventKind, data: D, located = true) => {
     events.push(type)
+    const found = Option.fromUndefinedOr(EventManifest.Server.get(type))
+    if (Option.isNone(found)) return broken.push(`the server's event manifest has no ${type}`)
+    const definition = found.value
+    const event: Wire<D> = { id: id("evt"), created: now(), type, data }
+    if (located) event.location = location
+    // A durable event carries its place in its aggregate's log, as the real server's do (every event the double sends is a session's).
+    if (definition.durability === "durable") {
+      const seq = sequences.get(data.sessionID) ?? 0
+      sequences.set(data.sessionID, seq + 1)
+      event.durable = { aggregateID: data.sessionID, seq, version: definition.durable.version }
+    }
+    if (!isCodec(definition)) return broken.push(`the event ${type} has no schema`)
+    const encoded = roundTrip(definition, event)
+    if (Exit.isFailure(encoded)) return broken.push(`the event ${type} does not encode: ${String(encoded.cause)}`)
+    const wire = encoded.value
+    if (isClientEvent(wire)) return outbox.push(wire)
+    return broken.push(`the event ${type} is no event the client reads`)
   }
-  const sequences = new Map<string, number>()
-  /** Answers and events the fork's schemas refused: each fails the test's next step. */
-  const broken: Array<string> = []
 
-  const touch = (sessionID: string, time: Json) => {
+  const touch = (sessionID: string, time: Partial<SessionTime>) => {
     const session = sessions.get(sessionID)
-    if (session) sessions.set(sessionID, { ...session, time: { ...(session.time as Json), updated: now(), ...time } })
+    if (session) Object.assign(session.time, time, { updated: now() })
   }
 
   /** Adds a session (a root, or a child under `parentID`) as the server holds it after `session.create`. */
-  const session = (input: { title?: string; parentID?: string; agent?: string } = {}) => {
+  const session = (input: { readonly title?: string; readonly parentID?: string; readonly agent?: string } = {}) => {
     const sessionID = id("ses")
-    const info: Json = {
+    const info: SessionInfo = {
       id: sessionID,
-      ...(input.parentID ? { parentID: input.parentID } : {}),
       projectID: PROJECT,
       // A session starts on the default agent and the scripted model, as the real drive's does: the
       // TUI's switch to them before a prompt changes nothing and shows no "Switched" row.
@@ -296,48 +445,53 @@ export const make = (options: Options) => {
       cost: 0,
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       time: { created: now(), updated: now() },
-      ...(input.title ? { title: input.title } : {}),
       location,
     }
+    if (input.parentID) info.parentID = input.parentID
+    if (input.title) info.title = input.title
     sessions.set(sessionID, info)
     messages.set(sessionID, [])
     inbox.set(sessionID, [])
     return sessionID
   }
 
-  const list = (sessionID: string) => messages.get(sessionID) ?? []
+  const list = (sessionID: string): Array<Message> => {
+    const found = messages.get(sessionID) ?? []
+    messages.set(sessionID, found)
+    return found
+  }
+  const pending = (sessionID: string): Array<Pending> => inbox.get(sessionID) ?? []
 
   const startStep = (run: Running) => {
     const steps = options.model({ sessionID: run.sessionID, text: run.prompt, step: run.step })
-    if (steps === undefined) return finish(run)
-    const session = sessions.get(run.sessionID)
-    const agent = (session?.agent as string | undefined) ?? "build"
-    const model = (session?.model as Json | undefined) ?? MODEL_REF
-    const message: Message & { content: Array<Json> } = { id: id("msg"), time: { created: now(), firstToken: now() }, type: "assistant", agent, model, content: [] }
+    if (steps.length === 0) return finish(run)
+    const info = Option.fromUndefinedOr(sessions.get(run.sessionID))
+    const agentName = Option.match(info, { onNone: () => "build", onSome: (each) => each.agent })
+    const model = Option.match(info, { onNone: () => MODEL_REF, onSome: (each) => each.model })
+    const message: AssistantMessage = { id: id("msg"), time: { created: now(), firstToken: now() }, type: "assistant", agent: agentName, model, content: [] }
     run.message = message
     run.text = ""
     list(run.sessionID).push(message)
-    emit("session.step.started", { sessionID: run.sessionID, agent, model, assistantMessageID: message.id, started: now() })
+    emit("session.step.started", { sessionID: run.sessionID, agent: agentName, model, assistantMessageID: message.id, started: now() })
     emit("session.step.first-token", { sessionID: run.sessionID, assistantMessageID: message.id })
-    play(run, steps, 0)
+    return play(run, steps)
   }
 
-  const streamText = (run: Running, text: string, kind: "text" | "reasoning") => {
-    const part: Json = kind === "text" ? { type: "text", text: "" } : { type: "reasoning", text: "", time: { created: now() } }
+  /** Streams `value` as a new part of `kind`, in pieces the seed cuts. */
+  const streamText = (run: Running, value: string, part: TextPart | ReasoningPart) => {
+    const kinds = STREAMS[part.type]
     run.message.content.push(part)
     const ordinal = run.message.content.length - 1
-    emit(`session.${kind}.started`, { sessionID: run.sessionID, assistantMessageID: run.message.id, ordinal })
-    // The text arrives in pieces the seed cuts.
-    let rest = text
-    while (rest.length > 0) {
+    const ref = { sessionID: run.sessionID, assistantMessageID: run.message.id, ordinal }
+    emit(kinds.started, ref)
+    for (let rest = value; rest.length > 0; ) {
       const size = 1 + draw(rest.length)
       const delta = rest.slice(0, size)
       rest = rest.slice(size)
-      part.text = `${part.text as string}${delta}`
-      emit(`session.${kind}.delta`, { sessionID: run.sessionID, assistantMessageID: run.message.id, ordinal, delta })
+      part.text = `${part.text}${delta}`
+      emit(kinds.delta, { ...ref, delta })
     }
-    if (kind === "text") run.text = part.text as string
-    return ordinal
+    if (part.type === "text") run.text = part.text
   }
 
   const endText = (run: Running) => {
@@ -345,87 +499,81 @@ export const make = (options: Options) => {
     if (ordinal >= 0 && run.text !== "") emit("session.text.ended", { sessionID: run.sessionID, assistantMessageID: run.message.id, ordinal, text: run.text })
   }
 
-  const play = (run: Running, steps: ReadonlyArray<Step>, from: number): void => {
-    for (let index = from; index < steps.length; index++) {
-      const given = steps[index]
-      if (given === undefined) continue
-      // A tool call's id is the script's, made the message's own: the TUI keeps state by call id,
-      // so a seed never meets the call of a seed before it in the same app.
-      const step = "id" in given ? { ...given, id: `${given.id}_${String(run.message.id).slice(-8)}` } : given
-      switch (step._tag) {
-        case "Text":
-          streamText(run, step.text, "text")
-          break
-        case "Reasoning":
-          streamText(run, step.text, "reasoning")
-          break
-        case "Stall":
-          run.hold = "stall"
-          return
-        case "Shell": {
-          const input = { command: step.command, description: step.description }
-          const part: Json = { type: "tool", id: step.id, name: "shell", executed: false, state: { status: "running", input, metadata: {} }, time: { created: now(), ran: now() } }
-          run.message.content.push(part)
-          emit("session.tool.input.started", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, name: "shell" })
-          emit("session.tool.input.ended", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, text: JSON.stringify(input) })
-          emit("session.tool.called", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, input, executed: false })
-          endText(run)
-          emit("session.step.streamed", { sessionID: run.sessionID, assistantMessageID: run.message.id })
-          run.hold = "shell"
-          run.shell = { toolID: step.id, part }
-          return
-        }
-        case "Subagent": {
-          subagent(run, step)
-          break
-        }
-      }
-    }
-    endStep(run, steps.some((step) => step._tag === "Subagent") ? "tool-calls" : "stop")
+  const toolPart = (id: string, name: string, input: Input): ToolPart => ({
+    type: "tool",
+    id,
+    name,
+    executed: false,
+    state: { status: "running", input, metadata: {} },
+    time: { created: now(), ran: now() },
+  })
+
+  /** The tool call's input and call events, the part already on the message. */
+  const called = (run: Running, part: ToolPart, input: Input) => {
+    const ref = { sessionID: run.sessionID, assistantMessageID: run.message.id, id: part.id }
+    emit("session.tool.input.started", { ...ref, name: part.name })
+    emit("session.tool.input.ended", { ...ref, text: toJson(input) })
+    emit("session.tool.called", { ...ref, input, executed: false })
   }
 
-  const subagent = (run: Running, step: Extract<Step, { _tag: "Subagent" }>) => {
-    const part: Json = { type: "tool", id: step.id, name: "subagent", executed: false, state: { status: "running", input: step.input, metadata: {} }, time: { created: now(), ran: now() } }
+  /** Plays `steps`; returns once the step holds (a stall, a shell) or the run went on past it. */
+  const play = (run: Running, steps: ReadonlyArray<Step>): void => {
+    // A tool call's id is the script's, made the message's own: the TUI keeps state by call id,
+    // so a seed never meets the call of a seed before it in the same app.
+    const own = (id: string) => `${id}_${run.message.id.slice(-8)}`
+    for (const step of steps) {
+      if (step._tag === "Text") streamText(run, step.text, { type: "text", text: "" })
+      if (step._tag === "Reasoning") streamText(run, step.text, { type: "reasoning", text: "", time: { created: now() } })
+      if (step._tag === "Stall") {
+        run.hold = "stall"
+        return
+      }
+      if (step._tag === "Shell") {
+        const input = { command: step.command, description: step.description }
+        const part = toolPart(own(step.id), "shell", input)
+        run.message.content.push(part)
+        called(run, part, input)
+        endText(run)
+        emit("session.step.streamed", { sessionID: run.sessionID, assistantMessageID: run.message.id })
+        run.hold = "shell"
+        run.shell = Option.some(part)
+        return
+      }
+      if (step._tag === "Subagent") spawn(run, { ...step, id: own(step.id) })
+    }
+    endStep(run, FINISHES[Number(steps.some((step) => step._tag === "Subagent"))] ?? "stop")
+  }
+
+  const spawn = (run: Running, step: Subagent) => {
+    const part = toolPart(step.id, "subagent", step.input)
     run.message.content.push(part)
-    emit("session.tool.input.started", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, name: "subagent" })
-    emit("session.tool.input.ended", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, text: JSON.stringify(step.input) })
-    emit("session.tool.called", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, input: step.input, executed: false })
+    called(run, part, step.input)
+    const ref = { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id }
     emit("session.step.streamed", { sessionID: run.sessionID, assistantMessageID: run.message.id })
     const child = session({ title: step.title, parentID: run.sessionID, agent: step.agent })
     const info = sessions.get(child)
-    if (info) sessions.set(child, { ...info, model: step.model })
-    emit("session.created", {
-      sessionID: child,
-      slug: "sim-child",
-      version: "unknown",
-      projectID: PROJECT,
-      location,
-      parentID: run.sessionID,
-    })
-    const metadata = { sessionID: child, status: "running" }
-    emit("session.tool.progress", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, metadata })
-    const content = [{ type: "text", text: `The subagent is working in the background (sessionID: ${child}).` }]
-    part.state = { status: "completed", input: step.input, content, metadata: { ...metadata, truncated: false } }
-    part.time = { ...(part.time as Json), completed: now() }
-    const prompt = `You are a subagent spawned by another session.\n${String(step.input.prompt ?? "")}`
-    enqueue(child, prompt, "steer")
-    emit("session.tool.success", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: step.id, content, metadata: { ...metadata, truncated: false }, executed: false })
+    if (info) info.model = step.model
+    emit("session.created", { sessionID: child, slug: "sim-child", version: "unknown", projectID: PROJECT, location, parentID: run.sessionID })
+    emit("session.tool.progress", { ...ref, metadata: { sessionID: child, status: "running" } })
+    const content = [{ type: "text" as const, text: `The subagent is working in the background (sessionID: ${child}).` }]
+    const metadata = { sessionID: child, status: "running", truncated: false }
+    part.state = { status: "completed", input: step.input, content, metadata }
+    part.time = { ...part.time, completed: now() }
+    enqueue(child, `You are a subagent spawned by another session.\n${String(step.input.prompt ?? "")}`, "steer")
+    emit("session.tool.success", { ...ref, content, metadata, executed: false })
   }
 
-  const endStep = (run: Running, finish: "stop" | "tool-calls") => {
+  const endStep = (run: Running, finished: "stop" | "tool-calls") => {
     endText(run)
     const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-    run.message.time = { ...(run.message.time as Json), streamed: now(), completed: now() }
-    Object.assign(run.message, { finish, rawFinish: finish === "stop" ? "stop" : "tool_calls", cost: 0, tokens })
+    run.message.time = { ...run.message.time, streamed: now(), completed: now() }
+    Object.assign(run.message, { finish: finished, rawFinish: finishOf(finished), cost: 0, tokens })
     emit("session.step.streamed", { sessionID: run.sessionID, assistantMessageID: run.message.id })
-    emit("session.step.ended", { sessionID: run.sessionID, assistantMessageID: run.message.id, finish, rawFinish: finish === "stop" ? "stop" : "tool_calls", tokens, cost: 0 })
+    emit("session.step.ended", { sessionID: run.sessionID, assistantMessageID: run.message.id, finish: finished, rawFinish: finishOf(finished), tokens, cost: 0 })
     run.step += 1
-    const steers = (inbox.get(run.sessionID) ?? []).filter((item) => item.delivery === "steer")
-    if (steers.length > 0) {
-      for (const item of steers) deliver(item)
-      return startStep(run)
-    }
-    return startStep(run)
+    // A steer waiting in the inbox goes into the next step.
+    for (const item of pending(run.sessionID).filter((each) => each.delivery === "steer")) deliver(item)
+    startStep(run)
   }
 
   const finish = (run: Running) => {
@@ -433,8 +581,7 @@ export const make = (options: Options) => {
     emit("session.execution.succeeded", { sessionID: run.sessionID }, false)
     touch(run.sessionID, { idle: now() })
     settled(run.sessionID)
-    const next = (inbox.get(run.sessionID) ?? [])[0]
-    if (next) start(run.sessionID)
+    if (pending(run.sessionID).length > 0) start(run.sessionID)
   }
 
   const settled = (sessionID: string) => {
@@ -443,239 +590,293 @@ export const make = (options: Options) => {
   }
 
   const deliver = (item: Pending) => {
-    const items = inbox.get(item.sessionID) ?? []
-    inbox.set(item.sessionID, items.filter((each) => each.id !== item.id))
+    inbox.set(
+      item.sessionID,
+      pending(item.sessionID).filter((each) => each.id !== item.id),
+    )
     emit("session.inbox.delivered", { sessionID: item.sessionID, inboxID: item.id })
     list(item.sessionID).push({ id: item.id, time: { created: now() }, text: item.payload.text, type: "user" })
   }
 
   const start = (sessionID: string) => {
-    const items = inbox.get(sessionID) ?? []
-    const first = items[0]
-    if (first === undefined) return
-    emit("session.execution.started", { sessionID }, false)
-    touch(sessionID, { busy: now() })
-    const delivered = items.filter((item) => item.delivery === "steer" || item === first)
-    for (const item of delivered) deliver(item)
-    const run: Running = { sessionID, prompt: delivered.map((item) => item.payload.text).join("\n"), step: 0, message: { id: "", type: "assistant", content: [] }, text: "" }
-    running.set(sessionID, run)
-    const session = sessions.get(sessionID)
-    if (session && session.title === undefined && session.parentID === undefined) {
-      const title = titles(first.payload.text)
-      sessions.set(sessionID, { ...session, title })
-      emit("session.renamed", { sessionID, title })
-    }
-    startStep(run)
+    const items = pending(sessionID)
+    Option.map(Arr.head(items), (first) => {
+      emit("session.execution.started", { sessionID }, false)
+      touch(sessionID, { busy: now() })
+      const delivered = items.filter((item) => item.delivery === "steer" || item === first)
+      for (const item of delivered) deliver(item)
+      const placeholder: AssistantMessage = { id: "", type: "assistant", time: { created: now() }, agent: "build", model: MODEL_REF, content: [] }
+      const run: Running = { sessionID, prompt: delivered.map((item) => item.payload.text).join("\n"), step: 0, message: placeholder, text: "", hold: "none", shell: Option.none() }
+      running.set(sessionID, run)
+      const info = sessions.get(sessionID)
+      if (info && !info.title && !info.parentID) {
+        const title = state.titles(first.payload.text)
+        info.title = title
+        emit("session.renamed", { sessionID, title })
+      }
+      startStep(run)
+    })
   }
-
-  let titles: (text: string) => string = (text) => text.split(/\s+/).slice(0, 3).join(" ").toLowerCase()
 
   /** Commits a staged revert (core's SessionRevert.commit): the messages from the reverted one on go. */
   const commitRevert = (sessionID: string) => {
-    const staged = sessions.get(sessionID)?.revert as { messageID: string } | undefined
-    if (staged === undefined) return
+    const info = sessions.get(sessionID)
+    if (!info?.revert) return
+    const { messageID } = info.revert
     const kept = list(sessionID)
-    const at = kept.findIndex((message) => message.id === staged.messageID)
+    const at = kept.findIndex((message) => message.id === messageID)
     if (at >= 0) kept.splice(at)
-    const { revert: _, ...rest } = sessions.get(sessionID) ?? {}
-    sessions.set(sessionID, rest)
-    emit("session.revert.committed", { sessionID, to: staged.messageID })
+    delete info.revert
+    emit("session.revert.committed", { sessionID, to: messageID })
   }
 
-  const enqueue = (sessionID: string, text: string, delivery: "steer" | "queue", given?: string) => {
+  const enqueue = (sessionID: string, prompt: string, delivery: Delivery, given = "") => {
     // A prompt on a session with a staged revert commits it first (core's Session.prompt).
     commitRevert(sessionID)
     // The client draws the prompt's id (it sends `id`); the server keeps it.
-    const item: Pending = { id: given ?? id("msg"), sessionID, time: { created: now() }, type: "user", payload: { text }, delivery }
-    inbox.get(sessionID)?.push(item)
+    const item: Pending = { id: given || id("msg"), sessionID, time: { created: now() }, type: "user", payload: { text: prompt }, delivery }
+    inbox.set(sessionID, [...pending(sessionID), item])
     emit("session.inbox.enqueued", { inboxID: item.id, sessionID, item: { type: "user", payload: item.payload, delivery } })
     if (!running.has(sessionID)) start(sessionID)
     return item
   }
 
   const interrupt = (sessionID: string, resume: boolean) => {
-    const run = running.get(sessionID)
-    if (run === undefined) return false
+    const found = Option.fromUndefinedOr(running.get(sessionID))
+    if (Option.isNone(found)) return false
+    const run = found.value
     running.delete(sessionID)
     const error = { type: "aborted", message: "Step interrupted" }
-    if (run.shell) {
-      // As core settles a tool call the interrupt cut (SessionRunner.settleStaleToolCalls): aborted, with no output.
-      shellExits.push("killed")
-      const error = { type: "aborted", message: "Tool execution interrupted: shell" }
-      run.shell.part.state = { status: "error", input: (run.shell.part.state as Json).input, error }
-      run.shell.part.time = { ...(run.shell.part.time as Json), completed: now() }
-      emit("session.tool.failed", { sessionID, assistantMessageID: run.message.id, id: run.shell.toolID, error, executed: false })
-    } else {
-      endText(run)
-      emit("session.step.streamed", { sessionID, assistantMessageID: run.message.id })
-    }
-    run.message.time = { ...(run.message.time as Json), streamed: now(), completed: now() }
+    Option.match(run.shell, {
+      onNone: () => {
+        endText(run)
+        emit("session.step.streamed", { sessionID, assistantMessageID: run.message.id })
+      },
+      onSome: (part) => {
+        // As core settles a tool call the interrupt cut (SessionRunner.settleStaleToolCalls): aborted, with no output.
+        shellExits.push("killed")
+        const cut = { type: "aborted", message: "Tool execution interrupted: shell" }
+        part.state = { status: "error", input: part.state.input, error: cut }
+        part.time = { ...part.time, completed: now() }
+        emit("session.tool.failed", { sessionID, assistantMessageID: run.message.id, id: part.id, error: cut, executed: false })
+      },
+    })
+    run.message.time = { ...run.message.time, streamed: now(), completed: now() }
     Object.assign(run.message, { finish: "error", error })
     emit("session.step.failed", { sessionID, assistantMessageID: run.message.id, error })
-    const idle: Message = { id: id("msg"), time: { created: now() }, type: "idle", outcome: "interrupted" }
-    list(sessionID).push(idle)
+    list(sessionID).push({ id: id("msg"), time: { created: now() }, type: "idle", outcome: "interrupted" })
     emit("session.execution.interrupted", { sessionID, reason: "user" }, false)
     touch(sessionID, { idle: now() })
-    const session = sessions.get(sessionID)
-    if (session) sessions.set(sessionID, { ...session, outcome: "interrupted" })
+    const info = sessions.get(sessionID)
+    if (info) info.outcome = "interrupted"
     settled(sessionID)
-    if (resume && (inbox.get(sessionID) ?? []).some((item) => item.delivery === "steer")) start(sessionID)
+    if (resume && pending(sessionID).some((item) => item.delivery === "steer")) start(sessionID)
     return true
   }
 
-  const json = (identifier: string, body: unknown, status = 200) => {
-    const found = endpoints.find((endpoint) => endpoint.identifier === identifier)
-    if (found === undefined || body === undefined) return new Response(null, { status: 204 })
-    const encoded = roundTrip(found.success, body)
-    return new Response(JSON.stringify(encoded), { status, headers: { "content-type": "application/json" } })
-  }
-
-  /** An error answer, as the real server's: a JSON body under its status. */
-  const failure = (status: number, body: Json) =>
-    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+  /** A success answer of `identifier`, encoded through its schema. */
+  const json = <A>(identifier: Served, body: A) =>
+    Option.match(
+      Arr.findFirst(endpoints, (endpoint) => endpoint.identifier === identifier),
+      {
+        onNone: noContent,
+        onSome: (found) => {
+          const encoded = roundTrip(found.success, body)
+          if (Exit.isSuccess(encoded)) return response(200, Option.some(toJson(encoded.value)))
+          broken.push(`${identifier} answers what its schema refuses: ${String(encoded.cause)}`)
+          return failure(500, "SimTuiDoubleError", String(encoded.cause))
+        },
+      },
+    )
 
   const ordered = (sessionID: string) => list(sessionID).toReversed()
-  const family = (sessionID: string): Array<string> => [
+  const family = (sessionID: string): ReadonlyArray<string> => [
     sessionID,
-    ...[...sessions.values()].filter((each) => each.parentID === sessionID).flatMap((each) => family(each.id as string)),
+    ...Array.from(sessions.values()).filter((each) => each.parentID === sessionID).flatMap((each) => family(each.id)),
   ]
 
-  const serve = (identifier: Served, params: Record<string, string>, query: URLSearchParams, body: Json): Response | Promise<Response> => {
-    const sessionID = params.sessionID ?? ""
-    switch (identifier) {
-      case "session.list":
-        return json(identifier, { data: [...sessions.values()].toSorted((a, b) => ((a.id as string) < (b.id as string) ? -1 : 1)), cursor: {} })
-      case "session.get": {
-        const found = sessions.get(sessionID)
-        if (found === undefined) return failure(404, { _tag: "SessionNotFoundError", message: `Session not found: ${sessionID}` })
-        return json(identifier, { data: found })
-      }
-      case "session.active":
-        return json(identifier, { data: Object.fromEntries([...running.keys()].map((each) => [each, { type: "running" }])) })
-      case "session.messages":
-        return json(identifier, { data: ordered(sessionID), cursor: {} })
-      case "session.message": {
-        const found = list(sessionID).find((message) => message.id === params.messageID)
-        if (found === undefined) return failure(404, { _tag: "MessageNotFoundError", message: `Message not found: ${params.messageID}` })
-        return json(identifier, { data: found })
-      }
-      case "session.inbox.list":
-        return json(identifier, { data: inbox.get(sessionID) ?? [] })
-      case "session.inbox.cancel": {
-        const items = inbox.get(sessionID) ?? []
-        const inboxID = params.inboxID ?? ""
-        if (items.some((item) => item.id === inboxID)) {
-          inbox.set(sessionID, items.filter((item) => item.id !== inboxID))
-          emit("session.inbox.cancelled", { sessionID, inboxID })
-        }
-        return new Response(null, { status: 204 })
-      }
-      case "session.prompt": {
-        const delivery = body.delivery === "queue" ? "queue" : "steer"
-        const item = enqueue(sessionID, String(body.text ?? ""), delivery, typeof body.id === "string" ? body.id : undefined)
-        return json(identifier, { data: item })
-      }
-      case "session.interrupt":
-        return json(identifier, { interrupted: interrupt(sessionID, query.get("resume") !== "false") })
-      case "session.wait":
-        if (!running.has(sessionID)) return new Response(null, { status: 204 })
-        // A long poll: parked until the run settles, so it does not keep the harness from resting.
-        parked += 1
-        return new Promise<Response>((resolve) => {
-          const list = waiters.get(sessionID) ?? []
-          list.push(() => {
-            parked -= 1
-            resolve(new Response(null, { status: 204 }))
-          })
-          waiters.set(sessionID, list)
-        })
-      case "session.revert.stage": {
-        const revert = { messageID: String(body.messageID ?? ""), files: [] }
-        const found = sessions.get(sessionID)
-        if (found) sessions.set(sessionID, { ...found, revert })
-        emit("session.revert.staged", { sessionID, revert })
-        return json(identifier, { data: revert })
-      }
-      case "session.family.request.list":
-        return json(identifier, { data: { sessions: family(sessionID), permissions: [], forms: [] } })
-      case "session.switchAgent":
-      case "session.switchModel": {
-        const found = sessions.get(sessionID)
-        if (found === undefined) return failure(404, { _tag: "SessionNotFoundError", message: `Session not found: ${sessionID}` })
-        const field = identifier === "session.switchAgent" ? "agent" : "model"
-        const previous = found[field]
-        if (canonical(previous) !== canonical(body[field])) {
-          sessions.set(sessionID, { ...found, [field]: body[field] })
-          emit(field === "agent" ? "session.agent.selected" : "session.model.selected", { sessionID, [field]: body[field], ...(previous === undefined ? {} : { previous }) })
-        }
-        return new Response(null, { status: 204 })
-      }
-      case "session.revert.commit":
-        if (!sessions.has(sessionID)) return failure(404, { _tag: "SessionNotFoundError", message: `Session not found: ${sessionID}` })
-        if (running.has(sessionID)) return failure(409, { _tag: "SessionBusyError", sessionID, message: `Session is busy: ${sessionID}` })
-        commitRevert(sessionID)
-        return new Response(null, { status: 204 })
-      case "session.view": {
-        // As core's Session.view: marks an idle the session has had, never past it and never back.
-        const found = sessions.get(sessionID)
-        if (found === undefined) return failure(404, { _tag: "SessionNotFoundError", message: `Session not found: ${sessionID}` })
-        const time = found.time as { idle?: number; viewed?: number }
-        const idle = Number(body.idle)
-        if (time.idle === undefined || idle > time.idle || (time.viewed !== undefined && time.viewed >= idle)) return new Response(null, { status: 204 })
-        sessions.set(sessionID, { ...found, time: { ...time, viewed: Math.max(idle, time.viewed ?? idle) } })
-        emit("session.viewed", { sessionID, idle })
-        return new Response(null, { status: 204 })
-      }
-      case "agent.list":
-        return json(identifier, { location: catalogLocation, data: AGENTS })
-      case "model.list":
-        return json(identifier, { location: catalogLocation, data: [MODEL] })
-      case "provider.list":
-        return json(identifier, { location: catalogLocation, data: [PROVIDER] })
-      case "server.info":
-        return json(identifier, INFO)
-      case "rpc.call":
-        // No plugin of ours runs on the double's server: an RPC to one fails as the real server's does with none loaded.
-        if (params.rpcID === "opencode.goal") return json(identifier, { output: null })
-        return failure(404, { _tag: "RpcNotFoundError", message: `No RPC ${params.rpcID}` })
-    }
+  const view = (sessionID: string, info: SessionInfo, idle: number) => {
+    // As core's Session.view: marks an idle the session has had, never past it and never back.
+    const had = info.time.idle ?? -1
+    const viewed = info.time.viewed ?? -1
+    if (had < 0 || idle > had || viewed >= idle) return noContent()
+    info.time.viewed = idle
+    emit("session.viewed", { sessionID, idle })
+    return noContent()
   }
 
-  let inflight = 0
-  /** Requests the double holds open on purpose (a long poll, or any request while silent). */
-  let parked = 0
-  /** The fetch handler the fixture calls first: the double's answer, or undefined for the fixture's own defaults. */
-  const fetch: Handler = async (url, raw) => {
-    const found = endpointOf(raw.method, url.pathname)
-    const served = found !== undefined && (SERVED as ReadonlyArray<string>).includes(found.endpoint.identifier)
-    if (!served) {
-      if (url.pathname === "/api/event") return undefined
-      if (FIXTURE_ROUTES.includes(url.pathname) || FIXTURE_PATTERNS.some((pattern) => pattern.test(url.pathname))) return undefined
-      unserved.push(`${raw.method} ${url.pathname}`)
-      return failure(501, { message: `the double does not serve ${raw.method} ${url.pathname}` })
-    }
-    const text = raw.method === "GET" || raw.method === "DELETE" ? "" : await raw.text()
-    const body = text === "" ? {} : (JSON.parse(text) as Json)
-    requests.push({ at: now(), method: raw.method, path: url.pathname, ...(text === "" ? {} : { body }) })
-    inflight += 1
-    try {
-      if (silent) {
-        parked += 1
-        return await new Promise<Response>((resolve) =>
-          held.push(() => {
-            parked -= 1
-            resolve(new Response(null, { status: 503 }))
-          }),
-        )
-      }
-      return await serve(found.endpoint.identifier as Served, found.params, url.searchParams, body)
-    } catch (cause) {
-      broken.push(`${raw.method} ${url.pathname}: ${String(cause)}`)
-      return failure(500, { message: String(cause) })
-    } finally {
-      inflight -= 1
-    }
+  const switchTo = (identifier: "session.switchAgent" | "session.switchModel", info: SessionInfo, body: Body) => {
+    const sessionID = info.id
+    const previousAgent = info.agent
+    const previousModel = info.model
+    if (identifier === "session.switchAgent")
+      Option.map(
+        Option.fromUndefinedOr(body.agent).pipe(Option.filter((next) => next !== previousAgent)),
+        (next) => {
+          info.agent = next
+          emit("session.agent.selected", { sessionID, agent: next, previous: previousAgent })
+        },
+      )
+    if (identifier === "session.switchModel")
+      Option.map(
+        Option.fromUndefinedOr(body.model).pipe(Option.filter((next) => !sameModel(next, previousModel))),
+        (next) => {
+          info.model = next
+          emit("session.model.selected", { sessionID, model: next, previous: previousModel })
+        },
+      )
+    return noContent()
   }
+
+  const update = (sessionID: string, inboxID: string, delivery: Delivery) => {
+    const item = pending(sessionID).find((each) => each.id === inboxID)
+    if (!item) return failure(409, "ConflictError", `No pending inbox item ${inboxID}`)
+    if (item.delivery !== delivery) {
+      item.delivery = delivery
+      emit("session.inbox.delivery.changed", { sessionID, inboxID, delivery })
+    }
+    // Steering wakes an idle session's execution; a running one takes the steer at its next step.
+    if (delivery === "steer" && !running.has(sessionID)) start(sessionID)
+    return noContent()
+  }
+
+  const withSession = (sessionID: string, serve: (info: SessionInfo) => Response) =>
+    Option.match(Option.fromUndefinedOr(sessions.get(sessionID)), { onNone: () => notFound(sessionID), onSome: serve })
+
+  /** A long poll: parked until the run settles, so it does not keep the harness from resting. */
+  const wait = (sessionID: string) =>
+    Effect.callback<Response>((resume) => {
+      state.parked += 1
+      waiters.set(sessionID, [
+        ...(waiters.get(sessionID) ?? []),
+        () => {
+          state.parked -= 1
+          resume(Effect.succeed(noContent()))
+        },
+      ])
+    })
+
+  /** A request the double serves: its path parameters, its query and its body. */
+  interface Call {
+    readonly sessionID: string
+    readonly params: ReadonlyMap<string, string>
+    readonly query: URLSearchParams
+    readonly body: Body
+  }
+  const now204 = () => Effect.succeed(noContent())
+  const routes = {
+    "session.list": () =>
+      Effect.succeed(json("session.list", { data: Array.from(sessions.values()).toSorted((a, b) => Number(a.id > b.id) - Number(a.id < b.id)), cursor: {} })),
+    "session.get": ({ sessionID }) => Effect.succeed(withSession(sessionID, (info) => json("session.get", { data: info }))),
+    "session.active": () => Effect.succeed(json("session.active", { data: Object.fromEntries(Array.from(running.keys(), (each) => [each, { type: "running" }])) })),
+    "session.messages": ({ sessionID }) => Effect.succeed(json("session.messages", { data: ordered(sessionID), cursor: {} })),
+    "session.message": ({ sessionID, params }) => {
+      const messageID = params.get("messageID") ?? ""
+      return Effect.succeed(
+        Option.match(Arr.findFirst(list(sessionID), (message) => message.id === messageID), {
+          onNone: () => failure(404, "MessageNotFoundError", `Message not found: ${messageID}`),
+          onSome: (found) => json("session.message", { data: found }),
+        }),
+      )
+    },
+    "session.inbox.list": ({ sessionID }) => Effect.succeed(json("session.inbox.list", { data: pending(sessionID) })),
+    "session.inbox.cancel": ({ sessionID, params }) => {
+      const inboxID = params.get("inboxID") ?? ""
+      if (pending(sessionID).some((item) => item.id === inboxID)) {
+        inbox.set(
+          sessionID,
+          pending(sessionID).filter((item) => item.id !== inboxID),
+        )
+        emit("session.inbox.cancelled", { sessionID, inboxID })
+      }
+      return now204()
+    },
+    "session.inbox.update": ({ sessionID, params, body }) => Effect.succeed(update(sessionID, params.get("inboxID") ?? "", body.delivery ?? "steer")),
+    "session.prompt": ({ sessionID, body }) => Effect.succeed(json("session.prompt", { data: enqueue(sessionID, body.text ?? "", body.delivery ?? "steer", body.id ?? "") })),
+    "session.interrupt": ({ sessionID, query }) => Effect.succeed(json("session.interrupt", { interrupted: interrupt(sessionID, query.get("resume") !== "false") })),
+    "session.wait": ({ sessionID }) => {
+      if (!running.has(sessionID)) return now204()
+      return wait(sessionID)
+    },
+    "session.revert.stage": ({ sessionID, body }) => {
+      const revert = { messageID: body.messageID ?? "", files: [] }
+      const info = sessions.get(sessionID)
+      if (info) info.revert = revert
+      emit("session.revert.staged", { sessionID, revert })
+      return Effect.succeed(json("session.revert.stage", { data: revert }))
+    },
+    "session.family.request.list": ({ sessionID }) => Effect.succeed(json("session.family.request.list", { data: { sessions: family(sessionID), permissions: [], forms: [] } })),
+    "session.switchAgent": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => switchTo("session.switchAgent", info, body))),
+    "session.switchModel": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => switchTo("session.switchModel", info, body))),
+    "session.revert.commit": ({ sessionID }) =>
+      Effect.succeed(
+        withSession(sessionID, () => {
+          if (running.has(sessionID)) return failure(409, "SessionBusyError", `Session is busy: ${sessionID}`)
+          commitRevert(sessionID)
+          return noContent()
+        }),
+      ),
+    "session.view": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => view(sessionID, info, body.idle ?? -1))),
+    "agent.list": () => Effect.succeed(json("agent.list", { location: catalogLocation, data: AGENTS })),
+    "model.list": () => Effect.succeed(json("model.list", { location: catalogLocation, data: [MODEL] })),
+    "provider.list": () => Effect.succeed(json("provider.list", { location: catalogLocation, data: [PROVIDER] })),
+    "server.info": () => Effect.succeed(json("server.info", INFO)),
+    // No plugin of ours runs on the double's server: an RPC to one fails as the real server's does with none loaded; the goal RPC answers no goal.
+    "rpc.call": ({ params }) => {
+      if (params.get("rpcID") === "opencode.goal") return Effect.succeed(response(200, Option.some(NO_GOAL)))
+      return Effect.succeed(failure(404, "RpcNotFoundError", `No RPC ${params.get("rpcID") ?? ""}`))
+    },
+  } satisfies { readonly [K in Served]: (call: Call) => Effect.Effect<Response> }
+
+  /** Any request while silent: held open until `answer`, then a 503. */
+  const hold = Effect.callback<Response>((resume) => {
+    state.parked += 1
+    held.push(() => {
+      state.parked -= 1
+      resume(Effect.succeed(response(503, Option.none())))
+    })
+  })
+
+  /** A request's body as text: none for a GET or a DELETE. */
+  const bodyOf = (raw: Request) => {
+    if (raw.method === "GET" || raw.method === "DELETE") return Effect.succeed("")
+    return Effect.promise(() => raw.text())
+  }
+
+  /** What the double does with `raw`: its answer, held open while silent. */
+  const served = (route: Served, call: Call) => {
+    if (state.silent) return hold
+    return Effect.suspend(() => routes[route](call))
+  }
+
+  const answer = Effect.fn("SimTuiDouble.answer")(function* (url: URL, raw: Request) {
+    const found = endpointOf(raw.method, url.pathname).pipe(
+      Option.flatMap(({ endpoint, params }) => Option.map(Option.liftPredicate(endpoint.identifier, isServed), (route) => ({ route, params }))),
+    )
+    if (Option.isNone(found)) {
+      if (url.pathname === "/api/event") return Option.none()
+      if (FIXTURE_ROUTES.includes(url.pathname) || FIXTURE_PATTERNS.some((pattern) => pattern.test(url.pathname))) return Option.none()
+      unserved.push(`${raw.method} ${url.pathname}`)
+      return Option.some(failure(501, "SimTuiUnservedError", `the double does not serve ${raw.method} ${url.pathname}`))
+    }
+    const { route, params } = found.value
+    const text = yield* bodyOf(raw)
+    const body = Exit.match(decodeBody(text || "{}"), {
+      onSuccess: (value): Body => value,
+      onFailure: (): Body => {
+        broken.push(`${raw.method} ${url.pathname}: a body the double cannot read: ${text}`)
+        return {}
+      },
+    })
+    requests.push({ at: now(), method: raw.method, path: url.pathname, body: text })
+    state.inflight += 1
+    const call: Call = { sessionID: params.get("sessionID") ?? "", params, query: url.searchParams, body }
+    const result = yield* served(route, call).pipe(Effect.ensuring(Effect.sync(() => (state.inflight -= 1))))
+    return Option.some(result)
+  })
+
+  /** The fetch handler the fixture calls first: the double's answer, or none for the fixture's own defaults. */
+  const fetch: Handler = (url, raw) => Effect.runPromise(answer(url, raw))
 
   return {
     fetch,
@@ -683,63 +884,65 @@ export const make = (options: Options) => {
     enqueue,
     interrupt,
     /** Ends a stalled step: the rest of the model's text, then the run goes on. */
-    release: (sessionID: string, text = "") => {
-      const run = running.get(sessionID)
-      if (run === undefined || run.hold !== "stall") return
-      run.hold = undefined
-      if (text !== "") {
-        const part = run.message.content.findLast((each) => each.type === "text")
-        if (part) {
-          const ordinal = run.message.content.lastIndexOf(part)
-          part.text = `${part.text as string}${text}`
-          run.text = part.text as string
-          emit("session.text.delta", { sessionID, assistantMessageID: run.message.id, ordinal, delta: text })
-        }
+    release: (sessionID: string, rest = "") => {
+      const found = Option.fromUndefinedOr(running.get(sessionID)).pipe(Option.filter((run) => run.hold === "stall"))
+      if (Option.isNone(found)) return
+      const run = found.value
+      run.hold = "none"
+      const ordinal = run.message.content.findLastIndex((part) => part.type === "text")
+      const part = run.message.content[ordinal]
+      if (rest !== "" && part?.type === "text") {
+        part.text = `${part.text}${rest}`
+        run.text = part.text
+        emit("session.text.delta", { sessionID, assistantMessageID: run.message.id, ordinal, delta: rest })
       }
       endStep(run, "stop")
     },
     /** The server stops answering: requests from now on stay open until `answer`. */
     silence: () => {
-      silent = true
+      state.silent = true
     },
     answer: () => {
-      silent = false
+      state.silent = false
       for (const wake of held.splice(0)) wake()
     },
-    retitle: (namer: (text: string) => string) => {
-      titles = namer
+    retitle: (namer: (prompt: string) => string) => {
+      state.titles = namer
     },
     /** The events to send the client now: none while silent (the stream stalls with the rest). */
-    take: () => (silent ? [] : outbox.splice(0)),
+    take: (): ReadonlyArray<Sent> => {
+      if (state.silent) return []
+      return outbox.splice(0)
+    },
     /** Whether the double owes the client anything it will send without time moving. */
-    busy: () => inflight - parked > 0 || (!silent && outbox.length > 0),
+    busy: () => state.inflight - state.parked > 0 || (!state.silent && outbox.length > 0),
     /** How many requests the double holds open on purpose: the harness does not wait on them. */
-    parked: () => parked,
+    parked: () => state.parked,
     /** What the double still owes, for a message. */
-    owed: () => `${inflight - parked} requests in flight, ${silent ? 0 : outbox.length} events unsent`,
+    owed: () => `${state.inflight - state.parked} requests in flight, ${outbox.length * Number(!state.silent)} events unsent`,
     /** The seed ends: every parked request is answered (503) and every long poll woken, so none outlives its seed. */
     close: () => {
-      silent = false
+      state.silent = false
       // A session left running would stay running in the client's store past its seed, and the
       // store's backstop recheck would read it again in a later seed: each one ends here.
-      for (const sessionID of [...running.keys()]) {
+      for (const sessionID of Array.from(running.keys())) {
         running.delete(sessionID)
         emit("session.execution.succeeded", { sessionID }, false)
       }
       for (const wake of held.splice(0)) wake()
-      for (const sessionID of [...waiters.keys()]) settled(sessionID)
+      for (const sessionID of Array.from(waiters.keys())) settled(sessionID)
     },
-    shellExits: () => shellExits,
-    requests: () => requests,
-    unserved: () => unserved,
-    broken: () => broken,
-    events: () => events,
+    shellExits: (): ReadonlyArray<"killed"> => shellExits,
+    requests: (): ReadonlyArray<Took> => requests,
+    unserved: (): ReadonlyArray<string> => unserved,
+    broken: (): ReadonlyArray<string> => broken,
+    events: (): ReadonlyArray<string> => events,
     running: (sessionID: string) => running.has(sessionID),
     /** The child sessions of `sessionID`, oldest first. */
-    children: (sessionID: string) => [...sessions.values()].filter((each) => each.parentID === sessionID).map((each) => String(each.id)),
-    messages: list,
-    inbox: (sessionID: string) => inbox.get(sessionID) ?? [],
-    info: (sessionID: string) => sessions.get(sessionID),
+    children: (sessionID: string) => Array.from(sessions.values()).filter((each) => each.parentID === sessionID).map((each) => each.id),
+    messages: (sessionID: string): ReadonlyArray<Message> => list(sessionID),
+    inbox: (sessionID: string): ReadonlyArray<Pending> => pending(sessionID),
+    info: (sessionID: string) => Option.fromUndefinedOr(sessions.get(sessionID)),
   }
 }
 export type Double = ReturnType<typeof make>

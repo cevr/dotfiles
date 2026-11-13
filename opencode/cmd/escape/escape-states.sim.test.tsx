@@ -7,10 +7,9 @@
 // step: the model streams its first words and stalls (or, for `tool`, starts a
 // shell call that runs until it is cut).
 import { Effect } from "effect"
-import * as Seed from "../../sim/seed.ts"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
-import type { Model } from "../../sim-tui/server.ts"
+import { type Model, shell, stall, text } from "../../sim-tui/server.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/escape/escape-states.sim.test.tsx"
@@ -26,7 +25,7 @@ const BOOT: App.BootOptions = {
   config: { session: { verbosity: "medium" } },
 }
 
-Seed.effect(App.BOOT_TEST, App.boot(BOOT))
+App.bootTest(BOOT)
 
 const ASK = "Rename the helper."
 const NEXT = "Also update the docs."
@@ -34,21 +33,27 @@ const DRAFT = "half a thought"
 const PARTIAL = "Working on it"
 type Case = "steer" | "queue" | "tool" | "draft" | "offline"
 
-const modelOf = (which: Case): Model =>
-  which === "tool"
-    ? ({ step }) =>
-        step === 0
-          ? [{ _tag: "Text", text: PARTIAL }, { _tag: "Shell", id: "call_wait", command: "sleep 60", description: "Wait" }]
-          : [{ _tag: "Text", text: PARTIAL }, { _tag: "Stall" }]
-    : () => [{ _tag: "Text", text: PARTIAL }, { _tag: "Stall" }]
+const stalled: Model = () => [text(PARTIAL), stall]
+/** The tool case: the first step starts a shell call that runs until it is cut; any later one stalls. */
+const shelled: Model = ({ step }) => {
+  if (step === 0) return [text(PARTIAL), shell({ id: "call_wait", command: "sleep 60", description: "Wait" })]
+  return [text(PARTIAL), stall]
+}
+const MODELS = { steer: stalled, queue: stalled, tool: shelled, draft: stalled, offline: stalled } satisfies { readonly [K in Case]: Model }
+const modelOf = (which: Case) => MODELS[which]
 const title = () => "helper rename"
+
+/** A shell call's state by whether the double killed it. */
+const STATES = ["running", "interrupted"] as const
+/** How the test names a case's prompt. */
+const NAMES = { steer: "steer", queue: "queued prompt" } as const
 
 /** The case's frames by name (`before`, `after`, `again`, `tool`), as the real scenario saves them. */
 const play = (seed: number, which: Case) =>
   App.seed(BOOT, { key: which, seed, model: modelOf(which), title }, (tui) =>
     Effect.gen(function* () {
       const frames: Record<string, ReadonlyArray<string>> = {}
-      const has = (text: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(text)
+      const has = (shown: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(shown)
       const at = (start: number, ms: number) => tui.advance(Math.max(0, start + ms - tui.elapsed()))
       yield* tui.type(ASK)
       yield* tui.press({ name: "enter" })
@@ -81,14 +86,13 @@ const play = (seed: number, which: Case) =>
         yield* tui.advance(2_500)
         frames.again = tui.text()
       }
-      if (which === "tool") frames.tool = [tui.server.shellExits().includes("killed") ? "interrupted" : "running"]
+      if (which === "tool") frames.tool = [STATES[Number(tui.server.shellExits().includes("killed"))] ?? "running"]
       return frames
     }),
   )
 
 /** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
-const split = (frame: ReadonlyArray<string> | undefined) => {
-  const lines = frame ?? []
+const split = (lines: ReadonlyArray<string> = []) => {
   const hint = hintRow(lines)
   return { transcript: lines.slice(0, hint).filter((line) => line.trim() !== ""), composer: lines[hint + 1] ?? "" }
 }
@@ -97,7 +101,7 @@ const golden = (which: Case, frames: Record<string, ReadonlyArray<string>>, name
 
 for (const which of ["steer", "queue"] as const)
   seeded(
-    `a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`,
+    `a ${NAMES[which]} sent while the model works: one Escape stops the run and puts the prompt back in the composer`,
     ({ seed, expect }) =>
       Effect.gen(function* () {
         const frames = yield* play(seed, which)
@@ -139,4 +143,4 @@ seeded("the server does not answer: the TUI says so instead of doing nothing", (
   }),
 )
 
-Seed.effect(App.CLOSE_TEST, App.shutdown)
+App.closeTest()
