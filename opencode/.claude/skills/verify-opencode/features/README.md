@@ -4,7 +4,7 @@ The maintained source for verifying what our mods do for a user and an agent. Re
 
 ## Baseline
 
-- **The world**: nothing to seed. A suite makes its world (`World.make({ seed, script })`), loads the plugins from `sim/plugins.ts` and drives sessions by prompts; the verify model (`sim/verify-model.ts`, `worldScript`) does what a prompt's `verify:` lines say.
+- **The world**: nothing to seed. A suite makes its world (`World.make({ seed, script })`), loads the plugins from `sim/plugins.ts` and drives sessions by prompts; the verify model (`worldScript`, `sim/verify-world.ts`) does what a prompt's `verify:` lines say.
 - **Real OpenCode**: `bun run verify:seed $ROOT` makes a scratch root (a git work repo with `AGENTS.md` and `notes.txt`, a home, a config dir, an owner-only secret) loading the default plugins; `bun run verify:launch --root $ROOT --port $PORT` serves it on `http://127.0.0.1:$PORT` on the verify model; `bun run verify:doctor --root $ROOT` passes before the first drive. Never the owner's service port or his TUIs.
 - Each real run makes its own pilotty session, `pilotty spawn --name verify-$PORT bun run verify:tui --root $ROOT`, and kills it at cleanup. Every step is `pilotty type -s verify-$PORT '<prompt>'` then `pilotty key -s verify-$PORT Enter`, or a `pilotty key`; recipes below show the prompt or the key. `$EVIDENCE` is the drive's evidence dir (`out/verify/<head>/` by default). Nothing here plays sound or opens a browser.
 

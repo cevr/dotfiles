@@ -1,6 +1,8 @@
 // The verify model: one scripted model a verifier drives by the words of its prompt, on both of the
-// verify-opencode skill's paths. On the world (sim/world.ts) it is `worldScript`; on a real scratch
+// verify-opencode skill's paths. On the world it is `worldScript` (sim/verify-world.ts); on a real scratch
 // OpenCode (`bun run verify:launch`) it answers OpenAI's chat completions, streamed, on a loopback port.
+// This file imports `effect` alone, never the world: `scripts/verify.ts` imports it into the root project,
+// whose type check must not reach the world's runtime or the fork's sources.
 //
 // A prompt says what the model does, one directive a line:
 //
@@ -12,7 +14,6 @@
 // answered `Verify run`. The same prompt does the same on both hosts, so a journey found on the world is
 // typed into the real TUI word for word.
 import { Array as Arr, Data, Match, Option, Predicate, Schema } from "effect"
-import * as World from "./world.ts"
 
 /** A tool's input as a directive writes it: a JSON object. */
 const Input = Schema.Record(Schema.String, Schema.Json)
@@ -143,19 +144,6 @@ export const worldReading = (text: string): Reading =>
     // A tool's line is `tool <callID> <name>: <output>`; a prompt's is its text.
     text: (message) => Match.value(message.kind).pipe(Match.when("tool", () => message.text.replace(/^\S+ \S+: /, "")), Match.orElse(() => message.text)),
   })
-
-/** The verify model on the world: a world made with `script: worldScript` answers each prompt by its directives. */
-export const worldScript: World.Script = (request) =>
-  Match.value(request.kind).pipe(
-    Match.when("title", () => World.say(TITLE)),
-    Match.when("compaction", () => World.say("verify: compacted")),
-    Match.orElse(() =>
-      Answer.$match(answer(worldReading(request.text)), {
-        Call: (call) => World.call(call.id, call.tool, call.input),
-        Text: (text) => World.say(text.text),
-      }),
-    ),
-  )
 
 // ── On real OpenCode (OpenAI chat completions) ──
 

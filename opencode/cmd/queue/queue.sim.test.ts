@@ -14,7 +14,7 @@ import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
-import { worldScript } from "../../sim/verify-model.ts"
+import { worldScript } from "../../sim/verify-world.ts"
 
 const { seeded } = Seed.runner("cmd/queue/queue.sim.test.ts")
 

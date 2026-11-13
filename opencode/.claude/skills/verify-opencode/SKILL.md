@@ -106,7 +106,7 @@ All in `scripts/verify.ts` (Effect CLI on Bun), one JSON line each, exit 1 on a 
 | `bun run verify:drive [--feature id]… [--changed base] [--all] [--scenario file]… [--real] [--swarm-ms n] [--evidence dir]` | `{ ok, head, features, unreachable, evidence, runs, red }` |
 | `bun run verify:stop --root <dir>` | `{ ok, stopped, launchPid, serverPid, port, portFree }` |
 
-The verify model is `sim/verify-model.ts` (`worldScript` on the world, `chatAnswer`/`chatEvents` behind `verify:launch`); the map's reader is `scripts/verify-map.ts`; the docs guard is `scripts/verify-docs.test.ts`.
+The verify model is `sim/verify-model.ts` (`chatResponse` behind `verify:launch`), with `worldScript` on the world in `sim/verify-world.ts`; the map's reader is `scripts/verify-map.ts`; the docs guard is `scripts/verify-docs.test.ts`.
 
 ## Hosts
 
