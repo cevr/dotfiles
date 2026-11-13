@@ -279,9 +279,29 @@ const Body = Schema.Struct({
   idle: Schema.optionalKey(Schema.Number),
   agent: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(Schema.Struct({ id: Schema.String, providerID: Schema.String, variant: Schema.optionalKey(Schema.String) })),
+  /** An RPC's input. */
+  input: Schema.optionalKey(Schema.Unknown),
 })
 type Body = typeof Body.Type
 const decodeBody = Schema.decodeUnknownExit(Schema.fromJsonString(Body))
+
+/** A form create's body, as far as the double keeps it: the form's own fields, checked by the form's schema when it is answered and announced. */
+const FormBody = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.String,
+  metadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  actions: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  fields: Schema.Array(Schema.Unknown),
+})
+const decodeFormBody = Schema.decodeUnknownOption(Schema.fromJsonString(FormBody))
+
+/**
+ * A stand-in for one of our server plugins' RPCs, which a test lends the double: its output for `method`
+ * of `rpcID` with `input`, or none when it does not serve that RPC (then the call fails as with no plugin loaded).
+ */
+export type Rpc = (call: { readonly rpcID: string; readonly method: string; readonly input: unknown }) => Option.Option<unknown>
+/** No plugin of ours stood in for. */
+export const noRpc: Rpc = () => Option.none()
 
 /** The routes the double itself serves, by the client API's endpoint identifier; each is named by a client law. */
 export const SERVED = [
@@ -298,6 +318,7 @@ export const SERVED = [
   "session.wait",
   "session.revert.stage",
   "session.family.request.list",
+  "session.form.create",
   "rpc.call",
   "session.switchAgent",
   "session.switchModel",
@@ -362,6 +383,7 @@ export const EVENTS = [
   "session.viewed",
   "shell.created",
   "shell.exited",
+  "form.created",
 ] as const
 export type EventKind = (typeof EVENTS)[number]
 
@@ -397,6 +419,8 @@ export interface Options {
   readonly draw: Draw
   readonly now: () => number
   readonly model: Model
+  /** Our server plugins' RPCs the test stands in for; none by default. */
+  readonly rpc?: Rpc
 }
 
 /** A completed call's metadata, as far as the double fills it. */
@@ -458,6 +482,8 @@ export const make = (options: Options) => {
   const shellExits: Array<"killed"> = []
   /** The shell commands the shell tool started, by id, as the server's shell registry lists them. */
   const shells = new Map<string, ShellInfo>()
+  /** The forms made in each session, pending (no reply route is served), as the server's Form service holds them. */
+  const forms = new Map<string, Array<unknown>>()
   const events: Array<string> = []
   const sequences = new Map<string, number>()
   // The sessions that chose their own agent and model, as the real server keeps them: a switch to the one
@@ -926,7 +952,21 @@ export const make = (options: Options) => {
     readonly params: ReadonlyMap<string, string>
     readonly query: URLSearchParams
     readonly body: Body
+    /** The body as it came. */
+    readonly raw: string
   }
+  /** As the server's session.form.create: the form kept pending in the session, announced `form.created` with its location. */
+  const createForm = (sessionID: string, raw: string) =>
+    Option.match(decodeFormBody(raw), {
+      onNone: () => failure(400, "InvalidRequestError", `the double cannot read the form: ${raw}`),
+      onSome: (input) =>
+        withSession(sessionID, () => {
+          const form = { ...input, id: input.id ?? id("frm"), sessionID }
+          forms.set(sessionID, [...(forms.get(sessionID) ?? []), form])
+          emit("form.created", { form })
+          return json("session.form.create", { data: form })
+        }),
+    })
   const now204 = () => Effect.succeed(noContent())
   const routes = {
     "session.list": () =>
@@ -969,7 +1009,8 @@ export const make = (options: Options) => {
       emit("session.revert.staged", { sessionID, revert })
       return Effect.succeed(json("session.revert.stage", { data: revert }))
     },
-    "session.family.request.list": ({ sessionID }) => Effect.succeed(json("session.family.request.list", { data: { sessions: family(sessionID), permissions: [], forms: [] } })),
+    "session.family.request.list": ({ sessionID }) => Effect.succeed(json("session.family.request.list", { data: { sessions: family(sessionID), permissions: [], forms: family(sessionID).flatMap((member) => forms.get(member) ?? []) } })),
+    "session.form.create": ({ sessionID, raw }) => Effect.succeed(createForm(sessionID, raw)),
     "session.switchAgent": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => switchTo("session.switchAgent", info, body))),
     "session.switchModel": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => switchTo("session.switchModel", info, body))),
     "session.revert.commit": ({ sessionID }) =>
@@ -988,10 +1029,13 @@ export const make = (options: Options) => {
     "model.list": () => Effect.succeed(json("model.list", { location: catalogLocation, data: [MODEL] })),
     "provider.list": () => Effect.succeed(json("provider.list", { location: catalogLocation, data: [PROVIDER] })),
     "server.info": () => Effect.succeed(json("server.info", INFO)),
-    // No plugin of ours runs on the double's server: an RPC to one fails as the real server's does with none loaded (400, rpc.unavailable); the goal RPC answers no goal.
-    "rpc.call": ({ params }) => {
-      if (params.get("rpcID") === "opencode.goal") return Effect.succeed(response(200, Option.some(NO_GOAL)))
+    // No plugin of ours runs on the double's server: an RPC to one fails as the real server's does with none loaded (400, rpc.unavailable),
+    // unless the test stands in for it (`rpc`); the goal RPC answers no goal.
+    "rpc.call": ({ params, body }) => {
       const rpcID = params.get("rpcID") ?? ""
+      if (rpcID === "opencode.goal") return Effect.succeed(response(200, Option.some(NO_GOAL)))
+      const answered = Option.flatMap(Option.fromUndefinedOr(options.rpc), (rpc) => rpc({ rpcID, method: params.get("method") ?? "", input: body.input }))
+      if (Option.isSome(answered)) return Effect.succeed(json("rpc.call", { output: answered.value }))
       return Effect.succeed(failure(400, "RpcError", `RPC is unavailable: ${rpcID}`, { type: "rpc.unavailable" }))
     },
   } satisfies { readonly [K in Served]: (call: Call) => Effect.Effect<Response> }
@@ -1038,7 +1082,7 @@ export const make = (options: Options) => {
     })
     requests.push({ at: now(), method: raw.method, path: url.pathname, body: text })
     state.inflight += 1
-    const call: Call = { sessionID: params.get("sessionID") ?? "", params, query: url.searchParams, body }
+    const call: Call = { sessionID: params.get("sessionID") ?? "", params, query: url.searchParams, body, raw: text }
     const result = yield* served(route, call).pipe(Effect.ensuring(Effect.sync(() => (state.inflight -= 1))))
     return Option.some(result)
   })

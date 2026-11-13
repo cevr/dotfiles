@@ -658,6 +658,8 @@ export interface SeedOptions {
   readonly model: Server.Model
   /** The seed's root session: its title, if the scenario's model named it before the TUI showed it. */
   readonly title?: (text: string) => string
+  /** Our server plugins' RPCs the seed stands in for (the double's `rpc`). */
+  readonly rpc?: Server.Rpc
 }
 
 const pressOn = (fixture: Fixture, key: Key) => {
@@ -733,7 +735,7 @@ export const seed = <A, E>(options: BootOptions, seedOptions: SeedOptions, body:
       const draw = drawFrom(hash(`${seedOptions.key}`) ^ seedOptions.seed)
       // The fork's Identifier keeps the last time it drew at; a seed's first id must not depend on the seed before.
       Identifier.create(false, 0)
-      const server = Server.make({ draw, now: TuiClock.system.now, model: seedOptions.model })
+      const server = Server.make({ draw, now: TuiClock.system.now, model: seedOptions.model, rpc: Option.getOrElse(Option.fromUndefinedOr(seedOptions.rpc), () => Server.noRpc) })
       Option.map(Option.fromUndefinedOr(seedOptions.title), server.retitle)
       const sessionID = server.session()
       app.current = server
