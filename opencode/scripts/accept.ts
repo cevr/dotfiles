@@ -592,6 +592,11 @@ const main = Effect.fn("Accept.main")(function* () {
     // A fork that is not installed here would fail every real-OpenCode test for a reason none of them names.
     const checked = checkFork(ENV.OPENCODE_DEV)
     if ("problem" in checked) return yield* refuse(checked.problem)
+    // Each package reaches the fork's modules through link-fork's links, and one added since this checkout last
+    // linked has none: real OpenCode then fails to load a plugin a test gives it (the host laws' probe in sim/,
+    // after a land), and the test fails for a reason it cannot name. Link first, as the gate does.
+    const linked = yield* Effect.promise(() => $`${process.execPath} ${path.join(ROOT, "scripts/link-fork.ts")}`.cwd(ROOT).env(ENV).nothrow().quiet())
+    if (linked.exitCode !== 0) return yield* refuse(`link-fork failed:\n${linked.stdout.toString()}${linked.stderr.toString()}`)
   }
   const signalled = yield* Deferred.make<boolean>()
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => Effect.runFork(Deferred.succeed(signalled, true)))

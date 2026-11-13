@@ -3,10 +3,10 @@
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"
 import { reconnectTest, restart, riftOf, SUITE, test, TIMEOUT_MS, transcript } from "./reconnect/fixture.ts"
-import { keptScratch } from "./scratch.ts"
+import { forkRuns, keptScratch } from "./scratch.ts"
 
-describe(SUITE, () => {
-  const kept = keptScratch(true, "rs-gone-")
+describe.skipIf(!forkRuns)(SUITE, () => {
+  const kept = keptScratch(forkRuns, "rs-gone-")
   test(
     "after `service restart` the TUI keeps a worker whose Rift is gone without an error toast in any frame",
     reconnectTest(kept, (fixture) =>

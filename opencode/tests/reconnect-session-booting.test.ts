@@ -4,10 +4,10 @@
 import { describe } from "bun:test"
 import { Effect } from "effect"
 import { reconnectTest, restart, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
-import { keptScratch } from "./scratch.ts"
+import { forkRuns, keptScratch } from "./scratch.ts"
 
-describe(SUITE, () => {
-  const kept = keptScratch(true, "rs-booting-")
+describe.skipIf(!forkRuns)(SUITE, () => {
+  const kept = keptScratch(forkRuns, "rs-booting-")
   test(
     "after `service restart` the TUI keeps a session the booting service refuses without an error toast in any frame",
     reconnectTest(kept, (fixture) =>
