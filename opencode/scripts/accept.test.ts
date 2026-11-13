@@ -427,7 +427,7 @@ const LAND_STAND_IN = [
   "    }",
   "  })",
   '  writeFileSync(join(dir, "seen.json"), JSON.stringify({ groups, alive }))',
-  "})",
+    "})",
   "",
 ].join("\n")
 
@@ -571,7 +571,7 @@ const FLAKY = [
   '  const first = !existsSync(join(dir, "flaky-ran"))',
   '  writeFileSync(join(dir, "flaky-ran"), "")',
   "  expect(first).toBe(false)",
-  "})",
+    "})",
   "",
 ].join("\n")
 
@@ -585,7 +585,7 @@ const SLOW_FIRST = [
   '  const first = !existsSync(join(dir, "slept"))',
   '  writeFileSync(join(dir, "slept"), "")',
   "  await Bun.sleep((first && 15_000) || 1000)",
-  "})",
+    "})",
   "",
 ].join("\n")
 
@@ -636,4 +636,55 @@ describe("a deep run's second runs", () => {
     },
     RUN_MS,
   )
+
+  test(
+    "a land run that cuts a failed file's second run: the file runs once more after the yield and ends failed, and a file whose second run ended runs no third time (round 2's M1 and M2)",
+    async () => {
+      using dir = scratch("accept-second-cut-")
+      mkdirSync(join(dir.path, "deep"))
+      mkdirSync(join(dir.path, "land"))
+      // a-red fails on every run; b-late fails at once on its first run, sleeps 15 s and fails on its second (the
+      // run the land run cuts), and fails at once after. Each counts its runs in the scratch dir.
+      writeFileSync(join(dir.path, "deep", "a-red.test.ts"), counted("a-red", "expect(n).toBe(0)"))
+      writeFileSync(join(dir.path, "deep", "b-late.test.ts"), counted("b-late", "if (n === 2) await Bun.sleep(15_000)\n  expect(n).toBe(0)"))
+      writeFileSync(join(dir.path, "land", "quick.test.ts"), 'import { test } from "bun:test"\ntest("quick", () => {})\n')
+      const base = scratchEnv(dir.path, { YIELD_DIR: dir.path })
+      const runs = (name: string) => Option.match(Option.liftPredicate(join(dir.path, `${name}.runs`), existsSync), { onNone: () => 0, onSome: (file) => readFileSync(file, "utf8").length })
+      const deepRun = accept(["--owed", "--parallel=2"], { ...base, ACCEPT_FILES: join(dir.path, "deep", "*.test.ts") })
+      // Second runs go one at a time in file order: once b-late's has started, a-red's has ended.
+      await until("b-late's second run started", () => runs("b-late") >= 2 && runs("a-red") >= 2)
+      const land = await accept(["--land"], { ...base, ACCEPT_FILES: join(dir.path, "land", "*.test.ts"), ACCEPT_BUDGET_MS: "20000" })
+      const deep = await deepRun
+      expect({
+        land: land.code,
+        failed: deep.code !== 0,
+        yields: deep.lines.filter((line) => line.startsWith("accept: yielded the lock to a land run")).length,
+        runs: { "a-red": runs("a-red"), "b-late": runs("b-late") },
+        closing: closingOf(deep.lines),
+      }).toEqual({
+        land: 0,
+        failed: true,
+        yields: 1,
+        runs: { "a-red": 2, "b-late": 3 },
+        closing: Option.some({ mode: "owed", passed: 0, failed: 2, owed: 0, deep: 0, budget: 0 }),
+      })
+    },
+    RUN_MS,
+  )
 })
+
+/** A stand-in named `name` that counts its runs in the scratch dir (`n`, 1 on its first run) and then runs `body` in its one test. */
+const counted = (name: string, body: string) =>
+  [
+    'import { expect, test } from "bun:test"',
+    'import { appendFileSync, existsSync, readFileSync } from "node:fs"',
+    'import { join } from "node:path"',
+    'const dir = process.env.YIELD_DIR ?? ""',
+    `const runs = join(dir, "${name}.runs")`,
+    'const n = ((existsSync(runs) && readFileSync(runs, "utf8").length) || 0) + 1',
+    'appendFileSync(runs, "x")',
+    `test("${name}", async () => {`,
+    `  ${body}`,
+    "})",
+    "",
+  ].join("\n")
