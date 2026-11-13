@@ -100,6 +100,35 @@
           "why": "the done row, read off the TUI's frame: sim-tui's to move"
         }
       ]
+    },
+    "tests/prime-fallback.test.ts": {
+      "simulated": "cmd/orchestrate/orchestrate-fallback.sim.test.ts",
+      "tests": [
+        {
+          "name": "the pool holds the first model, and the admission script is asked about the newest sol for the role",
+          "expects": 2,
+          "carried": "simulated",
+          "why": "the scenario's stand-in pool on the world's RPC; the admission is asked at the CodexAdmission port, whose memory double records the model and the role the plugin asks with, where the real run read the script's `--model <m> --role <r>` args (the argv is mods/orchestrate/codex/admission.ts's); the sols' family and release on the world's catalog (host law: catalog)"
+        },
+        {
+          "name": "it starts at once on sol, never latched, and the call log says why",
+          "expects": 3,
+          "carried": "simulated",
+          "why": "the call log is the memory double the plugin writes; the child's model as the world's subagent tool takes it (host law: subagent)"
+        },
+        {
+          "name": "the worker's request goes to sol",
+          "expects": 1,
+          "carried": "simulated",
+          "why": "the request's model is the child session's, as the world's provider receives it"
+        },
+        {
+          "name": "the parent reads where it ran and why, first in the call's result, then the answer, and its row shows sol",
+          "expects": 4,
+          "carried": "both",
+          "why": "the call's result and the completion notice in the parent's request on the world (host law: subagent); the parent's answer on screen and the planner's row stay real, read off the TUI's frame: sim-tui's to move"
+        }
+      ]
     }
   },
   "retired": []
