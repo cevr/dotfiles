@@ -8,7 +8,7 @@
 // so itself, with the marker line (`// accept: one at a time (<why>)`); the
 // runner keeps no list of them. scripts/accept.test.ts checks that every file
 // whose text, or the scenario it drives, asserts such a bound carries the marker.
-import { Option } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 
 /** The marker line a timing-sensitive acceptance file carries: `// accept: one at a time (<why>)`. */
 export const SERIAL_MARKER = /^\/\/ accept: one at a time\b/m
@@ -80,6 +80,58 @@ export const plan = (files: ReadonlyArray<string>, text: (file: string) => strin
   ]
   return phases.filter((phase) => phase.files.length > 0)
 }
+
+// ---- The swarm: fresh seeds over the simulated suites (`*.sim.test.ts`), each its own `bun test` under
+// sim/seed.ts's swarm mode (`SIM_SWARM`, `SIM_SWARM_MS`). A land run swarms the suites the change reaches
+// for a third of its budget (20 s of 60) before its real files; the deep run swarms every suite for
+// 10 minutes once a day. A failing seed fails the run and is printed as the command that replays it.
+
+/** The seeds sim/seed.ts runs in the gate (its `SEEDS`); a swarm's start past them. */
+export const FIXED_SEEDS = 20
+/** The largest seed a swarm starts from, so its seeds stay inside a 32-bit integer for a day's swarm and more. */
+const SEED_SPAN = 1_000_000_000
+
+/** Whether a file is a simulated suite. */
+export const isSimSuite = (file: string) => /\.sim\.test\.tsx?$/.test(file)
+
+/** The swarm's box in a land run of `budgetMs`: a third of it (20 s of 60). */
+export const swarmBox = (budgetMs: number) => Math.floor(budgetMs / 3)
+
+/** The daily long swarm's box, and how often it is due. */
+export const LONG_SWARM_MS = 600_000
+export const LONG_SWARM_EVERY_MS = 24 * 60 * 60 * 1000
+
+/** The simulated suites a change reaches: those whose reach (`reachOf`, the suite itself included) holds a changed file. */
+export const reachedSuites = (suites: ReadonlyArray<string>, reachOf: (suite: string) => ReadonlySet<string>, changed: ReadonlyArray<string>) =>
+  suites.filter((suite) => changed.some((file) => file === suite || reachOf(suite).has(file)))
+
+/** A swarm's first seed, from the head's hash and what the swarm is for (`land`, `daily:<date>`): fresh for each head, past the fixed seeds. */
+export const swarmFirst = (head: string, label: string) => FIXED_SEEDS + 1 + (Number(BigInt(Bun.hash(`${head}:${label}`)) % BigInt(SEED_SPAN)))
+
+/** Each suite's box when `count` suites share `boxMs`, `width` at a time: the whole box when they all fit at once. */
+export const swarmSlot = (boxMs: number, width: number, count: number) => Math.floor(boxMs * Math.min(1, Math.max(1, width) / Math.max(1, count)))
+
+/** What one suite's swarm printed: the seeds that passed, and each seed that failed (`SIM_SEED=<n> bun test <file>`). */
+export const swarmRead = (output: string, file: string) => {
+  const passed = output.split("\n").filter((line) => line.startsWith(`sim-swarm ${file} `)).length
+  const failing = [...new Set([...output.matchAll(/SIM_SEED=(\d+) bun test (\S+?):/g)].flatMap((match) => Arr.filter([Number(match[1])], () => match[2] === file)))]
+  return { passed, failing }
+}
+
+/** The line that replays a failing seed. */
+export const replayLine = (file: string, seed: number) => `SIM_SEED=${seed} bun test ${file}`
+
+/** The swarm's summary line: the seeds it ran over the suites, in how long, and how many a second. */
+export const swarmLine = (what: string, suites: ReadonlyArray<string>, seeds: number, ms: number, first: number) =>
+  `accept: swarm (${what}): ${seeds} seeds over ${suites.length} simulated suites in ${(ms / 1000).toFixed(1)} s, ${(seeds / Math.max(0.001, ms / 1000)).toFixed(1)} seeds/s, from seed ${first}${Arr.filter([`: ${suites.join(", ")}`], () => suites.length > 0).join("")}`
+
+/** When the daily long swarm last ran to its end on a host, and at which head (beside the ledger, `swarm.json`). */
+const SwarmState = Schema.fromJsonString(Schema.Struct({ at: Schema.Finite, head: Schema.String }))
+export const encodeSwarmState = Schema.encodeSync(SwarmState)
+export const decodeSwarmState = Schema.decodeUnknownOption(SwarmState)
+
+/** Whether the daily long swarm is due at `now`: it never ran, or last ran `LONG_SWARM_EVERY_MS` ago. */
+export const longSwarmDue = (lastAt: Option.Option<number>, now: number) => Option.match(lastAt, { onNone: () => true, onSome: (at) => now - at >= LONG_SWARM_EVERY_MS })
 
 /** The line accept prints before a phase runs; the pool's names the host it was sized for. */
 export const heading = (phase: Phase, cores: number, load1: number) => {
