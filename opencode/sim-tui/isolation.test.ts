@@ -1,7 +1,7 @@
 // Isolation of the seeds that share one app: a seed run alone (`SIM_SEED=<n>`,
 // its file booting a fresh app for it) gives the same trace as that seed in
-// the file's full run, after every seed before it, for the first 3 seeds of
-// each simulated TUI file. A seed that left something behind in the app (a
+// the file's full run, after every seed before it, for seeds 2 to 4 of each
+// simulated TUI file. A seed that left something behind in the app (a
 // toast, a session still running, a timer's phase, a draft) shows here as a
 // trace that depends on what ran before it.
 //
@@ -16,7 +16,8 @@ import { TRACE_ENV } from "./app.ts"
 
 const ROOT = path.resolve(import.meta.dir, "..")
 const FILES = ["cmd/prime/prime-escape.sim.test.tsx", "cmd/prime/prime-sidebar.sim.test.tsx", "cmd/escape/escape-states.sim.test.tsx"]
-const ALONE = [1, 2, 3]
+// Seed 1 is the first after the boot in both runs; the seeds after it are the ones a seed before could reach.
+const ALONE = [2, 3, 4]
 const RUN_MS = 300_000
 
 /** Runs `file` with `env` added, writing its seeds' traces to a new folder; returns the folder. */
