@@ -9,7 +9,7 @@
 // The AccountPool decider, made for the pool's rules (its cache life), and
 // each command it decides with its events and rejections, in the order a
 // request meets them.
-import { DateTime, Effect, Schema } from "effect"
+import { DateTime, Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import {
   DEFAULT_HOLD_MS,
@@ -144,11 +144,19 @@ export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHe
   sessionID: Schema.String,
   kind: RequestKind,
   retryAt: Schema.Number,
+  /** When every account is held for a new sign-in, those accounts (no time opens them; only a sign-in does); else none. */
+  signIn: Schema.Array(Schema.String),
 }) {}
 
-/** The turn's end a held pool names: the pace's words, and when the first account opens. */
-export const heldMessage = (error: AccountsHeld): string =>
-  `dotfiles-opencode.pool: all pool accounts are held; the first opens at ${DateTime.formatIso(DateTime.makeUnsafe(error.retryAt))}`
+/**
+ * The turn's end a held pool names: the pace's words, and when the first account opens; or, when every account
+ * needs a new sign-in, which ones.
+ */
+export const heldMessage = (error: AccountsHeld): string => {
+  if (error.signIn.length > 0)
+    return `dotfiles-opencode.pool: every pool account needs a new sign-in (${error.signIn.join(", ")}). Sign in to them again.`
+  return `dotfiles-opencode.pool: all pool accounts are held; the first opens at ${DateTime.formatIso(DateTime.makeUnsafe(error.retryAt))}`
+}
 
 export declare namespace PlaceRequest {
   export type Rejections = NoAccount | AccountsHeld
@@ -171,14 +179,19 @@ const placeRequest = (
   const choice = pinned ?? rank(state, command.sessionID, now, rules, command.cacheOf)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
   // Placement ranks held accounts last: a held choice means every account is held.
-  if (held(state, choice, now))
+  if (held(state, choice, now)) {
+    const forSignIn = (credentialID: string) =>
+      Option.exists(Option.fromNullishOr(state.holds[credentialID]), (hold) => hold.kind === "signin")
+    const everySignIn = state.credentials.every(forSignIn)
     return Effect.fail(
       new AccountsHeld({
         sessionID: command.sessionID,
         kind: command.kind,
         retryAt: Math.min(...state.credentials.map((credentialID) => state.holds[credentialID]?.until ?? now)),
+        signIn: [...state.credentials].sort().filter(() => everySignIn),
       }),
     )
+  }
   const cache = requestCache(rules, state.recent[command.sessionID], command.cacheLifeMs, now)
   return Effect.succeed([
     RequestPlaced.make({ sessionID: command.sessionID, kind: command.kind, credentialID: choice, at: now, ...cacheFields(cache) }),

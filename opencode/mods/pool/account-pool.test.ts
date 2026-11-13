@@ -2,12 +2,13 @@
 // the account its cache is on, or the best account; a reading or a refusal
 // holds an account, a step counts on its account, a run ends, a restored pool
 // keeps each cache where it was, and the ledger forgets what has expired.
-import { describe, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
 import {
   AccountPool,
   AccountsHeld,
+  heldMessage,
   LedgerPruned,
   ListLogins,
   LoginsListed,
@@ -111,12 +112,40 @@ describe("a request is placed", () => {
       ...placed("s1", "b", T0),
       ...held("b", T0 + 30 * MINUTE),
       Story.when(PlaceRequest.make({ sessionID: "s1", kind: "primary" })),
-      Story.rejected(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0 + 30 * MINUTE })),
+      Story.rejected(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0 + 30 * MINUTE, signIn: [] })),
       Story.when(PlaceRequest.make({ sessionID: "s2", kind: "title" })),
-      Story.rejected(new AccountsHeld({ sessionID: "s2", kind: "title", retryAt: T0 + 30 * MINUTE })),
+      Story.rejected(new AccountsHeld({ sessionID: "s2", kind: "title", retryAt: T0 + 30 * MINUTE, signIn: [] })),
       // Once the first hold ends, the request goes out there.
       Story.clock(T0 + 30 * MINUTE),
       ...placed("s1", "b", T0 + 30 * MINUTE),
+    )
+  })
+
+  test("every account held for a new sign-in refuses the request naming them, with no time it opens", () => {
+    const held = (credentialID: string, kind: "signin" | "rate-limit", until: number) => [
+      Story.given(ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind, until } }), hold: { kind, until, at: T0 } })),
+    ]
+    return run(
+      accounts("b", "a"),
+      Story.clock(T0),
+      ...held("a", "signin", T0 + 30 * MINUTE),
+      ...held("b", "rate-limit", T0 + 10 * MINUTE),
+      // One account opens by itself: the pool names when.
+      Story.when(PlaceRequest.make({ sessionID: "s1", kind: "primary" })),
+      Story.rejected(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0 + 10 * MINUTE, signIn: [] })),
+      // Both need a sign-in: the pool names them.
+      ...held("b", "signin", T0 + 30 * MINUTE),
+      Story.when(PlaceRequest.make({ sessionID: "s1", kind: "primary" })),
+      Story.rejected(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0 + 30 * MINUTE, signIn: ["a", "b"] })),
+    )
+  })
+
+  test("a held pool's message names the sign-in when every account needs one, else when the first opens", () => {
+    expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: ["store:alpha", "store:beta"] }))).toBe(
+      "dotfiles-opencode.pool: every pool account needs a new sign-in (store:alpha, store:beta). Sign in to them again.",
+    )
+    expect(heldMessage(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0, signIn: [] }))).toMatch(
+      /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at \d{4}-/,
     )
   })
 
