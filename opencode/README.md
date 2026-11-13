@@ -67,10 +67,11 @@ only the resident location's copy acts, so a host runs one updater.
 - **The target.** An accepted batch verdict records what every host installs:
   orchestrate (its `fleet` option, `{ dotfiles, fork }`, which daily writes)
   takes the heads the batch file beside the verifier's report
-  (`<run dir>/<batch>.md`) names as verified (`Dotfiles: base X, head Y`,
-  `Fork prime-look: base X, head Y`, `Fork unchanged (Y)`), never a checkout's
-  HEAD. It needs both heads: a batch file that names only one, or none,
-  publishes nothing (no kept commit stands in). It never moves the fleet
+  (`<run dir>/<batch>.md`) names in its one machine line, exactly
+  `Heads: dotfiles=<40-hex sha> fork=<40-hex sha>` (both full commits, which
+  the orchestrator resolves before writing), never prose and never a
+  checkout's HEAD. A batch file with no such line, two, or one in another form
+  (a short hash, one repository) publishes nothing (no kept commit stands in). It never moves the fleet
   back: each head must descend from the current target's (`git merge-base
   --is-ancestor`). A batch it does not publish says so, `fleet: <batch>
   accepted, but NOT published: <why>`, in the root's context, the run's
