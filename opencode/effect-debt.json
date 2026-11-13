@@ -172,7 +172,13 @@
     {"file":"scripts/daily.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so the lock fakes run each step with Effect.runPromise and record its release with Effect.ensuring"},
     {"file":"scripts/accept.test.ts","rule":"effect/noAsyncFunction","reason":"Bun test bridge: the root has no Effect test runner, so the cases that run scripts/accept.ts await its output and exit in async bun:test cases"},
     {"file":"scripts/accept.test.ts","rule":"effect/noGlobals","reason":"acceptance-file harness: it lists tests/*.test.ts with Bun.Glob, runs scripts/accept.ts with process.env less OPENCODE_DEV and reads its output with Bun's stream helpers; the root has no Effect platform layer"},
-    {"file":"scripts/accept.test.ts","rule":"effect/noNodeBuiltinImport","reason":"acceptance-file harness: it reads the acceptance files and their scenarios with node:fs and joins their paths with node:path; the root has no Effect platform layer"}
+    {"file":"scripts/accept.test.ts","rule":"effect/noNodeBuiltinImport","reason":"acceptance-file harness: it reads the acceptance files and their scenarios with node:fs and joins their paths with node:path; the root has no Effect platform layer"},
+    {"file":"mods/cache/filestore/ping-log.ts","rule":"effect/noNodeBuiltinImport","reason":"file store adapter: every copy of the plugin appends its pings to one JSONL file beside the ledger with node:fs's appendFile, which Bun's whole-file write cannot do without losing another copy's line; the mod has no Effect platform layer"},
+    {"file":"mods/cache/filestore/ping-log.test.ts","rule":"effect/noNodeBuiltinImport","reason":"test scratch: each case's log lives in a scratch directory made and removed with node:fs; the mod has no Effect platform layer"},
+    {"file":"mods/cache/filestore/ping-log.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so the bun:test case reads its scratch log with Effect.runPromise"},
+    {"file":"mods/cache/keepalive.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs the arming rule with Effect.runSync"},
+    {"file":"mods/cache/laws.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test law runs its case over the log's fresh Layer with Effect.runPromise"},
+    {"file":"mods/cache/fetch/pinger.ts","rule":"effect/noGlobals","reason":"network adapter: the keepalive's pings go out on the runtime's fetch, the Pinger contract's one live implementation; the mod has no Effect HTTP client layer"}
   ],
   "budgets": {
     "cmd/anthropic-auth/server.test.ts": {"effect/noAs":47,"effect/noAsyncFunction":561,"effect/noChainedTypeAssertions":15,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":2,"effect/noGlobals":194,"effect/noKnownValueWidening":4,"effect/noModuleMocks":26,"effect/noNewError":15,"effect/noNewPromise":37,"effect/noNullish":34,"effect/noObjectParameters":1,"effect/noPromiseChainsInTests":8,"effect/noTernary":6,"effect/noThrowStatement":12,"effect/noTryCatch":46,"effect/noUnknownParameters":14,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":1},
@@ -314,7 +320,7 @@
     "mods/cache/filestore/request-log.ts": {"effect/noAsyncFunction":7,"effect/noModuleLevelMutableState":1,"effect/noNewPromise":2,"effect/noNodeBuiltinImport":2,"effect/noNullish":2,"effect/noTernary":7,"effect/noUnknownParameters":1},
     "mods/cache/fingerprint.test.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":2,"effect/noTernary":2},
     "mods/cache/fingerprint.ts": {"effect/noConditionalEmptyObjectSpread":3,"effect/noGlobals":1,"effect/noKnownValueWidening":1,"effect/noNullish":21,"effect/noRuntimeTypeof":14,"effect/noTernary":22,"effect/noUnknownParameters":14,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":2},
-    "mods/cache/laws.ts": {"effect/noAsyncFunction":6,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":1,"effect/noTernary":1},
+    "mods/cache/laws.ts": {"effect/noAsyncFunction":6,"effect/noConditionalEmptyObjectSpread":1,"effect/noTernary":1},
     "mods/cache/ledger.test.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":12,"effect/noTernary":5,"effect/preferTaggedConstructors":14},
     "mods/cache/ledger.ts": {"effect/noNullish":18,"effect/noTernary":4,"effect/preferTaggedConstructors":3},
     "mods/cache/line.test.ts": {"effect/preferTaggedConstructors":29},

@@ -1614,6 +1614,31 @@ holds the setup against the six caching rules and the lifetime fit
 the config's model and MCP server names, with the window's breaks as the
 evidence, `pass`, `warn` or `fail` per rule with the file responsible.
 
+### Keepalive
+
+Most wasted writes are `ttl-expiry`: a subagent waits 5 to 20 minutes on a
+running tool and its 5-minute cache expires. Anthropic refreshes a cache only
+when a request reads the same cached prefix, so the server half keeps a
+subagent's last primary request on a cache of 5 minutes or less as the auth
+plugin signed it (its hook runs after the auth plugin's: the same URL,
+headers, login and body), in memory only, and while one of the session's tool
+calls runs (`session.tool.called` to its `success` or `failed`, a tool the
+provider runs aside) re-sends it with `max_tokens: 1` (`keepalive.ts`). The
+first ping goes 4.5 minutes after the request, each next one 4.5 minutes after
+the ping before, at most 4 a wait; none once the cache's lifetime since the
+last request or ping has passed. The ping goes straight to the network on the
+login the request went out on (`fetch/pinger.ts`): no hook, no event, never
+the session's history, and its answer is read for its usage and dropped. A
+root session waiting on the owner is never pinged, nor an hour's cache, an
+unsigned request, or a body that thinks on a budget (`max_tokens: 1` is
+refused there). The tool's return (a ping in flight aborted), the session's
+next request, its execution's end or its deletion end the wait; a refused or
+failed ping ends its pings. It is always on, on every host. Each ping is a
+line of `keepalive.jsonl` beside the ledger (`filestore/ping-log.ts`): the
+session, agent, model, login, its place in the wait, the gap since the request
+or ping before, the answer's status or error, its input, cache read and write
+and output tokens, and the answer's `anthropic-ratelimit-*` headers.
+
 ## Guard
 
 `cmd/guard` is a server plugin that refuses a shell command that loses work

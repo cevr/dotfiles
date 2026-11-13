@@ -26,9 +26,10 @@
 // only the copy holding a waiting request writes a line, so each request gets
 // one. A ledger that cannot be written is logged and skipped; the TUI still
 // gets the step's cause.
-import { Clock, Context, Effect, Layer, Option } from "effect"
+import { Clock, Context, Duration, Effect, FiberMap, Layer, Option } from "effect"
+import { kept, MAX_PINGS, nextPing, pingLine, type Snapshot } from "./keepalive.ts"
 import { judge, lineOf, type Previous, type Sent, type SessionSteps, type StepCause, type Tokens } from "./request-log.ts"
-import { type LedgerUnavailable, RequestLog } from "./service.ts"
+import { type LedgerUnavailable, Pinger, PingLog, RequestLog } from "./service.ts"
 
 /** How many sessions, and steps of each, are kept for the RPC; the oldest go first. */
 export const KEPT_SESSIONS = 500
@@ -130,6 +131,116 @@ export const layer = (host: string) =>
           }),
         compacted: (sessionID, tokens) => settle(sessionID, "compaction", undefined, tokens),
         steps: (sessionID) => Effect.sync(() => ({ steps: [...(sessions.get(sessionID)?.steps ?? [])] })),
+      })
+    }),
+  )
+
+/** How many sessions the keepalive holds a request for at once; the oldest go first. */
+export const KEPT_ARMED = 200
+
+/**
+ * The keepalive's handlers (keepalive.ts has the rules). The plugin calls
+ * them from the host's hooks and events:
+ *
+ * - A request of the session went out (`armed`): the request the next wait
+ *   pings, or none when it arms none (a root's, an hour's cache). It ends any
+ *   wait: a request means the tools before it returned.
+ * - One of its tool calls starts (`toolStarted`): the wait starts with the
+ *   first. It ends with the last (`toolEnded`), its ping in flight aborted.
+ * - Its execution ends or it is deleted (`ended`): the wait ends and the
+ *   request is dropped.
+ *
+ * Only the copy whose hook saw the request holds it, so only that copy pings,
+ * though every copy hears the events. A ping's line that cannot be written is
+ * logged and skipped.
+ */
+export class Keepalive extends Context.Service<
+  Keepalive,
+  {
+    readonly armed: (sessionID: string, request: Option.Option<Omit<Snapshot, "at">>) => Effect.Effect<void>
+    readonly toolStarted: (sessionID: string, callID: string) => Effect.Effect<void>
+    readonly toolEnded: (sessionID: string, callID: string) => Effect.Effect<void>
+    readonly ended: (sessionID: string) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/cache/Keepalive") {}
+
+interface Waiting {
+  snapshot: Snapshot
+  readonly running: Set<string>
+  /** The pings the current wait sent. */
+  sent: number
+}
+
+export const keepaliveLayer = (host: string) =>
+  Layer.effect(
+    Keepalive,
+    Effect.gen(function* () {
+      const log = yield* PingLog
+      const pinger = yield* Pinger
+      const loops = yield* FiberMap.make<string>()
+      // Insertion order is recency: a session armed again moves to the end.
+      const sessions = new Map<string, Waiting>()
+      const waitingOf = (sessionID: string) => Option.fromUndefinedOr(sessions.get(sessionID))
+
+      const unwritten = (error: LedgerUnavailable) => Effect.logWarning(`cache keepalive: ${error.message}`)
+
+      /** The wait's next ping, when one is due (nextPing): sent and logged; whether the wait goes on. */
+      const ping = Effect.fn("Keepalive.ping")(function* (sessionID: string, waiting: Waiting) {
+        const { snapshot, sent } = waiting
+        const delay = nextPing(snapshot.at, snapshot.ttlMs, yield* Clock.currentTimeMillis, sent)
+        if (Option.isNone(delay)) return false
+        yield* Effect.sleep(Duration.millis(delay.value))
+        const at = yield* Clock.currentTimeMillis
+        // Counted as it goes out, so a wait's tool call that starts the loop again sends no fifth.
+        waiting.sent = sent + 1
+        const outcome = yield* Effect.result(pinger.send({ url: snapshot.url, method: snapshot.method, headers: snapshot.headers, body: snapshot.body }))
+        yield* log.append(pingLine({ host, sessionID, snapshot, at, ping: sent + 1, outcome })).pipe(Effect.catchTag("LedgerUnavailable", unwritten))
+        // A refused or failed ping would fail again within the wait: the wait's pings end.
+        if (!kept(outcome)) {
+          waiting.sent = MAX_PINGS
+          return false
+        }
+        waiting.snapshot = { ...snapshot, at }
+        return true
+      })
+
+      /** One wait's pings, each due `INTERVAL_MS` after the request or ping before, until none is. */
+      const wait = Effect.fn("Keepalive.wait")(function* (sessionID: string) {
+        let going = true
+        while (going) going = yield* Option.match(waitingOf(sessionID), { onNone: () => Effect.succeed(false), onSome: (waiting) => ping(sessionID, waiting) })
+      })
+
+      const stop = (sessionID: string) => FiberMap.remove(loops, sessionID)
+
+      return Keepalive.of({
+        armed: Effect.fn("Keepalive.armed")(function* (sessionID, request) {
+          yield* stop(sessionID)
+          sessions.delete(sessionID)
+          if (Option.isNone(request)) return
+          sessions.set(sessionID, { snapshot: { ...request.value, at: yield* Clock.currentTimeMillis }, running: new Set(), sent: 0 })
+          if (sessions.size <= KEPT_ARMED) return
+          const [oldest] = sessions.keys()
+          if (oldest === sessionID) return
+          sessions.delete(oldest)
+          yield* stop(oldest)
+        }),
+        toolStarted: Effect.fn("Keepalive.toolStarted")(function* (sessionID, callID) {
+          const found = waitingOf(sessionID)
+          if (Option.isNone(found)) return
+          // The first call of a wait starts it afresh.
+          if (found.value.running.size === 0) found.value.sent = 0
+          found.value.running.add(callID)
+          yield* FiberMap.run(loops, sessionID, wait(sessionID), { onlyIfMissing: true })
+        }),
+        toolEnded: Effect.fn("Keepalive.toolEnded")(function* (sessionID, callID) {
+          const found = waitingOf(sessionID)
+          if (Option.isNone(found) || !found.value.running.delete(callID) || found.value.running.size > 0) return
+          yield* stop(sessionID)
+        }),
+        ended: Effect.fn("Keepalive.ended")(function* (sessionID) {
+          sessions.delete(sessionID)
+          yield* stop(sessionID)
+        }),
       })
     }),
   )

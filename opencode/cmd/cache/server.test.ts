@@ -6,10 +6,14 @@
 // move, a compaction; a failed step writes nothing, and a broken ledger still
 // answers the TUI's RPC. tests/cache.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { Effect, PubSub, type Scope, Stream } from "effect"
+import { Effect, Layer, Option, PubSub, Schema, type Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
+import type { PingLine } from "@dotfiles/opencode-cache/keepalive"
+import * as MemoryPings from "@dotfiles/opencode-cache/memory/ping-log"
+import * as MemoryPinger from "@dotfiles/opencode-cache/memory/pinger"
 import * as Memory from "@dotfiles/opencode-cache/memory/request-log"
 import type { SessionSteps } from "@dotfiles/opencode-cache/request-log"
+import { PingFailed } from "@dotfiles/opencode-cache/service"
 import Cache, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, make } from "./server.ts"
 
 type Host = Parameters<(typeof Cache)["effect"]>[0]
@@ -35,7 +39,35 @@ const body = (day: string, turns: number) => ({
 
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
 
-const start = (ledger: Memory.MemoryLedger) =>
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
+
+/** A one-token answer as Anthropic streams it, with a rate-limit header. */
+const STREAMED: MemoryPinger.MemoryNetwork["answer"] = () =>
+  Effect.succeed({
+    status: 200,
+    headers: [
+      ["content-type", "text/event-stream"],
+      ["anthropic-ratelimit-unified-5h-utilization", "0.4"],
+      ["request-id", "req_1"],
+    ],
+    text: [
+      "event: message_start",
+      `data: ${json({ type: "message_start", message: { usage: { input_tokens: 3, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0, output_tokens: 1 } } })}`,
+      "",
+      "event: message_delta",
+      `data: ${json({ type: "message_delta", usage: { output_tokens: 1 } })}`,
+      "",
+    ].join("\n"),
+  })
+
+/** The stand-in network, answering every ping with `STREAMED`. */
+const network = (): MemoryPinger.MemoryNetwork => {
+  const net = MemoryPinger.make()
+  net.answer = STREAMED
+  return net
+}
+
+const start = (ledger: Memory.MemoryLedger, net: MemoryPinger.MemoryNetwork = network(), pings: Array<PingLine> = []) =>
   Effect.gen(function* () {
     const hooks: Record<string, Array<Hook>> = {}
     const events = yield* PubSub.unbounded<HostEvent>()
@@ -48,8 +80,15 @@ const start = (ledger: Memory.MemoryLedger) =>
             ;(hooks[name] ??= []).push(callback)
             return { dispose: Effect.void }
           }),
+        // A session named `ses_child…` is a subagent's; any other a root's.
+        get: ({ sessionID }: { readonly sessionID: string }) =>
+          Effect.succeed({ id: sessionID, parentID: Option.getOrUndefined(Option.liftPredicate("ses_root", () => sessionID.startsWith("ses_child"))) }),
       },
-      event: { subscribe: () => Stream.fromPubSub(events) },
+      // As the host does, a subscription hears only the types it names.
+      event: {
+        subscribe: ({ types }: { readonly types: ReadonlyArray<string> }) =>
+          Stream.fromPubSub(events).pipe(Stream.filter((event) => types.includes(event.type))),
+      },
       rpc: {
         register: (_definition: unknown, registered: Handlers) =>
           Effect.sync(() => {
@@ -58,7 +97,7 @@ const start = (ledger: Memory.MemoryLedger) =>
           }),
       },
     } as unknown as Host
-    yield* make(() => Memory.layer(ledger)).effect(host)
+    yield* make(() => Layer.mergeAll(Memory.layer(ledger), MemoryPings.layer(pings), MemoryPinger.layer(net))).effect(host)
     yield* settle
 
     /**
@@ -69,14 +108,21 @@ const start = (ledger: Memory.MemoryLedger) =>
     const send = Effect.fn("CacheServerTest.send")(function* (
       sessionID: string,
       json: unknown,
-      options: { readonly kind?: string; readonly login?: string; readonly ttl?: string; readonly kept?: boolean } = {},
+      options: {
+        readonly kind?: string
+        readonly login?: string
+        readonly ttl?: string
+        readonly kept?: boolean
+        /** Headers on the request as the hook sees it: the auth plugin's signing, when its hook ran first. */
+        readonly headers?: Record<string, string>
+      } = {},
     ) {
       const scope = { sessionID, agent: "build", model: { providerID: "anthropic", id: "claude-x" }, kind: options.kind ?? "primary" }
       const pool: Record<string, string> = {}
       if (options.login !== undefined) pool[CREDENTIAL_HEADER] = options.login
       if (options.ttl !== undefined) pool[CACHE_TTL_HEADER] = options.ttl
       for (const callback of hooks["model.request"] ?? []) yield* callback({ ...scope, headers: { ...pool } })
-      const headers = new Headers({ "content-type": "application/json", ...(options.kept === true ? pool : {}) })
+      const headers = new Headers({ "content-type": "application/json", ...(options.kept === true ? pool : {}), ...options.headers })
       const request = new Request("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: JSON.stringify(json) })
       for (const callback of hooks["http.request"] ?? []) yield* callback({ ...scope, request })
     })
@@ -272,6 +318,201 @@ describe("the cache ledger plugin", () => {
         yield* plugin.ended("ses_1", "msg_1", 0, 40_000)
         expect(ledger.lines).toEqual([])
         expect((yield* plugin.steps({ sessionID: "ses_1" })).steps).toEqual([{ messageID: "msg_1", cause: "first" }])
+      }),
+    ))
+})
+
+/** An Anthropic body on the five-minute cache, as a subagent's turn sends it, ending on the tool call's turn. */
+const shortBody = (turns: number) => ({
+  model: "claude-x",
+  max_tokens: 32_000,
+  stream: true,
+  thinking: { type: "adaptive", display: "omitted" },
+  tools: TOOLS,
+  system: [{ type: "text", text: "You are a worker.", cache_control: { type: "ephemeral" } }],
+  messages: body("Friday", turns).messages,
+})
+
+/** The headers the auth plugin's hook leaves on a request it signed. */
+const SIGNED = { authorization: "Bearer sk-ant-oat-test", "anthropic-beta": "oauth-2025-04-20", "content-length": "999" }
+
+const SECOND = 1_000
+const PING = 270 * SECOND
+const parsed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
+
+describe("the keepalive", () => {
+  const called = (sessionID: string, id: string, executed = false) =>
+    ["session.tool.called", { sessionID, assistantMessageID: "msg_1", id, input: {}, executed }] as const
+  const returned = (sessionID: string, id: string, type: "session.tool.success" | "session.tool.failed" = "session.tool.success") =>
+    [type, { sessionID, assistantMessageID: "msg_1", id }] as const
+  /** Moves the test clock on, then lets the pings it set off run. */
+  const pass = (ms: number) => TestClock.adjust(ms).pipe(Effect.andThen(settle))
+
+  test("a subagent waiting on a tool: its last request again at max_tokens 1, 4.5 minutes on and every 4.5 after, 4 at most, the answers kept out of the session", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const ledger = Memory.make()
+        const net = network()
+        const pings: Array<PingLine> = []
+        const plugin = yield* start(ledger, net, pings)
+        yield* plugin.send("ses_child", shortBody(3), { login: "cred-a", headers: SIGNED })
+        yield* plugin.ended("ses_child", "msg_1", 80_000, 10_000)
+        yield* plugin.emit(...called("ses_child", "call_1"))
+        yield* pass(PING - SECOND)
+        expect(net.received).toHaveLength(0)
+        yield* pass(SECOND)
+        expect(net.received).toHaveLength(1)
+        for (const _ of [2, 3, 4]) yield* pass(PING)
+        expect(net.received).toHaveLength(4)
+        yield* pass(20 * 60 * SECOND)
+        expect(net.received).toHaveLength(4)
+
+        // Each ping is the request as it went out, at max_tokens 1, but its length.
+        const sent = net.received.map((ping) => {
+          const headers = new Headers(ping.headers.map(([name, value]) => [name, value]))
+          return [ping.url, ping.method, headers.has("content-length"), headers.get("authorization"), headers.get("anthropic-beta"), parsed(ping.body)]
+        })
+        expect(sent).toEqual(
+          Array.from({ length: 4 }, () => [
+            "https://api.anthropic.com/v1/messages",
+            "POST",
+            false,
+            "Bearer sk-ant-oat-test",
+            "oauth-2025-04-20",
+            { ...shortBody(3), max_tokens: 1 },
+          ]),
+        )
+
+        expect(pings.map((line) => [line.sessionID, line.ping, line.gapMs, line.status, line.read, line.write])).toEqual([
+          ["ses_child", 1, PING, Option.some(200), 90_000, 0],
+          ["ses_child", 2, PING, Option.some(200), 90_000, 0],
+          ["ses_child", 3, PING, Option.some(200), 90_000, 0],
+          ["ses_child", 4, PING, Option.some(200), 90_000, 0],
+        ])
+        expect(pings[0]).toMatchObject({
+          host: "mac",
+          agent: Option.some("build"),
+          model: "anthropic/claude-x",
+          login: Option.some("cred-a"),
+          ttlMs: 300_000,
+          input: 3,
+          output: 1,
+          limits: { "anthropic-ratelimit-unified-5h-utilization": "0.4" },
+        })
+        // The answers never reach the session: no ledger line and no step beyond the request's own.
+        expect(ledger.lines.map((line) => line.messageID)).toEqual(["msg_1"])
+        expect((yield* plugin.steps({ sessionID: "ses_child" })).steps.map((step) => step.messageID)).toEqual(["msg_1"])
+      }),
+    ))
+
+  test("the tool's return ends the wait at once, a ping in flight aborted; so do the next request and the execution's end", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const net = network()
+        const plugin = yield* start(Memory.make(), net)
+        yield* plugin.send("ses_child", shortBody(3), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_1"))
+        yield* pass(PING)
+        expect(net.received).toHaveLength(1)
+        yield* plugin.emit(...returned("ses_child", "call_1"))
+        yield* pass(20 * 60 * SECOND)
+        expect(net.received).toHaveLength(1)
+
+        // A ping that hangs is aborted when the tool returns.
+        net.answer = () => Effect.never
+        yield* plugin.send("ses_child", shortBody(5), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_2"))
+        yield* pass(PING)
+        expect(net.received).toHaveLength(2)
+        yield* plugin.emit(...returned("ses_child", "call_2", "session.tool.failed"))
+        expect(net.aborted).toHaveLength(1)
+
+        // The next request ends a wait whose tool event never came; the execution's end ends another.
+        net.answer = STREAMED
+        yield* plugin.send("ses_child", shortBody(7), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_3"))
+        yield* pass(PING - SECOND)
+        yield* plugin.send("ses_child", shortBody(9), { headers: SIGNED })
+        yield* pass(PING)
+        expect(net.received).toHaveLength(2)
+        yield* plugin.send("ses_child", shortBody(11), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_4"))
+        yield* plugin.emit("session.execution.interrupted", { sessionID: "ses_child" })
+        yield* pass(20 * 60 * SECOND)
+        expect(net.received).toHaveLength(2)
+      }),
+    ))
+
+  test("parallel calls are one wait, pinged until the last returns; the next wait counts its own 4", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const net = network()
+        const plugin = yield* start(Memory.make(), net)
+        yield* plugin.send("ses_child", shortBody(3), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_a"))
+        yield* plugin.emit(...called("ses_child", "call_b"))
+        yield* pass(PING)
+        yield* plugin.emit(...returned("ses_child", "call_a"))
+        yield* pass(PING)
+        expect(net.received).toHaveLength(2)
+        // A third call in the same wait sends no ping past the wait's fourth.
+        yield* plugin.emit(...called("ses_child", "call_c"))
+        for (const _ of [3, 4, 5]) yield* pass(PING)
+        expect(net.received).toHaveLength(4)
+        yield* plugin.emit(...returned("ses_child", "call_b"))
+        yield* plugin.emit(...returned("ses_child", "call_c"))
+        yield* plugin.send("ses_child", shortBody(5), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_d"))
+        for (const _ of [1, 2, 3, 4, 5]) yield* pass(PING)
+        expect(net.received).toHaveLength(8)
+      }),
+    ))
+
+  test("never a root session, an hour's cache, an unsigned request, a budgeted thinking body, a provider's own tool, or a cache already expired", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const net = network()
+        const plugin = yield* start(Memory.make(), net)
+        const wait = (sessionID: string) => plugin.emit(...called(sessionID, "call_1")).pipe(Effect.andThen(pass(PING)), Effect.andThen(pass(PING)))
+        yield* plugin.send("ses_root", shortBody(3), { headers: SIGNED })
+        yield* wait("ses_root")
+        yield* plugin.send("ses_child_hour", body("Friday", 3), { headers: SIGNED })
+        yield* wait("ses_child_hour")
+        yield* plugin.send("ses_child_unsigned", shortBody(3))
+        yield* wait("ses_child_unsigned")
+        yield* plugin.send("ses_child_budget", { ...shortBody(3), thinking: { type: "enabled", budget_tokens: 10_000 } }, { headers: SIGNED })
+        yield* wait("ses_child_budget")
+        yield* plugin.send("ses_child_hosted", shortBody(3), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child_hosted", "srv_1", true))
+        yield* pass(PING)
+        // A tool that starts once the cache has expired: a ping would only write a new one.
+        yield* plugin.send("ses_child_late", shortBody(3), { headers: SIGNED })
+        yield* pass(301 * SECOND)
+        yield* wait("ses_child_late")
+        expect(net.received).toHaveLength(0)
+      }),
+    ))
+
+  test("a refused ping ends the wait, logged with its status; a ping with no answer is logged with its error", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const net = network()
+        const pings: Array<PingLine> = []
+        const plugin = yield* start(Memory.make(), net, pings)
+        net.answer = () => Effect.succeed({ status: 429, headers: [["anthropic-ratelimit-unified-status", "rejected"]], text: '{"type":"error"}' })
+        yield* plugin.send("ses_child", shortBody(3), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_1"))
+        for (const _ of [1, 2, 3]) yield* pass(PING)
+        expect(net.received).toHaveLength(1)
+        net.answer = () => Effect.fail(new PingFailed({ message: "network down" }))
+        yield* plugin.send("ses_child", shortBody(5), { headers: SIGNED })
+        yield* plugin.emit(...called("ses_child", "call_2"))
+        for (const _ of [1, 2, 3]) yield* pass(PING)
+        expect(net.received).toHaveLength(2)
+        expect(pings.map((line) => [line.ping, Option.getOrElse(line.status, () => 0), Option.getOrElse(line.error, () => "answered"), line.read, line.limits])).toEqual([
+          [1, 429, "answered", 0, { "anthropic-ratelimit-unified-status": "rejected" }],
+          [1, 0, "network down", 0, {}],
+        ])
       }),
     ))
 })
