@@ -5,6 +5,7 @@
 // tests/guard.test.ts runs it in OpenCode, with direct and kernel-cell calls.
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, type Scope } from "effect"
+import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
@@ -58,6 +59,7 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
       Layer.mergeAll(
         MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app", ses_child: "/work/app" }),
         MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] }),
+        MemoryCheckouts.layer({ checkouts: [] }),
         MemorySubagents.layer(world.parents ?? { ses_1: undefined, ses_child: "ses_1" }),
         MemoryProcesses.layer(world.processes ?? PROCESSES),
         MemoryLaunchers.layer({ scope: false, ...world.launchers, written }),

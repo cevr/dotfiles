@@ -155,38 +155,57 @@ const rmFindings = (command: string, args: ReadonlyArray<Word>, runsIn: string, 
   return findings
 }
 
+/** One simple command of a line, where it runs. */
+export interface PlacedCommand {
+  /** The program's name, its path dropped (`/bin/rm` is `rm`); empty for a line of assignments alone. */
+  readonly head: string
+  readonly args: ReadonlyArray<Word>
+  /** The command as the refusal names it: its running words, prefixes dropped. */
+  readonly command: string
+  /** The directory it runs in, absolute. */
+  readonly runsIn: string
+}
+
 /**
- * What each simple command of `line` asks of the verdict, in order. A `cd`
- * moves where the commands after it run; `sh -c` and `eval` are read as
- * lines of their own, where they run.
+ * Each simple command of `line` that runs, in order, with the directory it
+ * runs in. A `cd` moves where the commands after it run (and is not listed);
+ * the script of `sh -c` or `eval` follows its command, read as a line of its
+ * own where it runs.
  */
-const scan = (line: string, callCwd: string, startsIn: string, home: string, depth: number): ReadonlyArray<Finding> => {
-  const findings: Array<Finding> = []
+export const placedCommands = (line: string, startsIn: string, home: string, depth = 0): ReadonlyArray<PlacedCommand> => {
+  const placed: Array<PlacedCommand> = []
   let runsIn = startsIn
   for (const words of simpleCommands(line)) {
     const running = runningWords(words)
-    const head = running[0]?.text.split("/").pop()
+    const head = running[0]?.text.split("/").pop() ?? ""
     const args = running.slice(1)
-    const command = running.map((word) => word.text).join(" ")
     if (head === "cd") {
       const target = args[0]
       runsIn = target === undefined ? resolve("/", home) : resolve(runsIn, expandWord(target, home, runsIn))
       continue
     }
-    if (head === "rm") findings.push(...rmFindings(command, args, runsIn, callCwd, home))
+    placed.push({ head, args, command: running.map((word) => word.text).join(" "), runsIn })
+    if (depth < MAX_DEPTH) {
+      const script = SHELLS.has(head) ? shellScript(args) : head === "eval" ? args.map((word) => word.text).join(" ") : undefined
+      if (script !== undefined) placed.push(...placedCommands(script, runsIn, home, depth + 1))
+    }
+  }
+  return placed
+}
+
+/** What each simple command of `line` asks of the verdict, in order. */
+const findingsOf = (line: string, place: Place): ReadonlyArray<Finding> => {
+  const callCwd = resolve("/", place.cwd)
+  const findings: Array<Finding> = []
+  for (const { head, args, command, runsIn } of placedCommands(line, callCwd, place.home)) {
+    if (head === "rm") findings.push(...rmFindings(command, args, runsIn, callCwd, place.home))
     if (head === "git") {
       const reason = gitRefusal(command, args.map((word) => word.text))
       if (reason !== undefined) findings.push({ _tag: "Refused", reason })
     }
-    if (depth < MAX_DEPTH) {
-      const script = head !== undefined && SHELLS.has(head) ? shellScript(args) : head === "eval" ? args.map((word) => word.text).join(" ") : undefined
-      if (script !== undefined) findings.push(...scan(script, callCwd, runsIn, home, depth + 1))
-    }
   }
   return findings
 }
-
-const findingsOf = (command: string, place: Place) => scan(command, resolve("/", place.cwd), resolve("/", place.cwd), place.home, 0)
 
 /** The paths whose being a repository's root decides the verdict: every target of a recursive `rm` the other rules pass. */
 export const repoCandidates = (command: string, place: Place): ReadonlyArray<string> => [

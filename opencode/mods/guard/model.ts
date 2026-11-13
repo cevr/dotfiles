@@ -4,24 +4,28 @@
 // `Guard`: it gathers what the verdict needs from outside (where the call
 // runs, which of its `rm` targets are repositories, and, for a kill by
 // pattern, what runs on the machine) and fails with `Destructive` when a
-// verdict denies the call; then, for a foreground call that opens with a long
+// verdict denies the call; for a `git worktree add`, it reads the checkout
+// (and, off a cloning file system, the warm sources) and fails with
+// `FullCopy` when Rift serves it (worktree.ts); then, for a foreground call that opens with a long
 // sleep (sleep.ts), it asks whether the session is a subagent and fails with
 // `Idle` when it is. The plugin calls this and nothing else.
 //
-// The destructive and kill rules fail closed: a session whose directory the
-// host cannot give, a target it cannot tell is a repository, or a kill by
+// The destructive, worktree and kill rules fail closed: a session whose directory the
+// host cannot give, a target it cannot tell is a repository, a worktree add in
+// a checkout it cannot read, or a kill by
 // pattern while it cannot list the processes, refuses the call with why. The
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { isHeavy } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
+import { clones, FullCopy, riftHome, worktreeAdds, worktreeReason } from "./worktree.ts"
 
 /** The guard's settings, from the plugin's options. */
 export interface Config {
@@ -42,8 +46,8 @@ export interface ShellCall {
 export class Guard extends Context.Service<
   Guard,
   {
-    /** Succeeds when the call may run; fails `Destructive` or `Idle` with the words the model reads when it may not. */
-    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | Idle>
+    /** Succeeds when the call may run; fails `Destructive`, `FullCopy` or `Idle` with the words the model reads when it may not. */
+    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | Idle>
   }
 >()("dotfiles-opencode/guard/Guard") {}
 
@@ -55,6 +59,13 @@ export const layer = (config: Config) =>
       const roots = yield* RepoRoots
       const processes = yield* Processes
       const subagents = yield* Subagents
+      const checkouts = yield* Checkouts
+
+      /** The warm sources that decide whether Rift serves `checkout`: none asked on a cloning file system, which decides alone. */
+      const sourcesFor = (checkout: Checkout): Effect.Effect<ReadonlyArray<WarmSource>, CheckoutUnknown> => {
+        if (clones(checkout.filesystem)) return Effect.succeed([])
+        return checkouts.warmSources
+      }
 
       const judge = Effect.fn("Guard.judge")(function* (call: ShellCall) {
         const refuse = (reason: string) => Effect.fail(new Destructive({ command: call.command, reason }))
@@ -81,6 +92,21 @@ export const layer = (config: Config) =>
         const repositories = new Set(answers.flatMap(([path, root]) => (root ? [path] : [])))
         const answer = verdict(call.command, { ...place, isRepoRoot: (path) => repositories.has(path) })
         if (answer._tag === "Deny") return yield* refuse(answer.reason)
+        // The checkout and the warm sources are read only for a worktree add; the sources only off a cloning file system.
+        for (const add of worktreeAdds(call.command, place)) {
+          const unknown = (error: CheckoutUnknown) =>
+            Effect.fail(
+              new FullCopy({
+                command: call.command,
+                reason: `cannot tell whether Rift serves the checkout at ${add.directory} (${error.path}: ${error.message}), so the guard refuses \`${add.command}\` rather than guess; make a Rift with the rift tool (\`{ action: "create", branch }\`) or \`workrift create <branch>\` on the workbox`,
+              }),
+            )
+          const checkout = yield* checkouts.of(add.directory).pipe(Effect.catchTag("CheckoutUnknown", unknown))
+          if (Option.isNone(checkout)) continue
+          const sources = yield* sourcesFor(checkout.value).pipe(Effect.catchTag("CheckoutUnknown", unknown))
+          const home = riftHome(checkout.value, sources)
+          if (Option.isSome(home)) return yield* new FullCopy({ command: call.command, reason: worktreeReason(add, checkout.value, home.value) })
+        }
         // The process table is read only for a kill by pattern; a `kill -1` needs none.
         const running = killsByPattern(call.command)
           ? yield* processes
