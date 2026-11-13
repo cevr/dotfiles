@@ -43,7 +43,7 @@ What it runs:
 
 1. `quint typecheck` of the model.
 2. `quint run` with `--invariant pipeline` and four witnesses: a second batch lands, a land carries a folded finding, a land refused by `VerdictPending`, one refused by `FindingUnfolded`. A witness reached 0 times is red: the walks never got where the property bites.
-3. The replay (`opencode/formal/orchestrate/replay.ts`): every written trace, step by step, through the real `machine()`. The code must refuse what the model refuses, by the same rule, and hold the same state after each step.
+3. The replay (`opencode/formal/orchestrate/replay.ts`, the ITF decoded by `trace.ts`): every written trace, step by step, through the real `machine()`. The code must refuse what the model refuses, by the same rule, and hold the same state after each step.
 4. `--deep`: `quint verify` (Apalache, a bounded model checker): `pipeline` in every run up to `--depth` steps (default 8; 12 runs past 20 minutes).
 5. `--mutants`: three guards broken on purpose (`MUTANTS` in `check.ts`): the `VerdictPending` check, the `FindingUnfolded` check, and a dead verifier read as a verdict. Each is broken in a scratch copy of `machine.ts` (the replay must part from the model) and of the model (`pipeline` must break).
 
