@@ -243,8 +243,8 @@ describe("restore", () => {
     expect(after.hc.terminals.find((t) => t.address === "t1")?.labels["migrate.resume"]).toBe("opencode --session ses_A1")
     expect(after.hc.terminals.find((t) => t.address === "t2")?.labels["migrate.resume"]).toBeUndefined()
     expect(after.hc.terminals.find((t) => t.address === "t3")?.labels["migrate.resume"]).toBeUndefined()
-    // Only `hc ls` and `hc label`: nothing is typed into any terminal.
-    expect(new Set(after.calls.filter((c) => c[0] === "hc").map((c) => c[1]))).toEqual(new Set(["ls", "label"]))
+    // Only `hc ls`, `hc get` (the labels) and `hc label`: nothing is typed into any terminal.
+    expect(new Set(after.calls.filter((c) => c[0] === "hc").map((c) => c[1]))).toEqual(new Set(["ls", "get", "label"]))
     expect(after.calls.some((c) => c[0] === "herdr")).toBe(false)
 
     after.calls = []
@@ -333,6 +333,37 @@ describe("restore --herdr", () => {
     expect(result.stdout).toContain("restored wA:p2: opencode --session ses_A2")
     expect(result.stdout).toContain("failed wB:p6: session ses_B6 does not open through the server")
     expect(runs()).toEqual([["herdr", "pane", "run", "wA:p2", "opencode --session ses_A2"]])
+  })
+
+  test("restores the save it is given, not the newest one", () => {
+    const { path: first } = saved(run("save").stdout)
+    // A later save that sees only the plain shell: it holds no session.
+    const w = readWorld()
+    w.herdr.snapshot = { ...snapshot, panes: snapshot.panes.filter((p) => p.pane_id === "wB:p7") }
+    writeWorld(w)
+    const { path: second } = saved(run("save").stdout)
+    expect(second).not.toBe(first)
+    const after = restarted(readWorld())
+    after.herdr.snapshot = snapshot
+    writeWorld(after)
+
+    const result = run("restore", "--herdr", first)
+    expect(result.stdout).toContain("3 restored, 0 skipped, 0 failed")
+    expect(runs().map((c) => c.at(-1))).toEqual(["opencode --session ses_A1", "opencode --session ses_A2", "opencode --session ses_B6"])
+  })
+
+  test("two saved panes that held one session get it once in a run", () => {
+    const w = readWorld()
+    w.herdr.processes["wA:p2"] = [[OPENCODE, "-s", "ses_A1"]]
+    writeWorld(w)
+    const { path, file } = saved(run("save").stdout)
+    expect(file.panes.slice(0, 2).map((p: { session: string }) => p.session)).toEqual(["ses_A1", "ses_A1"])
+    writeWorld(restarted(readWorld()))
+
+    const result = run("restore", "--herdr", path)
+    expect(result.stdout).toContain("restored wA:p1P: opencode --session ses_A1")
+    expect(result.stdout).toContain("skipped wA:p2: already open in wA:p1P")
+    expect(runs().map((c) => c[3])).toEqual(["wA:p1P", "wB:p6"])
   })
 
   test("exits 0 when every saved session is back", () => {

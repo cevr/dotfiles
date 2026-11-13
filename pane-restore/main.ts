@@ -217,7 +217,9 @@ interface Terminal {
 type Outcome = { readonly kind: "restored" | "skipped" | "failed"; readonly line: string }
 
 export const restore = (saved: Saved): Outcome[] => {
-  const terminals: Terminal[] = json(["hc", "ls", "--json"]).terminals ?? []
+  // `hc ls` lists addresses without labels (hc 0.1.21); `hc get` carries each terminal's labels and foreground.
+  const addresses: string[] = (json(["hc", "ls", "--json"]).terminals ?? []).map((t: { address: string }) => t.address)
+  const terminals: Terminal[] = addresses.map((address) => json(["hc", "get", address, "--json"]))
   return saved.panes
     .filter((p) => p.session !== null)
     .map((pane): Outcome => {
