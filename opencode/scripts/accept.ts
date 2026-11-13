@@ -515,8 +515,11 @@ const waitingLine = (owner: Option.Option<Accept.Mode>) => {
   return `accept: waiting for ${who} (one at a time per machine)`
 }
 
-const waitLine = (waited: number, behindLand: number) =>
-  `accept: waited ${seconds(waited)} for the lock (${seconds(waited - behindLand)} on the run's clock, ${seconds(behindLand)} behind another land run off it)`
+/** The wait for the lock; a land run's with the part on its 60 s clock, a run with no deadline's alone. */
+const waitLine = (waited: number, behindLand: number) => {
+  if (mode !== "land") return `accept: waited ${seconds(waited)} for the lock`
+  return `accept: waited ${seconds(waited)} for the lock (${seconds(waited - behindLand)} on the run's clock, ${seconds(behindLand)} behind another land run off it)`
+}
 
 /** Watches for a live wanted mark while this deep run holds the lock: one sets `run.wanted`. */
 const watchMarks = (run: Run) =>
@@ -536,7 +539,8 @@ const deepHold = Effect.fn("Accept.deepHold")(function* (run: Run, done: Readonl
   const settledHere = new Set(done.flatMap((outcome) => Arr.filter([outcome.file], () => outcome.status === "passed" || outcome.status === "failed")))
   // Read under the lock: every write after builds on what a land run wrote while this run waited.
   const fresh = selectFrom(run.candidates, readAgain(run), run.named, run.text)
-  const passedMeanwhile = fresh.settled.filter((outcome) => outcome.status === "before" && run.selection.run.includes(outcome.file))
+  // Passed by a land run while this one waited; a file this run settled itself stays as it ended here.
+  const passedMeanwhile = fresh.settled.filter((outcome) => outcome.status === "before" && run.selection.run.includes(outcome.file) && !settledHere.has(outcome.file))
   const todo = fresh.run.filter((file) => run.selection.run.includes(file) && !settledHere.has(file))
   const watcher = yield* Effect.forkChild(watchMarks(run))
   const ran = yield* phases(run, todo)

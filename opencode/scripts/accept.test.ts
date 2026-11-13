@@ -405,6 +405,11 @@ const yieldWorld = (dir: string) => {
     owner: join(dir, "lock.owner.json"),
     mark: (pid: number) => join(dir, "lock.wanted", String(pid)),
     groups: (): ReadonlyArray<number> => (existsSync(groupsFile) && JSON.parse(readFileSync(groupsFile, "utf8"))) || [],
+    /** How many files the scratch ledger holds a pass for. */
+    passed: () =>
+      Object.values(
+        readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, join(dir, "ledger.json")).ledger.passes,
+      ).filter((passes) => passes.length > 0).length,
   }
 }
 
@@ -423,6 +428,8 @@ describe("a deep run yields the lock to a land run", () => {
       const world = yieldWorld(dir.path)
       const deepRun = accept(["--owed", "--parallel=3"], world.deepEnv)
       await until("the sleeper running in the deep run", () => world.groups().length === 2)
+      // The two quick files pass in this hold, before the yield: the deep run must count them as its own passes after it, not as passed before it.
+      await until("the quick files passed in the deep run's first hold", () => world.passed() >= 2)
       const land = await accept(["--land"], world.landEnv)
       const deep = await deepRun
       const seen = JSON.parse(readFileSync(join(dir.path, "seen.json"), "utf8"))
