@@ -1,3 +1,4 @@
+// accept: one at a time (it measures each plugin's setup time and the service's CPU at start).
 // Our server plugins start without holding a location up: a scratch fork service with
 // daily's server plugins (scripts/perf/plugin-start.ts, from its own OTLP spans) opens
 // three locations together, as TUIs reconnect after a restart, and each answers a

@@ -1,3 +1,4 @@
+// accept: one at a time (a failed boot must be named within five seconds, by the clock).
 // `ready` against a stand-in for the fork's background service that answers
 // as the fork's `ServerProcess` does (packages/server/src/process.ts
 // `dispatch`): its file is written when it listens, then every route answers

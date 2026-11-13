@@ -385,6 +385,16 @@
       "rules": {
         "effect/noEffectRunInTests": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/accept.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }

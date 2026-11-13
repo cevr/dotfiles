@@ -12,7 +12,8 @@
 // Run: CASE=steer OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/escape-states.ts
 //
 // It writes, under SCENARIO_OUT, `<case>-before.txt` (the frame just before
-// the Escape), `<case>-after.txt` (2.5 s after it, or 7 s for `offline`) and,
+// the Escape), `<case>-after.txt` (2.5 s after the TUI shows it interrupted, or
+// once it says the run is still running, for `offline`) and,
 // for `steer` and `queue`, `<case>-again.txt` (2.5 s after a second Escape),
 // plus `<case>-tool.txt` with `interrupted` when the shell call was cut.
 import { Effect, Schedule, Stream } from "effect"
@@ -79,8 +80,9 @@ export default OpenCodeDriver.use(
       const at = (start: number, ms: number) => Effect.sleep(Math.max(0, start + ms - Date.now()))
 
       const shells = which === "tool" ? yield* tools.control("shell") : undefined
-      const sent = Date.now()
       yield* ui.submit(ASK)
+      // The TUI has sent the prompt by the time submit returns: the grace counts from then, however slow the host.
+      const sent = Date.now()
       yield* until("streaming", (frame) => frame.includes(PARTIAL))
       // Past the 5 s grace, so the first prompt is never taken back.
       yield* at(sent, 6_000)
@@ -96,7 +98,12 @@ export default OpenCodeDriver.use(
       if (which === "offline") yield* network.set({ blackhole: true })
       yield* save("before")
       yield* ui.press("escape")
-      yield* Effect.sleep(which === "offline" ? "7 seconds" : "2500 millis")
+      // What the Escape did, once the TUI shows it: the run interrupted, or (the server silent) still running.
+      if (which === "offline") yield* until("after", (frame) => frame.includes("Still running"))
+      else {
+        yield* until("after", (frame) => frame.includes("Interrupted"))
+        yield* Effect.sleep("2500 millis")
+      }
       yield* save("after")
       if (which === "steer" || which === "queue") {
         yield* ui.press("escape")

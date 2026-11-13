@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds how long the store's refresh takes).
 // Real OpenCode (the fork, from source) with the Anthropic auth plugin and
 // the pool reading a login store, against the fake Anthropic API. Two store
 // accounts: the first one's token has expired, and the token endpoint answers
