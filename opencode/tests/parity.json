@@ -58,6 +58,23 @@
           "why": "real too: the late ◈ row waits for sim-tui, and a real server restart is no law yet"
         }
       ]
+    },
+    "tests/pool-failover.test.ts": {
+      "simulated": "cmd/pool/pool-failover.sim.test.ts",
+      "tests": [
+        {
+          "name": "without the pool, the same refusal ends the run: the host does not retry a plan limit",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until the HTTP, retry and refused laws have run on real OpenCode"
+        },
+        {
+          "name": "the first login's plan-limit 429 holds it, and the run goes out on the second",
+          "expects": 11,
+          "carried": "both",
+          "why": "real too until the HTTP, retry, refused and integration laws have run on real OpenCode"
+        }
+      ]
     }
   },
   "retired": []
