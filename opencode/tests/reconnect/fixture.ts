@@ -778,7 +778,7 @@ const holdsPrompt = (prompts: ReadonlyArray<Submission>, sessionID: string, mark
  * service accepts it (it answers once the session's location has booted, ANSWER_MS), and the
  * model gets it.
  */
-const promptArrives = (fixture: Fixture, marker: string) =>
+const promptArrives = (fixture: Fixture, marker: string, screen: Effect.Effect<string>) =>
   Effect.gen(function* () {
     const { proxy, parent } = fixture
     yield* until(
@@ -786,7 +786,7 @@ const promptArrives = (fixture: Fixture, marker: string) =>
       (sent) => holdsPrompt(sent, parent, marker),
       (last) => `the boot-time prompt never reached ${parent}:\n${toJson(last)}`,
       BACK_WITHIN_MS,
-    )
+    ).pipe(Effect.catchTag("TimedOut", (error) => screen.pipe(Effect.flatMap((shown) => Effect.fail(new TimedOut({ message: `${error.message}\nthe pane:\n${shown}` }))))))
     yield* until(
       Effect.sync(() => proxy.accepted),
       (taken) => holdsPrompt(taken, parent, marker),
@@ -853,7 +853,7 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
     // Earlier transcript text can scroll off screen as turns accumulate.
     // The stable header and the session-specific admission prove identity.
     yield* until(screen, (text) => text.includes(marker) && text.includes("Reconnect parent"), (last) => `opening/submitting during boot did not recover:\n${last}`, BACK_WITHIN_MS)
-    yield* promptArrives(fixture, marker)
+    yield* promptArrives(fixture, marker, screen)
     expect(proxy.refusedRequests.slice(beforeRefusals).length, "selection really crossed the 503 window").toBeGreaterThan(0)
     expect(seen.toasts, "error toast opening/submitting during boot").toEqual([])
   })
