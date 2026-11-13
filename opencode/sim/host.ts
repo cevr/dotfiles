@@ -30,7 +30,7 @@ import type { SimulationProtocol } from "@opencode/simulation/protocol"
 import { Agent } from "@opencode/schema/agent"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Schema } from "effect"
+import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Schema } from "effect"
 import { below, type JsonObject, line, plain, record as recordOf, type Runtime } from "./runtime.ts"
 
 // ── The model ──
@@ -255,15 +255,19 @@ export interface Options {
   readonly compactionReason?: boolean
   /** Background compaction: a session idle with a prompt at or past `trigger` and under `ceiling` gets a summary written ahead. */
   readonly backgroundCompaction?: { readonly trigger: number; readonly ceiling: number }
+  /** `experimental.schedules` on: the schedule tools are built in. */
+  readonly schedules?: boolean
   readonly models?: ReadonlyArray<CatalogModel>
 }
 
 /** 2001-09-09T01:46:40Z: every world's clock starts here unless told otherwise, years from any wall-clock reading. */
 export const START = 1_000_000_000_000
 
-/** The built-in tools the registry starts with: the shell, and OpenCode's schedule tools (offered under `experimental.schedules`). */
-export const BUILTIN = [
-  "shell",
+/** The built-in tool the registry starts with (real OpenCode has more; our plugins reach only the shell). */
+export const BUILTIN = ["shell"]
+
+/** OpenCode's schedule tools: built in only under `experimental.schedules` (real OpenCode's default is off). */
+export const SCHEDULES = [
   "opencode_schedule_create",
   "opencode_schedule_list",
   "opencode_schedule_pause",
@@ -427,8 +431,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     )
 
   /** The tools a request in `directory` offers: the built-ins, then each copy's transform there, in load order. */
+  const builtIn = [...BUILTIN, ...Arr.filter(SCHEDULES, () => options.schedules === true)]
   const toolsOf = (directory: string) => {
-    const offered = new Map<string, Option.Option<Tool.Info>>(BUILTIN.map((name) => [name, Option.none()]))
+    const offered = new Map<string, Option.Option<Tool.Info>>(builtIn.map((name) => [name, Option.none()]))
     for (const [instance, at] of directories) {
       if (at !== directory) continue
       for (const name of removed.get(instance) ?? []) offered.delete(name)

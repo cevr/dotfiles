@@ -239,6 +239,7 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
+    // Both hosts run with `experimental.schedules` on, so the schedule tools are built in.
     name: LAW.tools,
     operations: ["tool.transform", "tool.list"],
     check: (ctx) =>

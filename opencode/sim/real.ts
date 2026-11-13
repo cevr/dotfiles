@@ -98,6 +98,8 @@ const content = {
     },
   },
   plugins: [{ package: probe, options: PROBE_OPTIONS }],
+  // As the world's law run: OpenCode's schedule tools built in, for the tool law to remove one.
+  experimental: { schedules: true },
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */

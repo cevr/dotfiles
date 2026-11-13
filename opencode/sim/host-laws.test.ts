@@ -17,7 +17,7 @@ const { seeded } = Seed.runner("sim/host-laws.test.ts")
 /** One world on `seed` with the probe loaded for the law folder, run until it has run every law: its log. */
 const lawsOn = (seed: number) =>
   Effect.gen(function* () {
-    const world = World.make({ seed, script: (request) => World.say(answer(request.kind, request.text)) })
+    const world = World.make({ seed, schedules: true, script: (request) => World.say(answer(request.kind, request.text)) })
     yield* world.load(Probe, { directory: `/scratch/${LAW_FOLDER}`, options: PROBE_OPTIONS })
     yield* world.until(() => world.logs().some((line) => line.message === DONE), 20 * 60_000, 500)
     return world.logs().flatMap(lawLine)
