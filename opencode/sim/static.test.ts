@@ -4,8 +4,8 @@
 // the world's clock, moved only by an advance; a real one would make a seed
 // replay differently, or wait on a clock the world never moves.
 //
-// The seed runner (seed.ts) holds the file's wall budget through Effect's live
-// clock, and the real run (tests/host-laws/real.ts) is real by design: neither
+// The seed runner (seed.ts) holds the file's CPU budget, the wall time read
+// beside it through Effect's live clock, and the real run (tests/host-laws/real.ts) is real by design: neither
 // is scanned. The files are read through the fork's own Effect platform layer.
 import { describe, expect, test } from "bun:test"
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
