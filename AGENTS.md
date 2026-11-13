@@ -29,7 +29,7 @@
 
 ## Isolated workspaces
 
-- Use Rift instead of Git worktrees when Rift supports the file system.
+- Work happens in a Rift made from the repository's warm source, never in a Git worktree: a worktree is a full copy, a Rift a copy-on-write one. The folder you start in does not decide this: a checkout on a file system Rift cannot clone (the workbox's ext4 `~/Developer`) still has its warm source on one that can (`/workspaces`). The guard refuses `git worktree add` wherever Rift serves the checkout; `git worktree list`, `remove` and `prune` still run, to clean up old worktrees.
 - In OpenCode, use the `rift` tool (`create`, `list`, `remove`, `land`, and on the workbox its `workrift` actions): it runs the commands below for you, `remove` refuses a Rift with unsaved work, and `land` merges Rifts onto the default branch as one batch, gates, pushes and removes them.
 - Keep one clean warm source for each repository.
 - Do not make feature changes in a warm source.
