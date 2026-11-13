@@ -176,3 +176,69 @@ describe("link-fork", () => {
     }
   })
 })
+
+/** Every entry under `dir`, one level into scopes, with its link text: a fork's modules as a run found or left them. */
+const listing = (dir: string): ReadonlyArray<string> =>
+  readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name)
+    const stat = lstatSync(path)
+    if (stat.isSymbolicLink()) return [`${name} -> ${readlinkSync(path)}`]
+    if (name.startsWith("@") && stat.isDirectory()) return listing(path).map((entry) => `${name}/${entry}`)
+    return [name]
+  })
+
+describe("link-fork, sim-tui's extra links", () => {
+  /** sim-tui's package, and in the fork the protocol package and the TUI's test folder it links besides the modules. */
+  const simTui = () => {
+    const dir = join(workspace, "sim-tui")
+    file(join(dir, "package.json"))
+    file(join(fork, "packages/protocol/package.json"))
+    file(join(fork, "packages/tui/test/preload.ts"), "")
+    return dir
+  }
+  const forkModules = () => join(fork, "packages/tui/node_modules")
+
+  test("land in sim-tui's own node_modules, each resolving into the fork, and the fork's modules stay as they were", () => {
+    const dir = simTui()
+    const before = listing(forkModules())
+    expect(run(fork)).toMatchObject({ code: 0 })
+    expect(listing(forkModules())).toEqual(before)
+    const modules = join(dir, "node_modules")
+    expect(lstatSync(join(modules, "@opencode")).isSymbolicLink()).toBe(false)
+    expect(realpathSync(join(modules, "@opencode/protocol"))).toBe(realpathSync(join(fork, "packages/protocol")))
+    expect(realpathSync(join(modules, "@opencode-tui/test"))).toBe(realpathSync(join(fork, "packages/tui/test")))
+    expect(realpathSync(join(modules, "@opencode/plugin"))).toBe(realpathSync(join(forkModules(), "@opencode/plugin")))
+    // A second run, as every gate and install makes one, changes nothing either.
+    expect(run(fork)).toMatchObject({ code: 0 })
+    expect(listing(forkModules())).toEqual(before)
+  })
+
+  test("replace a scope an older run linked whole to the fork's with sim-tui's own", () => {
+    const dir = simTui()
+    const before = listing(forkModules())
+    mkdirSync(join(dir, "node_modules"), { recursive: true })
+    symlinkSync(join(forkModules(), "@opencode"), join(dir, "node_modules/@opencode"))
+    expect(run(fork)).toMatchObject({ code: 0 })
+    expect(lstatSync(join(dir, "node_modules/@opencode")).isSymbolicLink()).toBe(false)
+    expect(listing(forkModules())).toEqual(before)
+  })
+
+  test("a link an older run wrote into the fork's modules, pointing nowhere, is removed and the run goes on", () => {
+    const dir = simTui()
+    const before = listing(forkModules())
+    // As one went in through that scope: relative to a checkout, through the anchors folder, nothing from the fork.
+    symlinkSync("../../../../../../../.local/state/opencode-fork/Developer/personal/dotfiles/opencode/modules/../../protocol", join(forkModules(), "@opencode/protocol"))
+    expect(run(fork)).toMatchObject({ code: 0 })
+    expect(listing(forkModules())).toEqual(before)
+    expect(realpathSync(join(dir, "node_modules/@opencode/protocol"))).toBe(realpathSync(join(fork, "packages/protocol")))
+  })
+
+  test("a link of the fork's own that points nowhere is never removed: the run refuses it", () => {
+    simTui()
+    symlinkSync(join(ELSEWHERE, "packages/protocol"), join(forkModules(), "@opencode/protocol"))
+    const { code, err } = run(fork)
+    expect(code).not.toBe(0)
+    expect(err).toContain("@opencode/protocol")
+    expect(lstatSync(join(forkModules(), "@opencode/protocol")).isSymbolicLink()).toBe(true)
+  })
+})

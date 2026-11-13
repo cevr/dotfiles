@@ -133,4 +133,63 @@ describe("the advance step over real git and bun", () => {
       ),
     60_000,
   )
+
+  test(
+    "a target whose sim-tui links the fork's protocol installs, and the next one too: the fork's modules stay as they were",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const root = sh(".", ["mktemp", "-d", "-t", "update-source"]).out
+          const fork = `${root}/fork`
+          // The fork: its TUI package installed (the plugin API in its @opencode scope, Solid, Effect), its protocol
+          // package and the TUI's test folder, which sim-tui links besides the modules.
+          yield* files(fork, [
+            ["packages/tui/package.json", "{}"],
+            ["packages/tui/node_modules/@opencode/plugin/package.json", "{}"],
+            ["packages/tui/node_modules/solid-js/package.json", "{}"],
+            ["packages/tui/node_modules/effect/package.json", "{}"],
+            ["packages/protocol/package.json", "{}"],
+            ["packages/tui/test/preload.ts", ""],
+          ])
+          const forkModules = () => sh(fork, ["find", "packages/tui/node_modules", "-print"]).out
+          const before = forkModules()
+          const checkoutRoot = `${root}/dotfiles`
+          gitInit(checkoutRoot, ["-q", "-b", "main"], GIT_ENV)
+          yield* files(checkoutRoot, [
+            [".gitignore", "node_modules\n"],
+            ["opencode/package.json", WORKSPACES_PACKAGE],
+            ["opencode/scripts/link-fork.ts", yield* Effect.promise(() => file(new URL("../../../scripts/link-fork.ts", import.meta.url)).text())],
+            ["opencode/scripts/fork.ts", yield* Effect.promise(() => file(new URL("../../../scripts/fork.ts", import.meta.url)).text())],
+            ["opencode/sim-tui/package.json", `{ "name": "sim-tui", "private": true }`],
+          ])
+          expect(sh(`${checkoutRoot}/opencode`, [BUN, "install"]).code).toBe(0)
+          sh(checkoutRoot, ["git", "add", "-A"])
+          sh(checkoutRoot, ["git", "commit", "-qm", "A"])
+          const commit = (name: string) => {
+            spawnSync(["touch", `${checkoutRoot}/${name}`])
+            sh(checkoutRoot, ["git", "add", "-A"])
+            sh(checkoutRoot, ["git", "commit", "-qm", name])
+            return sh(checkoutRoot, ["git", "rev-parse", "HEAD"]).out
+          }
+          const b = commit("b")
+          const c = commit("c")
+          sh(checkoutRoot, ["git", "reset", "-q", "--hard", "HEAD~2"])
+          const env = { ...GIT_ENV, OPENCODE_FORK_ANCHORS: `${root}/anchors` }
+          const advanceTo = (target: string) =>
+            Effect.gen(function* () {
+              return yield* (yield* Source).advance(target)
+            }).pipe(Effect.provide(SourceLive.layer({ root: checkoutRoot, mode: "ff", bun: BUN, fork, env })), Effect.exit)
+          expect(Exit.isSuccess(yield* advanceTo(b))).toBe(true)
+          expect(forkModules()).toBe(before)
+          // The next install's link-fork checks the fork first: a link written into it would fail it there.
+          const next = yield* advanceTo(c)
+          expect(Exit.match(next, { onSuccess: () => "installed", onFailure: String })).toBe("installed")
+          expect(sh(checkoutRoot, ["git", "rev-parse", "HEAD"]).out).toBe(c)
+          expect(forkModules()).toBe(before)
+          expect(sh(checkoutRoot, ["realpath", "opencode/sim-tui/node_modules/@opencode/protocol"]).out).toBe(sh(fork, ["realpath", "packages/protocol"]).out)
+          spawnSync(["rm", "-rf", root])
+        }),
+      ),
+    60_000,
+  )
 })

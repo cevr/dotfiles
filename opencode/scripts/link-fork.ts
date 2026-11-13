@@ -33,7 +33,33 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { checkFork, FORK_MODULES } from "./fork.ts"
 
-const checked = checkFork(process.env.OPENCODE_DEV)
+const ANCHORS = "opencode-fork"
+
+/** sim-tui's extra links: the fork TUI's test folder (its fixture and preload) and the protocol package, by where they sit from the anchor. */
+const SIM_TUI: ReadonlyArray<readonly [string, string]> = [
+  ["@opencode-tui/test", "../test"],
+  ["@opencode/protocol", "../../protocol"],
+]
+
+/** A link's text, `real` for a file or folder, nothing for nothing there. */
+const linkOf = (file: string) => {
+  try {
+    const stat = lstatSync(file)
+    return stat.isSymbolicLink() ? readlinkSync(file) : "real"
+  } catch {
+    return undefined
+  }
+}
+
+const dev = process.env.OPENCODE_DEV
+// A run before 2026-11-13 linked sim-tui's scope folders whole to the fork's, so sim-tui's extra links went through
+// them into the fork's own modules, as text relative to a checkout, which points nowhere from there; the check
+// below refuses such a fork for every checkout. Such a link is ours (it names the anchors folder): it goes first.
+for (const [name] of SIM_TUI) {
+  const entry = path.join(path.resolve(dev || "."), FORK_MODULES, name)
+  if (String(linkOf(entry)).includes(path.sep + ANCHORS + path.sep)) rmSync(entry)
+}
+const checked = checkFork(dev)
 if ("problem" in checked) {
   console.error(`link-fork: ${checked.problem}`)
   process.exit(1)
@@ -42,7 +68,6 @@ if ("problem" in checked) {
 const forkModules = path.normalize(FORK_MODULES) + path.sep
 const root = path.resolve(import.meta.dir, "..")
 
-const ANCHORS = "opencode-fork"
 const anchors = process.env.OPENCODE_FORK_ANCHORS || path.join(homedir(), ".local/state", ANCHORS)
 const underHome = path.relative(homedir(), root)
 const anchor = path.join(anchors, underHome.startsWith("..") || path.isAbsolute(underHome) ? root.replace(/^[/\\]+/, "") : underHome, "modules")
@@ -71,15 +96,6 @@ const packages = [...children(path.join(root, "mods")), ...children(path.join(ro
   (dir) => existsSync(path.join(dir, "package.json")),
 )
 
-const linkOf = (file: string) => {
-  try {
-    const stat = lstatSync(file)
-    return stat.isSymbolicLink() ? readlinkSync(file) : "real"
-  } catch {
-    return undefined
-  }
-}
-
 /** A link through an anchor, or (from an older run) straight into a fork's packages/tui/node_modules: ours to repoint or remove. */
 const ours = (link: string | undefined): link is string =>
   link !== undefined && link !== "real" && (link.includes(path.sep + ANCHORS + path.sep) || link.includes(forkModules) || link.includes(platformModules))
@@ -87,12 +103,6 @@ const ours = (link: string | undefined): link is string =>
 /** The fork's Effect platform packages, built on the same `effect` the TUI's modules link: sim/ reads files through them. */
 const PLATFORM = "packages/util/node_modules/@effect"
 const platformModules = path.normalize(PLATFORM) + path.sep
-
-/** sim-tui's extra links: the fork TUI's test folder (its fixture and preload) and the protocol package, by where they sit from the anchor. */
-const SIM_TUI: ReadonlyArray<readonly [string, string]> = [
-  ["@opencode-tui/test", "../test"],
-  ["@opencode/protocol", "../../protocol"],
-]
 
 /** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
 const prune = (dir: string) => {
@@ -102,6 +112,12 @@ const prune = (dir: string) => {
     if (ours(current) && !existsSync(entry)) rmSync(entry)
     else if (current === "real" && name.startsWith("@") && lstatSync(entry).isDirectory()) prune(entry)
   }
+}
+
+/** Makes `scope` a folder of its own, in place of a link of ours to the fork's scope; `merge` then fills it one link at a time. */
+const realScope = (scope: string) => {
+  if (ours(linkOf(scope))) rmSync(scope)
+  mkdirSync(scope, { recursive: true })
 }
 
 /** Links each entry of `from` missing in `into`; a scope both have is merged one level down. */
@@ -127,6 +143,8 @@ for (const dir of packages) {
   if (linkOf(modules) !== undefined && linkOf(modules) !== "real") rmSync(modules)
   mkdirSync(modules, { recursive: true })
   prune(modules)
+  // sim-tui's extra links land in scope folders of its own: a scope linked whole to the fork's would take them into the fork.
+  if (path.basename(dir) === "sim-tui") for (const [name] of SIM_TUI) realScope(path.join(modules, path.dirname(name)))
   merge(target, modules)
   const platform = path.join(checked.fork, PLATFORM)
   if ((path.basename(dir) === "sim" || path.basename(dir) === "sim-tui") && existsSync(platform)) {
