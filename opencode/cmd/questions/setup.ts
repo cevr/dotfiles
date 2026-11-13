@@ -2,9 +2,9 @@
  * The questions TUI plugin's setup, apart from the JSX that draws the tray so
  * the seam test can run it (Bun's test runner has no Solid JSX transform;
  * OpenCode's TUI preloads one). It registers /answer, the shift+← hotkey and
- * the `session.composer.top` slot; `draw` renders the tray there. /answer and
- * the hotkey open the host's own question form for the open questions, one
- * per asking session (`@dotfiles/opencode-questions/opencode/form`).
+ * the `session.composer.top` slot; `draw` renders the tray there. /answer, the
+ * hotkey and a click on the tray (`open`) open the host's own question form for
+ * the open questions (`@dotfiles/opencode-questions/opencode/form`).
  *
  * shift+← is also the composer's `input.select.left` (the fork's
  * packages/tui/src/config/keybind.ts, bound by the managed textarea layer in
@@ -21,7 +21,12 @@ import { COMMAND } from "@dotfiles/opencode-questions/tray"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { JSX } from "@opentui/solid"
 
-export type Draw = (input: { readonly sessionID: string; readonly questions: Questions }) => JSX.Element
+export type Draw = (input: {
+  readonly sessionID: string
+  readonly questions: Questions
+  /** A click on the tray: opens the form for the session's open questions, as shift+← on an empty composer does; with none open, nothing. */
+  readonly open: () => void
+}) => JSX.Element
 
 export const ANSWER = `${QUESTIONS.id}.answer`
 export const OPEN = `${QUESTIONS.id}.open`
@@ -76,7 +81,15 @@ export const setup = (ctx: Plugin.Context, draw: Draw, host: FormHost = fromCont
   }))
   ctx.ui.slot({
     append: "session.composer.top",
-    render: (input) => draw({ sessionID: input.sessionID, questions }),
+    render: (input) =>
+      draw({
+        sessionID: input.sessionID,
+        questions,
+        open: () => {
+          // A click takes no key from the composer, so it opens as shift+← on an empty composer does, whatever the composer holds.
+          if (questions.open(input.sessionID).length > 0) void answer(input.sessionID)
+        },
+      }),
   })
   return questions
 }
