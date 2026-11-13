@@ -143,11 +143,27 @@ const startAccept = (args: ReadonlyArray<string>, env: typeof process.env, unown
   return { child, done }
 }
 
+/** This process's environment, without the fork (its real-OpenCode tests skip) and without the clock switch below. */
+const { OPENCODE_DEV: _fork, ACCEPT_TIMED: timedSwitch, ...INHERITED } = process.env
+
+/**
+ * Whether the real runs below judge their wall-clock bounds too: only with ACCEPT_TIMED=1, set by the acceptance file
+ * tests/accept-clock.test.ts, which runs one at a time. In the gate a loaded host stretches real time many times over,
+ * and a gate unit test does not judge it: there the runs judge what happened and in what order, never how fast.
+ */
+const TIMED = timedSwitch === "1"
+
+/** A wall-clock bound: judged only when TIMED; holds otherwise. */
+const bound = (holds: boolean) => holds || !TIMED
+
 /** The environment of a run on a scratch lock and ledger, without the fork (its real-OpenCode tests skip). */
-const scratchEnv = (dir: string, extra: Record<string, string> = {}) => {
-  const { OPENCODE_DEV: _fork, ...inherited } = process.env
-  return { ...inherited, ACCEPT_LOCK: join(dir, "lock"), ACCEPT_LEDGER: join(dir, "ledger.json"), ACCEPT_LOGS: join(dir, "logs"), ...extra }
-}
+const scratchEnv = (dir: string, extra: Record<string, string> = {}) => ({
+  ...INHERITED,
+  ACCEPT_LOCK: join(dir, "lock"),
+  ACCEPT_LEDGER: join(dir, "ledger.json"),
+  ACCEPT_LOGS: join(dir, "logs"),
+  ...extra,
+})
 
 /** Waits until `what` holds (tests/wait.ts), for `ms` at most; a wait in vain fails the test, naming it. */
 const until = (what: string, ready: () => boolean, ms = 30_000) => waitUntil(what, ready, ms)
@@ -352,7 +368,7 @@ describe("a land run under its budget", () => {
       const alive = groups.filter(groupAlive)
       // What the run left of this test's own stand-in, ended here so a red run leaks nothing.
       for (const group of alive) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
-      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
+      expect({ failed: first.code !== 0, inTime: bound(first.seconds < 12), closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
         failed: true,
         inTime: true,
         closing: Option.some({ mode: "land", passed: 1, failed: 1, owed: 1, deep: 0, budget: 1 }),
@@ -463,8 +479,8 @@ describe("a deep run yields the lock to a land run", () => {
       const waited = waitedOf(land.lines)
       expect({
         land: land.code,
-        inBudget: land.seconds < 20,
-        waitedUnder5: Option.exists(waited, (each) => each.waited < 5),
+        inBudget: bound(land.seconds < 20),
+        waitedUnder5: bound(Option.exists(waited, (each) => each.waited < 5)),
         // The wait ends as the lock is taken: its line comes before the first file, so it counts the wait alone.
         waitBeforeFiles: land.lines.findIndex((line) => line.startsWith("accept: waited ")) < land.lines.findIndex((line) => line.startsWith("accept: passed ")),
         onClock: Option.exists(waited, (each) => each.onClock === each.waited),
@@ -499,7 +515,7 @@ describe("a deep run yields the lock to a land run", () => {
       await until("the land run's wanted mark", () => existsSync(world.mark(land.child.pid)))
       // The deep run saw the mark: it stopped the sleeper's groups to give the lock up.
       const stopping = world.groups()
-      await until("the deep run stopping the sleeper's groups", () => stopping.every((group) => !groupAlive(group)), 10_000)
+      await until("the deep run stopping the sleeper's groups", () => stopping.every((group) => !groupAlive(group)))
       land.child.kill("SIGKILL")
       const killedAt = Date.now()
       await land.done
@@ -507,11 +523,10 @@ describe("a deep run yields the lock to a land run", () => {
       await until(
         "the deep run holding the lock again",
         () => existsSync(world.owner) && statSync(world.owner).mtimeMs >= killedAt && readFileSync(world.owner, "utf8").includes(`"pid":${deep.child.pid}`),
-        10_000,
       )
       const resumedIn = Date.now() - killedAt
       const ended = await deep.done
-      expect({ within2s: resumedIn < 2000, closing: closingOf(ended.lines) }).toEqual({
+      expect({ within2s: bound(resumedIn < 2000), closing: closingOf(ended.lines) }).toEqual({
         within2s: true,
         closing: Option.some({ mode: "owed", passed: 3, failed: 0, owed: 0, deep: 0, budget: 0 }),
       })
@@ -532,9 +547,15 @@ describe("a deep run yields the lock to a land run", () => {
       const land = await accept(["--land"], world.landEnv)
       // The killed run stopped nothing: its sleeper's groups (started by this test's run) go now.
       for (const group of orphans) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
-      await until("the killed run's sleeper groups gone", () => orphans.every((group) => !groupAlive(group)), 5000)
+      await until("the killed run's sleeper groups gone", () => orphans.every((group) => !groupAlive(group)))
       const read = readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, join(dir.path, "ledger.json"))
-      expect({ land: land.code, atOnce: Option.exists(waitedOf(land.lines), (each) => each.waited < 1), problem: read.problem }).toEqual({ land: 0, atOnce: true, problem: Option.none() })
+      expect({
+        land: land.code,
+        // The killed run's flock ended with it: the land run found the lock free and waited for no one.
+        free: !land.lines.some((line) => line.startsWith("accept: waiting for")),
+        atOnce: bound(Option.exists(waitedOf(land.lines), (each) => each.waited < 1)),
+        problem: read.problem,
+      }).toEqual({ land: 0, free: true, atOnce: true, problem: Option.none() })
     },
     RUN_MS,
   )
