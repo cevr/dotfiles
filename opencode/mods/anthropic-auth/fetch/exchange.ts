@@ -5,7 +5,7 @@
 import { type Clock, Effect, Option, Result, Schema } from "effect"
 import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
-import { readUnifiedQuota } from "../quota.ts"
+import { readUnifiedQuota, retryAfterSeconds } from "../quota.ts"
 import { describeConnection, type RateLimitCategory } from "../rate-limit.ts"
 import { type CacheTTL, rewriteRequestBody } from "../request-body.ts"
 import { CLAUDE_CODE_SESSION_HEADER, claudeCodeSessionID } from "../session-header.ts"
@@ -134,6 +134,27 @@ export const onRequest =
         ),
       )
       if (!exchange.active() || login === undefined) return
+      // A login another plugin chose that was refused while the request waited for its token (its placement made
+      // before the refusal came back) sends the request nowhere, as a refusal does, so the chooser places it again.
+      const resolvedAt = clock.currentTimeMillisUnsafe()
+      const refusedUntil = yield* Option.match(Option.fromNullishOr(choice.credentialID), {
+        onNone: () => Effect.succeed(Option.none<number>()),
+        onSome: (credentialID) =>
+          auth.reading(credentialID).pipe(
+            Effect.map((reading) =>
+              Option.filter(
+                Option.flatMap(Option.fromNullishOr(reading?.refusal), (refusal) => Option.fromNullishOr(refusal.until)),
+                (until) => until > resolvedAt,
+              ),
+            ),
+          ),
+      })
+      if (Option.isSome(refusedUntil)) {
+        const request = refusedRequest(event.request)
+        ownership.refused.set(request, retryAfterSeconds(refusedUntil.value, resolvedAt))
+        event.request = request
+        return
+      }
       const description = describeConnection(login.connection)
       const credentialID = credentialIDOf(login.connection)
       const sessionHeader = claudeCodeSessionID(event.sessionID)
