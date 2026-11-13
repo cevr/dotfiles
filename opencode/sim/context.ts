@@ -190,19 +190,16 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         }),
     )
 
+  /** A client of an RPC: any method name, answered as the host answers it (a method no plugin registered fails). */
   const client = (definition: { readonly id: string }) =>
-    guarded(
-      new Proxy(
-        {},
-        {
-          get: (_target, method) => {
-            if (Predicate.isSymbol(method) || PROBES.has(method)) return void 0
-            return <I>(input: I) => host.callRpc(definition.id, method, plain(input))
-          },
+    new Proxy(
+      {},
+      {
+        get: (_target, method) => {
+          if (Predicate.isSymbol(method) || PROBES.has(method)) return void 0
+          return <I>(input: I) => host.callRpc(definition.id, method, plain(input))
         },
-      ),
-      `ctx.rpc(${definition.id})`,
-      0,
+      },
     )
 
   const list = (input: typeof ListInput.Type) => {
