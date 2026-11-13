@@ -1,0 +1,40 @@
+                                            money worker  $0.00
+
+  opencode vlocal
+  model simulation/gpt-sim-model
+  cwd ~/files
+
+ ┃ Fix the money parser with one worker.
+
+  ● Started Fix money parsing
+
+  A worker is on it.
+
+  ⠙ Executing · 1s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ┃
+ ↓ subagents                                                                                gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 1 subagent  ·  0 shells
+ ◇ worker gpt  Fix money parsing  Check the money parser first. · 0s
+
+ ✓ Server  ● UI  Theme  Tools  Experiments

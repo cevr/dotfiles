@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-sim-tui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The fork's real TUI in-process with our TUI plugins loaded as OpenCode loads them, on a manual clock, in front of a scripted server double held to the real server by client laws (app.ts, server.ts, client-laws.ts).",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

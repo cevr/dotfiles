@@ -6,6 +6,7 @@
 // the service onto its new build, and the TUI reconnects to it. A service
 // still booting answers 503, so a failed read of its version is tried again,
 // backing off, until it answers or a newer read takes over.
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
 import type { UpstreamReading } from "../update.ts"
@@ -25,7 +26,7 @@ export function builds(context: Plugin.Context, readUpstream: () => UpstreamRead
   })
   // A read the next connection started is newer, so each read takes a turn and an older one's answer is dropped.
   let turn = 0
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancel: (() => void) | undefined
   const attempt = (current: number, tries: number) => {
     void context.client.server.info().then(
       (info) => {
@@ -34,12 +35,12 @@ export function builds(context: Plugin.Context, readUpstream: () => UpstreamRead
       () => {
         const wait = RETRY_MS[tries]
         if (turn !== current || wait === undefined) return
-        timer = setTimeout(() => attempt(current, tries + 1), wait)
+        cancel = TuiClock.once(wait, () => attempt(current, tries + 1))
       },
     )
   }
   const load = () => {
-    clearTimeout(timer)
+    cancel?.()
     setUpstream(readUpstream())
     attempt(++turn, 0)
   }
@@ -50,7 +51,7 @@ export function builds(context: Plugin.Context, readUpstream: () => UpstreamRead
     upstream: () => upstream(),
     stop() {
       turn++
-      clearTimeout(timer)
+      cancel?.()
       unconnected()
     },
   }

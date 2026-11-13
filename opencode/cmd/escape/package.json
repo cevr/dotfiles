@@ -9,6 +9,7 @@
     "./tui": "./tui.ts"
   },
   "dependencies": {
+    "@dotfiles/decider": "workspace:*",
     "@dotfiles/opencode-escape": "workspace:*"
   }
 }

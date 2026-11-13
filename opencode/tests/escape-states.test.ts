@@ -1,4 +1,4 @@
-// accept: deep (218.3 s alone on a quiet host: 1-minute load 7.3–27.6 on 12 cores; it holds a 20 s stall in each of its five cases, one after another)
+// accept: deep (218.3 s alone on a quiet host: 1-minute load 7.3–27.6 on 12 cores; it holds a 20 s stall in each of its five cases, one after another; the gate runs its names simulated, cmd/escape/escape-states.sim.test.tsx)
 // Runs scenarios/escape-states.ts once per case with the Prime look and the
 // escape plugin against an OpenCode checkout, and asserts that one Escape on a
 // busy session stops its run in every state, never drops the prompt the user

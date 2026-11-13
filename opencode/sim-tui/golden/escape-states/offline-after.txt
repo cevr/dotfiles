@@ -1,0 +1,40 @@
+                                           helper rename  $0.00
+                                            ┃                                                          ┃
+  opencode vlocal                           ┃  Still running 5 s after Escape: the server has not   x  ┃
+  model simulation/gpt-sim-model            ┃  stopped it (is it reachable?)                           ┃
+  cwd ~/files                               ┃                                                          ┃
+
+ ┃ Rename the helper.
+
+  Working on it
+
+  ⠧ Executing · 11s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ┃
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ○ UI  Theme  Tools  Experiments

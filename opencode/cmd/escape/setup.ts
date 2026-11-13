@@ -32,6 +32,7 @@
  * composer, oldest first, joined by a newline, after the draft; nothing is
  * sent. With nothing waiting, or off the first row, Up is the host's.
  */
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { decide, DEFAULT_GRACE_MS, hung, STOP_MS, type Taking } from "@dotfiles/opencode-escape/escape"
 import { read, waiting, type Editor, type Reads, type Route } from "@dotfiles/opencode-escape/opencode/view"
 import { decideSend, plan, SEND_COMMAND, SEND_FALLBACK, SEND_KEY, type Waiting } from "@dotfiles/opencode-escape/send"
@@ -121,7 +122,8 @@ export interface Clock {
   after(ms: number, run: () => void): void
 }
 
-const realClock: Clock = { now: Date.now, after: (ms, run) => void setTimeout(run, ms) }
+/** The TUI clock (decider/tui-clock.ts), read at each call, so a harness that installs one holds this plugin too. */
+const realClock: Clock = { now: () => TuiClock.now(), after: (ms, run) => void TuiClock.once(ms, run) }
 
 /** The toast when the session still runs STOP_MS after `key` asked it to stop. */
 export const notStopped = (key: string) => `Still running ${STOP_MS / 1000} s after ${key}: the server has not stopped it (is it reachable?)`

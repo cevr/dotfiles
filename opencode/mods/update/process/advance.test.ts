@@ -24,8 +24,11 @@ const copy = `${scratch}/opencode`
 const load = (entries: ReadonlyArray<string>) =>
   sh([BUN, "build", "--target=bun", "--outdir", `${scratch}/out`, ...HOST.flatMap((name) => ["--external", name]), ...entries], copy)
 
-/** The plugins' entry files: every non-test file of `cmd/*`, server, TUI, handoff and job runner alike. */
-const entries = () => [...new Glob("cmd/*/*.{ts,tsx}").scanSync(copy)].filter((path) => !path.endsWith(".test.ts")).sort()
+/**
+ * The plugins' entry files: every non-test file of `cmd/*`, server, TUI, handoff and job runner alike. A test file,
+ * `.ts` or `.tsx` (a simulated TUI test, `*.sim.test.tsx`), is no entry: the host never loads it.
+ */
+const entries = () => [...new Glob("cmd/*/*.{ts,tsx}").scanSync(copy)].filter((path) => !/\.test\.tsx?$/.test(path)).sort()
 
 /**
  * A fresh copy of the tree, as a host's checkout stands right after its fast-forward: no node_modules. The

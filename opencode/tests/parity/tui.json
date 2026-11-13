@@ -1,0 +1,81 @@
+{
+  "baseline": "33535b23",
+  "files": {
+    "tests/prime-sidebar.test.ts": {
+      "simulated": "cmd/prime/prime-sidebar.sim.test.tsx",
+      "tests": [
+        {
+          "name": "wide, the sidebar holds the session and the dock counts the worker",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the frames on sim-tui, each held to its golden from one real run (sim-tui/golden/prime-sidebar)"
+        },
+        {
+          "name": "wide, with the sidebar open, the worker's row stays beneath the composer",
+          "expects": 1,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the frames on sim-tui, each held to its golden from one real run"
+        },
+        {
+          "name": "narrow, there is no sidebar and the worker's row is back under the count",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the resize on sim-tui, held to its golden from one real run"
+        }
+      ]
+    },
+    "tests/prime-escape.test.ts": {
+      "simulated": "cmd/prime/prime-escape.sim.test.tsx",
+      "tests": [
+        {
+          "name": "just after sending, the Dock shows no Escape hint",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the frame on sim-tui, held to its golden from one real run (sim-tui/golden/prime-escape)"
+        },
+        {
+          "name": "Escape at 1 s: the prompt leaves the transcript and is back in the composer",
+          "expects": 4,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the 1 s Escape on the virtual clock; the double's take-back is the client law of the inbox cancel"
+        },
+        {
+          "name": "7 s after sending, the Dock still shows no Escape hint",
+          "expects": 1,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the frame on sim-tui, held to its golden from one real run"
+        },
+        {
+          "name": "Escape at 7 s interrupts: the prompt and its partial answer stay",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the 7 s Escape on the virtual clock; the double's interrupt is the client law of the interrupt"
+        }
+      ]
+    },
+    "tests/escape-states.test.ts": {
+      "simulated": "cmd/escape/escape-states.sim.test.tsx",
+      "tests": [
+        {
+          "name": "a running shell call: one Escape cancels it and interrupts",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the shell call as the drive's tools.control runs it, held to its golden from one real run (sim-tui/golden/escape-states)"
+        },
+        {
+          "name": "a draft in the composer: one Escape interrupts and the draft stays",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the frames on sim-tui, held to their goldens from one real run"
+        },
+        {
+          "name": "the server does not answer: the TUI says so instead of doing nothing",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too until scripts/accept.test.ts (accept-ledger-land) stops reading the real file; the double silent while the virtual clock passes STOP_MS"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

@@ -1,4 +1,4 @@
-// accept: deep (18.2 s alone on a quiet host: 1-minute load 12.3–13.9 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (18.2 s alone on a quiet host: 1-minute load 12.3–13.9 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long; the gate runs its names simulated, cmd/prime/prime-sidebar.sim.test.tsx)
 // Runs scenarios/prime-sidebar.ts with the Prime look and the orchestrate
 // plugin against an OpenCode checkout and asserts that the live subagent rows
 // beneath the composer stay while the session's sidebar shows: wide, the

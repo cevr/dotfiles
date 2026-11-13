@@ -4,6 +4,7 @@
 // the tray, rule, dock line (subagents, shells, wakes; drawn only while one
 // is active) and a live row per subagent under it. The words are
 // chrome.ts's; this file draws them.
+import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import type { BoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -148,7 +149,7 @@ export function HintLine(props: { host: Host; sessionID: string }) {
  * dropped once its moment passes, by a timer set for that moment.
  */
 function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal | undefined> {
-  const [now, setNow] = createSignal(Date.now())
+  const [now, setNow] = createSignal(TuiClock.now())
   const goal = createMemo(() => {
     const id = sessionID()
     return id ? host.goal(id) : undefined
@@ -156,10 +157,9 @@ function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal
   createEffect(() => {
     const current = goal()
     if (current?.status !== "complete") return
-    const left = current.updatedAt + GOAL_LINGER_MS - Date.now()
-    if (left <= 0) return setNow(Date.now())
-    const timer = setTimeout(() => setNow(Date.now()), left)
-    onCleanup(() => clearTimeout(timer))
+    const left = current.updatedAt + GOAL_LINGER_MS - TuiClock.now()
+    if (left <= 0) return setNow(TuiClock.now())
+    onCleanup(TuiClock.once(left, () => setNow(TuiClock.now())))
   })
   return createMemo(() => {
     const current = goal()
@@ -422,19 +422,19 @@ export function Queued(props: { host: Host; sessionID: string }) {
 export function Working(props: { host: Host; sessionID: string }) {
   const running = createMemo(() => props.host.status(props.sessionID) === "running")
   const shown = createMemo(() => loader(props.host.messages(props.sessionID), props.host.pending(props.sessionID)))
-  const [now, setNow] = createSignal(Date.now())
-  const [seen, setSeen] = createSignal(Date.now())
+  const [now, setNow] = createSignal(TuiClock.now())
+  const [seen, setSeen] = createSignal(TuiClock.now())
   const [frame, setFrame] = createSignal(0)
   // The spinner turns only while the turn runs; an idle session sets no timer.
   createEffect(() => {
     if (!running()) return
-    setNow(Date.now())
-    setSeen(Date.now())
-    const timer = setInterval(() => {
-      setNow(Date.now())
+    setNow(TuiClock.now())
+    setSeen(TuiClock.now())
+    const stop = TuiClock.every(SPINNER_MS, () => {
+      setNow(TuiClock.now())
       setFrame((value) => (value + 1) % SPINNER.length)
-    }, SPINNER_MS)
-    onCleanup(() => clearInterval(timer))
+    })
+    onCleanup(stop)
   })
   return (
     <Show when={running() ? shown() : undefined}>
