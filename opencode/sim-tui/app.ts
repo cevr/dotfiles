@@ -139,7 +139,8 @@ interface Harness {
   ended: boolean
   frame: Frame
   key: string
-  scratch: Option.Option<string>
+  /** The file's host dirs (`hold`), made when its app starts and removed by the file's last test (`shutdown`, `dropHost`) or the next start. */
+  host: Option.Option<string>
   release: () => void
 }
 const harness: Harness = {
@@ -151,22 +152,26 @@ const harness: Harness = {
   ended: false,
   frame: { lines: [] },
   key: "",
-  scratch: Option.none(),
+  host: Option.none(),
   release: () => {},
 }
 
-/** The wall clock under fake timers: a scratch file's modification time. */
+/** The wall clock under fake timers: the modification time of a file written in a folder made for the read and removed with it. */
 const realNow = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const scratch = yield* Option.match(harness.scratch, {
-    onSome: Effect.succeed,
-    onNone: () => fs.makeTempDirectory({ prefix: "sim-tui-clock-" }).pipe(Effect.map((dir) => path.join(dir, "now"))),
-  })
-  harness.scratch = Option.some(scratch)
-  yield* fs.writeFileString(scratch, "")
-  const info = yield* fs.stat(scratch)
+  const now = path.join(yield* fs.makeTempDirectoryScoped({ prefix: "sim-tui-clock-" }), "now")
+  yield* fs.writeFileString(now, "")
+  const info = yield* fs.stat(now)
   return Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() })
+}).pipe(Effect.scoped)
+
+/** Removes the file's host dirs, once its app has closed or its start failed; none made is fine. */
+const dropHost = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const made = harness.host
+  harness.host = Option.none()
+  if (Option.isSome(made)) yield* fs.remove(made.value, { recursive: true, force: true })
 })
 
 /** The process's CPU time so far, in milliseconds. */
@@ -455,8 +460,10 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   const theme = yield* fs.readFileString(path.join(root, "themes/prime.json")).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Theme)))
   const traced = { trace: new Array<TraceEntry>(), started: EPOCH }
   // A file before this one in the process gave its holds back when it closed; a seeded test run alone holds them for good.
-  const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
   harness.release()
+  yield* dropHost
+  const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
+  harness.host = Option.some(host)
   hold(simClock((entry) => traced.trace.push(entry), () => traced.started), host)
   jest.setSystemTime(EPOCH)
   const lobby = Server.make({ draw: () => 0, now: TuiClock.system.now, model: lobbyModel })
@@ -534,7 +541,8 @@ export const shutdown = Effect.gen(function* () {
     yield* close(app)
   }
   harness.release()
-}).pipe(Effect.provide(NodeServices.layer))
+  // The host dirs go however the file ends: its app closed, its close failed, or its start failed with no app made.
+}).pipe(Effect.ensuring(Effect.orDie(dropHost)), Effect.provide(NodeServices.layer))
 
 /** The app for `options.file`, booted once per process: the app of another file closes first, so its timers and requests stop. */
 export const boot = (options: BootOptions) =>

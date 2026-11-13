@@ -45,6 +45,10 @@ runner (`sim/seed.ts`) unchanged.
   boots, so no frame shows this machine's files, such as daily's
   `upstream.json` (`host.test.ts` plants one on a fake host and looks).
   A plugin that reads a host file takes its dir from there.
+- Every folder the harness makes goes when the file ends, however it ends:
+  the host dirs by the file's last test (`shutdown`), and the clock's
+  scratch with each read. `tmp.test.ts` runs a green and a red file with
+  TMPDIR at a fresh folder and finds it empty after.
 
 ## What holds time
 
