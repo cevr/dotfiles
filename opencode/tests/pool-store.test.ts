@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds how far apart two refreshes begin).
 // The pool's login store source over a store in its slot-file format: the
 // fixtures are slot files in temporary directories, another process's
 // refreshes are made under the store's real lock (tests/store/store.ts), and

@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds the gap between the failed turn and its retry).
 // Real OpenCode (the fork, from source) with two Anthropic logins, the
 // Anthropic auth plugin and the pool, against the fake Anthropic API. The
 // first login answers with a plan-limit 429; the run must finish on the

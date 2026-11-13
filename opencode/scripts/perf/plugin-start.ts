@@ -62,6 +62,11 @@ export interface Options {
   /** Copies of the owner's plugin data in the scratch HOME (see `copyData`). */
   readonly data?: boolean
   readonly cpuProfile?: string
+  /**
+   * The scratch directory to run in, made by the caller (its HOME is `<root>/home`), and removed at
+   * the end like one of its own; by default a new one in the system temp directory.
+   */
+  readonly root?: string
 }
 
 export interface Location {
@@ -165,7 +170,7 @@ export const groupCpu = (group: number): number => {
 
 export const measure = async (options: Options): Promise<Measure> => {
   const plugins = options.plugins ?? SERVER_PLUGINS
-  const root = mkdtempSync(join(tmpdir(), "plugin-start-"))
+  const { root = mkdtempSync(join(tmpdir(), "plugin-start-")) } = options
   const home = join(root, "home")
   const state = join(home, ".local/state")
   const write = (file: string, value: unknown) => {
