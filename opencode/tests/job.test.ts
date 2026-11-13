@@ -1,4 +1,4 @@
-// accept: deep (31.5 s alone on a quiet host before the kill moved to the simulated host: 1-minute load 8.2–10.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (31.5 s alone on a quiet host: measured before the kill moved to the simulated host, 1-minute load 8.2–10.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public tool seam: real OpenCode, the real wake server plugin with its
 // process runner, Prime and a scripted model. scenarios/job.ts runs a job, a
 // real detached process, whose end wakes the idle session. What happened is
