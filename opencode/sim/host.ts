@@ -572,13 +572,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       })
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
       yield* runHttpHooks("http.request", session, before)
+      // The answer arrives at once: a refusal is whole then; an answer streams for the seed's latency before it is read.
       const answered = yield* Effect.exit(provider.handle(before.request))
-      yield* streaming
       if (Exit.isFailure(answered)) return Result.fail(Http.unreachable(String(answered.cause)))
       const after: HttpResponseInput = { ...scope, kind: event.kind, request: before.request, response: answered.value }
       yield* runHttpHooks("http.response", session, after)
       const text = yield* Http.textOf(after.response)
       if (!after.response.ok) return Result.fail(Http.classify(after.response.status, after.response.headers, text))
+      yield* streaming
       const streamed = Http.readStream(text)
       const items = streamed.items.map((item): Item => {
         if (item.type === "text") return { type: "textDelta", text: item.text }
