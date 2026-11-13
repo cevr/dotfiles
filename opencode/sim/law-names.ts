@@ -45,9 +45,13 @@ export const PROBE_OPTIONS = { law: "probe", depth: 2 }
 /** The folder the law probe's copy runs the laws in: a host may load it for other folders too. */
 export const LAW_FOLDER = "law"
 
+/** What the move law's folder adds to the law folder's path: a sibling, `<law folder>-moved`, that the test host makes. */
+export const LAW_MOVED = "-moved"
+
 export const LAW = {
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",
-  prompt: "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, and a second admission of its id is not taken again",
+  prompt:
+    "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, the answer the assistant message's text content; a second admission of its id is not taken again",
   steer: "a synthetic message with resume wakes an idle session into an execution that reads it, and a second admission of its id is not taken again",
   notice: "a synthetic message without resume starts no execution, and the next prompt's execution reads it",
   compact:
@@ -77,7 +81,9 @@ export const LAW = {
     "execute.before sees a call and may change its input; one that fails refuses the call with its message and no execute.after runs; execute.after sees the result and may change what the model reads",
   update: "a transform's update of the built-in subagent tool wraps its execute: the call runs through the wrapper",
   shell: "the shell's create.before hooks see each command the host spawns, before it runs",
-  compaction: "a compaction hook's message added after the conversation goes in the compaction request before the summary prompt",
+  compaction:
+    "a compaction hook's message added after the conversation goes in the compaction request before the summary prompt; its start and end are one event each with an id of its own, the end's carrying the summary",
+  move: "an idle session moved to another directory moves with no turn, is there, and is decided by that location's hooks until it moves back; each move publishes session.moved",
   window: "a session on an agent whose compactionWindow its prompt passed is compacted automatically; one on an agent without the window is not",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
 }

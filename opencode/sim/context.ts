@@ -8,7 +8,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
-import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type HostEvent, type Login, type Subscriber } from "./host.ts"
+import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, type Subscriber } from "./host.ts"
 import { type JsonObject, plain } from "./runtime.ts"
 
 /** A plugin as OpenCode loads it: its definition, where, and its options. */
@@ -53,6 +53,7 @@ export const OPERATIONS = [
   "session.create",
   "session.prompt",
   "session.update",
+  "session.move",
   "model.list",
   "model.default",
   "provider.list",
@@ -93,6 +94,7 @@ const CreateInput = Schema.Struct({
 })
 const PromptInput = Schema.Struct({ sessionID: Schema.String, id: Schema.optional(Schema.String), text: Schema.String })
 const UpdateInput = Schema.Struct({ sessionID: Schema.String, metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)) })
+const MoveInput = Schema.Struct({ sessionID: Schema.String, directory: Schema.String })
 const ListInput = Schema.Struct({
   parentID: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.optional(Schema.String),
@@ -191,7 +193,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         Effect.gen(function* () {
           const subscriber: Subscriber = {
             types: Option.map(Option.fromNullishOr(input.types), (types) => new Set(types)),
-            queue: yield* Queue.unbounded<HostEvent>(),
+            queue: yield* Queue.unbounded<Published>(),
           }
           host.subscribers.add(subscriber)
           return subscriber
@@ -465,6 +467,11 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           ),
         ),
       ),
+    move: <I>(input: I) =>
+      parse(
+        MoveInput,
+        "session.move",
+      )(input).pipe(Effect.flatMap((parsed) => host.sessionOr(parsed.sessionID).pipe(Effect.flatMap((found) => host.move(found, parsed.directory))))),
   }
 
   /** The agents of a location, as the agent domain answers them. */

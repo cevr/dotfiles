@@ -72,7 +72,11 @@ export interface Request {
   readonly tools: ReadonlyArray<string>
 }
 
-export type Script = (request: Request) => Reply
+/**
+ * The model: its reply to a request, or an Effect that answers it later (a provider holding its answer until the test
+ * lets it go, as tests/orchestrate/sim.ts's gates hold a response). Either way the stream's latency runs first.
+ */
+export type Script = (request: Request) => Reply | Effect.Effect<Reply>
 
 /** An HTTP request, as the fetch API has it (this module's `Request` is a model request). */
 type WebRequest = globalThis.Request
@@ -192,7 +196,8 @@ export interface Session {
   job: Option.Option<Job>
   /** None until the first execution asks for one; then the title request's answer. */
   title: Option.Option<string>
-  readonly directory: string
+  /** Its location: a move changes it. */
+  directory: string
   metadata: JsonObject
   busy: Option.Option<number>
   idle: Option.Option<number>
@@ -274,9 +279,14 @@ export interface HostEvent {
   readonly data: JsonObject
 }
 
+/** An event as a subscriber gets it: with its own id, as every event of the fork's bus carries one. */
+export interface Published extends HostEvent {
+  readonly id: string
+}
+
 export interface Subscriber {
   readonly types: Option.Option<ReadonlySet<string>>
-  readonly queue: Queue.Queue<HostEvent>
+  readonly queue: Queue.Queue<Published>
 }
 
 export interface ModelRequestInput {
@@ -707,11 +717,15 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     fiber.addObserver(() => fibers.delete(fiber))
   }
 
+  /** Each event with an id of its own, from a counter (no seed drawn, so the ids move no other choice). */
+  const published = { count: 0 }
   const publish = (event: HostEvent) =>
     Effect.gen(function* () {
+      published.count += 1
+      const sent: Published = { id: `evt_${published.count.toString().padStart(6, "0")}`, ...event }
       record("event", { type: event.type, data: event.data })
       for (const subscriber of subscribers)
-        if (Option.match(subscriber.types, { onNone: () => true, onSome: (types) => types.has(event.type) })) yield* Queue.offer(subscriber.queue, event)
+        if (Option.match(subscriber.types, { onNone: () => true, onSome: (types) => types.has(event.type) })) yield* Queue.offer(subscriber.queue, sent)
     })
 
   /**
@@ -889,7 +903,17 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const outcome = yield* Option.match(
         Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === used.providerID),
         {
-          onNone: () => streaming.pipe(Effect.andThen(Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script(asking))))),
+          onNone: () =>
+            streaming.pipe(
+              Effect.andThen(
+                Effect.suspend(() => {
+                  const answer = options.script(asking)
+                  if (Effect.isEffect(answer)) return answer
+                  return Effect.succeed(answer)
+                }),
+              ),
+              Effect.map((reply): Result.Result<Reply, Http.Failure> => Result.succeed(reply)),
+            ),
           onSome: (provider) => overHttp(session, provider, event, tools, extra),
         },
       )
@@ -1139,6 +1163,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   /** A compaction: the held summary, else a `compaction` request; then its completed message. */
   const compaction = (session: Session, item: Extract<InboxItem, { type: "compaction" }>) =>
     Effect.gen(function* () {
+      let reason: Reason = "manual"
+      if (options.compactionReason !== false) reason = Option.getOrElse(item.reason, (): Reason => "manual")
+      // As the fork's runner and compaction publish them (session-event.ts `Compaction.Started`, `Compaction.Ended`).
+      yield* publish({ type: "session.compaction.started", data: { sessionID: session.id, reason, inputID: item.id } })
       const held = session.held
       session.held = Option.none()
       let summary = ""
@@ -1164,10 +1192,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
           .flatMap((message) => Option.match(Schema.decodeUnknownOption(AddedMessage)(message), { onNone: () => [], onSome: addedText }))
         summary = textOf((yield* request(session, "compaction", [...added, "summarize the conversation above"].join("\n"))).reply)
       }
-      let reason: Reason = "manual"
-      if (options.compactionReason !== false) reason = Option.getOrElse(item.reason, (): Reason => "manual")
       session.messages.push({ type: "compaction", id: item.id, created: runtime.now(), status: "completed", summary, reason })
       record("compacted", { sessionID: session.id })
+      yield* publish({ type: "session.compaction.ended", data: { sessionID: session.id, reason, text: summary } })
     })
 
   /** Takes the inbox up to its first compaction into the conversation, each one delivered. */
@@ -1448,8 +1475,11 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const viewOf = (message: Message) => {
     const created = { created: DateTime.makeUnsafe(message.created) }
     if (message.type !== "assistant") return { ...message, time: created }
-    const { call: used, ...rest } = message
-    return Option.match(used, { onNone: () => ({ ...rest, time: created }), onSome: (value) => ({ ...rest, call: value, time: created }) })
+    // Its text as the fork's assistant message holds it, and only there: a text part of its content
+    // (session-message.ts `Assistant`).
+    const { call: used, text, ...rest } = message
+    const content = Arr.filter([{ type: "text", text }], (part) => part.text.trim() !== "")
+    return Option.match(used, { onNone: () => ({ ...rest, content, time: created }), onSome: (value) => ({ ...rest, content, call: value, time: created }) })
   }
 
   /** The catalog's providers: one per provider the models name. */
@@ -1477,6 +1507,23 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         Effect.map(plain),
         Effect.catchDefect(() => Effect.fail(new RpcInternal({ message: `the handler of ${id}.${method} failed` }))),
       )
+    })
+
+  /**
+   * A session moved to another directory (packages/core/src/session/move.ts): an idle one moves at once, its location
+   * the new one, with no turn, and `session.moved` published; from then on its requests, tools and hooks are that
+   * location's copies'. A running one moves at its next step's boundary in the fork, which the world does not model.
+   */
+  const move = (session: Session, directory: string) =>
+    Effect.suspend(() => {
+      if (session.running) {
+        unmodelled.push(`session.move of the running session ${session.id}`)
+        return Effect.void
+      }
+      record("moved", { sessionID: session.id, from: session.directory, directory })
+      session.directory = directory
+      touch(session)
+      return publish({ type: "session.moved", data: { sessionID: session.id, location: { directory } } })
     })
 
   /** Stops every host fiber: the server is gone. */
@@ -1529,6 +1576,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     runTool,
     providers,
     callRpc,
+    move,
     stop,
     resume,
     agentTransforms,

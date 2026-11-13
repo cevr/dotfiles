@@ -29,9 +29,10 @@ import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
-import { Branches, Findings, type FindingsRead, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
+import { findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
+import { Branches, Findings, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
 import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
-import { Data, Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option } from "effect"
 import type { World } from "./world.ts"
 
 /** A check in the world's shell: the command's answer at this instant, after the time it runs (at most `timeoutMs`). */
@@ -72,10 +73,13 @@ export interface OrchestrateDoubles {
   readonly lines?: Array<CallLine>
   /** The Codex admission's answer for a model and role; none fails open, as the script with no admission line does. */
   readonly codex?: (model: string, role: string) => Option.Option<Pace>
+  /** The machine's ledger lines: one array is one ledger, shared by the copies (each location's, each restart's) given it. */
+  readonly ledger?: Array<unknown>
+  /** The files a verifier's report and its unit findings are read from, by absolute path; a path not in it does not read. */
+  readonly files?: ReadonlyMap<string, string>
 }
 
-/** The findings reader's answers. */
-const Reads = Data.taggedEnum<FindingsRead>()
+const NO_FILES: ReadonlyMap<string, string> = new Map()
 
 /**
  * The orchestrate plugin (`cmd/orchestrate/server.ts`'s `make`) on the world: everything that goes through OpenCode
@@ -88,9 +92,10 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) =>
   makeOrchestrate((ctx, options, start, background) =>
     Layer.mergeAll(
       hosted(ctx, start, background),
-      MemoryLedger.layer(options.cadence, []),
-      // No report reads, no Rift has a branch, no unit's log.md is found: the world keeps no files and runs no git or log.ts.
-      Layer.succeed(Findings, Findings.of({ read: (report) => Effect.succeed(Reads.Unread({ why: `the report ${report} does not read` })) })),
+      MemoryLedger.layer(options.cadence, doubles.ledger ?? []),
+      // A report reads from the files the test holds, by the plugin's own reader; no Rift has a branch, no unit's log.md
+      // is found: the world runs no git or log.ts.
+      Layer.succeed(Findings, Findings.of({ read: (report) => Effect.sync(() => findingsIn(report, (path) => (doubles.files ?? NO_FILES).get(path))) })),
       Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
       Layer.succeed(UnitLogs, UnitLogs.of({ find: () => Effect.succeed(void 0), append: () => Effect.void, drops: () => Effect.succeed([]) })),
       CallLogTest.layer(doubles.lines ?? []),

@@ -205,6 +205,8 @@ export const make = (worldOptions: WorldOptions) => {
     /** The owner sends `text` to the session: a prompt, which wakes it. */
     prompt: (sessionID: string, text: string) =>
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
+    /** The owner moves an idle session to `directory` (host law: move): from then on that location's copies decide it. */
+    move: (sessionID: string, directory: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.move(session, directory)))),
     /** The session is deleted. */
     remove: (sessionID: string) =>
       run(
