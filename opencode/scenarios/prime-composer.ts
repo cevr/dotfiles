@@ -10,10 +10,13 @@
 //
 // It writes, under SCENARIO_OUT, `composer-<name>.txt` and `.json` for each
 // kept frame (`set`, `panel`, `wakes`, `detail`, `cancelled`, `monitors`, `closed`, `none`, `alarm`), and
-// `composer-timeout.txt` when a wait times out.
+// `composer-timeout.txt` when a wait times out. Each frame is kept only once
+// it shows what tests/prime-composer.test.ts asserts on it
+// (scenarios/prime-composer-frames.ts).
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { alarmShows, CLOSED, closedDock, detailShows, noneShows, panelShows, type PanelFrame } from "./prime-composer-frames.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -62,6 +65,9 @@ export default OpenCodeDriver.use(
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() => ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/composer-timeout.txt`, text(frame))))),
         )
+      const lines = (frame: string) => frame.split("\n")
+      /** Ready to keep `name`: the open panel shows all the test asserts of it. */
+      const shows = (name: PanelFrame) => (frame: string) => panelShows(name, lines(frame))
       const keep = (name: string, screenshot = false) =>
         Effect.gen(function* () {
           const { images: _, ...frame } = yield* ui.capture()
@@ -75,7 +81,7 @@ export default OpenCodeDriver.use(
       yield* keep("set")
       // ↓ on the empty prompt opens the panel on its first tab.
       yield* ui.press("down")
-      yield* until((frame) => frame.includes("Subagents") && frame.includes("Wakes") && frame.includes("Monitors"), 50)
+      yield* until(shows("panel"), 50)
       yield* keep("panel", true)
       // → past Shell reaches Wakes. The note shows in the transcript too: the tab's row is what follows it.
       const alarmRow = "ALPHA: check the deploy  wake · once"
@@ -85,23 +91,23 @@ export default OpenCodeDriver.use(
         yield* ui.press("right")
         yield* Effect.sleep("150 millis")
       }
-      yield* until((frame) => frame.includes(alarmRow), 50)
+      yield* until(shows("wakes"), 50)
       yield* keep("wakes", true)
       // Enter shows the alarm whole; Escape closes that and leaves the tab open.
       yield* ui.press("return")
-      yield* until((frame) => frame.includes("Repeat: once") && frame.includes("Mode: wake"), 50)
+      yield* until((frame) => detailShows(lines(frame)), 50)
       yield* keep("detail", true)
       yield* ui.press("escape")
       yield* until((frame) => !frame.includes("Repeat: once") && frame.includes(alarmRow), 50)
       yield* ui.press("d", { ctrl: true })
-      yield* until((frame) => frame.includes("No pending wakes"), 80)
+      yield* until(shows("cancelled"), 80)
       yield* keep("cancelled", true)
       yield* ui.press("right")
-      yield* until((frame) => frame.includes("echo still-waiting  still-waiting"), 80)
+      yield* until(shows("monitors"), 80)
       yield* keep("monitors", true)
       // Escape closes the panel: the dock is back, counting the monitor and no wake.
       yield* ui.press("escape")
-      yield* until((frame) => frame.includes("1 monitor") && !frame.includes("Monitors"), 50)
+      yield* until((frame) => closedDock(lines(frame)) === CLOSED && !frame.includes("Monitors"), 50)
       yield* keep("closed")
       // Cancel the monitor too: with no subagent, shell, wake or monitor, the dock's count line is gone.
       yield* ui.press("down")
@@ -116,11 +122,11 @@ export default OpenCodeDriver.use(
       yield* ui.press("d", { ctrl: true })
       yield* until((frame) => frame.includes("No monitors"), 80)
       yield* ui.press("escape")
-      yield* until((frame) => !frame.includes("No monitors") && !frame.includes("Monitors") && !frame.includes("1 monitor"), 50)
+      yield* until((frame) => !frame.includes("No monitors") && !frame.includes("Monitors") && noneShows(lines(frame)), 50)
       yield* keep("none")
       // A turn that sets one alarm alone: the line is back, counting the wake.
       yield* ui.submit("Set one alarm.")
-      yield* until((frame) => frame.includes("Alarm set.") && frame.includes("1 wake"))
+      yield* until((frame) => frame.includes("Alarm set.") && alarmShows(lines(frame)))
       yield* keep("alarm")
     }),
 )

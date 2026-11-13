@@ -6,6 +6,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { DOCK_COUNT, dockRow, workingRow } from "../scenarios/prime-subagents-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -81,15 +82,13 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
   test("while subagents run, the main session says Down reaches them, under the composer", kept.test(() => {
     expect(frames.started[0]).not.toContain("›")
     expectDownUnder(frames.started)
-    expect(frames.started.join("\n")).toContain("◆ 3 subagents")
+    expect(frames.started.join("\n")).toContain(DOCK_COUNT)
   }))
 
   test("beneath the dock, each running subagent has a live row in the order they started", kept.test(() => {
-    const dock = frames.started.findIndex((line) => line.includes("◆ 3 subagents"))
+    const dock = frames.started.findIndex((line) => line.includes(DOCK_COUNT))
     const rows = frames.started.slice(dock + 1, dock + 4).map((line) => line.trim())
-    WORKERS.forEach((worker, index) =>
-      expect(rows[index]).toMatch(new RegExp(`^[◇◈◆] general gpt  ${worker.title} +.+ · \\d+s$`)),
-    )
+    WORKERS.forEach((worker, index) => expect(rows[index]).toMatch(dockRow(worker.title)))
   }))
 
   test("inside a subagent the rows sit above the picker and mark the one shown", kept.test(() => {
@@ -117,7 +116,7 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
   test("Down on the empty prompt opens the Subagents picker, listing the running workers", kept.test(() => {
     const text = frames.picker.join("\n")
     expect(text).toContain("Subagents")
-    for (const worker of WORKERS) expect(text).toMatch(new RegExp(`[◆◇◈] general +\\S+ +${worker.title} .* working +\\d+s$`, "m"))
+    for (const worker of WORKERS) expect(text).toMatch(workingRow(worker.title))
   }))
 
   test("Enter in the picker opens a subagent, with its brief and its loader", kept.test(() => {
@@ -139,6 +138,6 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
   test("a click on the dock's subagent count opens the Subagents picker", kept.test(() => {
     const text = frames.dock.join("\n")
     expect(frames.dock[0]).not.toContain("›")
-    for (const worker of WORKERS) expect(text).toMatch(new RegExp(`[◆◇◈] general +\\S+ +${worker.title} .* working +\\d+s$`, "m"))
+    for (const worker of WORKERS) expect(text).toMatch(workingRow(worker.title))
   }))
 })

@@ -14,7 +14,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { panelOf as panel, ROWS, type Tab } from "../scenarios/prime-panel-rows.ts"
+import { BAR, FOOTERS, panelOf as panel, ROWS, SUBAGENTS, type Tab } from "../scenarios/prime-panel-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -112,7 +112,7 @@ function expectDownUnder(frame: string) {
  */
 function expectOtherTabs(shown: Shown) {
   for (const tab of OTHER_TABS) expect(shown[tab]?.rows, tab).toEqual(ROWS[tab].map((row) => expect.stringMatching(row)))
-  expect(shown.shell?.footer).toBe("Enter output · Ctrl+D kill · ←/→ tabs")
+  expect(shown.shell?.footer).toBe(FOOTERS.shell)
   // The Terminals rows line their columns up: the commands start in one column.
   const terminals = shown.terminals?.rows.slice(0, 2) ?? []
   expect(new Set(terminals.map((row) => row.indexOf("sh -c"))).size).toBe(1)
@@ -128,9 +128,9 @@ describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DE
       const { wide, narrow } = await scenario(dir)
       for (const cols of [160, 80]) expectDownUnder(readFileSync(join(dir, `panel-${cols}-dock.txt`), "utf8"))
       for (const shown of [wide, narrow]) {
-        expect(shown.subagents?.bar).toMatch(/^Subagents 5 {2}· {2}Shell 2 {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 +esc$/)
-        expect(shown.subagents?.footer).toBe("Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs")
-        expect(shown.subagents?.rows).toHaveLength(5)
+        expect(shown.subagents?.bar).toMatch(BAR)
+        expect(shown.subagents?.footer).toBe(FOOTERS.subagents)
+        expect(shown.subagents?.rows).toHaveLength(SUBAGENTS)
         expectOtherTabs(shown)
       }
       expectSubagents(wide, narrow)
