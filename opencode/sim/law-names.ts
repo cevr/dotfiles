@@ -22,7 +22,8 @@ export const LAW_FOLDER = "law"
 export const LAW = {
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",
   prompt: "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, and a second admission of its id is not taken again",
-  steer: "a synthetic message with resume wakes an idle session into an execution that reads it, and a second admission of its id is not taken again",
+  steer:
+    "a synthetic message with resume, steered, wakes an idle session into an execution that reads it, the message keeping its metadata, and a second admission of its id is not taken again",
   notice: "a synthetic message without resume starts no execution, and the next prompt's execution reads it",
   compact:
     "a compaction asked with a reason runs on the model and starts the context completed with that reason; experimental.idle runs after a turn and not after the compaction alone",
@@ -31,6 +32,14 @@ export const LAW = {
   rpc: "an RPC method a plugin registers answers a call with its JSON",
   sessions:
     "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
+  steps:
+    "each step of a turn publishes session.step.started then session.step.ended for its assistant message, on the session's agent and model, and the host publishes no session.idle",
+  removed: "a removed session publishes session.deleted once and is gone",
+  archived:
+    "a plugin's update does not archive a session (the plugin host drops `archived`); a client's archive publishes session.archived once, and archiving it again publishes nothing",
+  form: "a form a client creates for a session and answers publishes form.replied with the session and the answer",
+  agent:
+    "an agent a transform adds publishes agent.updated and is in the catalog; a session created with it and a model answers both, and its requests run on them",
   catalog: "the catalog lists the configured model, its provider and the build agent, and refuses ones it does not have",
   http: "http.request runs after model.request for each request, carrying the headers model.request set; the request it leaves is the one sent, and http.response sees that request",
   retry:
@@ -41,7 +50,7 @@ export const LAW = {
     "an http.request hook may send a request to a data: URL, answered in the process; a 401 http.response puts in its answer's place fails the request with its message, the retry hook asked not to retry it, and the turn ends: one request, no answer",
   integration:
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
-  provider: "a provider a transform turns on is in the provider list",
+  provider: "a provider a transform turns on is in the provider list, and the change publishes provider.updated and model.updated for the copy's location",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
 }
 
@@ -63,6 +72,14 @@ export const KEPT = "sim-law: kept "
 export const BROKEN = "sim-law: broken "
 /** The probe's line once it has run every law. */
 export const DONE = "sim-law: done"
+
+/**
+ * The probe's line asking the host's client (the TUI, the owner) to act, as only a client can: then the ask as
+ * JSON, `{ "action": "archive", "sessionID" }` or `{ "action": "form", "sessionID", "key", "value" }` (create a
+ * form of one string field `key` for the session and answer it `value`). The world's law run does it with the
+ * world's own driver, the real run with the fork's SDK; the law waits for what the host does after.
+ */
+export const CLIENT = "sim-law: client "
 
 /** A law's own outcome line among a run's lines, or, with none, every line, to show what happened. */
 export const outcome = (all: ReadonlyArray<string>, name: string) => {

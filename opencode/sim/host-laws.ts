@@ -15,13 +15,14 @@
 // model's requests from the `model.request` hook.
 import { Integration, type Plugin } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+import { CLIENT, LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -34,7 +35,26 @@ export interface Probe {
   readonly requests: Effect.Effect<ReadonlyArray<{ readonly sessionID: string; readonly kind: string }>>
   /** Runs `action`, then waits until the session ran an execution after it and has none running. */
   readonly turn: <A, E>(sessionID: string, action: Effect.Effect<A, E>) => Effect.Effect<A, E | LawBroken>
+  /** Asks the host's client to act (law-names.ts `CLIENT`); the law waits for what the host does after. */
+  readonly client: (ask: ClientAsk) => Effect.Effect<void>
 }
+
+/** What a law asks the host's client to do. */
+export const ClientAsk = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("archive"), sessionID: Schema.String }),
+  Schema.Struct({ action: Schema.Literal("form"), sessionID: Schema.String, key: Schema.String, value: Schema.String }),
+])
+export type ClientAsk = typeof ClientAsk.Type
+const encodeAsk = Schema.encodeSync(Schema.fromJsonString(ClientAsk))
+
+/** Waits until `holds` answers true, polling the host's clock; fails the law with `message` past 30 s. */
+const waitFor = <E>(holds: Effect.Effect<boolean, E>, message: string) =>
+  Effect.gen(function* () {
+    for (let waited = 0; !(yield* holds); waited += 100) {
+      if (waited > 30_000) return yield* Effect.fail(new LawBroken({ message }))
+      yield* Effect.sleep("100 millis")
+    }
+  })
 
 export interface Law {
   readonly name: string
@@ -89,7 +109,8 @@ export const probeOf = (ctx: Plugin.Context) =>
         }
         return result
       })
-    const probe: Probe = { requests: Ref.get(requests), turn }
+    const client = (ask: ClientAsk) => Effect.logInfo(`${CLIENT}${encodeAsk(ask)}`)
+    const probe: Probe = { requests: Ref.get(requests), turn, client }
     return probe
   })
 
@@ -182,13 +203,26 @@ export const LAWS: ReadonlyArray<Law> = [
     check: (ctx, probe) =>
       Effect.gen(function* () {
         const session = yield* fresh(ctx)
-        const steer = { sessionID: session.id, id: SessionMessage.ID.make("msg_lawsteeronce0001"), text: "law: steer once", description: "law", resume: true }
-        yield* probe.turn(session.id, ctx.session.synthetic(steer))
-        yield* ctx.session.synthetic(steer).pipe(Effect.ignore)
+        // As wake and questions steer a letter: an id, a description, metadata and `delivery: "steer"`, the host's default.
+        const steer = ctx.session.synthetic({
+          sessionID: session.id,
+          id: SessionMessage.ID.make("msg_lawsteeronce0001"),
+          text: "law: steer once",
+          description: "law",
+          metadata: { law: "steer" },
+          delivery: "steer",
+          resume: true,
+        })
+        yield* probe.turn(session.id, steer)
+        yield* steer.pipe(Effect.ignore)
         yield* settle
         const text = yield* contextText(ctx, session.id)
         yield* ensure(count(text, "heard steer once") === 1, `the model answered the steer ${count(text, "heard steer once")} times`)
         yield* ensure(count(text, "law: steer once") === 1, `the session holds the steer ${count(text, "law: steer once")} times`)
+        const kept = (yield* ctx.session.context({ sessionID: session.id })).filter((message) =>
+          Schema.is(Schema.Struct({ type: Schema.Literal("synthetic"), metadata: Schema.Struct({ law: Schema.Literal("steer") }) }))(message),
+        )
+        yield* ensure(kept.length === 1, `${kept.length} synthetic messages keep the steer's metadata`)
       }),
   },
   {
@@ -313,6 +347,144 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* probe.turn(newer.id, ctx.session.prompt({ sessionID: newer.id, text: "law: list order" }))
         const prompted = yield* ctx.session.list({ parentID: parent.id, order: "desc", limit: 1 })
         yield* ensure(ids(prompted) === newer.id, `desc limit 1 after a prompt to the newer child was ${ids(prompted)}`)
+      }),
+  },
+  {
+    name: LAW.steps,
+    operations: ["event.subscribe", "session.prompt", "session.context"],
+    // The pool prices a step from its end and its model from its start, and listens for session.idle.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", "session.idle"] }).pipe(
+            Stream.runForEach((event) => {
+              if (event.type === "session.idle") return Ref.update(seen, (all) => [...all, "idle"])
+              if (event.data.sessionID !== session.id) return Effect.void
+              if (event.type === "session.step.started") {
+                const { agent, model, assistantMessageID } = event.data
+                return Ref.update(seen, (all) => [...all, `started ${assistantMessageID} ${agent} ${model.providerID}/${model.id}`])
+              }
+              return Ref.update(seen, (all) => [...all, `ended ${event.data.assistantMessageID}`])
+            }),
+          ),
+          { startImmediately: true },
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: steps" }))
+        yield* settle
+        const assistant = (yield* ctx.session.context({ sessionID: session.id })).flatMap((message) => {
+          if (message.type === "assistant") return [message.id]
+          return []
+        })
+        yield* ensure(assistant.length === 1, `the turn holds ${assistant.length} assistant messages`)
+        const lines = (yield* Ref.get(seen)).join(", ")
+        yield* ensure(lines === `started ${assistant[0]} build sim/sim-model, ended ${assistant[0]}`, `the step events were ${lines}`)
+      }),
+  },
+  {
+    name: LAW.removed,
+    operations: ["session.remove", "event.subscribe", "session.get"],
+    check: (ctx) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const deleted = yield* Ref.make(0)
+        yield* Effect.forkScoped(
+          ctx.event
+            .subscribe({ types: ["session.deleted"] })
+            .pipe(Stream.runForEach((event) => Effect.when(Ref.update(deleted, (n) => n + 1), Effect.succeed(event.data.sessionID === session.id)))),
+          { startImmediately: true },
+        )
+        yield* ctx.session.remove({ sessionID: session.id })
+        yield* settle
+        yield* ensure((yield* Ref.get(deleted)) === 1, `the removal published session.deleted ${yield* Ref.get(deleted)} times`)
+        const gone = yield* Effect.exit(ctx.session.get({ sessionID: session.id }))
+        yield* ensure(gone._tag === "Failure", "get still answers a removed session")
+      }),
+  },
+  {
+    name: LAW.archived,
+    operations: ["session.update", "event.subscribe"],
+    // Questions forgets an archived session's questions: the owner archives it, from a client.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const archived = yield* Ref.make(0)
+        yield* Effect.forkScoped(
+          ctx.event
+            .subscribe({ types: ["session.archived"] })
+            .pipe(Stream.runForEach((event) => Effect.when(Ref.update(archived, (n) => n + 1), Effect.succeed(event.data.sessionID === session.id)))),
+          { startImmediately: true },
+        )
+        yield* ctx.session.update({ sessionID: session.id, archived: true })
+        yield* settle
+        yield* ensure((yield* Ref.get(archived)) === 0, "a plugin's update archived the session")
+        yield* probe.client({ action: "archive", sessionID: session.id })
+        yield* waitFor(
+          Ref.get(archived).pipe(Effect.map((n) => n > 0)),
+          "the client's archive published no session.archived",
+        )
+        yield* probe.client({ action: "archive", sessionID: session.id })
+        yield* settle
+        yield* ensure((yield* Ref.get(archived)) === 1, `archiving twice published session.archived ${yield* Ref.get(archived)} times`)
+      }),
+  },
+  {
+    name: LAW.form,
+    operations: ["event.subscribe"],
+    // Questions hears the owner's answers to its form from form.replied.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const replies = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["form.replied"] }).pipe(
+            Stream.runForEach((event) =>
+              Ref.update(replies, (all) => [...all, `${event.data.sessionID === session.id} ${String(event.data.answer["law"])}`]),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        yield* probe.client({ action: "form", sessionID: session.id, key: "law", value: "answered" })
+        yield* waitFor(
+          Ref.get(replies).pipe(Effect.map((all) => all.length > 0)),
+          "the client's answer published no form.replied",
+        )
+        yield* settle
+        const seen = (yield* Ref.get(replies)).join(",")
+        yield* ensure(seen === "true answered", `form.replied carried ${seen}`)
+      }),
+  },
+  {
+    name: LAW.agent,
+    operations: ["agent.transform", "agent.get", "event.subscribe", "session.create", "session.get", "session.prompt", "session.hook"],
+    // Wake creates a fire's session with the agent and model the alarm names.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const updates = yield* Ref.make(0)
+        const asked = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(ctx.event.subscribe({ types: ["agent.updated"] }).pipe(Stream.runForEach(() => Ref.update(updates, (n) => n + 1))), {
+          startImmediately: true,
+        })
+        yield* ctx.session.hook("model.request", (event) =>
+          Ref.update(asked, (all) => [...all, `${event.sessionID} ${event.kind} ${event.agent} ${event.model.providerID}/${event.model.id}`]),
+        )
+        yield* ctx.agent.transform((editor) =>
+          editor.update("law", (agent) => {
+            agent.description = "law: an agent a plugin adds"
+          }),
+        )
+        yield* settle
+        yield* ensure((yield* Ref.get(updates)) >= 1, "adding an agent published no agent.updated")
+        yield* ctx.agent.get({ agentID: Agent.ID.make("law"), location: { directory: ctx.location.directory } })
+        const model = { providerID: Provider.ID.make("sim"), id: Model.ID.make("sim-model"), variant: Model.VariantID.make("default") }
+        const session = yield* ctx.session.create({ title: "law agent", agent: Agent.ID.make("law"), model })
+        const info = yield* ctx.session.get({ sessionID: session.id })
+        yield* ensure(info.agent === "law", `the session's agent is ${String(info.agent)}`)
+        yield* ensure(info.model?.providerID === "sim" && info.model.id === "sim-model", `the session's model is ${info.model?.providerID}/${info.model?.id}`)
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: agent" }))
+        const mine = (yield* Ref.get(asked)).filter((line) => line.startsWith(`${session.id} primary `))
+        yield* ensure(mine.join(",") === `${session.id} primary law sim/sim-model`, `the session's requests were ${mine.join(",")}`)
       }),
   },
   {
@@ -523,9 +695,22 @@ export const LAWS: ReadonlyArray<Law> = [
   },
   {
     name: LAW.provider,
-    operations: ["provider.transform", "provider.list"],
+    operations: ["provider.transform", "provider.list", "event.subscribe"],
+    // Idle compaction looks at the catalog again on these events, its own location's alone.
     check: (ctx) =>
       Effect.gen(function* () {
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["provider.updated", "model.updated"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.when(
+                Ref.update(seen, (all) => [...all, event.type]),
+                Effect.succeed(event.location?.directory === ctx.location.directory),
+              ),
+            ),
+          ),
+          { startImmediately: true },
+        )
         yield* ctx.provider.transform((editor) => {
           if (editor.get("openai")?.provider.activation === "auto")
             editor.update("openai", (provider) => {
@@ -537,6 +722,9 @@ export const LAWS: ReadonlyArray<Law> = [
           providers.data.some((provider) => provider.id === "openai"),
           `the provider list after the transform is ${providers.data.map((provider) => provider.id).join(",")}`,
         )
+        yield* settle
+        const events = new Set(yield* Ref.get(seen))
+        yield* ensure(events.has("provider.updated") && events.has("model.updated"), `the transform published ${[...events].join(",")} for this location`)
       }),
   },
   {

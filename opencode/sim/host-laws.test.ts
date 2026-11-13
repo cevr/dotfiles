@@ -4,12 +4,12 @@
 // without a law: every one of them is named by one.
 import type { Plugin } from "@opencode/plugin/effect"
 import { describe, expect } from "bun:test"
-import { Array as Arr, Effect, Predicate, type Schema } from "effect"
+import { Array as Arr, Effect, Predicate, Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
-import { LAWS } from "./host-laws.ts"
+import { ClientAsk, LAWS } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe from "./server.ts"
 import * as World from "./world.ts"
 
@@ -51,9 +51,26 @@ const lawsOn = (seed: number) =>
       integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
     })
     yield* world.load(Probe, { directory: `/scratch/${LAW_FOLDER}`, options: PROBE_OPTIONS })
-    yield* world.until(() => world.logs().some((line) => line.message === DONE), 20 * 60_000, 500)
+    // What the probe asks of the host's client, the world's driver does, as the real run's SDK does.
+    const asks = () => world.logs().flatMap((line) => Arr.filter([line.message.slice(CLIENT.length)], () => line.message.startsWith(CLIENT)))
+    const done = () => world.logs().some((line) => line.message === DONE)
+    for (let handled = 0; !done(); ) {
+      yield* world.until(() => done() || asks().length > handled, 20 * 60_000, 500)
+      for (const json of asks().slice(handled)) {
+        handled += 1
+        yield* act(world, yield* decodeAsk(json))
+      }
+    }
     return world.logs().flatMap(lawLine)
   })
+
+const decodeAsk = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientAsk))
+
+/** Does a law's ask of the client with the world's own driver. */
+const act = (world: World.World, ask: ClientAsk) => {
+  if (ask.action === "archive") return world.archive(ask.sessionID)
+  return world.reply(ask.sessionID, { [ask.key]: ask.value })
+}
 
 /** A law's outcome line, alone; nothing for another. */
 const lawLine = (line: { readonly message: string }) => {

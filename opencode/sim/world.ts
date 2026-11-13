@@ -203,11 +203,18 @@ export const make = (worldOptions: WorldOptions) => {
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
     /** The session is deleted. */
     remove: (sessionID: string) =>
-      run(
-        Effect.suspend(() => {
-          if (!host.sessions.delete(sessionID)) return Effect.void
-          return host.publish({ type: "session.deleted", data: { sessionID } })
-        }),
+      run(Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => Effect.void, onSome: host.removeSession })),
+    /** The owner archives the session from a client. */
+    archive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.archive(session)))),
+    /**
+     * The owner answers a form made for the session (a client makes one: the TUI, an HTTP caller; a server plugin
+     * cannot), with `answer`: `form.replied` with the form, the session and the answer, as the fork's Form.reply.
+     */
+    reply: (sessionID: string, answer: JsonObject) =>
+      sessionOf(sessionID).pipe(
+        Effect.flatMap((session) =>
+          run(host.publish({ type: "form.replied", data: { id: host.mint("frm_"), sessionID: session.id, answer } })),
+        ),
       ),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */
     rpc: (id: string, method: string, input: Schema.Json) => run(host.callRpc(id, method, input)),

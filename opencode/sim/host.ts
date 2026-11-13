@@ -161,9 +161,20 @@ export interface Shell {
   readonly command: string
 }
 
+/** A model as a session names it: its provider, its id, and the variant when one was chosen. */
+export interface ModelRef {
+  readonly providerID: string
+  readonly id: string
+  readonly variant?: string
+}
+
 export interface Session {
   readonly id: string
   readonly parentID: Option.Option<string>
+  /** The agent it was created with: its requests run as it, else as `build` (`requestAgent`). */
+  readonly agent: Option.Option<string>
+  /** The model it was created with: its requests run on it, else on the host's (`requestModel`). */
+  readonly model: Option.Option<ModelRef>
   /** None until the first execution asks for one; then the title request's answer. */
   title: Option.Option<string>
   readonly directory: string
@@ -231,6 +242,8 @@ class HookDied extends Data.TaggedError("HookDied")<{ readonly name: string; rea
 export interface HostEvent {
   readonly type: string
   readonly data: JsonObject
+  /** The Location an event of one Location's state names (a catalog change), as the fork's bus tags it. */
+  readonly location?: { readonly directory: string }
 }
 
 export interface Subscriber {
@@ -404,6 +417,8 @@ interface SessionTime {
 /** A session as `session.get` answers it. */
 interface SessionInfo {
   readonly id: string
+  agent?: string
+  model?: ModelRef
   parentID?: string
   title?: string
   readonly location: { readonly directory: string }
@@ -452,6 +467,28 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     ["openai", "auto"],
   ])
   const catalogNotFound = (what: string) => new CatalogNotFound({ message: `${what} not found` })
+  /** The agents plugins added, by the directory whose catalog they changed (a Location's own, as the fork's). */
+  const added = new Map<string, Set<string>>()
+  /** The agents of a directory's catalog: `build`, then the ones a transform there added. */
+  const agentsOf = (directory: string) => ["build", ...(added.get(directory) ?? [])].map((id) => ({ id, request: {} }))
+
+  /** A session removed: gone from the host, and `session.deleted` published. */
+  const removeSession = (session: Session) =>
+    Effect.suspend(() => {
+      sessions.delete(session.id)
+      record("session-removed", { sessionID: session.id })
+      return publish({ type: "session.deleted", data: { sessionID: session.id } })
+    })
+
+  /** The sessions a client archived. A plugin's `session.update` cannot archive one: the fork's plugin host drops `archived`. */
+  const archived = new Set<string>()
+  /** A client archives the session: `session.archived` once; an archived session's archive is nothing (the fork's Session.archive). */
+  const archive = (session: Session) =>
+    Effect.suspend(() => {
+      if (archived.has(session.id)) return Effect.void
+      archived.add(session.id)
+      return publish({ type: "session.archived", data: { sessionID: session.id } })
+    })
 
   /** Appends one trace line: its virtual time, its kind, its data as JSON. */
   const record = <A>(kind: string, data: A) => {
@@ -475,6 +512,11 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const touch = (session: Session) => {
     session.updated = runtime.now()
   }
+
+  /** The agent a session's requests run as: the one it was created with, else `build`. */
+  const requestAgent = (session: Session) => Option.getOrElse(session.agent, () => AGENT)
+  /** The model a session's requests run on: the one it was created with, else the host's. */
+  const requestModel = (session: Session): ModelRef => Option.getOrElse(session.model, () => model)
 
   /** A host fiber (an execution, a background shell, a title): it lives until it ends or the host goes down. */
   const spawn = <A, E>(effect: Effect.Effect<A, E>) => {
@@ -605,13 +647,13 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     extra: string,
   ) =>
     Effect.gen(function* () {
-      const scope = { sessionID: session.id, agent: AGENT, model }
+      const scope = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session) }
       const conversation = contextOf(session).flatMap(wireOf)
       const messages = [...conversation, ...Arr.filter([{ role: "user" as const, content: [{ type: "text", text: extra }] }], () => extra !== "")]
       const sent = new Request(`${event.baseURL}/messages`, {
         method: "POST",
         headers: { ...event.headers, "content-type": "application/json", "anthropic-version": "2023-06-01" },
-        body: Http.bodyOf({ model: model.id, system: "You are OpenCode.", messages, tools }),
+        body: Http.bodyOf({ model: scope.model.id, system: "You are OpenCode.", messages, tools }),
       })
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
       yield* runRequestHooks("http.request", session, before)
@@ -637,7 +679,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   /** One model request: the hook, the request in the trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure. */
   const attempt = (session: Session, kind: Kind, extra = "") =>
     Effect.gen(function* () {
-      const event = { sessionID: session.id, agent: AGENT, model, kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
+      const event = { sessionID: session.id, agent: requestAgent(session), model: requestModel(session), kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
       yield* runRequestHooks("model.request", session, event, { requestKind: kind })
       const startedAt = runtime.now()
       const text = [...contextOf(session).map(renderOf), extra].filter((part) => part !== "").join("\n")
@@ -645,12 +687,12 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       asked.push({ at: startedAt - start, sessionID: session.id, kind, text })
       const tools = Arr.filter([...toolsOf(session.directory).keys()], () => kind === "primary")
       const outcome = yield* Option.match(
-        Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === model.providerID),
+        Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === event.model.providerID),
         {
           onNone: () =>
             streaming.pipe(
               Effect.andThen(
-                Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script({ sessionID: session.id, kind, agent: AGENT, text, tools: [...toolsOf(session.directory).keys()] }))),
+                Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script({ sessionID: session.id, kind, agent: event.agent, text, tools: [...toolsOf(session.directory).keys()] }))),
               ),
             ),
           onSome: (provider) => overHttp(session, provider, event, tools, extra),
@@ -688,8 +730,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         if (Option.isNone(gap)) return Result.fail(failure)
         const event: RetryInput = {
           sessionID: session.id,
-          agent: AGENT,
-          model,
+          agent: requestAgent(session),
+          model: requestModel(session),
           error: { type: failure.tag, message: failure.message },
           attempt: retries + 2,
           decision: Option.match(Option.liftPredicate(gap.value, () => failure.retryable), {
@@ -750,7 +792,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       if (Exit.isFailure(decoded)) return { output: `Error: invalid input for ${used.name}: ${String(decoded.cause)}`, error: true }
       const context: Tool.Context = {
         sessionID: SessionID.make(session.id),
-        agent: Agent.ID.make(AGENT),
+        agent: Agent.ID.make(requestAgent(session)),
         messageID: SessionMessage.ID.make(messageID),
         id: Tool.CallID.make(used.id),
         progress: () => Effect.void,
@@ -832,6 +874,19 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       title(session)
       session.held = Option.none()
       touch(session)
+      // The step's assistant message is named as it starts (the fork's Step.Started), its model the request's.
+      const messageID = mint("msg_")
+      const ref = requestModel(session)
+      yield* publish({
+        type: "session.step.started",
+        data: {
+          sessionID: session.id,
+          assistantMessageID: messageID,
+          agent: requestAgent(session),
+          model: { providerID: ref.providerID, id: ref.id, ...Option.match(Option.fromNullishOr(ref.variant), { onNone: () => ({}), onSome: (variant) => ({ variant }) }) },
+          started: runtime.now(),
+        },
+      })
       // An HTTP hook that died ends the execution failed, past the retry policy, its message the session's error (the
       // fork's `toSessionError` of the squashed cause: `unknown`).
       const answered = yield* primary(session).pipe(
@@ -846,12 +901,12 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         const failure = answered.failure
         session.messages.push({ type: "error", id: mint("msg_"), created: runtime.now(), tag: failure.tag, message: failure.message })
         record("step-failed", { sessionID: session.id, tag: failure.tag })
+        yield* publish({ type: "session.step.failed", data: { sessionID: session.id, assistantMessageID: messageID } })
         return "failed" as const
       }
       const { reply, startedAt } = answered.success
       const usage = reply.usage ?? USAGE
       const used = callOf(reply)
-      const messageID = mint("msg_")
       session.messages.push({
         type: "assistant",
         id: messageID,
@@ -859,8 +914,19 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         text: textOf(reply),
         call: used,
         tokens: { input: usage.input, cache: { read: usage.read, write: usage.write } },
-        model,
-        agent: AGENT,
+        model: { providerID: requestModel(session).providerID, id: requestModel(session).id },
+        agent: requestAgent(session),
+      })
+      // The step's end: its finish, its tokens (the reply's usage; no output or reasoning counted) and no cost.
+      yield* publish({
+        type: "session.step.ended",
+        data: {
+          sessionID: session.id,
+          assistantMessageID: messageID,
+          finish: Option.match(used, { onNone: () => "stop", onSome: () => "tool-calls" }),
+          cost: 0,
+          tokens: { input: usage.input, output: 0, reasoning: 0, cache: { read: usage.read, write: usage.write } },
+        },
       })
       if (Option.isNone(used)) return "answered" as const
       const answer = yield* runTool(session, messageID, used.value)
@@ -983,6 +1049,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     readonly parentID?: string
     readonly title?: string
     readonly metadata?: JsonObject
+    readonly agent?: string
+    readonly model?: ModelRef
   }) =>
     Effect.gen(function* () {
       const existing = sessions.get(input.id ?? "")
@@ -990,6 +1058,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const session: Session = {
         id: input.id ?? mint("ses_"),
         parentID: Option.fromNullishOr(input.parentID),
+        agent: Option.fromNullishOr(input.agent),
+        model: Option.map(Option.fromNullishOr(input.model), (chosen) => ({ ...chosen })),
         title: Option.fromNullishOr(input.title),
         directory: input.directory,
         metadata: { ...input.metadata },
@@ -1021,6 +1091,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       time,
     }
     if (Option.isSome(session.parentID)) info.parentID = session.parentID.value
+    if (Option.isSome(session.agent)) info.agent = session.agent.value
+    if (Option.isSome(session.model)) info.model = { ...session.model.value }
     if (Option.isSome(session.title)) info.title = session.title.value
     return info
   }
@@ -1082,6 +1154,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     rpcEvents,
     activations,
     catalogNotFound,
+    added,
+    agentsOf,
+    removeSession,
+    archive,
     processes,
     record,
     mint,

@@ -6,6 +6,7 @@
 // world's next operation fails with its name, so a plugin can never pass on a
 // host the world made up.
 import type { Plugin } from "@opencode/plugin/effect"
+import { Agent } from "@opencode/schema/agent"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
 import { type Handler, type Hook, type HookInput, type Host, type HostEvent, type Login, type Subscriber } from "./host.ts"
@@ -28,6 +29,7 @@ interface Mark {
   readonly url?: string
 }
 type ProviderEditor = Parameters<Parameters<Plugin.Context["provider"]["transform"]>[0]>[0]
+type AgentEditor = Parameters<Parameters<Plugin.Context["agent"]["transform"]>[0]>[0]
 
 /** The operations the world's plugin context offers, by path: the static test holds a law to each one. */
 export const OPERATIONS = [
@@ -56,6 +58,8 @@ export const OPERATIONS = [
   "provider.get",
   "agent.list",
   "agent.get",
+  "agent.transform",
+  "session.remove",
   "provider.transform",
   "integration.get",
   "integration.transform",
@@ -76,6 +80,8 @@ const SyntheticInput = Schema.Struct({
   text: Schema.String,
   description: Schema.optional(Schema.String),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+  // Steered, the host's default: taken at the session's next step. A queued one (after the turn) is not modelled.
+  delivery: Schema.optional(Schema.Literals(["steer"])),
   resume: Schema.optional(Schema.Boolean),
 })
 const CreateInput = Schema.Struct({
@@ -83,25 +89,37 @@ const CreateInput = Schema.Struct({
   location: Schema.optional(Schema.Struct({ directory: Schema.String })),
   parentID: Schema.optional(Schema.String),
   title: Schema.optional(Schema.String),
+  agent: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.Struct({ providerID: Schema.String, id: Schema.String, variant: Schema.optional(Schema.String) })),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
 })
 const PromptInput = Schema.Struct({ sessionID: Schema.String, id: Schema.optional(Schema.String), text: Schema.String })
-const UpdateInput = Schema.Struct({ sessionID: Schema.String, metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)) })
+// `archived` is taken and dropped, as the fork's plugin host does (packages/core/src/plugin/host.ts `update`): only a client archives.
+const UpdateInput = Schema.Struct({
+  sessionID: Schema.String,
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+  archived: Schema.optional(Schema.Boolean),
+})
 const ListInput = Schema.Struct({
   parentID: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.optional(Schema.String),
   order: Schema.optional(Schema.Literals(["asc", "desc"])),
   limit: Schema.optional(Schema.Number),
 })
-const ProviderInput = Schema.Struct({ providerID: Schema.String })
-const AgentInput = Schema.Struct({ agentID: Schema.String })
+/** The Location a catalog read names: the plugin's own when absent. */
+const At = Schema.optional(Schema.Struct({ directory: Schema.String }))
+const ProviderInput = Schema.Struct({ providerID: Schema.String, location: At })
+const AgentInput = Schema.Struct({ agentID: Schema.String, location: At })
 const SubscribeInput = Schema.Struct({ types: Schema.optional(Schema.Array(Schema.String)) })
 
-/** A plugin's input to an operation, parsed as the host's schema would: a malformed one is the plugin's defect. */
+/**
+ * A plugin's input to an operation, parsed as the host's schema would: a malformed one is the plugin's defect. A field
+ * the world does not read is refused, not dropped: the host would act on it, so the world would be kinder than it.
+ */
 const parse =
   <S extends Schema.Codec<unknown, unknown>>(schema: S, operation: string) =>
   <I>(input: I): Effect.Effect<S["Type"]> =>
-    Schema.decodeUnknownEffect(schema)(plain(input)).pipe(
+    Schema.decodeUnknownEffect(schema)(plain(input), { onExcessProperty: "error" }).pipe(
       Effect.catch((error) => Effect.die(new Error(`sim: ${operation} got an input the host refuses: ${error.message}`))),
     )
 
@@ -321,8 +339,22 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     models: new Map(),
   })
 
-  /** The catalog's transform: a plugin may turn a provider on (`activation`); nothing else is modelled. */
+  /**
+   * The catalog's transform: a plugin may turn a provider on (`activation`); nothing else is modelled. A change
+   * publishes `provider.updated`, then `model.updated` (the fork's model catalog follows the providers'), for the
+   * copy's Location.
+   */
   const providerTransform = (callback: (editor: ProviderEditor) => void) =>
+    Effect.gen(function* () {
+      const before = host.providers().map((provider) => provider.id).join(",")
+      const registered = yield* providerRegistration(callback)
+      if (host.providers().map((provider) => provider.id).join(",") === before) return registered
+      yield* changed("provider.updated")
+      yield* changed("model.updated")
+      return registered
+    })
+
+  const providerRegistration = (callback: (editor: ProviderEditor) => void) =>
     registration(
       () =>
         callback({
@@ -379,6 +411,14 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       )(input).pipe(
         Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
         Effect.map(host.infoOf),
+      ),
+    remove: <I>(input: I) =>
+      parse(
+        SessionInput,
+        "session.remove",
+      )(input).pipe(
+        Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
+        Effect.flatMap(host.removeSession),
       ),
     list: <I>(input: I) => parse(ListInput, "session.list")(input).pipe(Effect.map(list)),
     context: <I>(input: I) =>
@@ -443,7 +483,9 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         Effect.flatMap((parsed) =>
           host.sessionOr(parsed.sessionID).pipe(
             Effect.map((found) => {
-              found.metadata = { ...(parsed.metadata ?? found.metadata) }
+              // An update naming no metadata changes nothing: the fork's sets only what the input names.
+              if (parsed.metadata === void 0) return host.infoOf(found)
+              found.metadata = { ...parsed.metadata }
               host.touch(found)
               host.record("session-updated", { sessionID: found.id, metadata: found.metadata })
               return host.infoOf(found)
@@ -453,7 +495,37 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       ),
   }
 
-  const agents = [{ id: "build", request: {} }]
+  /** The directory a catalog read is of: the one it names, else the plugin's. */
+  const directoryOf = (at: typeof At.Type) => Option.getOrElse(Option.map(Option.fromNullishOr(at), (place) => place.directory), () => loaded.directory)
+
+  /** A catalog change of this copy's Location, as the fork's state publishes one: tagged with the Location. */
+  const changed = (type: string) => host.publish({ type, data: {}, location: { directory: loaded.directory } })
+
+  /** The agents' transform: a plugin may add an agent (`update` of a new id); its Location's catalog then publishes `agent.updated`. */
+  const agentTransform = (callback: (editor: AgentEditor) => void) =>
+    Effect.gen(function* () {
+      const before = host.agentsOf(loaded.directory).length
+      const registered = yield* registration(
+        () =>
+          callback({
+            list: () => host.agentsOf(loaded.directory).map((agent) => Agent.Info.default(Agent.ID.make(agent.id))),
+            get: (id) => Option.getOrUndefined(Option.map(Option.fromNullishOr(host.agentsOf(loaded.directory).find((agent) => agent.id === id)), () => Agent.Info.default(Agent.ID.make(id)))),
+            default: (id) => void unmodelled(`ctx.agent.transform: editor.default(${String(id)})`),
+            update: (id, change) => {
+              const draft: Types.DeepMutable<Agent.Info> = { ...Agent.Info.default(Agent.ID.make(id)) }
+              change(draft)
+              const own = host.added.get(loaded.directory) ?? new Set<string>()
+              host.added.set(loaded.directory, own.add(id))
+              host.record("agent-updated", { id, instance })
+            },
+            remove: (id) => void unmodelled(`ctx.agent.transform: editor.remove(${id})`),
+          }),
+        () => void 0,
+      )
+      if (host.agentsOf(loaded.directory).length !== before) yield* changed("agent.updated")
+      return registered
+    })
+
   const modelled = {
     options: loaded.options,
     location: { directory: loaded.directory },
@@ -492,13 +564,16 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         ),
     },
     agent: {
-      list: () => Effect.sync(() => ({ data: agents })),
+      transform: agentTransform,
+      list: <I>(input: I) => parse(Schema.Struct({ location: At }), "agent.list")(input ?? {}).pipe(Effect.map(({ location }) => ({ data: host.agentsOf(directoryOf(location)) }))),
       get: <I>(input: I) =>
         parse(
           AgentInput,
           "agent.get",
         )(input).pipe(
-          Effect.flatMap(({ agentID }) => Effect.fromOption(Option.fromNullishOr(agents.find((agent) => agent.id === agentID)))),
+          Effect.flatMap(({ agentID, location }) =>
+            Effect.fromOption(Option.fromNullishOr(host.agentsOf(directoryOf(location)).find((agent) => agent.id === agentID))),
+          ),
           Effect.map((data) => ({ data })),
           Effect.mapError(() => host.catalogNotFound("agent")),
         ),

@@ -14,7 +14,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { answer, BROKEN, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -100,7 +100,36 @@ interface Embedded {
       readonly activate: boolean
     }) => Promise<object>
   }
+  readonly session: {
+    readonly update: (input: { readonly sessionID: string; readonly archived: boolean }) => Promise<{ readonly id: string }>
+    readonly form: {
+      readonly create: (input: {
+        readonly sessionID: string
+        readonly title: string
+        readonly fields: ReadonlyArray<{ readonly key: string; readonly type: "string" }>
+      }) => Promise<{ readonly id: string }>
+      readonly reply: (input: { readonly sessionID: string; readonly formID: string; readonly answer: { readonly [key: string]: string } }) => Promise<void>
+    }
+  }
   readonly close: () => Promise<void>
+}
+
+/** What the probe asks the host's client to do (sim/host-laws.ts `ClientAsk`). */
+const ClientAsk = Schema.fromJsonString(
+  Schema.Union([
+    Schema.Struct({ action: Schema.Literal("archive"), sessionID: Schema.String }),
+    Schema.Struct({ action: Schema.Literal("form"), sessionID: Schema.String, key: Schema.String, value: Schema.String }),
+  ]),
+)
+type ClientAsk = typeof ClientAsk.Type
+
+/** Does what the probe asked, as the owner would from a client: archive a session, or answer a form made for it. */
+const act = (opencode: Embedded, ask: ClientAsk) => {
+  const client = <A>(request: () => Promise<A>) => Effect.tryPromise({ try: request, catch: (cause) => new RealRunFailed({ message: `the client did not ${ask.action}`, cause }) })
+  if (ask.action === "archive") return client(() => opencode.session.update({ sessionID: ask.sessionID, archived: true }))
+  return client(() => opencode.session.form.create({ sessionID: ask.sessionID, title: "law", fields: [{ key: ask.key, type: "string" }] })).pipe(
+    Effect.flatMap((form) => client(() => opencode.session.form.reply({ sessionID: ask.sessionID, formID: form.id, answer: { [ask.key]: ask.value } }))),
+  )
 }
 /** A host log entry, as the fork's SDK emits it (packages/sdk/src/logging.ts). */
 interface LogEntry {
@@ -128,6 +157,10 @@ const outcomeIn = (message: string) =>
     Option.map((at) => message.slice(at)),
     Option.filter((line) => [KEPT, BROKEN, DONE].some((prefix) => line.startsWith(prefix))),
   )
+
+/** The probe's ask of the client in a log message, if it holds one: its JSON. */
+const askIn = (message: string) =>
+  Option.liftPredicate(message.indexOf(CLIENT), (at) => at >= 0).pipe(Option.map((at) => message.slice(at + CLIENT.length)))
 
 const run = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -164,6 +197,7 @@ const run = Effect.gen(function* () {
   })
   if (!isSdk(sdk)) return yield* new RealRunFailed({ message: "the fork's SDK has no OpenCode.create" })
   const lines: Array<string> = []
+  const asks: Array<string> = []
   const warnings: Array<string> = []
   const note = (entry: LogEntry) => {
     if (entry.level !== "warn" && entry.level !== "error" && entry.level !== "fatal") return
@@ -180,6 +214,7 @@ const run = Effect.gen(function* () {
             emit: (entry) => {
               note(entry)
               Option.map(outcomeIn(entry.message), (line) => lines.push(line))
+              Option.map(askIn(entry.message), (ask) => asks.push(ask))
             },
           },
           config: { directory: config, project: false, content: toJson(content) },
@@ -208,10 +243,28 @@ const run = Effect.gen(function* () {
     try: () => opencode.location.get({ location: { directory: law } }),
     catch: (cause) => new RealRunFailed({ message: "the law folder did not open", cause }),
   })
-  yield* Effect.suspend(() => {
-    if (Arr.contains(lines, DONE)) return Effect.void
-    return Effect.fail(new RealRunFailed({ message: "the probe has not finished" }))
-  }).pipe(Effect.retry({ schedule: Schedule.spaced(POLL), times: LIMIT / POLL }), Effect.ignore)
+  // Each poll does what the probe asked of the client since the last; one that fails is a warning, the law saying why it broke.
+  const drain = Effect.suspend(() =>
+    Effect.forEach(
+      asks.splice(0),
+      (json) =>
+        Schema.decodeUnknownEffect(ClientAsk)(json).pipe(
+          Effect.flatMap((ask) => act(opencode, ask)),
+          Effect.catch((failure) => Effect.sync(() => note({ level: "warn", message: `client ask ${json}: ${failure.message}` }))),
+        ),
+      { discard: true },
+    ),
+  )
+  yield* drain.pipe(
+    Effect.andThen(
+      Effect.suspend(() => {
+        if (Arr.contains(lines, DONE)) return Effect.void
+        return Effect.fail(new RealRunFailed({ message: "the probe has not finished" }))
+      }),
+    ),
+    Effect.retry({ schedule: Schedule.spaced(POLL), times: LIMIT / POLL }),
+    Effect.ignore,
+  )
   // A probe that did not finish leaves a line saying how far it got and what the host warned of, for the test to show.
   if (!Arr.contains(lines, DONE))
     lines.push(`the probe did not finish in ${LIMIT / 1000} s, after ${lines.length} outcome lines; the host's last warnings and errors:\n${warnings.join("\n")}`)
