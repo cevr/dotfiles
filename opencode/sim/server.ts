@@ -3,12 +3,12 @@
 // and logs each law's outcome: `sim-law: kept <name>`, `sim-law: broken
 // <name>: <why>`, then `sim-law: done`. The world loads it in
 // sim/host-laws.test.ts; real OpenCode loads it from config, as the owner
-// loads any plugin, in tests/host-laws.test.ts (sim/real.ts). It runs the laws
+// loads any plugin, in tests/host-laws.test.ts (tests/host-laws/real.ts). It runs the laws
 // only in its copy for the law folder: a host may load it for other folders.
 import { Plugin } from "@opencode/plugin/effect"
 import { Cause, Effect, Exit, Option } from "effect"
-import { LAW_FOLDER, LAWS, LawBroken, probeOf } from "./host-laws.ts"
-import { BROKEN, DONE, KEPT } from "./law-names.ts"
+import { LAWS, LawBroken, probeOf } from "./host-laws.ts"
+import { BROKEN, DONE, KEPT, LAW_FOLDER } from "./law-names.ts"
 
 /** Why a law broke: its own words, or the host's failure in full. */
 const why = <E>(cause: Cause.Cause<E>) => {

@@ -18,7 +18,7 @@ the seed that replays it, and no assertion reads wall time, so load cannot break
 | `seed.ts` | The seed runner: `Seed.runner(file).seeded(name, ({ seed, expect }) => effect)` runs a test on 20 seeds; `SIM_SEED=<n>` runs one; a file's seeds share 5 s of wall time; `SIM_EXPECTS=1` prints each test's `expect()` calls for the parity check. `Seed.effect(name, effect)` is a plain Effect test. |
 | `host-laws.ts`, `law-names.ts` | The host laws: what OpenCode does for a plugin, over the context's own operations. Every entry of `OPERATIONS` is named by a law. |
 | `server.ts` | The law probe: a plugin that runs every law from inside the host it is loaded into and logs `sim-law: kept|broken <name>`. |
-| `real.ts` | The laws' real run: the fork booted through its SDK on a loopback scripted model, the probe loaded from config (`tests/host-laws.test.ts` starts it). |
+| `tests/host-laws/real.ts` (outside `sim/`) | The laws' real run: the fork booted through its SDK on a loopback scripted model, the probe loaded from config (`tests/host-laws.test.ts` starts it). It runs on the root's Effect and Bun's platform layer, reading only `law-names.ts` from here. |
 
 ## Writing a simulated test
 

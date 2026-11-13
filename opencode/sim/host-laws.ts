@@ -2,8 +2,8 @@
 // context's own operations, written once against the fork's `Plugin.Context`
 // and run on both hosts by the law probe (sim/server.ts), a plugin that runs
 // every law from inside the host. sim/host-laws.test.ts loads it into the
-// world; tests/host-laws.test.ts into real OpenCode (sim/real.ts), on a
-// scripted model that answers as `answer` says.
+// world; tests/host-laws.test.ts into real OpenCode (tests/host-laws/real.ts), on a
+// scripted model that answers as law-names.ts `answer` says.
 //
 // Every operation the world's context offers (context.ts OPERATIONS) is named
 // by at least one law (sim/host-laws.test.ts holds that), so no world
@@ -20,28 +20,12 @@ import type { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { LAW } from "./law-names.ts"
+import { LAW, LAW_FOLDER } from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
 /** A law broken: what was expected and what the host did. */
 export class LawBroken extends Data.TaggedError("LawBroken")<{ readonly message: string }> {}
-
-/** The model's answer to a law's request: by its kind, and a turn names every law marker its request carried. */
-export const answer = (kind: "primary" | "compaction" | "title", text: string) => {
-  if (kind === "title") return "Law title"
-  if (kind === "compaction") return SUMMARY
-  return `heard ${[...text.matchAll(/law: ([a-z ]+[a-z])/g)].map((match) => match[1]).join("|")}`
-}
-
-/** The model's summary when the host compacts. */
-export const SUMMARY = "## Objective\n- law: the session's summary"
-
-/** The law probe's options, as both hosts configure it. */
-export const PROBE_OPTIONS = { law: "probe", depth: 2 }
-
-/** The folder the law probe's copy runs the laws in: a host may load it for other folders too. */
-export const LAW_FOLDER = "law"
 
 /** What a law reads beside the context's answers: the model's requests and when a session is at rest. */
 export interface Probe {

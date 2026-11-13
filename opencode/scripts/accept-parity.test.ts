@@ -13,12 +13,11 @@
 //
 // A baseline count is the `expect(` calls in the test's body in the real file
 // at the baseline commit; this test checks the manifest's against it.
-import { describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
-import { Schema } from "effect"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Effect, FileSystem, Path, Schema, Stream } from "effect"
+import { describe, expect, it } from "effect-bun-test"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NAMES } from "../sim/law-names.ts"
-import { owned } from "../tests/owned.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -35,98 +34,134 @@ const Manifest = Schema.Struct({
   ),
   retired: Schema.Array(Schema.Struct({ file: Schema.String, name: Schema.String, by: Schema.String })),
 })
-const manifest = Schema.decodeUnknownSync(Schema.fromJsonString(Manifest))(readFileSync(join(ROOT, "tests/parity.json"), "utf8"))
 
-/** A command's stdout, run from opencode/ in a process group of its own. */
-const output = async (command: ReadonlyArray<string>, env: Readonly<Record<string, string>> = {}) => {
-  const child = owned(command, { cwd: ROOT, env: { ...process.env, ...env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
-  const stdout = new Response(child.stdout).text()
-  const stderr = new Response(child.stderr).text()
-  await child.exited
-  return { code: child.exitCode, stdout: await stdout, stderr: await stderr }
-}
+/** A file's text, from opencode/. */
+const read = (file: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    return yield* fs.readFileString(path.join(ROOT, file))
+  })
+
+/** The manifest, and its files as `[real file, entry]` pairs. */
+const manifest = read("tests/parity.json").pipe(
+  Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest))),
+  Effect.map((decoded) => ({ ...decoded, entries: Object.entries(decoded.files) })),
+)
+
+/** A child's whole output, as text. */
+const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
+
+/** A command's stdout and stderr, run from opencode/ in a process group of its own, with `env` over this process's. */
+const output = (command: string, args: ReadonlyArray<string>, env: Readonly<Record<string, string>> = {}) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const child = yield* spawner.spawn(ChildProcess.make(command, args, { cwd: ROOT, env, extendEnv: true, stdin: "ignore", forceKillAfter: "3 seconds" }))
+    const [stdout, stderr] = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 })
+    yield* child.exitCode
+    return { stdout, stderr }
+  }).pipe(Effect.scoped)
 
 /** A file's text at a commit, from opencode/. */
-const at = async (commit: string, file: string) => (await output(["git", "show", `${commit}:./${file}`])).stdout
+const at = (commit: string, file: string) => output("git", ["show", `${commit}:./${file}`]).pipe(Effect.map((run) => run.stdout))
 
 /** The test names a file declares: each title literal `test(` or `seeded(` opens with. */
-export const declared = (text: string) => [...text.matchAll(/\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded)\(\s*"([^"]+)"/g)].map((match) => match[1] ?? "")
+export const declared = (source: string) => [...source.matchAll(/\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded)\(\s*"([^"]+)"/g)].map((match) => match[1] ?? "")
 
 /** The `expect(` calls in each declared test's body: from its title to the next title, or the end. */
-export const expects = (text: string) => {
-  const titles = [...text.matchAll(/\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded)\(\s*"([^"]+)"/g)]
+export const expects = (source: string) => {
+  const titles = [...source.matchAll(/\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded)\(\s*"([^"]+)"/g)]
   return new Map(
     titles.map((match, index) => {
-      const end = titles[index + 1]?.index ?? text.length
-      return [match[1] ?? "", text.slice(match.index, end).split("expect(").length - 1]
+      const end = titles[index + 1]?.index ?? source.length
+      return [match[1] ?? "", source.slice(match.index, end).split("expect(").length - 1]
     }),
   )
 }
 
 /** The simulated tests' `expect()` calls at one seed, as the seed runner prints them. */
-const simulatedCounts = async (file: string) => {
-  const run = await output([process.execPath, "test", `./${file}`], { SIM_EXPECTS: "1" })
-  const prefix = `sim-expects ${file} `
-  const lines = `${run.stdout}\n${run.stderr}`.split("\n").filter((line) => line.startsWith(prefix))
-  return new Map(lines.map((line) => [line.slice(prefix.length, line.lastIndexOf(" ")), Number(line.slice(line.lastIndexOf(" ") + 1))]))
-}
-
-const files = Object.entries(manifest.files)
+const simulatedCounts = (file: string) =>
+  output(process.execPath, ["test", `./${file}`], { SIM_EXPECTS: "1" }).pipe(
+    Effect.map((run) => {
+      const prefix = `sim-expects ${file} `
+      const lines = `${run.stdout}\n${run.stderr}`.split("\n").filter((line) => line.startsWith(prefix))
+      return new Map(lines.map((line) => [line.slice(prefix.length, line.lastIndexOf(" ")), Number(line.slice(line.lastIndexOf(" ") + 1))]))
+    }),
+  )
 
 describe("no assertion lost", () => {
-  test("the manifest names every baseline test with its baseline expect() calls", async () => {
-    for (const [file, entry] of files) {
-      const baseline = await at(manifest.baseline, file)
-      const named = [...entry.tests.map((item) => item.name), ...manifest.retired.filter((item) => item.file === file).map((item) => item.name)]
-      expect(named.toSorted()).toEqual(declared(baseline).toSorted())
-      const counts = expects(baseline)
-      expect(Object.fromEntries(entry.tests.map((item) => [item.name, item.expects]))).toEqual(
-        Object.fromEntries(entry.tests.map((item) => [item.name, counts.get(item.name) ?? -1])),
-      )
-    }
-  })
+  const live = it.live.layer(BunServices.layer)
 
-  test("every baseline name exists today where the manifest says", () => {
-    for (const [file, entry] of files) {
-      const real = declared(readFileSync(join(ROOT, file), "utf8"))
-      const simulated = declared(readFileSync(join(ROOT, entry.simulated), "utf8"))
-      for (const item of entry.tests) {
-        expect({ name: item.name, simulated: simulated.includes(item.name) }).toEqual({ name: item.name, simulated: item.carried !== "real" })
-        expect({ name: item.name, real: real.includes(item.name) }).toEqual({ name: item.name, real: item.carried !== "simulated" })
+  live("the manifest names every baseline test with its baseline expect() calls", () =>
+    Effect.gen(function* () {
+      const { baseline, entries, retired } = yield* manifest
+      for (const [file, entry] of entries) {
+        const before = yield* at(baseline, file)
+        const named = [...entry.tests.map((item) => item.name), ...retired.filter((item) => item.file === file).map((item) => item.name)]
+        expect(named.toSorted()).toEqual(declared(before).toSorted())
+        const counts = expects(before)
+        expect(Object.fromEntries(entry.tests.map((item) => [item.name, item.expects]))).toEqual(
+          Object.fromEntries(entry.tests.map((item) => [item.name, counts.get(item.name) ?? -1])),
+        )
       }
-    }
-  })
+    }),
+  )
 
-  test("each file's simulated and remaining real expect() calls are at least the baseline's", async () => {
-    for (const [file, entry] of files) {
-      const simulated = await simulatedCounts(entry.simulated)
-      const real = expects(readFileSync(join(ROOT, file), "utf8"))
-      const carried = entry.tests.map((item) => {
-        const fromSimulated = simulated.get(item.name) ?? 0
-        if (item.carried === "simulated") expect({ name: item.name, counted: simulated.has(item.name) }).toEqual({ name: item.name, counted: true })
-        return fromSimulated + (real.get(item.name) ?? 0)
-      })
-      const baseline = entry.tests.reduce((sum, item) => sum + item.expects, 0)
-      expect({ file, atLeastBaseline: carried.reduce((sum, calls) => sum + calls, 0) >= baseline }).toEqual({ file, atLeastBaseline: true })
-    }
-  }, 60_000)
-
-  test("a name leaves its real file only in the commit that adds it to its simulated file, and a retired name names what carries it", async () => {
-    for (const [file, entry] of files)
-      for (const item of entry.tests.filter((each) => each.carried === "simulated")) {
-        const log = await output(["git", "log", "--format=%H", `-S${item.name}`, `${manifest.baseline}..HEAD`, "--", file])
-        const removals = log.stdout.split("\n").filter((commit) => commit !== "")
-        expect({ name: item.name, removals: removals.length }).toEqual({ name: item.name, removals: 1 })
-        for (const commit of removals) {
-          const added = await output(["git", "show", "--format=", commit, "--", entry.simulated])
-          expect({ name: item.name, commit, adds: added.stdout.split("\n").some((line) => line.startsWith("+") && line.includes(item.name)) }).toEqual({
-            name: item.name,
-            commit,
-            adds: true,
-          })
+  live("every baseline name exists today where the manifest says", () =>
+    Effect.gen(function* () {
+      for (const [file, entry] of (yield* manifest).entries) {
+        const real = declared(yield* read(file))
+        const simulated = declared(yield* read(entry.simulated))
+        for (const item of entry.tests) {
+          expect({ name: item.name, simulated: simulated.includes(item.name) }).toEqual({ name: item.name, simulated: item.carried !== "real" })
+          expect({ name: item.name, real: real.includes(item.name) }).toEqual({ name: item.name, real: item.carried !== "simulated" })
         }
       }
-    const carriers = new Set([...NAMES, ...files.flatMap(([, entry]) => declared(readFileSync(join(ROOT, entry.simulated), "utf8")))])
-    for (const item of manifest.retired) expect({ name: item.name, carriedBy: carriers.has(item.by) }).toEqual({ name: item.name, carriedBy: true })
-  }, 60_000)
+    }),
+  )
+
+  live(
+    "each file's simulated and remaining real expect() calls are at least the baseline's",
+    () =>
+      Effect.gen(function* () {
+        for (const [file, entry] of (yield* manifest).entries) {
+          const simulated = yield* simulatedCounts(entry.simulated)
+          const real = expects(yield* read(file))
+          const carried = entry.tests.map((item) => {
+            const fromSimulated = simulated.get(item.name) ?? 0
+            if (item.carried === "simulated") expect({ name: item.name, counted: simulated.has(item.name) }).toEqual({ name: item.name, counted: true })
+            return fromSimulated + (real.get(item.name) ?? 0)
+          })
+          const baseline = entry.tests.reduce((sum, item) => sum + item.expects, 0)
+          expect({ file, atLeastBaseline: carried.reduce((sum, calls) => sum + calls, 0) >= baseline }).toEqual({ file, atLeastBaseline: true })
+        }
+      }),
+    60_000,
+  )
+
+  live(
+    "a name leaves its real file only in the commit that adds it to its simulated file, and a retired name names what carries it",
+    () =>
+      Effect.gen(function* () {
+        const { baseline, entries, retired } = yield* manifest
+        for (const [file, entry] of entries)
+          for (const item of entry.tests.filter((each) => each.carried === "simulated")) {
+            const log = yield* output("git", ["log", "--format=%H", `-S${item.name}`, `${baseline}..HEAD`, "--", file])
+            const removals = log.stdout.split("\n").filter((commit) => commit !== "")
+            expect({ name: item.name, removals: removals.length }).toEqual({ name: item.name, removals: 1 })
+            for (const commit of removals) {
+              const added = yield* output("git", ["show", "--format=", commit, "--", entry.simulated])
+              expect({ name: item.name, commit, adds: added.stdout.split("\n").some((line) => line.startsWith("+") && line.includes(item.name)) }).toEqual({
+                name: item.name,
+                commit,
+                adds: true,
+              })
+            }
+          }
+        const simulatedNames = yield* Effect.forEach(entries, ([, entry]) => read(entry.simulated).pipe(Effect.map(declared)))
+        const carriers = new Set([...NAMES, ...simulatedNames.flat()])
+        for (const item of retired) expect({ name: item.name, carriedBy: carriers.has(item.by) }).toEqual({ name: item.name, carriedBy: true })
+      }),
+    60_000,
+  )
 })

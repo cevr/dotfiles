@@ -1,7 +1,23 @@
-// The host laws' names and the law probe's outcome lines, apart from the laws
-// themselves (host-laws.ts), so a test of real OpenCode can name each law
-// without compiling the fork's sources: tests/host-laws.test.ts imports this
-// alone.
+// The host laws' names, the law probe's outcome lines, its options and the
+// scripted model's answer, apart from the laws themselves (host-laws.ts), so
+// the real run (tests/host-laws/real.ts) and its test read them on the root's
+// Effect without compiling the fork's sources: this file imports nothing.
+
+/** The model's answer to a law's request: by its kind, and a turn names every law marker its request carried. */
+export const answer = (kind: "primary" | "compaction" | "title", text: string) => {
+  if (kind === "title") return "Law title"
+  if (kind === "compaction") return SUMMARY
+  return `heard ${[...text.matchAll(/law: ([a-z ]+[a-z])/g)].map((match) => match[1]).join("|")}`
+}
+
+/** The model's summary when the host compacts. */
+export const SUMMARY = "## Objective\n- law: the session's summary"
+
+/** The law probe's options, as both hosts configure it. */
+export const PROBE_OPTIONS = { law: "probe", depth: 2 }
+
+/** The folder the law probe's copy runs the laws in: a host may load it for other folders too. */
+export const LAW_FOLDER = "law"
 
 export const LAW = {
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",

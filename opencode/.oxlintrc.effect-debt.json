@@ -475,44 +475,6 @@
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
-    },
-    {
-      "files": [
-        "sim/real.ts"
-      ],
-      "rules": {
-        "effect/noAsyncFunction": "off",
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "sim/static.test.ts"
-      ],
-      "rules": {
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "tests/host-laws.test.ts"
-      ],
-      "rules": {
-        "effect/noAsyncFunction": "off",
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "scripts/accept-parity.test.ts"
-      ],
-      "rules": {
-        "effect/noAsyncFunction": "off",
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
     }
   ]
 }
