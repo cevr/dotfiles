@@ -8,6 +8,7 @@
 #   grow.sh --dry-run  print the sizes and what it would do
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=linux/workbox-btrfs/common.sh
 . "$here/common.sh"
 
 dry=false

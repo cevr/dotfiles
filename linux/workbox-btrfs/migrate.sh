@@ -12,6 +12,7 @@
 #                              delete the moved-aside home and the old /tmp (root)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=linux/workbox-btrfs/common.sh
 . "$here/common.sh"
 conf=${WB_WORKTREES_CONF:-$here/worktrees.conf}
 # sudo's PATH lacks the owner's ~/.local/bin.
@@ -135,7 +136,7 @@ plan() {
 
 convert() {
     [[ $(id -un) == "$WB_USER" ]] || die "run convert as $WB_USER"
-    local action t branch s reason
+    local action t branch s
     while IFS=$'\t' read -r action t branch s _; do
         [[ $action == convert ]] || continue
         if converted_paths | grep -Fxq -e "$t"; then continue; fi
@@ -218,7 +219,7 @@ blockers() {
 }
 
 wait_idle() {
-    local i busy
+    local busy
     for _ in $(seq 1 "${WB_IDLE_WAIT:-60}"); do
         busy=$(blockers)
         [[ -z $busy ]] && return 0

@@ -6,6 +6,7 @@
 #   check.sh --before  before it: reports the same things, always exits 0
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=linux/workbox-btrfs/common.sh
 . "$here/common.sh"
 
 before=false
