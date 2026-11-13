@@ -187,7 +187,7 @@ import {
   type Tell,
   type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
-import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
+import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
 /** The batch machine's ledger: one line per event or refusal, of every root. */
@@ -378,7 +378,12 @@ const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${l
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
 /** What the model reads when a call is refused. */
-const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched, place: Place): Tool.Error => {
+const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched | CodexNeverImplements, place: Place): Tool.Error => {
+  if (rejection._tag === "CodexNeverImplements")
+    return new Tool.Error({
+      message: `orchestrate: Codex never implements. This ${rejection.agent} would run on ${rejection.model}, and the host offers no Opus model for it. Do not name another model: start it again once an Opus model is offered.`,
+      error: rejection,
+    })
   if (rejection._tag === "SabbathRest") {
     const then =
       tool === SUBAGENT

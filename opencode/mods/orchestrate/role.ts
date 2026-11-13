@@ -6,6 +6,8 @@ import generated from "./agents.json"
 import { described, STEPS } from "./described.ts"
 
 export const WORKER = "worker"
+/** The role Codex never runs (`onCodex`). */
+export const IMPLEMENTOR = "implementor"
 export const ROLES = [...STEPS, WORKER] as const
 export type Role = (typeof ROLES)[number]
 
@@ -157,6 +159,15 @@ export const isCodexModel = (ref: string, providers: ReadonlyArray<string> = [])
   const id = at < 0 ? ref : ref.slice(at + 1)
   return CODEX_PROVIDERS.includes(provider) || providers.includes(provider) || /^gpt-/i.test(id)
 }
+
+/** The owner's rule: Codex plans and verifies, never implements. Only these agents ever run on a Codex fallback. */
+export const onCodex = (agent: string): boolean => agent === "planner" || agent === "verifier"
+
+/**
+ * Where an implementor runs when the model it would run on is a Codex one (its parent's, say): the newest
+ * Opus on one of these providers, at the role's effort. Codex never implements.
+ */
+export const OPUS = { providers: ["anthropic"], family: "claude-opus" } as const
 
 /**
  * The Codex model a held planner or verifier falls back to: the newest sol,
