@@ -595,8 +595,9 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(ran("compaction") === compactions && compactions === 1, `the compaction hook ran ${ran("compaction")} times for ${compactions} compaction requests`)
         const first = yield* ctx.session.get({ sessionID: session.id })
         const other = yield* ctx.session.get({ sessionID: (yield* fresh(ctx)).id })
-        yield* ensure(first.projectID === other.projectID, `two sessions of one location are in projects ${first.projectID} and ${other.projectID}`)
-        yield* ensure(first.projectID === "global", `a folder outside a repository is in project ${first.projectID}`)
+        // Which project is the host's (a repository's id, or `global` outside one): the real run's law folder sits in a
+        // repository, so only the sharing is a law.
+        yield* ensure(first.projectID !== "" && first.projectID === other.projectID, `two sessions of one location are in projects ${first.projectID} and ${other.projectID}`)
       }),
   },
 ]
