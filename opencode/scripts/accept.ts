@@ -48,7 +48,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import os from "node:os"
 import path from "node:path"
 import { $, type Subprocess } from "bun"
-import { Array as Arr, Console, Deferred, Effect, Fiber, Option } from "effect"
+import { Console, Deferred, Effect, Fiber, Option } from "effect"
 import { holdingIfFree } from "../mods/rift/process/flock.ts"
 import { descendants, listing, type Proc, servers, stop, survivors, table, watch, type Watch } from "./leaks.ts"
 import { checkFork } from "./fork.ts"
@@ -120,8 +120,6 @@ interface Run {
   readonly signalled: Deferred.Deferred<boolean>
   /** Done when a live wanted mark asks this deep run to give the lock up; a new one per hold. */
   wanted: Deferred.Deferred<boolean>
-  /** The files whose second run ended (passed or failed) in this run. */
-  readonly retried: Set<string>
   /** The checkout's head, and where this head's logs go. */
   readonly head: string
   readonly logs: string
@@ -161,7 +159,7 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
   const head = (yield* git(["rev-parse", "HEAD"])).trim()
   const logs = path.join(LOGS, head.slice(0, 12) || "no-head")
   const wanted = yield* Deferred.make<boolean>()
-  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, retried: new Set(), head, logs }
+  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, head, logs }
   return run
 })
 
@@ -538,17 +536,12 @@ const watchMarks = (run: Run) =>
  */
 const deepHold = Effect.fn("Accept.deepHold")(function* (run: Run, done: ReadonlyArray<Accept.Outcome>) {
   run.wanted = yield* Deferred.make<boolean>()
-  const settledHere = new Set(done.flatMap((outcome) => Arr.filter([outcome.file], () => outcome.status === "passed" || outcome.status === "failed")))
   // Read under the lock: every write after builds on what a land run wrote while this run waited.
-  const fresh = selectFrom(run.candidates, readAgain(run), run.named, run.text)
-  // Passed by a land run while this one waited; a file this run settled itself stays as it ended here.
-  const passedMeanwhile = fresh.settled.filter((outcome) => outcome.status === "before" && run.selection.run.includes(outcome.file) && !settledHere.has(outcome.file))
-  const todo = fresh.run.filter((file) => run.selection.run.includes(file) && !settledHere.has(file))
+  const { passedMeanwhile, todo } = Accept.holdPlan(run.selection.run, done, selectFrom(run.candidates, readAgain(run), run.named, run.text))
   const watcher = yield* Effect.forkChild(watchMarks(run))
   const ran = yield* phases(run, todo)
-  const all = Accept.latest([...done, ...passedMeanwhile, ...ran])
-  // A first failure carried over a yield gets its second run here; one whose second run ended does not.
-  const again = Accept.secondRunsDue(all, run.retried).filter(() => !Deferred.isDoneUnsafe(run.wanted))
+  // Every first failure with no second run that ended, carried over a yield (before or during its second run) too.
+  const again = Accept.secondRunsDue([...done, ...passedMeanwhile, ...ran]).filter(() => !Deferred.isDoneUnsafe(run.wanted))
   const second = yield* Effect.forEach(again, (file) => secondRun(run, file))
   yield* Fiber.interrupt(watcher)
   return { outcomes: [...passedMeanwhile, ...ran, ...second], yielded: Deferred.isDoneUnsafe(run.wanted) }
@@ -558,10 +551,8 @@ const deepHold = Effect.fn("Accept.deepHold")(function* (run: Run, done: Readonl
 const secondRun = Effect.fn("Accept.secondRun")(function* (run: Run, file: string) {
   const load = load1()
   yield* say(`accept: ${file} failed; running it once more, alone, at 1-minute load ${load.toFixed(1)}`)
-  const outcome = Accept.afterSecond(yield* runFile(run, file, true), load)
-  // A second run a yield stopped did not end: the file is owed, and a later first failure earns another.
-  if (outcome.status === "passed" || outcome.status === "failed") run.retried.add(file)
-  return outcome
+  // An ended second run is marked `second`, so `secondRunsDue` never gives the file another; one a yield stopped is not.
+  return Accept.afterSecond(yield* runFile(run, file, true), load)
 })
 
 /** The ledger read again after the lock was given up and taken back. */

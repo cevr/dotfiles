@@ -249,7 +249,7 @@ const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
     return finished(draw, byName.get(file)!, 1000, skips)
   })
   // The hold that runs the second runs reads the first failures as the run carried them (over a yield too), none retried yet.
-  const again = Accept.secondRunsDue(Accept.latest(first), new Set())
+  const again = Accept.secondRunsDue(first)
   const second = again.map((file) => {
     const load = draw.below(200)
     if (behaviour(file) === "red") return Accept.afterSecond({ file, status: "failed", ms: 1000, reason: "bun test exited 1" }, load)
@@ -257,7 +257,7 @@ const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
   })
   const ended = Accept.latest([...first, ...second])
   // Once each second run ended, no later hold runs a file again.
-  const dueAfter = Accept.secondRunsDue(ended, new Set(again))
+  const dueAfter = Accept.secondRunsDue([...first, ...second])
   const all = [...selection.settled, ...ended]
   const statusOf = (file: string) => all.find((outcome) => outcome.file === file)?.status
   const counts = Accept.countsOf(all)
@@ -451,6 +451,114 @@ const playSeed = (seed: number): ReadonlyArray<string> => {
     problems.push(...[...step(draw, model), ...agreement(model)].map((problem) => `seed ${seed}, command ${index}: ${problem}`))
   return problems
 }
+
+/** How a file behaves in a deep run cut by yields: green, red once then green (a flake), red on every run, or red by a leak. */
+type Act = "green" | "flaky" | "red" | "leak"
+
+/** At most this many yields in one modelled deep run; the hold after the last is not cut. */
+const MAX_YIELDS = 4
+
+/**
+ * A deep run as the runner's holds (`deepHold`), cut by a land run's mark at any run, a first run or a second run:
+ * each hold plans with `holdPlan` from all the run did before it and the ledger read again (a land run may have
+ * passed a file meanwhile), runs its first runs, then the second runs `secondRunsDue` names from the run's whole
+ * history; a cut run is owed, no file starts after it, and the next hold goes on. The model keeps its own count of
+ * each file's ended second runs, apart from the marks the runner's functions read.
+ * I16: once the run ends, each file whose first run failed (not by a leak) had exactly one second run that ended,
+ * every other file none; no file ends owed; a red file ends failed, a flaky one passed on its second run, a leak
+ * failed, a green one passed (or passed before, by a land run).
+ */
+const playHolds = (seed: number) => {
+  const draw = drawOf(seed)
+  const reached = new Set<string>()
+  const files = FILES.slice(0, 1 + draw.below(5))
+  const acts = new Map(files.map((file) => [file, draw.pick<Act>(["green", "flaky", "red", "leak"])]))
+  const act = (file: string): Act => acts.get(file) ?? "green"
+  const cutChance = draw.pick([0.1, 0.3, 0.6])
+  const history: Array<Accept.Outcome> = []
+  const secondsEnded = new Map<string, number>()
+  const firstFailed = new Set<string>()
+  const byLand = new Set<string>()
+  let yields = 0
+  for (;;) {
+    // A land run may have passed a file while this run waited.
+    const passing = Arr.filter(files, () => yields > 0 && draw.chance(0.15))
+    for (const file of passing) byLand.add(file)
+    if (passing.length > 0) reached.add("a file passed by a land run meanwhile")
+    const fresh: Accept.Selection = { run: files.filter((file) => !byLand.has(file)), settled: [...byLand].map((file): Accept.Outcome => ({ file, status: "before" })) }
+    const plan = Accept.holdPlan(files, history, fresh)
+    let cut = false
+    const cuts = () => {
+      cut = cut || (yields < MAX_YIELDS && draw.chance(cutChance))
+      return cut
+    }
+    const ran = plan.todo.map((file): Accept.Outcome => {
+      if (cut) return Accept.owe(file, "yielded", "not started")
+      if (cuts()) {
+        reached.add("a first run cut")
+        return Accept.owe(file, "yielded", "stopped")
+      }
+      if (act(file) === "green") return { file, status: "passed", ms: 1000 }
+      firstFailed.add(file)
+      if (act(file) === "leak") return { file, status: "failed", ms: 1000, reason: Accept.LEAKED }
+      return { file, status: "failed", ms: 1000, reason: "bun test exited 1" }
+    })
+    history.push(...plan.passedMeanwhile, ...ran)
+    const again = Arr.filter(Accept.secondRunsDue(history), () => !cut)
+    for (const file of again) {
+      if (cut || cuts()) {
+        reached.add("a second run cut")
+        history.push(Accept.afterSecond(Accept.owe(file, "yielded", "stopped"), 1))
+        continue
+      }
+      secondsEnded.set(file, (secondsEnded.get(file) ?? 0) + 1)
+      if (history.some((outcome) => outcome.file === file && outcome.status === "owed")) reached.add("a cut second run run again")
+      reached.add(`a second run of a ${act(file)} file`)
+      const second: Accept.Outcome = (act(file) === "flaky" && { file, status: "passed", ms: 1000 }) || { file, status: "failed", ms: 1000, reason: "bun test exited 1" }
+      history.push(Accept.afterSecond(second, 1))
+    }
+    if (!cut) break
+    yields += 1
+  }
+  const ended = new Map(Accept.latest(history).map((outcome) => [outcome.file, outcome]))
+  const expected = (file: string) => {
+    if (act(file) === "red" || act(file) === "leak") return "failed"
+    if (act(file) === "flaky") return "passed on its second run"
+    return "passed"
+  }
+  const got = (file: string) => {
+    const outcome = ended.get(file)
+    if (Option.isSome(Option.flatMap(Option.fromUndefinedOr(outcome), Accept.secondLoad))) return "passed on its second run"
+    if (outcome?.status === "before" && act(file) === "green") return "passed"
+    return String(outcome?.status)
+  }
+  const wanted = (file: string) => Number(firstFailed.has(file) && act(file) !== "leak")
+  const problems = [
+    ...files.flatMap((file) => unless((secondsEnded.get(file) ?? 0) === wanted(file), `I16: ${file} (${act(file)}) had ${secondsEnded.get(file) ?? 0} second runs that ended, not ${wanted(file)}`)),
+    // A file a land run passed before its first run here ended is passed before, whatever it does here.
+    ...files.flatMap((file) => unless(ended.get(file)?.status === "before" || got(file) === expected(file), `I16: ${file} (${act(file)}) ended ${got(file)}, not ${expected(file)}`)),
+  ].map((problem) => `seed ${seed}, ${yields} yields: ${problem}`)
+  return { problems, reached }
+}
+
+describe("a deep run cut by yields against its model", () => {
+  test(`${SEEDS * 5} seeded deep runs, cut at any first or second run, keep I16`, () => {
+    const problems = Array.from({ length: SEEDS * 5 }, (_, seed) => playHolds(seed + 1).problems).flat()
+    expect(problems.slice(0, 5)).toEqual([])
+  })
+
+  test("the generator reaches cuts of first and second runs, a cut second run run again, files a land run passed meanwhile, and second runs of flaky and red files", () => {
+    const reached = new Set(Array.from({ length: SEEDS * 5 }, (_, seed) => [...playHolds(seed + 1).reached]).flat())
+    expect([...reached].sort()).toEqual([
+      "a cut second run run again",
+      "a file passed by a land run meanwhile",
+      "a first run cut",
+      "a second run cut",
+      "a second run of a flaky file",
+      "a second run of a red file",
+    ])
+  })
+})
 
 describe("the acceptance ledger against its model", () => {
   test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I15`, () => {

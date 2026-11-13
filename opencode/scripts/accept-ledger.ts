@@ -126,8 +126,8 @@ export type Why = "deep" | "budget" | "skipped" | "unnamed" | "signal" | "listed
 /** Where a file ended: run and passed (`second`: on its second run, after a failed first, at that 1-minute load), failed, owed (with why), or skipped because it passed before with its key unchanged. */
 export type Outcome =
   | { readonly file: string; readonly status: "passed"; readonly ms: number; readonly second?: number }
-  | { readonly file: string; readonly status: "failed"; readonly ms: number; readonly reason: string }
-  | { readonly file: string; readonly status: "owed"; readonly why: Why; readonly detail: string }
+  | { readonly file: string; readonly status: "failed"; readonly ms: number; readonly reason: string; readonly second?: number }
+  | { readonly file: string; readonly status: "owed"; readonly why: Why; readonly detail: string; readonly second?: number }
   | { readonly file: string; readonly status: "before" }
 
 export interface Candidate {
@@ -465,19 +465,39 @@ export const holdTiming = (selection: Selection, serial: (file: string) => boole
 export const secondRuns = (outcomes: ReadonlyArray<Outcome>): ReadonlyArray<string> =>
   outcomes.flatMap((outcome) => Arr.filter([outcome.file], () => outcome.status === "failed" && outcome.reason !== LEAKED))
 
-/**
- * The files a deep run's hold runs once more at its end: those that failed, not by a leak, whose second run
- * has not ended in this run (`retried`). A yield between a first failure and the second runs leaves the file
- * failed in what the run carried over, and the next hold gives it its second run.
- */
-export const secondRunsDue = (outcomes: ReadonlyArray<Outcome>, retried: ReadonlySet<string>): ReadonlyArray<string> =>
-  secondRuns(outcomes).filter((file) => !retried.has(file))
+/** Whether `outcome` is a second run that ended, marked by `afterSecond`: passed, failed, or owed for its own reason (a skip, an unrecordable run); one a yield stopped did not end. */
+const endedSecond = (outcome: Outcome) => outcome.status !== "before" && Option.isSome(Option.fromUndefinedOr(outcome.second))
 
-/** A file's outcome after its second run at `load`: a pass is a pass marked `second` with that load; anything else stands as the second run ended. */
+/**
+ * The files a deep run's hold runs once more at its end, from everything the run did so far (`history`, every hold's
+ * outcomes in order): each that failed, not by a leak, and has no second run that ended. A yield before a second
+ * run, or during it, leaves the file due, and the next hold gives it the run; once one ended, never again.
+ */
+export const secondRunsDue = (history: ReadonlyArray<Outcome>): ReadonlyArray<string> => {
+  const ended = new Set(history.flatMap((outcome) => Arr.filter([outcome.file], () => endedSecond(outcome))))
+  return [...new Set(secondRuns(history))].filter((file) => !ended.has(file))
+}
+
+/**
+ * One hold of a deep run, from what the run did before it (`done`), the files it selected at its start (`selected`),
+ * and the ledger read again under the lock (`fresh`): the files a land run passed meanwhile (`passedMeanwhile`, but
+ * not one this run settled itself), and the first runs still to run (`todo`): a file whose first run ended (passed
+ * or failed) is not run again as a first run; one a yield stopped is.
+ */
+export const holdPlan = (selected: ReadonlyArray<string>, done: ReadonlyArray<Outcome>, fresh: Selection) => {
+  const settledHere = new Set(done.flatMap((outcome) => Arr.filter([outcome.file], () => outcome.status === "passed" || outcome.status === "failed")))
+  const mine = (file: string) => selected.includes(file) && !settledHere.has(file)
+  return {
+    passedMeanwhile: fresh.settled.filter((outcome) => outcome.status === "before" && mine(outcome.file)),
+    todo: fresh.run.filter(mine),
+  }
+}
+
+/** A file's outcome after its second run at `load`, marked `second` with that load once the run ended; one a yield stopped stands as it is, and the file is still due its second run. */
 export const afterSecond = (second: Outcome, load: number): Outcome => {
-  if (second.status === "passed") return { ...second, second: load }
-  if (second.status === "failed") return { ...second, reason: `failed twice; the second time: ${second.reason}` }
-  return second
+  if (second.status === "failed") return { ...second, second: load, reason: `failed twice; the second time: ${second.reason}` }
+  if (second.status === "before" || (second.status === "owed" && second.why === "yielded")) return second
+  return { ...second, second: load }
 }
 
 /** A pass on a second run: the file and the load it ran at. */
