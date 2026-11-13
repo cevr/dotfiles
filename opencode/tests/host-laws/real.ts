@@ -14,7 +14,8 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { Socket } from "effect/socket"
+import { answer, BROKEN, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, LAW_SOCKET, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -40,14 +41,41 @@ const textOf = (content: Content = ""): string => {
   return content.map((part) => part.text ?? "").join("")
 }
 
+/** OpenAI's Responses request, over HTTP or as a socket's `response.create`: its instructions and its input's messages. */
+const ResponsesRequest = Schema.Struct({
+  model: Schema.optional(Schema.String),
+  instructions: Schema.optional(Schema.String),
+  input: Schema.optional(Schema.Array(Schema.Struct({ role: Schema.optional(Schema.String), content: Schema.optional(Content) }))),
+})
+type ResponsesRequest = typeof ResponsesRequest.Type
+const decodeResponses = Schema.decodeUnknownEffect(Schema.fromJsonString(ResponsesRequest))
+
+/** A conversation as both APIs carry it: each message's role and text. */
+type Said = ReadonlyArray<{ readonly role?: string; readonly content?: Content }>
+
 /** A request's kind as the host means it: a title by its system prompt, a compaction by OpenCode's summary prompt. */
-const kindOf = (request: ChatRequest) => {
-  const messages = request.messages ?? []
-  const system = messages.filter((message) => message.role === "system").map((message) => textOf(message.content))
+const kindOf = (messages: Said, instructions = "") => {
+  const system = [instructions, ...messages.filter((message) => message.role === "system" || message.role === "developer").map((message) => textOf(message.content))]
   if (system.join("\n").includes("You name conversations")) return "title"
   const user = messages.filter((message) => message.role === "user").map((message) => textOf(message.content))
   if ((user.at(-1) ?? "").includes("summarize the conversation above")) return "compaction"
   return "primary"
+}
+
+/** The answer to a Responses request, as OpenAI's Responses events: one text message, then the response's usage. */
+const responseEvents = (request: ResponsesRequest, id: string) => {
+  const messages = request.input ?? []
+  const text = answer(kindOf(messages, request.instructions), messages.map((message) => textOf(message.content)).join("\n"))
+  const item = { type: "message", id: `msg_${id}`, status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] }
+  const usage = { input_tokens: 1_000, output_tokens: 10, total_tokens: 1_010 }
+  return [
+    { type: "response.created", response: { id: `resp_${id}` } },
+    { type: "response.output_item.added", item: { type: "message", id: item.id } },
+    { type: "response.output_text.delta", item_id: item.id, delta: text },
+    { type: "response.output_text.done", item_id: item.id, text },
+    { type: "response.output_item.done", item },
+    { type: "response.completed", response: { id: `resp_${id}`, output: [item], usage } },
+  ].map((event) => toJson(event))
 }
 
 interface Delta {
@@ -74,18 +102,53 @@ const events = (text: string, model: string, id: string) => {
   return [...list.map((event) => `data: ${toJson(event)}\n\n`), "data: [DONE]\n\n"].join("")
 }
 
-/** The scripted model: each chat completion answered as the world's model answers it. */
+const stream = (body: string) => HttpServerResponse.text(body, { contentType: "text/event-stream", headers: { "cache-control": "no-cache" } })
+
+/**
+ * The socket model: each `response.create` the host writes to the socket answered with the answer's events, one frame
+ * each, until the host closes it.
+ */
+const socketModel = (request: HttpServerRequest.HttpServerRequest, served: { count: number }) =>
+  Effect.gen(function* () {
+    const socket = yield* request.upgrade
+    const writer = yield* socket.writer
+    const pull = yield* Socket.readerString(socket)
+    yield* pull.pipe(
+      Effect.flatMap((messages) =>
+        Effect.forEach(messages, (message) =>
+          decodeResponses(message).pipe(
+            Effect.flatMap((create) => {
+              served.count += 1
+              return Effect.forEach(responseEvents(create, `law${served.count}`), (frame) => writer.write(frame), { discard: true })
+            }),
+          ),
+        ),
+      ),
+      Effect.forever,
+      Effect.catchTag("SocketError", () => Effect.void),
+    )
+    return HttpServerResponse.empty()
+  }).pipe(Effect.scoped)
+
+/**
+ * The scripted model: each chat completion (the `sim` provider) and each Responses request over HTTP or a socket
+ * (the socket law's provider) answered as the world's model answers it.
+ */
 const model = (served: { count: number }) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
+    if (request.url.endsWith("/responses") && request.headers["upgrade"] === "websocket") return yield* socketModel(request, served)
+    if (request.method === "POST" && request.url.endsWith("/responses")) {
+      const body = yield* HttpServerRequest.schemaBodyJson(ResponsesRequest)
+      served.count += 1
+      return stream(responseEvents(body, `law${served.count}`).map((frame) => `data: ${frame}\n\n`).join(""))
+    }
     if (request.method !== "POST" || !request.url.endsWith("/chat/completions")) return HttpServerResponse.text("not found", { status: 404 })
     const body = yield* HttpServerRequest.schemaBodyJson(ChatRequest)
-    const text = (body.messages ?? []).map((message) => textOf(message.content)).join("\n")
+    const messages = body.messages ?? []
+    const text = messages.map((message) => textOf(message.content)).join("\n")
     served.count += 1
-    return HttpServerResponse.text(events(answer(kindOf(body), text), body.model ?? "sim", `law${served.count}`), {
-      contentType: "text/event-stream",
-      headers: { "cache-control": "no-cache" },
-    })
+    return stream(events(answer(kindOf(messages), text), body.model ?? "sim", `law${served.count}`))
   }).pipe(Effect.orDie)
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -184,6 +247,15 @@ const run = Effect.gen(function* () {
         package: "@opencode/ai/providers/openai-compatible",
         settings: { baseURL: `${origin}/v1`, apiKey: "sim-key" },
         models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
+      },
+      // The socket law's provider: OpenAI's Responses, streamed over a WebSocket to the same loopback.
+      [LAW_SOCKET.providerID]: {
+        name: "Law socket",
+        package: "@opencode/ai/providers/openai",
+        settings: { baseURL: `${origin}/v1`, apiKey: "sim-key", transport: "websocket" },
+        models: {
+          [LAW_SOCKET.id]: { name: "Law socket", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } },
+        },
       },
     },
     plugins: [{ package: probe, options: PROBE_OPTIONS }],

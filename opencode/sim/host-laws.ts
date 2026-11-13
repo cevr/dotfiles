@@ -20,9 +20,9 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Array as Arr, Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { CLIENT, LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+import { CLIENT, LAW, LAW_FOLDER, LAW_LOGIN, LAW_SOCKET, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -121,6 +121,13 @@ const contextText = (ctx: Plugin.Context, sessionID: SessionID) =>
   ctx.session.context({ sessionID }).pipe(Effect.flatMap((messages) => Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(messages)))
 
 const count = (text: string, part: string) => text.split(part).length - 1
+
+/** A provider's socket frame's event type, as OpenAI's Responses names it, or `?` for a frame that names none. */
+const frameType = (frame: string) =>
+  Option.match(Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))(frame), {
+    onNone: () => "?",
+    onSome: (event) => event.type,
+  })
 
 /** A provider's 429 with `body`, as the law puts it in place of an answer. */
 const limited = (body: string) => new Response(body, { status: 429, headers: { "content-type": "application/json" } })
@@ -485,6 +492,28 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: agent" }))
         const mine = (yield* Ref.get(asked)).filter((line) => line.startsWith(`${session.id} primary `))
         yield* ensure(mine.join(",") === `${session.id} primary law sim/sim-model`, `the session's requests were ${mine.join(",")}`)
+      }),
+  },
+  {
+    name: LAW.socket,
+    operations: ["session.create", "session.prompt", "session.hook"],
+    // The pool reads a ChatGPT login's quota from the frames of a socket turn.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const frames = yield* Ref.make<ReadonlyArray<string>>([])
+        const model = { providerID: Provider.ID.make(LAW_SOCKET.providerID), id: Model.ID.make(LAW_SOCKET.id) }
+        const session = yield* ctx.session.create({ title: "law socket", model })
+        yield* ctx.session.hook("experimental.ws.receive", (event) =>
+          Ref.update(frames, (all) => [
+            ...all,
+            ...Arr.filter([`${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`], () => event.sessionID === session.id),
+          ]),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: socket" }))
+        const seen = yield* Ref.get(frames)
+        const on = `primary ${LAW_SOCKET.providerID}/${LAW_SOCKET.id}`
+        yield* ensure(seen.at(0) === `${on} response.created` && seen.at(-1) === `${on} response.completed`, `the frames were ${seen.join(",")}`)
+        yield* ensure(seen.includes(`${on} response.output_text.delta`), `no text frame among ${seen.join(",")}`)
       }),
   },
   {

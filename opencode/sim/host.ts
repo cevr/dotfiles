@@ -34,6 +34,7 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Result, Schema } from "effect"
 import * as Http from "./http.ts"
 import { below, type JsonObject, line, plain, record as recordOf, type Runtime, type SimError } from "./runtime.ts"
+import { framesOf } from "./socket.ts"
 
 // ── The model ──
 
@@ -223,7 +224,8 @@ export interface CatalogModel {
   readonly modelID: string
   readonly limit: { readonly context: number; readonly input?: number }
   readonly cost: ReadonlyArray<{ readonly input: number; readonly output: number; readonly cache: { readonly read: number; readonly write: number } }>
-  readonly settings?: { readonly cache?: { readonly ttl?: string } }
+  /** The provider settings the world reads: the cache's TTL, and `transport: "websocket"` for a provider whose turns stream over a socket (sim/socket.ts). */
+  readonly settings?: { readonly cache?: { readonly ttl?: string }; readonly transport?: "websocket" }
 }
 
 export const SIM_MODEL: CatalogModel = { providerID: "sim", id: "sim-model", modelID: "sim-model", limit: { context: 128_000 }, cost: [] }
@@ -281,6 +283,15 @@ export interface HttpResponseInput {
   response: Response
 }
 
+/** A frame a provider's socket sent, before the provider driver reads it (`experimental.ws.receive`). */
+export interface SocketReceiveInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: { readonly providerID: string; readonly id: string }
+  readonly kind: Kind
+  frame: string
+}
+
 export type RetryDecision = { readonly retry: false } | { readonly retry: true; readonly delay: number }
 
 export interface RetryInput {
@@ -292,7 +303,7 @@ export interface RetryInput {
   decision: RetryDecision
 }
 
-export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput
+export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput | SocketReceiveInput
 
 export interface Hook {
   readonly instance: number
@@ -533,14 +544,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     })
 
   /**
-   * Runs a request's hook (`model.request`, `http.request`, `http.response`) of the session's location's copies on
+   * Runs a request's hook (`model.request`, `http.request`, `http.response`, `experimental.ws.receive`) of the session's location's copies on
    * one event, in the order they registered: each sees what the one before left. A hook that fails fails the
    * request, as the host's `hooks.trigger` does in the model request's build and its HTTP call.
    */
   const runRequestHooks = (
-    name: "model.request" | "http.request" | "http.response",
+    name: "model.request" | "http.request" | "http.response" | "experimental.ws.receive",
     session: Session,
-    event: ModelRequestInput | HttpRequestInput | HttpResponseInput,
+    event: ModelRequestInput | HttpRequestInput | HttpResponseInput | SocketReceiveInput,
     detail: JsonObject = {},
   ) =>
     Effect.gen(function* () {
@@ -676,6 +687,31 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return Result.succeed<Reply>({ items, usage: streamed.usage })
     })
 
+  /** Whether a model's provider streams a turn over a WebSocket (its catalog entry's `transport`), as the fork's session runner asks for one. */
+  const socketed = (ref: ModelRef) =>
+    models.some((entry) => entry.providerID === ref.providerID && entry.id === ref.id && entry.settings?.transport === "websocket")
+
+  /**
+   * A reply streamed over the provider's socket: each frame (sim/socket.ts) through `experimental.ws.receive` of the
+   * session's location's copies, in order. A hook that replaces a frame changes what the fork's driver reads; the
+   * world reads the script's reply, so a replacement is unmodelled.
+   */
+  const overSocket = (session: Session, scope: { readonly kind: Kind; readonly agent: string; readonly model: ModelRef }, reply: Reply) =>
+    Effect.forEach(
+      framesOf(reply, mint("resp_"), reply.usage ?? USAGE),
+      (frame) =>
+        Effect.gen(function* () {
+          const input: SocketReceiveInput = { sessionID: session.id, agent: scope.agent, model: { providerID: scope.model.providerID, id: scope.model.id }, kind: scope.kind, frame }
+          yield* runRequestHooks("experimental.ws.receive", session, input, { requestKind: scope.kind })
+          if (input.frame === frame) return
+          const path = "experimental.ws.receive: a replaced frame"
+          unmodelled.push(path)
+          record("unmodelled", { path })
+          return yield* Effect.die(new Error(`sim: the world does not model ${path}; add it with a law in sim/host-laws.ts`))
+        }),
+      { discard: true },
+    )
+
   /** One model request: the hook, the request in the trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure. */
   const attempt = (session: Session, kind: Kind, extra = "") =>
     Effect.gen(function* () {
@@ -692,8 +728,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
           onNone: () =>
             streaming.pipe(
               Effect.andThen(
-                Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script({ sessionID: session.id, kind, agent: event.agent, text, tools: [...toolsOf(session.directory).keys()] }))),
+                Effect.sync((): Reply => options.script({ sessionID: session.id, kind, agent: event.agent, text, tools: [...toolsOf(session.directory).keys()] })),
               ),
+              Effect.tap((reply) => Effect.when(overSocket(session, event, reply), Effect.succeed(kind === "primary" && socketed(event.model)))),
+              Effect.map((reply): Result.Result<Reply, Http.Failure> => Result.succeed(reply)),
             ),
           onSome: (provider) => overHttp(session, provider, event, tools, extra),
         },

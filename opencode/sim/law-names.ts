@@ -40,6 +40,8 @@ export const LAW = {
   form: "a form a client creates for a session and answers publishes form.replied with the session and the answer",
   agent:
     "an agent a transform adds publishes agent.updated and is in the catalog; a session created with it and a model answers both, and its requests run on them",
+  socket:
+    "a turn on a model whose provider streams over a WebSocket runs experimental.ws.receive on each frame the provider sends, from response.created to response.completed, with the turn's model and kind",
   catalog: "the catalog lists the configured model, its provider and the build agent, and refuses ones it does not have",
   http: "http.request runs after model.request for each request, carrying the headers model.request set; the request it leaves is the one sent, and http.response sees that request",
   retry:
@@ -53,6 +55,12 @@ export const LAW = {
   provider: "a provider a transform turns on is in the provider list, and the change publishes provider.updated and model.updated for the copy's location",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
 }
+
+/**
+ * The model the socket law's session runs on: a provider both hosts stream over a WebSocket (OpenAI's Responses
+ * over a socket, the fork's `transport: "websocket"`), answered as `answer` says.
+ */
+export const LAW_SOCKET = { providerID: "law-socket", id: "law-socket-model" }
 
 /** The login both hosts hold for the integration law: no real token. */
 export const LAW_LOGIN = { id: "cred_law", label: "Law login", access: "law-access-token", refresh: "law-refresh-token" }

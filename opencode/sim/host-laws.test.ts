@@ -9,7 +9,7 @@ import { OPERATIONS } from "./context.ts"
 import { ClientAsk, LAWS } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, LAW_SOCKET, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe from "./server.ts"
 import * as World from "./world.ts"
 
@@ -47,6 +47,8 @@ const lawsOn = (seed: number) =>
       schedules: true,
       script: (request) => World.say(answer(request.kind, request.text)),
       model: { providerID: "sim", id: "sim-model" },
+      // The socket law's model streams over a WebSocket, as real OpenCode's OpenAI Responses provider does.
+      models: [World.SIM_MODEL, { ...LAW_SOCKET, modelID: LAW_SOCKET.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" } }],
       anthropic: { accounts: {}, anonymous: true, script: lawModel },
       integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
     })
