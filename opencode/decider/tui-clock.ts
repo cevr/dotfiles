@@ -10,26 +10,27 @@
  * timer (`dotfiles/tui-clock-only`, lint/tui-clock.ts): this is the one place that
  * does.
  */
+import { Clock as EffectClock, Effect, Fiber } from "effect"
+
 export interface Clock {
   readonly now: () => number
   readonly once: (ms: number, run: () => void) => () => void
   readonly every: (ms: number, run: () => void) => () => void
 }
 
-/** The system clock. */
+/** Runs `effect` on its own fiber; the returned function interrupts it. */
+const started = (effect: Effect.Effect<void>) => {
+  const fiber = Effect.runFork(effect)
+  return () => {
+    Effect.runFork(Fiber.interrupt(fiber))
+  }
+}
+
+/** The system clock: Effect's own, as every Effect program reads it. */
 export const system: Clock = {
-  // oxlint-disable-next-line effect/noGlobals -- the system clock: the TUI clock's one adapter to the platform
-  now: () => Date.now(),
-  once: (ms, run) => {
-    // oxlint-disable-next-line effect/noGlobals -- the system clock: the TUI clock's one adapter to the platform
-    const timer = setTimeout(run, ms)
-    return () => clearTimeout(timer)
-  },
-  every: (ms, run) => {
-    // oxlint-disable-next-line effect/noGlobals -- the system clock: the TUI clock's one adapter to the platform
-    const timer = setInterval(run, ms)
-    return () => clearInterval(timer)
-  },
+  now: () => Effect.runSync(EffectClock.currentTimeMillis),
+  once: (ms, run) => started(Effect.sleep(ms).pipe(Effect.andThen(Effect.sync(run)))),
+  every: (ms, run) => started(Effect.sync(run).pipe(Effect.delay(ms), Effect.forever)),
 }
 
 const KEY = Symbol.for("dotfiles.tui-clock")

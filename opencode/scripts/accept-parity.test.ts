@@ -69,7 +69,8 @@ const manifests = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const dir = path.join(ROOT, "tests/parity")
-  const more = (yield* fs.exists(dir)) ? (yield* fs.readDirectory(dir)).filter((name) => name.endsWith(".json")).toSorted() : []
+  const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
+  const more = names.filter((name) => name.endsWith(".json")).toSorted()
   return yield* Effect.forEach(["tests/parity.json", ...more.map((name) => `tests/parity/${name}`)], decode)
 })
 
