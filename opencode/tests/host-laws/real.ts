@@ -19,12 +19,14 @@ import {
   answer,
   BROKEN,
   callFor,
+  callOf,
   CLIENT,
   DONE,
   ELSEWHERE_FOLDER,
   KEPT,
   LAW_FOLDER,
   LAW_LOGIN,
+  LAW_SOL,
   LAW_SOCKET,
   type LawCall,
   PROBE_OPTIONS,
@@ -38,6 +40,7 @@ const POLL = 250
 /** The run could not start the fork or the probe never finished. */
 class RealRunFailed extends Data.TaggedError("RealRunFailed")<{ readonly message: string; readonly cause?: unknown }> {}
 
+/** A message's content: a string or its parts; a message of tool calls only has none, or `null` (`OptionFromOptionalNullOr`). */
 const Content = Schema.Union([Schema.String, Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) }))])
 type Content = typeof Content.Type
 const ChatRequest = Schema.Struct({
@@ -107,8 +110,14 @@ interface Delta {
   }>
 }
 
-/** The answer: text, or a law's tool call (law-names.ts `callFor`). */
-type Reply = { readonly kind: "text"; readonly text: string } | { readonly kind: "tool"; readonly call: LawCall }
+/**
+ * The answer: text, a law's tool call (law-names.ts `callFor`), or the call a law's `law-call:` prompt asks for
+ * (law-names.ts `callOf`: its input already a JSON object's text).
+ */
+type Reply =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "tool"; readonly call: LawCall }
+  | { readonly kind: "asked"; readonly name: string; readonly input: string }
 
 /** The answer as OpenAI-compatible stream events, with a usage. A tool call's arguments are its input as JSON: a string input stays a string. */
 const events = (reply: Reply, model: string, id: string) => {
@@ -120,12 +129,14 @@ const events = (reply: Reply, model: string, id: string) => {
     choices: [{ index: 0, delta, finish_reason: Option.getOrUndefined(finish) }],
   })
   const usage = { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010 }
+  const called = (name: string, args: string) => [
+    chunk({ tool_calls: [{ index: 0, id: `call_${id}`, type: "function", function: { name, arguments: args } }] }, Option.none()),
+    chunk({}, Option.some("tool_calls")),
+  ]
   const body = Match.value(reply).pipe(
     Match.when({ kind: "text" }, (text) => [chunk({ content: text.text }, Option.none()), chunk({}, Option.some("stop"))]),
-    Match.when({ kind: "tool" }, (tool) => [
-      chunk({ tool_calls: [{ index: 0, id: `call_${id}`, type: "function", function: { name: tool.call.name, arguments: toJson(tool.call.input) } }] }, Option.none()),
-      chunk({}, Option.some("tool_calls")),
-    ]),
+    Match.when({ kind: "tool" }, (tool) => called(tool.call.name, toJson(tool.call.input))),
+    Match.when({ kind: "asked" }, (asked) => called(asked.name, asked.input)),
     Match.exhaustive,
   )
   const list = [chunk({ role: "assistant", content: "" }, Option.none()), ...body, { id, object: "chat.completion.chunk", created: 0, model, choices: [], usage }]
@@ -160,11 +171,16 @@ const socketModel = (request: HttpServerRequest.HttpServerRequest, served: { cou
     return HttpServerResponse.empty()
   }).pipe(Effect.scoped)
 
-/** The reply to a request: a law's call while its prompt waits for one, else the words `answer` gives. */
+/**
+ * The reply to a request: the call a turn's last message asks for with a law's `law-call:` prompt; a law's call while
+ * its prompt waits for one; else the words `answer` gives.
+ */
 const replyTo = (request: ChatRequest): Reply => {
   const messages = request.messages ?? []
   const text = messages.map((message) => textOf(message.content)).join("\n")
   const kind = kindOf(messages)
+  const asked = Option.filter(Arr.head(callOf(textOf(Option.flatMap(Option.fromNullishOr(messages.at(-1)), (last) => last.content)))), () => kind === "primary")
+  if (Option.isSome(asked)) return { kind: "asked", ...asked.value }
   const call = callFor(kind, text, messages.filter((message) => message.role === "tool").length)
   if (call !== void 0) return { kind: "tool", call }
   return { kind: "text", text: answer(kind, text) }
@@ -186,7 +202,8 @@ const model = (served: { count: number }) =>
     if (request.method !== "POST" || !request.url.endsWith("/chat/completions")) return HttpServerResponse.text("not found", { status: 404 })
     const body = yield* HttpServerRequest.schemaBodyJson(ChatRequest)
     served.count += 1
-    return stream(events(replyTo(body), body.model ?? "sim", `law${served.count}`))  }).pipe(Effect.orDie)
+    return stream(events(replyTo(body), body.model ?? "sim", `law${served.count}`))
+  }).pipe(Effect.orDie)
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
 interface Embedded {
@@ -285,7 +302,16 @@ const run = Effect.gen(function* () {
         name: "Sim",
         package: "@opencode/ai/providers/openai-compatible",
         settings: { baseURL: `${origin}/v1`, apiKey: "sim-key" },
-        models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
+        models: {
+          "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } },
+          [LAW_SOL.id]: {
+            name: "Sim sol",
+            family: LAW_SOL.family,
+            releaseDate: LAW_SOL.releaseDate,
+            capabilities: { tools: true, input: ["text"], output: ["text"] },
+            limit: { context: 128_000, output: 16_000 },
+          },
+        },
       },
       // The socket law's provider: OpenAI's Responses, streamed over a WebSocket to the same loopback.
       [LAW_SOCKET.providerID]: {

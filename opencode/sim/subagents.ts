@@ -83,18 +83,21 @@ const withRunning = (status: "completed" | "error", body: string, shells: Readon
   return { body: `${body}\n\nBackground work still running:\n${lines}`, state }
 }
 
-/** The report of a child's period, or none for a period with nothing to report. */
+/**
+ * The report of a child's period, or none for a period with nothing to report. The child's description is the one
+ * its subagent call gave (its title, `Subagent` without one) and its agent the one it runs as (`subagent` when it was
+ * created with none).
+ */
 export const reportOf = (
-  child: { readonly id: string; readonly title: Option.Option<string> },
+  child: { readonly id: string; readonly description: string; readonly agent: string },
   ended: Ended,
   shells: ReadonlyArray<{ readonly id: string; readonly command: string }>,
 ): Option.Option<Report> =>
   Option.map(ended, ({ status, body }) => {
     const shown = withRunning(status, body, shells)
-    const description = Option.getOrElse(child.title, () => "Subagent")
     return {
-      text: `<subagent sessionID="${child.id}" state="${shown.state}" description="${description}">\n${shown.body}\n</subagent>`,
-      description,
-      metadata: { source: "subagent", childID: child.id, agent: "subagent", state: status },
+      text: `<subagent sessionID="${child.id}" state="${shown.state}" description="${child.description}">\n${shown.body}\n</subagent>`,
+      description: child.description,
+      metadata: { source: "subagent", childID: child.id, agent: child.agent, state: status },
     }
   })

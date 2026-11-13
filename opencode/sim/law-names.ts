@@ -6,6 +6,7 @@
 /** The model's answer to a law's request: by its kind, and a turn names every law marker its request carried. */
 export const answer = (kind: "primary" | "compaction" | "title", text: string) => {
   if (kind === "title") return "Law title"
+  if (kind === "compaction" && text.includes("law: kept for the summary")) return `${SUMMARY}\n${KEPT_IN_SUMMARY}`
   if (kind === "compaction") return SUMMARY
   return `heard ${[...text.matchAll(/law: ([a-z ]+[a-z])/g)].map((match) => match[1]).join("|")}`
 }
@@ -39,8 +40,33 @@ export const callFor = (kind: "primary" | "compaction" | "title", text: string, 
   return LAW_CALLS.find((call) => text.includes(call.marker))
 }
 
-/** The model's summary when the host compacts. */
+/** The model's summary when the host compacts: a line more for each law marker the request carried after its conversation. */
 export const SUMMARY = "## Objective\n- law: the session's summary"
+
+/** A law's prompt that asks the model for one tool call: `law-call: <tool> <input as JSON>`. */
+export const LAW_CALL = "law-call: "
+
+/** A second model of the law provider, of a family with a release date, as a Codex sol is configured: the catalog law reads both back. */
+export const LAW_SOL = { id: "sim-sol", family: "gpt-sol", releaseDate: "2026-09-29" }
+
+/** A law's prompt that asks the model to call `tool` with `input`, a JSON object's text. */
+export const lawCall = (tool: string, input: string) => `${LAW_CALL}${tool} ${input}`
+
+/**
+ * The tool call a request's last message asks for, when it is a law's `law-call:` prompt (its input as JSON text, for
+ * the caller to decode on its own Effect); none for any other.
+ */
+export const callOf = (last: string): ReadonlyArray<{ readonly name: string; readonly input: string }> => {
+  const at = last.indexOf(LAW_CALL)
+  if (at < 0) return []
+  const rest = last.slice(at + LAW_CALL.length).trim()
+  const space = rest.indexOf(" ")
+  if (space < 0) return [{ name: rest, input: "{}" }]
+  return [{ name: rest.slice(0, space), input: rest.slice(space + 1) }]
+}
+
+/** The summary's line for a compaction request that carried `law: kept for the summary` (the compaction hook law's message). */
+export const KEPT_IN_SUMMARY = "- law: the hook's message was in the request"
 
 /** The law probe's options, as both hosts configure it. */
 export const PROBE_OPTIONS = { law: "probe", depth: 2 }
@@ -56,9 +82,11 @@ export const LAW = {
   notice: "a synthetic message without resume starts no execution, and the next prompt's execution reads it",
   compact:
     "a compaction asked with a reason runs on the model and starts the context completed with that reason; experimental.idle runs after a turn and not after the compaction alone",
+  compacted: "a compaction that completes publishes session.compaction.ended once for its session, with its reason and an event id",
   request: "model.request runs before each request of the plugin's sessions, with the request's kind",
   tools: "a tool a transform adds is offered, and a built-in tool it removes is not",
   rpc: "an RPC method a plugin registers answers a call with its JSON",
+  rpcFaults: "an RPC handler that dies fails its call, never its caller, and one that never answers leaves the call open to the caller's own timeout",
   sessions:
     "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
   steps:
@@ -86,6 +114,16 @@ export const LAW = {
     "execute.before runs before a tool call of the plugin's sessions after the host's input repair (a bash call with its input a JSON string reaches it as shell with the input an object, and its answer names shell), and a failure it fails with refuses the call: the tool does not run and the model reads the failure's message",
   shellHook:
     "create.before sees each command the shell tool spawns, in the session's directory and in the order the hooks registered, each seeing the program the one before it left",
+  agents:
+    "an agent a transform defines is listed and got with its fields, an update of an agent the transform did not define makes it, and a session created on it runs as it with its system prompt",
+  subagent:
+    "a subagent call starts a child session of the caller on the agent asked, prompted with the spawned line, and answers at once that it runs in the background; the child going idle sends the parent a <subagent> notice with its answer, which wakes it",
+  hooks:
+    "execute.before sees a call and may change its input; one that fails refuses the call with its message and no execute.after runs; execute.after sees the result and may change what the model reads",
+  update: "a transform's update of the built-in subagent tool wraps its execute: the call runs through the wrapper",
+  shell: "the shell's create.before hooks see each command the host spawns, before it runs",
+  compaction: "a compaction hook's message added after the conversation goes in the compaction request before the summary prompt",
+  window: "a session on an agent whose compactionWindow its prompt passed is compacted automatically; one on an agent without the window is not",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
   report:
     "an execution of a session with a parent that ends with an answer tells the parent in one synthetic message, `source: subagent`, carrying the answer under the child's title, and it wakes the parent into an execution that reads it",

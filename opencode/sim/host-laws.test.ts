@@ -8,8 +8,9 @@ import { Array as Arr, Effect, Option, Predicate, Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
 import { ClientAsk, type Law, LAWS, probeOf } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
+import { plain } from "./runtime.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, callFor, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LIMIT_MS, LAW_LOGIN, LAW_SOCKET, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, callFor, callOf, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LIMIT_MS, LAW_LOGIN, LAW_SOCKET, LAW_SOL, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe, { runLaws } from "./server.ts"
 import * as World from "./world.ts"
 
@@ -36,16 +37,30 @@ const toolResults = (messages: Schema.Json): number =>
     onSome: (all) => all.flatMap((message) => message.content).filter((block) => block.type === "tool_result").length,
   })
 
+/** The last text of a request's last message: a law's `law-call:` prompt, or what a tool answered. */
+const lastText = (messages: Schema.Json) => {
+  if (!Array.isArray(messages)) return Option.none<string>()
+  return Option.flatMap(Arr.last(messages), (message) => Arr.last(textsOf(message)))
+}
+
+/** A law call's input, as law-names.ts `callOf` gives its text: a JSON object. */
+const CallInput = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
+
 /**
  * The law model over HTTP, as real OpenCode's scripted model answers (tests/host-laws/real.ts): a turn offers tools,
  * a compaction asks for the summary, a title is the rest; each answered as law-names.ts `answer` says.
  */
 const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
-  // The system prompt first, then the conversation, as the real run's model joins a chat request's messages.
-  const text = textsOf([body["system"] ?? [], body["messages"] ?? []]).join("\n")
+  const messages = body["messages"] ?? []
+  // The system prompt comes first, as real OpenCode's scripted model reads its system message first.
+  const text = [...textsOf(body["system"] ?? []), ...textsOf(messages)].join("\n")
   const tools = body["tools"]
+  const asked = Option.flatMap(lastText(messages), (said) =>
+    Option.flatMap(Arr.head(callOf(said)), (call) => Option.map(Schema.decodeUnknownOption(CallInput)(call.input), (input) => ({ name: call.name, input }))),
+  )
+  if (Array.isArray(tools) && tools.length > 0 && Option.isSome(asked)) return { kind: "ok", tool: { name: asked.value.name, input: plain(asked.value.input) } }
   if (Array.isArray(tools) && tools.length > 0) {
-    const call = callFor("primary", text, toolResults(body["messages"] ?? []))
+    const call = callFor("primary", text, toolResults(messages))
     if (call !== void 0) return { kind: "ok", tool: { name: call.name, input: call.input } }
     return { kind: "ok", text: answer("primary", text) }
   }
@@ -73,8 +88,13 @@ const playLaws = (seed: number) =>
       schedules: true,
       script: (request) => World.say(answer(request.kind, `${request.system}\n${request.text}`)),
       model: { providerID: "sim", id: "sim-model" },
-      // The socket law's model streams over a WebSocket, as real OpenCode's OpenAI Responses provider does.
-      models: [World.SIM_MODEL, { ...LAW_SOCKET, modelID: LAW_SOCKET.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" } }],
+      // As real OpenCode's law config: the sim model, a sol of a family with a release date, and the socket law's model,
+      // which streams over a WebSocket as real OpenCode's OpenAI Responses provider does.
+      models: [
+        World.SIM_MODEL,
+        { ...World.SIM_MODEL, id: LAW_SOL.id, modelID: LAW_SOL.id, family: LAW_SOL.family, time: { released: Date.parse(LAW_SOL.releaseDate) } },
+        { ...LAW_SOCKET, modelID: LAW_SOCKET.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" } },
+      ],
       anthropic: { accounts: {}, anonymous: true, script: lawModel },
       integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
     })
@@ -109,6 +129,7 @@ const lawLine = (line: { readonly message: string }) => {
 }
 
 describe("the host laws on the world", () => {
+  // One world per seed runs every law; each law's test reads its own line of that run, as the real run's tests do.
   for (const law of LAWS)
     seeded(law.name, ({ seed, expect: check }) =>
       Effect.gen(function* () {
