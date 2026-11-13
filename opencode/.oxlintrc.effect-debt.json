@@ -234,7 +234,7 @@
     },
     {
       "files": [
-        "tests/reconnect/fixture.ts"
+        "tests/reconnect/host.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off",

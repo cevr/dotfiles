@@ -7,7 +7,7 @@
 // The fork runs from source in a scratch HOME on a scripted model: the service
 // starts and restarts through the CLI as daily does (`service start`, `service
 // restart`), the TUI runs on a real pty (gamut's terminal host), and the test
-// reads its screen. Each file builds its own fixture (`reconnectTest`): its own
+// reads its screen. Each file builds its own world (`reconnectTest`): its own
 // scratch HOME, service, scripted model and proxy, so the files run side by
 // side. One file is one case group:
 // - reconnect-session-<case>.test.ts: a restart under a root, a subagent, a root
@@ -17,8 +17,8 @@
 //   follows a turn sent on the new service.
 // - reconnect-session-open.test.ts: a TUI opened while the service is down or
 //   booting waits for it, says so, and opens its session.
-// - reconnect-session-managed.test.ts: a TUI opened on a stopped or restarting
-//   background service opens its session.
+// - reconnect-session.test.ts: the frame guard, and a TUI opened on a stopped or
+//   restarting background service opens its session.
 // - reconnect-session-select-<cache>.test.ts: a session selected from home while
 //   the service boots, and a prompt submitted then, arrive.
 //
@@ -35,26 +35,27 @@
 // service is down or booting says it waits ("Waiting for the OpenCode server")
 // and opens its session, where it used to exit with Bun's "Unable to connect.
 // Is the computer able to access the url?" (the owner's 2026-11-11 report).
+//
+// What touches the platform (Bun, the process, files, the network) is in
+// ./host.ts; this module is Effect over it.
 import { expect } from "bun:test"
-import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
-import { fileURLToPath } from "node:url"
-import { Cause, Data, Effect, Fiber, Option, Schedule, Schema, type Scope } from "effect"
+import { Cause, Clock, Data, Effect, Fiber, Option, Schedule, Schema, type Scope } from "effect"
+import { Base64 } from "effect/encoding"
+import { ROOT } from "../../scripts/reach.ts"
 import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
-import { hostCall, serve, type ServedHost } from "../../testbeds/gamut/pty-host.ts"
+import { hostCall, serve } from "../../testbeds/gamut/pty-host.ts"
 import type { Kept } from "../scratch.ts"
 import { freePort, ready, type Service } from "../service.ts"
+import { ENV, endsQuietly, files, importClient, listen, run, runCase, send, type Ran } from "./host.ts"
 
 /** The describe every file's cases sit in, so the test names stay what the one file reported. */
 export const SUITE = "a TUI on the background service across a service restart"
 /** A case's own timeout: one restart, or one open, on a loaded host. */
 export const TIMEOUT_MS = 180_000
-
-const { OPENCODE_DEV: fork = "", OPENCODE_RECONNECT_TUI_BINARY: binary = "", PATH: path = "" } = process.env
 /** The fork the files run, "" when OPENCODE_DEV is not set and they skip. */
-export const FORK = fork
+export const FORK = ENV.fork
+export { skipNotice } from "./host.ts"
 
-const ROOT = fileURLToPath(new URL("../..", import.meta.url))
 const TUI_PLUGINS = ["prime", "status", "git", "cache", "questions", "btw", "skills", "recover", "orchestrate", "escape"]
 const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "web", "memory"]
 /** How long the TUI has, after the restarted service can serve, to show its session again. */
@@ -67,6 +68,13 @@ const BOOTING_MS = 8_000
  * down or booting) opens once the TUI is up, never on the clock before it starts.
  */
 const START_MS = 60_000
+/**
+ * How long a restarted service has to answer a prompt for a session: it answers once the
+ * session's location has booted, and a location boots the server plugins again after a restart,
+ * which took 20 s at a load of 45-115 (select-down's trace, 2026-11-12). The bound a test gives
+ * a service to come up (tests/service.ts `ready`).
+ */
+const ANSWER_MS = 60_000
 /**
  * How long a TUI opened on a ready service has to show its session, and one opened
  * on a down or booting service once the service serves: that service stays down or
@@ -81,6 +89,8 @@ const GAVE_UP = /Could not reach|Unable to connect|did not provide|UnexpectedSta
 /** How often a wait looks again. */
 const LOOK_MS = 250
 const LOOK = Schedule.spaced(`${LOOK_MS} millis`)
+
+const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 /**
  * A transient error toast in a frame's rows, or none. ToastSurface lives at
@@ -109,6 +119,9 @@ const until = <A>(read: Effect.Effect<A>, done: (value: A) => boolean, label: (l
     Effect.retry({ schedule: LOOK.pipe(Schedule.upTo({ duration: `${ms} millis` })), times: Math.ceil(ms / LOOK_MS) + 1 }),
     Effect.mapError((error) => new TimedOut({ message: label(error.last) })),
   )
+
+/** Waits until the clock reaches `at`, at most `ms`. */
+const reach = (at: number, label: string, ms: number) => until(Clock.currentTimeMillis, (now) => now >= at, () => label, ms)
 
 /** Runs `check` every 250 ms for `ms`: a state that must hold all along, not just at the end. */
 const holds = <E>(check: Effect.Effect<void, E>, ms: number) => check.pipe(Effect.repeat(LOOK.pipe(Schedule.upTo({ duration: `${ms} millis` }))), Effect.asVoid)
@@ -152,7 +165,7 @@ const answer = (messages: ReadonlyArray<Message>) => {
   return Option.getOrElse(Option.flatMap(Option.fromNullishOr(/say (\S+)/.exec(last)), (match) => Option.fromNullishOr(match[1])), () => "ok")
 }
 
-const stream = (events: ReadonlyArray<string>) => new Response(events.join(""), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
+const EVENT_STREAM = { "content-type": "text/event-stream", "cache-control": "no-cache" }
 /** What a chunk adds to the answer. */
 interface Delta {
   readonly role?: string
@@ -161,45 +174,43 @@ interface Delta {
 /** A chunk of the answer; the last one says it stopped. */
 const chunk = (delta: Delta, finish: Option.Option<"stop">) => ({ id: "sim", object: "chat.completion.chunk", created: 0, model: "sim", choices: [{ index: 0, delta, finish_reason: Option.getOrNull(finish) }] })
 const USAGE = { id: "sim", object: "chat.completion.chunk", created: 0, model: "sim", choices: [], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } }
-const event = (value: ReturnType<typeof chunk> | typeof USAGE) => `data: ${JSON.stringify(value)}\n\n`
+const event = (value: ReturnType<typeof chunk> | typeof USAGE) => `data: ${toJson(value)}\n\n`
+
+/** The scripted model's answer to one request; `prompts` gets the request's last message. */
+const respond = (prompts: Array<string>, body: Option.Option<typeof ChatBody.Type>) => {
+  const messages = Option.getOrElse(Option.flatMap(body, (decoded) => Option.fromUndefinedOr(decoded.messages)), () => [])
+  const last = messages.slice(-1).map(textOf).join("")
+  prompts.push(last)
+  // `hold` keeps the turn running: the answer starts and never ends, so the restart cuts a working session.
+  if (last.includes("hold")) {
+    const head = new TextEncoder().encode(event(chunk({ role: "assistant", content: "holding" }, Option.none())))
+    return new Response(new ReadableStream({ start: (controller) => controller.enqueue(head) }), { headers: EVENT_STREAM })
+  }
+  const events = [event(chunk({ role: "assistant", content: "" }, Option.none())), event(chunk({ content: answer(messages) }, Option.none())), event(chunk({}, Option.some("stop"))), event(USAGE), "data: [DONE]\n\n"]
+  return new Response(events.join(""), { headers: EVENT_STREAM })
+}
 
 /** The scripted model's server and the last message of every request it took. */
 const simModel = Effect.acquireRelease(
   Effect.sync(() => {
     const prompts: Array<string> = []
-    const respond = (body: Option.Option<typeof ChatBody.Type>) => {
-      const messages = Option.getOrElse(Option.flatMap(body, (decoded) => Option.fromUndefinedOr(decoded.messages)), () => [])
-      const last = messages.slice(-1).map(textOf).join("")
-      prompts.push(last)
-      // `hold` keeps the turn running: the answer starts and never ends, so the restart cuts a working session.
-      if (last.includes("hold")) {
-        const head = new TextEncoder().encode(event(chunk({ role: "assistant", content: "holding" }, Option.none())))
-        return new Response(new ReadableStream({ start: (controller) => controller.enqueue(head) }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
-      }
-      return stream([event(chunk({ role: "assistant", content: "" }, Option.none())), event(chunk({ content: answer(messages) }, Option.none())), event(chunk({}, Option.some("stop"))), event(USAGE), "data: [DONE]\n\n"])
-    }
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: (request) => {
-        if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 })
-        return Effect.runPromise(Effect.promise(() => request.json()).pipe(Effect.map((body) => respond(decodeBody(body)))))
-      },
+    const server = listen(0, (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/chat/completions")) return Effect.succeed(new Response("not found", { status: 404 }))
+      return Effect.promise(() => request.json()).pipe(Effect.map((body) => respond(prompts, decodeBody(body))))
     })
     return { server, prompts }
   }),
-  ({ server }) => Effect.sync(() => server.stop(true)),
+  ({ server }) => Effect.sync(server.stop),
 )
 
-/** What the proxy saw a client send: a prompt's path and body. */
+/** A prompt a client sent through the proxy: its path and body. */
 interface Submission {
   readonly path: string
   readonly body: string
 }
 
 /** The JSON body of a GET of `url`. */
-const json = (url: URL, headers: Headers | { readonly authorization: string }) =>
-  Effect.promise(() => fetch(url, { headers })).pipe(Effect.flatMap((response) => Effect.promise(() => response.json())))
+const json = (url: URL, headers: Headers | { readonly authorization: string }) => send(url, { headers }).pipe(Effect.flatMap((response) => Effect.tryPromise(() => response.json())))
 
 /** The service's info, as the proxy passes it on. */
 const Fields = Schema.Record(Schema.String, Schema.Unknown)
@@ -209,13 +220,22 @@ const unavailable = () => Response.json({ code: "service_starting" }, { status: 
 /** The service the service file names now, once it can serve. */
 const serviceIn = (file: string, label: string) => Effect.promise(() => ready(file, () => label))
 
-const authorization = (service: Service) => ({ authorization: `Basic ${btoa(`opencode:${service.password}`)}` })
+const authorization = (service: Service) => ({ authorization: `Basic ${Base64.encode(`opencode:${service.password}`)}` })
+
+/** A prompt's path and body, when the request is one. */
+const promptOf = (request: Request, url: URL) =>
+  Effect.gen(function* () {
+    if (request.method !== "POST" || !url.pathname.includes("/prompt")) return Option.none<Submission>()
+    return Option.some({ path: url.pathname, body: yield* Effect.promise(() => request.clone().text()) })
+  })
 
 /**
  * A stand-in for a service still booting, in front of the service the service file
  * names now: it passes every request through, except, while it boots, every request
  * (`booting`) or a GET of a refused session (`refuse`), which it answers 503
- * `service_starting`; and `down` leaves nothing listening on its port until `up`.
+ * `service_starting`; and `down` leaves nothing listening on its port until `up`. It
+ * keeps the prompts clients sent (`submissions`) and those the service accepted
+ * (`accepted`: answered 2xx).
  */
 const bootingProxy = (serviceFile: string) =>
   Effect.acquireRelease(
@@ -223,6 +243,7 @@ const bootingProxy = (serviceFile: string) =>
       const refused = new Map<string, number>()
       const refusedRequests: Array<string> = []
       const submissions: Array<Submission> = []
+      const accepted: Array<Submission> = []
       const state = { unavailableUntil: 0, fromFirstRequest: false, listening: true }
       /** The service's own answer while it boots: its info (version, pid and the starting code), or 503 for every other route. */
       const refuse = (request: Request, url: URL) =>
@@ -232,41 +253,45 @@ const bootingProxy = (serviceFile: string) =>
           const service = yield* serviceIn(serviceFile, "the service")
           const info = yield* json(new URL("/api/info", service.url), request.headers).pipe(Effect.map(Schema.decodeUnknownSync(Fields)))
           return Response.json({ ...info, code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
-        })
+        }).pipe(Effect.orElseSucceed(unavailable))
       const pass = (request: Request, url: URL) =>
         Effect.gen(function* () {
-          if (request.method === "POST" && url.pathname.includes("/prompt")) submissions.push({ path: url.pathname, body: yield* Effect.promise(() => request.clone().text()) })
+          const prompt = yield* promptOf(request, url)
+          submissions.push(...Option.toArray(prompt))
           const target = yield* serviceIn(serviceFile, "the service behind the proxy")
           const headers = new Headers(request.headers)
           headers.delete("host")
-          const upstream = yield* Effect.tryPromise(() => fetch(new URL(url.pathname + url.search, target.url), { method: request.method, headers, body: request.body, signal: request.signal, redirect: "manual" }))
+          const upstream = yield* send(new URL(url.pathname + url.search, target.url), { method: request.method, headers, body: request.body, signal: request.signal, redirect: "manual" })
+          if (upstream.ok) accepted.push(...Option.toArray(prompt))
           // fetch hands back the body decoded; its encoding headers no longer describe it.
           const back = new Headers(upstream.headers)
           back.delete("content-encoding")
           back.delete("content-length")
           return new Response(endsQuietly(upstream), { status: upstream.status, headers: back })
         }).pipe(Effect.orElseSucceed(unavailable))
-      const handle = (request: Request) => {
-        if (state.fromFirstRequest) {
-          state.fromFirstRequest = false
-          state.unavailableUntil = Date.now() + BOOTING_MS
-        }
-        const url = new URL(request.url)
-        const session = Option.fromNullishOr(/^\/api\/session\/([^/]+)$/.exec(url.pathname)?.[1])
-        const sessionRefused = request.method === "GET" && Option.exists(session, (id) => Date.now() < (refused.get(id) ?? 0))
-        if (Date.now() < state.unavailableUntil || sessionRefused) return Effect.runPromise(refuse(request, url))
-        return Effect.runPromise(pass(request, url))
-      }
-      const listen = (port: number) => Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 0, fetch: handle })
-      const servers = [listen(0)]
-      const port = servers[0]?.port ?? 0
+      const handle = (request: Request) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          if (state.fromFirstRequest) {
+            state.fromFirstRequest = false
+            state.unavailableUntil = now + BOOTING_MS
+          }
+          const url = new URL(request.url)
+          const session = Option.fromNullishOr(/^\/api\/session\/([^/]+)$/.exec(url.pathname)).pipe(Option.flatMap((match) => Option.fromNullishOr(match[1])))
+          const sessionRefused = request.method === "GET" && Option.exists(session, (id) => now < Option.getOrElse(Option.fromUndefinedOr(refused.get(id)), () => 0))
+          if (now < state.unavailableUntil || sessionRefused) return yield* refuse(request, url)
+          return yield* pass(request, url)
+        })
+      const first = listen(0, handle)
+      const { port } = first
+      const servers = [first]
       return {
         url: `http://127.0.0.1:${port}`,
         refusedRequests,
         submissions,
+        accepted,
         /** Refuses the session's GET until `until`. */
         refuse: (sessionID: string, until: number) => refused.set(sessionID, until),
-        clearRefusals: () => refused.clear(),
         /** Refuses every request until `until` (0: serves again). */
         bootingUntil: (until: number) => {
           state.unavailableUntil = until
@@ -278,52 +303,21 @@ const bootingProxy = (serviceFile: string) =>
         /** Nothing listens on the proxy's port until `up`: a client's connection is refused, as in a restart's gap. */
         down: () => {
           state.listening = false
-          for (const server of servers.splice(0)) server.stop(true)
+          for (const server of servers.splice(0)) server.stop()
         },
         up: () => {
           if (state.listening) return
-          servers.push(listen(port))
+          servers.push(listen(port, handle))
           state.listening = true
         },
         stop: () => {
-          for (const server of servers.splice(0)) server.stop(true)
+          for (const server of servers.splice(0)) server.stop()
         },
       }
     }),
     (proxy) => Effect.sync(proxy.stop),
   )
 type Proxy = Effect.Success<ReturnType<typeof bootingProxy>>
-
-/** A body the restart cuts ends, as the service's own would, rather than erroring in the test. */
-const endsQuietly = (response: Response) =>
-  Option.match(Option.fromNullishOr(response.body), {
-    onNone: () => response.body,
-    onSome: (upstream) => {
-      const reader = upstream.getReader()
-      return new ReadableStream<Uint8Array>({
-        pull: (controller) =>
-          Effect.runPromise(
-            Effect.tryPromise(() => reader.read()).pipe(
-              Effect.match({
-                onFailure: () => controller.close(),
-                onSuccess: (read) => {
-                  if (read.done) controller.close()
-                  else controller.enqueue(read.value)
-                },
-              }),
-            ),
-          ),
-        cancel: () => Effect.runPromise(Effect.ignore(Effect.tryPromise(() => reader.cancel()))),
-      })
-    },
-  })
-
-/** One run of the fork's CLI: its exit code and output. */
-interface Ran {
-  readonly code: number
-  readonly out: string
-  readonly err: string
-}
 
 /** A terminal host on a pty, stopped with the case's scope; `onFrame` sees every write's screen. */
 const hosted = (socket: string, cwd: string, command: ReadonlyArray<string>, env: { readonly [name: string]: string }, onFrame: (rows: ReadonlyArray<string>) => void) =>
@@ -334,7 +328,7 @@ const hosted = (socket: string, cwd: string, command: ReadonlyArray<string>, env
       (served) => Effect.promise(() => served.stop()),
     )
     yield* until(
-      Effect.sync(() => existsSync(socket)),
+      Effect.sync(() => files.exists(socket)),
       Boolean,
       () => `${socket}: the terminal host`,
       10_000,
@@ -361,6 +355,7 @@ const recorder = () => {
 export interface Fixture {
   readonly root: string
   readonly home: string
+  /** The sessions' folder, its links resolved: the directory a TUI started there reports, so the session and the TUI share one location. */
   readonly work: string
   readonly serviceFile: string
   /** The TUI's command: the fork from source, or an installed old binary (OPENCODE_RECONNECT_TUI_BINARY). */
@@ -382,75 +377,72 @@ export interface Fixture {
 /** A session of its own with `marker` in its transcript, so no other case's turns scroll it away. */
 export const transcript = (fixture: Fixture, title: string, marker: string, directory = fixture.work) =>
   Effect.gen(function* () {
-    if (!existsSync(directory)) mkdirSync(directory)
+    if (!files.exists(directory)) files.makeDir(directory)
     const made = yield* Effect.promise(() => fixture.client.session.create({ location: { directory }, title }))
     yield* Effect.promise(() => fixture.client.session.prompt({ sessionID: made.id, text: `say ${marker}` }))
     yield* Effect.promise(() => fixture.client.experimental.session.wait({ sessionID: made.id }))
     return made.id
   })
 
+/** The scratch HOME's config: the scripted model and the owner's server and TUI plugins. */
+const configure = (home: string, simPort: number) => {
+  for (const dir of [home, `${home}/.config`, `${home}/.config/opencode`]) files.makeDir(dir)
+  files.write(
+    `${home}/.config/opencode/opencode.json`,
+    toJson({
+      model: "sim/sim-model",
+      providers: {
+        sim: {
+          name: "Sim",
+          package: "@opencode/ai/providers/openai-compatible",
+          settings: { baseURL: `http://127.0.0.1:${simPort}/v1`, apiKey: "sim-key" },
+          models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
+        },
+      },
+      // The owner's server plugins that need no login, network listener or OS job.
+      plugins: SERVER_PLUGINS.map((name) => [ROOT, "cmd", name].join("/")),
+    }),
+  )
+  // The owner's TUI plugins, as daily writes them (herdr left out: it reports to a herdr socket).
+  files.write(`${home}/.config/opencode/cli.json`, toJson({ plugins: [...TUI_PLUGINS.map((name) => [ROOT, "cmd", name].join("/")), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }))
+}
+
 /** Builds a file's world in `root`; its scope stops the service, the hosts, the model and the proxy. */
 const fixture = (root: string) =>
   Effect.gen(function* () {
-    const home = join(root, "home")
-    const work = join(root, "work")
-    const launch = forkLaunch(fork, process.execPath)
-    const scratchBinary = join(root, "opencode-old")
-    if (binary !== "") copyFileSync(binary, scratchBinary)
-    const tui = Option.match(Option.liftPredicate(binary, (each) => each !== ""), { onNone: () => launch.base, onSome: () => [scratchBinary] })
+    const home = `${root}/home`
+    files.makeDir(`${root}/work`)
+    const work = files.real(`${root}/work`)
+    const launch = forkLaunch(ENV.fork, ENV.bun)
+    const scratchBinary = `${root}/opencode-old`
+    if (ENV.binary !== "") files.copy(ENV.binary, scratchBinary)
+    const tui = Option.match(Option.liftPredicate(ENV.binary, (each) => each !== ""), { onNone: () => launch.base, onSome: () => [scratchBinary] })
     const env = {
-      PATH: path,
+      PATH: ENV.path,
       HOME: home,
       TERM: "xterm-256color",
       // The owner's TUIs run in herdr panes, where OpenCode turns session tabs off.
       HERDR_ENV: "1",
-      XDG_CONFIG_HOME: join(home, ".config"),
-      XDG_DATA_HOME: join(home, ".local/share"),
-      XDG_STATE_HOME: join(home, ".local/state"),
-      XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DB: join(root, "opencode.db"),
+      XDG_CONFIG_HOME: `${home}/.config`,
+      XDG_DATA_HOME: `${home}/.local/share`,
+      XDG_STATE_HOME: `${home}/.local/state`,
+      XDG_CACHE_HOME: `${home}/.cache`,
+      OPENCODE_DB: `${root}/opencode.db`,
       OPENCODE_DISABLE_MODELS_FETCH: "1",
       ...launch.env,
     }
-    const tuiEnv = { ...env, ...Object.fromEntries([["BUN_OPTIONS", ""]].filter(() => binary !== "")) }
-    const serviceFile = join(home, ".local/state/opencode/service-local.json")
-    /**
-     * The fork's CLI in the scratch HOME, run to its end. Not `owned`: the service
-     * `service start` and `service restart` leave running is the point; `service
-     * stop` ends it, and accept's leak check stops it if that fails.
-     */
-    const opencode = (...args: ReadonlyArray<string>) =>
-      Effect.gen(function* () {
-        const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "pipe", detached: true })
-        const [code, out, err] = yield* Effect.all([Effect.promise(() => child.exited), Effect.promise(() => child.stdout.text()), Effect.promise(() => child.stderr.text())], { concurrency: "unbounded" })
-        return { code, out, err }
-      })
+    const tuiEnv = { ...env, ...Object.fromEntries([["BUN_OPTIONS", ""]].filter(() => ENV.binary !== "")) }
+    const serviceFile = `${home}/.local/state/opencode/service-local.json`
+    /** The fork's CLI in the scratch HOME, run to its end. */
+    const opencode = (...args: ReadonlyArray<string>) => run([...launch.base, ...args], work, env)
     const sim = yield* simModel
-    for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode")]) mkdirSync(dir)
-    writeFileSync(
-      join(home, ".config/opencode/opencode.json"),
-      JSON.stringify({
-        model: "sim/sim-model",
-        providers: {
-          sim: {
-            name: "Sim",
-            package: "@opencode/ai/providers/openai-compatible",
-            settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
-            models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
-          },
-        },
-        // The owner's server plugins that need no login, network listener or OS job.
-        plugins: SERVER_PLUGINS.map((name) => join(ROOT, "cmd", name)),
-      }),
-    )
-    // The owner's TUI plugins, as daily writes them (herdr left out: it reports to a herdr socket).
-    writeFileSync(join(home, ".config/opencode/cli.json"), JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => join(ROOT, "cmd", name)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }))
+    configure(home, sim.server.port)
     // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
     expect(yield* opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
-    const started = yield* Effect.acquireRelease(opencode("service", "start"), () => Effect.asVoid(Effect.when(opencode("service", "stop"), Effect.sync(() => existsSync(serviceFile)))))
+    const started = yield* Effect.acquireRelease(opencode("service", "start"), () => Effect.asVoid(Effect.when(opencode("service", "stop"), Effect.sync(() => files.exists(serviceFile)))))
     expect(started).toMatchObject({ code: 0 })
     const service = yield* serviceIn(serviceFile, `the service (${started.err.slice(-500)})`)
-    const module: ClientModule = yield* Effect.promise(() => import(join(fork, "packages/client/src/promise/index.ts")))
+    const module = yield* importClient<ClientModule>(ENV.fork)
     const client = module.OpenCode.make({ baseUrl: service.url, headers: authorization(service) })
     const proxy = yield* bootingProxy(serviceFile)
     const base = { root, home, work, serviceFile, tui, tuiEnv, opencode, client, OpenCode: module.OpenCode, service: serviceIn(serviceFile, "the service"), proxy, prompts: sim.prompts }
@@ -467,7 +459,7 @@ const fixture = (root: string) =>
  */
 export const reconnectTest = <E>(kept: Kept, body: (fixture: Fixture) => Effect.Effect<void, E, Scope.Scope>) =>
   // A short folder name: the terminal hosts' sockets live in it, and a socket path has at most 104 bytes on macOS.
-  kept.test(() => Effect.runPromise(Effect.scoped(Effect.flatMap(fixture(kept.dir("w")), body))))
+  kept.test(() => runCase(Effect.flatMap(fixture(kept.dir("w")), body)))
 
 /** How a restart case sets up its TUI and its service. */
 export interface RestartCase {
@@ -497,7 +489,7 @@ const beforeRestart = (
       yield* Effect.promise(() => fixture.client.session.prompt({ sessionID, text: "hold" }))
       yield* until(screen, (text) => text.includes("holding"), (last) => `${name}: the turn never started:\n${last}`, 30_000)
     }
-    if (options.gone !== "") rmSync(options.gone, { recursive: true, force: true })
+    if (options.gone !== "") files.remove(options.gone)
     if (options.draft) {
       yield* Effect.promise(() => hostCall(socket, { op: "type", text: draftText }))
       yield* until(screen, (text) => text.includes(draftText), (last) => `${name}: the draft never showed:\n${last}`, 10_000)
@@ -505,7 +497,7 @@ const beforeRestart = (
   })
 
 /** The folder of the gone case's worker: its Rift, removed before the restart. */
-export const riftOf = (fixture: Fixture) => join(fixture.root, "rift")
+export const riftOf = (fixture: Fixture) => `${fixture.root}/rift`
 
 /** `--server` through the proxy, when the case reaches the service through it. */
 const viaProxy = (explicit: boolean, proxy: Proxy) => [["--server", proxy.url]].filter(() => explicit).flat()
@@ -521,10 +513,10 @@ export const restart = (fixture: Fixture, name: string, session: Effect.Effect<s
     const { proxy } = fixture
     proxy.bootingUntil(0)
     const sessionID = yield* session
-    const socket = join(fixture.root, `${name}.sock`)
+    const socket = `${fixture.root}/${name}.sock`
     // A herdr pane's directory need not be the session's: the TUI starts in the HOME.
     // A booting service is the proxy in front of it: the TUI reaches the service through it.
-    const explicit = booting || bootingAll || starting || binary !== ""
+    const explicit = booting || bootingAll || starting || ENV.binary !== ""
     const service = yield* fixture.service
     const password = Object.fromEntries([["OPENCODE_PASSWORD", service.password]].filter(() => explicit))
     const seen = recorder()
@@ -548,19 +540,14 @@ export const restart = (fixture: Fixture, name: string, session: Effect.Effect<s
     expect(restarted).toMatchObject({ code: 0 })
     // The new service still refuses the session for a while, as one still loading its plugins does,
     // or every request, its event stream and info too, as the service does until its routes are built.
-    const servesAt = Date.now() + BOOTING_MS * Number(booting || bootingAll)
+    const servesAt = (yield* Clock.currentTimeMillis) + BOOTING_MS * Number(booting || bootingAll)
     if (booting) proxy.refuse(sessionID, servesAt)
     if (bootingAll) proxy.bootingUntil(servesAt)
     const after = yield* serviceIn(fixture.serviceFile, `the restarted service (${restarted.err.slice(-500)})`)
     // A new service process, not the old one answering.
     expect((yield* pid(after)).pid).not.toBe(before.pid)
     // Every deadline after this runs from when the TUI can be served again.
-    yield* until(
-      Effect.sync(() => Date.now()),
-      (now) => now >= servesAt,
-      () => `${name}: the booting window`,
-      BOOTING_MS + 1_000,
-    )
+    yield* reach(servesAt, `${name}: the booting window`, BOOTING_MS + 1_000)
     yield* until(screen, showing, (last) => `${name}: ${BACK_WITHIN_MS / 1000}s after the restart the TUI does not show ${marker}:\n${last}`, BACK_WITHIN_MS)
     if (draft) yield* until(screen, (text) => text.includes(draftText) && showing(text), (last) => `${name}: the draft is gone after the restart:\n${last}`, BACK_WITHIN_MS)
     if (gone !== "") {
@@ -587,8 +574,7 @@ export const restart = (fixture: Fixture, name: string, session: Effect.Effect<s
 
 const Info = Schema.Struct({ pid: Schema.optionalKey(Schema.Number) })
 /** The service's process id, as its `/api/info` says. */
-const pid = (service: Service) =>
-  json(new URL("/api/info", service.url), authorization(service)).pipe(Effect.map(Schema.decodeUnknownSync(Info)))
+const pid = (service: Service) => json(new URL("/api/info", service.url), authorization(service)).pipe(Effect.map(Schema.decodeUnknownSync(Info)), Effect.orDie)
 
 /** How a TUI is opened while the service cannot serve: down (nothing listens), booting (503 to every request) or ready. */
 interface Open {
@@ -607,12 +593,12 @@ interface Open {
  */
 export const openWhileDown = (fixture: Fixture) =>
   Effect.gen(function* () {
-    // In the directory the TUI's process sees (macOS's /var is /private/var), so --continue finds it there.
-    const opened = realpathSync(fixture.work)
+    // fixture.work is the directory the TUI's process sees (macOS's /var is /private/var), so --continue finds it there.
+    const opened = fixture.work
     const target = yield* transcript(fixture, "Reconnect opened", "opened-transcript-marker", opened)
     // A directory with no session: --continue has none to open there.
-    const empty = join(fixture.root, "empty")
-    mkdirSync(empty)
+    const empty = `${fixture.root}/empty`
+    files.makeDir(empty)
     const shows = /opened-transcript-marker/
     const cases: ReadonlyArray<Open> = [
       { name: "open-down", args: ["-s", target], mode: "down", cwd: opened, shows },
@@ -629,7 +615,7 @@ export const openWhileDown = (fixture: Fixture) =>
           const proxy = yield* bootingProxy(fixture.serviceFile)
           if (mode === "down") proxy.down()
           if (mode === "booting") proxy.bootingUntil(Number.POSITIVE_INFINITY)
-          const socket = join(fixture.root, `${name}.sock`)
+          const socket = `${fixture.root}/${name}.sock`
           const seen = recorder()
           yield* hosted(socket, cwd, [...fixture.tui, "--server", proxy.url, ...args], { ...fixture.tuiEnv, OPENCODE_PASSWORD: service.password }, seen.record)
           const screen = screenOf(socket)
@@ -673,7 +659,7 @@ export const openManaged = (fixture: Fixture) =>
       Effect.scoped(
         Effect.gen(function* () {
           const pending = yield* Effect.forkScoped(meanwhile)
-          const socket = join(fixture.root, `${name}.sock`)
+          const socket = `${fixture.root}/${name}.sock`
           const seen = recorder()
           yield* hosted(socket, fixture.home, [...fixture.tui, "-s", target], fixture.tuiEnv, seen.record)
           yield* until(screenOf(socket), (text) => text.includes("managed-transcript-marker"), (last) => `${name}: the TUI never opened its session:\n${last}`, 60_000)
@@ -716,6 +702,38 @@ const chord = (socket: string, screen: Effect.Effect<string>, key: string, opene
   return attempt(1)
 }
 
+/** Whether `prompts` holds the prompt to `sessionID` that says `marker`. */
+const holdsPrompt = (prompts: ReadonlyArray<Submission>, sessionID: string, marker: string) =>
+  prompts.some((prompt) => prompt.path === `/api/session/${sessionID}/prompt` && prompt.body.includes(marker))
+
+/**
+ * The prompt a pane submitted during the boot arrives: the proxy passes it to the service, the
+ * service accepts it (it answers once the session's location has booted, ANSWER_MS), and the
+ * model gets it.
+ */
+const promptArrives = (fixture: Fixture, marker: string) =>
+  Effect.gen(function* () {
+    const { proxy, parent } = fixture
+    yield* until(
+      Effect.sync(() => proxy.submissions),
+      (sent) => holdsPrompt(sent, parent, marker),
+      (last) => `the boot-time prompt never reached ${parent}:\n${toJson(last)}`,
+      BACK_WITHIN_MS,
+    )
+    yield* until(
+      Effect.sync(() => proxy.accepted),
+      (taken) => holdsPrompt(taken, parent, marker),
+      () => `the service never accepted the boot-time prompt to ${parent} in ${ANSWER_MS / 1000}s`,
+      ANSWER_MS,
+    )
+    yield* until(
+      Effect.sync(() => fixture.prompts),
+      (prompts) => prompts.some((prompt) => prompt.includes(marker)),
+      () => "the session never sent the boot-time prompt to its model",
+      BACK_WITHIN_MS,
+    )
+  })
+
 /**
  * A pane at home selects the parent from its session picker while the service boots (503 to every
  * request), and a prompt is submitted: `cached`, the pane visited the session first, so its composer
@@ -727,7 +745,7 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
   Effect.gen(function* () {
     const { proxy } = fixture
     const service = yield* fixture.service
-    const socket = join(fixture.root, `open-booting-${cache}.sock`)
+    const socket = `${fixture.root}/open-booting-${cache}.sock`
     const seen = recorder()
     const visit = [["-s", fixture.parent]].filter(() => cache !== "uncached").flat()
     yield* hosted(socket, fixture.work, [...fixture.tui, "--server", proxy.url, ...visit], { ...fixture.tuiEnv, OPENCODE_PASSWORD: service.password }, seen.record)
@@ -756,23 +774,11 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
     const marker = `opened-during-boot-${cache}-marker`
     const submit = Effect.promise(() => hostCall(socket, { op: "type", text: `say ${marker}` })).pipe(Effect.andThen(Effect.promise(() => hostCall(socket, { op: "keys", names: ["enter"] }))))
     if (cache !== "uncached") yield* submit
-    const servesAt = Date.now() + BOOTING_MS
+    const servesAt = (yield* Clock.currentTimeMillis) + BOOTING_MS
     proxy.bootingUntil(servesAt)
     // Half the booting window in, the proxy listens again.
-    yield* Effect.forkScoped(
-      until(
-        Effect.sync(() => Date.now()),
-        (now) => now >= servesAt - BOOTING_MS / 2,
-        () => "half the booting window",
-        BOOTING_MS,
-      ).pipe(Effect.andThen(Effect.sync(proxy.up))),
-    )
-    yield* until(
-      Effect.sync(() => Date.now()),
-      (now) => now >= servesAt,
-      () => "the booting window",
-      BOOTING_MS + 1_000,
-    )
+    yield* Effect.forkScoped(reach(servesAt - BOOTING_MS / 2, "half the booting window", BOOTING_MS).pipe(Effect.andThen(Effect.sync(proxy.up))))
+    yield* reach(servesAt, "the booting window", BOOTING_MS + 1_000)
     if (cache === "uncached") {
       yield* until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !/\bSessions\b|Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
       yield* submit
@@ -780,25 +786,7 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
     // Earlier transcript text can scroll off screen as turns accumulate.
     // The stable header and the session-specific admission prove identity.
     yield* until(screen, (text) => text.includes(marker) && text.includes("Reconnect parent"), (last) => `opening/submitting during boot did not recover:\n${last}`, BACK_WITHIN_MS)
-    yield* until(
-      Effect.sync(() => proxy.submissions),
-      (requests) => requests.some((request) => request.path === `/api/session/${fixture.parent}/prompt` && request.body.includes(marker)),
-      (last) => `the boot-time prompt never reached ${fixture.parent}:\n${JSON.stringify(last)}`,
-      BACK_WITHIN_MS,
-    )
-    yield* until(
-      Effect.sync(() => fixture.prompts),
-      (prompts) => prompts.some((prompt) => prompt.includes(marker)),
-      () => "the session never sent the boot-time prompt to its model",
-      BACK_WITHIN_MS,
-    )
+    yield* promptArrives(fixture, marker)
     expect(proxy.refusedRequests.slice(beforeRefusals).length, "selection really crossed the 503 window").toBeGreaterThan(0)
     expect(seen.toasts, "error toast opening/submitting during boot").toEqual([])
   })
-
-/** The message a file prints when OPENCODE_DEV is not set and it skips. */
-export const skipNotice = (file: string) => {
-  if (fork === "") console.warn(`${file}: skipped. Set OPENCODE_DEV to the fork.`)
-}
-
-export type { ServedHost }
