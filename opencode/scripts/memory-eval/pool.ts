@@ -186,7 +186,11 @@ export class Pool {
 
   private apply(command: Command): void {
     const decided = Effect.runSync(Effect.result(this.model.decide(this.state, command, this.now())))
-    if (Result.isFailure(decided)) throw new PoolLimit(`no account to place ${command._tag} on: the login store lists none`)
+    if (Result.isFailure(decided)) {
+      const rejection = decided.failure
+      if (rejection._tag === "AccountsHeld") throw new PoolLimit("every eval account is held", rejection.retryAt)
+      throw new PoolLimit(`no account to place ${command._tag} on: the login store lists none`)
+    }
     this.state = fold(this.model, decided.success, this.state)
   }
 
@@ -273,11 +277,8 @@ export class Pool {
     let recovered = false
     for (;;) {
       this.apply({ _tag: "PlaceRequest", sessionID, kind: "primary" })
+      // Every account held: the placement above threw `PoolLimit` with when the first opens.
       const credentialID = placedOn(this.state, sessionID, "primary")!
-      if (held(this.state, credentialID, this.now())) {
-        const untils = this.state.credentials.flatMap((id) => (held(this.state, id, this.now()) ? [this.state.holds[id]!.until] : []))
-        throw new PoolLimit("every eval account is held", Math.min(...untils))
-      }
       const login = await this.options.source.resolve(credentialID)
       const aliases = new ToolNameAliasTable()
       const rewritten = rewriteRequestBody(JSON.stringify(body), this.version, aliases)

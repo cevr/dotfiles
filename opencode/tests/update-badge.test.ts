@@ -1,3 +1,4 @@
+// accept: deep (38.2 s alone on a quiet host: 1-minute load 60.8–74.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The TUI says when it runs an older build than its service.
 //
 // The owner (2026-11-11): an install restarts the service onto the new build

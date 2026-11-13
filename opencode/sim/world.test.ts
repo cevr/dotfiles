@@ -14,11 +14,12 @@ import { describe, expect } from "bun:test"
 import * as Seed from "./seed.ts"
 import { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
-import { Clock, Effect, Option, Schema } from "effect"
+import { Array as Arr, Clock, Effect, Option, Schema } from "effect"
 import * as Plugins from "./plugins.ts"
 import type { InboxItem, Message } from "./host.ts"
 import { below, generator, line } from "./runtime.ts"
-import { make, say, type World } from "./world.ts"
+import * as Provider from "./provider.ts"
+import { make, say, START, type World } from "./world.ts"
 
 const SteerInput = Schema.Struct({ sessionID: Schema.String, text: Schema.String, resume: Schema.Boolean })
 
@@ -217,12 +218,188 @@ const oneAtATime = (world: World) => {
       expect(running.has(id), `a second execution of ${id}`).toBe(false)
       running.add(id)
     }
-    if (entry.type === "session.execution.succeeded") running.delete(id)
+    if (entry.type === "session.execution.succeeded" || entry.type === "session.execution.failed") running.delete(id)
     if (entry.kind === "down") running.clear()
   }
 }
 
 const SEEDS = Array.from({ length: 50 }, (_, index) => index + 1)
+
+// The pooled world: two Anthropic logins OpenCode holds, the auth plugin and
+// the pool from their roots, against the world's Anthropic. The commands add
+// pooled turns, a plan limit on a login until a reset, a token endpoint that
+// fails, a reset grant about to expire on a spent week (the pool claims it on
+// its own) and a claim endpoint that fails, the pool sweeping every 30 minutes, and
+// the clock passing a reset, a grant's end or a token's expiry.
+
+const LOGINS = ["first", "second"] as const
+const HOUR = 3_600_000
+
+type Pooled =
+  | { readonly type: "session" }
+  | { readonly type: "prompt"; readonly session: number }
+  | { readonly type: "limit"; readonly login: number; readonly hours: number }
+  | { readonly type: "token"; readonly login: number; readonly answer: "rotate" | "rate-limited" | "unavailable" }
+  | { readonly type: "grant"; readonly login: number; readonly hours: number }
+  | { readonly type: "claim"; readonly answer: Provider.ClaimResult }
+  | { readonly type: "advance"; readonly ms: number }
+  | { readonly type: "restart" }
+
+const pooledOf = (pick: number, random: ReturnType<typeof generator>): Pooled => {
+  if (pick < 2) return { type: "session" }
+  if (pick < 9) return { type: "prompt", session: below(random, 3) }
+  if (pick < 12) return { type: "limit", login: below(random, 2), hours: 1 + below(random, 5) }
+  if (pick < 14) return { type: "token", login: below(random, 2), answer: (["rotate", "rate-limited", "unavailable"] as const)[below(random, 3)] ?? "rotate" }
+  if (pick < 16) return { type: "grant", login: below(random, 2), hours: 1 + below(random, 30) }
+  if (pick < 17) return { type: "claim", answer: (["reset", "unavailable", "rate-limited", "cooldown"] as const)[below(random, 4)] ?? "reset" }
+  if (pick < 21) return { type: "advance", ms: below(random, 4) * (1 + below(random, 2 * HOUR)) }
+  return { type: "restart" }
+}
+
+/** Up to 40 pooled commands, the seed choosing each. */
+const pooledCommandsOf = (seed: number): ReadonlyArray<Pooled> => {
+  const random = generator(`pooled:${seed}`)
+  const count = 10 + below(random, 31)
+  return [{ type: "session" }, ...Array.from({ length: count - 1 }, () => pooledOf(below(random, 22), random))]
+}
+
+/** What the world's Anthropic is told: each login's plan limit until its reset, and each one's token endpoint answer. */
+interface Anthropic {
+  readonly limits: Map<string, number>
+  readonly tokens: Map<string, "rotate" | "rate-limited" | "unavailable">
+  /** Each plan-limit refusal: the login, the provider's request index, and the reset it named. */
+  readonly refusals: Array<{ readonly login: string; readonly index: number; readonly resetAt: number }>
+  /** Each login's reset grants: listed until claimed or ended. */
+  readonly grants: Map<string, Array<Provider.Grant>>
+  /** What the claim endpoint answers next. */
+  claim: Provider.ClaimResult
+  /** Each login's week, 90% used once a grant is listed on it (worth claiming, not spent), until a claim gives it back. */
+  readonly weeks: Map<string, number>
+}
+
+/** What the world's Anthropic is told by a command: a plan limit, a token or claim endpoint's answer, a grant listed. */
+const tell = (anthropic: Anthropic, command: Pooled, before: number) => {
+  if (command.type === "limit") anthropic.limits.set(LOGINS[command.login] ?? "first", before + command.hours * HOUR)
+  if (command.type === "token") anthropic.tokens.set(LOGINS[command.login] ?? "first", command.answer)
+  if (command.type === "grant") {
+    const login = LOGINS[command.login] ?? "first"
+    const grant: Provider.Grant = { id: `grant-${before}-${login}`, resetsLeft: 1, endsAt: before + command.hours * HOUR, clears: ["seven_day"], type: "weekly" }
+    anthropic.grants.set(login, [...(anthropic.grants.get(login) ?? []), grant])
+    anthropic.weeks.set(login, 0.9)
+  }
+  if (command.type === "claim") anthropic.claim = command.answer
+}
+
+/** A claimed grant: listed still, with no resets left, as Anthropic lists it. */
+const spend = (listed: ReadonlyArray<Provider.Grant>, grant: string) =>
+  listed.map((item) => Option.match(Option.liftPredicate(item, (each) => each.id === grant), { onNone: () => item, onSome: (each) => ({ ...each, resetsLeft: 0 }) }))
+
+/** One pooled run: its world and what the provider saw. */
+const pooledRun = (seed: number, check: (world: World, anthropic: Anthropic, command: Pooled, before: number) => void = () => void 0) =>
+  Effect.gen(function* () {
+    const anthropic: Anthropic = { limits: new Map(), tokens: new Map(), refusals: [], grants: new Map(), claim: "reset", weeks: new Map() }
+    const accounts = Provider.accounts(seed, LOGINS)
+    const world = make({
+      seed,
+      script: () => say(""),
+      anthropic: {
+        accounts,
+        token: (login) => ({ kind: anthropic.tokens.get(login) ?? "rotate" }),
+        quota: (login) => ({
+          // The five-hour window as the plan limit says: spent until its reset, as the 429 named it.
+          fiveHour: Option.match(Option.filter(Option.fromNullishOr(anthropic.limits.get(login)), (resetAt) => resetAt > world.now()), {
+            onNone: () => ({ utilization: 0.1, resetAt: world.now() + 2 * HOUR }),
+            onSome: (resetAt) => ({ utilization: 1, resetAt }),
+          }),
+          sevenDay: { utilization: anthropic.weeks.get(login) ?? 0.2, resetAt: START + 5 * 24 * HOUR },
+        }),
+        grants: (login) => anthropic.grants.get(login) ?? [],
+        claim: (login, grant) => {
+          const listed = anthropic.grants.get(login) ?? []
+          if (listed.some((item) => item.id === grant && item.resetsLeft === 0)) return "already_used"
+          const answer = anthropic.claim
+          if (answer !== "reset") return answer
+          anthropic.grants.set(login, spend(listed, grant))
+          anthropic.weeks.set(login, 0)
+          return answer
+        },
+        script: ({ account, body }) => {
+          const tools = body["tools"]
+          const turn = Array.isArray(tools) && tools.length > 0
+          const resetAt = anthropic.limits.get(account) ?? 0
+          if (turn && resetAt > world.now()) {
+            anthropic.refusals.push({ login: account, index: world.provider().received().length, resetAt })
+            return { kind: "usage-429", claim: "five_hour", resetAt }
+          }
+          return { kind: "ok", text: `answered on ${account}` }
+        },
+      },
+      integrations: {
+        anthropic: LOGINS.map((name, index) => ({ id: `cred_${name}`, label: `Anthropic ${index + 1}`, ...accounts[name], expires: START + HOUR })),
+      },
+    })
+    yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: "/work" })
+    yield* world.load(Plugins.pool(), { directory: "/work", options: { sweepMinutes: 30, limitsFile: "/nonexistent/sim/limits.json" } })
+    const sessions: Array<string> = []
+    for (const command of pooledCommandsOf(seed)) {
+      const before = world.now()
+      if (command.type === "session") sessions.push(yield* world.session("/work"))
+      if (command.type === "prompt")
+        yield* Option.match(Option.fromNullishOr(sessions[command.session % Math.max(1, sessions.length)]), {
+          onNone: () => Effect.void,
+          onSome: (id) => world.prompt(id, `pooled ${before}`),
+        })
+      tell(anthropic, command, before)
+      if (command.type === "advance") yield* world.advance(command.ms)
+      if (command.type === "restart") yield* world.restart
+      check(world, anthropic, command, before)
+    }
+    return { world, anthropic }
+  })
+
+/** The invariants of a pooled run after one command. */
+const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, command: Pooled, before: number) => {
+  const label = `seed ${seed}: ${line(command)}`
+  if (command.type !== "advance") expect(world.now(), label).toBe(before)
+  const received = world.provider().received()
+  const messages = received.flatMap((request, index) => Arr.filter([{ ...request, index }], () => request.path === "/v1/messages"))
+  // A request goes out on exactly one login the provider knows: none unsigned.
+  expect(
+    messages.filter((request) => request.account === ""),
+    label,
+  ).toEqual([])
+  // Never on a login the provider refused as spent, once the refusal is back (a request already sent at that instant
+  // aside), before the reset it named: with every login spent the pool refuses the turn itself.
+  const refused = (login: string, at: number, known: (refusal: { readonly index: number }) => boolean) =>
+    anthropic.refusals.some((refusal) => refusal.login === login && known(refusal) && at < refusal.resetAt)
+  expect(
+    messages.filter(
+      (request) =>
+        request.tools > 0 &&
+        refused(request.account, request.at, (refusal) => (received[refusal.index]?.at ?? request.at) < request.at),
+    ),
+    label,
+  ).toEqual([])
+  // A refresh token is traded once: none is presented again after it was rotated.
+  expect(
+    received.filter((request) => request.path === "/v1/oauth/token" && request.status === 400),
+    label,
+  ).toEqual([])
+  // A grant is claimed at most once, across restarts: none is sent again after the provider took it.
+  const claims = world.provider().claims()
+  expect(
+    claims.filter((claim, index) => claims.slice(0, index).some((before) => before.grant === claim.grant && before.result === "reset")),
+    label,
+  ).toEqual([])
+  // Nor is a grant claimed the provider never listed for that login.
+  expect(
+    world
+      .provider()
+      .claims()
+      .filter((claim) => !claim.grant.startsWith("grant-") || !claim.grant.endsWith(`-${claim.account}`)),
+    label,
+  ).toEqual([])
+}
 
 describe("the world", () => {
   Seed.effect(
@@ -251,6 +428,38 @@ describe("the world", () => {
   )
 
   Seed.effect(
+    "a pooled run replays byte for byte: pooled turns, plan limits, refresh faults, resets and restarts; 50 seeds give at least 10 different runs",
+    Effect.gen(function* () {
+      const traces = yield* Effect.forEach(SEEDS, (seed) =>
+        Effect.gen(function* () {
+          const replay = (run: { readonly world: World }) => `${run.world.trace()}\n${line(run.world.provider().received())}`
+          const first = replay(yield* pooledRun(seed))
+          expect(replay(yield* pooledRun(seed)), `seed ${seed}`).toBe(first)
+          return first
+        }),
+      )
+      expect(new Set(traces).size).toBeGreaterThanOrEqual(10)
+    }),
+  )
+
+  Seed.effect(
+    "against the pooled model: every request on one known login, none on a login before the reset it was refused to, no refresh token traded twice, no grant claimed twice or unlisted",
+    Effect.gen(function* () {
+      const claims = yield* Effect.forEach(SEEDS, (seed) =>
+        pooledRun(seed, pooledInvariants(seed)).pipe(
+          Effect.map(({ world }) => {
+            oneAtATime(world)
+            return world.provider().claims()
+          }),
+        ),
+      )
+      // The runs reach the claims the invariants are about: taken, and refused by a failing claim endpoint.
+      const results = new Set(claims.flat().map((claim) => claim.result))
+      expect([...results].toSorted()).toEqual(["cooldown", "rate-limited", "reset", "unavailable"])
+    }),
+  )
+
+  Seed.effect(
     "a simulated hour costs milliseconds",
     Effect.gen(function* () {
       const world = yield* worldOf(7)
@@ -267,3 +476,4 @@ describe("the world", () => {
     }),
   )
 })
+

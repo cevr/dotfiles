@@ -1,4 +1,5 @@
 // accept: one at a time (it bounds when the idle compaction fires against its due time).
+// accept: may skip 1 (the fork's version picks one of "recorded as automatic" and "records the idle compaction as manual")
 // Idle compaction in real OpenCode (the fork, through its SDK) on the scripted
 // model, on a 20 s cache and a 5 s margin, for what rests on host behaviour no
 // host law pins yet (tests/parity.json says which): a session whose background

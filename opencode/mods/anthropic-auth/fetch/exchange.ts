@@ -2,7 +2,7 @@
 // the way Claude Code sends it, and its response comes back with the tool
 // names OpenCode knows, the quota it carries recorded, a version rejection
 // recovered from once, and a 429 named for what it is.
-import { type Clock, Effect, Result, Schema } from "effect"
+import { type Clock, Effect, Option, Result, Schema } from "effect"
 import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
 import { readUnifiedQuota } from "../quota.ts"
@@ -31,10 +31,10 @@ import {
   setOAuthHeaders,
   takeCacheTTL,
   takeCredentialChoice,
+  unsignedResponse,
 } from "./request.ts"
 import { createStrippedStream } from "./response-stream.ts"
 import { detectClaudeCodeVersionRejection } from "./version-rejection.ts"
-import type { LoginFailed } from "../service.ts"
 
 const INTEGRATION_ID = "anthropic"
 const MAX_REQUEST_ALIAS_ENTRIES = 256
@@ -45,8 +45,8 @@ export class UntrustedOrigin extends Schema.TaggedError<UntrustedOrigin>()("Untr
   message: Schema.String,
 }) {}
 
-/** Why a request is not sent. */
-export type RequestError = LoginFailed | BodyError | ToolNameRejected | RequestUntracked | UntrustedOrigin
+/** Why a request is not sent. A login that cannot sign in is none: its request answers as a 401. */
+export type RequestError = BodyError | ToolNameRejected | RequestUntracked | UntrustedOrigin
 
 /** Why a response is not delivered. */
 export type ResponseError = RequestUntracked
@@ -100,6 +100,8 @@ const credentialIDOf = (connection: { readonly type: string; readonly id?: strin
  * named (`CACHE_TTL_HEADER`) when it named one, else for the agent's own
  * lifetime when the provider configures one. A login refused for a while
  * sends the request nowhere; the response hook answers it as a retryable 429.
+ * A login that cannot sign in sends it nowhere too, answered as a 401 that
+ * says why.
  */
 export const onRequest =
   (exchange: Exchange) =>
@@ -116,6 +118,16 @@ export const onRequest =
           Effect.sync(() => {
             const request = refusedRequest(event.request)
             ownership.refused.set(request, refused.retryAfter)
+            event.request = request
+            return undefined
+          }),
+        ),
+        // A login that cannot sign in (it needs a new sign-in) sends the request nowhere too: the response hook
+        // answers it as the 401 that says why, a failure the turn reports and the pool fails over on.
+        Effect.catchTag("LoginFailed", (failed) =>
+          Effect.sync(() => {
+            const request = refusedRequest(event.request)
+            ownership.unsigned.set(request, failed.message)
             event.request = request
             return undefined
           }),
@@ -209,11 +221,21 @@ export const onResponse =
       const { auth, endpoint, ownership, leases, connections, clock } = exchange
       if (event.model.providerID !== INTEGRATION_ID) return
       // A refused request went nowhere: it answers as Anthropic's rate limit
-      // does, whichever setup refused it.
-      const refused = ownership.refused.get(event.request)
-      if (refused !== undefined) {
-        yield* Effect.promise(() => event.response.body?.cancel() ?? Promise.resolve())
-        event.response = refusedResponse(refused)
+      // does, whichever setup refused it; an unsigned one as its 401.
+      const cancel = Option.match(Option.fromNullishOr(event.response.body), {
+        onNone: () => Effect.void,
+        onSome: (body) => Effect.promise(() => body.cancel()),
+      })
+      const refused = Option.fromNullishOr(ownership.refused.get(event.request))
+      if (Option.isSome(refused)) {
+        yield* cancel
+        event.response = refusedResponse(refused.value)
+        return
+      }
+      const unsigned = Option.fromNullishOr(ownership.unsigned.get(event.request))
+      if (Option.isSome(unsigned)) {
+        yield* cancel
+        event.response = unsignedResponse(unsigned.value)
         return
       }
       if (!exchange.active()) return

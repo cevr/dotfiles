@@ -137,11 +137,11 @@
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
-import { PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
-import { StoreSource, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
+import { StoreSource, type StoreSourceOptions, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
 import * as FleetStoreLive from "@dotfiles/opencode-pool/opencode/fleet"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
@@ -272,13 +272,17 @@ const chatgptLogin = (ctx: Plugin.Context, pool: PoolId) => (credentialID: strin
   )
 
 /** The ChatGPT quota sources of the paced pools, by pool. */
-const chatgptSources = (ctx: Plugin.Context, options: Options) =>
+const chatgptSources = (ctx: Plugin.Context, options: Options, host: StoreHost) =>
   Effect.gen(function* () {
     const sources = new Map<PoolId, ChatGPT.Source>()
     for (const pool of chatgptPools(options))
       sources.set(
         pool,
-        yield* ChatGPT.make({ login: chatgptLogin(ctx, pool), ...(options.usageURL === undefined ? {} : { url: options.usageURL }) }),
+        yield* ChatGPT.make({
+          login: chatgptLogin(ctx, pool),
+          ...(options.usageURL === undefined ? {} : { url: options.usageURL }),
+          ...Option.match(Option.fromNullishOr(host.source.fetch), { onNone: () => ({}), onSome: (send) => ({ fetch: send }) }),
+        }),
       )
     return sources
   })
@@ -290,21 +294,45 @@ const storePool = (options: Options): PoolId | undefined => options.providers.an
  * The login stores the options name, each read in place. One per directory per
  * process. Each logs its refreshes to the host's log through `context`.
  */
-const storeSources = (options: Options, context: Context.Context<never>) =>
+const storeSources = (options: Options, context: Context.Context<never>, host: StoreHost) =>
   storePool(options) === undefined
     ? []
     : options.sources.map(
         (source) =>
-          new StoreSource({ dir: source.dir, context, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
+          new StoreSource({
+            dir: source.dir,
+            context,
+            ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }),
+            ...host.source,
+          }),
       )
 
-/** The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's storage. */
-export const live = (
-  ctx: Plugin.Context,
-  options: Options,
-  sources: ReadonlyArray<StoreSource>,
-  chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
-): Layer.Layer<Externals | Limits | PushStore | Workload> =>
+/**
+ * What the login stores reach outside the plugin: in OpenCode the disk, this
+ * process, the network and the process-wide registry the auth plugin reads
+ * (`LIVE_STORE_HOST`); on the simulated world, the world's.
+ */
+export interface StoreHost {
+  /** What each source reaches: its files and lock, its process, its fetch (the ChatGPT usage endpoint's too). */
+  readonly source: Pick<StoreSourceOptions, "files" | "process" | "fetch">
+  /** Registers a source with the auth plugin for an integration; the returned function removes it. */
+  readonly register: (integrationID: string, source: StoreSource) => () => void
+}
+
+export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCredentialSource }
+
+/**
+ * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
+ * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
+ */
+export const liveWith =
+  (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) =>
+  (
+    ctx: Plugin.Context,
+    options: Options,
+    sources: ReadonlyArray<StoreSource>,
+    chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
+  ): Layer.Layer<Externals | Limits | PushStore | Workload> =>
     Layer.mergeAll(
       LimitsLive.layer(ctx.storage, options.limitsFile ?? LimitsLive.defaultPath()),
       LoginsLive.layer(
@@ -327,7 +355,7 @@ export const live = (
         }
       }),
       LedgerLive.layer(ctx.storage),
-      PeersLive.layer(options.fleet.peers),
+      peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
       FleetStoreLive.layer(ctx.storage),
       // And the same resets, so a hold is worked once on the host.
@@ -338,6 +366,9 @@ export const live = (
       // The host's load, and the orchestrate runs of this directory from the status plugin (reached at each call: it may start after the pool).
       WorkloadLive.layer(() => Effect.suspend(() => ctx.rpc(STATUS).status({}))),
     )
+
+/** The outside systems as OpenCode provides them, the peers over SSH. */
+export const live = liveWith(PeersLive.layer)
 
 /** The questions plugin's RPC and the host's sessions, as the pool asks the owner through them. */
 const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
@@ -385,6 +416,7 @@ export const make = (
     sources: ReadonlyArray<StoreSource>,
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ) => Layer.Layer<Externals>,
+  storeHost: StoreHost = LIVE_STORE_HOST,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -397,8 +429,8 @@ export const make = (
       // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
       yield* migrate(ctx.storage)
       // The plugin's context carries the host's loggers.
-      const sources = storeSources(options, yield* Effect.context<never>())
-      const chatgpt = yield* chatgptSources(ctx, options)
+      const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
+      const chatgpt = yield* chatgptSources(ctx, options, storeHost)
       const services = yield* Layer.build(
         Model.layer({
           providers: options.providers,
@@ -423,7 +455,7 @@ export const make = (
       if (anthropic !== undefined)
         for (const source of sources)
           yield* Effect.acquireRelease(
-            Effect.sync(() => registerCredentialSource(anthropic, source)),
+            Effect.sync(() => storeHost.register(anthropic, source)),
             (unregister) => Effect.sync(unregister),
           )
 
@@ -474,6 +506,9 @@ export const make = (
                   if (placed.cacheLifeMs !== undefined && placed.cacheLifeMs !== cacheLifeMs)
                     event.headers[CACHE_TTL_HEADER] = ttlOf(placed.cacheLifeMs)
                 }),
+                // Every account held: the request goes out on none. The host ends the turn on the pool's own words
+                // and when the first account opens; a hook declares no failure, so the refusal is its defect.
+                Effect.catchTag("AccountsHeld", (held) => Effect.die(new Error(heldMessage(held)))),
               ),
           ),
         ),

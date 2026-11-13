@@ -282,11 +282,33 @@ export function wakeLine(entry: WakeEntry, now: number, frame: string): Line {
   return monitorLine(entry, now, frame)
 }
 
-/** A terminal's row: the process in front, else its title. The data says no more. */
-export function terminalLine(label: string, current: boolean): Line {
-  const terminal: Line = { ...blank, glyph: "$", tone: "muted", name: label }
-  if (current) return { ...terminal, tone: "success" }
-  return terminal
+/** A terminal as the host's Terminals tab knows it (its persistent PTY record). */
+export type Terminal = {
+  readonly title: string
+  readonly command: string
+  readonly status: "running" | "exited"
+  readonly exitCode?: number
+  /** The process in front, while one other than its shell runs. */
+  readonly foregroundProcess?: string
+}
+
+/**
+ * A terminal's row: its title, what runs in it (the process in front, else its
+ * command), and its state in the words a shell's row uses (`running`,
+ * `exited 1`). No time: the PTY service keeps no start time for a terminal.
+ */
+export function terminalLine(terminal: Terminal): Line {
+  const row: Line = { ...blank, glyph: "$", tone: "success", name: terminal.title, status: terminal.foregroundProcess || terminal.command, state: "running" }
+  if (terminal.status === "running") return row
+  const code = terminal.exitCode ?? "?"
+  const exited: Line = { ...row, tone: "error", status: terminal.command, state: `exited ${code}` }
+  if (code === 0) return { ...exited, tone: "muted" }
+  return exited
+}
+
+/** A row the host words and the panel knows nothing more of: the Terminals tab's `+ New terminal`, a row whose subject is not read yet. */
+export function labelLine(label: string): Line {
+  return { ...blank, glyph: "$", tone: "muted", name: label }
 }
 
 // ── The tab bar and the footer ──

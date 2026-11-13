@@ -3,21 +3,16 @@
 // fixtures are slot files in temporary directories, another process's
 // refreshes are made under the store's real lock (tests/store/store.ts), and
 // the token endpoint is the fake Anthropic API. Every token is a fake drawn
-// at run time.
+// at run time. The names that rest on the store's logic alone run on the
+// simulated world (cmd/pool/pool-store.sim.test.ts); the ones here rest on the
+// disk or on two real processes as well (tests/parity.json says which).
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { Effect } from "effect"
-import {
-  CREDENTIAL_SOURCES,
-  STORE_PREFIX,
-  CLAUDE_TOKEN_URL,
-  StoreCredentialError,
-  StoreSource,
-  limitDetail,
-  registerCredentialSource,
-} from "../mods/pool/store/store.ts"
+import { Clock, Effect, Option } from "effect"
+import { it } from "effect-bun-test"
+import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, StoreSource, storeProcess } from "../mods/pool/store/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { openSlotStore, type SlotStore } from "./store/store.ts"
 import { owned } from "./owned.ts"
@@ -87,62 +82,7 @@ const failure = async (run: Promise<unknown>): Promise<StoreCredentialError> => 
   throw new Error("expected the resolve to fail")
 }
 
-// The endpoint Claude Code and the Anthropic auth plugin refresh at.
-test("the store source refreshes at Claude Code's token endpoint", () => {
-  expect(CLAUDE_TOKEN_URL).toBe("https://platform.claude.com/v1/oauth/token")
-})
-
-test("a 429's log line names who limited the request, and never more than the error's words", () => {
-  expect(limitDetail("cloudflare", "60", "<html><body><h1>Error 1015</h1> You are being rate limited</body></html>")).toBe(
-    'server cloudflare; retry-after 60; "Error 1015 You are being rate limited"',
-  )
-  expect(limitDetail(null, null, JSON.stringify({ error: { type: "rate_limit_error", message: "Too many refreshes" } }))).toBe(
-    'server unnamed; retry-after none; "rate_limit_error: Too many refreshes"',
-  )
-  expect(limitDetail("envoy", null, "")).toBe("server envoy; retry-after none; empty body")
-})
-
 describe("the pool's source over a login store", () => {
-  test("lists the accounts the store owns by label, and says why it leaves the rest alone", async () => {
-    const { dir, store, source } = await bench({ alpha: fakeAccount(), "beta-2": fakeAccount() })
-    // The default entry (Claude Code's login), a linked slot, a write in
-    // flight and a file that is not a sign-in.
-    await store.signIn(undefined, { ...fakeAccount(), expires: Date.now() + HOUR }, { metadata: {} })
-    await store.signIn("linked", { ...fakeAccount(), expires: Date.now() + HOUR }, { metadata: { source: "claude-code" } })
-    writeFileSync(join(dir, ".slots/anthropic/.alpha.store-write-0a1b2c3d"), "{}", { mode: 0o600 })
-    writeFileSync(join(dir, ".slots/anthropic/broken"), "{}", { mode: 0o600 })
-
-    expect(source.list()).toEqual({
-      accounts: [`${STORE_PREFIX}alpha`, `${STORE_PREFIX}beta-2`],
-      skipped: [
-        { label: "broken", reason: "does not decode as an OAuth sign-in" },
-        { label: "linked", reason: "a linked Claude Code login, which Claude Code refreshes itself" },
-      ],
-    })
-    expect(source.owns(`${STORE_PREFIX}alpha`)).toBe(true)
-    expect(source.owns("alpha")).toBe(false)
-    expect(source.owns(`${STORE_PREFIX}default`)).toBe(false)
-    expect(new StoreSource({ dir: join(dir, "missing") }).list()).toEqual({ accounts: [], skipped: [] })
-  })
-
-  test("serves each slot's own token, read again for every request", async () => {
-    const alpha = fakeAccount()
-    const beta = fakeAccount()
-    const { store, source, trades } = await bench({ alpha, beta })
-    expect((await source.resolve(`${STORE_PREFIX}alpha`)).access).toBe(alpha.access)
-    expect((await source.resolve(`${STORE_PREFIX}beta`)).access).toBe(beta.access)
-
-    // Another process refreshes alpha meanwhile: the next request carries its new token.
-    const next = { ...fakeAccount(), expires: Date.now() + 8 * HOUR }
-    await store.refresh("alpha", () => next)
-    expect(await source.resolve(`${STORE_PREFIX}alpha`)).toEqual({ access: next.access, expires: next.expires })
-    expect(trades()).toBe(0)
-
-    await store.signIn("linked", { ...fakeAccount(), expires: Date.now() + HOUR }, { metadata: {} })
-    expect((await failure(source.resolve(`${STORE_PREFIX}linked`))).kind).toBe("not-owned")
-    expect((await failure(source.resolve(`${STORE_PREFIX}gone`))).kind).toBe("signed-out")
-  })
-
   test("a stale token is refreshed once and written back in the store's exact shape, mode 0600", async () => {
     const account = fakeAccount()
     const ours = await bench({ alpha: account }, { expires: Date.now() - 1000 })
@@ -197,98 +137,6 @@ describe("the pool's source over a login store", () => {
     // Both asked while the other's refresh (1.5 s at the endpoint) could be in flight: a real race.
     expect(Math.abs(outputs[0]!.began - outputs[1]!.began)).toBeLessThan(1000)
   }, 30_000)
-
-  test("in one process too, concurrent requests for a stale slot share one refresh", async () => {
-    const { dir, tokenURL, trades } = await bench(
-      { alpha: fakeAccount() },
-      { expires: Date.now() - 1000, token: () => ({ kind: "rotate", delayMs: 200 }) },
-    )
-    const first = new StoreSource({ dir, tokenURL })
-    const second = new StoreSource({ dir, tokenURL })
-    const served = await Promise.all([
-      first.resolve(`${STORE_PREFIX}alpha`),
-      second.resolve(`${STORE_PREFIX}alpha`),
-      first.resolve(`${STORE_PREFIX}alpha`),
-    ])
-    expect(new Set(served.map((credential) => credential.access)).size).toBe(1)
-    expect(trades()).toBe(1)
-  })
-
-  test("a token another process refreshed while the pool waited for its lock is read again, not refreshed again", async () => {
-    const { store, source, trades } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000 })
-    const theirs = { ...fakeAccount(), expires: Date.now() + 8 * HOUR }
-    // The other process takes the lock; the pool asks while its refresh is in flight.
-    const asked: Array<{ readonly at: number; readonly resolving: Promise<{ access: string; expires: number }> }> = []
-    const ask = Effect.sync(() => asked.push({ at: Date.now(), resolving: source.resolve(`${STORE_PREFIX}alpha`) }))
-    await store.refresh("alpha", () => theirs, ask.pipe(Effect.andThen(Effect.sleep("500 millis"))))
-    const answers: Array<{ readonly resolved: { access: string; expires: number }; readonly waited: boolean }> = []
-    for (const { at, resolving } of asked) answers.push({ resolved: await resolving, waited: Date.now() - at > 400 })
-    expect(answers).toEqual([{ resolved: { access: theirs.access, expires: theirs.expires }, waited: true }])
-    expect(trades()).toBe(0)
-  })
-
-  test("another process, waiting for the lock while the pool refreshes, reads the pool's write and writes nothing", async () => {
-    const { store, fake, source, trades } = await bench(
-      { alpha: fakeAccount() },
-      { expires: Date.now() - 1000, token: () => ({ kind: "rotate", delayMs: 800 }) },
-    )
-    const ours = source.resolve(`${STORE_PREFIX}alpha`)
-    await Bun.sleep(300)
-    let seen: string | undefined
-    // The other process's refresh: it rereads under the lock and finds the token fresh.
-    await store.refresh("alpha", (current) => {
-      seen = current?.access
-      return current !== undefined && current.expires > Date.now() + 60_000 ? undefined : { ...fakeAccount(), expires: 0 }
-    })
-    const resolved = await ours
-    expect(seen).toBe(resolved.access)
-    expect(resolved.access).toBe(fake.tokens("alpha").access)
-    expect(trades()).toBe(1)
-  })
-
-  test("a refresh the endpoint could not answer writes nothing and may be tried again", async () => {
-    let answer: FakeTokenAnswer = { kind: "unavailable" }
-    const { source, trades, file } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000, token: () => answer })
-    const before = file("alpha")
-    const error = await failure(source.resolve(`${STORE_PREFIX}alpha`))
-    expect(error.kind).toBe("unavailable")
-    expect(error.retryAt).toBeGreaterThan(Date.now())
-    expect(file("alpha")).toBe(before)
-
-    // The refresh token stays after an unclear failure: the next try spends it.
-    answer = { kind: "rotate" }
-    await source.resolve(`${STORE_PREFIX}alpha`)
-    expect(trades()).toBe(2)
-    expect(file("alpha")).not.toBe(before)
-  })
-
-  test("a rate-limited refresh pauses every account of the store until retry-after", async () => {
-    let answer: FakeTokenAnswer = { kind: "rate-limited", retryAfterSeconds: 120 }
-    const { source, trades } = await bench(
-      { alpha: fakeAccount(), beta: fakeAccount() },
-      { expires: Date.now() - 1000, token: () => answer },
-    )
-    const first = await failure(source.resolve(`${STORE_PREFIX}alpha`))
-    expect(first.kind).toBe("unavailable")
-    expect(first.message).toContain("answered 429 (server")
-    expect(first.message).toContain("retry-after 120")
-    expect(first.retryAt).toBeGreaterThan(Date.now() + 110_000)
-    // The other account waits too, without a request of its own.
-    answer = { kind: "rotate" }
-    const second = await failure(source.resolve(`${STORE_PREFIX}beta`))
-    expect(second.retryAt).toBe(first.retryAt)
-    expect(trades()).toBe(1)
-  })
-
-  test("a refresh the endpoint refused writes nothing and asks for a new sign-in", async () => {
-    const { source, file } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000, token: () => ({ kind: "rejected" }) })
-    const before = file("alpha")
-    const error = await failure(source.resolve(`${STORE_PREFIX}alpha`))
-    expect(error.kind).toBe("rejected")
-    expect(error.retryAt).toBeUndefined()
-    expect(file("alpha")).toBe(before)
-  })
-
   test("a refresh whose write failed is held, and written later only over the login it replaced", async () => {
     const { dir, fake, source, trades, file } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000 })
     const slots = join(dir, ".slots/anthropic")
@@ -321,39 +169,27 @@ describe("the pool's source over a login store", () => {
     expect(trades()).toBe(1)
   })
 
-  test("a token the provider rejected is refreshed next time, only while the store still holds it", async () => {
-    const account = fakeAccount()
-    const { source, trades } = await bench({ alpha: account })
-    source.rejected(`${STORE_PREFIX}alpha`, "fake-access-some-older-token")
-    expect((await source.resolve(`${STORE_PREFIX}alpha`)).access).toBe(account.access)
-    expect(trades()).toBe(0)
+  it.live("a refresh whose write failed keeps the store's lock: no other holder trades the spent refresh token", () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const { dir, fake, source, tokenURL, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
+      const slots = join(dir, ".slots/anthropic")
+      const alpha = `${STORE_PREFIX}alpha`
+      chmodSync(slots, 0o500)
+      expect((yield* Effect.promise(() => failure(source.resolve(alpha)))).kind).toBe("persist")
+      const rotated = fake.tokens("alpha")
 
-    source.rejected(`${STORE_PREFIX}alpha`, account.access)
-    const next = await source.resolve(`${STORE_PREFIX}alpha`)
-    expect(next.access).not.toBe(account.access)
-    expect(trades()).toBe(1)
-  })
+      // Another holder of the store (its own state of it, its own SQLite connection) must refresh the same login:
+      // it waits on the lock, and never reads the spent refresh token to trade it.
+      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
+      expect((yield* Effect.promise(() => failure(theirs.resolve(alpha)))).kind).toBe("busy")
+      expect(trades()).toBe(1)
 
-  test("gives up on a lock another process holds too long, with a time to try again", async () => {
-    const { dir, store, tokenURL, trades } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000 })
-    // The pool asks while the other process holds the lock, and polls it 5 times only.
-    const asked: Array<Promise<StoreCredentialError>> = []
-    const ask = Effect.sync(() => asked.push(failure(new StoreSource({ dir, tokenURL, lockPolls: 5 }).resolve(`${STORE_PREFIX}alpha`))))
-    await store.refresh("alpha", () => undefined, ask.pipe(Effect.andThen(Effect.sleep("1 second"))))
-    const errors: Array<StoreCredentialError> = []
-    for (const error of asked) errors.push(await error)
-    expect(errors.map((error) => ({ kind: error.kind, later: (error.retryAt ?? 0) > Date.now() }))).toEqual([{ kind: "busy", later: true }])
-    expect(trades()).toBe(0)
-  })
-
-  test("registers with the registry the auth plugin reads, and leaves it on dispose", async () => {
-    const { credentialSource } = await import("../mods/anthropic-auth/registry/credential-sources.ts")
-    const { source } = await bench({ alpha: fakeAccount() })
-    const unregister = registerCredentialSource("anthropic-store-test", source)
-    expect((globalThis as Record<symbol, unknown>)[CREDENTIAL_SOURCES]).toBeInstanceOf(Map)
-    expect(credentialSource("anthropic-store-test", `${STORE_PREFIX}alpha`)).toBe(source)
-    expect(credentialSource("anthropic-store-test", "cred_other")).toBeUndefined()
-    unregister()
-    expect(credentialSource("anthropic-store-test", `${STORE_PREFIX}alpha`)).toBeUndefined()
-  })
+      chmodSync(slots, 0o700)
+      expect((yield* Effect.promise(() => source.resolve(alpha))).access).toBe(rotated.access)
+      expect(Option.map(Option.fromNullishOr(decodeStoredOAuth(file("alpha"))), (stored) => stored.refresh)).toEqual(Option.some(rotated.refresh))
+      expect((yield* Effect.promise(() => theirs.resolve(alpha))).access).toBe(rotated.access)
+      expect(trades()).toBe(1)
+    }),
+  )
 })

@@ -1,3 +1,4 @@
+// accept: deep (22.8 s alone on a quiet host: 1-minute load 67.1–72.7 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode with the skills plugin, a project whose
 // `review` skill exists in both tiers, and a scripted model. The `$` popup is
 // read off the frame; what each `$` token attached, off the model requests.

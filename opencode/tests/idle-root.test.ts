@@ -1,3 +1,4 @@
+// accept: deep (28.7 s alone on a quiet host: 1-minute load 10.0–13.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public seam: real OpenCode with the orchestrate (server and TUI), status
 // and queue plugins, on a scripted model (scenarios/idle-root.ts). A root that
 // owns an orchestrate run with units in plan and implement goes idle: it is

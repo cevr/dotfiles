@@ -1,3 +1,4 @@
+// accept: deep (37.3 s alone on a quiet host: 1-minute load 7.3–7.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-indent.ts with the Prime look, once per transcript
 // verbosity, and asserts that every row of the turn starts in one column, the
 // one Prime's `● Ran …` call rows use: each call row, the grouped run, the

@@ -1,3 +1,4 @@
+// accept: deep (100.0 s alone on a quiet host: 1-minute load 5.3–7.7 on 12 cores; it waits out the pool's reset windows in real OpenCode)
 // Rate-limit resets end to end: the fork's own `serve --service` with the
 // Anthropic auth plugin, the pool and the questions plugin, against the fake
 // Anthropic API (Claude logins, each with a reset grant) and the fake

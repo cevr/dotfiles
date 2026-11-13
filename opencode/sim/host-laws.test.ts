@@ -4,20 +4,52 @@
 // without a law: every one of them is named by one.
 import type { Plugin } from "@opencode/plugin/effect"
 import { describe, expect } from "bun:test"
-import { Effect, Predicate } from "effect"
+import { Array as Arr, Effect, Predicate, type Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
 import { LAWS } from "./host-laws.ts"
+import * as Provider from "./provider.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe from "./server.ts"
 import * as World from "./world.ts"
 
 const { seeded } = Seed.runner("sim/host-laws.test.ts")
 
+/** The fields of a messages body that hold its texts. */
+const TEXTS = new Set(["text", "content", "messages"])
+
+/** A request's texts, in order, from the body the host sent. */
+const textsOf = (value: Schema.Json): ReadonlyArray<string> => {
+  if (Predicate.isString(value)) return [value]
+  if (Predicate.isNumber(value) || Predicate.isBoolean(value) || Predicate.isNull(value)) return []
+  if (Array.isArray(value)) return value.flatMap(textsOf)
+  return Object.entries(value).flatMap(([key, inner]) => Arr.filter([inner], () => TEXTS.has(key)).flatMap(textsOf))
+}
+
+/**
+ * The law model over HTTP, as real OpenCode's scripted model answers (tests/host-laws/real.ts): a turn offers tools,
+ * a compaction asks for the summary, a title is the rest; each answered as law-names.ts `answer` says.
+ */
+const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
+  const text = textsOf(body["messages"] ?? []).join("\n")
+  const tools = body["tools"]
+  if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: answer("primary", text) }
+  if (text.includes("summarize the conversation above")) return { kind: "ok", text: answer("compaction", text) }
+  return { kind: "ok", text: answer("title", text) }
+}
+
 /** One world on `seed` with the probe loaded for the law folder, run until it has run every law: its log. */
 const lawsOn = (seed: number) =>
   Effect.gen(function* () {
-    const world = World.make({ seed, schedules: true, script: (request) => World.say(answer(request.kind, request.text)) })
+    // The model goes over HTTP, as on real OpenCode, so the HTTP and retry laws have a wire to hook; the integration law a login.
+    const world = World.make({
+      seed,
+      schedules: true,
+      script: (request) => World.say(answer(request.kind, request.text)),
+      model: { providerID: "sim", id: "sim-model" },
+      anthropic: { accounts: {}, anonymous: true, script: lawModel },
+      integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
+    })
     yield* world.load(Probe, { directory: `/scratch/${LAW_FOLDER}`, options: PROBE_OPTIONS })
     yield* world.until(() => world.logs().some((line) => line.message === DONE), 20 * 60_000, 500)
     return world.logs().flatMap(lawLine)

@@ -4,7 +4,7 @@
 // drives the hooks, methods and quota RPC it registers as OpenCode would.
 // tests/pool-store.test.ts and testbeds/anthropic-auth.ts run it in OpenCode.
 import { describe, expect, mock, test } from 'bun:test'
-import { Clock, Effect, Exit, Logger, Scope } from 'effect'
+import { Clock, Effect, Exit, Logger, Option, Scope } from 'effect'
 import { REQUIRED_BETAS } from '@dotfiles/opencode-anthropic-auth/betas'
 import { describeConnection } from '@dotfiles/opencode-anthropic-auth/rate-limit'
 import { processRegistry } from '@dotfiles/opencode-anthropic-auth/registry/credential-sources'
@@ -44,6 +44,16 @@ interface ResponseEvent extends RequestEvent {
 interface SessionHooks {
   get(name: 'http.request'): (event: RequestEvent) => Promise<void>
   get(name: 'http.response'): (event: ResponseEvent) => Promise<void>
+  /** The request hook on `event`, then the response hook with `response` as what it sent answered: both as they left them. */
+  through(event: RequestEvent, response: Response): Promise<Exchanged>
+}
+
+/** A request the hooks sent and the response they handed back, its body read. */
+interface Exchanged {
+  readonly request: Request
+  readonly status: number
+  readonly headers: Headers
+  readonly body: string
 }
 
 /** A credential as a test hands it to the OAuth method. */
@@ -212,11 +222,23 @@ function makeMockContext() {
   }
   const run = <A, E>(effect: Effect.Effect<A, E>) =>
     Effect.runPromise(effect.pipe(Effect.provide(Logger.layer([collector])), Effect.provideService(Clock.Clock, clock)))
+  const hookOf = (name: string): HostHook =>
+    Option.getOrElse(Option.fromNullishOr(hooks.get(name)), () => () => Effect.die(new Error(`not registered: ${name}`)))
   const sessionHooks: SessionHooks = {
     get: (name: string) => (event: RequestEvent) => {
       const hook = hooks.get(name)
       return hook === undefined ? Promise.reject(new Error(`not registered: ${name}`)) : run(hook(event))
     },
+    through: (event, response) =>
+      run(
+        Effect.gen(function* () {
+          yield* hookOf('http.request')(event)
+          const answered: ResponseEvent = { ...event, response }
+          yield* hookOf('http.response')(answered)
+          const body = yield* Effect.promise(() => answered.response.text())
+          return { request: event.request, status: answered.response.status, headers: answered.response.headers, body }
+        }),
+      ),
   }
   const promised = (input: HostMethod): Registration => ({
     integrationID: input.integrationID,
@@ -3494,6 +3516,19 @@ describe('credential choice, wire extras and quota readings', () => {
     return event.response as Response
   }
 
+  /**
+   * A request whose login cannot sign in: the request hook sent it nowhere, unsigned, and the response hook answered
+   * it as a 401 that names `why`, not retried by itself.
+   */
+  const expectUnsigned = (exchanged: Exchanged, why: string) => {
+    expect(exchanged.request.url).toBe('data:text/plain,')
+    expect(exchanged.request.headers.has('authorization')).toBe(false)
+    expect(exchanged.status).toBe(401)
+    expect(exchanged.headers.get('x-should-retry')).toBe('false')
+    expect(exchanged.body).toContain('"type":"authentication_error"')
+    expect(exchanged.body).toContain(why)
+  }
+
   test('sends a request on the credential the header names, and strips the header', async () => {
     const { ctx, sessionHooks, accessOf } = twoAccounts()
     await plugin.setup(ctx)
@@ -3647,10 +3682,10 @@ describe('credential choice, wire extras and quota readings', () => {
       request: messagesRequest({ 'x-opencode-credential-id': 'cred-gone' }),
     }
 
-    await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+    expectUnsigned(
+      await sessionHooks.through(event, new Response('')),
       'not a connection of this integration',
     )
-    expect(event.request.headers.has('authorization')).toBe(false)
     expect(ctx.integration.connection.resolve).not.toHaveBeenCalled()
   })
 
@@ -3863,7 +3898,7 @@ describe('credential choice, wire extras and quota readings', () => {
     })
   })
 
-  test('a login whose token cannot be resolved is refused, and the request fails', async () => {
+  test('a login whose token cannot be resolved is refused, and the request fails as a 401 that says why', async () => {
     const { ctx, sessionHooks, rpcEvents } = twoAccounts()
     ctx.integration.connection.resolve.mockImplementation(
       async () => {
@@ -3880,7 +3915,8 @@ describe('credential choice, wire extras and quota readings', () => {
       request: messagesRequest({ 'x-opencode-credential-id': 'cred-a' }),
     }
 
-    await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+    expectUnsigned(
+      await sessionHooks.through(event, new Response('')),
       'ambiguous failure',
     )
     const refusal = lastOf(rpcEvents).payload.reading.refusal
@@ -4203,7 +4239,8 @@ describe('credential choice, wire extras and quota readings', () => {
           request: messagesRequest({ 'x-opencode-credential-id': 'src:one' }),
         }
 
-        await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+        expectUnsigned(
+          await sessionHooks.through(event, new Response('')),
           'refresh token rejected',
         )
         expect<unknown>(lastOf(rpcEvents).payload).toEqual({
@@ -4217,7 +4254,7 @@ describe('credential choice, wire extras and quota readings', () => {
       }
     })
 
-    test('an answer without a usable token fails the request', async () => {
+    test('an answer without a usable token fails the request as a 401 that says why', async () => {
       const { ctx, sessionHooks, remove } = withSource(async () => ({
         access: '',
         expires: Date.now() + HOUR,
@@ -4231,7 +4268,8 @@ describe('credential choice, wire extras and quota readings', () => {
           request: messagesRequest({ 'x-opencode-credential-id': 'src:one' }),
         }
 
-        await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+        expectUnsigned(
+          await sessionHooks.through(event, new Response('')),
           'without a usable token',
         )
       } finally {
