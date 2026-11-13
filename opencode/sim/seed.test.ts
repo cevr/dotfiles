@@ -103,4 +103,17 @@ describe("a seeded test past its timeout", () => {
       expect(said).toMatch(/^ 4 pass\n 0 fail$/m)
     }),
   )
+  // A seed still running at the runner's timeout and past bun's own (the 5 s grace) once ran on into the next test,
+  // and its failure landed between the tests: the runner checked its deadline only between seeds.
+  Seed.effect("stops a seed mid-run: one that would outlast bun's own timeout never runs on into the next test",
+    Effect.gen(function* () {
+      const said = yield* fixtureRun("./sim/fixtures/seed-hang.fixture.ts")
+      expect(said).toContain("seed-hang: during the next test: (none)")
+      expect(said).toContain("sim/fixtures/seed-hang.fixture.ts: a seed that outlasts bun's timeout: past its 300 ms timeout; its seeds were stopped")
+      expect(said).toContain("(fail) a seed that outlasts bun's timeout")
+      expect(said).not.toContain("timed out after")
+      expect(said).toMatch(/^ 1 pass\n 1 fail$/m)
+      expect(said).not.toContain("Unhandled error between tests")
+    }),
+  )
 })
