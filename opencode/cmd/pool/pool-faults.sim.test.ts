@@ -187,14 +187,12 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"]) => (world: Worl
     ),
     label,
   ).toEqual([])
-  // A refresh token is presented once, by whichever holder: none comes back after it was rotated. Once a store
-  // write failed, the holder that refreshed keeps the rotation to write later and another holder still reads the
-  // old token from the file: its trade is refused (see the request's finding).
-  if (script.slots.failed() === 0)
-    expect(
-      received.filter((request) => request.path === "/v1/oauth/token" && request.account === ""),
-      label,
-    ).toEqual([])
+  // A refresh token is presented once, by whichever holder: none comes back after it was rotated, a store write
+  // that failed included.
+  expect(
+    received.filter((request) => request.path === "/v1/oauth/token" && request.account === ""),
+    label,
+  ).toEqual([])
 }
 
 seeded("every turn ends in an answer or a named error, never on a spent login while another is free, and no refresh token is traded twice", ({ seed, expect }) =>

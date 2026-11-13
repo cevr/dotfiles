@@ -10,7 +10,7 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { STORE_PREFIX, StoreCredentialError, StoreSource } from "../mods/pool/store/store.ts"
+import { STORE_PREFIX, StoreCredentialError, StoreSource, storeProcess } from "../mods/pool/store/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { openSlotStore, type SlotStore } from "./store/store.ts"
 import { owned } from "./owned.ts"
@@ -164,6 +164,26 @@ describe("the pool's source over a login store", () => {
     await store.signIn("alpha", theirs, { signedInAt: 1_800_000_000_000 })
     expect(await source.resolve(`${STORE_PREFIX}alpha`)).toEqual({ access: theirs.access, expires: theirs.expires })
     expect((await store.get("alpha"))?.refresh).toBe(theirs.refresh)
+    expect(trades()).toBe(1)
+  })
+
+  test("a refresh whose write failed keeps the store's lock: no other holder trades the spent refresh token", async () => {
+    const { dir, fake, source, tokenURL, trades, file } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000 })
+    const slots = join(dir, ".slots/anthropic")
+    chmodSync(slots, 0o500)
+    expect((await failure(source.resolve(`${STORE_PREFIX}alpha`))).kind).toBe("persist")
+    const rotated = fake.tokens("alpha")
+
+    // Another holder of the store (its own state of it, its own SQLite connection) must refresh the same login:
+    // it waits on the lock, and never reads the spent refresh token to trade it.
+    const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
+    expect((await failure(theirs.resolve(`${STORE_PREFIX}alpha`))).kind).toBe("busy")
+    expect(trades()).toBe(1)
+
+    chmodSync(slots, 0o700)
+    expect((await source.resolve(`${STORE_PREFIX}alpha`)).access).toBe(rotated.access)
+    expect(JSON.parse(file("alpha")).refresh).toBe(rotated.refresh)
+    expect((await theirs.resolve(`${STORE_PREFIX}alpha`)).access).toBe(rotated.access)
     expect(trades()).toBe(1)
   })
 })
