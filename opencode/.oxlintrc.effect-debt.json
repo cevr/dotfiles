@@ -302,6 +302,31 @@
     },
     {
       "files": [
+        "tests/kernel/run.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/kernel/subagents.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/kernel/worker/subagent-handle.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "mods/stall/model.test.ts"
       ],
       "rules": {
@@ -388,7 +413,62 @@
     },
     {
       "files": [
+        "scenarios/queue-merge.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/queue-merge.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/escape/setup.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
         "scripts/accept.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/prime/tui/panel.tsx"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "scenarios/prime-panel.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/prime-panel.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",

@@ -12,7 +12,7 @@ import type { Host } from "../tui/host.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
 import { openPending } from "./pending.ts"
-import { openShells } from "./shells.ts"
+import { openShells, shellTail } from "./shells.ts"
 import { cancelWake, readWakes } from "./wakes.ts"
 
 /**
@@ -65,6 +65,9 @@ export function host(
     subagents: (sessionID) => family(data, sessionID, context.location),
     shells: (sessionID) =>
       data.shell.list(context.location).filter((shell) => shell.metadata.sessionID === sessionID).length,
+    shellList: (sessionID) =>
+      data.shell.list(context.location).filter((shell) => shell.metadata.sessionID === sessionID),
+    shellTail: (id) => shellTail(context, id),
     model: () => context.ui.model.current(),
     path: (directory) => context.ui.format.path(directory),
     route: () => {

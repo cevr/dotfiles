@@ -46,6 +46,8 @@ const SHIPPED = "Shipped the fix."
 const STALL = 20_000
 /** The picker's header row: the host's composer panel, its Subagents tab first. */
 const picker = (frame: string) => frame.split("\n").some((line) => /^\s*┃\s+Subagents(\s|$)/.test(line))
+/** The root's picker lists the worker as Prime's panel rows read (mods/prime/panel.ts): its tab counts it, its row ends `working  12s`. */
+const listed = (frame: string) => /┃\s+Subagents 1\s/.test(frame) && /Fix money parsing .* working +\d+s/.test(frame)
 
 export default OpenCodeDriver.use(
   {
@@ -107,7 +109,7 @@ export default OpenCodeDriver.use(
       yield* until("started", (frame) => frame.includes(STARTED) && frame.includes("1 subagent"))
 
       yield* ui.arrow("down")
-      yield* until("root-picker", (frame) => frame.includes("Subagents") && frame.includes("Running"))
+      yield* until("root-picker", listed)
       yield* ui.enter()
       yield* until("picker", (frame) => frame.includes(WORKING) && frame.includes("Subagents"))
       yield* save("picker")
@@ -134,7 +136,7 @@ export default OpenCodeDriver.use(
       yield* save("parent-steered")
 
       yield* ui.arrow("down")
-      yield* until("back-picker", (frame) => frame.includes("Subagents") && frame.includes("Running"))
+      yield* until("back-picker", listed)
       yield* ui.enter()
       yield* until("back", (frame) => frame.includes(STEERED) && !frame.includes(ASK))
       if (picker(text(yield* ui.capture()))) {

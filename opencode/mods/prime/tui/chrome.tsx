@@ -112,10 +112,13 @@ export function Splash(props: { host: Host; sessionID: string }) {
 }
 
 /**
- * The line above the composer: how to move among subagents and, while a
- * turn runs with a prompt waiting, the key that interrupts it and sends
- * (pending.ts `sendHint`) on the left; the update notice on the right. It
- * keeps its row while both are empty, so the composer never jumps.
+ * The line above the composer: inside a subagent, how to move among
+ * subagents (the picker takes the dock's place there), and, while a turn runs
+ * with a prompt waiting, the key that interrupts it and sends (pending.ts
+ * `sendHint`) on the left; the update notice on the right. In the main
+ * session the way down to its subagents sits under the composer, on the
+ * dock's first line (`Dock`). It keeps its row while both are empty, so the
+ * composer never jumps.
  */
 export function HintLine(props: { host: Host; sessionID: string }) {
   const family = useFamily(props.host, () => props.sessionID)
@@ -128,7 +131,7 @@ export function HintLine(props: { host: Host; sessionID: string }) {
     }),
   )
   const navigation = createMemo(() =>
-    [navigationHint({ child: family.child(), others: others() }), send()].filter(Boolean).join(" · "),
+    [family.child() && navigationHint({ child: true, others: others() }), send()].filter(Boolean).join(" · "),
   )
   return (
     <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
@@ -238,7 +241,11 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   })
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
-      <box flexDirection="row" height={1}>
+      {/* Right under the composer: the way down to the session's subagents (Down on an empty prompt), then the model and usage at the right. */}
+      <box flexDirection="row" height={1} gap={2}>
+        <text wrapMode="none" truncate fg={theme().text.faint} flexShrink={1}>
+          {navigationHint({ child: false, others: subagents() })}
+        </text>
         <box flexGrow={1} />
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {[model(), usage()].filter(Boolean).join(" · ")}

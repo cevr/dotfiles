@@ -5,7 +5,7 @@
 // the session's sidebar, which carries only the queue.
 import { columns, format, sameSegments, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
-import { subagents, visible, type Row as SubagentRow, type Tone } from "@dotfiles/opencode-subagents/subagent-row"
+import { subagents, visible, type Row as SubagentRow } from "@dotfiles/opencode-subagents/subagent-row"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, Index, Show, type Accessor } from "solid-js"
@@ -14,6 +14,7 @@ import { capped, moreLine } from "../rows.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { useSessionLink } from "./link.ts"
+import { roleColor } from "./tone.ts"
 
 /** The rows for `sessionID`'s family; `child` when the route is one of the subagents, which is then marked. */
 export function SubagentRows(props: { host: Host; sessionID: string; child: boolean }) {
@@ -95,14 +96,6 @@ function Row(props: {
       }),
     sameSegments,
   )
-  const roleColor = (tone: Tone): RGBA => {
-    if (tone === "planner") return theme().hue.interactive[300]
-    if (tone === "implementor") return theme().hue.accent[300]
-    if (tone === "verifier") return theme().text.feedback.info.base
-    if (tone === "worker") return theme().text.feedback.success.base
-    if (tone === "general") return theme().text.muted
-    return theme().text.base
-  }
   // The state shows only as the leading diamond, so its colour carries it (line.ts, `stateTone`).
   const stateColor = (): RGBA => {
     const tone = stateTone(props.row.state)
@@ -115,7 +108,7 @@ function Row(props: {
   const bright = () => link.hover() || props.marked
   const color = (kind: Kind): RGBA => {
     if (kind === "lead") return stateColor()
-    if (kind === "role") return roleColor(props.row.tone)
+    if (kind === "role") return roleColor(theme(), props.row.tone)
     if (kind === "mark") return theme().text.base
     if (kind === "faint" || kind === "model") return theme().text.faint
     if (kind === "stale") return theme().text.feedback.warning.base

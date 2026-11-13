@@ -103,7 +103,7 @@ export default OpenCodeDriver.use(
       yield* until("waiting-rows", (frame) => frame.includes(STARTED) && row(frame, "◈", WAITING))
       yield* save("waiting-rows")
       yield* ui.press("down")
-      yield* until("waiting-panel", (frame) => frame.includes("Waiting") && frame.includes("Run the proof"), 50)
+      yield* until("waiting-panel", (frame) => /Run the proof .* waiting +\d+s/.test(frame), 50)
       yield* save("waiting-panel")
       yield* ui.press("escape")
       // The short shell woke it, it killed the proof wait and stopped; the parent heard.

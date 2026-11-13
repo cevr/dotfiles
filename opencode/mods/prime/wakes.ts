@@ -15,6 +15,8 @@ export type WakeEntry = {
   readonly kind: "alarm" | "monitor"
   /** An alarm's due time, a monitor's deadline, epoch ms. */
   readonly dueAt: number
+  /** When it was set, epoch ms, when the wake server says. */
+  readonly setAt?: number
   readonly note: string
   /** `wake` starts a turn when it fires; `notify` waits for the next one. */
   readonly mode: "wake" | "notify"

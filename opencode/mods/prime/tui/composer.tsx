@@ -1,14 +1,17 @@
 // The composer panel's Wakes and Monitors tabs (cmd/prime registers them with
 // the host's `ui.composerTab`): the session's pending alarms, or its monitors,
-// one row each in the host's own tab style, soonest first. ↑/↓ move the
+// one row each in the panel's columns (tui/panel.tsx), soonest first, the
+// time live. ↑/↓ move the
 // highlight (↑ on the first row closes the panel, as the host's tabs do),
 // Enter shows the highlighted entry whole, ctrl+d cancels it as `wake_cancel`
 // does. The words are ../wakes.ts; the tab mounts only while it is the active
 // one, so its keys bind only then.
-import { TextAttributes } from "@opentui/core"
+import { spinner } from "@dotfiles/opencode-subagents/line"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
-import { EMPTY, tabEntries, wakeDetail, wakeRow, type WakeTab as Tab } from "../wakes.ts"
+import { wakeLine, widths } from "../panel.ts"
+import { EMPTY, tabEntries, wakeDetail, type WakeTab as Tab } from "../wakes.ts"
 import type { Host } from "./host.ts"
+import { PanelLine, useSeconds } from "./panel.tsx"
 
 /** The keys a tab binds, and the footer's hints for them. */
 export const KEYS = { detail: "return", cancel: "ctrl+d" } as const
@@ -69,6 +72,10 @@ export function WakeTab(props: { readonly host: Host; readonly sessionID: string
   // The window of rows that holds the highlight.
   const first = createMemo(() => Math.min(Math.max(0, selected() - ROWS + 1), Math.max(0, entries().length - ROWS)))
   const shown = createMemo(() => entries().slice(first(), first() + ROWS))
+  // Every row's time turns once a second while the tab lists any, in columns the tab's rows share.
+  const now = useSeconds(() => entries().length > 0)
+  const lines = createMemo(() => entries().map((entry) => wakeLine(entry, now(), spinner(now()))))
+  const cols = createMemo(() => widths(lines()))
 
   return (
     <box flexDirection="column">
@@ -88,13 +95,9 @@ export function WakeTab(props: { readonly host: Host; readonly sessionID: string
                   detail()
                 }}
               >
-                <text
-                  fg={active() ? theme().text.action.primary.focused : theme().text.action.primary.base}
-                  attributes={active() ? TextAttributes.BOLD : undefined}
-                  wrapMode="none"
-                >
-                  {wakeRow(entry, reading()?.now ?? Date.now())}
-                </text>
+                <Show when={lines()[first() + at()]}>
+                  {(line) => <PanelLine host={props.host} line={line()} widths={cols()} selected={active()} />}
+                </Show>
               </box>
             )
           }}

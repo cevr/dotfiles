@@ -31,14 +31,17 @@ function dock(frame: ReadonlyArray<string>) {
   const end = after.findIndex((line) => !/^ [◆◇◈] /.test(line))
   return { count: counted ? frame[rule + 1]!.trim() : undefined, rows: (end < 0 ? after : after.slice(0, end)).map((line) => line.trim()) }
 }
-/** The Subagents panel's entries, between its tab line and its hint line. */
+/** The Subagents panel in Prime's look (mods/prime/panel.ts): its tab bar's Subagents tab (`Subagents 1` counts the active ones), and its entries up to its footer. */
 function panel(frame: ReadonlyArray<string>) {
-  const at = frame.findIndex((line) => line.includes("Subagents  Shell"))
+  const at = frame.findIndex((line) => /^ ┃\s+Subagents\b/.test(line) && line.includes("Monitors"))
   const end = frame.findIndex((line, index) => index > at && line.includes("show inactive"))
-  return frame
-    .slice(at + 1, end)
-    .map((line) => line.replace(/^ ┃/, "").trim())
-    .filter(Boolean)
+  return {
+    tab: /Subagents(?: \d+)?/.exec(frame[at] ?? "")?.[0],
+    rows: frame
+      .slice(at + 1, end)
+      .map((line) => line.replace(/^ ┃/, "").trim())
+      .filter(Boolean),
+  }
 }
 
 describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_DEV)", () => {
@@ -65,7 +68,11 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
   }))
 
   test("the host's Subagents panel lists it as active, waiting, as the dock counts it", kept.test(() => {
-    expect(panel(frames["waiting-panel"])).toEqual([expect.stringMatching(/^Worker: Run the proof +Waiting$/)])
+    // One active row, in the waiting state: its still `◈` and the state word `waiting`, with its time; the tab counts it as the dock does.
+    expect(panel(frames["waiting-panel"])).toEqual({
+      tab: "Subagents 1",
+      rows: [expect.stringMatching(/^◈ worker gpt  Run the proof  Waiting for the proof\. +waiting +\d+s$/)],
+    })
   }))
 
   test("killed through its handle, the proof wait sends no notice: the worker only ever heard of the short shell", kept.test(() => {
@@ -75,6 +82,6 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
 
   test("once it stopped, its row is no longer live, the dock's count line goes and the panel lists none: both agree", kept.test(() => {
     expect(dock(frames["ended-rows"])).toEqual({ count: undefined, rows: ["◆ worker gpt  Run the proof  5 steps"] })
-    expect(panel(frames["ended-panel"])).toEqual(["No active subagents"])
+    expect(panel(frames["ended-panel"])).toEqual({ tab: "Subagents", rows: ["No active subagents"] })
   }))
 })

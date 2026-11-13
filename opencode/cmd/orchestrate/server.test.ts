@@ -41,7 +41,7 @@ import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHold
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import { eventuallyPasses } from "../../tests/wait.ts"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -1717,7 +1717,7 @@ describe("the agents", () => {
 
 describe("the batch machine", () => {
   /** A root's step sessions: each a role's child of `root`, with the hand-back it ends on. */
-  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>) => ({
+  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string; readonly stopped?: boolean }>>) => ({
     root: {},
     ...Object.fromEntries(Object.entries(said).map(([id, session]) => [id, { parentID: "root", ...session }])),
   })
@@ -1832,6 +1832,46 @@ describe("the batch machine", () => {
         // The verifier died with no hand-back: the next batch's verifier starts all the same.
         expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "none" }))
+      }),
+    ))
+
+  test("subagent-handle: the live sessions read a session whose last turn was interrupted as stopped, and no other", () => {
+    const fresh: StepHostSession = { time: {}, location: { directory: "/work" } }
+    const ended = (outcome: "succeeded" | "failed" | "interrupted"): StepHostSession => ({ ...fresh, outcome })
+    expect(stepSessionOf(ended("interrupted"))).toEqual({ started: true, stopped: true, directory: "/work" })
+    expect(stepSessionOf(ended("succeeded"))).toEqual({ started: true, stopped: false, directory: "/work" })
+    expect(stepSessionOf(ended("failed")).stopped).toBe(false)
+    expect(stepSessionOf(fresh)).toEqual({ started: false, stopped: false, directory: "/work" })
+  })
+
+  // subagent-handle: a step its root stopped (the `subagents` tool's stop, the host's interrupt) ends with its last
+  // words an earlier turn's. They are no hand-back: the ledger sees it stopped.
+  test("subagent-handle: a stopped implementor is handed back as stopped, not as the ready an earlier turn wrote; a stopped verifier gave no verdict", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          {
+            sessions: steps({
+              ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x", stopped: true },
+              ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+              ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", stopped: true },
+            }),
+          },
+        )
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        // alpha was stopped: a stopped turn has no idle, and the next decision's reconcile reads it.
+        yield* plugin.idle("ses_b")
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: false, said: "stopped" }))
+        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: true }))
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["beta"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        // The verifier was stopped: its batch's units wait for a verdict again, and the next verifier starts.
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "stopped" }))
+        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "accepted" }))
       }),
     ))
 

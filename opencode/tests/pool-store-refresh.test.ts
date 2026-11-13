@@ -95,6 +95,10 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
           OPENCODE_DB: join(base, "opencode.db"),
           OPENCODE_CONFIG_DIR: join(base, "config"),
           OPENCODE_DISABLE_MODELS_FETCH: "1",
+          // Every log line also on stderr, written as it is logged (the standalone server inherits the run's stderr).
+          // The log file is written in batches, and `run --standalone` SIGKILLs its server 3 s after SIGTERM: on a
+          // loaded host the server's last batch, with the lines below, never reached the file.
+          OPENCODE_PRINT_LOGS: "1",
           ANTHROPIC_BASE_URL: fake.url,
           ...launch.env,
         }
@@ -126,10 +130,12 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
         // alpha is as the store holds it.
         expect((await logins.get("alpha"))?.access).toBe(accounts.alpha.access)
 
-        // OpenCode's log has the trade at info and the pause once at warning, through the plugin's loggers.
+        // OpenCode's log has the trade at info and the pause once at warning, through the plugin's loggers: read where the
+        // server writes each line as it is logged (stderr), as the log file can lose its last batch when the server is stopped.
         const logs = logsUnder(join(base, "home"))
-        expect(logs.match(/level=INFO [^\n]*store refresh \\?"alpha\\?": unavailable/g) ?? [], logs.slice(-2000)).toHaveLength(1)
-        expect(logs.match(/level=WARN [^\n]*store refresh: the token endpoint answered 429/g) ?? []).toHaveLength(1)
+        const lines = (pattern: RegExp) => stderr.split("\n").filter((line) => pattern.test(line))
+        expect(lines(/level=INFO .*store refresh \\?"alpha\\?": unavailable/), stderr.slice(-2000)).toHaveLength(1)
+        expect(lines(/level=WARN .*store refresh: the token endpoint answered 429/), stderr.slice(-2000)).toHaveLength(1)
 
         for (const name of ["alpha", "beta"] as const)
           for (const token of [accounts[name].access, accounts[name].refresh])

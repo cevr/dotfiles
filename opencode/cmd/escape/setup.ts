@@ -4,10 +4,11 @@
  * on Escape. In the base mode, above the host's own `session.interrupt` and
  * below the composer's own Escape layers (shell mode, the sidebar, a plugin
  * panel), it reads the session on screen (`opencode/view.ts`), decides
- * (`escape.ts`) and acts: a take-back runs the host's `session.undo`, which
- * interrupts, waits, reverts and puts the prompt back in the composer (or
- * takes a pending prompt back out of the inbox, the run it waited behind
- * interrupted beside it); an interrupt goes through the client. A refused
+ * (`escape.ts`) and acts: a take-back of a sent prompt runs the host's
+ * `session.undo`, which interrupts, waits, reverts and puts the prompt back in
+ * the composer; a pending prompt comes back with every other waiting one
+ * through the fork's `ui.composer.takeBack` (`take.ts`), the run it waited
+ * behind interrupted beside it; an interrupt goes through the client. A refused
  * interrupt, or a turn not stopped (or a prompt still queued) STOP_MS after
  * the press, is a toast, so a press the server never answers is never
  * silent; the next turn a resume or a sent prompt starts is not the stopped
@@ -24,10 +25,17 @@
  * `prompt.queue` (attachments and all), the turn is interrupted once that
  * prompt is in the inbox, and the waiting prompts go out as `plan` orders;
  * on an idle session it is the host's `prompt.submit`, as Enter.
+ *
+ * A third layer, above the composer's own history layer, adds Up while prompts
+ * wait in the session's inbox: on the composer's first row, where the host's
+ * Up would walk the history, it takes every waiting prompt back into the
+ * composer, oldest first, joined by a newline, after the draft; nothing is
+ * sent. With nothing waiting, or off the first row, Up is the host's.
  */
 import { decide, DEFAULT_GRACE_MS, hung, STOP_MS, type Taking } from "@dotfiles/opencode-escape/escape"
 import { read, waiting, type Editor, type Reads, type Route } from "@dotfiles/opencode-escape/opencode/view"
 import { decideSend, plan, SEND_COMMAND, SEND_FALLBACK, SEND_KEY, type Waiting } from "@dotfiles/opencode-escape/send"
+import { firstRow, left, SEPARATOR } from "@dotfiles/opencode-escape/take"
 import { Schema } from "effect"
 
 /** The plugin's options: `grace`, the milliseconds after a send during which Escape takes the prompt back (0: never). */
@@ -65,11 +73,20 @@ export interface Ended {
 /** The host's events the plugin hears, by type. */
 export type Events = { readonly "session.inbox.enqueued": Enqueued } & { readonly [Type in (typeof ENDED)[number]]: Ended }
 
+/**
+ * Where the focused text editor's cursor sits (the composer whenever a key reaches the base mode on a session), as
+ * far as Up reads it; OpenTUI's `EditBufferRenderable` satisfies it.
+ */
+export interface Cursor {
+  readonly scrollY: number
+  readonly visualCursor: { readonly visualRow: number }
+}
+
 /** The parts of the TUI plugin context the plugin uses; `Plugin.Context` satisfies it. */
 export interface Host {
   readonly options: Readonly<Record<string, unknown>>
   readonly data: Reads & { on<Type extends keyof Events>(type: Type, handler: (event: Events[Type]) => void): () => void }
-  readonly renderer: { readonly currentFocusedEditor: Editor }
+  readonly renderer: { readonly currentFocusedEditor: Editor<Cursor> }
   readonly client: {
     readonly session: {
       interrupt(input: { sessionID: string; resume?: boolean }): Promise<unknown>
@@ -80,6 +97,10 @@ export interface Host {
   readonly ui: {
     readonly router: { current(): Route }
     readonly toast: { show(input: { message: string; variant: "info" | "success" | "warning" | "error"; duration?: number }): void }
+    /** The fork's take-back of pending prompts into the composer, attachments and all (packages/tui/src/prompt/take-back.ts). */
+    readonly composer: {
+      takeBack(input: { sessionID: string; inboxIDs: ReadonlyArray<string>; separator?: string }): Promise<{ readonly left: ReadonlyArray<string> }>
+    }
   }
 }
 
@@ -89,6 +110,8 @@ export const UNDO = "session.undo"
 export const SUBMIT = "prompt.submit"
 /** The host command leader+Enter runs: send the composer to the queue, for after the turn. */
 export const QUEUE = "prompt.queue"
+/** The id of the plugin's Up command, which takes the waiting prompts back into the composer. */
+export const TAKE_COMMAND = "dotfiles.escape.take"
 /** The host command that shows a subagent's parent session (↑ past the first row). */
 export const PARENT = "session.parent"
 
@@ -161,6 +184,30 @@ export const setup = (host: Host, clock: Clock = realClock) => {
     )
   }
 
+  /**
+   * Takes every prompt still waiting in `sessionID`'s inbox, oldest first, back into the composer as one prompt,
+   * the texts joined by a newline, attachments and all, after what the composer holds; one the server did not give
+   * back (sent meanwhile, or no answer) is a toast. Resolves once the server answered.
+   */
+  const takeAll = (sessionID: string) =>
+    host.ui.composer
+      .takeBack({ sessionID, inboxIDs: waiting(host.data, sessionID).map((item) => item.id), separator: SEPARATOR })
+      .then(
+        (result) => {
+          if (result.left.length > 0) toast(left(result.left.length), "warning")
+        },
+        (error: unknown) => toast(`Could not take the waiting prompts back: ${errorText(error)}`, "error"),
+      )
+
+  /** Up on the composer's first row of a session with prompts waiting: they all come back to the composer (takeAll). */
+  const up = () => {
+    const route = host.ui.router.current()
+    const composer = host.renderer.currentFocusedEditor
+    if (!("sessionID" in route) || route.type !== "session" || !composer) return false
+    if (waiting(host.data, route.sessionID).length === 0 || !firstRow(composer)) return false
+    void takeAll(route.sessionID)
+  }
+
   const escape = () => {
     const at = clock.now()
     const action = decide(read(host.data, host.ui.router.current(), host.renderer.currentFocusedEditor), { now: at, grace, taking })
@@ -180,9 +227,10 @@ export const setup = (host: Host, clock: Clock = realClock) => {
       case "TakeBack": {
         taking = { messageID: action.messageID, at }
         const { sessionID } = action
-        // The host's undo puts the prompt back in the composer: for a pending one it cancels it in the inbox, for a
-        // sent one it interrupts, waits, and reverts. Its own failures are its toasts; a hang is ours below.
-        host.keymap.dispatch(UNDO)
+        // A pending prompt comes back with every other waiting one, as Up takes them (takeAll). The host's undo puts a
+        // sent one back: it interrupts, waits, and reverts. Its own failures are its toasts; a hang is ours below.
+        if (action.pending) takeAll(sessionID)
+        else host.keymap.dispatch(UNDO)
         // A pending prompt waited behind a run: stop that too, without resuming the inbox ahead of the cancel.
         if (action.stop) void interrupt(sessionID, false)
         else if (action.pending)
@@ -273,6 +321,16 @@ export const setup = (host: Host, clock: Clock = realClock) => {
   host.keymap.layer(() => ({
     priority: 1,
     commands: [{ title: "Take back or interrupt", group: "Session", bind: "escape", run: escape }],
+  }))
+  // Up, above the composer's own history layer (priority 1): only while prompts wait, and only on the first row, where
+  // the host's Up would go to history; elsewhere, and with nothing waiting, it falls through to the host.
+  host.keymap.layer(() => ({
+    priority: 2,
+    enabled: () => {
+      const route = host.ui.router.current()
+      return "sessionID" in route && route.type === "session" && waiting(host.data, route.sessionID).length > 0
+    },
+    commands: [{ id: TAKE_COMMAND, title: "Take the waiting prompts back", group: "Prompt", bind: "up", run: up }],
   }))
   // Ctrl+Enter, above the composer's own (a newline, the managed textarea's layer at 0), and leader+F for a terminal
   // that sends Ctrl+Enter as Enter; an id so a hint can name its key.

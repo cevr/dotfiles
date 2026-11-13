@@ -14,6 +14,10 @@
  *   direct `memory_save` call, then a closing line.
  * - The task `<shell line>\nkernel drop`: one `kernel` call whose cell starts `implementor alpha r1` and then
  *   runs the shell line through `tools.shell`, then a closing line.
+ * - The task `<sessionID>\nkernel stop`: one `kernel` call whose cell starts a worker on the stall task, stops it,
+ *   and checks its shell never ended on its own, then a closing line.
+ * - The task `kernel stall` (that worker's): a background shell call, then, once its result is back, an answer that
+ *   opens and never ends (`stalls`).
  * - Anything else: one line.
  *
  * @module
@@ -86,6 +90,52 @@ export const SUBAGENT_TASK = "kernel subagent"
 /** One kernel call that starts a subagent from a cell and prints why it could not. */
 export const SUBAGENT_CELL = `try {\n  await tools.subagent({ agent: "worker", description: "probe from a cell", prompt: "Say hi" })\n  console.log("started")\n} catch (error) {\n  console.log("refused: " + (error instanceof Error ? error.message : String(error)))\n}`
 
+/**
+ * A subagent's task the model never finishes: its first answer starts a background shell (`LATE_COMMAND`), and its
+ * next one, once the shell's call is back, streams a first chunk and then holds.
+ */
+export const STALL_TASK = "kernel stall"
+/** The file the stall task's shell writes once it ran its course: a stopped child's shell never does. */
+export const LATE_FILE = "late.txt"
+/** The stall task's background shell: long enough to outlast the stop, short enough for the cell to see it would have ended. */
+export const LATE_COMMAND = `sleep 6; echo late > ${LATE_FILE}`
+/** The prompt the run queues to the stalled child (run.ts): a stopped child never runs it. */
+export const QUEUED_PROMPT = "kernel queued follow-up"
+/** Where a task names its own session, which the run replaces with the session's id (run.ts). */
+export const SELF = "{self}"
+/** The stop task, after its own session's id: `<sessionID>\nkernel stop`. */
+export const STOP_TASK = "kernel stop"
+/**
+ * One kernel call that starts a worker on the stall task, waits on it past a short limit, stops it twice, waits
+ * past the time its shell would have ended and reads it again, then asks the subagents tool to stop its own
+ * session, no subagent of itself; it prints a line of what each step did.
+ */
+const stopCell = (task: string) =>
+  [
+    `const seen = []`,
+    `const h = await tools.subagent({ agent: "worker", description: "stop probe", prompt: "${STALL_TASK}" })`,
+    `await h.wait(3000)`,
+    "seen.push(`waited: ${h.state}, ${h.note}`)",
+    `await h.stop()`,
+    "seen.push(`stopped: ${h.state}, ${h.note}`)",
+    `await h.stop()`,
+    "seen.push(`again: ${h.state}, ${h.note}`)",
+    // Past the end the shell would have had: had it lived, it wrote its file, and its notice woke the child.
+    `await new Promise((resolve) => setTimeout(resolve, 5000))`,
+    `await h.refresh()`,
+    "seen.push(`later: ${h.state}`)",
+    `const late = await tools.shell({ command: "test -e ${LATE_FILE} && echo written || echo none" })`,
+    `await late.wait()`,
+    "seen.push(`late file: ${late.output.trim()}`)",
+    `try {`,
+    `  await tools.subagents({ action: "stop", sessionID: "${task.slice(0, -STOP_TASK.length).trim()}" })`,
+    `  seen.push("other: stopped")`,
+    `} catch (error) {`,
+    "  seen.push(`other: ${error.message}`)",
+    `}`,
+    `seen.join("\\n")`,
+  ].join("\n")
+
 /** The drop task, after its shell line: `<line>\nkernel drop`. */
 export const DROP_TASK = "kernel drop"
 /**
@@ -146,10 +196,18 @@ export const cells = (file: string) => [
 /** The tasks that run one kernel cell and then close, each with its cell (from the task's text). */
 const ONE_CELL: ReadonlyArray<readonly [string, (task: string) => string]> = [
   [SUBAGENT_TASK, () => SUBAGENT_CELL],
+  [STOP_TASK, stopCell],
   [DROP_TASK, dropCell],
   [SHELL_TASK, () => SHELL_CELL],
   [ATTACH_TASK, () => ATTACH_CELL],
 ]
+
+/** The stall task's first answer: its background shell, called directly when the shell is offered, else from a cell. */
+const startLate = (request: ChatRequest): Reply => {
+  if ((request.tools ?? []).some((tool) => tool.function?.name === "shell"))
+    return { kind: "tool", name: "shell", input: { command: LATE_COMMAND, description: "late write", background: true } }
+  return { kind: "tool", name: "kernel", input: { code: `await tools.shell({ command: "${LATE_COMMAND}", background: true })` } }
+}
 
 const reply = (request: ChatRequest, file: string): Reply => {
   const messages = request.messages ?? []
@@ -161,6 +219,7 @@ const reply = (request: ChatRequest, file: string): Reply => {
   const results = messages.filter((message) => message.role === "tool").length
   const offersKernel = (request.tools ?? []).some((tool) => tool.function?.name === "kernel")
   const task = firstUser(messages)
+  if (task.endsWith(STALL_TASK)) return startLate(request)
   for (const [name, cell] of ONE_CELL)
     if (task.endsWith(name) && offersKernel) return results === 0 ? { kind: "tool", name: "kernel", input: { code: cell(task) } } : { kind: "text", text: DONE }
   const offersSave = (request.tools ?? []).some((tool) => tool.function?.name === "memory_save")
@@ -200,6 +259,10 @@ const events = (answer: Reply, model: string, id: string): string => {
   return [...list.map((event) => `data: ${JSON.stringify(event)}\n\n`), "data: [DONE]\n\n"].join("")
 }
 
+/** Whether the request is the stall task's answer after its shell's call: the one that opens and never ends. */
+const stalls = (messages: ReadonlyArray<ChatMessage>, system: string) =>
+  firstUser(messages).endsWith(STALL_TASK) && !system.includes("You name conversations") && messages.some((message) => message.role === "tool")
+
 /** Serves the scripted model; `file` is the path the first kernel call reads. */
 export const serve = (file: string) => {
   const seen: Seen[] = []
@@ -226,7 +289,17 @@ export const serve = (file: string) => {
         })(),
       })
       served += 1
-      return new Response(events(reply(body, file), body.model ?? "sim", `sim${served}`), {
+      const system = messages.filter((message) => message.role === "system").map((message) => text(message.content)).join("\n")
+      const model = body.model ?? "sim"
+      // The stall task's answer after its shell's call opens (its first event, the assistant's role) and never ends,
+      // until the request is aborted.
+      if (stalls(messages, system)) {
+        const opening = `${events({ kind: "text", text: "" }, model, `sim${served}`).split("\n\n")[0]}\n\n`
+        return new Response(new ReadableStream({ start: (controller) => controller.enqueue(new TextEncoder().encode(opening)) }), {
+          headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+        })
+      }
+      return new Response(events(reply(body, file), model, `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },

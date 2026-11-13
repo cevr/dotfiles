@@ -19,6 +19,7 @@ import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { Dock, GoalLine, HintLine, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
+import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
 import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
@@ -130,6 +131,22 @@ export default Plugin.define({
     context.ui.slot({
       append: "home.footer.status",
       render: () => <UpdateNotice host={h} />,
+    })
+
+    // The background-work panel (Down on an empty prompt) in the Prime look: its tab bar, each
+    // row of the host's tabs in shared columns with a live time, and its footer (the fork's
+    // session.composer.panel.* slots; the host keeps the panel's keys).
+    context.ui.slot({
+      replace: "session.composer.panel.tabs",
+      render: (input) => <PanelTabs host={h} input={input} />,
+    })
+    context.ui.slot({
+      replace: "session.composer.panel.row",
+      render: (input) => <PanelRow host={h} input={input} />,
+    })
+    context.ui.slot({
+      replace: "session.composer.panel.footer",
+      render: (input) => <PanelFooter host={h} input={input} />,
     })
 
     // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab; an older build has none).

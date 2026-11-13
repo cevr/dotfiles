@@ -1,6 +1,6 @@
 import { tagObject, type Target, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
 import { file, readableStreamToText, spawn } from "bun"
-import { Array as Arr, Clock, Effect, Layer, Option, Semaphore } from "effect"
+import { Array as Arr, Clock, Effect, Layer, Option, Result, Semaphore } from "effect"
 import { type Commits, FleetOutcome } from "../fleet.ts"
 import { Fleet } from "../service.ts"
 
@@ -13,90 +13,30 @@ export interface Checkouts {
 /** Who the tag names as its tagger. */
 const TAGGER = { name: "orchestrate", email: "orchestrate@dotfiles.invalid" }
 
-/** The commits a batch file names as the heads it was verified at; a repository it does not name is none. */
-export interface Heads {
-  readonly dotfiles: Option.Option<string>
-  readonly fork: Option.Option<string>
-}
+/** The form of the one machine line a batch file names its verified heads with, as a refusal quotes it. */
+export const HEADS_FORM = "`Heads: dotfiles=<40-hex sha> fork=<40-hex sha>`"
 
-/** A commit name, short or full: hex of 7 to 40 characters with a digit in it, so no English word reads as one. */
-const COMMIT = /^(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}$/
+/** The heads line, exactly: both full commit names, lowercase, in this order, nothing else on the line. */
+const HEADS_LINE = /^Heads: dotfiles=([0-9a-f]{40}) fork=([0-9a-f]{40})$/
 
-/** Where a repository's part of a batch file's header starts: its name at a line's or a sentence's start. */
-const PART = /(?:^|\n|[.;]\s+)(?:-\s+)?(Dotfiles|Fork)\b/g
-
-/** The words that mark the commit after them as a part's head: `head Y`, `X → Y`, `X -> Y`. */
-export const HEAD_MARKS: ReadonlySet<string> = new Set(["head", "→", "->"])
-
-/** The words that mark the commit after them as a base: `base X`, `from X`. */
-export const BASE_BEFORE: ReadonlySet<string> = new Set(["base", "from"])
-
-/** The words that mark the commit before them as a base: an arrow or a range (`X → …`, `X..Y`, `X to …`). */
-export const BASE_AFTER: ReadonlySet<string> = new Set(["→", "->", "=>", "⇒", "..", "...", "to"])
-
-/** A spaced word's words: itself when it is an arrow or a range, else its pieces between punctuation. */
-const piecesOf = (word: string): ReadonlyArray<string> => {
-  if (BASE_AFTER.has(word)) return [word]
-  return word.split(/[,;:.()`]+/)
-}
-
-/** A part's words, an arrow or a range glued to the word before it standing as a word of its own (`X→Y`, `X..Y` and `X..` read as `X → Y`, `X .. Y`, `X ..`). */
-const wordsOf = (part: string): ReadonlyArray<string> =>
-  part
-    .replace(/→|->|=>|⇒|(?<=\S)\.{2,3}/g, " $& ")
-    .split(/\s+/)
-    .flatMap(piecesOf)
-    .filter((word) => word.length > 0)
+/** A line that means to be the heads line: it starts with `Heads:` in any case, after any indent, bullet, quote or backtick. */
+const HEADS_START = /^\W*heads:/i
 
 /**
- * The head a part of a batch file's header names, never a base. A commit is a base when it stands
- * after `base`/`from` or before an arrow or a range (`base X`, `X → …`, `X..Y`), and a base is never
- * returned, even when a mark also names it. The head is the one commit a head mark names (`head Y`,
- * `X → Y`), else the part's only commit when it is not a base (`Fork unchanged (prime-look
- * 13a380890b)`, `Dotfiles: 0eb81d14 (no dotfiles change)`). Anything else is none: no commit
- * (`head origin/main`), only a base (`X → origin/main`), two or more commits without one marked
- * head (`X and Y`, `X..Y`): the publish refuses rather than guess which is the head.
+ * The heads a batch file names: its one line `Heads: dotfiles=<sha> fork=<sha>`, both full
+ * commit names, which the orchestrator writes after resolving them. No prose is read. A file with
+ * no such line, two or more, or one not exactly in that form (a short or uppercase hash, a missing
+ * repository, extra words) fails with why, and the publish refuses rather than guess.
  */
-const headOfPart = (part: string): Option.Option<string> => {
-  const words = wordsOf(part)
-  const isBase = (at: number) => BASE_BEFORE.has((words[at - 1] ?? "").toLowerCase()) || BASE_AFTER.has((words[at + 1] ?? "").toLowerCase())
-  const commits = words.map((commit, at) => ({ commit, at })).filter((each) => COMMIT.test(each.commit))
-  const heads = commits.filter((each) => !isBase(each.at))
-  const marked = Arr.dedupe(heads.filter((each) => HEAD_MARKS.has((words[each.at - 1] ?? "").toLowerCase())).map((each) => each.commit))
-  if (marked.length > 0) return Option.filter(Arr.head(marked), () => marked.length === 1)
-  return Option.map(
-    Option.filter(Arr.head(heads), () => commits.length === 1),
-    (each) => each.commit,
-  )
+export const headsOf = (text: string): Result.Result<Commits, string> => {
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => HEADS_START.test(line))
+  const line = Arr.head(lines)
+  if (Option.isNone(line)) return Result.fail(`has no heads line; write one, exactly ${HEADS_FORM}`)
+  if (lines.length > 1) return Result.fail(`has ${lines.length} heads lines; write one, exactly ${HEADS_FORM}`)
+  const match = Option.fromNullishOr(HEADS_LINE.exec(line.value))
+  if (Option.isNone(match)) return Result.fail(`has a malformed heads line (<${line.value.slice(0, 160)}>); write it exactly ${HEADS_FORM}, both full commit names`)
+  return Result.succeed({ dotfiles: match.value[1], fork: match.value[2] })
 }
-
-/**
- * The heads a batch file names, as the orchestrator writes its header: `Dotfiles: base X, head Y`,
- * `Fork prime-look: base X, head Y`, `Fork (…): base X, head Y`, `Fork: X → Y`, `Fork unchanged
- * (13a380890b)`. Each repository's part runs to the next part; the first part that names a commit
- * decides, so an unreadable one (two commits, no head marked) leaves the head unnamed.
- */
-export const headsOf = (text: string): Heads => {
-  const starts = Arr.fromIterable(text.matchAll(PART)).map((match) => ({ name: match[1], at: match.index + match[0].length - match[1].length }))
-  const parts = starts.map((start, at) => ({ name: start.name, text: text.slice(start.at, Option.getOrElse(Option.map(Option.fromNullishOr(starts[at + 1]), (next) => next.at), () => text.length)).split("\n")[0] }))
-  const first = (name: string) =>
-    Option.flatMap(
-      Arr.head(parts.filter((part) => part.name === name && wordsOf(part.text).some((each) => COMMIT.test(each)))),
-      (part) => headOfPart(part.text),
-    )
-  return { dotfiles: first("Dotfiles"), fork: first("Fork") }
-}
-
-/**
- * What the batch file lacks to name a target: both heads, the dotfiles' and the fork's, as the
- * orchestrator writes them; empty when it names both. No kept commit stands in for a missing head:
- * the fork moves apart from batches (an upstream merge after a land), so the last recorded fork is
- * not the one a dotfiles-only batch was verified with.
- */
-export const missingOf = (heads: Heads): ReadonlyArray<string> => [
-  ...Option.match(heads.dotfiles, { onNone: () => ["the dotfiles head (`Dotfiles: base X, head Y`)"], onSome: () => [] }),
-  ...Option.match(heads.fork, { onNone: () => ["the fork head (`Fork prime-look: base X, head Y` or `Fork unchanged (Y)`)"], onSome: () => [] }),
-]
 
 /** Whether `target` names the commits `current` names: recording them again moves nothing. */
 export const sameAs = (target: Commits, current: Option.Option<Commits>): boolean => Option.exists(current, (each) => each.dotfiles === target.dotfiles && each.fork === target.fork)
@@ -186,13 +126,12 @@ const recordTarget = Effect.fn("Fleet.recordTarget")(function* (program: string,
   const text = yield* Effect.tryPromise(() => file(path).text()).pipe(Effect.map(Option.some), Effect.orElseSucceed(() => Option.none<string>()))
   if (Option.isNone(text)) return FleetOutcome.Refused({ reason: `the batch file ${path} does not read` })
   const named = headsOf(text.value)
-  const both = Option.all({ dotfiles: named.dotfiles, fork: named.fork })
-  if (Option.isNone(both)) return FleetOutcome.Refused({ reason: `the batch file ${path} lacks ${missingOf(named).join(" and ")}` })
-  const short = both.value
+  if (Result.isFailure(named)) return FleetOutcome.Refused({ reason: `the batch file ${path} ${named.failure}` })
+  const heads = named.success
   yield* Effect.all([git(program, checkouts.dotfiles, ["fetch", "--quiet", "origin"]), git(program, checkouts.fork, ["fetch", "--quiet", "origin"])], { concurrency: 2 })
-  const full = yield* Effect.all({ dotfiles: commitAt(program, checkouts.dotfiles, short.dotfiles), fork: commitAt(program, checkouts.fork, short.fork) })
+  const full = yield* Effect.all({ dotfiles: commitAt(program, checkouts.dotfiles, heads.dotfiles), fork: commitAt(program, checkouts.fork, heads.fork) })
   if (Option.isNone(full.dotfiles) || Option.isNone(full.fork))
-    return FleetOutcome.Refused({ reason: `the batch file names a head the checkouts do not know (dotfiles ${short.dotfiles}, fork ${short.fork})` })
+    return FleetOutcome.Refused({ reason: `the batch file names a head the checkouts do not know (dotfiles ${heads.dotfiles}, fork ${heads.fork})` })
   const wanted: Target = { dotfiles: full.dotfiles.value, fork: full.fork.value, batch }
   const pushed = yield* Effect.all([onOrigin(program, checkouts.dotfiles, wanted.dotfiles), onOrigin(program, checkouts.fork, wanted.fork)])
   if (!pushed.every(Boolean)) return FleetOutcome.Refused({ reason: `origin lacks dotfiles ${wanted.dotfiles.slice(0, 10)} or fork ${wanted.fork.slice(0, 10)}` })
