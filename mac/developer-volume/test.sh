@@ -116,6 +116,31 @@ grep -q 'quit ' <<< "$out" || fail "preflight printed nothing to quit: $out"
 stop_started
 "$here/migrate.sh" preflight "$src" > /dev/null || fail 'preflight still blocked once its holders quit'
 
+# launchd-due: an agent whose script imports from the tree and fires inside the window
+# is due; one naming the tree in its plist but firing after the window is "later"; one
+# that never refers to the tree is not listed.
+agents=$work/agents
+mkdir -p "$agents"
+echo "import { scheduled } from \"$src/personal/dotfiles/backstop.ts\"" > "$work/job.ts"
+plist() {
+    plutil -create xml1 "$agents/$1.plist"
+    plutil -insert Label -string "$1" "$agents/$1.plist"
+    plutil -insert ProgramArguments -array "$agents/$1.plist"
+    plutil -insert ProgramArguments -string /usr/bin/true -append "$agents/$1.plist"
+    plutil -insert ProgramArguments -string "$2" -append "$agents/$1.plist"
+    plutil -insert StartCalendarInterval -json "$3" "$agents/$1.plist"
+}
+plist test.nightly "$work/job.ts" '{"Hour":3,"Minute":15}'
+plist test.monday "$src/personal/x.sh" '{"Weekday":1,"Hour":9,"Minute":0}'
+plist test.other /usr/bin/true '{"Hour":3,"Minute":15}'
+# Saturday 2026-11-14 16:25 local; 36 hours reach Monday 04:25.
+window=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-14 16:25:00' +%s)
+due=$(bun "$here/launchd-due.ts" "$src" 36 "$agents" "$window")
+nightly=$(awk -F '\t' '$1 == "test.nightly" { print $3 }' <<< "$due")
+[[ $nightly == "$(date -u -r "$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-15 03:15:00' +%s)" +%Y-%m-%dT%H:%M:00.000Z)" ]] || fail "nightly agent not due Sunday 03:15: $due"
+grep -q $'^test.monday\tunloaded\tlater\t' <<< "$due" || fail "monday agent should be later: $due"
+grep -q '^test.other' <<< "$due" && fail "an agent that never refers to the tree was listed: $due"
+
 hdiutil create -quiet -size 1g -fs APFS -type SPARSE -volname devtest "$work/img"
 mkdir -p "$mnt"
 hdiutil attach -quiet -nobrowse -mountpoint "$mnt" "$work/img.sparseimage"
@@ -144,7 +169,7 @@ run > /dev/null || fail 'rerun failed'
 cache=$home/.cache/repo
 mkdir -p "$cache/github/x" "$work/trash"
 echo src > "$cache/github/x/a.ts"
-move() { DEVELOPER_MIGRATE_TRASH=$work/trash "$here/migrate.sh" move-cache "$cache" "$mnt/.cache/repo" > /dev/null; }
+move() { DEVELOPER_MIGRATE_TRASH=$work/trash DEVELOPER_MIGRATE_RESERVE_KB=1024 "$here/migrate.sh" move-cache "$cache" "$mnt/.cache/repo" > /dev/null; }
 move || fail 'move-cache failed'
 [[ -L $cache && $(readlink "$cache") == "$mnt/.cache/repo" ]] || fail 'cache was not linked onto the volume'
 [[ $(cat "$cache/github/x/a.ts") == src ]] || fail 'cache contents did not move'
@@ -154,6 +179,16 @@ move || fail 'move-cache rerun failed'
 rm "$cache"
 move || fail 'move-cache resume failed'
 [[ -L $cache ]] || fail 'move-cache resume did not link the cache'
+# A cache larger than the free space past the reserve is refused before anything moves.
+big=$home/.bun/install/cache
+mkdir -p "$big"
+head -c $((8 * 1024 * 1024)) /dev/urandom > "$big/pkg.tgz"
+reserve=$(($(df -kP "$mnt" | awk 'NR == 2 { print $4 }') - 4096))
+if DEVELOPER_MIGRATE_TRASH=$work/trash DEVELOPER_MIGRATE_RESERVE_KB=$reserve "$here/migrate.sh" move-cache "$big" "$mnt/.cache/bun" 2> /dev/null; then
+    fail 'move-cache moved a cache past the free-space reserve'
+fi
+[[ -d $big && ! -L $big && ! -e $mnt/.cache/bun ]] || fail 'refused move-cache changed something'
+rm -r "$home/.bun"
 
 # The after check on the image. mdutil -i off needs root, so the image keeps an
 # unknown indexing state and that one check must fail; the others must pass.

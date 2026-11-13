@@ -8,6 +8,9 @@
 #                                  caches) and what to quit; exit 1 when anything does
 #   migrate.sh copy ORIGIN SRC DST copy SRC into DST, where ORIGIN is the path
 #                                  the tree's worktree links name (used by test.sh)
+#   migrate.sh bootout             boot out each loaded launch agent that refers to ~/Developer
+#                                  (plist or script) and record it
+#   migrate.sh bootstrap           load the recorded agents again from their plists
 #   migrate.sh move-cache CACHE TARGET
 #                                  move one cache to TARGET behind a link (used by test.sh)
 set -euo pipefail
@@ -26,7 +29,10 @@ uid=$(id -u)
 rift_db=${DEVELOPER_MIGRATE_RIFT_DB:-"$HOME/Library/Application Support/rift/rift.sqlite"}
 syncthing_config=${DEVELOPER_MIGRATE_SYNCTHING_CONFIG:-"$HOME/Library/Application Support/Syncthing/config.xml"}
 opencode_config=$HOME/.config/opencode/opencode.json
-launch_agents=$HOME/Library/LaunchAgents
+launch_agents=${DEVELOPER_MIGRATE_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}
+# The estimated length of the whole run, in hours (RUNBOOK.md, measured on today's tree);
+# a launch agent due within it blocks the run.
+hours=${DEVELOPER_MIGRATE_HOURS:-6}
 # Caches that move onto the volume, as "<path>:<name under ~/Developer/.cache>". bun
 # clones packages out of its cache, and clones cannot cross volumes; okra's repo cache
 # is source trees that gain from no Spotlight index and no FSEvents log.
@@ -163,9 +169,6 @@ copy_tree() {
     rm -rf "$work"
 }
 
-# Does launch agent PLIST name a path under ROOT?
-names() { [[ -f $1 ]] && grep -qF -e "$2/" -e "$2<" "$1"; }
-
 # What to quit for a process, by its command name and line.
 hint() {
     case $2 in
@@ -234,16 +237,52 @@ preflight() {
             done < <(grep -o 'path="[^"]*"' "$syncthing_config" | sed 's/^path="//; s/"$//' |
                 awk -v r="$root" '$0 == r || index($0, r "/") == 1')
         fi
-        # A loaded agent may fire mid-copy and run from the half-copied tree.
-        for plist in "$launch_agents"/*.plist; do
-            names "$plist" "$root" || continue
-            label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null) || continue
-            launchctl print "gui/$uid/$label" >/dev/null 2>&1 || continue
-            printf '  launch agent %s runs from %s\n      quit: launchctl bootout gui/%s/%s\n' "$label" "$root" "$uid" "$label"
-            busy=1
-        done
+        # A loaded agent due before the estimated finish would run from the half-copied tree.
+        while IFS=$'\t' read -r label loaded due plist; do
+            [[ $loaded == loaded ]] || continue
+            if [[ $due == later ]]; then
+                printf '  note: launch agent %s refers to %s, next due after the estimated finish (%s h)\n      boot it out anyway: migrate.sh bootout\n' "$label" "$root" "$hours"
+            else
+                printf '  launch agent %s refers to %s and is due %s, before the estimated finish (%s h)\n      quit: migrate.sh bootout (or launchctl bootout gui/%s/%s)\n' "$label" "$root" "$due" "$hours" "$uid" "$label"
+                busy=1
+            fi
+        done < <(agents "$root")
     done
     return "$busy"
+}
+
+# The launch agents that refer to ROOT, in their plist or their script, with their
+# state and next fire time (launchd-due.ts).
+agents() {
+    local bun=$HOME/.bun/bin/bun here
+    here=$(cd "$(dirname "$0")" && pwd -P)
+    [[ -x $bun ]] || bun=$(command -v bun) || die 'Needs bun for the launch agent check.'
+    "$bun" "$here/launchd-due.ts" "$1" "$hours" "$launch_agents"
+}
+
+# Boots out each loaded launch agent that refers to ~/Developer, and records it so
+# `bootstrap` loads the same plists again. Never `launchctl submit`.
+bootout() {
+    local label loaded due plist
+    mkdir -p "$state"
+    while IFS=$'\t' read -r label loaded due plist; do
+        [[ $loaded == loaded ]] || continue
+        launchctl bootout "gui/$uid/$label"
+        printf '%s\t%s\n' "$label" "$plist" >> "$state/agents-booted-out.tsv"
+        say "Booted out $label"
+    done < <(agents "$dev")
+    [[ -f $state/agents-booted-out.tsv ]] && say "Recorded in $state/agents-booted-out.tsv; migrate.sh bootstrap loads them again."
+    return 0
+}
+
+bootstrap() {
+    local label plist
+    [[ -f $state/agents-booted-out.tsv ]] || { say 'No booted-out agents recorded.'; return 0; }
+    sort -u "$state/agents-booted-out.tsv" | while IFS=$'\t' read -r label plist; do
+        if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then say "$label is loaded"; continue; fi
+        launchctl bootstrap "gui/$uid" "$plist" && say "Bootstrapped $label"
+    done
+    mv "$state/agents-booted-out.tsv" "$state/agents-booted-out.$(date +%Y%m%d-%H%M%S).done"
 }
 
 require_idle() {
@@ -255,17 +294,10 @@ require_idle() {
 
 # What to start again once the tree is on the volume.
 restart_steps() {
-    local plist label
     say 'Start again what you quit:'
-    printf '  opencode service start\n  herdr\n'
+    printf '  ~/Developer/personal/dotfiles/mac/developer-volume/migrate.sh bootstrap\n  opencode service start\n  herdr\n'
     if [[ -f $syncthing_config ]] && ! pgrep -x syncthing >/dev/null &&
         grep -qF "path=\"$dev/" "$syncthing_config"; then printf '  brew services start syncthing\n'; fi
-    for plist in "$launch_agents"/*.plist; do
-        names "$plist" "$dev" || continue
-        label=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null) || continue
-        launchctl print "gui/$uid/$label" >/dev/null 2>&1 && continue
-        printf '  launchctl bootstrap gui/%s %s\n' "$uid" "$plist"
-    done
     printf '  rift gc   (clears rift'\''s list of the trash that stayed behind)\n'
 }
 
@@ -276,6 +308,9 @@ move_cache() {
     stamp=$(date +%Y%m%d-%H%M%S)
     if [[ -d $cache && ! -L $cache ]]; then
         require_idle "$cache"
+        mkdir -p "$(dirname "$target")"
+        (($(avail_kb "$(dirname "$target")") - $(used_kb "$cache") > reserve_kb)) ||
+            die "Moving $cache needs about $(gib "$(used_kb "$cache")") more than the $(gib "$reserve_kb") reserve; free space and rerun."
         say "Moving $cache onto the volume"
         mkdir -p "$target"
         "$rsync" "${rsync_flags[@]}" "$cache/" "$target/"
@@ -356,7 +391,7 @@ relocate() {
     local here copy
     here=$(cd "$(dirname "$0")" && pwd -P)
     copy=$(mktemp -d)
-    cp "$here/migrate.sh" "$here/setup.sh" "$here/check.sh" "$here/watch-bench.ts" "$copy/"
+    cp "$here/migrate.sh" "$here/setup.sh" "$here/check.sh" "$here/watch-bench.ts" "$here/launchd-due.ts" "$copy/"
     # caffeinate keeps the Mac awake for the length of the copy.
     DEVELOPER_MIGRATE_RELOCATED=1 exec caffeinate -i "$BASH" "$copy/migrate.sh" "$@"
 }
@@ -374,6 +409,8 @@ case ${1:-} in
         fi
         preflight "$@" && say "Nothing uses $*." ;;
     copy) [[ $# == 4 ]] || die 'usage: migrate.sh copy ORIGIN SRC DST'; copy_tree "$2" "$3" "$4" ;;
+    bootout) bootout ;;
+    bootstrap) bootstrap ;;
     move-cache) [[ $# == 3 ]] || die 'usage: migrate.sh move-cache CACHE TARGET'; move_cache "$2" "$3" ;;
-    *) die 'usage: migrate.sh [--with-transcripts | preflight [--with-transcripts | ROOT...] | copy ORIGIN SRC DST | move-cache CACHE TARGET]' ;;
+    *) die 'usage: migrate.sh [--with-transcripts | preflight [--with-transcripts | ROOT...] | bootout | bootstrap | copy ORIGIN SRC DST | move-cache CACHE TARGET]' ;;
 esac

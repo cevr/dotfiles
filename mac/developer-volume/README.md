@@ -12,6 +12,8 @@ space with the startup volumes (elastic, no quota): it adds no capacity.
 | `migrate.sh` | Moves an existing `~/Developer` onto the volume. Rerun it to resume. `migrate.sh preflight` lists what uses `~/Developer` and what to quit, and changes nothing. |
 | `check.sh` | The after check: volume, `no_log`, Spotlight, a 38-watch `fs.watch` bench, the symlinks into `~/Developer`, and fseventsd's CPU against the baseline. |
 | `watch-bench.ts` | The `fs.watch` bench `check.sh` runs. |
+| `launchd-due.ts` | Lists the launch agents that refer to `~/Developer` (plist or script) and when each fires next; `migrate.sh` refuses while one is due within the run. |
+| `RUNBOOK.md` | The owner's run: what to quit, the commands in order, how long each takes, the after check, and rollback. |
 | `test.sh` | Runs preflight, the copy, the cache move and the after check against a scratch APFS disk image. No sudo. |
 
 ## What moves, and what stays
@@ -29,7 +31,7 @@ space with the startup volumes (elastic, no quota): it adds no capacity.
    - the OpenCode service: `opencode service stop` (its kernel workers and jobs stop with it), and every OpenCode TUI;
    - herdr: `herdr server stop` (its panes run inside `~/Developer`);
    - Syncthing, which syncs `~/Developer/personal/dotfiles`: `brew services stop syncthing`;
-   - each loaded launch agent that runs from `~/Developer`: `launchctl bootout gui/$(id -u)/<label>`;
+   - each loaded launch agent whose plist or script refers to `~/Developer` (the OpenCode wake jobs import `cmd/wake/backstop.ts`): `migrate.sh bootout` boots them out and records them, `migrate.sh bootstrap` loads the same plists again afterwards;
    - editors, dev servers, Claude Code and Codex sessions, and shells inside `~/Developer`.
 3. Open a new terminal in `~` and run:
 
@@ -49,7 +51,9 @@ The script:
 6. Verifies the new tree against the old one and stops on any difference.
 7. Moves the caches (and, with `--with-transcripts`, the agent state) onto the volume behind symlinks.
 8. Moves the old tree and the old caches to `~/.Trash`. Empty the Trash to reclaim the space.
-9. Runs `check.sh` and prints what to start again: `opencode service start`, `herdr`, `brew services start syncthing`, `launchctl bootstrap` for each agent, then `rift gc`.
+9. Runs `check.sh` and prints what to start again: `migrate.sh bootstrap`, `opencode service start`, `herdr`, `brew services start syncthing`, then `rift gc`.
+
+See `RUNBOOK.md` for the timed, ordered run.
 
 On a new Mac, run `setup.sh` before you clone anything.
 
