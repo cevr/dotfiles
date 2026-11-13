@@ -234,16 +234,6 @@
     },
     {
       "files": [
-        "tests/reconnect/host.ts"
-      ],
-      "rules": {
-        "effect/noEffectRunInTests": "off",
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
         "tests/wait.ts"
       ],
       "rules": {
