@@ -37,6 +37,15 @@ runner (`sim/seed.ts`) unchanged.
 - `static.test.ts`: no wall time in a `*.sim.test.tsx` or in `sim-tui/` but
   `app.ts`.
 
+## What holds the host's dirs
+
+- Our plugins read HOME and the XDG base dirs through `decider/tui-dirs.ts`
+  (Effect Config from a process-wide source, the env by default). The harness
+  installs a source with every dir under the file's own scratch before the app
+  boots, so no frame shows this machine's files, such as daily's
+  `upstream.json` (`host.test.ts` plants one on a fake host and looks).
+  A plugin that reads a host file takes its dir from there.
+
 ## What holds time
 
 - Bun's fake timers hold the host's and our plugins' timers, `Date.now` and

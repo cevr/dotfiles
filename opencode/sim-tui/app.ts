@@ -22,11 +22,12 @@ import "@opentui/solid/preload"
 import "@opencode-tui/test/preload.ts"
 import { jest } from "bun:test"
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Clock, Config, Console, Data, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
+import { Clock, Config, ConfigProvider, Console, Data, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { createAppFixture } from "@opencode-tui/test/fixture/app.ts"
 import { createFetch } from "@opencode-tui/test/fixture/tui-client.ts"
 import * as TuiClock from "../decider/tui-clock.ts"
+import * as TuiDirs from "../decider/tui-dirs.ts"
 import { Identifier } from "@opencode/schema/identifier"
 import { MockTreeSitterClient } from "@opentui/core/testing"
 import { effectTest } from "./effect-test.ts"
@@ -313,10 +314,13 @@ const capped = (fake: typeof setTimeout): typeof setTimeout =>
  * What the harness holds while an app runs, taken once and given back by `release`: the fake
  * timers, the TUI clock, the in-process fetch, the held randomness and the highlighter.
  *
+ * - The host's dirs our plugins read (decider/tui-dirs.ts): HOME and the XDG base dirs, all under
+ *   `host`, the file's own scratch, so no frame shows this machine's files (its daily's upstream reading).
+ *
  * - OpenTUI's tree-sitter client answers from a worker thread in real time, so a frame would hang
  *   on the worker's speed: OpenTUI's own mock takes its place, every highlight answering empty.
  */
-const hold = (clock: TuiClock.Clock) => {
+const hold = (clock: TuiClock.Clock, host: string) => {
   const singletons: { [key: symbol]: Bag } = globalThis
   const bag = singletons[SINGLETONS] ?? {}
   singletons[SINGLETONS] = bag
@@ -328,6 +332,7 @@ const hold = (clock: TuiClock.Clock) => {
   jest.useFakeTimers()
   const untimed = wrap(globalThis, "setTimeout", capped)
   const unclock = TuiClock.install(clock)
+  const undirs = TuiDirs.install(ConfigProvider.fromEnv({ env: hostEnv(host) }))
   const unfetch = replace(globalThis, "fetch", Object.assign(routed, { preconnect: () => {} }))
   const unrandom = replace(crypto, "getRandomValues", fill)
   harness.release = () => {
@@ -336,10 +341,20 @@ const hold = (clock: TuiClock.Clock) => {
     harness.local = Option.none()
     untimed()
     unclock()
+    undirs()
     jest.useRealTimers()
     harness.release = () => {}
   }
 }
+
+/** The env our plugins read their host dirs from (decider/tui-dirs.ts): every dir under `host`. */
+export const hostEnv = (host: string) => ({
+  HOME: `${host}/home`,
+  XDG_STATE_HOME: `${host}/state`,
+  XDG_DATA_HOME: `${host}/data`,
+  XDG_CONFIG_HOME: `${host}/config`,
+  XDG_CACHE_HOME: `${host}/cache`,
+})
 
 /** The theme document the real drive installs, read from themes/prime.json. */
 const Theme = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
@@ -440,8 +455,9 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   const theme = yield* fs.readFileString(path.join(root, "themes/prime.json")).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Theme)))
   const traced = { trace: new Array<TraceEntry>(), started: EPOCH }
   // A file before this one in the process gave its holds back when it closed; a seeded test run alone holds them for good.
+  const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
   harness.release()
-  hold(simClock((entry) => traced.trace.push(entry), () => traced.started))
+  hold(simClock((entry) => traced.trace.push(entry), () => traced.started), host)
   jest.setSystemTime(EPOCH)
   const lobby = Server.make({ draw: () => 0, now: TuiClock.system.now, model: lobbyModel })
   const lobbyID = lobby.session({ title: "lobby" })
