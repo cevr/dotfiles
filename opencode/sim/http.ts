@@ -76,20 +76,19 @@ export const classify = (status: number, headers: Headers, text: string): Failur
   return failure("InvalidRequest", false)
 }
 
+/** A data: URL of text: its media type and its percent-encoded data. A base64 one is not modelled. */
+const DATA_URL = /^data:([^,;]*(?:;charset=[^,;]*)?),(.*)$/s
+
 /**
- * A data: URL's answer, as the host's fetch gives it without the network: a 200 of the URL's data (percent-decoded,
- * or base64), typed by its media type; none for another URL.
+ * A data: URL's answer, as the host's fetch gives it without the network: a 200 of the URL's data, percent-decoded,
+ * typed by its media type (text/plain without one); none for another URL.
  */
-export const dataOf = (url: string): Option.Option<Response> => {
-  const match = /^data:([^,]*),(.*)$/s.exec(url)
-  if (match === null) return Option.none()
-  const meta = match[1] ?? ""
-  const data = match[2] ?? ""
-  const base64 = /;base64$/i.test(meta)
-  const type = meta.replace(/;base64$/i, "")
-  const body = base64 ? Uint8Array.from(atob(data), (char) => char.charCodeAt(0)) : decodeURIComponent(data)
-  return Option.some(new Response(body, { status: 200, headers: { "content-type": type === "" ? "text/plain;charset=US-ASCII" : type } }))
-}
+export const dataOf = (url: string): Option.Option<Response> =>
+  Option.map(Option.fromNullishOr(DATA_URL.exec(url)), (match) => {
+    const part = (index: number) => Option.getOrElse(Option.fromNullishOr(match[index]), () => "")
+    const type = Option.getOrElse(Option.liftPredicate(part(1), (named) => named !== ""), () => "text/plain;charset=US-ASCII")
+    return new Response(decodeURIComponent(part(2)), { status: 200, headers: { "content-type": type } })
+  })
 
 /** A request that did not connect: the provider is not where it was sent. */
 export const unreachable = (message: string): Failure => ({ tag: "Transport", status: 0, message, retryable: true, retryAfterMs: 0 })

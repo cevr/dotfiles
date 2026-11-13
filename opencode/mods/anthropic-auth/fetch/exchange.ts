@@ -2,7 +2,7 @@
 // the way Claude Code sends it, and its response comes back with the tool
 // names OpenCode knows, the quota it carries recorded, a version rejection
 // recovered from once, and a 429 named for what it is.
-import { type Clock, Effect, Result, Schema } from "effect"
+import { type Clock, Effect, Option, Result, Schema } from "effect"
 import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
 import { readUnifiedQuota } from "../quota.ts"
@@ -222,16 +222,20 @@ export const onResponse =
       if (event.model.providerID !== INTEGRATION_ID) return
       // A refused request went nowhere: it answers as Anthropic's rate limit
       // does, whichever setup refused it; an unsigned one as its 401.
-      const refused = ownership.refused.get(event.request)
-      if (refused !== undefined) {
-        yield* Effect.promise(() => event.response.body?.cancel() ?? Promise.resolve())
-        event.response = refusedResponse(refused)
+      const cancel = Option.match(Option.fromNullishOr(event.response.body), {
+        onNone: () => Effect.void,
+        onSome: (body) => Effect.promise(() => body.cancel()),
+      })
+      const refused = Option.fromNullishOr(ownership.refused.get(event.request))
+      if (Option.isSome(refused)) {
+        yield* cancel
+        event.response = refusedResponse(refused.value)
         return
       }
-      const unsigned = ownership.unsigned.get(event.request)
-      if (unsigned !== undefined) {
-        yield* Effect.promise(() => event.response.body?.cancel() ?? Promise.resolve())
-        event.response = unsignedResponse(unsigned)
+      const unsigned = Option.fromNullishOr(ownership.unsigned.get(event.request))
+      if (Option.isSome(unsigned)) {
+        yield* cancel
+        event.response = unsignedResponse(unsigned.value)
         return
       }
       if (!exchange.active()) return

@@ -107,7 +107,10 @@ seeded("a store account that must sign in again fails the request as a 401 that 
       anthropic: {
         accounts,
         // alpha's refresh token is refused: it needs a new sign-in.
-        token: (account) => (account === "alpha" ? { kind: "rejected" } : { kind: "rotate" }),
+        token: (account) => {
+          if (account === "alpha") return { kind: "rejected" }
+          return { kind: "rotate" }
+        },
         script: ({ body }) => {
           const tools = body["tools"]
           if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: "Hello from the second store account." }

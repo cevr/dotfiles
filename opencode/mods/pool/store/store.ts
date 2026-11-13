@@ -489,7 +489,7 @@ interface StoreState {
    * The release of the store's lock, kept while a rotation is held for a write: until the
    * file holds the new refresh token, no other holder may read the spent one and trade it.
    */
-  lock: Effect.Effect<void> | undefined
+  lock: Option.Option<Effect.Effect<void>>
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
@@ -506,7 +506,7 @@ const freshState = (): StoreState => ({
   queue: Promise.resolve(),
   pausedUntil: 0,
   lastTradeAt: -Infinity,
-  lock: undefined,
+  lock: Option.none(),
 })
 
 /** This process's stores' state: on `globalThis`, so it outlives a hot reload and every copy of this module shares it. */
@@ -830,11 +830,12 @@ export class StoreSource {
   /** Under the lock: write `label`'s held rotation over the login it replaced, or drop it when the file holds another. */
   private landHeld(label: string): Effect.Effect<void, StoreCredentialError | StoreUnreadable> {
     return Effect.gen({ self: this }, function* (this: StoreSource) {
-      const pending = this.state.pending.get(label)
-      if (pending === undefined) return
+      const pending = Option.fromNullishOr(this.state.pending.get(label))
+      if (Option.isNone(pending)) return
+      const { next, replaces } = pending.value
       const stored = yield* this.read(label)
-      if (stored && isStoreOwned(stored) && stored.refresh === pending.replaces) {
-        yield* this.write(label, stored, pending.next, pending.replaces)
+      if (stored && isStoreOwned(stored) && stored.refresh === replaces) {
+        yield* this.write(label, stored, next, replaces)
         this.state.rejected.delete(label)
       }
       this.state.pending.delete(label)
@@ -849,15 +850,17 @@ export class StoreSource {
    */
   private locked<A, E>(use: Effect.Effect<A, E>): Effect.Effect<A, E | StoreCredentialError> {
     return Effect.acquireUseRelease(
-      Effect.suspend(() => (this.state.lock === undefined ? takeStoreLock(this.dir, this.lockPolls, this.files) : Effect.succeed(this.state.lock))),
+      Effect.suspend(() =>
+        Option.match(this.state.lock, { onNone: () => takeStoreLock(this.dir, this.lockPolls, this.files), onSome: Effect.succeed }),
+      ),
       () => use,
       (release) =>
         Effect.suspend(() => {
           if (this.state.pending.size > 0) {
-            this.state.lock = release
+            this.state.lock = Option.some(release)
             return Effect.void
           }
-          this.state.lock = undefined
+          this.state.lock = Option.none()
           return release
         }),
     )
