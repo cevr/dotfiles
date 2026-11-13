@@ -853,15 +853,25 @@ export const machineLayer = (config: MachineConfig) =>
           return (yield* liveness.alive(child)) || (yield* sessions.latchOf(child)) !== undefined
         })
 
-      /** The verdict an implementor's session hands `name` back with in its last words; `none` when they hand back no such step. */
+      /** Whether the step's session was stopped: its last words are then an earlier turn's, never its hand-back. */
+      const stoppedChild = (child: Option.Option<string>) =>
+        Effect.map(Effect.forEach(Option.toArray(child), (id) => sessions.stoppedOf(id)), (stopped) => stopped.includes(true))
+
+      /**
+       * The verdict an implementor's session hands `name` back with in its last words; `none` when they hand back no
+       * such step, `stopped` when its turn was stopped.
+       */
       const lastVerdictOf = (name: string, child: Option.Option<string>) =>
-        Effect.map(Effect.forEach(Option.toArray(child), (id) => sessions.lastWordsOf(id)), (words) =>
-          Option.fromNullishOr(stepHandBackOf("implementor", words.join("\n"))).pipe(
-            Option.filter((back) => back.name === name),
-            Option.map((back) => back.verdict),
-            Option.getOrElse((): HandBack["verdict"] => "none"),
-          ),
-        )
+        Effect.flatMap(stoppedChild(child), (stopped) => {
+          if (stopped) return Effect.succeed<HandBack["verdict"]>("stopped")
+          return Effect.map(Effect.forEach(Option.toArray(child), (id) => sessions.lastWordsOf(id)), (words) =>
+            Option.fromNullishOr(stepHandBackOf("implementor", words.join("\n"))).pipe(
+              Option.filter((back) => back.name === name),
+              Option.map((back) => back.verdict),
+              Option.getOrElse((): HandBack["verdict"] => "none"),
+            ),
+          )
+        })
 
       /** A `changes` hand-back's findings as its report gives them, or why they are not known. */
       const readReport = (report: string | undefined) =>
@@ -903,6 +913,8 @@ export const machineLayer = (config: MachineConfig) =>
           }
           const verifier = state.verifier
           if (verifier === undefined || (yield* working(root, "verifier", verifier.batch, verifier.child))) return dead
+          // A stopped verifier's last words are an earlier turn's: it gave no verdict.
+          if (yield* stoppedChild(Option.fromNullishOr(verifier.child))) return [...dead, HandBack.make({ role: "verifier", name: verifier.batch, verdict: "stopped" })]
           const said = yield* Effect.forEach(Option.toArray(Option.fromNullishOr(verifier.child)), (child) =>
             Effect.map(saidBy("verifier", child), Option.map((back) => ({ back, child }))),
           )

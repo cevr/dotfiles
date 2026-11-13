@@ -313,6 +313,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
             ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
             ...(session.agent === undefined ? {} : { agent: session.agent }),
             started: session.time.busy !== undefined || session.outcome !== undefined,
+            stopped: session.outcome === "interrupted",
             ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
             directory: session.location.directory,
           })),

@@ -60,6 +60,11 @@ export class Sessions extends Context.Service<
     readonly agentOf: (sessionID: string) => Effect.Effect<string | undefined>
     /** Whether the session has run a turn, or is running one. A session it cannot read has not. */
     readonly startedOf: (sessionID: string) => Effect.Effect<boolean>
+    /**
+     * Whether the session's last turn was stopped (interrupted) rather than ended: its last words are then no
+     * hand-back, whatever an earlier turn wrote. A session it cannot read was not.
+     */
+    readonly stoppedOf: (sessionID: string) => Effect.Effect<boolean>
     /** When the session, a latched child that will still open, opens (epoch ms); none once it opened, was cancelled or failed. */
     readonly latchOf: (sessionID: string) => Effect.Effect<number | undefined>
     /** The directory the session works in. */

@@ -1717,7 +1717,7 @@ describe("the agents", () => {
 
 describe("the batch machine", () => {
   /** A root's step sessions: each a role's child of `root`, with the hand-back it ends on. */
-  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>) => ({
+  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string; readonly stopped?: boolean }>>) => ({
     root: {},
     ...Object.fromEntries(Object.entries(said).map(([id, session]) => [id, { parentID: "root", ...session }])),
   })
@@ -1832,6 +1832,37 @@ describe("the batch machine", () => {
         // The verifier died with no hand-back: the next batch's verifier starts all the same.
         expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "none" }))
+      }),
+    ))
+
+  // subagent-handle: a step its root stopped (the `subagents` tool's stop, the host's interrupt) ends with its last
+  // words an earlier turn's. They are no hand-back: the ledger sees it stopped.
+  test("subagent-handle: a stopped implementor is handed back as stopped, not as the ready an earlier turn wrote; a stopped verifier gave no verdict", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          {
+            sessions: steps({
+              ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x", stopped: true },
+              ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+              ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", stopped: true },
+            }),
+          },
+        )
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        // alpha was stopped: a stopped turn has no idle, and the next decision's reconcile reads it.
+        yield* plugin.idle("ses_b")
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: false, said: "stopped" }))
+        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: true }))
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["beta"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        // The verifier was stopped: its batch's units wait for a verdict again, and the next verifier starts.
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "stopped" }))
+        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "accepted" }))
       }),
     ))
 
