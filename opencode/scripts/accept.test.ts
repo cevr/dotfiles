@@ -5,13 +5,14 @@
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Option } from "effect"
 import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
+import { waitUntil } from "../tests/wait.ts"
 import { isSerial, plan, poolWidth, requestedWidth, scenariosOf, timingSigns } from "./accept-plan.ts"
-import { parseClosing, readLedger, tierOf } from "./accept-ledger.ts"
+import { parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
 import { acceptanceTests, acceptReach, load, packageOf, reach } from "./reach.ts"
 
@@ -42,10 +43,10 @@ describe("the acceptance run's plan", () => {
     expect(plan(["tests/a.test.ts", "tests/c.test.ts"], text, 1)).toEqual([{ name: "pool", files: ["tests/a.test.ts", "tests/c.test.ts"], width: 1 }])
   })
 
-  test("runs the pool on the cores the 1-minute load leaves free, at least one, and no more than --parallel asks", () => {
+  test("runs the pool on the cores the 1-minute load leaves free, at least one, or exactly as wide as --parallel asks at any load", () => {
     const four = Option.some(4)
-    expect([poolWidth(12, 0.4), poolWidth(12, 5.6), poolWidth(12, 13), poolWidth(12, 300), poolWidth(12, 2, four), poolWidth(12, 10, four), poolWidth(1, 0)]).toEqual([
-      11, 6, 1, 1, 4, 2, 1,
+    expect([poolWidth(12, 0.4), poolWidth(12, 5.6), poolWidth(12, 13), poolWidth(12, 300), poolWidth(12, 2, four), poolWidth(12, 10, four), poolWidth(12, 300, Option.some(2)), poolWidth(1, 0)]).toEqual([
+      11, 6, 1, 1, 4, 4, 2, 1,
     ])
     expect([requestedWidth([]), requestedWidth(["--list", "--parallel=3"])]).toEqual([
       { ok: true, width: Option.none() },
@@ -123,18 +124,52 @@ const linesOf = (out: string) =>
     .map((line) => line.trim())
 
 /** A run of scripts/accept.ts with `args` and `env`, stdout and stderr in one stream so its lines keep their order. */
-const accept = async (args: ReadonlyArray<string>, env: typeof process.env) => {
+const accept = (args: ReadonlyArray<string>, env: typeof process.env) => startAccept(args, env).done
+
+/**
+ * A run of scripts/accept.ts started: its process (the `bun` the shell execs, so its pid is the run's) and its end.
+ * `owned` stops all it started when it exits, which would hide what the run itself failed to stop; `unowned` runs it
+ * bare (its own group), for a test that checks the run's own stop and then ends its stand-ins' groups itself.
+ */
+const startAccept = (args: ReadonlyArray<string>, env: typeof process.env, unowned = false) => {
   const started = performance.now()
-  const run = owned(["/bin/sh", "-c", 'exec "$0" scripts/accept.ts "$@" 2>&1', process.execPath, ...args], { cwd: ROOT, env, stdout: "pipe" })
-  const out = await Bun.readableStreamToText(run.stdout)
-  const code = await run.exited
-  return { code, lines: linesOf(out).filter((line) => line !== ""), seconds: (performance.now() - started) / 1000 }
+  const argv = ["/bin/sh", "-c", 'exec "$0" scripts/accept.ts "$@" 2>&1', process.execPath, ...args]
+  const child = (unowned && Bun.spawn(argv, { cwd: ROOT, env, stdout: "pipe", detached: true })) || owned(argv, { cwd: ROOT, env, stdout: "pipe" })
+  const done = (async () => {
+    const out = await Bun.readableStreamToText(child.stdout)
+    const code = await child.exited
+    return { code, lines: linesOf(out).filter((line) => line !== ""), seconds: (performance.now() - started) / 1000 }
+  })()
+  return { child, done }
 }
 
 /** The environment of a run on a scratch lock and ledger, without the fork (its real-OpenCode tests skip). */
 const scratchEnv = (dir: string, extra: Record<string, string> = {}) => {
   const { OPENCODE_DEV: _fork, ...inherited } = process.env
   return { ...inherited, ACCEPT_LOCK: join(dir, "lock"), ACCEPT_LEDGER: join(dir, "ledger.json"), ...extra }
+}
+
+/** Waits until `what` holds (tests/wait.ts), for `ms` at most; a wait in vain fails the test, naming it. */
+const until = (what: string, ready: () => boolean, ms = 30_000) => waitUntil(what, ready, ms)
+
+/** A child this test starts that holds the scratch accept lock (through mods/rift/process/flock.ts) until the test disposes of it. */
+const holdLock = (dir: string) => {
+  const script = join(dir, "hold.ts")
+  const ready = join(dir, "held")
+  writeFileSync(
+    script,
+    [
+      `import { writeFileSync } from "node:fs"`,
+      `import { exclusively } from ${JSON.stringify(join(ROOT, "mods/rift/process/flock.ts"))}`,
+      `await exclusively(process.argv[2] ?? "")(() => {`,
+      `  writeFileSync(process.argv[3] ?? "", "held")`,
+      `  return new Promise(() => {})`,
+      `})`,
+      "",
+    ].join("\n"),
+  )
+  const child = owned([process.execPath, script, join(dir, "lock"), ready], { cwd: ROOT, stdout: "ignore" })
+  return { ready: until("the lock held by the test's child", () => existsSync(ready)), [Symbol.dispose]: () => child.kill("SIGKILL") }
 }
 
 /** The closing line's counts, none when the run printed none. */
@@ -218,6 +253,10 @@ describe("the acceptance tiers over the real tree", () => {
     expect(wrong).toEqual([])
   })
 
+  test("every file allowed past the deep share exists, each with the unit that removes it: the list only shrinks", () => {
+    expect(SLOW_DEEP.filter(([file, unit]) => !existsSync(join(ROOT, file)) || unit === "")).toEqual([])
+  })
+
   test("every one-at-a-time file is deep, and every deep marker names its measured time", () => {
     const files = acceptance()
     expect(files.filter((file) => isSerial(read(file)) && tierOf(read(file)) !== "deep")).toEqual([])
@@ -229,30 +268,42 @@ describe("the acceptance tiers over the real tree", () => {
     "--list prints each tier's due files and the closing line, and exits without taking the lock",
     async () => {
       using dir = scratch("accept-tiers-")
-      // The lock is held by this test's own process, alive: a run that took it would wait for good.
-      mkdirSync(join(dir.path, "lock"))
-      writeFileSync(join(dir.path, "lock", "owner.json"), JSON.stringify({ pid: process.pid, root: ROOT }))
+      // The lock is held by a process this test started, alive: a run that took it would wait for good.
+      using held = holdLock(dir.path)
+      await held.ready
       const files = acceptance()
       const land = await accept(["--land", "--list"], scratchEnv(dir.path))
       const owed = await accept(["--owed", "--list"], scratchEnv(dir.path))
+      const settled = await accept(["--owed", "--settled", "--list"], scratchEnv(dir.path))
       const deep = files.filter((file) => tierOf(read(file)) === "deep")
       expect({ code: land.code, due: [...dueOf(land.lines)].sort(), closing: closingOf(land.lines) }).toEqual({
         code: 0,
         due: files.filter((file) => tierOf(read(file)) === "land"),
         closing: Option.some({ mode: "land", passed: 0, failed: 0, owed: files.length, deep: deep.length, budget: 0 }),
       })
-      expect({ code: owed.code, due: [...dueOf(owed.lines)].sort(), closing: closingOf(owed.lines) }).toEqual({
+      // Without --settled the files that bound a time stay owed, by name and why.
+      const timing = files.filter((file) => isSerial(read(file)))
+      expect({ code: owed.code, due: [...dueOf(owed.lines)].sort(), held: owed.lines.filter((line) => line.endsWith("(waits for a settled host)")), closing: closingOf(owed.lines) }).toEqual({
         code: 0,
-        due: files,
+        due: files.filter((file) => !isSerial(read(file))),
+        held: timing.map((file) => `owed: ${file} (waits for a settled host)`),
         closing: Option.some({ mode: "owed", passed: 0, failed: 0, owed: files.length, deep: 0, budget: 0 }),
       })
-      expect(land.lines.concat(owed.lines).filter((line) => line.includes("waiting for the run"))).toEqual([])
+      expect({ code: settled.code, due: [...dueOf(settled.lines)].sort() }).toEqual({ code: 0, due: files })
+      expect(land.lines.concat(owed.lines, settled.lines).filter((line) => line.includes("waiting for"))).toEqual([])
     },
     RUN_MS,
   )
 })
 
-/** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own. */
+/**
+ * A detached child (a process group of its own, as `opencode service` is) that starts a long sleeper of
+ * its own and waits: Bun ends the direct child when its `bun test` is stopped, so only the runner's stop of
+ * the test's own processes ends the grandchild (accept-ledger-land M1). The child's pid leads its group.
+ */
+const GRANDCHILD = '  const child = Bun.spawn(["/bin/sh", "-c", "sleep 120 & wait"], { detached: true, stdout: "ignore" })'
+
+/** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own with a grandchild in it. */
 const STAND_INS = {
   "pass.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
   "fail.test.ts": 'import { expect, test } from "bun:test"\ntest("fails", () => {\n  expect(1).toBe(2)\n})\n',
@@ -261,7 +312,7 @@ const STAND_INS = {
     'import { writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
     'test("sleeps", async () => {',
-    '  const child = Bun.spawn(["sleep", "120"], { detached: true, stdout: "ignore" })',
+    GRANDCHILD,
     '  writeFileSync(join(import.meta.dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
     "  await Bun.sleep(120_000)",
     "})",
@@ -281,12 +332,16 @@ describe("a land run under its budget", () => {
       mkdirSync(files)
       for (const [name, body] of Object.entries(STAND_INS)) writeFileSync(join(files, name), body)
       const env = scratchEnv(dir.path, { ACCEPT_FILES: join(files, "*.test.ts"), ACCEPT_BUDGET_MS: "6000" })
-      const first = await accept(["--land"], env)
+      // Bare, so only the run's own stop can end the sleeper's grandchild (accept-ledger-land M1).
+      const first = await startAccept(["--land"], env, true).done
       const groups = Option.match(Option.liftPredicate(join(files, "groups.json"), existsSync), {
         onNone: () => [],
         onSome: (file): ReadonlyArray<number> => JSON.parse(readFileSync(file, "utf8")),
       })
-      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive: groups.filter(groupAlive) }).toEqual({
+      const alive = groups.filter(groupAlive)
+      // What the run left of this test's own stand-in, ended here so a red run leaks nothing.
+      for (const group of alive) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
+      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
         failed: true,
         inTime: true,
         closing: Option.some({ mode: "land", passed: 1, failed: 1, owed: 1, deep: 0, budget: 1 }),
@@ -301,6 +356,174 @@ describe("a land run under its budget", () => {
         closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 1, deep: 0, budget: 1 }),
         before: 1,
       })
+    },
+    RUN_MS,
+  )
+})
+
+/** A deep run's stand-ins: two that pass in 1 s, and one that sleeps 60 s beside a process group of its own on its first run (1 s after). */
+const DEEP_STAND_INS = {
+  "a.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
+  "b.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(2).toBe(2)\n})\n',
+  "sleep.test.ts": [
+    'import { test } from "bun:test"',
+    'import { existsSync, writeFileSync } from "node:fs"',
+    'import { join } from "node:path"',
+    'const dir = process.env.YIELD_DIR ?? ""',
+    'test("sleeps", async () => {',
+    '  const first = !existsSync(join(dir, "slept"))',
+    '  writeFileSync(join(dir, "slept"), "")',
+    GRANDCHILD,
+    '  writeFileSync(join(dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    "  await Bun.sleep((first && 60_000) || 1000)",
+    "  process.kill(-child.pid, \"SIGKILL\")",
+    "})",
+    "",
+  ].join("\n"),
+}
+
+/** A land run's one stand-in: it records which of the deep run's groups still run as it starts. */
+const LAND_STAND_IN = [
+  'import { test } from "bun:test"',
+  'import { existsSync, readFileSync, writeFileSync } from "node:fs"',
+  'import { join } from "node:path"',
+  'const dir = process.env.YIELD_DIR ?? ""',
+  'test("starts after the deep run gave the lock up", () => {',
+  '  const file = join(dir, "groups.json")',
+  '  const groups: Array<number> = (existsSync(file) && JSON.parse(readFileSync(file, "utf8"))) || []',
+  "  const alive = groups.filter((group) => {",
+  "    try {",
+  "      process.kill(-group, 0)",
+  "      return true",
+  "    } catch {",
+  "      return false",
+  "    }",
+  "  })",
+  '  writeFileSync(join(dir, "seen.json"), JSON.stringify({ groups, alive }))',
+  "})",
+  "",
+].join("\n")
+
+/** A scratch world for a deep run and land runs on one scratch lock, ledger and logs. */
+const yieldWorld = (dir: string) => {
+  for (const [name, body] of Object.entries(DEEP_STAND_INS)) {
+    mkdirSync(join(dir, "deep"), { recursive: true })
+    writeFileSync(join(dir, "deep", name), body)
+  }
+  mkdirSync(join(dir, "land"), { recursive: true })
+  writeFileSync(join(dir, "land", "quick.test.ts"), LAND_STAND_IN)
+  const base = scratchEnv(dir, { ACCEPT_LOGS: join(dir, "logs"), YIELD_DIR: dir })
+  const groupsFile = join(dir, "groups.json")
+  return {
+    deepEnv: { ...base, ACCEPT_FILES: join(dir, "deep", "*.test.ts") },
+    landEnv: { ...base, ACCEPT_FILES: join(dir, "land", "*.test.ts"), ACCEPT_BUDGET_MS: "20000" },
+    groupsFile,
+    owner: join(dir, "lock.owner.json"),
+    mark: (pid: number) => join(dir, "lock.wanted", String(pid)),
+    groups: (): ReadonlyArray<number> => (existsSync(groupsFile) && JSON.parse(readFileSync(groupsFile, "utf8"))) || [],
+    /** How many files the scratch ledger holds a pass for. */
+    passed: () =>
+      Object.values(
+        readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, join(dir, "ledger.json")).ledger.passes,
+      ).filter((passes) => passes.length > 0).length,
+  }
+}
+
+/** The land run's wait line: the whole wait and the part on its clock. */
+const waitedOf = (lines: ReadonlyArray<string>) =>
+  Option.map(Option.fromNullishOr(lines.map((line) => /^accept: waited ([\d.]+) s for the lock \(([\d.]+) s on the run's clock/.exec(line)).find(Boolean)), (match) => ({
+    waited: Number(match[1]),
+    onClock: Number(match[2]),
+  }))
+
+describe("a deep run yields the lock to a land run", () => {
+  test(
+    "the lock is free within 5 s of the mark, the land run ends in its budget with the wait on its clock, the sleeper is gone before it starts, and the deep run then passes all three",
+    async () => {
+      using dir = scratch("accept-yield-")
+      const world = yieldWorld(dir.path)
+      const deepRun = accept(["--owed", "--parallel=3"], world.deepEnv)
+      await until("the sleeper running in the deep run", () => world.groups().length === 2)
+      // The two quick files pass in this hold, before the yield: the deep run must count them as its own passes after it, not as passed before it.
+      await until("the quick files passed in the deep run's first hold", () => world.passed() >= 2)
+      const land = await accept(["--land"], world.landEnv)
+      const deep = await deepRun
+      const seen = JSON.parse(readFileSync(join(dir.path, "seen.json"), "utf8"))
+      const waited = waitedOf(land.lines)
+      expect({
+        land: land.code,
+        inBudget: land.seconds < 20,
+        waitedUnder5: Option.exists(waited, (each) => each.waited < 5),
+        // The wait ends as the lock is taken: its line comes before the first file, so it counts the wait alone.
+        waitBeforeFiles: land.lines.findIndex((line) => line.startsWith("accept: waited ")) < land.lines.findIndex((line) => line.startsWith("accept: passed ")),
+        onClock: Option.exists(waited, (each) => each.onClock === each.waited),
+        seen,
+        deep: deep.code,
+        closing: closingOf(deep.lines),
+        yields: deep.lines.filter((line) => line.startsWith("accept: yielded the lock to a land run")).length,
+      }).toEqual({
+        land: 0,
+        inBudget: true,
+        waitedUnder5: true,
+        waitBeforeFiles: true,
+        onClock: true,
+        seen: { groups: expect.any(Array), alive: [] },
+        deep: 0,
+        closing: Option.some({ mode: "owed", passed: 3, failed: 0, owed: 0, deep: 0, budget: 0 }),
+        yields: 1,
+      })
+      expect(seen.groups.length).toBe(2)
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a land run killed while its mark is set: the deep run goes on within 2 s",
+    async () => {
+      using dir = scratch("accept-yield-land-dies-")
+      const world = yieldWorld(dir.path)
+      const deep = startAccept(["--owed", "--parallel=3"], world.deepEnv)
+      await until("the sleeper running in the deep run", () => world.groups().length === 2)
+      const land = startAccept(["--land"], world.landEnv)
+      await until("the land run's wanted mark", () => existsSync(world.mark(land.child.pid)))
+      // The deep run saw the mark: it stopped the sleeper's groups to give the lock up.
+      const stopping = world.groups()
+      await until("the deep run stopping the sleeper's groups", () => stopping.every((group) => !groupAlive(group)), 10_000)
+      land.child.kill("SIGKILL")
+      const killedAt = Date.now()
+      await land.done
+      // The deep run takes the lock back and writes itself as its owner.
+      await until(
+        "the deep run holding the lock again",
+        () => existsSync(world.owner) && statSync(world.owner).mtimeMs >= killedAt && readFileSync(world.owner, "utf8").includes(`"pid":${deep.child.pid}`),
+        10_000,
+      )
+      const resumedIn = Date.now() - killedAt
+      const ended = await deep.done
+      expect({ within2s: resumedIn < 2000, closing: closingOf(ended.lines) }).toEqual({
+        within2s: true,
+        closing: Option.some({ mode: "owed", passed: 3, failed: 0, owed: 0, deep: 0, budget: 0 }),
+      })
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a deep run killed while it holds the lock: the land run takes it at once, and the ledger reads",
+    async () => {
+      using dir = scratch("accept-yield-deep-dies-")
+      const world = yieldWorld(dir.path)
+      const deep = startAccept(["--owed", "--parallel=3"], world.deepEnv)
+      await until("the sleeper running in the deep run", () => world.groups().length === 2)
+      const orphans = world.groups()
+      deep.child.kill("SIGKILL")
+      await deep.done
+      const land = await accept(["--land"], world.landEnv)
+      // The killed run stopped nothing: its sleeper's groups (started by this test's run) go now.
+      for (const group of orphans) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
+      await until("the killed run's sleeper groups gone", () => orphans.every((group) => !groupAlive(group)), 5000)
+      const read = readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, join(dir.path, "ledger.json"))
+      expect({ land: land.code, atOnce: Option.exists(waitedOf(land.lines), (each) => each.waited < 1), problem: read.problem }).toEqual({ land: 0, atOnce: true, problem: Option.none() })
     },
     RUN_MS,
   )

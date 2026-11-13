@@ -4,13 +4,19 @@
 // (signature, time) on its own clock; a seeded generator draws commands (change
 // a reached file, a lint-only input or a package's own test, bench or Markdown;
 // move the clock up to 30 h; a land run with drawn durations, load and
-// failures; an owed run; a run killed at a drawn write; a corrupt ledger) and
-// after each one the real pure functions must agree with the model (I1 to I8 of
-// the unit's spec, and I9: a skip the file does not declare never passes). A
-// failure names the seed and the command.
+// failures; an owed run, loaded or settled, whose files pass, fail once then
+// pass, fail twice, leak or are stopped by a yield; a run killed at a drawn
+// write; a corrupt ledger) and after each one the real pure functions must
+// agree with the model (I1 to I8 of accept-ledger-land's spec; I9: a skip the
+// file does not declare never passes; I10 to I14 of accept-deep-owed's: a file
+// that bounds a time never starts without --settled, a pass only from a green
+// run not stopped, failed twice is failed, the counts equal the sets, the deep
+// share judged only when quiet and never for a listed file). A failure names
+// the seed and the command.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
 import * as Accept from "./accept-ledger.ts"
+import { isSerial } from "./accept-plan.ts"
 import { ACCEPT_SHARED, acceptKey, acceptSharedFrom, packageOf } from "./reach.ts"
 
 const SEEDS = 200
@@ -216,16 +222,70 @@ const orderProblems = (order: ReadonlyArray<string>, near: ReadonlyArray<string>
   return unless(lastNear < firstFar, `I7: order ${order.join(" ")} puts a far file before a near one (near: ${near.join(" ")})`)
 }
 
-/** An owed run on the model: every due file, drawn failures, no deadline. */
-const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: ReadonlyMap<string, string>, failures: boolean): Played => {
-  const selection = Accept.select("owed", candidatesOf(model, keys), ledger, model.now)
+/** How a file behaves in a deep run: green, red once then green (a flake), red twice, red by a leak, or stopped by a yield. */
+type Behaviour = "green" | "flaky" | "red" | "leak" | "yielded"
+
+/**
+ * An owed run on the model, loaded (no `--settled`) or settled: every due file, but the files that bound a time
+ * only when settled; each file drawn green, flaky, red, leaking or stopped by a yield; the failed ones, but a
+ * leak, run once more at the end (`secondRuns`), and each file ends as its last run did (`latest`).
+ * I10: without --settled a one-at-a-time file never starts and is owed `unsettled`. I11: a pass only from a
+ * green run not stopped. I12: red twice is failed, a leak is failed with no second run. I13: the outcome's
+ * counts equal the sets.
+ */
+const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: ReadonlyMap<string, string>, failures: boolean, settledHost: boolean): Played => {
   const byName = new Map(model.files.map((file) => [file.name, file]))
+  const serial = (name: string) => isSerial(textOf(byName.get(name)!))
+  const selection = Accept.holdTiming(Accept.select("owed", candidatesOf(model, keys), ledger, model.now), serial, settledHost)
   const skips: Array<string> = []
-  const ended = selection.run.map((file): Accept.Outcome => {
-    if (failures && draw.chance(0.2)) return { file, status: "failed", ms: 1000, reason: "drawn" }
+  const behaviours = new Map(selection.run.map((file): readonly [string, Behaviour] => [file, (failures && draw.pick<Behaviour>(["green", "flaky", "red", "leak", "yielded"])) || "green"]))
+  const behaviour = (file: string): Behaviour => behaviours.get(file) ?? "green"
+  const first = selection.run.map((file): Accept.Outcome => {
+    const finish = { file, code: 0, report: Option.some({ tests: TESTS, failures: 0, skipped: 0 }), leaked: false, ms: 1000, recordable: true, forked: true, declared: 0 }
+    if (behaviour(file) === "yielded") return Accept.owe(file, "yielded", "stopped after 1.0 s")
+    if (behaviour(file) === "leak") return Accept.verdict({ ...finish, leaked: true })
+    if (behaviour(file) === "flaky" || behaviour(file) === "red") return Accept.verdict({ ...finish, code: 1 })
     return finished(draw, byName.get(file)!, 1000, skips)
   })
-  return { ended, selection, problems: skips }
+  const again = Accept.secondRuns(first)
+  const second = again.map((file) => {
+    const load = draw.below(200)
+    if (behaviour(file) === "red") return Accept.afterSecond({ file, status: "failed", ms: 1000, reason: "bun test exited 1" }, load)
+    return Accept.afterSecond(finished(draw, byName.get(file)!, 1000, skips), load)
+  })
+  const ended = Accept.latest([...first, ...second])
+  const all = [...selection.settled, ...ended]
+  const statusOf = (file: string) => all.find((outcome) => outcome.file === file)?.status
+  const counts = Accept.countsOf(all)
+  const sets = { passed: 0, failed: 0, owed: 0, before: 0 }
+  for (const outcome of all) sets[outcome.status] += 1
+  const problems = [
+    ...skips,
+    ...model.files.flatMap((file) =>
+      unless(settledHost || !serial(file.name) || !selection.run.includes(file.name), `I10: ${file.name} bounds a time and started in a run without --settled`),
+    ),
+    ...selection.settled.flatMap((outcome) => unless(settledHost || !serial(outcome.file) || outcome.status !== "owed" || outcome.why === "unsettled", `I10: ${outcome.file} held for ${outcome.status}`)),
+    ...ended.flatMap((outcome) => unless(outcome.status !== "passed" || behaviour(outcome.file) === "green" || behaviour(outcome.file) === "flaky", `I11: ${outcome.file} passed after a ${behaviour(outcome.file)} run`)),
+    ...ended.flatMap((outcome) => unless(behaviour(outcome.file) !== "yielded" || (outcome.status === "owed" && outcome.why === "yielded"), `I11: ${outcome.file} stopped by a yield ended ${outcome.status}`)),
+    ...selection.run.flatMap((file) => unless(behaviour(file) !== "red" || statusOf(file) === "failed", `I12: ${file} failed twice and ended ${String(statusOf(file))}`)),
+    ...selection.run.flatMap((file) => unless(behaviour(file) !== "leak" || (statusOf(file) === "failed" && !again.includes(file)), `I12: ${file} leaked and ended ${String(statusOf(file))}, run again ${again.includes(file)}`)),
+    ...ended.flatMap((outcome) => unless(Option.isNone(Accept.secondLoad(outcome)) || behaviour(outcome.file) === "flaky", `I13: ${outcome.file} marked passed on a second run after a ${behaviour(outcome.file)} first`)),
+    ...unless(counts.passed === sets.passed && counts.failed === sets.failed && counts.owed === sets.owed && counts.before === sets.before && new Set(all.map((each) => each.file)).size === all.length, `I13: counts ${counts.passed}/${counts.failed}/${counts.owed}/${counts.before} for sets ${sets.passed}/${sets.failed}/${sets.owed}/${sets.before}`),
+    ...deepShares(draw),
+  ]
+  return { ended, selection, problems }
+}
+
+/** I14: in a deep run a file over its 60 s share fails the run only on a quiet host, and never a file SLOW_DEEP lists. */
+const deepShares = (draw: Draw): ReadonlyArray<string> => {
+  const quiet = draw.chance(0.5)
+  const names = [...FILES, ...Accept.SLOW_DEEP.map(([file]) => file)]
+  const timed = names.map((file): Accept.Timed => ({ file, tier: "deep", ms: draw.below(120_000) }))
+  const judged = Accept.shares("owed", timed, quiet)
+  const listed = new Set(Accept.SLOW_DEEP.map(([file]) => file))
+  const expected = timed.flatMap((each) => Arr.filter([each.file], () => quiet && each.ms > Accept.DEEP_SHARE_MS && !listed.has(each.file)))
+  const broke = timed.flatMap((each) => Arr.filter([each.file], () => judged.broken.some((line) => line.startsWith(`accept: ${each.file} `))))
+  return unless(broke.join(" ") === expected.join(" "), `I14: quiet ${quiet}: broke ${broke.join(" ")}, expected ${expected.join(" ")}`)
 }
 
 /**
@@ -314,7 +374,7 @@ const changing = (model: Model, file: string) => {
 
 /** The run a command plays: an owed one (with drawn failures), else a land one. */
 const playOf = (draw: Draw, model: Model, owedRun: boolean, ledger: Accept.Ledger, keys: ReadonlyMap<string, string>) => {
-  if (owedRun) return playOwed(draw, model, ledger, keys, draw.chance(0.5))
+  if (owedRun) return playOwed(draw, model, ledger, keys, draw.chance(0.5), draw.chance(0.5))
   return playLand(draw, model, ledger, keys)
 }
 
@@ -337,7 +397,8 @@ const run = (draw: Draw, model: Model, kind: "land" | "owed" | "kill") => {
   // A corrupt ledger nobody wrote over since stays corrupt (and reads as empty, loudly); any write leaves a readable one.
   const readable = Option.isNone(after.problem) || (applied.written === 0 && Option.isSome(read.problem))
   const settledOk = readable && Accept.encodeLedger(after.ledger) === applied.snapshots.at(-1)
-  const clean = kind !== "kill" && owedRun && !played.ended.some((outcome) => outcome.status !== "passed")
+  // Clean: every file it ran passed and it held none back for a settled host.
+  const clean = kind !== "kill" && owedRun && !played.ended.some((outcome) => outcome.status !== "passed") && !played.selection.settled.some((outcome) => outcome.status === "owed")
   return [
     ...played.problems,
     ...runProblems(model, played, dueBefore),
@@ -386,7 +447,7 @@ const playSeed = (seed: number): ReadonlyArray<string> => {
 }
 
 describe("the acceptance ledger against its model", () => {
-  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I9`, () => {
+  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I14`, () => {
     const problems = Array.from({ length: SEEDS }, (_, seed) => playSeed(seed + 1)).flat()
     expect(problems.slice(0, 5)).toEqual([])
   })

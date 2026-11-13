@@ -1820,7 +1820,7 @@ knows no repository's commands:
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
 | `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
-| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land Rift (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines). A step is owed from the push until it has run, one per warm source over every land since one last ran (`mods/rift/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once when no reading in the last 5 minutes was at or past the cores, and else says it is owed; the plugin itself reads the load every minute while one is owed and runs it once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/rift/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration Rift is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its Rift) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/rift/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/rift/process/landing.ts`). `remove` refuses the integration and post-land Rifts while a step runs there |
+| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land Rift (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit), `RIFT_POST_LAND_LOAD` (`settled`, `forced` or `loaded`: what the host allows; the step decides what each word means) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines), and a `loaded` run that exits 0 with an empty report wakes no one. A step is owed from the push until it has run, one per warm source over every land since one last ran (`mods/rift/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once (`settled`) when no reading in the last 5 minutes was at or past the cores, and else runs it `loaded`, which never pays it: it stays owed, and the wake says what ran and what still waits; the plugin itself reads the load every minute while one is owed, runs it `loaded` again 30 minutes after its last run ended (never while another run holds the claim), and runs it `settled` once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/rift/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration Rift is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its Rift) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/rift/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/rift/process/landing.ts`). `remove` refuses the integration and post-land Rifts while a step runs there |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
 The gate and the acceptance run always run heavy, through the guard's
@@ -1842,13 +1842,25 @@ git config rift.regenerate 'bun skills/orchestrate/scripts/agents.ts && cd openc
 git config rift.postLand 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun scripts/post-land.ts'
 ```
 
-Its post-land step (`scripts/post-land.ts`) merges upstream OpenCode into the
-fork's `prime-look` on the Mac that owns the fork (`mergeUpstream`, as
-`bun run daily`'s step 0 does, under the same lock), refreshes
-`upstream.json` for the TUI's corner, and reports the outcome with the fork
-work it calls for (`scripts/fork-work.ts`): conflicts to resolve, fork
-commits upstream now also makes, and fork commits marked to drop once an
-upstream change merges. On the workbox it does nothing.
+Its post-land step (`scripts/post-land.ts`) first runs the owed acceptance
+files (the deep run, `accept.ts --owed --json`, which takes the machine's
+accept lock itself and yields it to a land's run), then merges upstream
+OpenCode into the fork's `prime-look` on the Mac that owns the fork
+(`mergeUpstream`, as `bun run daily`'s step 0 does, under the same lock),
+refreshes `upstream.json` for the TUI's corner, and reports the outcome with
+the fork work it calls for (`scripts/fork-work.ts`): conflicts to resolve,
+fork commits upstream now also makes, and fork commits marked to drop once an
+upstream change merges. By `RIFT_POST_LAND_LOAD` (absent reads as `settled`,
+so a run by hand does everything): `loaded` runs the deep run two wide
+without the one-at-a-time files and merges nothing (`upstream: waits for a
+settled host`); `settled` runs it with them, as wide as the load leaves room
+for (`forced`: two wide), then the merge, and a second deep run when the
+merge moved `prime-look` (a new fork head makes every file due). A red deep
+run holds the merge. The report opens with the deep block: `accept deep:
+green at <head> on <host>: <p> passed, 0 failed, <o> still owed, load <l>.`
+or `accept deep: RED at <head> (<n> failed) …` with each failed file's log,
+then each file that passed only on its second run and each still owed, with
+why. On the workbox it runs the deep run and merges nothing.
 
 A path in these values is written with `$HOME`, never `~`: `sh` leaves a
 `~` after `=` in a command's argument as it is, so `env OPENCODE_DEV=~/…`
@@ -3115,10 +3127,21 @@ drives, asserts such a bound lacks the one-at-a-time marker
   owed files do not fail it. A land file at or over its 20 s share on a quiet
   host (1-minute load under half the cores at the start and the end) fails the
   run; on a loaded host it is reported, not judged.
-- `bun run accept:owed` runs every due file of both tiers with no deadline:
-  first a pool as wide as the cores the host's 1-minute load leaves free (at
-  least one, at most `--parallel=N`), then the one-at-a-time files one by one.
-  A file over the 60 s deep share is reported.
+- `bun run accept:owed` (the deep run) runs every due file of both tiers with
+  no deadline: first a pool as wide as the cores the host's 1-minute load
+  leaves free (at least one; `--parallel=N` sets it to N), then, with
+  `--settled`, the one-at-a-time files one by one; without it they stay owed,
+  `waits for a settled host`. A file that fails, but not by a leak, runs once
+  more, alone, at the end: failing twice is a failure, passing the second time
+  a pass the run names (`accept: passed <file> on its second run at load
+  <l>`). Each file's output goes to a log under `ACCEPT_LOGS` (default
+  `~/.cache/opencode-accept/logs/<head, 12 hex>/<file>.log`, the newest 5
+  heads kept), and `--json <file>` writes the outcome: head, host, load at the
+  start and end, and per file its status, why, seconds, log and whether it
+  passed on its second run. On a quiet host a file over its 60 s deep share
+  fails the run, except the files `SLOW_DEEP` in `scripts/accept-ledger.ts`
+  lists, each with the unit that removes it (a test fails a listed file that
+  no longer exists: the list only shrinks).
 - `bun run accept` runs every file the same way, the ledger ignored, passes
   still recorded.
 
@@ -3129,6 +3152,23 @@ owed in <s> s (owed: <d> deep, <b> past the budget; run bun run accept:owed)`.
 say fit) and the closing line without taking the lock; named files narrow a
 run, and the others it would have run are owed. `bun run test` still runs
 every file one after another.
+
+One run at a time holds the machine's accept lock (`ACCEPT_LOCK`, default
+`$TMPDIR/opencode-accept.flock`, a flock(2) lock the kernel lets go when its
+holder dies; `<lock>.owner.json` names the holder's pid, checkout and mode).
+A land run that finds a deep run holding it leaves a mark
+(`<lock>.wanted/<pid>`); the deep run, which looks every 250 ms, stops its
+running files with every process they started and lets the lock go within 5
+s (`accept: yielded the lock to a land run`), the land run's wait counted on
+its 60 s clock. The stopped files stay owed, `yielded to a land run`, never
+passed or failed; once no live mark is left the deep run takes the lock back,
+reads the ledger again and goes on. A land run behind another land run waits
+off its clock. A mark whose pid is dead is ignored. `scripts/accept-yield.ts`
+holds the rules; `notes/accept-lock.qnt` is their Quint model. A run from a
+checkout older than this lock takes the old directory lock
+(`$TMPDIR/opencode-accept.lock`) and does not exclude a new run: a land always
+runs in the new `integrate` checkout, so only a hand run from an old Rift is
+the gap.
 
 A test starts what it runs (opencode-drive, an OpenCode server, a
 `run --standalone`) through `tests/owned.ts`, which stops everything that

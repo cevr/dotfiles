@@ -5,8 +5,10 @@
 // or the minute check's, feeds one settle window (`Readings`): one at or past the cores restarts it. The
 // rift plugin's check, every CHECK_EVERY, runs an owed step once its readings have stayed under the cores
 // for SETTLE; a land runs its own at once when no reading in the last SETTLE was at or past them, and once
-// the step has been owed MAX_WAIT, whatever the load (heavy, so nice'd), and says so. This file holds the
-// rules and the words; model.ts runs them.
+// the step has been owed MAX_WAIT, whatever the load (heavy, so nice'd), and says so. Where the rule says
+// defer, the step still runs, `loaded` (`phase`): a land's at once, the minute check's once LOADED_EVERY has
+// passed since its last run; it does what a loaded host allows (RIFT_POST_LAND_LOAD=loaded) and stays owed.
+// This file holds the rules and the words; model.ts runs them.
 import { Array as Arr, Duration, Option, Schema } from "effect"
 import type { HostLoad, Unit } from "./land.ts"
 
@@ -41,6 +43,8 @@ export const OwedPostLand = Schema.Struct({
   /** The session woken with its report: the newest land's. */
   sessionID: Schema.String,
   lands: Schema.NonEmptyArray(OwedLand),
+  /** When a `loaded` run of the step (one that leaves it owed) last ended, epoch milliseconds; absent before the first. */
+  ranAt: Schema.optionalKey(Schema.Finite),
 })
 export type OwedPostLand = typeof OwedPostLand.Type
 
@@ -75,10 +79,18 @@ export interface Owing {
 /** The owed steps after a land: its source's step now the land's, over the lands owed before it too. */
 export const owe = (all: ReadonlyArray<OwedPostLand>, owing: Owing): ReadonlyArray<OwedPostLand> => {
   const before = Option.fromNullishOr(all.find((owed) => owed.source === owing.source))
-  const lands = Option.match(before, { onNone: () => Arr.of(owing.land), onSome: (owed) => Arr.append(owed.lands, owing.land) })
-  const owed: OwedPostLand = { source: owing.source, main: owing.main, command: owing.command, sessionID: owing.sessionID, lands }
+  const newest = { source: owing.source, main: owing.main, command: owing.command, sessionID: owing.sessionID }
+  // The step's last loaded run stays its last run: a later land does not make the minute check run it sooner.
+  const owed: OwedPostLand = Option.match(before, {
+    onNone: () => ({ ...newest, lands: Arr.of(owing.land) }),
+    onSome: (kept) => ({ ...kept, ...newest, lands: Arr.append(kept.lands, owing.land) }),
+  })
   return [...all.filter((each) => each.source !== owing.source), owed]
 }
+
+/** The owed steps once the source's step ran at all, ending at `at`: the time the minute check counts its next loaded run from. */
+export const ran = (all: ReadonlyArray<OwedPostLand>, source: string, at: number): ReadonlyArray<OwedPostLand> =>
+  all.map((owed) => Option.match(Option.liftPredicate(owed, (each) => each.source === source), { onNone: () => owed, onSome: (mine) => ({ ...mine, ranAt: at }) }))
 
 /**
  * The owed steps once the source's step ran for `head`: the lands up to that one are paid, and a land owed
@@ -149,6 +161,30 @@ export const verdict = (owed: OwedPostLand, readings: Readings, now: number, tri
   return "defer"
 }
 
+/** How long the minute check leaves an owed step after its last run before it runs it `loaded` again. */
+export const LOADED_EVERY = Duration.minutes(30)
+
+/**
+ * How a step runs now, as RIFT_POST_LAND_LOAD says it: `run` (settled) and `forced` as `verdict` says, and
+ * where it says defer, `loaded` (the step does what a loaded host allows and stays owed) for a land, and for
+ * the minute check once LOADED_EVERY has passed since the step's last run (or it never ran); else `wait`.
+ */
+export type Phase = "run" | "forced" | "loaded" | "wait"
+
+export const phase = (owed: OwedPostLand, readings: Readings, now: number, trigger: Trigger): Phase => {
+  const decided = verdict(owed, readings, now, trigger)
+  if (decided !== "defer") return decided
+  if (trigger === "land") return "loaded"
+  if (Option.exists(Option.fromUndefinedOr(owed.ranAt), (at) => !atLeast(at, now, LOADED_EVERY))) return "wait"
+  return "loaded"
+}
+
+/** Whether a run in `phase` pays the step: a `loaded` run leaves it owed. */
+export const pays = (phase: Phase): boolean => phase === "run" || phase === "forced"
+
+/** The RIFT_POST_LAND_LOAD word of a phase that runs. */
+export const loadWord = (phase: Exclude<Phase, "wait">): string => ({ run: "settled", forced: "forced", loaded: "loaded" })[phase]
+
 const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
 
 const minutesOf = (duration: Duration.Duration): number => Math.round(Duration.toMinutes(duration))
@@ -160,11 +196,14 @@ const loadWords = (load: HostLoad, readings: Readings, now: number): string => {
   return `the 1-minute load is ${load.load.toFixed(1)}, but it was at or past the host's ${load.cores} cores ${ago} min ago`
 }
 
-/** The wake a land whose post-land step is deferred sends. */
-export const deferredText = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
+/**
+ * The line that heads the report of a step run `loaded`: what ran (what a loaded host allows: the owed
+ * acceptance files that bound no time) and what still waits (the rest, and the upstream merge), and when.
+ */
+export const loadedLine = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
   [
-    `rift land: the post-land step after ${branches(unitsOf(owed))} is owed: ${loadWords(load, readings, now)}.`,
-    `It runs once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes (read every ${minutesOf(CHECK_EVERY)} min), or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; a later land's step replaces it. This session is woken with its report.`,
+    `rift land: the post-land step after ${branches(unitsOf(owed))} ran loaded (${loadWords(load, readings, now)}): it ran what a loaded host allows, and the rest still waits, so the step stays owed.`,
+    `It runs in full once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes, or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; until then the next land, or every ${minutesOf(LOADED_EVERY)} minutes the minute check, runs it loaded again.`,
   ].join(" ")
 
 /**

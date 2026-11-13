@@ -53,11 +53,12 @@ export const requestedWidth = (args: ReadonlyArray<string>): Requested => {
   return { ok: false, problem: `--parallel takes a positive whole number, not ${given.join(" ")}` }
 }
 
-/** How wide the parallel pool runs: the cores the host's 1-minute load leaves free (at least one), capped by a width the caller asked for. */
-export const poolWidth = (cores: number, load1: number, requested: Option.Option<number> = Option.none()) => {
-  const free = Math.max(1, Math.floor(cores - load1))
-  return Math.max(1, Math.min(free, Option.getOrElse(requested, () => free)))
-}
+/**
+ * How wide the parallel pool runs: the width the caller asked for (`--parallel=N`: the post-land step's
+ * deep run asks for two at any load), else the cores the host's 1-minute load leaves free, at least one.
+ */
+export const poolWidth = (cores: number, load1: number, requested: Option.Option<number> = Option.none()) =>
+  Math.max(1, Option.getOrElse(requested, () => Math.floor(cores - load1)))
 
 /** One `bun test` run of the plan: its files and how many run at once. */
 export interface Phase {
