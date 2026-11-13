@@ -5,7 +5,7 @@
 // the wall time it took, as sim-tui's seeds do (here none: the reading before
 // the advance). The timeout is wall time: every seed runs and the test passes.
 import { expect, jest, test } from "bun:test"
-import { Console, Effect } from "effect"
+import { Clock, Console, Effect } from "effect"
 import * as Seed from "../seed.ts"
 
 const ran: Array<number> = []
@@ -13,12 +13,12 @@ const { seeded } = Seed.runner("sim/fixtures/seed-fake-timers.fixture.ts", { tim
 
 test("the fake timers are taken", () => {
   jest.useFakeTimers()
-  expect(jest.now()).toBeGreaterThan(0)
+  expect(ran).toEqual([])
 })
 
 seeded("seeds that move the virtual clock past the timeout", ({ seed }) =>
   Effect.gen(function* () {
-    const at = jest.now()
+    const at = yield* Clock.currentTimeMillis
     jest.advanceTimersByTime(60_000)
     jest.setSystemTime(at)
     // A turn of the process, as a TUI seed takes many: a timer fired by the advance acts here.
