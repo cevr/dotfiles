@@ -7,6 +7,8 @@
 // calls it, on the world's clock.
 import { Data, Effect, Option, Schema } from "effect"
 import { claimEffect, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
+import { spentAccount } from "../../tests/fake-chatgpt.ts"
+import * as ChatGPT from "../../sim/chatgpt.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
@@ -25,20 +27,47 @@ const POOL = "dotfiles-opencode.pool"
 /** How long the real run waited for a claim. */
 const CLAIM_LIMIT_MS = 60_000
 
-/** The world with the Claude logins `names` OpenCode holds (the first active), the auth plugin and the pool sweeping every 6 s. */
+/** The ChatGPT login OpenCode holds, its account `acct-1` on the world's ChatGPT backend. */
+const CHATGPT = "chatgpt"
+
+/**
+ * The world with the Claude logins `names` OpenCode holds (the first active), the auth plugin and the pool sweeping
+ * every 6 s; with a ChatGPT backend, the ChatGPT login too, its pool paced on the backend's usage endpoint.
+ */
 const serve = (seed: number, names: ReadonlyArray<string>, anthropic: Omit<Provider.Options, "seed" | "accounts">) =>
   Effect.gen(function* () {
-    const accounts = Provider.accounts(seed, names)
+    const accounts = Provider.accounts(seed, [...names, CHATGPT])
+    const chatgpt = Option.fromNullishOr(anthropic.chatgpt)
     const world = World.make({
       seed,
       script: () => World.say(""),
       anthropic: { accounts, ...anthropic },
       integrations: {
         anthropic: names.map((name) => ({ id: `cred_${name}`, label: `Claude ${name}`, ...accounts[name], expires: World.START + 8 * HOUR })),
+        openai: Option.match(chatgpt, {
+          onNone: () => [],
+          onSome: () => [
+            {
+              id: "cred_chatgpt",
+              label: "ChatGPT",
+              ...accounts[CHATGPT],
+              expires: World.START + 8 * HOUR,
+              methodID: "chatgpt-browser",
+              metadata: { accountID: "acct-1" },
+            },
+          ],
+        }),
       },
     })
+    const paced = Option.match(chatgpt, {
+      onNone: () => ({}),
+      onSome: () => ({ paced: { openai: "openai" }, usageURL: ChatGPT.USAGE_URL }),
+    })
     yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: WORK })
-    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0.1, limitsFile: "/nonexistent/sim/limits.json" } })
+    yield* world.load(Plugins.pool(new Map(), Plugins.network(world.provider())), {
+      directory: WORK,
+      options: { sweepMinutes: 0.1, limitsFile: "/nonexistent/sim/limits.json", ...paced },
+    })
     yield* world.load(Plugins.questions, { directory: WORK })
     // The session that waits for a start, where the owner is asked.
     yield* world.session(WORK, { id: SESSION })
@@ -72,6 +101,9 @@ const OpenQuestion = Schema.Struct({ id: Schema.String, sessionID: Schema.String
 type OpenQuestion = typeof OpenQuestion.Type
 const Open = Schema.Struct({ questions: Schema.Array(OpenQuestion) })
 
+/** The pace method's answer, as far as the pane reads it. */
+const Paced = Schema.Struct({ ok: Schema.optional(Schema.Boolean) })
+
 /** What the tray, the provider or the pool did not come to within the wait. */
 class Waited extends Data.TaggedError("Waited")<{ readonly message: string }> {}
 
@@ -98,6 +130,101 @@ const resetsOf = (answer: Schema.Json) => Schema.decodeUnknownEffect(Resets)(ans
 
 /** A grant's resets left: one until it is claimed. */
 const leftOf = (claimed: ReadonlySet<string>, id: string) => Number(!claimed.has(id))
+
+/** How long account b's first 5-hour hold lasts from the pool's first reading of it: its question is withdrawn once it lifts. */
+const SHORT_HOLD_MS = 25 * SECOND
+
+seeded(
+  "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
+  ({ seed, expect }) =>
+    Effect.gen(function* () {
+      const now = World.START
+      // ── The world's ChatGPT backend: one account, its 5-hour window spent, one credit ──
+      const backend = ChatGPT.make()
+      // a: spent for two hours, its week resetting in three days (the most time left, so asked first).
+      // b: spent for SHORT_HOLD_MS from the pool's first reading of it, its week resetting in two days.
+      const quotas = new Map<string, FakeQuota>([
+        ["a", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 3 * DAY } }],
+      ])
+      // The world's clock, once the world is made: the provider reads quotas at its own time.
+      const clock = { now: () => now }
+      const quotaOf = (account: string): FakeQuota => {
+        if (account === "b" && !quotas.has("b"))
+          quotas.set("b", { fiveHour: { utilization: 1, resetAt: clock.now() + SHORT_HOLD_MS }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
+        const quota = Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
+        // A window past its reset reads empty, as the real one does.
+        if (clock.now() < quota.fiveHour.resetAt) return quota
+        return { ...quota, fiveHour: { utilization: 0, resetAt: clock.now() + 5 * HOUR } }
+      }
+      const { world, accounts, pool, questions, open, until } = yield* serve(seed, ["a", "b"], {
+        chatgpt: backend,
+        quota: quotaOf,
+        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 1, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
+        claim: (account) => {
+          const quota = Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
+          quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: clock.now() + 5 * HOUR } })
+          return "reset"
+        },
+      })
+      clock.now = world.now
+      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now))
+      const claims = () => world.provider().claims()
+
+      // ── Codex: claimed by itself, once ──
+      const codexPace = yield* Schema.decodeUnknownEffect(Paced)(yield* pool("pace", { providerID: "openai", sessionID: SESSION }))
+      expect(codexPace.ok).toBe(false)
+      yield* world.until(() => backend.consumes().length > 0, CLAIM_LIMIT_MS, 250)
+      yield* pool("pace", { providerID: "openai", sessionID: SESSION })
+      yield* world.advance(SECOND)
+      expect(backend.consumes().map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
+        { account: "acct-1", creditID: "credit-1", code: "reset" },
+      ])
+      expect(yield* open).toEqual([])
+
+      // ── Claude: asked, never claimed unasked ──
+      const asked = (label: string) =>
+        until((rows) => rows.some((each) => each.header === `Claude reset · ${label}`), `a question about ${label}`).pipe(
+          Effect.flatMap((rows) => row(rows, `Claude reset · ${label}`)),
+        )
+      const first = yield* asked("Claude a")
+      expect(first.question).toContain("remain before the weekly reset")
+      expect(first.question).toContain("Claim it?")
+      expect(claims()).toEqual([])
+
+      // A no: nothing is claimed, and the next account is asked.
+      expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: first.id, answer: "Don't claim" }] })).toMatchObject({ ok: true })
+      const second = yield* asked("Claude b")
+      expect(claims()).toEqual([])
+
+      // b's hold lifts by itself: the sweep reads it, and its question goes unanswered.
+      yield* until((rows) => !rows.some((each) => each.id === second.id), "b's question withdrawn", SHORT_HOLD_MS + 30 * SECOND, false)
+      expect(claims()).toEqual([])
+      const lifted = yield* resetsOf(yield* pool("resets"))
+      expect(lifted.resets.filter((reset) => reset.label === "Claude b").map((reset) => [reset.stage, reset.message])).toEqual([
+        ["withdrawn", "the hold lifted"],
+      ])
+
+      // b is spent again: a new hold, asked again; on a yes its grant is claimed, once.
+      quotas.set("b", { fiveHour: { utilization: 1, resetAt: world.now() + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
+      const third = yield* asked("Claude b")
+      expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: third.id, answer: "Claim it" }] })).toMatchObject({ ok: true })
+      yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, 250)
+      yield* world.advance(2 * SECOND)
+      expect(claims().map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([{ account: "b", grant: "grant-b", result: "reset" }])
+      expect(String(claims()[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
+      const settled = yield* resetsOf(yield* pool("resets"))
+      expect(settled.claims.map(({ provider, outcome }) => [provider, outcome])).toEqual([
+        ["claude", "reset"],
+        ["codex", "reset"],
+      ])
+      expect(settled.claims[0]?.weekly).toBe("kept")
+      expect(settled.claims[1]?.weekly).toBe("moved")
+      // No token ever shows in what the pool answers or logs.
+      const shown = line(settled) + line(world.logs())
+      for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, accounts[CHATGPT].access, accounts[CHATGPT].refresh])
+        expect(shown).not.toContain(token)
+    }),
+)
 
 seeded(
   "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",

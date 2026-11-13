@@ -82,8 +82,8 @@
         {
           "name": "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
           "expects": 17,
-          "carried": "real",
-          "why": "the world has no ChatGPT backend yet (tests/fake-chatgpt.ts's usage and consume endpoints) nor its provider laws"
+          "carried": "both",
+          "why": "real too: a ChatGPT login's metadata (its accountID) through integration.connection.resolve is no host law yet; the backend is under sim/chatgpt-laws.ts"
         },
         {
           "name": "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
