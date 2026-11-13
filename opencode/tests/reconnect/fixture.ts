@@ -52,6 +52,8 @@ import { ENV, endsQuietly, files, importClient, listen, run, runCase, send, type
 export const SUITE = "a TUI on the background service across a service restart"
 /** A case's own timeout: one restart, or one open, on a loaded host. */
 export const TIMEOUT_MS = 180_000
+/** What a case that runs out of time keeps of TIMEOUT_MS to stop its world (the service, the hosts). */
+const CLOSE_MS = 15_000
 /** The fork the files run, "" when OPENCODE_DEV is not set and they skip. */
 export const FORK = ENV.fork
 export { skipNotice } from "./host.ts"
@@ -112,13 +114,35 @@ class TimedOut extends Data.TaggedError("TimedOut")<{ readonly message: string }
 /** A read that did not hold yet: what it saw. */
 class NotYet<A> extends Data.TaggedError("NotYet")<{ readonly last: A }> {}
 
+/**
+ * The waits this file's case finished, each with what it took and the first line of the message
+ * it would have failed with: what a case that runs out of its time names (`reconnectTest`).
+ */
+const trail: Array<string> = []
+
+/** `effect`, its time kept in the trail under `label`. */
+const timed = <A, E, R>(label: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const start = yield* Clock.currentTimeMillis
+    const value = yield* effect
+    const end = yield* Clock.currentTimeMillis
+    trail.push(`${((end - start) / 1000).toFixed(1)} s: ${label}`)
+    return value
+  })
+
 /** Reads `read` until `done` holds, every 250 ms for `ms`; past it, fails with `label` of the last read. */
 const until = <A>(read: Effect.Effect<A>, done: (value: A) => boolean, label: (last: A) => string, ms: number) =>
-  read.pipe(
-    Effect.filterOrFail(done, (last) => new NotYet({ last })),
-    Effect.retry({ schedule: LOOK.pipe(Schedule.upTo({ duration: `${ms} millis` })), times: Math.ceil(ms / LOOK_MS) + 1 }),
-    Effect.mapError((error) => new TimedOut({ message: label(error.last) })),
-  )
+  Effect.gen(function* () {
+    const start = yield* Clock.currentTimeMillis
+    const last = yield* read.pipe(
+      Effect.filterOrFail(done, (seen) => new NotYet({ last: seen })),
+      Effect.retry({ schedule: LOOK.pipe(Schedule.upTo({ duration: `${ms} millis` })), times: Math.ceil(ms / LOOK_MS) + 1 }),
+      Effect.mapError((error) => new TimedOut({ message: label(error.last) })),
+    )
+    const end = yield* Clock.currentTimeMillis
+    trail.push(`${((end - start) / 1000).toFixed(1)} s of ${ms / 1000} s: ${label(last).split("\n")[0]}`)
+    return last
+  })
 
 /** Waits until the clock reaches `at`, at most `ms`. */
 const reach = (at: number, label: string, ms: number) => until(Clock.currentTimeMillis, (now) => now >= at, () => label, ms)
@@ -218,7 +242,7 @@ const Fields = Schema.Record(Schema.String, Schema.Unknown)
 const unavailable = () => Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
 
 /** The service the service file names now, once it can serve. */
-const serviceIn = (file: string, label: string) => Effect.promise(() => ready(file, () => label))
+const serviceIn = (file: string, label: string) => timed(`the service file names a service that serves (${label.split(" (")[0]})`, Effect.promise(() => ready(file, () => label)))
 
 const authorization = (service: Service) => ({ authorization: `Basic ${Base64.encode(`opencode:${service.password}`)}` })
 
@@ -434,7 +458,7 @@ const fixture = (root: string) =>
     const tuiEnv = { ...env, ...Object.fromEntries([["BUN_OPTIONS", ""]].filter(() => ENV.binary !== "")) }
     const serviceFile = `${home}/.local/state/opencode/service-local.json`
     /** The fork's CLI in the scratch HOME, run to its end. */
-    const opencode = (...args: ReadonlyArray<string>) => run([...launch.base, ...args], work, env)
+    const opencode = (...args: ReadonlyArray<string>) => timed(`opencode ${args.join(" ")}`, run([...launch.base, ...args], work, env))
     const sim = yield* simModel
     configure(home, sim.server.port)
     // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
@@ -459,7 +483,17 @@ const fixture = (root: string) =>
  */
 export const reconnectTest = <E>(kept: Kept, body: (fixture: Fixture) => Effect.Effect<void, E, Scope.Scope>) =>
   // A short folder name: the terminal hosts' sockets live in it, and a socket path has at most 104 bytes on macOS.
-  kept.test(() => runCase(Effect.flatMap(fixture(kept.dir("w")), body)))
+  kept.test(() =>
+    runCase(
+      Effect.flatMap(fixture(kept.dir("w")), body).pipe(
+        // Before bun's own timeout, so the message names how far the case got, and its world still stops.
+        Effect.timeoutOrElse({
+          duration: `${TIMEOUT_MS - CLOSE_MS} millis`,
+          orElse: () => Effect.fail(new TimedOut({ message: `the case ran out of its ${(TIMEOUT_MS - CLOSE_MS) / 1000} s; the waits it finished, each with its time and its failure message:\n${trail.join("\n")}` })),
+        }),
+      ),
+    ),
+  )
 
 /** How a restart case sets up its TUI and its service. */
 export interface RestartCase {
