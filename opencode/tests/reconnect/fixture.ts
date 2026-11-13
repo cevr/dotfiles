@@ -198,7 +198,7 @@ interface Submission {
 }
 
 /** The JSON body of a GET of `url`. */
-const json = (url: URL, headers: HeadersInit) =>
+const json = (url: URL, headers: Headers | { readonly authorization: string }) =>
   Effect.promise(() => fetch(url, { headers })).pipe(Effect.flatMap((response) => Effect.promise(() => response.json())))
 
 /** The service's info, as the proxy passes it on. */
