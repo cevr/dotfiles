@@ -1,4 +1,4 @@
-// accept: deep (49.2 s alone: 1-minute load under 24 on 12 cores; it boots real OpenCode twice, one turn each)
+// accept: deep (49.2 s alone on a quiet host: 1-minute load under 24 on 12 cores; it boots real OpenCode twice, one turn each)
 // Real OpenCode (the fork's `serve --service`, from source) with an Anthropic
 // login, the Anthropic auth plugin and the pool, against the fake Anthropic
 // API. A turn pins its session's run to the login it went out on; when the

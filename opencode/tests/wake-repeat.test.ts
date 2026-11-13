@@ -1,4 +1,4 @@
-// accept: deep (18.7 s alone on a quiet host before the monitor moved to the simulated host: 1-minute load 45.1–62.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (18.7 s alone on a quiet host: measured before the monitor moved to the simulated host, 1-minute load 45.1–62.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public seam: real OpenCode with `experimental.schedules` on, the real wake
 // server plugin, the built-in schedule plugin off as daily writes it, and a
 // scripted model. scenarios/wake-repeat.ts asks the model once, keeping the

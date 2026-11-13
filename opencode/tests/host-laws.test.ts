@@ -1,3 +1,4 @@
+// accept: one at a time (it bounds a failed probe load's boot under 60 s).
 // The host laws (sim/host-laws.ts) in real OpenCode: one boot of the fork
 // through its SDK (tests/host-laws/real.ts) in a scratch home, on a scripted
 // model, with the law probe (sim/server.ts) loaded from config. Each law is one
