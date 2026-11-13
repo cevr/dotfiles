@@ -33,7 +33,7 @@ import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
-import { checkFork } from "./fork.ts"
+import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
@@ -344,7 +344,7 @@ if (import.meta.main) {
   // From the update plugin (mods/update): the verified target's fork commit, built instead of origin's prime-look.
   const forkTarget = flagValue([...args], "--fork-target")
   const env = process.env
-  const checked = checkFork(env.OPENCODE_DEV || DEFAULT_FORK)
+  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
   const cli = join(fork, "packages/cli")

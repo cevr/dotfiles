@@ -22,7 +22,7 @@ import { Array as Arr, Effect, Option } from "effect"
 import { decodeDeepReport, type DeepReport } from "./accept-ledger.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { exclusively, exclusivelySync } from "../mods/rift/process/flock.ts"
-import { checkFork } from "./fork.ts"
+import { readyFork } from "./fork.ts"
 import { type ForkWork, droppable, forkWork, forkWorkText, ghLookup, readAgents } from "./fork-work.ts"
 import { DEFAULT_FORK } from "../testbeds/gamut/gamut.ts"
 import { BRANCH, forkChecks, mergeUpstream, type Outcome, ownsFork, syncFork, UPSTREAM_BRANCH, UPSTREAM_REMOTE, upstreamReading, withUpstreamLock } from "./upstream.ts"
@@ -198,7 +198,7 @@ if (import.meta.main) {
   const home = homedir()
   const opencode = resolve(import.meta.dir, "..")
   const env = process.env
-  const checked = checkFork(env.OPENCODE_DEV || DEFAULT_FORK)
+  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
   const state = join(home, ".local/state/opencode-daily")

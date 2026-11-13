@@ -5,12 +5,50 @@
 // from another machine (a Mac path on the workbox), an unexpanded `~`, a folder
 // that is not a checkout and an install copied from elsewhere all fail it, so
 // nothing links to a module that is not there.
-import { existsSync, lstatSync, readdirSync, readlinkSync } from "node:fs"
+//
+// Every caller takes the fork through `readyFork`, which first removes the one
+// stray link-fork itself ever wrote into a fork (below), so an older checkout's
+// run does not leave a fork that every caller then refuses.
+import { existsSync, lstatSync, readdirSync, readlinkSync, rmSync } from "node:fs"
 import { hostname } from "node:os"
 import path from "node:path"
 
 /** The TUI package's modules, relative to the fork: what link-fork links into every package. */
 export const FORK_MODULES = "packages/tui/node_modules"
+
+/** The folder under ~/.local/state that holds link-fork's anchors, one per checkout. */
+export const ANCHORS = "opencode-fork"
+
+/** sim-tui's extra links: the fork TUI's test folder (its fixture and preload) and the protocol package, by where they sit from the anchor. */
+export const SIM_TUI: ReadonlyArray<readonly [string, string]> = [
+  ["@opencode-tui/test", "../test"],
+  ["@opencode/protocol", "../../protocol"],
+]
+
+/**
+ * Removes link-fork's own stray from the fork's modules. A link-fork before 2026-11-13 linked sim-tui's scope folders
+ * whole to the fork's, so sim-tui's extra links went through them into the fork's own modules, as text relative to
+ * a checkout that points nowhere from there; the check refuses such a fork. Such a link is ours: it names the
+ * anchors folder. A link of the fork's own is never touched.
+ */
+const removeStray = (modules: string) => {
+  for (const [name] of SIM_TUI) {
+    const scope = path.join(modules, path.dirname(name))
+    if (!existsSync(scope)) continue
+    for (const entry of readdirSync(scope, { withFileTypes: true }).filter((each) => each.name === path.basename(name) && each.isSymbolicLink()))
+      if (readlinkSync(path.join(scope, entry.name)).includes(path.sep + ANCHORS + path.sep)) rmSync(path.join(scope, entry.name))
+  }
+}
+
+/**
+ * The fork in OPENCODE_DEV (`dev`), ready for a script to use: link-fork's own stray removed from it, then checked
+ * (`checkFork`). link-fork, accept, daily and post-land all take the fork through it.
+ */
+export const readyFork = (dev: string | undefined): Fork => {
+  if (dev === undefined || dev === "") return { problem: "OPENCODE_DEV is not set: point it at an OpenCode checkout, e.g. the prime-look Rift." }
+  removeStray(path.join(path.resolve(dev), FORK_MODULES))
+  return checkFork(dev)
+}
 
 export type Fork = { readonly fork: string; readonly modules: string } | { readonly problem: string }
 
@@ -25,8 +63,7 @@ const broken = (modules: string): ReadonlyArray<string> =>
   })
 
 /** Checks OPENCODE_DEV (`dev`) names an installed OpenCode checkout here; `problem` says what is wrong and how to fix it. */
-export const checkFork = (dev: string | undefined): Fork => {
-  if (dev === undefined || dev === "") return { problem: "OPENCODE_DEV is not set: point it at an OpenCode checkout, e.g. the prime-look Rift." }
+const checkFork = (dev: string): Fork => {
   const fork = path.resolve(dev)
   const modules = path.join(fork, FORK_MODULES)
   const expected = `an OpenCode checkout with its packages installed (${FORK_MODULES})`

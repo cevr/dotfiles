@@ -914,7 +914,7 @@
     "scripts/layout.test.ts": {"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noTernary":2},
     "scripts/leaks.test.ts": {"effect/noAsyncFunction":18,"effect/noFixedWaitInTests":2,"effect/noGlobals":5,"effect/noTryCatch":1},
     "scripts/leaks.ts": {"effect/noAsyncFunction":2,"effect/noGlobals":5,"effect/noNullish":5,"effect/noTryCatch":1},
-    "scripts/link-fork.test.ts": {"effect/noGlobals":4,"effect/noKnownValueWidening":1,"effect/noModulePathFacts":4,"effect/noNodeBuiltinImport":2,"effect/noNullish":4,"effect/noTernary":1,"effect/noTestLifecycleHooks":2},
+    "scripts/link-fork.test.ts": {"effect/noGlobals":2,"effect/noKnownValueWidening":1,"effect/noModulePathFacts":3,"effect/noNodeBuiltinImport":2,"effect/noNullish":4,"effect/noTernary":1,"effect/noTestLifecycleHooks":2},
     "scripts/link-fork.ts": {"effect/noAs":1,"effect/noGlobals":6,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":7,"effect/noTernary":3,"effect/noThrowStatement":1,"effect/noTryCatch":2},
     "scripts/memory-eval/api.ts": {"effect/noAs":3,"effect/noAsyncFunction":11,"effect/noGlobals":6,"effect/noModuleLevelMutableState":3,"effect/noNewError":5,"effect/noNewPromise":1,"effect/noNodeBuiltinImport":1,"effect/noNullish":7,"effect/noRuntimeTypeof":1,"effect/noTernary":1,"effect/noThrowStatement":8,"effect/noUnsafeDictionaryType":2},
     "scripts/memory-eval/episode.ts": {"effect/maxCognitiveComplexity":1,"effect/noAs":1,"effect/noAsyncFunction":13,"effect/noConditionalEmptyObjectSpread":2,"effect/noGlobals":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":13,"effect/noRuntimeTypeof":1,"effect/noTernary":17,"effect/noTryCatch":1,"effect/noUnsafeDictionaryType":3},
