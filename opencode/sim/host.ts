@@ -24,7 +24,10 @@
 //   compaction message. The context starts at the newest completed one.
 // - A background shell's end steers a notice into its session, which wakes it.
 // - Plugin storage is the host's, per plugin id, and outlives a restart.
-// - Events reach every copy, hooks only the session's location's.
+// - A session's events reach its location's copies, others every copy
+//   (sim/locations.ts); hooks run only the session's location's.
+// - An execution of a session with a parent reports its end to the parent,
+//   which the report wakes (sim/subagents.ts).
 import { Tool } from "@opencode/schema/tool"
 import type { SimulationProtocol } from "@opencode/simulation/protocol"
 import { Agent } from "@opencode/schema/agent"
@@ -32,7 +35,10 @@ import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Result, Schema } from "effect"
+import * as Faults from "./faults.ts"
 import * as Http from "./http.ts"
+import * as Locations from "./locations.ts"
+import * as Subagents from "./subagents.ts"
 import { below, type JsonObject, line, plain, record as recordOf, type Runtime, type SimError } from "./runtime.ts"
 
 // ── The model ──
@@ -234,6 +240,8 @@ export interface HostEvent {
 }
 
 export interface Subscriber {
+  /** The location of the copy that subscribed: it hears its own location's events and global ones. */
+  readonly directory: string
   readonly types: Option.Option<ReadonlySet<string>>
   readonly queue: Queue.Queue<HostEvent>
 }
@@ -438,6 +446,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const models = options.models ?? [SIM_MODEL]
   const model = options.model ?? MODEL
   const state = { up: true, counter: 0 }
+  /** The faults a test put into the host (sim/faults.ts). */
+  const faults = Faults.make()
   /** What a plugin reached for that the world does not model: the world's next operation fails naming it. */
   const unmodelled: Array<string> = []
   /** The logins OpenCode holds, by integration, in order, and the active one's id. */
@@ -483,11 +493,19 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     fiber.addObserver(() => fibers.delete(fiber))
   }
 
-  const publish = (event: HostEvent) =>
+  /**
+   * Publishes an event to the subscribers of its location: a session's event to its session's directory's
+   * (`at`, when the session is already gone), one of no session to every copy (sim/locations.ts).
+   */
+  const publish = (event: HostEvent, at?: string) =>
     Effect.gen(function* () {
+      const where = Locations.whereOf(event, Option.fromNullishOr(at), (sessionID) =>
+        Option.map(Option.fromNullishOr(sessions.get(sessionID)), (session) => session.directory),
+      )
       record("event", { type: event.type, data: event.data })
       for (const subscriber of subscribers)
-        if (Option.match(subscriber.types, { onNone: () => true, onSome: (types) => types.has(event.type) })) yield* Queue.offer(subscriber.queue, event)
+        if (Option.match(subscriber.types, { onNone: () => true, onSome: (types) => types.has(event.type) }) && Locations.hears(subscriber.directory, where))
+          yield* Queue.offer(subscriber.queue, event)
     })
 
   /**
@@ -906,6 +924,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     Effect.gen(function* () {
       session.running = true
       session.busy = Option.some(runtime.now())
+      const from = session.messages.length
       yield* publish({ type: "session.execution.started", data: { sessionID: session.id } })
       let ended: "control" | "model" | "failed" = yield* turn(session)
       while (ended === "model") {
@@ -921,8 +940,19 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       // A failed step ends the execution failed: `experimental.idle` does not run after a failure.
       if (ended === "failed") yield* publish({ type: "session.execution.failed", data: { sessionID: session.id } })
       else yield* publish({ type: "session.execution.succeeded", data: { sessionID: session.id } })
+      yield* report(session, Subagents.periodOf(session.messages.slice(from), ended === "failed"))
       precompute(session)
       wake(session)
+    })
+
+  /** A subagent's period ended: its report goes to its parent, which it wakes (sim/subagents.ts). */
+  const report = (session: Session, ended: Subagents.Ended) =>
+    Effect.suspend(() => {
+      const parent = Option.flatMap(session.parentID, (parentID) => Option.fromNullishOr(sessions.get(parentID)))
+      const sent = Option.flatMap(parent, () => Subagents.reportOf(session, ended, session.shells))
+      if (Option.isNone(parent) || Option.isNone(sent)) return Effect.void
+      record("subagent-report", { sessionID: parent.value.id, childID: session.id, state: sent.value.metadata["state"] ?? "" })
+      return admit(parent.value, { id: mint("msg_"), type: "synthetic", ...sent.value, resume: true })
     })
 
   /** Background compaction: a summary written ahead for a session idle near its window's ceiling. */
@@ -1081,6 +1111,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     integrations,
     rpcEvents,
     activations,
+    faults,
     catalogNotFound,
     processes,
     record,

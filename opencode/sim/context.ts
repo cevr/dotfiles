@@ -134,9 +134,15 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
   const storage: Storage = {
     get: (key) => Effect.sync(() => namespace.get(key)),
     set: (key, value) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        // A write the test made fail (sim/faults.ts): it dies, the value not stored.
+        if (host.faults.takeWrite(plugin)) {
+          host.record("store-set-failed", { plugin, key })
+          return Effect.die(new Error(`sim: a write of ${plugin}'s storage failed`))
+        }
         namespace.set(key, plain(value))
         host.record("store-set", { plugin, key, value })
+        return Effect.void
       }),
     remove: (key) =>
       Effect.sync(() => {
@@ -179,6 +185,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       Effect.acquireRelease(
         Effect.gen(function* () {
           const subscriber: Subscriber = {
+            directory: loaded.directory,
             types: Option.map(Option.fromNullishOr(input.types), (types) => new Set(types)),
             queue: yield* Queue.unbounded<HostEvent>(),
           }

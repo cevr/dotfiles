@@ -14,7 +14,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { answer, BROKEN, DONE, ELSEWHERE_FOLDER, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -138,6 +138,8 @@ const run = Effect.gen(function* () {
   const law = path.join(base, LAW_FOLDER)
   const config = path.join(base, "config")
   yield* fs.makeDirectory(law, { recursive: true })
+  // The `located` law's other location, beside the law folder.
+  yield* fs.makeDirectory(path.join(base, ELSEWHERE_FOLDER), { recursive: true })
   yield* fs.makeDirectory(config, { recursive: true })
 
   yield* HttpServer.serveEffect(model({ count: 0 }))

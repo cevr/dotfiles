@@ -19,9 +19,9 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Array as Arr, Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+import { ELSEWHERE_FOLDER, LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -551,4 +551,61 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(ctx.location.directory.endsWith(`/${LAW_FOLDER}`), `the location was ${ctx.location.directory}`)
       }),
   },
+  {
+    name: LAW.report,
+    operations: ["session.create", "session.prompt", "session.context"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const parent = yield* fresh(ctx)
+        const child = yield* ctx.session.create({ parentID: parent.id, title: "law child" })
+        // The child's turn ends with an answer; its report wakes the parent into a turn of its own.
+        yield* probe.turn(parent.id, probe.turn(child.id, ctx.session.prompt({ sessionID: child.id, text: "law: child report" })))
+        const messages = yield* ctx.session.context({ sessionID: parent.id })
+        const reports = messages.flatMap((message) => Arr.fromOption(Schema.decodeUnknownOption(Report)(message)))
+        yield* ensure(reports.length === 1, `the parent holds ${reports.length} subagent reports`)
+        const [report] = reports
+        yield* ensure(report?.metadata.childID === child.id, `the report names ${report?.metadata.childID ?? "no child"}, not the child`)
+        yield* ensure(report?.description === "law child", `the report's description is ${report?.description ?? "none"}`)
+        yield* ensure(Option.exists(Option.fromNullishOr(report), (found) => found.text.includes("heard child report")), "the report does not carry the child's answer")
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === parent.id && request.kind === "primary")
+        yield* ensure(primary.length === 1, `the report brought the parent ${primary.length} requests`)
+        const text = yield* contextText(ctx, parent.id)
+        yield* ensure(text.indexOf("heard child report") < text.lastIndexOf("heard"), "the parent's turn did not follow the report")
+      }),
+  },
+  {
+    name: LAW.located,
+    operations: ["event.subscribe", "session.create", "session.prompt"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const seen = yield* Ref.make<ReadonlySet<string>>(new Set())
+        yield* Effect.forkScoped(
+          ctx.event
+            .subscribe({ types: ["session.inbox.enqueued", "session.execution.started", "session.execution.succeeded"] })
+            .pipe(Stream.runForEach((event) => Ref.update(seen, (all) => new Set([...all, String(event.data.sessionID)])))),
+          { startImmediately: true },
+        )
+        const directory = `${ctx.location.directory.slice(0, -LAW_FOLDER.length)}${ELSEWHERE_FOLDER}`
+        const elsewhere = yield* ctx.session.create({ location: { directory: AbsolutePath.make(directory) }, title: "law elsewhere" })
+        yield* ctx.session.prompt({ sessionID: elsewhere.id, text: "law: elsewhere" })
+        // Its events are not this copy's to hear: wait for its answer through the context instead.
+        for (let waited = 0; count(yield* contextText(ctx, elsewhere.id), "heard elsewhere") === 0; waited += 100) {
+          if (waited > 60_000) return yield* Effect.fail(new LawBroken({ message: "the session elsewhere was not answered within 60 s" }))
+          yield* Effect.sleep("100 millis")
+        }
+        const here = yield* fresh(ctx)
+        yield* probe.turn(here.id, ctx.session.prompt({ sessionID: here.id, text: "law: here" }))
+        const heard = yield* Ref.get(seen)
+        yield* ensure(heard.has(here.id), "the plugin did not hear its own location's session")
+        yield* ensure(!heard.has(elsewhere.id), "the plugin heard a session in another location")
+      }),
+  },
 ]
+
+/** A subagent's report in its parent, as `session.context` lists it, as much as the law reads. */
+const Report = Schema.Struct({
+  type: Schema.Literal("synthetic"),
+  text: Schema.String,
+  description: Schema.String,
+  metadata: Schema.Struct({ source: Schema.Literal("subagent"), childID: Schema.String }),
+})
