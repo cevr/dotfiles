@@ -17,6 +17,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
+import * as Forms from "./forms.ts"
 import { type Asked, type Message, makeHost, type Session, type Options, type Process, START } from "./host.ts"
 import * as Provider from "./provider.ts"
 import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
@@ -89,6 +90,7 @@ export const make = (worldOptions: WorldOptions) => {
     },
   })
   const host = makeHost(options, runtime, start)
+  const forms = Forms.make(host)
   const counter = { instances: 0 }
 
   /** Runs `effect` in the world to rest; fails when a plugin reached for something the world does not model. */
@@ -149,6 +151,8 @@ export const make = (worldOptions: WorldOptions) => {
     provider: () => Option.getOrThrowWith(provider, () => new SimError({ message: "this world has no provider: make it with `anthropic`" })),
     sessions: host.sessions,
     storage: host.storage,
+    /** Faults to put into the host: a storage write that fails (sim/faults.ts). */
+    faults: host.faults,
     record: host.record,
     /** The trace so far, one JSON line per record. */
     trace: () => host.trace.join("\n"),
@@ -195,9 +199,14 @@ export const make = (worldOptions: WorldOptions) => {
       host.record("up", {})
       return startAll.pipe(Effect.andThen(run(Effect.sync(host.resume))))
     }),
-    /** A new root session in `directory`: its id. */
-    session: (directory: string, input: { readonly id?: string; readonly parentID?: string } = {}) =>
+    /** A new session in `directory`, a root or, with `parentID`, a subagent of that session: its id. */
+    session: (directory: string, input: { readonly id?: string; readonly parentID?: string; readonly title?: string } = {}) =>
       run(host.createSession({ directory, ...input })).pipe(Effect.map((session) => session.id)),
+    /** The owner opens a form in a session (`session.form.create`) and answers it (`session.form.reply`): sim/forms.ts. */
+    form: {
+      create: (sessionID: string, input: Forms.FormInput) => run(forms.create(sessionID, input)),
+      reply: (formID: string, answer: { readonly [key: string]: Schema.Json }) => run(forms.reply(formID, answer)),
+    },
     /** The owner sends `text` to the session: a prompt, which wakes it. */
     prompt: (sessionID: string, text: string) =>
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
@@ -205,8 +214,9 @@ export const make = (worldOptions: WorldOptions) => {
     remove: (sessionID: string) =>
       run(
         Effect.suspend(() => {
-          if (!host.sessions.delete(sessionID)) return Effect.void
-          return host.publish({ type: "session.deleted", data: { sessionID } })
+          const removed = host.sessions.get(sessionID)
+          if (removed === void 0 || !host.sessions.delete(sessionID)) return Effect.void
+          return host.publish({ type: "session.deleted", data: { sessionID } }, removed.directory)
         }),
       ),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */

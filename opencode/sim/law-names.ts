@@ -43,7 +43,13 @@ export const LAW = {
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
   provider: "a provider a transform turns on is in the provider list",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
+  report:
+    "an execution of a session with a parent that ends with an answer tells the parent in one synthetic message, `source: subagent`, carrying the answer under the child's title, and it wakes the parent into an execution that reads it",
+  located: "a plugin hears its own location's session events and not those of a session in another location",
 }
+
+/** The folder beside the law folder the `located` law runs a session in: real OpenCode's run makes it. */
+export const ELSEWHERE_FOLDER = "law-elsewhere"
 
 /** The login both hosts hold for the integration law: no real token. */
 export const LAW_LOGIN = { id: "cred_law", label: "Law login", access: "law-access-token", refresh: "law-refresh-token" }

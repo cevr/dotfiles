@@ -1,0 +1,23 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/questions-locations.test.ts": {
+      "simulated": "cmd/questions/questions-locations.sim.test.ts",
+      "tests": [
+        {
+          "name": "one form submit: one letter in the asking session, no copy of the plugin finds the question closed",
+          "expects": 6,
+          "carried": "both",
+          "why": "real too: that a form's reply is heard in its session's location (the reply route's) is no law yet, as a plugin's context opens no form; the world's session events by location are the law 'a plugin hears its own location's session events…'"
+        },
+        {
+          "name": "a subagent's question, answered in its root's form: the subagent wakes on the answer, the root reads a notice at its next turn",
+          "expects": 16,
+          "carried": "simulated",
+          "why": "the subagent's idle report is the law 'an execution of a session with a parent that ends with an answer tells the parent…', the notice's not waking the root the law 'a synthetic message without resume starts no execution…'"
+        }
+      ]
+    }
+  },
+  "retired": []
+}
