@@ -474,12 +474,18 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     })
 
   /**
-   * Runs an HTTP hook of the session's location's copies on one event, in the order they registered: each sees
-   * what the one before left. A hook that fails fails the request, as the host's `hooks.trigger` does.
+   * Runs a request's hook (`model.request`, `http.request`, `http.response`) of the session's location's copies on
+   * one event, in the order they registered: each sees what the one before left. A hook that fails fails the
+   * request, as the host's `hooks.trigger` does in the model request's build and its HTTP call.
    */
-  const runHttpHooks = (name: "http.request" | "http.response", session: Session, event: HttpRequestInput | HttpResponseInput) =>
+  const runRequestHooks = (
+    name: "model.request" | "http.request" | "http.response",
+    session: Session,
+    event: ModelRequestInput | HttpRequestInput | HttpResponseInput,
+    detail: JsonObject = {},
+  ) =>
     Effect.gen(function* () {
-      record("hook", { name, sessionID: session.id })
+      record("hook", { name, sessionID: session.id, ...detail })
       for (const hook of hooks.filter((entry) => entry.name === name && entry.directory === session.directory))
         yield* Effect.orDie(hook.callback(event)).pipe(
           Effect.catchDefect((defect) =>
@@ -591,12 +597,12 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         body: Http.bodyOf({ model: model.id, system: "You are OpenCode.", messages, tools }),
       })
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
-      yield* runHttpHooks("http.request", session, before)
+      yield* runRequestHooks("http.request", session, before)
       // The answer arrives at once: a refusal is whole then; an answer streams for the seed's latency before it is read.
       const answered = yield* Effect.exit(provider.handle(before.request))
       if (Exit.isFailure(answered)) return Result.fail(Http.unreachable(String(answered.cause)))
       const after: HttpResponseInput = { ...scope, kind: event.kind, request: before.request, response: answered.value }
-      yield* runHttpHooks("http.response", session, after)
+      yield* runRequestHooks("http.response", session, after)
       const text = yield* Http.textOf(after.response)
       if (!after.response.ok) return Result.fail(Http.classify(after.response.status, after.response.headers, text))
       yield* streaming
@@ -612,7 +618,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const attempt = (session: Session, kind: Kind, extra = "") =>
     Effect.gen(function* () {
       const event = { sessionID: session.id, agent: AGENT, model, kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
-      yield* runHooks("model.request", session, event, { requestKind: kind })
+      yield* runRequestHooks("model.request", session, event, { requestKind: kind })
       const startedAt = runtime.now()
       const text = [...contextOf(session).map(renderOf), extra].filter((part) => part !== "").join("\n")
       record("request", { sessionID: session.id, requestKind: kind })
@@ -637,10 +643,15 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return { outcome, startedAt }
     })
 
-  /** One model request that must answer (a compaction's, a title's): a failure answers nothing. */
+  /** One model request that must answer (a compaction's, a title's): a failure answers nothing, a hook that died too. */
   const request = (session: Session, kind: Kind, extra = "") =>
     attempt(session, kind, extra).pipe(
       Effect.map(({ outcome, startedAt }) => ({ reply: Result.getOrElse(outcome, (): Reply => ({ items: [] })), startedAt })),
+      Effect.catchDefect((defect) => {
+        if (!(defect instanceof HookDied)) return Effect.die(defect)
+        record("request-failed", { sessionID: session.id, requestKind: kind, tag: "Unknown", message: defect.message })
+        return Effect.succeed({ reply: { items: [] } satisfies Reply, startedAt: runtime.now() })
+      }),
     )
 
   /**

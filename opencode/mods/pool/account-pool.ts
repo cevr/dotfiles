@@ -9,7 +9,7 @@
 // The AccountPool decider, made for the pool's rules (its cache life), and
 // each command it decides with its events and rejections, in the order a
 // request meets them.
-import { Effect, Schema } from "effect"
+import { DateTime, Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import {
   DEFAULT_HOLD_MS,
@@ -135,8 +135,23 @@ export class NoAccount extends Schema.TaggedError<NoAccount>()("NoAccount", {
   kind: RequestKind,
 }) {}
 
+/**
+ * Every account of the pool is held: the request goes out on none, since each
+ * would be refused. The first opens at `retryAt` (epoch ms), the soonest hold's
+ * end, as the pace's "all pool accounts are held" names it.
+ */
+export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHeld", {
+  sessionID: Schema.String,
+  kind: RequestKind,
+  retryAt: Schema.Number,
+}) {}
+
+/** The turn's end a held pool names: the pace's words, and when the first account opens. */
+export const heldMessage = (error: AccountsHeld): string =>
+  `dotfiles-opencode.pool: all pool accounts are held; the first opens at ${DateTime.formatIso(DateTime.makeUnsafe(error.retryAt))}`
+
 export declare namespace PlaceRequest {
-  export type Rejections = NoAccount
+  export type Rejections = NoAccount | AccountsHeld
 }
 
 const placeRequest = (
@@ -144,7 +159,7 @@ const placeRequest = (
   state: AccountPoolState,
   command: PlaceRequest,
   now: number,
-): Effect.Effect<ReadonlyArray<RequestPlaced>, NoAccount> => {
+): Effect.Effect<ReadonlyArray<RequestPlaced>, NoAccount | AccountsHeld> => {
   const pin = state.runs[command.sessionID]
   const pinned =
     pin !== undefined &&
@@ -155,6 +170,15 @@ const placeRequest = (
       : undefined
   const choice = pinned ?? rank(state, command.sessionID, now, rules, command.cacheOf)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
+  // Placement ranks held accounts last: a held choice means every account is held.
+  if (held(state, choice, now))
+    return Effect.fail(
+      new AccountsHeld({
+        sessionID: command.sessionID,
+        kind: command.kind,
+        retryAt: Math.min(...state.credentials.map((credentialID) => state.holds[credentialID]?.until ?? now)),
+      }),
+    )
   const cache = requestCache(rules, state.recent[command.sessionID], command.cacheLifeMs, now)
   return Effect.succeed([
     RequestPlaced.make({ sessionID: command.sessionID, kind: command.kind, credentialID: choice, at: now, ...cacheFields(cache) }),
@@ -378,7 +402,7 @@ const clearHold = (state: AccountPoolState, command: ClearHold): Effect.Effect<R
 
 export type Command = ListLogins | PlaceRequest | TakeReading | RefuseRequest | RecordStep | ReleaseRun | PruneLedger | ClearHold
 export type Event = LoginsListed | RequestPlaced | ReadingTaken | RequestRefused | StepRecorded | RunReleased | LedgerPruned | HoldCleared
-export type Rejection = NoAccount
+export type Rejection = NoAccount | AccountsHeld
 
 const without = <A>(record: Readonly<Record<string, A>>, keys: ReadonlyArray<string>): Record<string, A> => {
   const drop = new Set(keys)
