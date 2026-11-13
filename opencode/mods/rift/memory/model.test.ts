@@ -313,20 +313,25 @@ describe("land", () => {
       const loaded = withPostLand(undefined)
       loaded.landing.load = { load: 12.5, cores: 10 }
       await calls(loaded, [{ action: "land", rifts: ["feat-x"] }])
-      expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([])
+      // Under load the land runs the step loaded: it does what a loaded host allows, says what still waits, and stays owed.
+      expect(loaded.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded"])
       expect(loaded.woken[0]!.notice).toEqual({
-        text: "rift land: the post-land step after feat/x is owed: the 1-minute load is 12.5, at or past the host's 10 cores. It runs once the load has stayed under 10 for 5 minutes (read every 1 min), or at the first land after 6 hours owed whatever the load; a later land's step replaces it. This session is woken with its report.",
-        description: "rift land · post-land owed (load)",
+        text: [
+          "rift land: the post-land step after feat/x ran loaded (the 1-minute load is 12.5, at or past the host's 10 cores): it ran what a loaded host allows, and the rest still waits, so the step stays owed. It runs in full once the load has stayed under 10 for 5 minutes, or at the first land after 6 hours owed whatever the load; until then the next land, or every 30 minutes the minute check, runs it loaded again.",
+          "rift land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log",
+          "post-land: nothing to do",
+        ].join("\n"),
+        description: "rift land · post-land ran loaded",
       })
       expect(loaded.debts.debts.owed.map((owed) => owed.lands.map((land) => land.head))).toEqual([["abc1234"]])
-      // The next land reads a calm host, but the load was past the cores moments ago: the step stays owed, for both batches.
-      // (A land past the settle window runs it: memory/post-land-owed.test.ts, on a TestClock.)
+      // The next land reads a calm host, but the load was past the cores moments ago: loaded again, still owed, for both
+      // batches; its loaded run that ran nothing (exit 0, an empty report) wakes no one.
+      // (A land past the settle window runs it settled: memory/post-land-owed.test.ts, on a TestClock.)
       loaded.landing.load = { load: 2, cores: 10 }
+      loaded.landing.postLandRun = { code: 0, output: "", report: "" }
       await calls(loaded, [{ action: "land", rifts: ["feat-y"] }])
-      expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([])
-      expect(loaded.woken[1]!.notice.text).toStartWith(
-        "rift land: the post-land step after feat/x, feat/y is owed: the 1-minute load is 2.0, but it was at or past the host's 10 cores 0 min ago.",
-      )
+      expect(loaded.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded", "loaded"])
+      expect(loaded.woken.filter((woken) => woken.notice.description.includes("post-land")).length).toBe(1)
       expect(loaded.debts.debts.owed.map((owed) => owed.lands.length)).toEqual([2])
       const red = withPostLand("bun run accept")
       red.landing.checks.set(`${INTEGRATE} gate`, { code: 1, output: "1 fail\n" })

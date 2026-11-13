@@ -22,6 +22,8 @@ export interface World {
   readonly checks: Map<string, { readonly code: number; readonly output: string }>
   /** The post-land step's exit, output and report; absent: 0, a report saying it ran. */
   postLandRun: { readonly code: number; readonly output: string; readonly report: string | undefined } | undefined
+  /** Each post-land step's environment, in order (RIFT_LAND_BASE, RIFT_LAND_HEAD, RIFT_POST_LAND_LOAD). */
+  readonly postLandEnvs: Array<Readonly<Record<string, string>>>
   /** What each post-land step runs before it ends, standing for a long run; at first, nothing. */
   postLandHold: Effect.Effect<void>
   /** What each gate and accept check runs before it ends, standing for a long run; at first, nothing. */
@@ -67,6 +69,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   regenerateFails: undefined,
   checks: new Map(),
   postLandRun: undefined,
+  postLandEnvs: [],
   postLandHold: Effect.void,
   checkHold: { gate: Effect.void, accept: Effect.void },
   load: undefined,
@@ -113,6 +116,7 @@ export const layer = (state: World) =>
         }).pipe(Effect.tap(() => state.checkHold[label])),
       postLand: Effect.fn("Landing.postLand")(function* (path: string, _command: string, env: Readonly<Record<string, string>>) {
         state.steps.push(`post-land ${path} ${env["RIFT_LAND_BASE"] ?? ""} ${env["RIFT_LAND_HEAD"] ?? ""}`)
+        state.postLandEnvs.push(env)
         yield* state.postLandHold
         state.steps.push(`ended post-land ${path}`)
         const scripted = state.postLandRun ?? { code: 0, output: "post-land ran\n", report: "post-land: nothing to do\n" }
