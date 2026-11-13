@@ -1,6 +1,6 @@
 // `bun run typecheck`: links the fork's modules (scripts/link-fork.ts), then
 // checks the root project and every workspace package that has a tsconfig.json
-// (mods/*, cmd/*, sim, sim-tui), each against its own compiler options, in one `bun check -b`
+// (mods/*, cmd/*, sim, sim-tui, formal), each against its own compiler options, in one `bun check -b`
 // over a tsconfig that only references them, written fresh each run to
 // node_modules/.cache/gate/tsconfig.json from the folders that exist.
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs"
@@ -15,7 +15,7 @@ export const projects = () =>
       const dir = path.join(root, group)
       return existsSync(dir) ? readdirSync(dir).map((name) => `${group}/${name}`) : []
     })
-    .concat(["sim", "sim-tui"])
+    .concat(["sim", "sim-tui", "formal"])
     .filter((name) => existsSync(path.join(root, name, "tsconfig.json")))
 
 /** The `bun check` command that checks every project; writes the tsconfig it reads. */

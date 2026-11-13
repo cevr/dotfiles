@@ -27,5 +27,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["mods", "cmd", "sim", "sim-tui", "testbeds/gamut/fixture"]
+  "exclude": ["mods", "cmd", "sim", "sim-tui", "formal", "testbeds/gamut/fixture"]
 }

@@ -1,6 +1,6 @@
 // Links the host's modules (Effect, the plugin API, OpenTUI, Solid) from the
 // OpenCode checkout in OPENCODE_DEV into every workspace package's
-// node_modules (mods/*, cmd/*, decider), so the plugins and the kit they share
+// node_modules (mods/*, cmd/*, decider, sim, sim-tui, formal), so the plugins and the kit they share
 // typecheck and test against one copy of them. At runtime OpenCode provides
 // these modules itself; the links are for tooling.
 //
@@ -77,7 +77,7 @@ function readAnchor() {
   }
 }
 const children = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => path.join(dir, name)) : [])
-const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider"), path.join(root, "sim"), path.join(root, "sim-tui")].filter(
+const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider"), path.join(root, "sim"), path.join(root, "sim-tui"), path.join(root, "formal")].filter(
   (dir) => existsSync(path.join(dir, "package.json")),
 )
 
