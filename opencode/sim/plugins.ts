@@ -1,10 +1,11 @@
 // Our server plugins as the world loads them: each one's real composition
 // root. Where a plugin reaches outside OpenCode (a process, an OS job), its
-// externals are the world's: a monitor's checks run in the world's shell, on
-// its clock; jobs are the plugin's own memory double and the OS backstop is
-// off, as in the real scenarios. Everything that goes through OpenCode
-// (storage, the session inbox, sessions, RPC) uses the plugin's own
-// `opencode/` adapters on the world's plugin context.
+// externals are the world's: a monitor's checks and the status script run in
+// the world's shell, on its clock; jobs are the plugin's own memory double and
+// the OS backstop is off, as in the real scenarios. Everything that goes
+// through OpenCode (storage, the session inbox, sessions, RPC) uses the
+// plugin's own `opencode/` adapters on the world's plugin context. A TUI that
+// reports to a server plugin is a client of the world (`draftClient`).
 import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credential-sources"
 import { make as makeAuth, makeShared } from "@dotfiles/opencode-cmd-anthropic-auth/server"
 import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
@@ -27,11 +28,17 @@ import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
-import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
+import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
+import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
-import { Branches, Findings, type FindingsRead, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
+import { Branches, Findings, type FindingsRead, StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
 import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
-import { Data, Effect, Layer, Option } from "effect"
+import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
+import * as MemoryQueue from "@dotfiles/opencode-queue/memory/store"
+import { make as makeStatus } from "@dotfiles/opencode-cmd-status/server"
+import * as StatusCallLog from "@dotfiles/opencode-status/memory/call-log"
+import { RunTables, RunsUnreadable } from "@dotfiles/opencode-status/service"
+import { Data, Effect, Layer, Option, Schema } from "effect"
 import type { World } from "./world.ts"
 
 /** A check in the world's shell: the command's answer at this instant, after the time it runs (at most `timeoutMs`). */
@@ -77,15 +84,28 @@ export interface OrchestrateDoubles {
 /** The findings reader's answers. */
 const Reads = Data.taggedEnum<FindingsRead>()
 
+/** A call log line as the file holds it: JSON. */
+const LineJson = Schema.fromJsonString(Schema.Unknown)
+
+/**
+ * The steps each session started, read back from the call log's `lines` as the file's step log reads the file
+ * (`filestore/step-log.ts` `unitsIn`, over each line as JSON): one log, written by the plugin's CallLog, read by its
+ * StepLog, as on disk.
+ */
+export const stepLogOf = (lines: ReadonlyArray<unknown>) =>
+  Layer.succeed(StepLog, StepLog.of({ units: (sessionID) => Effect.sync(() => unitsIn(lines.map((line) => Schema.encodeSync(LineJson)(line)).join("\n"), sessionID)) }))
+
 /**
  * The orchestrate plugin (`cmd/orchestrate/server.ts`'s `make`) on the world: everything that goes through OpenCode
- * (sessions, models, steering, the pool's, the wakes' and the others' RPC) on its own adapters over the world's context
- * (`hosted`), as the plugin OpenCode loads; what it keeps in files or asks of processes (the call log, the ledger, the
- * Codex admission script, git, the unit logs' script, the skill's files) its memory doubles, as
- * `cmd/orchestrate/server.test.ts` holds them.
+ * (sessions, models, steering, the pool's, the wakes', the status's, the questions' and the queue's RPC) on its own
+ * adapters over the world's context (`hosted`), as the plugin OpenCode loads; what it keeps in files or asks of
+ * processes (the call log and the step log it reads back, the ledger, the Codex admission script, git, the unit logs'
+ * script, the skill's files) its memory doubles, as `cmd/orchestrate/server.test.ts` holds them. The call log is one
+ * for the plugin's life, its restarts too, as its file is.
  */
-export const orchestrate = (doubles: OrchestrateDoubles = {}) =>
-  makeOrchestrate((ctx, options, start, background) =>
+export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
+  const lines = doubles.lines ?? []
+  return makeOrchestrate((ctx, options, start, background) =>
     Layer.mergeAll(
       hosted(ctx, start, background),
       MemoryLedger.layer(options.cadence, []),
@@ -93,14 +113,97 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) =>
       Layer.succeed(Findings, Findings.of({ read: (report) => Effect.succeed(Reads.Unread({ why: `the report ${report} does not read` })) })),
       Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
       Layer.succeed(UnitLogs, UnitLogs.of({ find: () => Effect.succeed(void 0), append: () => Effect.void, drops: () => Effect.succeed([]) })),
-      CallLogTest.layer(doubles.lines ?? []),
+      CallLogTest.layer(lines),
       CodexAdmissionTest.layer((model, role) => Option.getOrUndefined((doubles.codex ?? (() => Option.none()))(model, role))),
-      StepLogTest.layer({}),
+      stepLogOf(lines),
       SkillTest.skill({ history: [] }),
       SkillTest.records({ seen: new Map() }),
       FleetTest.layer([]),
     ),
   )
+}
+
+/** A command in the world's shell, from a plugin's fiber: what it prints, after the time it runs. */
+const shellOf = (world: World, command: string) =>
+  Effect.suspend(() => {
+    const process = world.processes(command, world.now())
+    world.record("process", { command, exitCode: process.exitCode })
+    return Effect.sleep(process.ms).pipe(Effect.as(process))
+  })
+
+/** How long the status script may run for one run, as the process adapter's timeout (`process/run-tables.ts`). */
+export const STATUS_TIMEOUT_MS = 20_000
+
+/**
+ * The runs of a repository through the orchestrate skill's status script, in the world's shell, as the process
+ * adapter (`@dotfiles/opencode-status/process/run-tables`) reads them on disk: the run folders `ls -1
+ * <directory>/tmp/orchestrate` lists (none when it fails: no runs, or no repository), then each one's table as `bun
+ * <script> <run dir>` prints it; a script that fails or runs past its timeout makes the runs unreadable. The world has
+ * no git, so a directory is its repository's top. Both adapters keep the RunTables laws (mods/status/laws.ts).
+ */
+export const runTables = (world: World, script: string) =>
+  Layer.succeed(RunTables, RunTables.of({
+    list: (directory: string) =>
+      Effect.gen(function* () {
+        const root = `${directory}/tmp/orchestrate`
+        const listed = yield* shellOf(world, `ls -1 ${root}`)
+        if (listed.exitCode !== 0) return []
+        const names = listed.stdout
+          .split("\n")
+          .map((name) => name.trim())
+          .filter((name) => name !== "")
+        return yield* Effect.forEach(names, (name) =>
+          Effect.gen(function* () {
+            const dir = `${root}/${name}`
+            const printed = yield* shellOf(world, `bun ${script} ${dir}`)
+            if (printed.ms > STATUS_TIMEOUT_MS) return yield* new RunsUnreadable({ message: `${script} timed out after ${STATUS_TIMEOUT_MS} ms` })
+            if (printed.exitCode !== 0) return yield* new RunsUnreadable({ message: `${script} failed: ${printed.stdout.trim() || `exit ${printed.exitCode}`}` })
+            return { name, dir, table: printed.stdout }
+          }),
+        )
+      }),
+  }))
+
+/**
+ * The status plugin (`cmd/status/server.ts`'s `make`) on the world: its runs through the status script in the world's
+ * shell (`runTables`); its call log, which only the /pool pane reads, an empty memory log.
+ */
+export const status = (world: World) => makeStatus((options) => Layer.merge(StatusCallLog.layer({ events: [] }), runTables(world, options.statusScript)))
+
+/** The queue plugin (`cmd/queue/server.ts`'s `make`) on the world: its store the memory one (`memory`), which keeps the store's laws. */
+export const queue = (memory: MemoryQueue.MemoryQueues = MemoryQueue.empty()) => makeQueue(() => MemoryQueue.layer(memory))
+
+/**
+ * The orchestrate TUI's draft reports (`cmd/orchestrate/tui.ts` `report`) as one client of the world: what it sees (the
+ * root on screen, and whether its composer holds text) is set by `show`, as a key the composer took, and reported at
+ * once as `reportsOf` says; a heartbeat on the world's clock looks again every `HEARTBEAT_MS`. Each report is the
+ * client's call of `IDLE.draft`, a failure dropped, as the TUI drops it.
+ */
+export const draftClient = (world: World, client = "tui-1") => {
+  const state = { last: Option.none<Reported>(), seen: Option.none<Seen>() }
+  /** The reports due now, each one marked sent; none before the TUI shows a session. */
+  const due = () => {
+    const at = world.now()
+    const drafts = Option.match(state.seen, { onNone: () => [], onSome: (seen) => reportsOf(Option.getOrUndefined(state.last), seen, at) })
+    for (const draft of drafts) state.last = Option.filter(Option.some({ sessionID: draft.sessionID, at }), () => draft.drafting)
+    return drafts.map((draft) => ({ ...draft, client }))
+  }
+  world.runtime.fork(
+    Effect.forever(
+      Effect.sleep(HEARTBEAT_MS).pipe(
+        Effect.andThen(Effect.suspend(() => Effect.forEach(due(), (draft) => world.clientRpc(IDLE.id, "draft", draft).pipe(Effect.ignore), { discard: true }))),
+      ),
+    ),
+  )
+  return {
+    /** The TUI shows the root `sessionID` with `composer` in its composer, as after a key. */
+    show: (sessionID: string, composer: string) =>
+      Effect.suspend(() => {
+        state.seen = Option.some({ sessionID, drafting: composer.trim() !== "" })
+        return Effect.forEach(due(), (draft) => world.rpc(IDLE.id, "draft", draft).pipe(Effect.ignore), { discard: true })
+      }),
+  }
+}
 
 /** The idle compaction plugin as OpenCode loads it: `cmd/idle-compact/server.ts`'s default export, wholly on the plugin context. */
 export const idleCompact = IdleCompact

@@ -13,12 +13,16 @@
     "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
     "@dotfiles/opencode-cmd-orchestrate": "workspace:*",
     "@dotfiles/opencode-cmd-pool": "workspace:*",
+    "@dotfiles/opencode-cmd-queue": "workspace:*",
     "@dotfiles/opencode-cmd-questions": "workspace:*",
+    "@dotfiles/opencode-cmd-status": "workspace:*",
     "@dotfiles/opencode-cmd-wake": "workspace:*",
     "@dotfiles/opencode-idle-compact": "workspace:*",
     "@dotfiles/opencode-orchestrate": "workspace:*",
     "@dotfiles/opencode-pool": "workspace:*",
+    "@dotfiles/opencode-queue": "workspace:*",
     "@dotfiles/opencode-questions": "workspace:*",
+    "@dotfiles/opencode-status": "workspace:*",
     "@dotfiles/opencode-wake": "workspace:*"
   }
 }

@@ -216,6 +216,11 @@ export const make = (worldOptions: WorldOptions) => {
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */
     rpc: (id: string, method: string, input: Schema.Json) => run(host.callRpc(id, method, input)),
     /**
+     * The same call as an Effect for a client's own fiber in the world (`runtime.fork`, a TUI's heartbeat): it does
+     * not run the world to rest itself, so it never nests a run.
+     */
+    clientRpc: (id: string, method: string, input: Schema.Json) => host.callRpc(id, method, input),
+    /**
      * A fault on one RPC method, from now on: its handler dies (the call fails, host law: RPC faults) or never answers
      * (the call waits on the caller's own timeout); `none` clears it.
      */
