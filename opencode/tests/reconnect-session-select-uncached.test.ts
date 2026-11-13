@@ -1,3 +1,4 @@
+// accept: deep (50.2 s alone on a quiet host: 1-minute load 142.5–136.4 on 12 cores; it drives a TUI from source to its session picker, then restarts the service and holds it booting for 8 s)
 // A pane at home selects a uncached session while the service boots, and submits.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"

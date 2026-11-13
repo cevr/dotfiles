@@ -1,3 +1,4 @@
+// accept: deep (59.8 s alone on a quiet host: 1-minute load 124.3–120.6 on 12 cores; it starts a service from source and restarts it under a TUI from source, then holds an 8 s booting window)
 // The owner's panes: a draft survives a restart whose service refuses everything while it boots.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"

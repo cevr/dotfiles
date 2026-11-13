@@ -1,3 +1,4 @@
+// accept: deep (36.5 s alone on a quiet host: 1-minute load 5.3–6.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The orchestrate port: the role agents against the orchestrate skill they
 // come from, and runs of real OpenCode (the fork, through its SDK) on
 // the scripted model: the paces, the guard, compaction per role, a unit's log.md, and the Sabbath stop.

@@ -1,3 +1,4 @@
+// accept: deep (159.5 s alone on a quiet host: 1-minute load 22.8–116.3 on 12 cores; scenarios/wake-downtime.ts waits out a cron minute (75 s))
 // Public UI seam: real OpenCode, the real wake server plugin, Prime (whose
 // dock counts the wakes) and a scripted model. scenarios/wake.ts drives an
 // alarm, a notice, a monitor, a cancel and a plugin reload;

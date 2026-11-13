@@ -1,3 +1,4 @@
+// accept: deep (41.5 s alone on a quiet host: 1-minute load 58.9–42.3 on 12 cores; it starts a service from source and restarts it under a TUI from source)
 // A TUI on a subagent session keeps it across `service restart`.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"
