@@ -67,7 +67,7 @@ function readAnchor() {
   }
 }
 const children = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => path.join(dir, name)) : [])
-const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider")].filter(
+const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider"), path.join(root, "sim")].filter(
   (dir) => existsSync(path.join(dir, "package.json")),
 )
 

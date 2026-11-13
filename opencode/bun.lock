@@ -395,6 +395,16 @@
       "name": "@dotfiles/opencode-web",
       "version": "0.0.0",
     },
+    "sim": {
+      "name": "@dotfiles/opencode-sim",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
+        "@dotfiles/opencode-cmd-wake": "workspace:*",
+        "@dotfiles/opencode-idle-compact": "workspace:*",
+        "@dotfiles/opencode-wake": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@dotfiles/decider": ["@dotfiles/decider@workspace:decider"],
@@ -486,6 +496,8 @@
     "@dotfiles/opencode-recover": ["@dotfiles/opencode-recover@workspace:mods/recover"],
 
     "@dotfiles/opencode-rift": ["@dotfiles/opencode-rift@workspace:mods/rift"],
+
+    "@dotfiles/opencode-sim": ["@dotfiles/opencode-sim@workspace:sim"],
 
     "@dotfiles/opencode-skills": ["@dotfiles/opencode-skills@workspace:mods/skills"],
 
