@@ -17,6 +17,9 @@ export const SUMMARY = "## Objective\n- law: the session's summary"
 /** A law's prompt that asks the model for one tool call: `law-call: <tool> <input as JSON>`. */
 export const LAW_CALL = "law-call: "
 
+/** A second model of the law provider, of a family with a release date, as a Codex sol is configured: the catalog law reads both back. */
+export const LAW_SOL = { id: "sim-sol", family: "gpt-sol", releaseDate: "2026-09-29" }
+
 /** A law's prompt that asks the model to call `tool` with `input`, a JSON object's text. */
 export const lawCall = (tool: string, input: string) => `${LAW_CALL}${tool} ${input}`
 

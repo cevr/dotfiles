@@ -14,7 +14,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, callOf, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { answer, BROKEN, callOf, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, LAW_SOL, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -176,7 +176,16 @@ const run = Effect.gen(function* () {
         name: "Sim",
         package: "@opencode/ai/providers/openai-compatible",
         settings: { baseURL: `${origin}/v1`, apiKey: "sim-key" },
-        models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
+        models: {
+          "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } },
+          [LAW_SOL.id]: {
+            name: "Sim sol",
+            family: LAW_SOL.family,
+            releaseDate: LAW_SOL.releaseDate,
+            capabilities: { tools: true, input: ["text"], output: ["text"] },
+            limit: { context: 128_000, output: 16_000 },
+          },
+        },
       },
     },
     plugins: [{ package: probe, options: PROBE_OPTIONS }],

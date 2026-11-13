@@ -241,6 +241,10 @@ export interface CatalogModel {
   readonly settings?: { readonly cache?: { readonly ttl?: string } }
   /** The reasoning variants it offers; none by default. */
   readonly variants?: ReadonlyArray<{ readonly id: string }>
+  /** Its family (such as `gpt-sol`), as its config names it; none by default. */
+  readonly family?: string
+  /** When it was released (epoch ms), as the fork lists a configured `releaseDate`; none by default. */
+  readonly time?: { readonly released: number }
 }
 
 export const SIM_MODEL: CatalogModel = { providerID: "sim", id: "sim-model", modelID: "sim-model", limit: { context: 128_000 }, cost: [] }

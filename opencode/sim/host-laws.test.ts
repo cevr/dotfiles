@@ -10,7 +10,7 @@ import { LAWS } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
 import { plain } from "./runtime.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, callOf, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, callOf, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, LAW_SOL, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe from "./server.ts"
 import * as World from "./world.ts"
 
@@ -63,6 +63,8 @@ const lawsOn = (seed: number) =>
       schedules: true,
       script: (request) => World.say(answer(request.kind, request.text)),
       model: { providerID: "sim", id: "sim-model" },
+      // As real OpenCode's law config: the sim model, and a sol of a family with a release date.
+      models: [World.SIM_MODEL, { ...World.SIM_MODEL, id: LAW_SOL.id, modelID: LAW_SOL.id, family: LAW_SOL.family, time: { released: Date.parse(LAW_SOL.releaseDate) } }],
       anthropic: { accounts: {}, anonymous: true, script: lawModel },
       integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
     })

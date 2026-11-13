@@ -21,7 +21,7 @@ import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Cause, Data, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { KEPT_IN_SUMMARY, LAW, LAW_FOLDER, lawCall, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+import { KEPT_IN_SUMMARY, LAW, LAW_FOLDER, lawCall, LAW_LOGIN, LAW_SOL, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
 /** The agents the laws define: one for the agent law, a subagent for the subagent laws, one with a small window. */
 const LAW_AGENT = "law-agent"
@@ -368,6 +368,12 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(
           models.data.some((model) => model.providerID === "sim" && model.id === "sim-model"),
           "the model list lacks sim/sim-model",
+        )
+        // A model configured with a family and a release date lists both: the release as epoch ms.
+        const sol = models.data.find((model) => model.providerID === "sim" && model.id === LAW_SOL.id)
+        yield* ensure(
+          sol?.family === LAW_SOL.family && sol.time?.released === Date.parse(LAW_SOL.releaseDate),
+          `the model list gives sim/${LAW_SOL.id} the family ${sol?.family} and the release ${sol?.time?.released}`,
         )
         const chosen = (yield* ctx.model.default({ location })).data
         yield* ensure(chosen?.providerID === "sim" && chosen.id === "sim-model", `the default model is ${chosen?.providerID}/${chosen?.id}`)
