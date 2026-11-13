@@ -638,7 +638,7 @@
     "mods/prime/compaction.ts": {"effect/noNullish":17,"effect/noTernary":12},
     "mods/prime/detail.ts": {"effect/noNullish":1},
     "mods/prime/diff.ts": {"effect/noNullish":2,"effect/noTernary":5},
-    "mods/prime/filestore/upstream.ts": {"effect/noGlobals":1,"effect/noNodeBuiltinImport":1,"effect/noNullish":2,"effect/noTryCatch":1},
+    "mods/prime/filestore/upstream.ts": {"effect/noNodeBuiltinImport":1,"effect/noNullish":2,"effect/noTryCatch":1},
     "mods/prime/goal.test.ts": {"effect/noNullish":1},
     "mods/prime/goal.ts": {"effect/noNullish":4,"effect/noTernary":10},
     "mods/prime/group.test.ts": {"effect/noAs":2,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":1,"effect/noTernary":5},
