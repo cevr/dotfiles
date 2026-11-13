@@ -1,7 +1,8 @@
 // The mail listener runs from the service's start: `opencode service start`,
 // through the launcher daily writes (scripts/daily.ts `launcher`), loads the
 // resident location, so a fresh server, with no client, no session and no
-// turn, takes a signed delivery from a paired host. The fork runs from source
+// turn, takes a signed delivery from a paired host. Only the service start is
+// this file's; the listener's answer on a fresh host is the simulated file's. The fork runs from source
 // in a scratch HOME with the mail plugin listening on a loopback port; the
 // pairing is written as the pair command leaves it, and the peer's request is
 // signed with the shared secret.
@@ -71,8 +72,10 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
     kept.done()
   })
 
+  // Real only: `opencode service start` through daily's launcher; the listener's answer itself is
+  // cmd/mail/mail-start.sim.test.ts's (tests/parity/mail.json).
   test(
-    "a fresh service, with no client, session or turn, accepts a signed delivery from a paired host",
+    "opencode service start, through daily's launcher, loads the resident location's plugins: its mail listener answers a signed request",
     kept.test(async () => {
       const state = join(home, ".local/state")
       for (const dir of [work, join(root, "bin"), home, join(home, ".config"), join(home, ".config/opencode"), join(home, ".local"), state, join(state, "opencode-mail"), join(state, "opencode-prime"), residentDir(home)]) mkdirSync(dir)

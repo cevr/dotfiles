@@ -20,7 +20,7 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, Cause, Data, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
 import {
   CLIENT,
@@ -156,6 +156,9 @@ const CallInput = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json
 const callFor = (tool: string, input: typeof CallInput.Type) => lawCall(tool, Schema.encodeSync(CallInput)(input))
 
 const fresh = (ctx: Plugin.Context) => ctx.session.create({ title: "law" })
+
+/** A session as `session.get` answers it. */
+type SessionInfo = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 
 /** What a session's context holds, as one JSON text, for a law to look into. */
 const contextText = (ctx: Plugin.Context, sessionID: SessionID) =>
@@ -497,8 +500,9 @@ export const LAWS: ReadonlyArray<Law> = [
   },
   {
     name: LAW.archived,
-    operations: ["session.update", "event.subscribe"],
-    // Questions forgets an archived session's questions: the owner archives it, from a client.
+    operations: ["session.update", "event.subscribe", "session.list"],
+    // Questions forgets an archived session's questions: the owner archives it, from a client. Mail lists the
+    // sessions it may deliver to with `archived: false`.
     check: (ctx, probe) =>
       Effect.gen(function* () {
         const session = yield* fresh(ctx)
@@ -520,6 +524,13 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* probe.client({ action: "archive", sessionID: session.id })
         yield* settle
         yield* ensure((yield* Ref.get(archived)) === 1, `archiving twice published session.archived ${yield* Ref.get(archived)} times`)
+        const kept = yield* fresh(ctx)
+        const listed = (archivedOnly: boolean) =>
+          ctx.session.list({ parentID: null, archived: archivedOnly, order: "desc", limit: 100 }).pipe(Effect.map((page) => page.data.map((info) => info.id)))
+        const live = yield* listed(false)
+        yield* ensure(live.includes(kept.id) && !live.includes(session.id), "a list with archived: false did not leave out only the archived session")
+        const gone = yield* listed(true)
+        yield* ensure(gone.includes(session.id) && !gone.includes(kept.id), "a list with archived: true did not list only the archived session")
       }),
   },
   {
@@ -1216,6 +1227,57 @@ export const LAWS: ReadonlyArray<Law> = [
         // Which project is the host's (a repository's id, or `global` outside one): the real run's law folder sits in a
         // repository, so only the sharing is a law.
         yield* ensure(first.projectID !== "" && first.projectID === other.projectID, `two sessions of one location are in projects ${first.projectID} and ${other.projectID}`)
+      }),
+  },
+  {
+    // What mail reads of a session and the inbox it writes to (mods/mail/opencode/sessions.ts).
+    name: LAW.mail,
+    operations: ["session.get", "session.synthetic", "session.hook", "session.prompt"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const nowhere = SessionID.make("ses_lawnowhere000001")
+        const missing = yield* Effect.flip(ctx.session.get({ sessionID: nowhere }))
+        yield* ensure(Schema.is(Schema.Struct({ _tag: Schema.Literal("Session.NotFoundError") }))(missing), "get of an unknown id did not fail as not found")
+        const refused = yield* Effect.flip(ctx.session.synthetic({ sessionID: nowhere, text: "law: nowhere", description: "law", resume: true }))
+        yield* ensure(Schema.is(Schema.Struct({ _tag: Schema.Literal("Session.NotFoundError") }))(refused), "a synthetic message to an unknown id did not fail as not found")
+
+        const session = yield* fresh(ctx)
+        const runs = (info: SessionInfo) =>
+          Option.match(Option.map(Option.fromNullishOr(info.time.busy), DateTime.toEpochMillis), {
+            onNone: () => false,
+            onSome: (busy) =>
+              Option.match(Option.map(Option.fromNullishOr(info.time.idle), DateTime.toEpochMillis), { onNone: () => true, onSome: (idle) => busy > idle }),
+          })
+        const seen = yield* Ref.make<ReadonlyArray<boolean>>([])
+        const steered = yield* Ref.make(false)
+        yield* ctx.session.hook("model.request", (input) =>
+          Effect.gen(function* () {
+            if (input.sessionID !== session.id || input.kind !== "primary") return
+            const info = yield* ctx.session.get({ sessionID: session.id })
+            yield* Ref.update(seen, (all) => [...all, runs(info)])
+            if (yield* Ref.getAndSet(steered, true)) return
+            yield* ctx.session.synthetic({ sessionID: session.id, text: "law: steered while running", description: "law", resume: true })
+          }).pipe(Effect.orDie),
+        )
+        yield* Effect.sleep(STEP)
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: running" }))
+        const during = yield* Ref.get(seen)
+        yield* ensure(during.length >= 2 && during.every((running) => running), `while it ran, get answered running ${during.join(",")}`)
+        const rested = yield* ctx.session.get({ sessionID: session.id })
+        yield* ensure(!runs(rested), "get answered running once the session rested")
+        const updated = DateTime.toEpochMillis(rested.time.updated)
+        yield* ensure(updated > DateTime.toEpochMillis(session.time.updated), "the session's last update did not move with its turn")
+        const text = yield* contextText(ctx, session.id)
+        yield* ensure(count(text, "law: steered while running") === 1, `the session holds the steer ${count(text, "law: steered while running")} times`)
+        yield* ensure(count(text, "heard running|steered while running") === 1, "no request after the steer carried it")
+
+        // A parcel that arrives twice comes under one id (mods/mail/model.ts receive): the first admission wins.
+        const once = { id: SessionMessage.ID.make(`msg_mail_law_${session.id}`), sessionID: session.id, text: "law: a parcel twice", description: "law", resume: true }
+        yield* probe.turn(session.id, ctx.session.synthetic(once))
+        yield* ctx.session.synthetic(once)
+        yield* settle
+        const held = count(yield* contextText(ctx, session.id), "law: a parcel twice")
+        yield* ensure(held === 1, `a synthetic admitted twice under one id is held ${held} times`)
       }),
   },
 ]

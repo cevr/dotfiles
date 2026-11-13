@@ -104,6 +104,8 @@ const UpdateInput = Schema.Struct({
 const ListInput = Schema.Struct({
   parentID: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.optional(Schema.String),
+  // true lists only the sessions a client archived, false leaves them out (the fork's store `list`).
+  archived: Schema.optional(Schema.Boolean),
   order: Schema.optional(Schema.Literals(["asc", "desc"])),
   limit: Schema.optional(Schema.Number),
 })
@@ -394,7 +396,8 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     const matching = [...host.sessions.values()].filter((session) => {
       const parent = Option.getOrElse(session.parentID, () => "")
       const parentMatches = input.parentID === void 0 || parent === (input.parentID ?? "")
-      return parentMatches && (input.directory === void 0 || session.directory === input.directory)
+      const archiveMatches = input.archived === void 0 || host.archived.has(session.id) === input.archived
+      return parentMatches && archiveMatches && (input.directory === void 0 || session.directory === input.directory)
     })
     // As the fork's store (packages/core/src/session/store.ts `list`): by last update, newest first unless
     // `order: "asc"`, the id string breaking a tie the same way; then `limit`.

@@ -13,6 +13,10 @@ import type { ProcessInfo } from "@dotfiles/opencode-guard/kill"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import { Processes, ProcessesUnreadable } from "@dotfiles/opencode-guard/service"
+import { externalsOn as mailOn, make as makeMail } from "@dotfiles/opencode-cmd-mail/server"
+import type * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
+import type * as MemoryPairs from "@dotfiles/opencode-mail/memory/pairs"
+import * as MemoryTokens from "@dotfiles/opencode-mail/memory/tokens"
 import Questions from "@dotfiles/opencode-cmd-questions/server"
 import { LIVE_STORE_HOST, type StoreHost, liveWith, make as makePool } from "@dotfiles/opencode-cmd-pool/server"
 import * as Lease from "@dotfiles/opencode-pool/lease"
@@ -191,6 +195,14 @@ export interface Stores extends StoreHost {
   /** The registry this process's auth plugin reads. */
   readonly registry: SourcesLive.RegistryRead
 }
+
+/**
+ * Session mail (`cmd/mail/server.ts`'s `make`) on the world: OpenCode's sessions through its context, the host's
+ * pairing in memory (`pairs`, shared with its pair command), the hosts' memory network as `hostname` reaches it, and
+ * tokens from the world's seeded random.
+ */
+export const mail = (network: MemoryNet.Network, pairs: MemoryPairs.MemoryPairs, hostname: string) =>
+  makeMail((ctx) => mailOn(ctx, Layer.mergeAll(pairs.layer, network.layer(hostname), MemoryTokens.layer)))
 
 /** A process with no login store whose network is the world's `provider` (the ChatGPT usage endpoint's too). */
 export const network = (provider: Provider.Provider): StoreHost => ({

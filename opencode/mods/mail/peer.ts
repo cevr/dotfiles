@@ -11,6 +11,15 @@ export const ROUTES = {
   pair: "/mail/v1/pair",
 } as const
 
+/**
+ * The listener's refusal of a request signed before it started (the nonces it saw died with the listener before it):
+ * the sender signs it again, with a fresh nonce and time, up to `RESIGNS` times.
+ */
+export const SIGNED_BEFORE_START = "the request was signed before this listener started"
+
+/** How many times a sender signs a request again after `SIGNED_BEFORE_START`. */
+export const RESIGNS = 3
+
 /** The port a mail listener uses unless configured. */
 export const DEFAULT_PORT = 4196
 
@@ -38,6 +47,11 @@ const Named = Schema.Struct({ id: Schema.String, title: Schema.String })
 
 /** A letter for a session on the peer: whom it is for, who wrote, who answers, the text and whether to wake it. */
 export const Parcel = Schema.Struct({
+  /**
+   * The parcel's id, the same on every try of one send: the peer holds a parcel once whatever number of times it
+   * arrives. A sender older than it sends none, and its parcel is held each time it arrives.
+   */
+  id: Schema.optional(Schema.String),
   to: Schema.String,
   from: Named,
   replyTo: Named,

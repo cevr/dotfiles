@@ -93,7 +93,7 @@ export const LAW = {
     "each step of a turn publishes session.step.started then session.step.ended for its assistant message, on the session's agent and model, and the host publishes no session.idle",
   removed: "a removed session publishes session.deleted once and is gone",
   archived:
-    "a plugin's update does not archive a session (the plugin host drops `archived`); a client's archive publishes session.archived once, and archiving it again publishes nothing",
+    "a plugin's update does not archive a session (the plugin host drops `archived`); a client's archive publishes session.archived once, and archiving it again publishes nothing; a list with archived: false leaves it out and archived: true lists it",
   form: "a form a client creates for a session and answers publishes form.replied with the session and the answer",
   agent:
     "an agent a transform adds publishes agent.updated and is in the catalog; a session created with it and a model answers both, and its requests run on them",
@@ -130,6 +130,7 @@ export const LAW = {
   located: "a plugin hears its own location's session events and not those of a session in another location",
   system:
     "the context hook runs on each primary request's system prompt, the same on each of a session's, and the compaction hook on a compaction's, neither on a title's, and the model reads a part they add; a location's sessions share one project",
+  mail: "get and synthetic of an id the host lacks fail as not found; get answers a running session busy after idle, and its last update; a steer admitted while it runs is read by its next request; a synthetic admitted twice under one id is held once",
 }
 
 /** The folder beside the law folder the `located` law runs a session in: real OpenCode's run makes it. */

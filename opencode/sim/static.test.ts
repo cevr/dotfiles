@@ -19,7 +19,7 @@ const ROOT = process.cwd()
 const WALL = [/\bBun\.sleep\b/, /\bsetTimeout\b/, /\bsetInterval\b/, /\bDate\.now\b/, /\bperformance\.now\b/, /tests\/wait(\.ts)?\b/]
 
 /** The world's own files: what a simulated test reaches in sim/, the runner aside. */
-const WORLD = ["context.ts", "host.ts", "host-laws.ts", "http.ts", "law-names.ts", "plugins.ts", "provider.ts", "provider-laws.ts", "runtime.ts", "server.ts", "system.ts", "world.ts"]
+const WORLD = ["context.ts", "host.ts", "host-laws.ts", "hosts.ts", "http.ts", "law-names.ts", "plugins.ts", "provider.ts", "provider-laws.ts", "readings.ts", "runtime.ts", "server.ts", "system.ts", "world.ts"]
 
 const Platform = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 

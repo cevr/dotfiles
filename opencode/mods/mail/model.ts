@@ -11,6 +11,9 @@ import { compose, deliveryOf, EmptyMessage, excerpt, LOG_EXCERPT, type Delivery,
 import type { Arrival, Parcel } from "./peer.ts"
 import { DeliveryRefused, Peers, Sessions, type SessionsUnreadable } from "./service.ts"
 
+/** A received parcel's letter's inbox id: this, then the parcel's id (a host's message ids start `msg_`). */
+export const PARCEL_PREFIX = "msg_mail_"
+
 /** A delivered message: to whom (with its host, when on a paired one), and how it reached them. */
 export interface Receipt {
   readonly to: SessionCard
@@ -121,7 +124,9 @@ export const layer = Layer.effect(
         const target = read.success.value
         const from: Party = { ...parcel.from, host: peer }
         const replyTo: Party = { ...parcel.replyTo, host: peer }
-        const wrote = yield* sessions.deliver(target.id, compose(from, replyTo, parcel.body), parcel.wake).pipe(Effect.result)
+        // The parcel's id makes the letter's inbox id: a parcel that arrives again (its sender tried again) is held once.
+        const once = Option.match(Option.fromNullishOr(parcel.id), { onNone: () => ({}), onSome: (id) => ({ id: `${PARCEL_PREFIX}${id}` }) })
+        const wrote = yield* sessions.deliver(target.id, { ...compose(from, replyTo, parcel.body), ...once }, parcel.wake).pipe(Effect.result)
         if (wrote._tag === "Failure") return { outcome: "refused", message: wrote.failure.message } satisfies Arrival
         const delivery = deliveryOf(target.running, parcel.wake)
         yield* delivered(from, target, replyTo, delivery, parcel.body)
