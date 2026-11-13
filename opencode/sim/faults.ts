@@ -5,26 +5,29 @@
 // - A storage write that fails: the fork's plugin storage is a table in the
 //   global database (packages/core/src/plugin/host.ts `storage`), whose
 //   writes do not fail by contract; a full disk or a locked database makes one
-//   die. `failWrites(plugin, n)` makes that plugin's next `n` writes
-//   (`storage.set`) die, the value not stored.
+//   die. `failWrites(plugin, count, after)` lets that plugin's next `after`
+//   writes (`storage.set`) through, then makes `count` die, the value not
+//   stored.
 
 /** The faults of one host. */
 export const make = () => {
-  const writes = new Map<string, number>()
+  const writes = new Map<string, { after: number; count: number }>()
   return {
-    /** The next `count` writes of `plugin`'s storage die. */
-    failWrites: (plugin: string, count: number) => {
-      writes.set(plugin, count)
+    /** After `after` more writes of `plugin`'s storage go through, the next `count` die. */
+    failWrites: (plugin: string, count: number, after = 0) => {
+      writes.set(plugin, { after, count })
     },
     /** Whether this write of `plugin`'s storage dies; it counts one off. */
     takeWrite: (plugin: string) => {
-      const left = writes.get(plugin) ?? 0
-      if (left <= 0) return false
-      writes.set(plugin, left - 1)
+      const planned = writes.get(plugin) ?? { after: 0, count: 0 }
+      if (planned.after > 0) {
+        planned.after -= 1
+        return false
+      }
+      if (planned.count <= 0) return false
+      planned.count -= 1
       return true
     },
-    /** How many writes of `plugin` are still to die. */
-    writesLeft: (plugin: string) => writes.get(plugin) ?? 0,
   }
 }
 
