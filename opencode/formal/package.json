@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/formal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Formal checks of the mods' protocols: Quint models, checked by `quint run` and `quint verify` (Apalache), each tied to the code by replaying the model's traces through the real module. `bun formal/check.ts` runs them all.",
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-orchestrate": "workspace:*"
+  },
+  "devDependencies": {
+    "@informalsystems/quint": "0.33.1"
+  }
+}
