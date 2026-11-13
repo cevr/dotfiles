@@ -469,6 +469,12 @@ export const canonical = (trace: ReadonlyArray<TraceEntry>) => {
   return trace.map((entry) => `${entry.at} ${entry.kind} ${rename(entry.value)}`)
 }
 
+/** With this variable naming a folder, each seed writes its canonical trace there, under `traceName`. */
+export const TRACE_ENV = "SIM_TUI_TRACES"
+/** The file a seed's trace is written to: its test file, key and seed, and the run within the seed if not the first. */
+export const traceName = (file: string, seed: { readonly key: string; readonly seed: number; readonly run?: number }) =>
+  `${file.replaceAll("/", "_")}--${seed.key.replaceAll(/[^A-Za-z0-9]+/g, "-")}--${seed.seed}${seed.run ? `--${seed.run}` : ""}.txt`
+
 /** The wall clock, for a test that proves no trace holds it (the one wall read sim-tui/ lends out). */
 export const wallNow = () => realNow()
 
@@ -605,6 +611,9 @@ export const seed = <A, E>(options: BootOptions, seedOptions: SeedOptions, body:
       Effect.ensuring(
         Effect.sync(() => {
           app.current.close()
+          // The isolation check (isolation.test.ts) reads each seed's trace from here.
+          const traces = process.env[TRACE_ENV]
+          if (traces) writeFileSync(path.join(traces, traceName(options.file, seedOptions)), canonical(app.trace).join("\n"))
           jest.setSystemTime(left + (realNow() - began))
         }),
       ),
