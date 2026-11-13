@@ -1136,6 +1136,78 @@ describe("the planner's first model", () => {
       }),
     ))
 
+  // The workbox's Ergo root named `model: "anthropic/claude-fable-5-2"` on 11 planner starts (2026-11-12/13): kept as
+  // asked, they ran at Fable's default effort, $20.6 a plan against $5 at medium (dream 2026-11-13, candidate 5).
+  test("a planner naming its first model, at any variant or none, runs on it at the planner's effort; its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol] })
+        const named = ["anthropic/claude-fable", "anthropic/claude-fable#max", "anthropic/claude-fable#medium", "claude-fable", "claude-fable#max"]
+        for (const asked of named) {
+          const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: asked, prompt: "x" })
+          expect(call.input, asked).toMatchObject({ model: "anthropic/claude-fable#medium" })
+        }
+        const lines = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
+        expect(lines.map((started) => started.reason)).toEqual(Array(named.length).fill("model-dropped"))
+        expect(lines.map((started) => started.dropped)).toEqual(named)
+        for (const started of lines) expect(started).toMatchObject({ agent: "planner", model: "anthropic/claude-fable#medium" })
+      }),
+    ))
+
+  test("a planner naming another model with no variant runs it at the planner's effort when that model offers it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sage: Offered = { providerID: "anthropic", id: "claude-sage", family: "claude-sage", variants: [{ id: "medium" }, { id: "high" }] }
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol, sage] })
+        const bare = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: "anthropic/claude-sage", prompt: "x" })
+        expect(bare.input).toMatchObject({ model: "anthropic/claude-sage#medium" })
+        // A variant it names is kept: the orchestrator chose it.
+        const high = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: "anthropic/claude-sage#high", prompt: "x" })
+        expect(high.input).toMatchObject({ model: "anthropic/claude-sage#high" })
+        // Any other role naming a model keeps it as named.
+        const verifier = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-1 r1", model: "anthropic/claude-sage", prompt: "x" })
+        expect(verifier.input).toMatchObject({ model: "anthropic/claude-sage" })
+      }),
+    ))
+
+  test("a host offering the first model without the planner's effort starts the planner on Opus at it, and its line says why", () =>
+    scenario(
+      Effect.gen(function* () {
+        const noMedium: Offered = { ...fable, variants: [{ id: "high" }, { id: "max" }] }
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [noMedium, sol] })
+        for (const asked of [undefined, "anthropic/claude-fable"]) {
+          const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x", ...(asked === undefined ? {} : { model: asked }) })
+          expect(call.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
+        }
+        for (const text of plugin.logged())
+          expect(JSON.parse(text)).toMatchObject({
+            model: "anthropic/claude-opus#medium",
+            first: { model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable offers no medium" },
+          })
+      }),
+    ))
+
+  test("every new planner start carries the planner's effort, or its line names why it could not: over what it names and what the host offers", () =>
+    scenario(
+      Effect.gen(function* () {
+        const offers: ReadonlyArray<ReadonlyArray<string>> = [["medium", "max"], ["max"], [], ["low", "medium", "high", "xhigh", "max"]]
+        const names = [undefined, "anthropic/claude-opus", "anthropic/claude-opus#max", "anthropic/claude-fable", "anthropic/claude-fable#high", "claude-fable"] as const
+        for (const variants of offers)
+          for (const asked of names) {
+            const host: Offered = { ...fable, variants: variants.map((id) => ({ id })) }
+            const plugin = yield* start(options, { model, variants: ["medium"], others: [host, sol] })
+            const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x", ...(asked === undefined ? {} : { model: asked }) })
+            const ran = String((call.input as Record<string, unknown>).model)
+            const started = line(plugin.logged())
+            const at = `${String(asked)} on a Fable offering [${variants.join(",")}]`
+            expect(ran, at).toEndWith("#medium")
+            expect(started.model, at).toBe(ran)
+            if (variants.includes("medium")) expect(ran, at).toBe("anthropic/claude-fable#medium")
+            else expect(started.first, at).toEqual({ model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable offers no medium" })
+          }
+      }),
+    ))
+
   test("the account's Fable week is spent and its main windows are free: the planner starts on Opus, and its line says why", () =>
     scenario(
       Effect.gen(function* () {
