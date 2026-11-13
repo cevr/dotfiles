@@ -265,9 +265,11 @@ export interface Finish {
   readonly ms: number
   /** Whether a pass may be recorded: no bun test flags (a filter) narrowed the run. */
   readonly recordable: boolean
+  /** Whether OPENCODE_DEV named a checked fork: without one, any skipped test means the file did not prove itself. */
+  readonly forked: boolean
 }
 
-/** A finished file's outcome: a pass needs exit 0, a report with tests and no failure or skip, no leak, and no narrowing flags. */
+/** A finished file's outcome: a pass needs exit 0, a report with tests and no failure, no skip without the fork (with it, not every test skipped), no leak, and no narrowing flags. */
 export const verdict = (finish: Finish): Outcome => {
   const { file, ms } = finish
   if (finish.leaked) return { file, status: "failed", ms, reason: "it left an OpenCode server or drive run behind" }
@@ -276,7 +278,10 @@ export const verdict = (finish: Finish): Outcome => {
     onNone: () => ({ file, status: "failed", ms, reason: "bun test wrote no report" }),
     onSome: (report): Outcome => {
       if (report.failures > 0) return { file, status: "failed", ms, reason: `${report.failures} tests failed` }
-      if (report.skipped > 0 || report.tests === 0) return owe(file, "skipped", `${report.skipped} of ${report.tests} tests skipped: no pass recorded`)
+      // With the fork a file may skip a case its own condition rules out (idle-compact runs one of two by the fork's
+      // version), as long as one ran; without it a skip is the fork's tests skipping, and never passes.
+      if (report.skipped >= report.tests || (report.skipped > 0 && !finish.forked))
+        return owe(file, "skipped", `${report.skipped} of ${report.tests} tests skipped: no pass recorded`)
       if (!finish.recordable) return owe(file, "skipped", "bun test flags narrowed it: no pass recorded")
       return { file, status: "passed", ms }
     },

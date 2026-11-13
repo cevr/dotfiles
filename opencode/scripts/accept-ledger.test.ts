@@ -374,19 +374,22 @@ describe("the acceptance ledger against its model", () => {
     expect([Accept.landWidth(12, 2, Option.none()), Accept.landWidth(12, 80, Option.none()), Accept.landWidth(12, 0, Option.some(3))]).toEqual([10, 4, 3])
   })
 
-  test("a pass needs exit 0, tests that ran and none failed or skipped, no leak and no narrowing flags", () => {
+  test("a pass needs exit 0, tests that ran and none failed, no skip without the fork, no leak and no narrowing flags", () => {
     const report = (tests: number, failures: number, skipped: number) => Accept.parseReport(`<testsuites name="bun test" tests="${tests}" assertions="1" failures="${failures}" skipped="${skipped}" time="1">`)
-    const base = { file: "tests/x.test.ts", code: 0, report: report(3, 0, 0), leaked: false, ms: 10, recordable: true }
+    const base = { file: "tests/x.test.ts", code: 0, report: report(3, 0, 0), leaked: false, ms: 10, recordable: true, forked: true }
     const statuses = [
       base,
       { ...base, code: 1 },
       { ...base, report: report(3, 1, 0) },
       { ...base, report: report(3, 0, 3) },
+      { ...base, report: report(3, 0, 1) },
+      { ...base, report: report(3, 0, 1), forked: false },
+      { ...base, forked: false },
       { ...base, report: report(0, 0, 0) },
       { ...base, report: Accept.parseReport("") },
       { ...base, leaked: true },
       { ...base, recordable: false },
     ].map((finish) => Accept.verdict(finish).status)
-    expect(statuses).toEqual(["passed", "failed", "failed", "owed", "owed", "failed", "failed", "owed"])
+    expect(statuses).toEqual(["passed", "failed", "failed", "owed", "passed", "owed", "passed", "owed", "failed", "failed", "owed"])
   })
 })
