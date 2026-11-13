@@ -43,6 +43,8 @@ export const LAW = {
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
   provider: "a provider a transform turns on is in the provider list",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",
+  system:
+    "the context hook runs on each primary request's system prompt, the same on each of a session's, and the compaction hook on a compaction's, neither on a title's, and the model reads a part they add; a location's sessions share one project, global outside a repository",
 }
 
 /** The login both hosts hold for the integration law: no real token. */

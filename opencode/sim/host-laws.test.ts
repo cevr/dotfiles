@@ -31,7 +31,8 @@ const textsOf = (value: Schema.Json): ReadonlyArray<string> => {
  * a compaction asks for the summary, a title is the rest; each answered as law-names.ts `answer` says.
  */
 const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
-  const text = textsOf(body["messages"] ?? []).join("\n")
+  // The system prompt first, then the conversation, as the real run's model joins a chat request's messages.
+  const text = textsOf([body["system"] ?? [], body["messages"] ?? []]).join("\n")
   const tools = body["tools"]
   if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: answer("primary", text) }
   if (text.includes("summarize the conversation above")) return { kind: "ok", text: answer("compaction", text) }
@@ -45,7 +46,7 @@ const lawsOn = (seed: number) =>
     const world = World.make({
       seed,
       schedules: true,
-      script: (request) => World.say(answer(request.kind, request.text)),
+      script: (request) => World.say(answer(request.kind, `${request.system}\n${request.text}`)),
       model: { providerID: "sim", id: "sim-model" },
       anthropic: { accounts: {}, anonymous: true, script: lawModel },
       integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
