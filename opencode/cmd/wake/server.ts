@@ -36,7 +36,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Ref, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Ref, Schema, Stream } from "effect"
 import * as CronBackstop from "@dotfiles/opencode-wake/cron/backstop"
 import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
 import { DEFAULT_WAIT_MS, MAX_WAIT_MS } from "@dotfiles/opencode-wake/job"
@@ -254,7 +254,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           pending: (input) =>
             Schema.decodeUnknownEffect(PendingInput)(input).pipe(
               Effect.flatMap(({ sessionIDs }) => wakes.pending(sessionIDs)),
-              Effect.orElseSucceed((): Pending => ({ now: Date.now(), entries: [], notices: [] })),
+              Effect.catch(() => Clock.currentTimeMillis.pipe(Effect.map((now): Pending => ({ now, entries: [], notices: [] })))),
             ),
           due: (input) =>
             Schema.decodeUnknownEffect(DueInput)(input).pipe(
