@@ -228,7 +228,9 @@ const SEEDS = Array.from({ length: 50 }, (_, index) => index + 1)
 // The pooled world: two Anthropic logins OpenCode holds, the auth plugin and
 // the pool from their roots, against the world's Anthropic. The commands add
 // pooled turns, a plan limit on a login until a reset, a token endpoint that
-// fails, and the clock passing a reset or a token's expiry.
+// fails, a reset grant about to expire on a spent week (the pool claims it on
+// its own) and a claim endpoint that fails, the pool sweeping every 30 minutes, and
+// the clock passing a reset, a grant's end or a token's expiry.
 
 const LOGINS = ["first", "second"] as const
 const HOUR = 3_600_000
@@ -238,6 +240,8 @@ type Pooled =
   | { readonly type: "prompt"; readonly session: number }
   | { readonly type: "limit"; readonly login: number; readonly hours: number }
   | { readonly type: "token"; readonly login: number; readonly answer: "rotate" | "rate-limited" | "unavailable" }
+  | { readonly type: "grant"; readonly login: number; readonly hours: number }
+  | { readonly type: "claim"; readonly answer: Provider.ClaimResult }
   | { readonly type: "advance"; readonly ms: number }
   | { readonly type: "restart" }
 
@@ -246,7 +250,9 @@ const pooledOf = (pick: number, random: ReturnType<typeof generator>): Pooled =>
   if (pick < 9) return { type: "prompt", session: below(random, 3) }
   if (pick < 12) return { type: "limit", login: below(random, 2), hours: 1 + below(random, 5) }
   if (pick < 14) return { type: "token", login: below(random, 2), answer: (["rotate", "rate-limited", "unavailable"] as const)[below(random, 3)] ?? "rotate" }
-  if (pick < 19) return { type: "advance", ms: below(random, 4) * (1 + below(random, 2 * HOUR)) }
+  if (pick < 16) return { type: "grant", login: below(random, 2), hours: 1 + below(random, 30) }
+  if (pick < 17) return { type: "claim", answer: (["reset", "unavailable", "rate-limited", "cooldown"] as const)[below(random, 4)] ?? "reset" }
+  if (pick < 21) return { type: "advance", ms: below(random, 4) * (1 + below(random, 2 * HOUR)) }
   return { type: "restart" }
 }
 
@@ -254,7 +260,7 @@ const pooledOf = (pick: number, random: ReturnType<typeof generator>): Pooled =>
 const pooledCommandsOf = (seed: number): ReadonlyArray<Pooled> => {
   const random = generator(`pooled:${seed}`)
   const count = 10 + below(random, 31)
-  return [{ type: "session" }, ...Array.from({ length: count - 1 }, () => pooledOf(below(random, 20), random))]
+  return [{ type: "session" }, ...Array.from({ length: count - 1 }, () => pooledOf(below(random, 22), random))]
 }
 
 /** What the world's Anthropic is told: each login's plan limit until its reset, and each one's token endpoint answer. */
@@ -263,12 +269,40 @@ interface Anthropic {
   readonly tokens: Map<string, "rotate" | "rate-limited" | "unavailable">
   /** Each plan-limit refusal: the login, the provider's request index, and the reset it named. */
   readonly refusals: Array<{ readonly login: string; readonly index: number; readonly resetAt: number }>
+  /** Each plan limit the test set: on which login, from when, until when. */
+  readonly spans: Array<{ readonly login: string; readonly from: number; readonly resetAt: number }>
+  /** Each login's reset grants: listed until claimed or ended. */
+  readonly grants: Map<string, Array<Provider.Grant>>
+  /** What the claim endpoint answers next. */
+  claim: Provider.ClaimResult
+  /** Each login's week, 90% used once a grant is listed on it (worth claiming, not spent), until a claim gives it back. */
+  readonly weeks: Map<string, number>
 }
+
+/** What the world's Anthropic is told by a command: a plan limit, a token or claim endpoint's answer, a grant listed. */
+const tell = (anthropic: Anthropic, command: Pooled, before: number) => {
+  if (command.type === "limit") {
+    anthropic.limits.set(LOGINS[command.login] ?? "first", before + command.hours * HOUR)
+    anthropic.spans.push({ login: LOGINS[command.login] ?? "first", from: before, resetAt: before + command.hours * HOUR })
+  }
+  if (command.type === "token") anthropic.tokens.set(LOGINS[command.login] ?? "first", command.answer)
+  if (command.type === "grant") {
+    const login = LOGINS[command.login] ?? "first"
+    const grant: Provider.Grant = { id: `grant-${before}-${login}`, resetsLeft: 1, endsAt: before + command.hours * HOUR, clears: ["seven_day"], type: "weekly" }
+    anthropic.grants.set(login, [...(anthropic.grants.get(login) ?? []), grant])
+    anthropic.weeks.set(login, 0.9)
+  }
+  if (command.type === "claim") anthropic.claim = command.answer
+}
+
+/** A claimed grant: listed still, with no resets left, as Anthropic lists it. */
+const spend = (listed: ReadonlyArray<Provider.Grant>, grant: string) =>
+  listed.map((item) => Option.match(Option.liftPredicate(item, (each) => each.id === grant), { onNone: () => item, onSome: (each) => ({ ...each, resetsLeft: 0 }) }))
 
 /** One pooled run: its world and what the provider saw. */
 const pooledRun = (seed: number, check: (world: World, anthropic: Anthropic, command: Pooled, before: number) => void = () => void 0) =>
   Effect.gen(function* () {
-    const anthropic: Anthropic = { limits: new Map(), tokens: new Map(), refusals: [] }
+    const anthropic: Anthropic = { limits: new Map(), tokens: new Map(), refusals: [], spans: [], grants: new Map(), claim: "reset", weeks: new Map() }
     const accounts = Provider.accounts(seed, LOGINS)
     const world = make({
       seed,
@@ -276,6 +310,24 @@ const pooledRun = (seed: number, check: (world: World, anthropic: Anthropic, com
       anthropic: {
         accounts,
         token: (login) => ({ kind: anthropic.tokens.get(login) ?? "rotate" }),
+        quota: (login) => ({
+          // The five-hour window as the plan limit says: spent until its reset, as the 429 named it.
+          fiveHour: Option.match(Option.filter(Option.fromNullishOr(anthropic.limits.get(login)), (resetAt) => resetAt > world.now()), {
+            onNone: () => ({ utilization: 0.1, resetAt: world.now() + 2 * HOUR }),
+            onSome: (resetAt) => ({ utilization: 1, resetAt }),
+          }),
+          sevenDay: { utilization: anthropic.weeks.get(login) ?? 0.2, resetAt: START + 5 * 24 * HOUR },
+        }),
+        grants: (login) => anthropic.grants.get(login) ?? [],
+        claim: (login, grant) => {
+          const listed = anthropic.grants.get(login) ?? []
+          if (listed.some((item) => item.id === grant && item.resetsLeft === 0)) return "already_used"
+          const answer = anthropic.claim
+          if (answer !== "reset") return answer
+          anthropic.grants.set(login, spend(listed, grant))
+          anthropic.weeks.set(login, 0)
+          return answer
+        },
         script: ({ account, body }) => {
           const tools = body["tools"]
           const turn = Array.isArray(tools) && tools.length > 0
@@ -292,7 +344,7 @@ const pooledRun = (seed: number, check: (world: World, anthropic: Anthropic, com
       },
     })
     yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: "/work" })
-    yield* world.load(Plugins.pool(), { directory: "/work", options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    yield* world.load(Plugins.pool(), { directory: "/work", options: { sweepMinutes: 30, limitsFile: "/nonexistent/sim/limits.json" } })
     const sessions: Array<string> = []
     for (const command of pooledCommandsOf(seed)) {
       const before = world.now()
@@ -302,8 +354,7 @@ const pooledRun = (seed: number, check: (world: World, anthropic: Anthropic, com
           onNone: () => Effect.void,
           onSome: (id) => world.prompt(id, `pooled ${before}`),
         })
-      if (command.type === "limit") anthropic.limits.set(LOGINS[command.login] ?? "first", before + command.hours * HOUR)
-      if (command.type === "token") anthropic.tokens.set(LOGINS[command.login] ?? "first", command.answer)
+      tell(anthropic, command, before)
       if (command.type === "advance") yield* world.advance(command.ms)
       if (command.type === "restart") yield* world.restart
       check(world, anthropic, command, before)
@@ -326,7 +377,8 @@ const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, 
   // aside), before the reset it named, while another login is not refused: with every login spent, the pool places
   // the request on the one that resets first (mods/pool/placement.ts), and the provider refuses it.
   // The request's own login counts as spent once its refusal came back at an earlier instant; another login as free
-  // only when no refusal before the request (in the provider's order) holds it.
+  // only when no refusal before the request (in the provider's order) holds it and no plan limit covers it: the
+  // pool also reads a spent window from the usage endpoint, before any request is refused.
   const refused = (login: string, at: number, known: (refusal: { readonly index: number }) => boolean) =>
     anthropic.refusals.some((refusal) => refusal.login === login && known(refusal) && at < refusal.resetAt)
   expect(
@@ -334,13 +386,31 @@ const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, 
       (request) =>
         request.tools > 0 &&
         refused(request.account, request.at, (refusal) => (received[refusal.index]?.at ?? request.at) < request.at) &&
-        LOGINS.some((login) => !refused(login, request.at, (refusal) => refusal.index < request.index)),
+        LOGINS.some(
+          (login) =>
+            !refused(login, request.at, (refusal) => refusal.index < request.index) &&
+            !anthropic.spans.some((span) => span.login === login && span.from <= request.at && request.at < span.resetAt),
+        ),
     ),
     label,
   ).toEqual([])
   // A refresh token is traded once: none is presented again after it was rotated.
   expect(
     received.filter((request) => request.path === "/v1/oauth/token" && request.status === 400),
+    label,
+  ).toEqual([])
+  // A grant is claimed at most once, across restarts: none is sent again after the provider took it.
+  const claims = world.provider().claims()
+  expect(
+    claims.filter((claim, index) => claims.slice(0, index).some((before) => before.grant === claim.grant && before.result === "reset")),
+    label,
+  ).toEqual([])
+  // Nor is a grant claimed the provider never listed for that login.
+  expect(
+    world
+      .provider()
+      .claims()
+      .filter((claim) => !claim.grant.startsWith("grant-") || !claim.grant.endsWith(`-${claim.account}`)),
     label,
   ).toEqual([])
 }
@@ -387,8 +457,20 @@ describe("the world", () => {
   )
 
   Seed.effect(
-    "against the pooled model: every request on one known login, none on a login before the reset it was refused to, no refresh token traded twice",
-    Effect.forEach(SEEDS, (seed) => pooledRun(seed, pooledInvariants(seed)).pipe(Effect.map(({ world }) => oneAtATime(world))), { discard: true }),
+    "against the pooled model: every request on one known login, none on a login before the reset it was refused to, no refresh token traded twice, no grant claimed twice or unlisted",
+    Effect.gen(function* () {
+      const claims = yield* Effect.forEach(SEEDS, (seed) =>
+        pooledRun(seed, pooledInvariants(seed)).pipe(
+          Effect.map(({ world }) => {
+            oneAtATime(world)
+            return world.provider().claims()
+          }),
+        ),
+      )
+      // The runs reach the claims the invariants are about: taken, and refused by a failing claim endpoint.
+      const results = new Set(claims.flat().map((claim) => claim.result))
+      expect([...results].toSorted()).toEqual(["cooldown", "rate-limited", "reset", "unavailable"])
+    }),
   )
 
   Seed.effect(
