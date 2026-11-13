@@ -267,16 +267,31 @@ unread, in the success colour while any is pending (the warning colour with
 only notices); its parts drop from the right as the row narrows. It is read
 again on the wake mod's `changed` event and every 2 seconds.
 
-↓ on an empty prompt opens the host's composer panel. After the host's
-Subagents, Shell and Terminals tabs, Prime adds Wakes and Monitors (through
-the fork's `ui.composerTab`; `tui/composer.tsx`, the words in `wakes.ts`).
-Each lists the session's pending alarms or monitors, soonest first, one row
-each:
+↓ on an empty prompt opens the host's background-work panel. After the
+host's Subagents, Shell and Terminals tabs, Prime adds Wakes and Monitors
+(through the fork's `ui.composerTab`; `tui/composer.tsx`). Prime draws the
+whole panel through the fork's `session.composer.panel.tabs`, `.row` and
+`.footer` slots (`tui/panel.tsx`, the words and columns in `panel.ts`); the
+host keeps its keys, scrolling and highlight. The tab bar counts what each tab
+lists, the footer words keys as the hint line does, and every row of every
+tab has the same columns: the state's diamond, a subagent's role and model,
+the name, what it last did, its state in a word, a live time and, where the
+data says, how long since it was last heard from:
 
 ```
-12:36 in 9m 59s · ALPHA: check the deploy · wake · once           (Wakes: due, note, mode, repeat)
-echo still-waiting · every 1s · until /^READY$/ · still-waiting   (Monitors: command, period, stop, newest output)
+Subagents 5  ·  Shell 2  ·  Terminals  ·  Wakes 1  ·  Monitors 1                    esc
+◆ implementor gpt  Corpus HP r1           Porting Corpus HP              working  1s
+◇ printf 'serving on :4000\n'; sl…  serving on :4000                    running  12s
+◇ Check the deploy: the canary  wake · once                            pending  in 9m 59s
+◆ echo still-waiting  still-waiting                          watching  40s  checked 0s ago
+Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs
 ```
+
+As the panel narrows the parts drop in turn: the last-heard age, the model's
+version, the model, the state's word, then what it last did; the name is cut,
+then the role drops, and the name and the time go last.
+`tests/prime-panel.test.ts` runs `scenarios/prime-panel.ts` at 160 and 80
+columns (needs the fork's `panel-slots` branch).
 
 ↑/↓ move the highlight, Enter shows the whole entry (its full note, a
 monitor's newest output in full), ctrl+d cancels it as `wake_cancel` does,
