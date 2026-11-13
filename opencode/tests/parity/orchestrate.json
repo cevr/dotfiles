@@ -1,0 +1,71 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/orchestrate.test.ts": {
+      "simulated": "cmd/orchestrate/orchestrate.sim.test.ts",
+      "tests": [
+        {
+          "name": "each role's prompt and description are the Claude Code agent's, word for word",
+          "expects": 4,
+          "carried": "real",
+          "why": "reads the Claude Code agent files on disk against the role definitions; no host runs"
+        },
+        {
+          "name": "every role may ask the owner in the background: ask_user_async is not denied under the deny-all rule",
+          "expects": 2,
+          "carried": "real",
+          "why": "a unit check of the role permissions; no host runs"
+        },
+        {
+          "name": "--check passes on the written file and fails on a hand edit",
+          "expects": 4,
+          "carried": "real",
+          "why": "runs scripts/agents.ts on a scratch tree; no host runs"
+        },
+        {
+          "name": "pace: with no wakes to keep a latch, an over-limit pool refuses new agents with when it opens; under pace they run",
+          "expects": 5,
+          "carried": "simulated",
+          "why": "the fixture pool registers only `pace` over the world's RPC, as the real run's fake plugin does; the subagent tool and its children are the world's (host law: a subagent call starts a child session)"
+        },
+        {
+          "name": "codex pace: a subagent on a Codex-paced provider asks the Codex admission, with its model and role",
+          "expects": 6,
+          "carried": "simulated",
+          "why": "the admission is asked at the CodexAdmission port: its memory double records the model and the role the plugin asks with, where the real run read the script's `--model <m> --role <r>` args; the script's own argv is mods/orchestrate/codex/admission.ts's, covered by its unit test"
+        },
+        {
+          "name": "guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as the verifier at medium effort",
+          "expects": 10,
+          "carried": "simulated",
+          "why": "the world's subagent tool, agent editor and per-agent tool permissions follow the fork's (host laws: subagent, agents, update); the call log is the memory double the plugin writes"
+        },
+        {
+          "name": "worker ceiling: under a root at max, the untyped worker runs at its model's default and the parent is told why; the verifier at medium",
+          "expects": 4,
+          "carried": "simulated",
+          "why": "a model asked with no variant is stored at `default`, as the fork's session create does (host law: subagent)"
+        },
+        {
+          "name": "compaction: on a 1M model, a planner session at 350k compacts at the 400k window; a worker session at 200k does not",
+          "expects": 12,
+          "carried": "simulated",
+          "why": "the world's automatic compaction keeps the fork's window and ceiling (host law: window) and runs the `compaction` hooks before the summary prompt (host law: compaction)"
+        },
+        {
+          "name": "units: an implementor's start and its hand-back move its unit in the run's log.md",
+          "expects": 2,
+          "carried": "real",
+          "why": "the unit's log.md is written by the skill's log.ts, a process the world does not run"
+        },
+        {
+          "name": "Sabbath: on Friday evening the subagent calls are refused with when work resumes, and no child starts",
+          "expects": 5,
+          "carried": "simulated",
+          "why": "the refusal is the plugin's tool.execute.before hook on the world's clock (host law: hooks)"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

@@ -21,7 +21,17 @@ import * as OpenCodeCourier from "@dotfiles/opencode-wake/opencode/courier"
 import * as OpenCodeOpener from "@dotfiles/opencode-wake/opencode/opener"
 import * as OpenCodeStore from "@dotfiles/opencode-wake/opencode/store"
 import { Checks } from "@dotfiles/opencode-wake/service"
-import { Effect, Layer } from "effect"
+import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
+import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
+import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
+import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
+import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
+import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
+import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
+import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
+import { Branches, Findings, type FindingsRead, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
+import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
+import { Data, Effect, Layer, Option } from "effect"
 import type { World } from "./world.ts"
 
 /** A check in the world's shell: the command's answer at this instant, after the time it runs (at most `timeoutMs`). */
@@ -55,6 +65,42 @@ export const wake = (world: World) => {
     ),
   )
 }
+
+/** What the orchestrate plugin keeps outside OpenCode, held in memory for a test to set and read. */
+export interface OrchestrateDoubles {
+  /** The call log's lines, as the plugin writes them. */
+  readonly lines?: Array<CallLine>
+  /** The Codex admission's answer for a model and role; none fails open, as the script with no admission line does. */
+  readonly codex?: (model: string, role: string) => Option.Option<Pace>
+}
+
+/** The findings reader's answers. */
+const Reads = Data.taggedEnum<FindingsRead>()
+
+/**
+ * The orchestrate plugin (`cmd/orchestrate/server.ts`'s `make`) on the world: everything that goes through OpenCode
+ * (sessions, models, steering, the pool's, the wakes' and the others' RPC) on its own adapters over the world's context
+ * (`hosted`), as the plugin OpenCode loads; what it keeps in files or asks of processes (the call log, the ledger, the
+ * Codex admission script, git, the unit logs' script, the skill's files) its memory doubles, as
+ * `cmd/orchestrate/server.test.ts` holds them.
+ */
+export const orchestrate = (doubles: OrchestrateDoubles = {}) =>
+  makeOrchestrate((ctx, options, start, background) =>
+    Layer.mergeAll(
+      hosted(ctx, start, background),
+      MemoryLedger.layer(options.cadence, []),
+      // No report reads, no Rift has a branch, no unit's log.md is found: the world keeps no files and runs no git or log.ts.
+      Layer.succeed(Findings, Findings.of({ read: (report) => Effect.succeed(Reads.Unread({ why: `the report ${report} does not read` })) })),
+      Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
+      Layer.succeed(UnitLogs, UnitLogs.of({ find: () => Effect.succeed(void 0), append: () => Effect.void, drops: () => Effect.succeed([]) })),
+      CallLogTest.layer(doubles.lines ?? []),
+      CodexAdmissionTest.layer((model, role) => Option.getOrUndefined((doubles.codex ?? (() => Option.none()))(model, role))),
+      StepLogTest.layer({}),
+      SkillTest.skill({ history: [] }),
+      SkillTest.records({ seen: new Map() }),
+      FleetTest.layer([]),
+    ),
+  )
 
 /** The idle compaction plugin as OpenCode loads it: `cmd/idle-compact/server.ts`'s default export, wholly on the plugin context. */
 export const idleCompact = IdleCompact
