@@ -36,7 +36,7 @@ A subagent start that orchestrate's pace or the Sabbath holds is not refused and
 
 A scratch server has no pool, so nothing holds a start: a latch is unreachable there by a user path (report it so). Its drawn row is proved by `tests/prime-latch.test.ts` (`scenarios/prime-latch.ts`). The plain alarm is reachable:
 
-1. **Alarm.** Type `verify: call wake {"afterSeconds":600,"note":"verify wake"}`, Enter. Wait for `set: it wakes this session`.
+1. **Alarm.** Type `verify: call wake {"afterSeconds":600,"note":"verify wake"}`, Enter. Wait for `the alarm starts a new turn`: the turn's last line is the tool answer's last (the call itself shows folded as `+ 1 tool`).
 2. **List.** Type `verify: call wake_list {}`, Enter. The answer lists the alarm and its note.
 3. **Cancel.** Type `verify: call wake_cancel {"id":"<the id from step 1>"}`, Enter; `wake_list` again answers no pending entry.
 4. **Proof.** Snapshot after each step into `$EVIDENCE/wake-latch/`.

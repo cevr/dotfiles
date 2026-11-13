@@ -31,7 +31,7 @@
 
 - **Real:** `tests/prime-panel.test.ts`, `scenarios/prime-panel.ts`
 
-1. **A wake to list.** Type `verify: call wake {"afterSeconds":600,"note":"verify panel wake"}`, Enter. Wait for `set: it wakes this session`.
+1. **A wake to list.** Type `verify: call wake {"afterSeconds":600,"note":"verify panel wake"}`, Enter. Wait for `the alarm starts a new turn`: the turn's last line is the tool answer's last (the call itself shows folded as `+ 1 tool`).
 2. **Open.** With the composer empty, `pilotty key -s verify-$PORT Down`. Wait for `Wakes 1`. The tab bar reads `Subagents`, `Shell`, `Terminals`, `Wakes 1`, `Monitors`; the footer words the keys.
 3. **Tabs.** `pilotty key -s verify-$PORT Right` until the Wakes tab is active: its row reads `verify panel wake`, `wake · once`, `pending`, `in 9m …`.
 4. **Empty tab.** One more Right: the Monitors tab says `No monitors`.

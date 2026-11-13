@@ -11,6 +11,8 @@ import { FEATURES_DIR, parseFeature, SKILL_DIR } from "./verify-map.ts"
 const CONTRACT = ["Sub-features", "How to get to it (user POV)", "Driving it with the world", "Driving it with real OpenCode", "Gotchas"]
 /** The folders a backticked path may start with, from opencode/; `out/` is a drive's output, never checked. */
 const PATH = /^(?:\.claude|cmd|mods|sim|sim-tui|scripts|tests|scenarios|testbeds|decider|themes)\/[\w./-]*$/
+/** A drive's own output (`out/`, `sim/out/`): git ignores it, and a fresh checkout has none. */
+const OUTPUT = /(?:^|\/)out\//
 const Manifest = Schema.fromJsonString(Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) }))
 
 /** opencode/, from this file's URL. */
@@ -45,7 +47,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
   live("every path it backticks exists", () =>
     Effect.gen(function* () {
       const named = Arr.dedupe((yield* docs).flatMap(({ text }) => backticked(text).flatMap((word) => word.split(/[\s,]+/))))
-      const paths = named.map((word) => word.replace(/[:.,)]+$/, "")).filter((word) => PATH.test(word))
+      const paths = named.map((word) => word.replace(/[:.,)]+$/, "")).filter((word) => PATH.test(word) && !OUTPUT.test(word))
       const missing = yield* Effect.filter(paths, (file) => Effect.map(exists(file.replace(/\/$/, "")), (here) => !here))
       expect(missing).toEqual([])
     }),

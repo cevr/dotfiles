@@ -35,9 +35,9 @@ The agent keeps a live list of what it has going: the `queue` tool sets it, patc
 
 - **Real:** `tests/queue.test.ts`
 
-1. **Set.** Type `verify: call queue {"set":[{"id":"pool","text":"Sidebar pool worker","state":"running"},{"id":"panes","text":"Close old Claude panes","state":"needs-you"}]}` and press Enter. Wait for `Close old Claude panes`. The transcript shows the `queue` call's answer and the turn's last line `verify: 1 call(s) done; the last answered: ! panes [needs-you]: Close old Claude panes`.
+1. **Set.** Type `verify: call queue {"set":[{"id":"pool","text":"Sidebar pool worker","state":"running"},{"id":"panes","text":"Close old Claude panes","state":"needs-you"}]}` and press Enter. Wait for `call(s) done`. The call shows folded as `+ 1 tool`, and the turn's last line reads `verify: 1 call(s) done; the last answered: ! panes needs-you: Close old Claude panes` (the markdown view drops the answer's brackets around the state).
 2. **Sidebar.** With the sidebar open (the TUI's own toggle; it opens by itself on a wide terminal: `pilotty resize -s verify-$PORT 200 50`), its Queue section lists `pool` and `panes`, one line each.
-3. **Patch.** Type `verify: call queue {"upsert":[{"id":"panes","state":"done"}]}`, Enter. Within the sidebar's two-second read, `panes` shows done.
+3. **Patch.** Type `verify: call queue {"upsert":[{"id":"panes","state":"done"}]}`, Enter. The turn ends `the last answered: ✓ panes done: Close old Claude panes`, and within the sidebar's two-second read its `panes` line turns from `!` to `✓`. Every turn says `1 call(s)`: wait on `✓ panes done`, not on a count.
 4. **Proof.** After steps 1 and 3, `pilotty snapshot -s verify-$PORT --format text > $EVIDENCE/queue/<step>.txt`.
 
 ## Gotchas

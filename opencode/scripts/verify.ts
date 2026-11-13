@@ -337,6 +337,9 @@ const tui = Command.make(
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
+      // In the terminal's own process group, not one of its own (the default): the TUI is the terminal's foreground
+      // job, and the hangup of `pilotty kill` reaches it as it reaches this helper.
+      detached: false,
       forceKillAfter: "3 seconds",
     })
     const child = yield* spawner.spawn(command).pipe(Effect.mapError(failed("tui")))
@@ -591,16 +594,19 @@ const drive = Command.make(
 
 // ── stop ──
 
-/** Whether the process `pid` still runs this helper's launch of `root`. */
-const isLaunch = (pid: number, root: string) =>
+/**
+ * Whether the process `pid` still runs this helper's launch on `port`. The port, not the root, names it: the root
+ * stands in the command line as it was typed (`$TMPDIR` writes `T//…`, a relative path), the port as a number.
+ */
+const isLaunch = (pid: number, port: number) =>
   output("stop", "ps", ["-o", "command=", "-p", String(pid)]).pipe(
-    Effect.map((command) => command.includes("verify.ts") && command.includes("launch") && command.includes(root)),
+    Effect.map((command) => command.includes("verify.ts") && command.includes(" launch ") && new RegExp(`--port[ =]"?${port}"?(?:\\s|$)`).test(command)),
     Effect.orElseSucceed(() => false),
   )
 
 /** Waits until the launch `pid` is gone, every 250 ms within 15 s. */
-const gone = (pid: number, root: string) =>
-  isLaunch(pid, root).pipe(
+const gone = (pid: number, port: number) =>
+  isLaunch(pid, port).pipe(
     Effect.filterOrFail(
       (alive) => !alive,
       () => new VerifyFailed({ step: "stop", message: `pid ${pid} still runs` }),
@@ -617,14 +623,14 @@ const stop = Command.make(
     const record = yield* readLaunched(root).pipe(Effect.option)
     if (Option.isNone(record)) return yield* print({ ok: true, stopped: false, detail: `no ${root}/launch.json: nothing launched` })
     const launched = record.value
-    if (!(yield* isLaunch(launched.launchPid, root))) {
+    if (!(yield* isLaunch(launched.launchPid, launched.port))) {
       yield* fs.remove(join(root, "launch.json")).pipe(Effect.ignore)
       return yield* print({ ok: true, stopped: false, detail: `pid ${launched.launchPid} is no launch of ${root} any more; its record is removed` })
     }
-    // The recorded launch is this root's helper (its command line names verify.ts, launch and the root): SIGTERM ends it,
-    // and its scope stops the server's process group.
+    // The recorded launch is this root's helper (its command line names verify.ts, launch and the port): SIGTERM ends
+    // it, and its scope stops the server's process group.
     process.kill(launched.launchPid, "SIGTERM")
-    yield* gone(launched.launchPid, root)
+    yield* gone(launched.launchPid, launched.port)
     const held = yield* holdersOf(launched.port)
     yield* print({ ok: held.length === 0, stopped: true, launchPid: launched.launchPid, serverPid: launched.serverPid, port: launched.port, portFree: held.length === 0 })
     if (held.length > 0) return yield* new VerifyFailed({ step: "stop", message: `port ${launched.port} is still held by ${held.join(", ")}` })
