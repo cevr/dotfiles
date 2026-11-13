@@ -272,13 +272,17 @@ const chatgptLogin = (ctx: Plugin.Context, pool: PoolId) => (credentialID: strin
   )
 
 /** The ChatGPT quota sources of the paced pools, by pool. */
-const chatgptSources = (ctx: Plugin.Context, options: Options) =>
+const chatgptSources = (ctx: Plugin.Context, options: Options, host: StoreHost) =>
   Effect.gen(function* () {
     const sources = new Map<PoolId, ChatGPT.Source>()
     for (const pool of chatgptPools(options))
       sources.set(
         pool,
-        yield* ChatGPT.make({ login: chatgptLogin(ctx, pool), ...(options.usageURL === undefined ? {} : { url: options.usageURL }) }),
+        yield* ChatGPT.make({
+          login: chatgptLogin(ctx, pool),
+          ...(options.usageURL === undefined ? {} : { url: options.usageURL }),
+          ...Option.match(Option.fromNullishOr(host.source.fetch), { onNone: () => ({}), onSome: (send) => ({ fetch: send }) }),
+        }),
       )
     return sources
   })
@@ -309,7 +313,7 @@ const storeSources = (options: Options, context: Context.Context<never>, host: S
  * (`LIVE_STORE_HOST`); on the simulated world, the world's.
  */
 export interface StoreHost {
-  /** What each source reaches: its files and lock, its process, its fetch. */
+  /** What each source reaches: its files and lock, its process, its fetch (the ChatGPT usage endpoint's too). */
   readonly source: Pick<StoreSourceOptions, "files" | "process" | "fetch">
   /** Registers a source with the auth plugin for an integration; the returned function removes it. */
   readonly register: (integrationID: string, source: StoreSource) => () => void
@@ -426,7 +430,7 @@ export const make = (
       yield* migrate(ctx.storage)
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
-      const chatgpt = yield* chatgptSources(ctx, options)
+      const chatgpt = yield* chatgptSources(ctx, options, storeHost)
       const services = yield* Layer.build(
         Model.layer({
           providers: options.providers,

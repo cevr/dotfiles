@@ -577,7 +577,7 @@
     "mods/pool/accounts.ts": {"effect/noConditionalEmptyObjectSpread":7,"effect/noNullish":40,"effect/noRuntimeTypeof":1,"effect/noTernary":16,"effect/noUnknownParameters":1},
     "mods/pool/alerts.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":7,"effect/noTernary":1},
     "mods/pool/chatgpt/usage.test.ts": {"effect/noAs":4,"effect/noAsyncFunction":10,"effect/noEffectRunInTests":4,"effect/noGlobals":7,"effect/noNullish":11,"effect/noTernary":4,"effect/noTryCatch":3},
-    "mods/pool/chatgpt/usage.ts": {"effect/noConditionalEmptyObjectSpread":5,"effect/noGlobals":4,"effect/noKnownValueWidening":1,"effect/noNullish":58,"effect/noRuntimeTypeof":7,"effect/noTernary":40,"effect/noUnknownParameters":4,"effect/noUnsafeDictionaryType":1},
+    "mods/pool/chatgpt/usage.ts": {"effect/noConditionalEmptyObjectSpread":5,"effect/noGlobals":3,"effect/noKnownValueWidening":1,"effect/noNullish":58,"effect/noRuntimeTypeof":7,"effect/noTernary":40,"effect/noUnknownParameters":4,"effect/noUnsafeDictionaryType":1},
     "mods/pool/fleet.test.ts": {"effect/noEffectRunInTests":1,"effect/noPromiseChainsInTests":14},
     "mods/pool/fleet.ts": {"effect/noConditionalEmptyObjectSpread":4,"effect/noNullish":8,"effect/noTernary":8,"effect/preferMatchTagsExhaustive":2},
     "mods/pool/laws.ts": {"effect/noEffectRunInTests":6,"effect/noInlineProvide":8,"effect/noLocaleCompare":1},
