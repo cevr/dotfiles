@@ -101,6 +101,17 @@
         }
       ]
     },
+    "tests/idle-root.test.ts": {
+      "simulated": "cmd/orchestrate/idle-root.sim.test.ts",
+      "tests": [
+        {
+          "name": "is steered once, after its planner ends and the owner's draft clears, and names its wait",
+          "expects": 11,
+          "carried": "both",
+          "why": "the nudges, the holds and the requests on the world: the running planner is the root's idle background (host law: idleBackground), the draft is the TUI's IDLE.draft report from a client of the world, the runs are the status script's table in the world's shell (the RunTables laws on both adapters), the wait is the queue's item over its RPC; the root's answer, the draft in the composer and the sidebar's wait stay real, read off the TUI's frames: sim-tui's to move"
+        }
+      ]
+    },
     "tests/prime-fallback.test.ts": {
       "simulated": "cmd/orchestrate/orchestrate-fallback.sim.test.ts",
       "tests": [
