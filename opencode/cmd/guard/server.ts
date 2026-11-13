@@ -39,7 +39,7 @@
  * - `cpuWeight`: the scope's `CPUWeight` on Linux, 1 to 10000; default 20.
  * - `launchers`: the directory the launchers are written to; default `~/.cache/opencode/guard-launchers`.
  */
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
@@ -69,12 +69,12 @@ const withDefault =
 const Int = (min: number, max: number) => Schema.Int.check(Schema.isBetween({ minimum: min, maximum: max }))
 
 export const Options = Schema.Struct({
-  home: Schema.String.pipe(withDefault(homedir())),
+  home: Schema.String.pipe(withDefault(TuiDirs.dirs().home)),
   heavy: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(DEFAULT_HEAVY)),
   nice: Int(0, 19).pipe(withDefault(DEFAULT_LIMITS.nice)),
   memoryMax: Schema.String.check(Schema.isPattern(/^(\d+[KMGT]?|\d+%|infinity)$/)).pipe(withDefault(DEFAULT_LIMITS.memoryMax)),
   cpuWeight: Int(1, 10_000).pipe(withDefault(DEFAULT_LIMITS.cpuWeight)),
-  launchers: Schema.String.pipe(withDefault(join(homedir(), ".cache/opencode/guard-launchers"))),
+  launchers: Schema.String.pipe(withDefault(join(TuiDirs.dirs().home, ".cache/opencode/guard-launchers"))),
 })
 export type Options = typeof Options.Type
 

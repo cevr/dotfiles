@@ -1,4 +1,4 @@
-// accept: one at a time (it asserts how many requests the stop check made within 6.5 s of the press).
+// accept: one at a time (it asserts how many requests the stop check made within 6.5 s of the press; the gate runs its names simulated, cmd/escape/escape-send.sim.test.tsx).
 // Runs scenarios/escape-send.ts with the escape plugin beside Prime against an
 // OpenCode checkout and asserts what one Ctrl+Enter does to a turn stuck in a
 // long shell call, with one prompt queued and a second in the composer: the

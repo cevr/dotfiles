@@ -1,0 +1,40 @@
+                                 money parsing › Fix money parsing  $0.00
+
+  opencode vlocal
+  agent general
+  model simulation/gpt-sim-model
+  cwd ~/files
+
+ ┃ You are a subagent spawned by another session.
+ ┃ Worker brief: fix money parsing.
+
+  Reading the parser
+
+  ⠋ Executing · 3s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ◌ queued · Check the cents rounding too.
+
+ ↑ back to parent · Ctrl+Enter interrupt and send
+ › ◇ general gpt  Fix money parsing  Reading the parser · 2s
+ ┃
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ● UI  Theme  Tools  Experiments

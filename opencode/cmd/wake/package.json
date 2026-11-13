@@ -10,6 +10,7 @@
     "./job": "./job.ts"
   },
   "dependencies": {
+    "@dotfiles/decider": "workspace:*",
     "@dotfiles/opencode-wake": "workspace:*"
   }
 }

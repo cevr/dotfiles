@@ -1,0 +1,30 @@
+                                         two batches  $0.00
+ ┃ List the first batch.
+  - one item 29
+  - one item 30
+  - one item 31
+  - one item 32
+  - one item 33
+  - one item 34
+  - one item 35
+  - one item 36
+  - one item 37
+  - one item 38
+  - one item 39
+  - one item 40
+
+ ┃ Now list the second batch, and keep going well past the width of this terminal so the pinned
+ ┃ line has to be cut short.
+
+  - two item 01
+  - two item 02
+  - two item 03
+  - two item 04
+                                                                                   Jump to latest ↓
+
+
+ ┃
+                                                                                      gpt-sim-model
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ● UI  Theme  Tools  Experiments

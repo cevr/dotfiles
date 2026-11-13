@@ -127,7 +127,7 @@
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
  */
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
@@ -189,15 +189,15 @@ import {
 } from "@dotfiles/opencode-orchestrate/service"
 import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
-export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
+export const DEFAULT_LOG = join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl")
 /** The batch machine's ledger: one line per event or refusal, of every root. */
-export const DEFAULT_LEDGER = join(homedir(), ".cache/orchestrate/machine.jsonl")
+export const DEFAULT_LEDGER = join(TuiDirs.dirs().home, ".cache/orchestrate/machine.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
-export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
+export const CODEX_BUDGET = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/scripts/budget.ts")
 /** The orchestrate skill's log.ts, the units' logs' one writer. */
-export const UNIT_LOG = join(homedir(), ".claude/skills/orchestrate/scripts/log.ts")
+export const UNIT_LOG = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/scripts/log.ts")
 /** The orchestrate skill as installed: a link into the dotfiles checkout, whose history versions it. */
-export const SKILL_DIR = join(homedir(), ".claude/skills/orchestrate")
+export const SKILL_DIR = join(TuiDirs.dirs().home, ".claude/skills/orchestrate")
 
 const SUBAGENT = "subagent"
 

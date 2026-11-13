@@ -69,7 +69,7 @@ import { Database } from "bun:sqlite"
 import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs"
 import { open, rename, rm } from "node:fs/promises"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join, resolve } from "node:path"
 import { Clock, Context, Effect, Logger, Option, Schema } from "effect"
 
@@ -213,7 +213,7 @@ export interface StoreListing {
   readonly skipped: ReadonlyArray<{ readonly label: string; readonly reason: string }>
 }
 
-const expandHome = (dir: string) => (dir === "~" || dir.startsWith("~/") ? join(homedir(), dir.slice(1)) : dir)
+const expandHome = (dir: string) => (dir === "~" || dir.startsWith("~/") ? join(TuiDirs.dirs().home, dir.slice(1)) : dir)
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
@@ -463,7 +463,7 @@ export interface StoreLostLogin {
 
 /** `dir` as the owner types it: `~` for the home directory. */
 const tildeOf = (dir: string) => {
-  const home = homedir()
+  const home = TuiDirs.dirs().home
   return dir === home ? "~" : dir.startsWith(`${home}/`) ? `~${dir.slice(home.length)}` : dir
 }
 

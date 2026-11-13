@@ -20,7 +20,9 @@ export const MASKS: ReadonlyArray<readonly [RegExp, string]> = [
   // A glyph that moves in wall time: a spinner, the DevTools bar's UI activity dot, a running worker's diamond.
   [/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /g, "<spinner> "],
   [/[○●⦿] UI\b/g, "<pulse> UI"],
-  [/[◆◇] worker\b/g, "<pulse> worker"],
+  [/[◆◇] (worker|general)\b/g, "<pulse> $1"],
+  // A running call's dot, which pulses ● / ○.
+  [/^( +)[●○] Running /g, "$1<pulse> Running "],
 ]
 
 const mask = (line: string) => MASKS.reduce((text, [pattern, by]) => text.replace(pattern, by), line.trimEnd())

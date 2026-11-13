@@ -1,0 +1,40 @@
+                                           helper rename  $0.00
+
+  opencode vlocal
+  model simulation/gpt-sim-model
+  cwd ~/files
+
+ ┃ Rename the helper.
+
+  Working on it and done.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ┃ Rename the helper.
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ● UI  Theme  Tools  Experiments

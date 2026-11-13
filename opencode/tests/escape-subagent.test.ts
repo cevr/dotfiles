@@ -1,4 +1,4 @@
-// accept: deep (66.9 s alone on a quiet host: 1-minute load 5.3–7.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (66.9 s alone on a quiet host: 1-minute load 5.3–7.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long; the gate runs its names simulated, cmd/escape/escape-subagent.sim.test.tsx)
 // Runs scenarios/escape-subagent.ts with the Prime look and the escape plugin
 // against an OpenCode checkout, and asserts that Escape is layered in a running
 // subagent's view: the first press only puts its Subagents picker away (the

@@ -1,4 +1,4 @@
-// accept: one at a time (its scenario drives a real TUI and waits on its frames under a deadline).
+// accept: one at a time (its scenario drives a real TUI and waits on its frames under a deadline; the gate runs its Up, Escape and history names simulated, cmd/escape/queue-merge.sim.test.tsx, and only this file the deliver case, the escape server plugin's hook).
 // Runs scenarios/queue-merge.ts once per case with the Prime look and the
 // escape plugins (cmd/escape, TUI and server) against an OpenCode checkout,
 // and asserts that waiting prompts act as one: three prompts queued behind a
