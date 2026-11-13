@@ -898,7 +898,7 @@
     "scenarios/tui-cpu.ts": {"effect/noFixedWaitInTests":4,"effect/noGlobals":10,"effect/noNodeBuiltinImport":2,"effect/noNullish":4,"effect/noTernary":7},
     "scenarios/wake-downtime.ts": {"effect/noFixedWaitInTests":1,"effect/noGlobals":10,"effect/noNodeBuiltinImport":1,"effect/noNullish":3,"effect/noTernary":2},
     "scenarios/wake-repeat.ts": {"effect/noFixedWaitInTests":2,"effect/noGlobals":7,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":5},
-    "scenarios/wake.ts": {"effect/noFixedWaitInTests":3,"effect/noGlobals":12,"effect/noNodeBuiltinImport":1,"effect/noNullish":4,"effect/noTernary":7},
+    "scenarios/wake.ts": {"effect/noFixedWaitInTests":2,"effect/noGlobals":12,"effect/noNodeBuiltinImport":1,"effect/noNullish":4,"effect/noTernary":7},
     "scripts/accept.ts": {"effect/noAsyncFunction":1,"effect/noGlobals":7,"effect/noModuleLevelMutableState":1,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":2},
     "scripts/agents.ts": {"effect/noAs":1,"effect/noAsyncFunction":5,"effect/noConditionalEmptyObjectSpread":1,"effect/noDynamicImports":1,"effect/noGlobals":4,"effect/noModulePathFacts":1,"effect/noNewError":4,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":3,"effect/noThrowStatement":4},
     "scripts/cache-audit.test.ts": {"effect/noGlobals":1,"effect/noNodeBuiltinImport":2},
