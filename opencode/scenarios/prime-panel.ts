@@ -7,16 +7,21 @@
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-panel.ts
 //
 // It writes, under SCENARIO_OUT, `panel-<cols>-<tab>.txt` and `.json` for each
-// tab at each width (`subagents`, `shell`, `wakes`, `monitors`),
+// tab at each width (`subagents`, `shell`, `terminals`, `wakes`, `monitors`),
 // `panel-<cols>-dock`: the session with the panel closed, its `↓ subagents`
 // hint and dock, and `panel-160-tick`: the Subagents tab again once its rows'
 // times moved on.
 // `BEFORE=1` runs it against a look without the panel slots: it keeps the same
-// frames, but waits on no time moving. It waits on what the frame shows, never
-// on a clock; a wait that runs out writes `panel-<name>.timeout.txt`.
+// frames, but waits on no time moving and on the host's words. It waits on
+// what the frame shows, never on a clock: Shell, Terminals, Wakes and Monitors
+// are kept only once their rows match `ROWS` (scenarios/prime-panel-rows.ts),
+// what tests/prime-panel.test.ts asserts; a wait that runs out writes
+// `panel-<name>.timeout.txt`. Before the walk it opens two terminals in the
+// session over the server's API: `server` runs `sleep 600`, `failed` exits 3.
 import { Deferred, Effect, Option, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { shows as listed, type Tab } from "./prime-panel-rows.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT || "out"
@@ -74,7 +79,7 @@ export default OpenCodeDriver.use(
     tui: { viewport: { cols: 160, rows: 40 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },
   },
-  ({ ui, llm }) =>
+  ({ ui, llm, opencode }) =>
     Effect.gen(function* () {
       // The lanes work on until the scenario is done, so every row stays live.
       const release = yield* Deferred.make<boolean>()
@@ -115,6 +120,10 @@ export default OpenCodeDriver.use(
         })
       const shows = (needles: ReadonlyArray<string>) => (frame: string) => needles.every((needle) => panel(frame).includes(needle))
 
+      /** Ready to keep a tab: its rows as ROWS has them; before the slots, the host's rows with `needles` in them. */
+      const ready = (tab: Tab, needles: ReadonlyArray<string>) => (frame: string) =>
+        (before && shows(needles)(frame)) || (!before && listed(tab, frame))
+
       /** Opens the panel at `cols` columns and keeps each tab. */
       const walk = (cols: number) =>
         Effect.gen(function* () {
@@ -132,14 +141,16 @@ export default OpenCodeDriver.use(
             yield* keep("160-tick")
           }
           yield* ui.press("right")
-          yield* until(`${cols}-shell`, shows(["serving on :4000", "watching src"].map((line) => line.slice(0, 7))))
+          yield* until(`${cols}-shell`, ready("shell", ["serving on :4000", "watching src"].map((line) => line.slice(0, 7))))
           yield* keep(`${cols}-shell`)
           yield* ui.press("right")
+          yield* until(`${cols}-terminals`, ready("terminals", ["failed", "New terminal"]))
+          yield* keep(`${cols}-terminals`)
           yield* ui.press("right")
-          yield* until(`${cols}-wakes`, shows([ALARM]))
+          yield* until(`${cols}-wakes`, ready("wakes", [ALARM]))
           yield* keep(`${cols}-wakes`)
           yield* ui.press("right")
-          yield* until(`${cols}-monitors`, (frame) => shows([MONITOR])(frame) && !panel(frame).includes("not checked yet"))
+          yield* until(`${cols}-monitors`, ready("monitors", [MONITOR, "still-waiting  still-waiting"]))
           yield* keep(`${cols}-monitors`)
           yield* ui.press("escape")
           yield* until(`${cols}-closed`, (frame) => !frame.includes("Monitors"))
@@ -147,6 +158,13 @@ export default OpenCodeDriver.use(
 
       yield* ui.submit(ASK)
       yield* until("set", (frame) => frame.includes(DONE) && frame.includes("5 subagents") && frame.includes("2 shells") && frame.includes("1 monitor"))
+      // Two terminals in the root session: one runs a command in front, one has exited 3.
+      const [root] = (yield* opencode.session.list()).data.filter((session) => !session.parentID)
+      if (!root) return yield* Effect.fail("no root session")
+      const terminal = (title: string, script: string) =>
+        opencode.experimental.persistentPty.create({ sessionID: root.id, command: "sh", args: ["-c", script], title, env: {} })
+      yield* terminal("server", "sleep 600")
+      yield* terminal("failed", "exit 3")
       yield* walk(160)
       yield* walk(80)
       yield* Deferred.succeed(release, true)
