@@ -25,7 +25,7 @@ import {
   type Event,
   PoolId,
 } from "./account-pool.ts"
-import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
+import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
@@ -41,6 +41,12 @@ import type { PushAnswer, PushRequest } from "./push.ts"
 
 /** A question gone from the owner's tray this long after it was asked, with no answer, was dismissed. */
 const ANSWER_GRACE_MS = 60_000
+/** A failure's type, as OpenCode names it, and the refusal's status it stands for. */
+const REFUSED_STATUS = new Map([
+  ["Authentication", 401],
+  ["RateLimit", 429],
+  ["QuotaExceeded", 429],
+])
 import type {
   Alerts,
   FleetStatus,
@@ -168,8 +174,11 @@ export class Pool extends Context.Service<
       readonly kind: RequestKind
       readonly status: number
     }) => Effect.Effect<void>
-    /** A primary request failed: whether it should go again at once, on another login. */
-    readonly retry: (input: { readonly providerID: string; readonly sessionID: string }) => Effect.Effect<boolean>
+    /**
+     * A primary request failed: whether it should go again at once, on another login. `error` is the failure's type
+     * as OpenCode names it (`Authentication`, `RateLimit`, `QuotaExceeded`, ...).
+     */
+    readonly retry: (input: { readonly providerID: string; readonly sessionID: string; readonly error?: string }) => Effect.Effect<boolean>
     /** A session went idle: its run ends in every pool. */
     readonly release: (sessionID: string) => Effect.Effect<void>
     /**
@@ -362,23 +371,31 @@ export const layer = (config: Config) =>
         if (input.status !== 401 && input.status !== 429) return
         const where = pooled(input.providerID)
         if (where === undefined) return
-        const credentialID = placedOn(yield* SynchronizedRef.get(where.pool), input.sessionID, input.kind)
-        if (credentialID === undefined) return
+        const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, input.kind)
+        if (Option.isNone(answered)) return
+        const credentialID = answered.value
         // The reading says for how long; without one (or with one that holds
         // nothing) the refusal holds the login for the default time.
         yield* pull(where, credentialID)
         yield* apply(where.pool, where.id, RefuseRequest.make({ credentialID, status: input.status }))
       })
 
-      const retry = Effect.fn("Pool.retry")(function* (input: { readonly providerID: string; readonly sessionID: string }) {
+      const retry = Effect.fn("Pool.retry")(function* (input: { readonly providerID: string; readonly sessionID: string; readonly error?: string }) {
         const where = pooled(input.providerID)
         if (where === undefined) return false
-        const credentialID = placedOn(yield* SynchronizedRef.get(where.pool), input.sessionID, "primary")
-        if (credentialID === undefined) return false
+        // A request placed before a restart is answered after it: the ledger's mark names its account.
+        const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, "primary")
+        if (Option.isNone(answered)) return false
+        const credentialID = answered.value
         // A refusal that never reached a response (a sign-in that failed before
         // the request went out) is only in the provider's reading.
         if (!held(yield* SynchronizedRef.get(where.pool), credentialID, yield* Clock.currentTimeMillis))
           yield* pull(where, credentialID)
+        // A refusal whose response this copy never saw (it came back to the copy a restart closed) holds the login
+        // here, as `responded` would have.
+        const status = Option.fromNullishOr(REFUSED_STATUS.get(input.error ?? ""))
+        if (Option.isSome(status) && !held(yield* SynchronizedRef.get(where.pool), credentialID, yield* Clock.currentTimeMillis))
+          yield* apply(where.pool, where.id, RefuseRequest.make({ credentialID, status: status.value }))
         return shouldFailOver(yield* SynchronizedRef.get(where.pool), input.sessionID, yield* Clock.currentTimeMillis)
       })
 

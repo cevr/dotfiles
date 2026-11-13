@@ -17,7 +17,7 @@
 //   its window resets, a rate limit for its `retry-after`, a rejected token
 //   until the host refreshes it, a failed sign-in for as long as the provider
 //   says. A window read as exhausted holds it until that reset.
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
 import type { AccountStatus, SessionAccount } from "./status.ts"
@@ -240,6 +240,18 @@ export const rank = (state: AccountPoolState, sessionID: string, now: number, ru
 export const placedOn = (state: AccountPoolState, sessionID: string, kind: RequestKind): string | undefined =>
   state.placed[placedKey(sessionID, kind)]
 
+/**
+ * The account a response of `kind` came back from: where the request was placed, or, for a primary request placed
+ * before a restart (this copy never saw it), the account the ledger's mark says the session's last request went on.
+ */
+export const answeredOn = (state: AccountPoolState, sessionID: string, kind: RequestKind): Option.Option<string> =>
+  Option.orElse(Option.fromNullishOr(placedOn(state, sessionID, kind)), () =>
+    Option.map(
+      Option.filter(Option.fromNullishOr(state.recent[sessionID]), () => kind === "primary"),
+      (mark) => mark.credentialID,
+    ),
+  )
+
 /** When the session last sent a request through this pool, epoch ms. */
 export const lastPlacedAt = (state: AccountPoolState, sessionID: string): number | undefined =>
   state.recent[sessionID]?.at ?? state.runs[sessionID]?.at
@@ -252,8 +264,7 @@ export const lastPlacedAt = (state: AccountPoolState, sessionID: string): number
  * provider's refusal.
  */
 export const shouldFailOver = (state: AccountPoolState, sessionID: string, now: number): boolean => {
-  const account = placedOn(state, sessionID, "primary")
-  return account !== undefined && held(state, account, now)
+  return Option.exists(answeredOn(state, sessionID, "primary"), (account) => held(state, account, now))
 }
 
 /**
