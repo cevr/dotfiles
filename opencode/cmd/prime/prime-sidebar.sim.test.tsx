@@ -1,5 +1,5 @@
 // tests/prime-sidebar.test.ts's names on the simulated TUI (sim-tui/), each at
-// 20 seeds: the fork's real TUI in this process with Prime loaded by path, in
+// its first SEEDS seeds: the fork's real TUI in this process with Prime loaded by path, in
 // front of the server double, on a virtual clock. The live subagent rows
 // beneath the composer stay while the session's sidebar shows: wide, the
 // sidebar holds the session and the worker's row is under the dock's count;
@@ -12,8 +12,8 @@ import * as Golden from "../../sim-tui/golden.ts"
 import { MODEL_REF, type Model, reasoning, stall, subagent, text } from "../../sim-tui/server.ts"
 
 const FILE = "cmd/prime/prime-sidebar.sim.test.tsx"
-/** Seeds this file runs: 20 fit its 5 s budget (measured at load 26). */
-const SEEDS = 20
+/** Seeds this file runs: 20 took 4.4–5.0 s of the 5 s of CPU a file has (measured at load 35–140); 16 leave a fifth of it. */
+const SEEDS = 16
 const { seeded } = App.runner(FILE, SEEDS)
 // The scenario's widths are 160 and 106.
 const WIDE = 160

@@ -13,8 +13,8 @@ import { type Model, shell, stall, text } from "../../sim-tui/server.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/escape/escape-states.sim.test.tsx"
-/** Seeds this file runs: its five cases at 20 seeds each took past 5 s; 4 each fit (measured at load 26). */
-const SEEDS = 4
+/** Seeds this file runs: its five cases at 4 seeds each (20 runs) took 3.5–4.9 s of the 5 s of CPU a file has (measured at load 30–130); 3 each leave a fifth of it. */
+const SEEDS = 3
 const { seeded } = App.runner(FILE, SEEDS)
 const BOOT: App.BootOptions = {
   file: FILE,

@@ -1,5 +1,5 @@
 // tests/prime-escape.test.ts's names on the simulated TUI (sim-tui/), each at
-// 20 seeds: the fork's real TUI in this process with Prime and the escape
+// its first SEEDS seeds: the fork's real TUI in this process with Prime and the escape
 // plugin loaded by path, in front of the server double, on a virtual clock. One
 // Escape on a busy session with an empty composer: at 1 s it cancels (the
 // prompt leaves the transcript and is back in the composer), at 7 s it
@@ -12,8 +12,8 @@ import { type Model, stall, text } from "../../sim-tui/server.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/prime/prime-escape.sim.test.tsx"
-/** Seeds this file runs: 20 fit its 5 s budget (measured at load 26). */
-const SEEDS = 20
+/** Seeds this file runs: 20 took 3.4–4.5 s of the 5 s of CPU a file has (measured at load 35–120); 16 leave a fifth of it. */
+const SEEDS = 16
 const { seeded } = App.runner(FILE, SEEDS)
 const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime", "cmd/escape"], width: 106, height: 40 }
 

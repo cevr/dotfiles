@@ -60,10 +60,12 @@ export const runner = (file: string, count: number) => {
       seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count)).pipe(Effect.asVoid)),
   }
 }
-/** The first boot's limit on a quiet host. */
+/**
+ * The CPU time a file's first boot may take, judged on any host as `sim/seed.ts` judges a file's
+ * seeds: the boot waits on no real clock, so on a quiet host its wall time is its CPU time, and on
+ * a loaded one the wall time is the host's. The wall time is reported beside it, never judged.
+ */
 export const BOOT_LIMIT_MS = 4_000
-/** The 1-minute load under which the boot limit holds. */
-export const QUIET_LOAD = 12
 /** Render passes `settle` may take before it says what never came to rest. */
 const PASSES = 400
 /** The step `advance` moves time by between settles of I/O. */
@@ -498,9 +500,10 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   const took = (yield* realNow) - began
   const used = cpuNow() - cpu
   const load = yield* loadNow
-  yield* Console.log(`sim-tui boot ${options.file}: wall ${Math.round(took)} ms, cpu ${Math.round(used)} ms (load ${load.toFixed(1)}, ${navigator.hardwareConcurrency} cores)`)
+  yield* Console.log(`sim-tui boot ${options.file}: cpu ${Math.round(used)} ms of its ${BOOT_LIMIT_MS}, wall ${Math.round(took)} ms (reported, not judged; load ${load.toFixed(1)}, ${navigator.hardwareConcurrency} cores)`)
   jest.setSystemTime(wall + took)
-  if (load < QUIET_LOAD && took > BOOT_LIMIT_MS) return yield* fail(`${options.file}: the first boot took ${Math.round(took)} ms, past the ${BOOT_LIMIT_MS} ms it has on a quiet host`)
+  if (used > BOOT_LIMIT_MS)
+    return yield* fail(`${options.file}: the boot took ${Math.round(used)} ms of CPU time (${Math.round(took)} ms of wall time), past the ${BOOT_LIMIT_MS} ms of CPU a boot has`)
   harness.booted = Option.some(app)
   return app
 })
@@ -511,7 +514,7 @@ export const shutdown = Effect.gen(function* () {
     const app = harness.booted.value
     const load = yield* loadNow
     const { wall, cpu, seeds } = app.spent
-    yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, wall ${Math.round(wall)} ms, cpu ${Math.round(cpu)} ms (load ${load.toFixed(1)})`)
+    yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, cpu ${Math.round(cpu)} ms of its ${Seed.BUDGET_MS}, wall ${Math.round(wall)} ms (reported, not judged; load ${load.toFixed(1)})`)
     yield* close(app)
   }
   harness.release()

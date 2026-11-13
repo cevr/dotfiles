@@ -77,8 +77,13 @@ rest of the process.
 
 ## Budget
 
-`sim/seed.ts` gives a file 5 s of wall time for all its seeds. The first boot
-of a file is reported on its own line (`sim-tui boot <file>: wall, cpu, load`)
-and fails past 4 s on a quiet host (load under 12); its seeds are reported at
-the close (`sim-tui seeds <file>: …`). A file whose 20 seeds do not fit
-takes the largest count that does (`escape-states`: 4).
+`sim/seed.ts` gives a file 5 s of CPU time for all its seeds, its wall time
+reported beside it, never judged: nothing here waits on a real clock, so on a
+quiet host the wall time is the CPU time, and on a loaded one it is the
+host's. A boot is judged the same way: it fails past 4 s of CPU time
+(`sim-tui boot <file>: cpu … of its 4000, wall …`; only a process's first boot
+comes near it, the Solid transform of the fork's TUI); a file's seeds are
+reported at its close (`sim-tui seeds <file>: …`). A seed costs 0.2–0.25 s of
+CPU (all threads: the JIT's helper threads run beside it), so a file runs the seed count
+that leaves a fifth of its budget free: 16 for prime-escape and prime-sidebar,
+3 a case for escape-states' five cases.

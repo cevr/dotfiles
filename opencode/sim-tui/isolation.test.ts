@@ -1,6 +1,6 @@
 // Isolation of the seeds that share one app: a seed run alone (`SIM_SEED=<n>`,
 // its file booting a fresh app for it) gives the same trace as that seed in
-// the file's full run, after every seed before it, for seeds 2 to 4 of each
+// the file's full run, after every seed before it, for three seeds of each
 // simulated TUI file. A seed that left something behind in the app (a
 // toast, a session still running, a timer's phase, a draft) shows here as a
 // trace that depends on what ran before it.
@@ -13,9 +13,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { TRACE_ENV } from "./app.ts"
 import { platformTest } from "./effect-test.ts"
 
-const FILES = ["cmd/prime/prime-escape.sim.test.tsx", "cmd/prime/prime-sidebar.sim.test.tsx", "cmd/escape/escape-states.sim.test.tsx"]
-// Seed 1 is the first after the boot in both runs; the seeds after it are the ones a seed before could reach.
-const ALONE = [2, 3, 4]
+// Each file's seeds checked alone. In prime-escape and prime-sidebar every test reads one play a seed, so seed 1
+// is the first after the boot in both runs and seeds 2 to 4 are the ones a seed before could reach. escape-states
+// runs 3 seeds, each test its own play: its seed 1 of every test but the first follows the test before.
+const FILES = new Map([
+  ["cmd/prime/prime-escape.sim.test.tsx", [2, 3, 4]],
+  ["cmd/prime/prime-sidebar.sim.test.tsx", [2, 3, 4]],
+  ["cmd/escape/escape-states.sim.test.tsx", [1, 2, 3]],
+])
 const RUN_MS = 300_000
 
 /** A run of a file that did not pass. */
@@ -57,17 +62,17 @@ const read = (dir: string) =>
   })
 
 describe("seeds alone give the traces they give in the full run", () => {
-  for (const file of FILES)
+  for (const [file, alone] of FILES)
     platformTest(
-      `${file}: seeds ${ALONE.join(", ")} alone give the traces they give in the full run`,
+      `${file}: seeds ${alone.join(", ")} alone give the traces they give in the full run`,
       Effect.gen(function* () {
         const everyone = yield* read(yield* run(file, Option.none()))
-        for (const seed of ALONE) {
+        for (const seed of alone) {
           const traces = yield* read(yield* run(file, Option.some(seed)))
           expect(traces.size).toBeGreaterThan(0)
           for (const [name, trace] of traces) expect({ name, trace }).toEqual({ name, trace: everyone.get(name) ?? "(not in the full run)" })
         }
       }),
-      RUN_MS * (ALONE.length + 1),
+      RUN_MS * (alone.length + 1),
     )
 })
