@@ -16,6 +16,10 @@ the seed that replays it, and no assertion reads wall time, so load cannot break
 | `runtime.ts` | The scheduler: one seeded generator orders ready fibers and same-instant timers; the clock is virtual; logs and timers are tagged with the plugin copy that made them, so a timer of a closed copy firing after a restart is caught (`stale()`). |
 | `plugins.ts` | Our plugins as the world loads them: wake through `make` with the world's shell for checks and no OS jobs; idle compaction and questions as OpenCode loads them; the Anthropic auth plugin and the pool on the world's provider, their login stores on memory slots (`mods/pool/memory/slots.ts`, which keeps the disk's laws in `mods/pool/store/files-laws.ts`) through `stores(slots, provider)`. |
 | `provider.ts`, `http.ts` | The world's Anthropic (`ORIGIN`): the messages API, token, usage and claim endpoints with the fake's wire (`tests/fake-anthropic.ts`), as state a test scripts. Model requests go to it over the host's HTTP path, through the `http.request`/`http.response` hooks: a refusal arrives whole at once, a hook that dies ends the turn as an unknown failure, never retried. |
+| `locations.ts` | Which copies hear an event: a session's events its location's copies, one of no session every copy (the fork's location-scoped plugin subscriptions); law `located`. |
+| `subagents.ts` | A subagent's idle report: an execution of a session with a parent that ends tells the parent in a synthetic `source: subagent` message that wakes it; law `report`. |
+| `forms.ts` | The host's forms as a client opens and answers them (`world.form.create`, `world.form.reply`): a reply publishes `form.replied` in its session's location. |
+| `faults.ts` | Faults a test puts into the host, outside its contract: `world.faults.failWrites(plugin, count, after)` makes a plugin's storage writes die. |
 | `provider-laws.ts` | What the world's provider and the real tier's fake both answer, run on each (`provider-laws.test.ts`). |
 | `seed.ts` | The seed runner: `Seed.runner(file).seeded(name, ({ seed, expect }) => effect)` runs a test on 20 seeds; `SIM_SEED=<n>` runs one; a file's seeds share 5 s of CPU time (wall time is reported, never judged: a loaded host's wall time is not the file's); `SIM_EXPECTS=1` prints each test's `expect()` calls for the parity check. `Seed.effect(name, effect)` is a plain Effect test. |
 | `host-laws.ts`, `law-names.ts` | The host laws: what OpenCode does for a plugin, over the context's own operations. Every entry of `OPERATIONS` is named by a law. |
@@ -40,11 +44,13 @@ the seed that replays it, and no assertion reads wall time, so load cannot break
 ## What it does not model
 
 Anything not in `OPERATIONS` (the world fails naming it); the TUI (`sim-tui`); a host's
-faults (a failed storage write, an RPC that never answers); the ChatGPT backend (usage and
+faults other than a failed storage write (an RPC that never answers); a form's field and
+answer validation, and the outbox that redelivers a subagent report a stopped server did not
+admit; the ChatGPT backend (usage and
 reset endpoints), so Codex claims stay real; a second host (the fleet). Behaviour no law
 pins yet stays in its real test too, as `tests/parity.json` says ("both"): a copy of a config
 plugin per opened Location, the host's held background summary, background shells and their
-notice, a real plugin reload and a real server restart.
+notice, where a form's reply is heard, a real plugin reload and a real server restart.
 
 ## Time is not a fork change
 
