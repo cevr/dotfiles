@@ -20,6 +20,8 @@
 //   minutes), for at most 10 retries. The `retry` hook sees every failure
 //   with the decision, a retryable one's or `retry: false`, and may change
 //   it; a negative or non-finite delay it sets takes the policy's.
+// - A request an `http.request` hook sends to a data: URL (the host's fetch,
+//   Bun's): answered in the process with the URL's data, never by a provider.
 import { Effect, Option, Schema } from "effect"
 import { below, line, type Runtime } from "./runtime.ts"
 
@@ -72,6 +74,21 @@ export const classify = (status: number, headers: Headers, text: string): Failur
   if (status === 429) return failure("RateLimit", true)
   if (status === 408 || status === 409 || status >= 500) return failure("ProviderInternal", true)
   return failure("InvalidRequest", false)
+}
+
+/**
+ * A data: URL's answer, as the host's fetch gives it without the network: a 200 of the URL's data (percent-decoded,
+ * or base64), typed by its media type; none for another URL.
+ */
+export const dataOf = (url: string): Option.Option<Response> => {
+  const match = /^data:([^,]*),(.*)$/s.exec(url)
+  if (match === null) return Option.none()
+  const meta = match[1] ?? ""
+  const data = match[2] ?? ""
+  const base64 = /;base64$/i.test(meta)
+  const type = meta.replace(/;base64$/i, "")
+  const body = base64 ? Uint8Array.from(atob(data), (char) => char.charCodeAt(0)) : decodeURIComponent(data)
+  return Option.some(new Response(body, { status: 200, headers: { "content-type": type === "" ? "text/plain;charset=US-ASCII" : type } }))
 }
 
 /** A request that did not connect: the provider is not where it was sent. */

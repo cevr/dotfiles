@@ -3494,6 +3494,23 @@ describe('credential choice, wire extras and quota readings', () => {
     return event.response as Response
   }
 
+  /**
+   * A request whose login cannot sign in: the request hook sends it nowhere, unsigned, and the response hook answers
+   * it as a 401; the 401's message.
+   */
+  async function unsigned(hooks: SessionHooks, event: RequestEvent) {
+    await hooks.get('http.request')(event)
+    const request = event.request as Request
+    expect(request.url).toBe('data:text/plain,')
+    expect(request.headers.has('authorization')).toBe(false)
+    const response = await answer(hooks, request, new Response(''))
+    expect(response.status).toBe(401)
+    expect(response.headers.get('x-should-retry')).toBe('false')
+    const body = await response.json()
+    expect(body.error.type).toBe('authentication_error')
+    return String(body.error.message)
+  }
+
   test('sends a request on the credential the header names, and strips the header', async () => {
     const { ctx, sessionHooks, accessOf } = twoAccounts()
     await plugin.setup(ctx)
@@ -3647,10 +3664,9 @@ describe('credential choice, wire extras and quota readings', () => {
       request: messagesRequest({ 'x-opencode-credential-id': 'cred-gone' }),
     }
 
-    await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+    expect(await unsigned(sessionHooks, event)).toContain(
       'not a connection of this integration',
     )
-    expect(event.request.headers.has('authorization')).toBe(false)
     expect(ctx.integration.connection.resolve).not.toHaveBeenCalled()
   })
 
@@ -3863,7 +3879,7 @@ describe('credential choice, wire extras and quota readings', () => {
     })
   })
 
-  test('a login whose token cannot be resolved is refused, and the request fails', async () => {
+  test('a login whose token cannot be resolved is refused, and the request fails as a 401 that says why', async () => {
     const { ctx, sessionHooks, rpcEvents } = twoAccounts()
     ctx.integration.connection.resolve.mockImplementation(
       async () => {
@@ -3880,9 +3896,7 @@ describe('credential choice, wire extras and quota readings', () => {
       request: messagesRequest({ 'x-opencode-credential-id': 'cred-a' }),
     }
 
-    await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
-      'ambiguous failure',
-    )
+    expect(await unsigned(sessionHooks, event)).toContain('ambiguous failure')
     const refusal = lastOf(rpcEvents).payload.reading.refusal
     expect<unknown>(lastOf(rpcEvents).payload.credentialID).toBe('cred-a')
     expect<unknown>(refusal.kind).toBe('signin')
@@ -4203,7 +4217,7 @@ describe('credential choice, wire extras and quota readings', () => {
           request: messagesRequest({ 'x-opencode-credential-id': 'src:one' }),
         }
 
-        await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+        expect(await unsigned(sessionHooks, event)).toContain(
           'refresh token rejected',
         )
         expect<unknown>(lastOf(rpcEvents).payload).toEqual({
@@ -4217,7 +4231,7 @@ describe('credential choice, wire extras and quota readings', () => {
       }
     })
 
-    test('an answer without a usable token fails the request', async () => {
+    test('an answer without a usable token fails the request as a 401 that says why', async () => {
       const { ctx, sessionHooks, remove } = withSource(async () => ({
         access: '',
         expires: Date.now() + HOUR,
@@ -4231,7 +4245,7 @@ describe('credential choice, wire extras and quota readings', () => {
           request: messagesRequest({ 'x-opencode-credential-id': 'src:one' }),
         }
 
-        await expect(sessionHooks.get('http.request')(event)).rejects.toThrow(
+        expect(await unsigned(sessionHooks, event)).toContain(
           'without a usable token',
         )
       } finally {

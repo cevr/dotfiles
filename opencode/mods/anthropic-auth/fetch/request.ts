@@ -88,6 +88,16 @@ export const refusedResponse = (retryAfter: number): Response =>
   new Response(refusedBody(retryAfter), { status: 429, headers: refusedHeaders(retryAfter) })
 
 /**
+ * What a request that could not be signed in answers: an authentication failure (401) with why, not retried by
+ * itself; the pool fails the session over to another login on it.
+ */
+export const unsignedResponse = (message: string): Response =>
+  new Response(JSON.stringify({ type: "error", error: { type: "authentication_error", message } }), {
+    status: 401,
+    headers: { "content-type": "application/json", "x-should-retry": "false" },
+  })
+
+/**
  * The request routed to `url` (the endpoint's), as the hook rebuilds it: the
  * same request when the URL did not change.
  */

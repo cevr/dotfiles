@@ -41,6 +41,8 @@ export interface Ownership {
   readonly transformed: WeakSet<Request>
   /** The requests a setup refused, with the `retry-after` (seconds) each answers with. */
   readonly refused: WeakMap<Request, number>
+  /** The requests a setup could not sign in, with why: each answers as a 401 that says so. */
+  readonly unsigned: WeakMap<Request, string>
   /** A slot for one response transform, and its release; none past the bound. */
   readonly acquireTransform: () => Result.Result<() => void, RequestUntracked>
 }
@@ -50,6 +52,7 @@ export const makeOwnership = (): Ownership => {
   return {
     transformed: new WeakSet(),
     refused: new WeakMap(),
+    unsigned: new WeakMap(),
     acquireTransform: () => {
       if (active >= MAX_ACTIVE_RESPONSE_TRANSFORMS) {
         return Result.fail(new RequestUntracked({ message: "Too many active Anthropic response transforms" }))
