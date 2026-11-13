@@ -9,6 +9,7 @@ import type { CurrentModel, Usage } from "../chrome.ts"
 import type { Goal } from "../goal.ts"
 import type { PendingItem, WaitingPrompt } from "../pending.ts"
 import type { UpstreamReading } from "../update.ts"
+import type { ShellEntry } from "../shells.ts"
 import type { Wakes } from "../wakes.ts"
 import type { Message, Part, Session } from "../session.ts"
 
@@ -96,6 +97,10 @@ export interface Host {
   subagents(sessionID: string): Family
   /** How many of the session's shell commands are running. */
   shells(sessionID: string): number
+  /** The session's shell commands, from the same registry as the count. */
+  shellList(sessionID: string): ReadonlyArray<ShellEntry>
+  /** The tail of a shell command's output, for its last line; empty when it does not read. */
+  shellTail(id: string): Promise<string>
 
   // The frame.
   /** The model the prompt sends to. */

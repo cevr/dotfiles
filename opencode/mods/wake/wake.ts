@@ -463,6 +463,8 @@ export const Shown = Schema.Struct({
   note: Schema.String,
   /** An alarm's due time; a monitor's deadline; when a latch opens. */
   dueAt: Schema.Number,
+  /** When it was set, epoch ms: how long a monitor has watched. Optional, as an older server answers without it. */
+  setAt: Schema.optional(Schema.Number),
   everySeconds: Schema.optional(Schema.Number),
   command: Schema.optional(Schema.String),
   /** A monitor's check period, seconds. */
@@ -488,6 +490,7 @@ export const shownOf = (entry: Exclude<Entry, Job>): Shown => ({
   mode: entry.kind === "latch" ? "wake" : entry.mode,
   note: entry.kind === "latch" ? entry.subagent.description : entry.note,
   dueAt: dueOf(entry),
+  setAt: entry.setAt,
   ...(entry.kind === "latch" ? { child: entry.child } : {}),
   ...(entry.kind === "alarm" && entry.everySeconds !== undefined ? { everySeconds: entry.everySeconds } : {}),
   ...(entry.kind === "monitor"

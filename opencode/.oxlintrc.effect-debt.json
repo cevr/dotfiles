@@ -423,6 +423,33 @@
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "mods/prime/tui/panel.tsx"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "scenarios/prime-panel.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/prime-panel.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }
