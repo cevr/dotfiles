@@ -393,17 +393,28 @@ const advanceOn = (app: Booted, ms: number) =>
   })
 
 /**
- * Stops an app for good: its double answers what it held, and the fake clock goes with every
- * timer the app set (Bun drops pending fake timers when real ones come back), so nothing of it
- * runs again. It is not shut down: the TUI's shutdown prints its epilogue to the test's output
- * and waits on timers of its own; the process ends with the test run.
+ * Stops an app for good: its double answers what it held, the TUI shuts down (its renderer, its
+ * client and its event stream, the fixture's server and folders) on the fake clock, time moved
+ * until it has, and the holds go back. An app left running kept its client in the process, and
+ * the next app's event stream dropped in its first seed.
  */
-const close = (app: Booted) => {
-  app.current.close()
-  harness.release()
-  harness.booted = Option.none()
-  router().navigate = Option.none()
-}
+const close = (app: Booted) =>
+  Effect.gen(function* () {
+    app.current.close()
+    const done = { closed: false }
+    void app.fixture[Symbol.asyncDispose]().finally(() => {
+      done.closed = true
+    })
+    // Nothing renders any more: time moves and the process takes its turns, no frame drawn.
+    for (let waited = 0; !done.closed && waited < UNTIL_MS; waited += POLL_MS) {
+      jest.advanceTimersByTime(POLL_MS)
+      for (let turn = 0; turn < PASSES && !done.closed; turn++) yield* Effect.yieldNow
+    }
+    harness.release()
+    harness.booted = Option.none()
+    router().navigate = Option.none()
+    if (!done.closed) return yield* fail(`${app.options.file}: the app did not shut down within ${UNTIL_MS} ms`)
+  })
 
 /** The router's navigate the route plugin lent (route/registry.ts). */
 const navigateTo = (sessionID: string) =>
@@ -501,7 +512,7 @@ export const shutdown = Effect.gen(function* () {
     const load = yield* loadNow
     const { wall, cpu, seeds } = app.spent
     yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, wall ${Math.round(wall)} ms, cpu ${Math.round(cpu)} ms (load ${load.toFixed(1)})`)
-    close(app)
+    yield* close(app)
   }
   harness.release()
 }).pipe(Effect.provide(NodeServices.layer))
@@ -511,7 +522,7 @@ export const boot = (options: BootOptions) =>
   Effect.gen(function* () {
     const found = harness.booted.pipe(Option.filter((app) => app.options.file === options.file))
     if (Option.isSome(found)) return found.value
-    Option.map(harness.booted, close)
+    if (Option.isSome(harness.booted)) yield* close(harness.booted.value)
     return yield* start(options)
   }).pipe(Effect.provide(NodeServices.layer))
 
