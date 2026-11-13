@@ -83,6 +83,12 @@ export interface Stores extends StoreHost {
   readonly registry: SourcesLive.RegistryRead
 }
 
+/** A process with no login store whose network is the world's `provider` (the ChatGPT usage endpoint's too). */
+export const network = (provider: Provider.Provider): StoreHost => ({
+  source: { fetch: (url, init) => provider.fetch(url, init) },
+  register: LIVE_STORE_HOST.register,
+})
+
 /** One process's stores over `slots`, fetching from the world's `provider`. */
 export const stores = (slots: MemorySlots.MemorySlots, provider: Provider.Provider): Stores => {
   const registry = new Map<string, Set<CredentialSource>>()

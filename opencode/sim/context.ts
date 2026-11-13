@@ -293,7 +293,14 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           for (const held of host.integrations.values())
             for (const login of held.logins)
               if (connection.type === "credential" && login.id === connection.id)
-                return { type: "oauth" as const, methodID: "claude-max", access: login.access, refresh: login.refresh, expires: login.expires }
+                return {
+                  type: "oauth" as const,
+                  methodID: Option.getOrElse(Option.fromNullishOr(login.methodID), () => "claude-max"),
+                  access: login.access,
+                  refresh: login.refresh,
+                  expires: login.expires,
+                  ...Option.match(Option.fromNullishOr(login.metadata), { onNone: () => ({}), onSome: (metadata) => ({ metadata }) }),
+                }
           return void 0
         }),
       /** A mark on a login, or its clearing: the integration lists it on the connection until it is cleared. */

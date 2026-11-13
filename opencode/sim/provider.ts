@@ -23,6 +23,7 @@ import {
   type FakeWindow,
   unifiedHeaders,
 } from "../tests/fake-anthropic.ts"
+import type * as ChatGPT from "./chatgpt.ts"
 import { below, generator, line, plain, type Runtime, SimError } from "./runtime.ts"
 
 export type { FakeAccount as Account, FakeAnswer as Answer, FakeClaimResult as ClaimResult, FakeGrant as Grant, FakeQuota as Quota, FakeTokenAnswer as TokenAnswer }
@@ -87,6 +88,8 @@ export interface Options {
   readonly claim?: (account: string, grant: string) => FakeClaimResult
   /** A model request no known token signs is answered as `ANONYMOUS`'s, as a provider on an API key would: the host laws' model. Default: refused (401). */
   readonly anonymous?: boolean
+  /** The world's ChatGPT backend, answering at its own origin (`sim/chatgpt.ts`). Default: none, so that origin does not connect. */
+  readonly chatgpt?: ChatGPT.Backend
 }
 
 /** The account an unsigned request is answered as, on an anonymous provider. */
@@ -419,6 +422,8 @@ export const make = (options: Options, world: Pick<Runtime, "now" | "fork">) => 
   const handle = (request: Request): Effect.Effect<Response, SimError> =>
     Effect.gen(function* () {
       const url = new URL(request.url)
+      const chatgpt = Option.filter(Option.fromNullishOr(options.chatgpt), (backend) => url.origin === backend.origin)
+      if (Option.isSome(chatgpt)) return yield* chatgpt.value.handle(request)
       if (url.origin !== ORIGIN) return yield* new SimError({ message: `no route to ${url.origin}: the world's provider answers at ${ORIGIN} only` })
       const path = url.pathname
       if (request.method === "POST" && path === "/v1/messages") return yield* messages(request, path)

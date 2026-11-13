@@ -318,6 +318,10 @@ export interface Login {
   readonly refresh: string
   /** Epoch ms. */
   readonly expires: number
+  /** The sign-in method that made it. Default `claude-max`. */
+  readonly methodID?: string
+  /** What the method kept beside the tokens (a ChatGPT login's `accountID`). Default none. */
+  readonly metadata?: JsonObject
 }
 
 /** 2001-09-09T01:46:40Z: every world's clock starts here unless told otherwise, years from any wall-clock reading. */
