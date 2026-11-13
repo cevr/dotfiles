@@ -68,6 +68,13 @@ goes back to the boot's lobby session on the file's terminal size and spends
 starts its clock at the epoch. Tool call ids are made per message, since the
 TUI keeps state by call id.
 
+Between files, the app shuts down (renderer, client, event stream, the
+fixture's server) on the fake clock before the holds go back; a TUI left
+running kept its client in the process and broke the next app's event
+stream. The first boot loads the root's Effect (through effect-bun-test)
+before the TUI's plugin runtime refuses every Effect but the host's for the
+rest of the process.
+
 ## Budget
 
 `sim/seed.ts` gives a file 5 s of wall time for all its seeds. The first boot
