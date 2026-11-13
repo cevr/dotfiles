@@ -6,7 +6,11 @@
 // Opus first, Codex second: a new agent the pace holds on its model, that
 // named no model of its own, is offered the newest Codex model for its role
 // (role.ts `codexFallback`), when the host offers one, with the Codex pace's
-// hold on it. The aggregate starts it there when Codex has room.
+// hold on it. The aggregate starts it there when Codex has room. Only a
+// planner or verifier is ever offered it (role.ts `onCodex`): Codex never
+// implements. A new implementor whose model is a Codex one (named, or its
+// parent's) runs on the newest Opus instead (`offCodex`), and a latch an older
+// build kept for one opens on Opus; with no Opus offered it never starts.
 //
 // The planner goes first on its own first model (the `planner` option, the
 // newest Fable: the owner's call, 2026-11-12): a new planner start that names
@@ -28,7 +32,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect"
+import { Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -70,10 +74,7 @@ import {
   verifierPromptOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
-import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
-
-/** The owner's rule: Codex plans and verifies, never implements; every other agent stays on its own model. */
-const onCodex = (agent: string) => agent === "planner" || agent === "verifier"
+import { codexFallback, effort, IMPLEMENTOR, isCodexModel, isRole, onCodex, OPUS, Reason, route, unspecific, WORKER } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import {
   Branches,
@@ -106,6 +107,7 @@ import { FLEET_DESCRIPTION, type FleetOutcome, fleetLineOf } from "./fleet.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
+  type CodexNeverImplements,
   continues,
   type Fallback,
   FinishSubagent,
@@ -161,6 +163,11 @@ export interface LatchedStart {
  */
 const lackedEffort = (model: string, level: Option.Option<string>): Option.Option<string> =>
   Option.filter(level, (wanted) => wanted !== "" && !model.endsWith(`#${wanted}`))
+/** Where a start runs, Codex never implementing (`offCodex`): its model, and the Codex model it is refused on with no Opus offered. */
+interface OffCodex {
+  readonly model: Option.Option<string>
+  readonly refused: Option.Option<string>
+}
 
 /** A latch's models, kept in its context: the first it is decided on, and the Codex fallback. */
 const LatchModels = Schema.Struct({ primary: Schema.String, fallback: Schema.String })
@@ -168,8 +175,8 @@ const LatchModels = Schema.Struct({ primary: Schema.String, fallback: Schema.Str
 /** Why a latched planner left its first model, kept in the latch's context, so the line its open writes records it too. */
 const LatchFirst = Schema.Struct({ model: Schema.String, fellBack: Schema.String })
 
-/** What `startSubagent` may refuse: the Sabbath or a still-latched child for a follow-up, and a held start no latch could be kept for. */
-export type StartRefusal = SabbathRest | PaceHeld | StillLatched
+/** What `startSubagent` may refuse: the Sabbath or a still-latched child for a follow-up, a held start no latch could be kept for, and an implementor with no Opus to run on. */
+export type StartRefusal = SabbathRest | PaceHeld | StillLatched | CodexNeverImplements
 
 /** A latch at its time, as the wakes hand it back: the parent's call as it was routed, and its child. */
 export interface LatchOpen {
@@ -240,6 +247,8 @@ export const layer = (config: Config) =>
       const units = yield* UnitLogs
       /** The planner's first model, when set. */
       const firstModel = Option.fromNullishOr(config.planner).pipe(Option.flatMap((planner) => Option.fromNullishOr(parseModel(planner.model))))
+      /** The providers a model counts as Codex's on, beside role.ts `CODEX_PROVIDERS`: the `codex` option's. */
+      const codexProviders = config.codex?.providers ?? []
 
       /** Move `unit` in the first of `directories` (or a path `named`) that has it; none found writes nothing. */
       const move = Effect.fnUntraced(function* (transition: Transition, named: ReadonlyArray<string>, directories: ReadonlyArray<string | undefined>) {
@@ -354,6 +363,29 @@ export const layer = (config: Config) =>
       })
 
       /**
+       * What a new implementor runs on, given the model it `named` (or was given): that model, else its role's
+       * or its parent's, unless that is a Codex one. Then the newest Opus offered, at the role's effort; with
+       * none offered, it is `refused` on the Codex model, which the aggregate refuses. Any other start, and a
+       * follow-up, keeps `named`.
+       */
+      const offCodex = Effect.fnUntraced(function* (
+        sessionID: string,
+        start: { readonly agent: string; readonly followUp: boolean },
+        named: Option.Option<string>,
+      ): Effect.fn.Return<OffCodex> {
+        const kept: OffCodex = { model: named, refused: Option.none() }
+        if (start.followUp || start.agent !== IMPLEMENTOR) return kept
+        const base = Option.map(Option.fromNullishOr(yield* models.base(sessionID, IMPLEMENTOR)), formatRef)
+        const codex = Option.filter(Option.orElse(named, () => base), (model) => isCodexModel(model, codexProviders))
+        if (Option.isNone(codex)) return kept
+        const level = Option.getOrElse(Option.fromNullishOr(effort(IMPLEMENTOR)), () => "")
+        return Option.match(Option.fromNullishOr(yield* models.newest(sessionID, OPUS.providers, OPUS.family, level)), {
+          onSome: (opus): OffCodex => ({ model: Option.some(opus), refused: Option.none() }),
+          onNone: (): OffCodex => ({ model: codex, refused: codex }),
+        })
+      })
+
+      /**
        * A new planner start on the planner's first model (`config.planner`),
        * when it names no model of its own: at the role's effort, with its pace
        * as asked, when the host offers that model and its pace has room;
@@ -430,16 +462,17 @@ export const layer = (config: Config) =>
         const bound = asks !== undefined && child === undefined && isRole(routed.agent) ? yield* models.base(call.sessionID, routed.agent) : undefined
         // An implementor naming a Codex model runs on its role's model instead, a follow-up on the one it has: Codex never
         // implements, whether the Codex fallback is on or off (no-codex-impl r1 M1).
-        const codexNamed = asks !== undefined && routed.agent === "implementor" && isCodexModel(asks, config.codex?.providers ?? [])
+        const codexNamed = asks !== undefined && routed.agent === IMPLEMENTOR && isCodexModel(asks, codexProviders)
         // A new planner naming its first model (any variant or none) is the planner's start too: named, it ran at the
         // model's default effort (the workbox's Ergo root, 2026-11-12: 11 Fable plans at 4x the cost of medium).
         const fresh = Option.isNone(Option.fromNullishOr(child))
         const firstNamed = Option.exists(Option.fromNullishOr(asks), (asked) => fresh && routed.agent === "planner" && Option.exists(firstModel, (first) => namesModel(asked, first)))
         const dropped = asks !== undefined && ((bound !== undefined && namesModel(asks, bound)) || codexNamed || firstNamed) ? asks : undefined
         const level = isRole(routed.agent) ? effort(routed.agent) : undefined
+        const followUp = child !== undefined
         const onFirst = yield* firstOf(call.sessionID, {
           agent: routed.agent,
-          followUp: child !== undefined,
+          followUp,
           namedModel: asks !== undefined && dropped === undefined,
           level,
           resting,
@@ -463,6 +496,9 @@ export const layer = (config: Config) =>
           const variant = yield* models.variant(call.sessionID, routed.agent, level)
           if (variant) model = variant
         }
+        // Codex never implements: a new implementor whose model is a Codex one (its parent's, say) runs on the newest Opus.
+        const off = yield* offCodex(call.sessionID, { agent: routed.agent, followUp }, Option.fromNullishOr(model))
+        model = Option.getOrUndefined(off.model)
         // A new worker that names no model runs on the one it inherits, at that model's variant: the aggregate caps it.
         const runsOn = child === undefined && model === undefined && routed.agent === WORKER ? yield* models.base(call.sessionID, routed.agent) : undefined
         const inherited = runsOn === undefined ? undefined : formatRef(runsOn)
@@ -492,6 +528,7 @@ export const layer = (config: Config) =>
           ...(inherited === undefined ? {} : { inherited }),
           ...(hold === undefined ? {} : { hold }),
           ...(childLatched === undefined ? {} : { childLatched }),
+          ...Option.match(off.refused, { onNone: () => ({}), onSome: (codex) => ({ codex }) }),
         })
         const first = onFirst?.first
         const events = yield* decide(command, now, SUBAGENT, asked, first)
@@ -549,7 +586,9 @@ export const layer = (config: Config) =>
         const now = yield* sabbathNow
         const resting = resumesAt(now, config.place) !== undefined
         // Its first model before its fallback; a latch with no fallback is decided on the model it was made on.
-        const kept = Option.getOrUndefined(Schema.decodeUnknownOption(LatchModels)(latch.context.models))
+        // Only a planner or verifier keeps a Codex fallback: one an older build kept for another agent is dropped,
+        // and that latch is decided on the model it was made on (codex-no-implement).
+        const kept = Option.getOrUndefined(Option.filter(Schema.decodeUnknownOption(LatchModels)(latch.context.models), () => onCodex(latch.agent)))
         // A planner latched on its first model (over the Sabbath) takes the planner's chain at its open, as a new
         // start would: the first model, else its own at its effort, then Codex.
         const firstRef = parseModel(config.planner?.model)
@@ -560,7 +599,11 @@ export const layer = (config: Config) =>
             ? yield* firstOf(latch.parent, { agent: latch.agent, followUp: false, namedModel: false, level, resting: false })
             : undefined
         const own = tried !== undefined && tried.model === undefined && level !== undefined && level !== "" ? yield* models.variant(latch.parent, latch.agent, level) : undefined
-        const primary = tried?.model ?? own ?? kept?.primary ?? latch.model
+        // Codex never implements: an implementor latched on a Codex model (an older build's) opens on Opus, or not at all.
+        const off = yield* offCodex(latch.parent, { agent: latch.agent, followUp: ran }, Option.fromNullishOr(tried?.model ?? own ?? kept?.primary ?? latch.model))
+        if (Option.isSome(off.refused))
+          return { outcome: "failed", message: `orchestrate: Codex never implements, and no Opus is offered for this implementor (it latched on ${off.refused.value}). Start it again once an Opus model is offered.` }
+        const primary = Option.getOrUndefined(off.model)
         const paced = resting || ran ? undefined : (tried?.paced ?? (yield* paceOf(latch.parent, latch.agent, primary)))
         // The chain's Codex fallback, offered as a new start's is; a latch made with one keeps its own.
         const offered =
@@ -636,7 +679,7 @@ export const layer = (config: Config) =>
         const resting = resumesAt(now, config.place) !== undefined
         const inSubagent = resting ? Boolean(yield* sessions.parentOf(call.sessionID)) : false
         // Another tool is never paced.
-        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTag("StillLatched", Effect.die))
+        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die }))
       })
 
       const finish = Effect.fn("Orchestrate.finishSubagent")(function* (input: {
@@ -646,7 +689,7 @@ export const layer = (config: Config) =>
       }) {
         // A finish is only recorded, never refused.
         const now = yield* sabbathNow
-        yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.catchTags({ SabbathRest: Effect.die, StillLatched: Effect.die }))
+        yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.catchTags({ SabbathRest: Effect.die, StillLatched: Effect.die, CodexNeverImplements: Effect.die }))
       })
 
       return { startSubagent, openLatch, useTool, finishSubagent: finish, handBack }
@@ -1228,9 +1271,12 @@ export const driftLayer = (config: Pick<Config, "place" | "now">) =>
   )
 
 /** What the log says about a refusal: the Sabbath's sentence, the pace's reason, or the latch the child waits on. */
-const whyOf = (rejection: Rejection | PaceHeld) =>
-  rejection._tag === "SabbathRest"
-    ? rejection.why
-    : rejection._tag === "PaceHeld"
-      ? rejection.reason
-      : `subagent ${rejection.child} is latched until ${new Date(rejection.opensAt).toISOString()}`
+const whyOf = (rejection: Rejection | PaceHeld): string =>
+  Match.value(rejection).pipe(
+    Match.tagsExhaustive({
+      SabbathRest: (rest) => rest.why,
+      PaceHeld: (held) => held.reason,
+      CodexNeverImplements: (codex) => `Codex never implements: the ${codex.agent} would run on ${codex.model} and no Opus is offered`,
+      StillLatched: (still) => `subagent ${still.child} is latched until ${new Date(still.opensAt).toISOString()}`,
+    }),
+  )

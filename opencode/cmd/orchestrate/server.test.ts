@@ -935,6 +935,69 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
+  /** An implementor's latch as the wakes hand it to the opener: made on `model`, with the opener's `context`. */
+  const implementorLatch = (model: string, context: Latch["context"]): Latch => ({
+    kind: "latch",
+    id: "w000001",
+    sessionID: "root",
+    directory: "/work",
+    setAt: now,
+    child: "ses_latched1",
+    subagent: { agent: "implementor", description: "FlowProducer close/add race", prompt: "x", model, from: "build", messageID: "msg", callID: "call" },
+    hold: "pace",
+    reason: "all pool accounts are held",
+    opensAt: now,
+    recheckAt: now,
+    context,
+  })
+
+  test("Codex never implements: an implementor latch kept with a Codex fallback (an older build's) opens on Opus or latches again, never on Codex", () =>
+    scenario(
+      Effect.gen(function* () {
+        // codex-no-implement: the workbox's 66 Codex implementors on 11-10 and 11-11 fell back so; a latch kept then keeps its fallback.
+        const latch = implementorLatch("anthropic/claude-opus#medium", { reason: "kept", models: { primary: "anthropic/claude-opus#medium", fallback: "openai/gpt-6.1-sol#high" } })
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
+        expect(yield* plugin.open(latch)).toMatchObject({ outcome: "held" })
+        expect(plugin.ran).toEqual([])
+        expect(asked).toEqual([])
+        // Opus with room: it opens there.
+        const later = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked) })
+        expect(yield* later.open(latch)).toEqual({ outcome: "opened" })
+        expect(later.ran).toMatchObject([{ input: { model: "anthropic/claude-opus#medium" } }])
+      }),
+    ))
+
+  test("Codex never implements: an implementor whose own model is Codex (a Codex parent's) runs on the newest Opus at its effort", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sol = { providerID: "openai", id: "gpt-6.1-sol-ultrafast" }
+        const opus: ReadonlyArray<Offered> = [
+          { providerID: "anthropic", id: "claude-opus-5-1", family: "claude-opus", time: { released: 1 }, variants: [{ id: "medium" }] },
+          { providerID: "anthropic", id: "claude-opus-5-5", family: "claude-opus", time: { released: 2 }, variants: [{ id: "medium" }, { id: "high" }] },
+        ]
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model: sol, variants: ["high"], others: [...codexOffered, ...opus], codex: admits(asked) })
+        const call = yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })
+        expect(call.input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus-5-5#medium" })
+        expect(call.refused).toBeUndefined()
+        expect(asked).toEqual([])
+        // A verifier on a Codex parent stays on the model it inherits: Codex plans and verifies.
+        const verifier = yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })
+        expect(verifier.input).toEqual({ agent: "verifier", prompt: "x" })
+        expect(verifier.refused).toBeUndefined()
+        // With no Opus offered, the start is refused: it never runs on Codex.
+        const bare = yield* start({ now: WEDNESDAY }, { model: sol, variants: ["high"], others: codexOffered, codex: admits(asked) })
+        expect(yield* bare.call("subagent", "root", { agent: "implementor", prompt: "x" })).toMatchObject({ refused: { message: expect.stringContaining("Codex never implements") } })
+        // A latch made on Codex opens on Opus, or fails with no Opus offered.
+        const latch = implementorLatch("openai/gpt-6.1-sol-ultrafast#high", { reason: "kept" })
+        expect(yield* plugin.open(latch)).toEqual({ outcome: "opened" })
+        expect(plugin.ran).toMatchObject([{ input: { model: "anthropic/claude-opus-5-5#medium" } }])
+        expect(yield* bare.open(latch)).toMatchObject({ outcome: "failed" })
+        expect(bare.ran).toEqual([])
+      }),
+    ))
+
   test("the spend-evenly pace alone holds a planner or verifier but not an implementor, which starts on Opus", () =>
     scenario(
       Effect.gen(function* () {

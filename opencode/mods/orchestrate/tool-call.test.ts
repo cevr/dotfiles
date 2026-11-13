@@ -8,11 +8,14 @@ import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
 import { explain, KNOWLTON, resumesAt, SabbathRest } from "./sabbath.ts"
 import {
+  CodexNeverImplements,
+  type Fallback,
   FinishSubagent,
   Finished,
   Latched,
   OpenLatch,
   PACE_POLL_MS,
+  routeOf,
   StartSubagent,
   Started,
   StillLatched,
@@ -435,10 +438,41 @@ describe("Opus first, Codex second", () => {
       Story.then(started({ agent: "planner", reason: "kept", model: OPUS, child: "child-1", background: true })),
     ))
 
-  test("a latch still held on Opus opens on Codex when Codex has room", () =>
-    run(
-      Story.clock(now),
-      Story.when(open({ model: OPUS, hold: poolHold, fallback: { model: SOL } })),
-      Story.then(started({ agent: "planner", reason: "kept", model: SOL, child: "child-1", background: true, fallback: `${OPUS} held: anthropic is at 95%` })),
-    ))
+  // codex-no-implement: the aggregate itself keeps the Codex fallback from any agent but a planner or verifier,
+  // whatever the handlers gathered (the workbox ran 66 implementors on Codex on 11-10 and 11-11).
+  const codexHold = { whose: "codex" as const, reason: "5h pace", retryAt: now + 300_000 }
+  const fallbacks: ReadonlyArray<Fallback> = [{ model: SOL }, { model: SOL, hold: codexHold }]
+  /** A held agent's two decisions, a new start and a latch's open, each with the fields its event carries. */
+  const heldOn = (agent: string, fallback: Fallback) => [
+    { command: start(agent, { model: OPUS, hold: poolHold, fallback }), fields: { asked: agent, ...routeOf(start(agent)) } },
+    { command: open({ agent, model: OPUS, hold: poolHold, fallback }), fields: { agent, reason: "kept" as const, child: "child-1", background: true as const } },
+  ]
+
+  const moved = `${OPUS} held: ${poolHold.reason}`
+  /** Each held decision with the event it must make: only a planner or verifier moves to Codex, any other agent latches on Opus. */
+  const cases = [
+    ...["implementor", "orchestrate-implementor", "worker", "general", "explore", "build", ""].flatMap((agent) =>
+      fallbacks.flatMap((fallback) =>
+        heldOn(agent, fallback).map(({ command, fields }) => ({
+          command,
+          event: latched({ ...fields, model: OPUS, hold: "pace", whose: "pool", why: poolHold.reason, opensAt: now + 900_000, recheckAt: now + PACE_POLL_MS }),
+        })),
+      ),
+    ),
+    ...["planner", "verifier"].flatMap((agent) => [
+      ...heldOn(agent, { model: SOL }).map(({ command, fields }) => ({ command, event: started({ ...fields, model: SOL, fallback: moved }) })),
+      ...heldOn(agent, { model: SOL, hold: codexHold }).map(({ command, fields }) => ({
+        command,
+        event: latched({ ...fields, model: SOL, fallback: moved, hold: "pace", whose: "codex", why: "5h pace", opensAt: now + 300_000, recheckAt: now + PACE_POLL_MS }),
+      })),
+    ]),
+    // Codex plans and verifies: a verifier on a Codex model starts there.
+    { command: start("verifier", { model: SOL, codex: SOL }), event: started({ asked: "verifier", agent: "verifier", reason: "kept", model: SOL }) },
+  ]
+
+  test("Codex never implements: only a held planner or verifier takes its Codex fallback, started or opened; any other agent latches on Opus", () =>
+    run(Story.clock(now), ...cases.map(({ command }) => Story.when(command)), Story.then(...cases.map(({ event }) => event))))
+
+  test("Codex never implements: an implementor start on a Codex model is refused", () =>
+    run(Story.clock(now), Story.when(start("implementor", { model: SOL, codex: SOL })), Story.rejected(new CodexNeverImplements({ agent: "implementor", model: SOL }))))
 })

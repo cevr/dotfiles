@@ -542,7 +542,7 @@
     "mods/orchestrate/memory/sessions.ts": {"effect/noNullish":3,"effect/noTernary":3},
     "mods/orchestrate/memory/skill.ts": {"effect/noNullish":2,"effect/preferServiceOf":2,"effect/preferTaggedConstructors":4},
     "mods/orchestrate/memory/step-log.ts": {"effect/noTernary":1,"effect/preferServiceOf":1},
-    "mods/orchestrate/model.ts": {"complexity":2,"effect/maxCognitiveComplexity":2,"effect/noAs":2,"effect/noConditionalEmptyObjectSpread":32,"effect/noGlobals":2,"effect/noNullish":197,"effect/noRuntimeTypeof":9,"effect/noTernary":92,"effect/noUnknownParameters":1,"effect/noUnsafeDictionaryType":3,"effect/preferSchemaTaggedUnion":3,"effect/preferServiceOf":4,"effect/preferTaggedConstructors":18},
+    "mods/orchestrate/model.ts": {"complexity":2,"effect/maxCognitiveComplexity":2,"effect/noAs":2,"effect/noConditionalEmptyObjectSpread":32,"effect/noGlobals":2,"effect/noNullish":197,"effect/noRuntimeTypeof":9,"effect/noTernary":90,"effect/noUnknownParameters":1,"effect/noUnsafeDictionaryType":3,"effect/preferSchemaTaggedUnion":3,"effect/preferServiceOf":4,"effect/preferTaggedConstructors":18},
     "mods/orchestrate/opencode/holds.test.ts": {"effect/noAsyncFunction":4,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":1,"effect/noNewError":1,"effect/noNullish":1,"effect/noTernary":2},
     "mods/orchestrate/opencode/holds.ts": {"effect/noNullish":2,"effect/noTernary":4,"effect/preferServiceOf":1},
     "mods/orchestrate/opencode/latches.test.ts": {"effect/noEffectRunInTests":2,"effect/noInlineProvide":1,"effect/noNewError":2,"effect/noNullish":2,"effect/noTernary":2},
