@@ -9,6 +9,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { ALARM, CLOSED, closedDock, DETAIL, panel, PANEL, underRule, type Want } from "../scenarios/prime-composer-frames.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -19,13 +20,8 @@ const root = join(import.meta.dir, "..")
 const names = ["panel", "wakes", "detail", "cancelled", "monitors", "closed", "none", "alarm"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
-/** The panel: its tab row, then its entries up to its hint line, without the rail. */
-function panel(frame: ReadonlyArray<string>) {
-  const at = frame.findIndex((line) => line.includes("Subagents") && line.includes("Monitors"))
-  const end = frame.findIndex((line, index) => index > at && line.includes("←/→ tabs"))
-  const clean = (line: string | undefined) => (line ?? "").replace(/^ ┃/, "").trim()
-  return { tabs: clean(frame[at]), rows: frame.slice(at + 1, end).map(clean).filter(Boolean), hints: clean(frame[end]) }
-}
+/** An expected line as a matcher (scenarios/prime-composer-frames.ts; the scenario waits on the same). */
+const matcher = (want: Want) => expect.stringMatching(want)
 
 describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-composer-")
@@ -44,33 +40,30 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
 
   test("↓ on the empty prompt opens the panel, its host tabs first, then Wakes and Monitors", kept.test(() => {
     // Prime's tab bar: the names between faint dots, with how many each lists; the alarm and the monitor are pending.
-    expect(panel(frames.panel).tabs).toMatch(/^Subagents {2}· {2}Shell {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 +esc$/)
-    expect(panel(frames.panel).rows).toEqual(["No active subagents"])
+    expect(panel(frames.panel).tabs).toMatch(PANEL.panel.tabs)
+    expect(panel(frames.panel).rows).toEqual(PANEL.panel.rows.map(matcher))
   }))
 
   test("Wakes lists the alarm in the panel's columns: its note, its mode and repeat, pending, and how long until it is due", kept.test(() => {
-    expect(panel(frames.wakes).rows).toEqual([expect.stringMatching(/^◇ ALPHA: check the deploy {2}wake · once +pending {2}in (9m \d\ds|10m)$/)])
-    expect(panel(frames.wakes).hints).toBe("Enter detail · Ctrl+D cancel · ←/→ tabs")
+    expect(panel(frames.wakes).rows).toEqual(PANEL.wakes.rows.map(matcher))
+    expect(panel(frames.wakes).hints).toMatch(PANEL.wakes.hints)
   }))
 
   test("Enter shows the alarm whole", kept.test(() => {
-    const text = frames.detail.join("\n")
-    expect(text).toMatch(/Wake w[0-9a-z]{6}/)
-    expect(text).toContain("Repeat: once")
-    expect(text).toContain("Mode: wake: its fire starts a turn")
+    // The wake's id, its repeat and its mode in words.
+    for (const want of DETAIL) expect(frames.detail.join("\n")).toMatch(want)
   }))
 
   test("ctrl+d cancels it: the tab says it has none", kept.test(() => {
-    expect(panel(frames.cancelled).rows).toEqual(["No pending wakes"])
+    expect(panel(frames.cancelled).rows).toEqual(PANEL.cancelled.rows.map(matcher))
   }))
 
   test("Monitors lists the monitor with its newest output, how long it has watched and when it last checked", kept.test(() => {
-    expect(panel(frames.monitors).rows).toEqual([expect.stringMatching(/^[◆◇] echo still-waiting {2}still-waiting +watching +\d+s {2}checked \d+s ago$/)])
+    expect(panel(frames.monitors).rows).toEqual(PANEL.monitors.rows.map(matcher))
   }))
 
   test("closed, the dock counts the monitor and no wake", kept.test(() => {
-    const dock = frames.closed.find((line) => line.includes("subagents  ·"))
-    expect(dock?.trim()).toBe("◆ 0 subagents  ·  0 shells  ·  1 monitor")
+    expect(closedDock(frames.closed)).toBe(CLOSED)
   }))
 
   test("with the monitor cancelled too, nothing is active: the dock's count line is not drawn", kept.test(() => {
@@ -83,12 +76,6 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
   }))
 
   test("a pending wake alone brings the line back, counting it, right under the rule", kept.test(() => {
-    const alarm = frames.alarm
-    const rule = alarm.findLastIndex((line) => /^ ─{20,}$/.test(line))
-    expect(alarm.slice(rule + 1, rule + 4).map((line) => line.trim())).toEqual([
-      "◆ 0 subagents  ·  0 shells  ·  1 wake",
-      "",
-      expect.stringContaining("Server"),
-    ])
+    expect(underRule(frames.alarm, ALARM.length)).toEqual(ALARM.map(matcher))
   }))
 })

@@ -21,7 +21,7 @@
 import { Deferred, Effect, Option, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
-import { shows as listed, type Tab } from "./prime-panel-rows.ts"
+import { FOOTERS, panelOf, shows as listed, subagentsShow, type Tab } from "./prime-panel-rows.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT || "out"
@@ -132,7 +132,9 @@ export default OpenCodeDriver.use(
           yield* until(`${cols}-dock`, (frame) => frame.includes("↓ subagents") && frame.includes("5 subagents"))
           yield* keep(`${cols}-dock`)
           yield* ui.press("down")
-          yield* until(`${cols}-subagents`, shows(["Monitors", ...LANES.map((lane) => lane.unit.slice(0, 6))]))
+          // Kept once the bar counts every tab (the wake and the monitor reach it after the subagents) and all five rows are in.
+          const lanes = shows(["Monitors", ...LANES.map((lane) => lane.unit.slice(0, 6))])
+          yield* until(`${cols}-subagents`, (frame) => lanes(frame) && (before || subagentsShow(frame)))
           const first = yield* keep(`${cols}-subagents`)
           // The rows' times move on with the clock, the rows redrawn in place.
           if (cols === 160 && !before) {
@@ -141,7 +143,8 @@ export default OpenCodeDriver.use(
             yield* keep("160-tick")
           }
           yield* ui.press("right")
-          yield* until(`${cols}-shell`, ready("shell", ["serving on :4000", "watching src"].map((line) => line.slice(0, 7))))
+          const shellRows = ready("shell", ["serving on :4000", "watching src"].map((line) => line.slice(0, 7)))
+          yield* until(`${cols}-shell`, (frame) => shellRows(frame) && (before || panelOf(frame).footer === FOOTERS.shell))
           yield* keep(`${cols}-shell`)
           yield* ui.press("right")
           yield* until(`${cols}-terminals`, ready("terminals", ["failed", "New terminal"]))

@@ -16,6 +16,7 @@
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { dockRows, listsWorking } from "./prime-subagents-rows.ts"
 
 const out = process.env.SCENARIO_OUT ?? "out"
 const label = process.env.SCENARIO_LABEL ?? "subagents"
@@ -123,7 +124,10 @@ export default OpenCodeDriver.use(
         top(frame).includes(" › ") && frame.includes("Executing") && frame.includes("● Ran printf")
 
       yield* ui.submit(ASK)
-      yield* until(`${label}-started`, (frame) => frame.includes(STARTED) && frame.includes("◆ 3 subagents"))
+      const titles = WORKERS.map((worker) => worker.description)
+      // A frame of the picker once it lists every worker working; the dock once its rows are in, in order.
+      const picker = (frame: string) => frame.includes("Subagents 3") && listsWorking(titles, frame)
+      yield* until(`${label}-started`, (frame) => frame.includes(STARTED) && dockRows(titles, frame))
       yield* Effect.sleep("500 millis")
       yield* save(`${label}-started`)
 
@@ -136,7 +140,7 @@ export default OpenCodeDriver.use(
       yield* save(`${label}-returned`)
 
       yield* ui.arrow("down")
-      yield* until(`${label}-picker`, (frame) => frame.includes("Subagents 3"))
+      yield* until(`${label}-picker`, picker)
       yield* save(`${label}-picker`)
 
       yield* ui.enter()
@@ -153,7 +157,7 @@ export default OpenCodeDriver.use(
       yield* save(`${label}-parent`)
 
       yield* click("◆ 3 subagents")
-      yield* until(`${label}-dock`, (frame) => frame.includes("Subagents 3"))
+      yield* until(`${label}-dock`, (frame) => picker(frame) && !top(frame).includes("›"))
       yield* save(`${label}-dock`)
 
       yield* ui.press("escape")

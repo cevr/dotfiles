@@ -95,22 +95,28 @@ export default OpenCodeDriver.use(
           writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
           console.log("screenshot:", yield* ui.screenshot(name))
         })
+      // The count line under the dock's rule, and the Subagents tab with its count; the test asserts both on these frames.
+      const lines = (frame: string) => frame.split("\n")
+      const counted = (frame: string) => lines(frame).some((line) => /^ ◆ \d+ subagents?  ·/.test(line))
+      const countLine = (count: string) => (frame: string) => lines(frame).some((line) => line.trim() === count)
+      const tab = (name: RegExp) => (frame: string) =>
+        lines(frame).some((line) => /^ ┃\s+Subagents\b/.test(line) && line.includes("Monitors") && name.test(line))
       const row = (frame: string, symbol: string, update: string) =>
         frame.split("\n").some((line) => line.includes(`${symbol} worker gpt  Run the proof  ${update}`))
 
       yield* ui.submit(ASK)
       // It has said it waits and ended its turn; both shells still run.
-      yield* until("waiting-rows", (frame) => frame.includes(STARTED) && row(frame, "◈", WAITING))
+      yield* until("waiting-rows", (frame) => frame.includes(STARTED) && row(frame, "◈", WAITING) && countLine("◆ 1 subagent  ·  0 shells")(frame))
       yield* save("waiting-rows")
       yield* ui.press("down")
-      yield* until("waiting-panel", (frame) => /Run the proof .* waiting +\d+s/.test(frame), 50)
+      yield* until("waiting-panel", (frame) => /Run the proof .* waiting +\d+s/.test(frame) && tab(/Subagents 1 /)(frame), 50)
       yield* save("waiting-panel")
       yield* ui.press("escape")
       // The short shell woke it, it killed the proof wait and stopped; the parent heard.
-      yield* until("ended-rows", (frame) => frame.includes(HEARD))
+      yield* until("ended-rows", (frame) => frame.includes(HEARD) && !counted(frame) && row(frame, "◆", "5 steps"))
       yield* save("ended-rows")
       yield* ui.press("down")
-      yield* until("ended-panel", (frame) => frame.includes("No active subagents"), 50)
+      yield* until("ended-panel", (frame) => frame.includes("No active subagents") && tab(/Subagents {2}·/)(frame), 50)
       yield* save("ended-panel")
       yield* dump
     }),

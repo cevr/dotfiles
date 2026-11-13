@@ -39,6 +39,21 @@ export const ROWS = {
 
 export type Tab = keyof typeof ROWS
 
+/** The tab bar on the Subagents tab: each tab with how many it lists (Terminals shows none). */
+export const BAR = /^Subagents 5 {2}· {2}Shell 2 {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 +esc$/
+
+/** The hint line under the Subagents and the Shell tabs, in Prime's words for their keys. */
+export const FOOTERS = { subagents: "Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs", shell: "Enter output · Ctrl+D kill · ←/→ tabs" } as const
+
+/** The five subagent lanes the scenario starts. */
+export const SUBAGENTS = 5
+
+/** Whether a frame's panel is the Subagents tab as the test asserts it: the bar counting every tab, the footer, five rows. */
+export function subagentsShow(frame: string) {
+  const shown = panelOf(frame)
+  return BAR.test(shown.bar) && shown.footer === FOOTERS.subagents && shown.rows.length === SUBAGENTS
+}
+
 /** Whether a frame's panel lists exactly the tab's rows. */
 export function shows(tab: Tab, frame: string) {
   const { rows } = panelOf(frame)
