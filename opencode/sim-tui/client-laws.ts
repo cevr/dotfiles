@@ -8,7 +8,8 @@
 // A law runs on a fresh root session, through HTTP-shaped calls and the events
 // the server sent since the law began. Its scripted model answers as the real
 // scenarios' does: a prompt containing `stall` streams `Working on it` and
-// holds; `spawn` starts one background worker; anything else answers `Done.`.
+// holds; `spawn` starts one background worker; `shell` runs one command to its
+// end; anything else answers `Done.`.
 import { Array as Arr, Data, Effect, Option, Schema } from "effect"
 import type { EventKind, ModelRef, SERVED } from "./server.ts"
 
@@ -109,6 +110,25 @@ const Item = Schema.Struct({ data: Schema.Struct({ id: Schema.String }) })
 const Inbox = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String, delivery: Schema.String })) })
 const Idle = Schema.Struct({ data: Schema.Struct({ time: Schema.Struct({ idle: Schema.optional(Schema.Number) }) }) })
 const Ended = Schema.Struct({ data: Schema.Struct({ outcome: Schema.optional(Schema.String) }) })
+const ShellCreated = Schema.Struct({
+  type: Schema.Literal("shell.created"),
+  data: Schema.Struct({ info: Schema.Struct({ id: Schema.String, metadata: Schema.Struct({ sessionID: Schema.optional(Schema.String) }) }) }),
+})
+const ShellExited = Schema.Struct({ type: Schema.Literal("shell.exited"), data: Schema.Struct({ id: Schema.String, status: Schema.String, exit: Schema.optional(Schema.Number) }) })
+const ToolProgress = Schema.Struct({
+  type: Schema.Literal("session.tool.progress"),
+  data: Schema.Struct({ sessionID: Schema.String, metadata: Schema.Struct({ shellID: Schema.optional(Schema.String) }) }),
+})
+const ToolSuccess = Schema.Struct({
+  type: Schema.Literal("session.tool.success"),
+  data: Schema.Struct({
+    sessionID: Schema.String,
+    content: Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) })),
+    metadata: Schema.Struct({ id: Schema.optional(Schema.String), exit: Schema.optional(Schema.Number), status: Schema.optional(Schema.String) }),
+  }),
+})
+const ShellList = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })) })
+const toJsonText = Schema.encodeSync(Json)
 const Unavailable = Schema.Struct({ _tag: Schema.Literal("RpcError"), type: Schema.Literal("rpc.unavailable") })
 const Goal = Schema.Struct({ output: Schema.Null })
 
@@ -131,6 +151,20 @@ const queuedBehindStall = (server: LawServer) =>
     yield* server.settle
     return { sessionID, queued, item: Option.match(read(Item, queued), { onNone: () => "", onSome: (found) => found.data.id }) }
   })
+
+/** What is wrong with the session's shell call's answer: the handle's header and the output, the handle in its metadata. */
+const shellAnswerFailures = (sent: ReadonlyArray<Sent>, sessionID: string, shellID: string) => {
+  const success = sent.flatMap((event) => Option.toArray(Schema.decodeUnknownOption(ToolSuccess)(event))).filter((event) => event.data.sessionID === sessionID)
+  const content = success[0]?.data.content ?? []
+  const metadata = success[0]?.data.metadata ?? {}
+  const header = content[0]?.text ?? ""
+  const output = content[1]?.text ?? ""
+  return [
+    ...[`the answer's header: ${header}`].filter(() => !header.startsWith(`${shellID} · exited 0 · `)),
+    ...[`the answer's output: ${output}`].filter(() => output.trim() !== "ok"),
+    ...[`the answer's metadata: ${toJsonText(metadata)}`].filter(() => metadata.id !== shellID || metadata.exit !== 0 || metadata.status !== "completed"),
+  ]
+}
 
 export const LAWS: ReadonlyArray<Law> = [
   {
@@ -318,6 +352,36 @@ export const LAWS: ReadonlyArray<Law> = [
         const created = (yield* server.sent).filter((event) => event.type === "session.created" && dataOf(event).parentID === sessionID)
         if (created.length !== 1) failures.push(`${created.length} children created`)
         failures.push(...expectStatus("family requests", yield* server.call(get(`/api/session/${sessionID}/family/request`)), 200))
+        return failures
+      }),
+  },
+  {
+    name: "a shell call runs its command to its end: the registry lists it and says it exited, the call names it as it starts, and its answer carries the handle's header and the output",
+    routes: ["shell.list"],
+    kinds: ["shell.created", "shell.exited", "session.tool.progress", "session.tool.success"],
+    run: (server) =>
+      Effect.gen(function* () {
+        const sessionID = yield* server.session
+        yield* prompt(server, sessionID, "run a shell")
+        yield* server.settle
+        const failures = inOrder(yield* kindsOf(server, sessionID), ["session.tool.called", "session.tool.progress", "session.tool.success"])
+        const sent = yield* server.sent
+        const created = sent.flatMap((event) => Option.toArray(Schema.decodeUnknownOption(ShellCreated)(event)))
+        const own = created.filter((event) => event.data.info.metadata.sessionID === sessionID).map((event) => event.data.info.id)
+        if (own.length !== 1) failures.push(`${own.length} shells created for the session`)
+        const shellID = own[0] ?? ""
+        const exited = sent.flatMap((event) => Option.toArray(Schema.decodeUnknownOption(ShellExited)(event))).filter((event) => event.data.id === shellID)
+        if (!exited.some((event) => event.data.status === "exited" && event.data.exit === 0)) failures.push(`shell.exited: ${exited.map((event) => toJsonText(event)).join(", ")}`)
+        const progress = sent.flatMap((event) => Option.toArray(Schema.decodeUnknownOption(ToolProgress)(event))).filter((event) => event.data.sessionID === sessionID)
+        if (!progress.some((event) => event.data.metadata.shellID === shellID)) failures.push(`progress names no shell ${shellID}: ${progress.map((event) => toJsonText(event)).join(", ")}`)
+        failures.push(...shellAnswerFailures(sent, sessionID, shellID))
+        // The registry lists the ended foreground shell no more, even asked for the exited ones (as real OpenCode answers).
+        const listed = (answer: Answer) => Option.match(read(ShellList, answer), { onNone: () => [], onSome: (found) => found.data.filter((info) => info.id === shellID).map((info) => info.status) })
+        const running = yield* server.call(get("/api/shell"))
+        const all = yield* server.call(get("/api/shell?exited=true"))
+        failures.push(...expectStatus("shell list", running, 200), ...expectStatus("shell list with the exited", all, 200))
+        if (listed(running).length !== 0) failures.push(`the shell list holds the ended shell: ${shown(running)}`)
+        if (listed(all).length !== 0) failures.push(`the shell list with the exited holds the ended foreground shell: ${shown(all)}`)
         return failures
       }),
   },

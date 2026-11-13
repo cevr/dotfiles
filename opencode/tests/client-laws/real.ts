@@ -9,6 +9,7 @@
 // a prompt containing `stall` streams `Working on it` and holds until the run is
 // cut; `spawn` calls the subagent tool once (a background worker on the
 // `general` agent, whose brief thinks and holds) and then answers `Started.`;
+// `shell` calls the shell tool once, on `printf 'ok\n'`, and then answers `Started.`;
 // a title request answers a title; anything else answers `Done.`.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
@@ -17,6 +18,8 @@ import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { real } from "../../sim-tui/law-server.ts"
 
 const BRIEF = "Worker brief."
+/** The command the shell law runs, in the laws' scratch directory. */
+const SHELL = "printf 'ok\\n'"
 const MODEL = { providerID: "sim", id: "sim-model" }
 
 const Content = Schema.Union([Schema.String, Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) }))])
@@ -51,6 +54,7 @@ const answerOf = (request: ChatRequest) => {
   if (user.includes(BRIEF)) return { kind: "hold" as const, text: "Looking." }
   if (user.includes("stall")) return { kind: "hold" as const, text: "Working on it" }
   if (user.includes("spawn")) return { kind: "spawn" as const, text: "" }
+  if (user.includes("shell")) return { kind: "shell" as const, text: "" }
   return { kind: "say" as const, text: "Done." }
 }
 
@@ -73,6 +77,10 @@ const eventsOf = (answer: ReturnType<typeof answerOf>, model: string, id: string
   const line = (event: ReturnType<typeof chunk> | typeof usage) => `data: ${toJson(event)}\n\n`
   const start = line(chunk({ role: "assistant", content: "" }, Option.none()))
   if (answer.kind === "hold") return { head: [start, line(chunk({ content: answer.text }, Option.none()))], tail: Option.none<ReadonlyArray<string>>() }
+  if (answer.kind === "shell") {
+    const call = { index: 0, id: "call_shell", type: "function" as const, function: { name: "shell", arguments: toJson({ command: SHELL }) } }
+    return { head: [start, line(chunk({ tool_calls: [call] }, Option.none()))], tail: Option.some([line(chunk({}, Option.some("tool_calls"))), line(usage), "data: [DONE]\n\n"]) }
+  }
   if (answer.kind === "spawn") {
     const input = { agent: "general", description: "Check the parser", prompt: BRIEF }
     const call = { index: 0, id: "call_worker", type: "function" as const, function: { name: "subagent", arguments: toJson(input) } }

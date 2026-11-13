@@ -41,7 +41,18 @@ export const Step = Schema.TaggedUnion({
   /** The model holds here until the run is interrupted (or `release`d). */
   Stall: {},
   /** A shell call a controller holds (opencode-drive's `tools.control`, as the scenarios run it) until the run is interrupted. */
-  Shell: { id: Schema.String, command: Schema.String, description: Schema.String },
+  Shell: {
+    id: Schema.String,
+    command: Schema.String,
+    description: Schema.optional(Schema.String),
+    /** The shell tool started it (it runs until `exit`ed or cut), as opposed to a controller holding the call. */
+    started: Schema.optional(Schema.Boolean),
+  },
+  /**
+   * A call that runs and answers within its step: a foreground shell that exits 0 with `output`, or a read
+   * of the text file at `path` holding `output`, each answered as the fork's tool answers it.
+   */
+  Ran: { id: Schema.String, tool: Schema.Literals(["shell", "read"]), target: Schema.String, output: Schema.String },
   /** A background subagent call: a child session starts on `input.prompt`; the model answers it as any session (by `Asked.sessionID`). */
   Subagent: {
     id: Schema.String,
@@ -52,6 +63,8 @@ export const Step = Schema.TaggedUnion({
   },
 })
 export type Step = typeof Step.Type
+/** A step that calls a tool and has its answer within the step: the step ends `tool-calls`. */
+const callsTool = Predicate.or(Predicate.isTagged("Subagent"), Predicate.isTagged("Ran"))
 type Subagent = typeof Step.cases.Subagent.Type
 
 /** The model streams `text`. */
@@ -61,7 +74,15 @@ export const reasoning = (value: string): Step => Step.cases.Reasoning.make({ te
 /** The model holds until the run is interrupted or released. */
 export const stall: Step = Step.cases.Stall.make({})
 /** A shell call that runs until the run is interrupted. */
-export const shell = (input: { readonly id: string; readonly command: string; readonly description: string }): Step => Step.cases.Shell.make(input)
+export const shell = (input: { readonly id: string; readonly command: string; readonly description?: string }): Step => Step.cases.Shell.make(input)
+/** A foreground shell call the shell tool runs until the test `exit`s it (or the run is interrupted). */
+export const longShell = (input: { readonly id: string; readonly command: string }): Step => Step.cases.Shell.make({ ...input, started: true })
+/** A foreground shell call that runs `command` and exits 0 with `output`, within its step. */
+export const ranShell = (input: { readonly id: string; readonly command: string; readonly output: string }): Step =>
+  Step.cases.Ran.make({ id: input.id, tool: "shell", target: input.command, output: input.output })
+/** A read call of the text file at `path`, which holds `output`, within its step. */
+export const ranRead = (input: { readonly id: string; readonly path: string; readonly output: string }): Step =>
+  Step.cases.Ran.make({ id: input.id, tool: "read", target: input.path, output: input.output })
 /** A background subagent call. */
 export const subagent = (input: Omit<Subagent, "_tag">): Step => Step.cases.Subagent.make(input)
 
@@ -95,8 +116,8 @@ type Tokens = { readonly input: number; readonly output: number; readonly reason
 type ErrorInfo = { readonly type: string; readonly message: string }
 
 type ToolState =
-  | { readonly status: "running"; readonly input: Input; readonly metadata: { readonly sessionID?: string } }
-  | { readonly status: "completed"; readonly input: Input; readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly metadata: { readonly sessionID: string; readonly status: string; readonly truncated: boolean } }
+  | { readonly status: "running"; readonly input: Input; readonly metadata: Readonly<Record<string, string>> }
+  | { readonly status: "completed"; readonly input: Input; readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly metadata: Metadata }
   | { readonly status: "error"; readonly input: Input; readonly error: ErrorInfo }
 
 interface TextPart {
@@ -175,6 +196,18 @@ interface SessionInfo {
   readonly location: { readonly directory: string }
   outcome?: string
   revert?: { readonly messageID: string; readonly files: ReadonlyArray<string> }
+}
+
+/** A shell command as the server's registry holds it (schema/src/shell.ts `Info`). */
+interface ShellInfo {
+  readonly id: string
+  status: "running" | "exited" | "killed"
+  readonly command: string
+  readonly cwd: string
+  readonly shell: string
+  readonly file: string
+  readonly metadata: { readonly sessionID: string }
+  time: { readonly started: number; completed?: number }
 }
 
 interface Running {
@@ -274,6 +307,7 @@ export const SERVED = [
   "model.list",
   "provider.list",
   "server.info",
+  "shell.list",
 ] as const
 export type Served = (typeof SERVED)[number]
 const isServed = (identifier: string): identifier is Served => SERVED.some((each) => each === identifier)
@@ -326,6 +360,8 @@ export const EVENTS = [
   "session.agent.selected",
   "session.model.selected",
   "session.viewed",
+  "shell.created",
+  "shell.exited",
 ] as const
 export type EventKind = (typeof EVENTS)[number]
 
@@ -361,6 +397,27 @@ export interface Options {
   readonly draw: Draw
   readonly now: () => number
   readonly model: Model
+}
+
+/** A completed call's metadata, as far as the double fills it. */
+type Metadata = Readonly<Record<string, string | number | boolean>>
+type Answer = { readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly metadata: Metadata }
+const textPart = (value: string) => ({ type: "text" as const, text: value })
+/** A runtime as the fork's shell tool's header line says it (tool/plugin/shell.ts `seconds`; the double's calls run under two minutes). */
+const seconds = (ms: number) => [`${(ms / 1_000).toFixed(1)} s`, `${Math.round(ms / 1_000)} s`][Number(ms >= 10_000)] ?? ""
+/**
+ * A foreground shell's answer once it exited 0 (tool/plugin/shell.ts `run`): its handle's header line and its
+ * output, and the handle less its output, with the fields the host's shell row read before handles.
+ */
+const shellAnswer = (shellID: string, output: string, runtimeMs: number): Answer => ({
+  content: [textPart(`${shellID} · exited 0 · ${seconds(runtimeMs)}`), textPart(output)],
+  metadata: { id: shellID, state: "exited", exitCode: 0, runtimeMs, next: Buffer.byteLength(output), truncated: false, status: "completed", exit: 0 },
+})
+/** A read's answer for a whole text file (tool/plugin/read.ts `toModelContent`): a line naming the range, then each line numbered. */
+const readAnswer = (path: string, output: string): Answer => {
+  const lines = Arr.filter([output.replace(/\n$/, "")], (text) => text !== "").flatMap((text) => text.split("\n"))
+  const range = [`Read file ${path}, 0 lines`, `Read file ${path}, lines 1-${lines.length}`][Number(lines.length > 0)] ?? ""
+  return { content: [textPart([range, ...lines.map((line, index) => `${index + 1}: ${line}`)].join("\n"))], metadata: { truncated: false } }
 }
 
 const NO_CONTENT = 204
@@ -399,6 +456,8 @@ export const make = (options: Options) => {
   const woken = new Set<string>()
   /** How each shell call the model started ended, in order. */
   const shellExits: Array<"killed"> = []
+  /** The shell commands the shell tool started, by id, as the server's shell registry lists them. */
+  const shells = new Map<string, ShellInfo>()
   const events: Array<string> = []
   const sequences = new Map<string, number>()
   // The sessions that chose their own agent and model, as the real server keeps them: a switch to the one
@@ -418,15 +477,15 @@ export const make = (options: Options) => {
   const id = (prefix: string) => `${prefix}_${Identifier.create(prefix === "ses", now())}`
 
   /** Queues `type` about `sessionID` for the client; `located` events carry the session's location. */
-  const emit = <D extends { readonly sessionID: string }>(type: EventKind, data: D, located = true) => {
+  const emit = <D extends object>(type: EventKind, data: D, located = true) => {
     events.push(type)
     const found = Option.fromUndefinedOr(EventManifest.Server.get(type))
     if (Option.isNone(found)) return broken.push(`the server's event manifest has no ${type}`)
     const definition = found.value
     const event: Wire<D> = { id: id("evt"), created: now(), type, data }
     if (located) event.location = location
-    // A durable event carries its place in its aggregate's log, as the real server's do (every event the double sends is a session's).
-    if (definition.durability === "durable") {
+    // A durable event carries its place in its aggregate's log, as the real server's do (every durable event the double sends is a session's; the shell events are ephemeral).
+    if (definition.durability === "durable" && Predicate.hasProperty(data, "sessionID") && Predicate.isString(data.sessionID)) {
       const seq = sequences.get(data.sessionID) ?? 0
       sequences.set(data.sessionID, seq + 1)
       event.durable = { aggregateID: data.sessionID, seq, version: definition.durable.version }
@@ -544,20 +603,91 @@ export const make = (options: Options) => {
         run.hold = "stall"
         return
       }
+      if (step._tag === "Ran") ran(run, { ...step, id: own(step.id) })
       if (step._tag === "Shell") {
-        const input = { command: step.command, description: step.description }
+        const input = Option.match(Option.fromUndefinedOr(step.description), {
+          onNone: () => ({ command: step.command }),
+          onSome: (description) => ({ command: step.command, description }),
+        })
         const part = toolPart(own(step.id), "shell", input)
         run.message.content.push(part)
         called(run, part, input)
         endText(run)
         emit("session.step.streamed", { sessionID: run.sessionID, assistantMessageID: run.message.id })
+        // The shell tool's own run names its shell as it starts; a controller's hold starts none.
+        if (step.started === true) startShell(run, part, step.command)
         run.hold = "shell"
         run.shell = Option.some(part)
         return
       }
       if (step._tag === "Subagent") spawn(run, { ...step, id: own(step.id) })
     }
-    endStep(run, FINISHES[Number(steps.some((step) => step._tag === "Subagent"))] ?? "stop")
+    endStep(run, FINISHES[Number(steps.some(callsTool))] ?? "stop")
+  }
+
+  /**
+   * The shell tool starts `part`'s command: the registry lists it (`shell.created`), and the call names it
+   * (`session.tool.progress`), as tool/plugin/shell.ts does. Returns the shell's id.
+   */
+  const startShell = (run: Running, part: ToolPart, command: string) => {
+    const info: ShellInfo = {
+      id: id("sh"),
+      status: "running",
+      command,
+      cwd: DIRECTORY,
+      shell: "/bin/sh",
+      file: `/tmp/opencode/shell/${part.id}.out`,
+      metadata: { sessionID: run.sessionID },
+      time: { started: now() },
+    }
+    shells.set(info.id, info)
+    emit("shell.created", { info })
+    part.state = { status: "running", input: part.state.input, metadata: { sessionID: run.sessionID, shellID: info.id } }
+    emit("session.tool.progress", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: part.id, metadata: part.state.metadata })
+    return info.id
+  }
+
+  /**
+   * The shell `shellID` exits 0; the registry says so (`shell.exited`) and lists it no more, even asked for
+   * the exited ones, as real OpenCode lists an ended foreground shell (the shell law).
+   */
+  const exitShell = (shellID: string) =>
+    Option.map(Option.fromUndefinedOr(shells.get(shellID)), () => {
+      shells.delete(shellID)
+      emit("shell.exited", { id: shellID, status: "exited", exit: 0 })
+    })
+
+  /** The shell `shellID` is killed, its call cut; the registry says so (`shell.exited`). */
+  const killShell = (shellID: string) =>
+    Option.map(Option.fromUndefinedOr(shells.get(shellID)), (info) => {
+      Object.assign(info, { status: "killed", time: { ...info.time, completed: now() } })
+      emit("shell.exited", { id: shellID, status: "killed" })
+    })
+
+  /** The id of the shell `part`'s call started, if it started one. */
+  const shellOf = (part: ToolPart) =>
+    Option.some(part.state).pipe(
+      Option.filter((state): state is Extract<ToolState, { readonly status: "running" }> => state.status === "running"),
+      Option.flatMap((state) => Option.fromUndefinedOr(state.metadata.shellID)),
+    )
+
+  /** The call's answer: its part completed and its success sent. */
+  const answered = (run: Running, part: ToolPart, answer: Answer) => {
+    part.state = { status: "completed", input: part.state.input, ...answer }
+    part.time = { ...part.time, completed: now() }
+    emit("session.tool.success", { sessionID: run.sessionID, assistantMessageID: run.message.id, id: part.id, ...answer, executed: false })
+  }
+
+  /** A call that runs and answers within its step, as the fork's tool does: a shell names its shell as it starts. */
+  const ran = (run: Running, step: typeof Step.cases.Ran.Type) => {
+    const input = { [{ shell: "command", read: "path" }[step.tool]]: step.target }
+    const part = toolPart(step.id, step.tool, input)
+    run.message.content.push(part)
+    called(run, part, input)
+    if (step.tool === "read") return answered(run, part, readAnswer(step.target, step.output))
+    const shellID = startShell(run, part, step.target)
+    exitShell(shellID)
+    answered(run, part, shellAnswer(shellID, step.output, now() - part.time.ran))
   }
 
   const spawn = (run: Running, step: Subagent) => {
@@ -674,6 +804,7 @@ export const make = (options: Options) => {
       onSome: (part) => {
         // As core settles a tool call the interrupt cut (SessionRunner.settleStaleToolCalls): aborted, with no output.
         shellExits.push("killed")
+        Option.map(shellOf(part), killShell)
         const cut = { type: "aborted", message: "Tool execution interrupted: shell" }
         part.state = { status: "error", input: part.state.input, error: cut }
         part.time = { ...part.time, completed: now() }
@@ -850,6 +981,9 @@ export const make = (options: Options) => {
         }),
       ),
     "session.view": ({ sessionID, body }) => Effect.succeed(withSession(sessionID, (info) => view(sessionID, info, body.idle ?? -1))),
+    // The running shells; with `exited=true`, the ended ones too (server/src/handlers/shell.ts).
+    "shell.list": ({ query }) =>
+      Effect.succeed(json("shell.list", { location: catalogLocation, data: Array.from(shells.values()).filter((info) => info.status === "running" || query.get("exited") === "true") })),
     "agent.list": () => Effect.succeed(json("agent.list", { location: catalogLocation, data: AGENTS })),
     "model.list": () => Effect.succeed(json("model.list", { location: catalogLocation, data: [MODEL] })),
     "provider.list": () => Effect.succeed(json("provider.list", { location: catalogLocation, data: [PROVIDER] })),
@@ -932,6 +1066,20 @@ export const make = (options: Options) => {
       }
       if (rest !== "" && part?.type !== "text") streamText(run, rest, { type: "text", text: "" })
       endStep(run, "stop")
+    },
+    /** Ends a held shell call: it exits 0 with `output` (its runtime the virtual time it ran), and the run goes on. */
+    exit: (sessionID: string, output: string) => {
+      const found = Option.fromUndefinedOr(running.get(sessionID)).pipe(Option.filter((run) => run.hold === "shell"))
+      if (Option.isNone(found)) return
+      const run = found.value
+      Option.map(run.shell, (part) => {
+        const named = shellOf(part)
+        Option.map(named, exitShell)
+        answered(run, part, shellAnswer(Option.getOrElse(named, () => id("sh")), output, now() - part.time.ran))
+      })
+      run.hold = "none"
+      run.shell = Option.none()
+      endStep(run, "tool-calls")
     },
     /** The server stops answering: requests from now on stay open until `answer`. */
     silence: () => {

@@ -151,6 +151,35 @@
           "why": "real too, in the deep tier, as the server double's check against the real host; the frames on sim-tui, held to their goldens from one real run (sim-tui/golden/escape-subagent)"
         }
       ]
+    },
+    "tests/prime-runs.test.ts": {
+      "simulated": "cmd/prime/prime-runs.sim.test.tsx",
+      "tests": [
+        {
+          "name": "while it runs, the long command after the text is its own row, the newest in the transcript",
+          "expects": 4,
+          "carried": "both",
+          "why": "real too, in the deep tier, as the server double's check against the real host; the frames on sim-tui, held to their goldens from one real run (sim-tui/golden/prime-runs)"
+        },
+        {
+          "name": "Details: a step's two parallel calls share a group; the next step, the text and the reader's message each start one",
+          "expects": 1,
+          "carried": "both",
+          "why": "real too, in the deep tier, as the server double's check against the real host; the frames on sim-tui, held to their goldens from one real run (sim-tui/golden/prime-runs)"
+        },
+        {
+          "name": "All: the first group keeps its header and tree; each call after a message is the group's line alone",
+          "expects": 2,
+          "carried": "both",
+          "why": "real too, in the deep tier, as the server double's check against the real host; the frames on sim-tui, held to their goldens from one real run (sim-tui/golden/prime-runs)"
+        },
+        {
+          "name": "Overview: a header per group, between the messages that end them",
+          "expects": 1,
+          "carried": "both",
+          "why": "real too, in the deep tier, as the server double's check against the real host; the frames on sim-tui, held to their goldens from one real run (sim-tui/golden/prime-runs)"
+        }
+      ]
     }
   },
   "retired": []
