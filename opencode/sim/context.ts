@@ -8,7 +8,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
-import { type Handler, type Hook, type HookInput, type Host, type HostEvent, type Login, type Subscriber } from "./host.ts"
+import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type HostEvent, type Login, type Subscriber } from "./host.ts"
 import { type JsonObject, plain } from "./runtime.ts"
 
 /** A plugin as OpenCode loads it: its definition, where, and its options. */
@@ -40,6 +40,8 @@ export const OPERATIONS = [
   "event.subscribe",
   "tool.transform",
   "tool.list",
+  "tool.hook",
+  "shell.hook",
   "rpc",
   "rpc.register",
   "session.hook",
@@ -52,10 +54,12 @@ export const OPERATIONS = [
   "session.prompt",
   "session.update",
   "model.list",
+  "model.default",
   "provider.list",
   "provider.get",
   "agent.list",
   "agent.get",
+  "agent.transform",
   "provider.transform",
   "integration.get",
   "integration.transform",
@@ -84,6 +88,8 @@ const CreateInput = Schema.Struct({
   parentID: Schema.optional(Schema.String),
   title: Schema.optional(Schema.String),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+  agent: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.Struct({ providerID: Schema.String, id: Schema.String, variant: Schema.optional(Schema.String) })),
 })
 const PromptInput = Schema.Struct({ sessionID: Schema.String, id: Schema.optional(Schema.String), text: Schema.String })
 const UpdateInput = Schema.Struct({ sessionID: Schema.String, metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)) })
@@ -94,7 +100,8 @@ const ListInput = Schema.Struct({
   limit: Schema.optional(Schema.Number),
 })
 const ProviderInput = Schema.Struct({ providerID: Schema.String })
-const AgentInput = Schema.Struct({ agentID: Schema.String })
+const AgentInput = Schema.Struct({ agentID: Schema.String, location: Schema.optional(Schema.Struct({ directory: Schema.String })) })
+const LocationInput = Schema.Struct({ location: Schema.optional(Schema.Struct({ directory: Schema.String })) })
 const SubscribeInput = Schema.Struct({ types: Schema.optional(Schema.Array(Schema.String)) })
 
 /** A plugin's input to an operation, parsed as the host's schema would: a malformed one is the plugin's defect. */
@@ -155,6 +162,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
 
   const own = host.tools.get(instance) ?? new Map()
   const gone = host.removed.get(instance) ?? new Set<string>()
+  const edits = host.updates.get(instance) ?? []
   const editor: ToolEditor = {
     list: () => [...own.values()].map((tool) => ({ ...tool, id: tool.name })),
     get: (id) => Option.getOrUndefined(Option.map(Option.fromNullishOr(own.get(id)), (tool) => ({ ...tool, id }))),
@@ -163,7 +171,10 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       own.set(tool.name, tool)
       host.record("tool-added", { name: tool.name, instance })
     },
-    update: (id) => void unmodelled(`ctx.tool.transform: editor.update(${id})`),
+    update: (id, change) => {
+      edits.push({ id, change })
+      host.record("tool-updated", { name: id, instance })
+    },
     remove: (id) => {
       gone.add(id)
       host.record("tool-removed", { name: id, instance })
@@ -362,16 +373,19 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     return { data: ordered.slice(0, input.limit ?? ordered.length).map(host.infoOf) }
   }
 
+  /** A hook of the copy's location, by its domain-qualified name (a session hook's is its own), for the copy's life. */
+  const hookOf = (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) =>
+    registration(
+      (): Hook => {
+        const hook = { instance, directory: loaded.directory, name, callback }
+        host.hooks.push(hook)
+        return hook
+      },
+      (hook) => void host.hooks.splice(host.hooks.indexOf(hook), 1),
+    )
+
   const session = {
-    hook: (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) =>
-      registration(
-        (): Hook => {
-          const hook = { instance, directory: loaded.directory, name, callback }
-          host.hooks.push(hook)
-          return hook
-        },
-        (hook) => void host.hooks.splice(host.hooks.indexOf(hook), 1),
-      ),
+    hook: hookOf,
     get: <I>(input: I) =>
       parse(
         SessionInput,
@@ -453,7 +467,10 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       ),
   }
 
-  const agents = [{ id: "build", request: {} }]
+  /** The agents of a location, as the agent domain answers them. */
+  const agentsAt = (input: typeof LocationInput.Type) => [...host.agentsOf(input.location?.directory ?? loaded.directory).values()]
+  /** The catalog's models, as the model domain answers them: each with its variants. */
+  const catalog = () => host.models.map((entry) => ({ ...entry, variants: entry.variants ?? [] }))
   const modelled = {
     options: loaded.options,
     location: { directory: loaded.directory },
@@ -465,18 +482,29 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           () => {
             host.tools.set(instance, own)
             host.removed.set(instance, gone)
+            host.updates.set(instance, edits)
             callback(editor)
           },
           () => {
             host.tools.delete(instance)
             host.removed.delete(instance)
+            host.updates.delete(instance)
           },
         ),
       list: () => Effect.sync(() => [...host.toolsOf(loaded.directory).keys()].map((name) => ({ id: name, name }))),
+      hook: (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) => hookOf(`tool:${name}`, callback),
     },
+    shell: { hook: (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) => hookOf(`shell:${name}`, callback) },
     rpc: Object.assign(client, { register }),
     session,
-    model: { list: () => Effect.sync(() => ({ data: host.models })) },
+    model: {
+      list: () => Effect.sync(() => ({ data: catalog() })),
+      // The model a session with no selection runs on: the host's, as the catalog has it.
+      default: () =>
+        Effect.sync(() => ({
+          data: catalog().find((entry) => entry.providerID === host.model.providerID && entry.id === host.model.id) ?? { ...host.model, variants: [] },
+        })),
+    },
     integration,
     provider: {
       transform: providerTransform,
@@ -492,15 +520,26 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         ),
     },
     agent: {
-      list: () => Effect.sync(() => ({ data: agents })),
+      list: <I>(input: I) => parse(LocationInput, "agent.list")(input ?? {}).pipe(Effect.map((parsed) => ({ data: agentsAt(parsed) }))),
       get: <I>(input: I) =>
         parse(
           AgentInput,
           "agent.get",
         )(input).pipe(
-          Effect.flatMap(({ agentID }) => Effect.fromOption(Option.fromNullishOr(agents.find((agent) => agent.id === agentID)))),
+          Effect.flatMap((parsed) => Effect.fromOption(Option.fromNullishOr(agentsAt(parsed).find((agent) => agent.id === parsed.agentID)))),
           Effect.map((data) => ({ data })),
           Effect.mapError(() => host.catalogNotFound("agent")),
+        ),
+      // A copy's agents transform, run on the location's agents at each read, in load order, for the copy's life.
+      transform: (callback: (editor: AgentEditor) => void) =>
+        registration(
+          () => {
+            const transform = { instance, callback }
+            host.agentTransforms.push(transform)
+            host.record("agent-transform", { instance })
+            return transform
+          },
+          (transform) => void host.agentTransforms.splice(host.agentTransforms.indexOf(transform), 1),
         ),
     },
   }

@@ -14,7 +14,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Array as Arr, Clock, Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema } from "effect"
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
+import { answer, BROKEN, callOf, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, PROBE_OPTIONS } from "../../sim/law-names.ts"
 
 /** How long the probe has to run every law on the real host. */
 const LIMIT = 300_000
@@ -24,7 +24,8 @@ const POLL = 250
 /** The run could not start the fork or the probe never finished. */
 class RealRunFailed extends Data.TaggedError("RealRunFailed")<{ readonly message: string; readonly cause?: unknown }> {}
 
-const Content = Schema.Union([Schema.String, Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) }))])
+/** A message's content: a string, its parts, or none at all (an assistant turn of tool calls only). */
+const Content = Schema.Union([Schema.String, Schema.Null, Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) }))])
 type Content = typeof Content.Type
 const ChatRequest = Schema.Struct({
   model: Schema.optional(Schema.String),
@@ -36,6 +37,7 @@ const toJson = Schema.encodeSync(Json)
 
 /** A message's text: its string, or its parts' texts. */
 const textOf = (content: Content = ""): string => {
+  if (Predicate.isNull(content)) return ""
   if (Predicate.isString(content)) return content
   return content.map((part) => part.text ?? "").join("")
 }
@@ -53,6 +55,25 @@ const kindOf = (request: ChatRequest) => {
 interface Delta {
   readonly role?: string
   readonly content?: string
+  readonly tool_calls?: ReadonlyArray<{ readonly index: number; readonly id: string; readonly type: "function"; readonly function: { readonly name: string; readonly arguments: string } }>
+}
+
+/** A tool call as OpenAI-compatible stream events, with a usage: what a law's `law-call:` prompt asks for. */
+const callEvents = (asked: { readonly name: string; readonly input: string }, model: string, id: string) => {
+  const chunk = (delta: Delta, finish: Option.Option<string>) => ({
+    id,
+    object: "chat.completion.chunk",
+    created: 0,
+    model,
+    choices: [{ index: 0, delta, finish_reason: Option.getOrUndefined(finish) }],
+  })
+  const usage = { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010 }
+  const list = [
+    chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${id}`, type: "function", function: { name: asked.name, arguments: asked.input } }] }, Option.none()),
+    chunk({}, Option.some("tool_calls")),
+    { id, object: "chat.completion.chunk", created: 0, model, choices: [], usage },
+  ]
+  return [...list.map((event) => `data: ${toJson(event)}\n\n`), "data: [DONE]\n\n"].join("")
 }
 
 /** The answer as OpenAI-compatible stream events, with a usage. */
@@ -82,7 +103,12 @@ const model = (served: { count: number }) =>
     const body = yield* HttpServerRequest.schemaBodyJson(ChatRequest)
     const text = (body.messages ?? []).map((message) => textOf(message.content)).join("\n")
     served.count += 1
-    return HttpServerResponse.text(events(answer(kindOf(body), text), body.model ?? "sim", `law${served.count}`), {
+    const id = `law${served.count}`
+    const kind = kindOf(body)
+    // A turn whose last message is a law's `law-call:` prompt is answered with that tool call; any other as `answer` says.
+    const asked = Option.filter(Arr.head(callOf(textOf(body.messages?.at(-1)?.content))), () => kind === "primary")
+    const stream = Option.match(asked, { onNone: () => events(answer(kind, text), body.model ?? "sim", id), onSome: (call) => callEvents(call, body.model ?? "sim", id) })
+    return HttpServerResponse.text(stream, {
       contentType: "text/event-stream",
       headers: { "cache-control": "no-cache" },
     })

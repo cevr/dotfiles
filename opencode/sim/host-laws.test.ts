@@ -4,12 +4,13 @@
 // without a law: every one of them is named by one.
 import type { Plugin } from "@opencode/plugin/effect"
 import { describe, expect } from "bun:test"
-import { Array as Arr, Effect, Predicate, type Schema } from "effect"
+import { Array as Arr, Effect, Option, Predicate, Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
 import { LAWS } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
+import { plain } from "./runtime.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import { answer, BROKEN, callOf, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
 import Probe from "./server.ts"
 import * as World from "./world.ts"
 
@@ -26,13 +27,28 @@ const textsOf = (value: Schema.Json): ReadonlyArray<string> => {
   return Object.entries(value).flatMap(([key, inner]) => Arr.filter([inner], () => TEXTS.has(key)).flatMap(textsOf))
 }
 
+/** The last text of a request's last message: a law's `law-call:` prompt, or what a tool answered. */
+const lastText = (messages: Schema.Json) => {
+  if (!Array.isArray(messages)) return Option.none<string>()
+  return Option.flatMap(Arr.last(messages), (message) => Arr.last(textsOf(message)))
+}
+
 /**
  * The law model over HTTP, as real OpenCode's scripted model answers (tests/host-laws/real.ts): a turn offers tools,
  * a compaction asks for the summary, a title is the rest; each answered as law-names.ts `answer` says.
  */
+/** A law call's input, as law-names.ts `callOf` gives its text: a JSON object. */
+const CallInput = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
+
 const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
-  const text = textsOf(body["messages"] ?? []).join("\n")
+  const messages = body["messages"] ?? []
+  // The system prompt comes first, as real OpenCode's scripted model reads its system message first.
+  const text = [...textsOf(body["system"] ?? []), ...textsOf(messages)].join("\n")
   const tools = body["tools"]
+  const asked = Option.flatMap(lastText(messages), (said) =>
+    Option.flatMap(Arr.head(callOf(said)), (call) => Option.map(Schema.decodeUnknownOption(CallInput)(call.input), (input) => ({ name: call.name, input }))),
+  )
+  if (Array.isArray(tools) && tools.length > 0 && Option.isSome(asked)) return { kind: "ok", tool: { name: asked.value.name, input: plain(asked.value.input) } }
   if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: answer("primary", text) }
   if (text.includes("summarize the conversation above")) return { kind: "ok", text: answer("compaction", text) }
   return { kind: "ok", text: answer("title", text) }
@@ -62,10 +78,17 @@ const lawLine = (line: { readonly message: string }) => {
 }
 
 describe("the host laws on the world", () => {
+  // One world per seed runs every law; each law's test reads its own line of that run, as the real run's tests do.
+  const runs = new Map<number, ReadonlyArray<string>>()
+  const linesOn = (seed: number) =>
+    Option.match(Option.fromNullishOr(runs.get(seed)), {
+      onSome: Effect.succeed,
+      onNone: () => lawsOn(seed).pipe(Effect.tap((lines) => Effect.sync(() => void runs.set(seed, lines)))),
+    })
   for (const law of LAWS)
     seeded(law.name, ({ seed, expect: check }) =>
       Effect.gen(function* () {
-        const lines = yield* lawsOn(seed)
+        const lines = yield* linesOn(seed)
         check(outcome(lines, law.name)).toEqual([`${KEPT}${law.name}`])
       }),
     )

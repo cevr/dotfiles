@@ -17,7 +17,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
-import { type Asked, type Message, makeHost, type Session, type Options, type Process, START } from "./host.ts"
+import { type Asked, type Message, makeHost, type ModelRef, type Session, type Options, type Process, START } from "./host.ts"
 import * as Provider from "./provider.ts"
 import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
 
@@ -25,7 +25,10 @@ export {
   call,
   PROCESSES,
   type Asked,
+  type CatalogModel,
+  type Kind,
   type Message,
+  type ModelRef,
   type Options,
   type Process,
   type Reply,
@@ -195,8 +198,8 @@ export const make = (worldOptions: WorldOptions) => {
       host.record("up", {})
       return startAll.pipe(Effect.andThen(run(Effect.sync(host.resume))))
     }),
-    /** A new root session in `directory`: its id. */
-    session: (directory: string, input: { readonly id?: string; readonly parentID?: string } = {}) =>
+    /** A new root session in `directory` (on an agent and a model, as the owner may pick them): its id. */
+    session: (directory: string, input: { readonly id?: string; readonly parentID?: string; readonly agent?: string; readonly model?: ModelRef } = {}) =>
       run(host.createSession({ directory, ...input })).pipe(Effect.map((session) => session.id)),
     /** The owner sends `text` to the session: a prompt, which wakes it. */
     prompt: (sessionID: string, text: string) =>

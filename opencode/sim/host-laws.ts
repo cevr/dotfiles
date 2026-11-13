@@ -13,7 +13,7 @@
 // it publishes and the hooks it runs. The probe (`probeOf`) is made of the
 // same: it counts each session's executions from the host's events and the
 // model's requests from the `model.request` hook.
-import { Integration, type Plugin } from "@opencode/plugin/effect"
+import { Integration, type Plugin, Tool } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
@@ -21,7 +21,25 @@ import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+import { KEPT_IN_SUMMARY, LAW, LAW_FOLDER, lawCall, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
+
+/** The agents the laws define: one for the agent law, a subagent for the subagent laws, one with a small window. */
+const LAW_AGENT = "law-agent"
+const LAW_CHILD = "law-child"
+const LAW_WINDOW = "law-window"
+/**
+ * The window law's compaction window, in tokens: under twice the 16k reserve, so its ceiling is 85% of it (85), which
+ * a request on either host's law model passes (the world's answer reports 100 input tokens, real OpenCode's 1,010).
+ */
+const WINDOW_TOKENS = 100
+
+/** A tool result's content as text, for a wrapper to put a line before it. */
+const resultContent = (content: Tool.Result["content"]) => {
+  if (Schema.is(Schema.String)(content)) return content
+  const texts: Array<string> = []
+  for (const part of content ?? []) if (part.type === "text") texts.push(part.text)
+  return texts.join("\n")
+}
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -92,6 +110,11 @@ export const probeOf = (ctx: Plugin.Context) =>
     const probe: Probe = { requests: Ref.get(requests), turn }
     return probe
   })
+
+/** A law call's input: a JSON object, as its text. */
+const CallInput = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
+/** A law's prompt that asks the model to call `tool` with `input`. */
+const callFor = (tool: string, input: typeof CallInput.Type) => lawCall(tool, Schema.encodeSync(CallInput)(input))
 
 const fresh = (ctx: Plugin.Context) => ctx.session.create({ title: "law" })
 
@@ -317,7 +340,7 @@ export const LAWS: ReadonlyArray<Law> = [
   },
   {
     name: LAW.catalog,
-    operations: ["model.list", "provider.list", "provider.get", "agent.list", "agent.get"],
+    operations: ["model.list", "model.default", "provider.list", "provider.get", "agent.list", "agent.get"],
     check: (ctx) =>
       Effect.gen(function* () {
         const location = { directory: ctx.location.directory }
@@ -326,6 +349,8 @@ export const LAWS: ReadonlyArray<Law> = [
           models.data.some((model) => model.providerID === "sim" && model.id === "sim-model"),
           "the model list lacks sim/sim-model",
         )
+        const chosen = (yield* ctx.model.default({ location })).data
+        yield* ensure(chosen?.providerID === "sim" && chosen.id === "sim-model", `the default model is ${chosen?.providerID}/${chosen?.id}`)
         const providers = yield* ctx.provider.list({ location })
         yield* ensure(
           providers.data.some((provider) => provider.id === "sim"),
@@ -537,6 +562,206 @@ export const LAWS: ReadonlyArray<Law> = [
           providers.data.some((provider) => provider.id === "openai"),
           `the provider list after the transform is ${providers.data.map((provider) => provider.id).join(",")}`,
         )
+      }),
+  },
+  {
+    name: LAW.agents,
+    operations: ["agent.transform", "agent.list", "agent.get", "session.create"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const location = { directory: ctx.location.directory }
+        yield* ctx.agent.transform((editor) =>
+          editor.update(LAW_AGENT, (agent) => {
+            agent.description = "law: the agent description"
+            agent.system = "law: the agent system"
+          }),
+        )
+        const listed = (yield* ctx.agent.list({ location })).data.filter((agent) => agent.id === LAW_AGENT)
+        yield* ensure(listed.length === 1, `the agent list holds the defined agent ${listed.length} times`)
+        const got = yield* ctx.agent.get({ agentID: Agent.ID.make(LAW_AGENT), location })
+        yield* ensure(got.data.description === "law: the agent description", `get answered the description ${String(got.data.description)}`)
+        yield* ensure(got.data.mode === "primary", `an agent made by an update is ${got.data.mode}, not primary`)
+        const session = yield* ctx.session.create({ title: "law", agent: Agent.ID.make(LAW_AGENT) })
+        yield* ensure((yield* ctx.session.get({ sessionID: session.id })).agent === LAW_AGENT, "the session does not run as the agent it was created on")
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: on the agent" }))
+        const text = yield* contextText(ctx, session.id)
+        yield* ensure(count(text, "heard the agent system|on the agent") === 1, "the model did not read the agent's system prompt before the prompt")
+      }),
+  },
+  {
+    name: LAW.subagent,
+    operations: ["session.prompt", "session.list", "session.get", "session.context"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        yield* ctx.agent.transform((editor) =>
+          editor.update(LAW_CHILD, (agent) => {
+            agent.mode = "subagent"
+          }),
+        )
+        const parent = yield* fresh(ctx)
+        const notices = yield* Ref.make(0)
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.inbox.enqueued"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.when(
+                Ref.update(notices, (n) => n + 1),
+                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && event.data.item.payload.text.startsWith("<subagent ")),
+              ),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        const call = callFor("subagent", { agent: LAW_CHILD, description: "law child", prompt: "law: the child task" })
+        yield* probe.turn(parent.id, ctx.session.prompt({ sessionID: parent.id, text: call }))
+        const children = (yield* ctx.session.list({ parentID: parent.id })).data
+        yield* ensure(children.length === 1, `the call made ${children.length} children`)
+        const child = children[0]!
+        yield* ensure(child.agent === LAW_CHILD, `the child runs as ${child.agent}`)
+        const answered = yield* contextText(ctx, parent.id)
+        yield* ensure(count(answered, "is working in the background") === 1, "the call did not answer that the child runs in the background")
+        // The child's idle reports to the parent, which wakes and reads it.
+        const notice = `<subagent sessionID=\\"${child.id}\\"`
+        for (let waited = 0; count(yield* contextText(ctx, parent.id), notice) === 0 && waited < 60_000; waited += 100) yield* Effect.sleep("100 millis")
+        yield* settle
+        const told = yield* contextText(ctx, child.id)
+        yield* ensure(count(told, "You are a subagent spawned by another session.") === 1, "the child was not told it is a subagent")
+        yield* ensure(count(told, "heard the child task") === 1, "the child did not answer its task")
+        const after = yield* contextText(ctx, parent.id)
+        yield* ensure((yield* Ref.get(notices)) === 1, `the parent got ${yield* Ref.get(notices)} subagent notices`)
+        yield* ensure(count(after, notice) === 1, "the parent's context does not hold the child's notice")
+        // The parent's answer to its call, the notice with the child's, and the parent's answer to the notice.
+        yield* ensure(count(after, "heard the child task") >= 3, `the parent's context holds ${count(after, "heard the child task")} answers to the task, not its own, the child's and its own to the notice`)
+      }),
+  },
+  {
+    name: LAW.hooks,
+    operations: ["tool.hook", "tool.transform"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        const session = yield* fresh(ctx)
+        const mine = (sessionID: string) => sessionID === session.id
+        yield* ctx.tool.transform((editor) =>
+          editor.add({
+            name: "law_hooked",
+            description: "echoes its text",
+            // A direct tool, as the rift tool the orchestrate plugin hooks is.
+            options: { codemode: false },
+            input: Schema.Struct({ text: Schema.String }),
+            execute: (input) => Effect.succeed({ content: `law: echoed ${input.text}` }),
+          }),
+        )
+        yield* ctx.tool.hook("execute.before", (event) =>
+          Effect.gen(function* () {
+            if (!mine(event.sessionID) || event.tool !== "law_hooked") return
+            const asked = Schema.decodeUnknownOption(Schema.Struct({ text: Schema.String }))(event.input)
+            yield* Ref.update(seen, (all) => [...all, `before ${Option.match(asked, { onNone: () => "?", onSome: (input) => input.text })}`])
+            if (Option.exists(asked, (input) => input.text === "refuse")) return yield* new Tool.Error({ message: "law: refused by the hook" })
+            event.input = { text: "changed" }
+          }),
+        )
+        yield* ctx.tool.hook("execute.after", (event) =>
+          Effect.gen(function* () {
+            if (!mine(event.sessionID) || event.tool !== "law_hooked") return
+            yield* Ref.update(seen, (all) => [...all, `after ${event.status}`])
+            if (event.status === "completed") event.result = { ...event.result, content: "law: after the hook" }
+          }),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: callFor("law_hooked", { text: "asked" }) }))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: callFor("law_hooked", { text: "refuse" }) }))
+        const lines = (yield* Ref.get(seen)).join(",")
+        yield* ensure(lines === "before asked,after completed,before refuse", `the tool hooks saw ${lines}`)
+        const text = yield* contextText(ctx, session.id)
+        yield* ensure(count(text, "law: after the hook") >= 1, "the model did not read the result execute.after left")
+        yield* ensure(count(text, "law: echoed") === 0, "the model read the result execute.after replaced")
+        yield* ensure(count(text, "law: refused by the hook") >= 1, "the model did not read the refusal's message")
+      }),
+  },
+  {
+    name: LAW.update,
+    operations: ["tool.transform"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const wrapped = yield* Ref.make(0)
+        yield* ctx.agent.transform((editor) =>
+          editor.update(LAW_CHILD, (agent) => {
+            agent.mode = "subagent"
+          }),
+        )
+        yield* ctx.tool.transform((editor) =>
+          editor.update("subagent", (tool) => {
+            const execute = tool.execute
+            tool.execute = (input, context) =>
+              Ref.update(wrapped, (n) => n + 1).pipe(
+                Effect.andThen(execute(input, context)),
+                Effect.map((result) => ({ ...result, content: `law: through the wrapper\n${resultContent(result.content)}` })),
+              )
+          }),
+        )
+        const session = yield* fresh(ctx)
+        const call = callFor("subagent", { agent: LAW_CHILD, description: "law wrapped", prompt: "law: the wrapped task" })
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: call }))
+        yield* ensure((yield* Ref.get(wrapped)) === 1, `the wrapper ran ${yield* Ref.get(wrapped)} times`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "law: through the wrapper") >= 1, "the model did not read the wrapper's answer")
+      }),
+  },
+  {
+    name: LAW.shell,
+    operations: ["shell.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.shell.hook("create.before", (event) =>
+          Effect.gen(function* () {
+            if (!event.command.includes("law-shell")) return
+            yield* Ref.update(seen, (all) => [...all, event.command])
+            event.env.LAW_SHELL = "set"
+          }),
+        )
+        const session = yield* fresh(ctx)
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: callFor("shell", { command: "echo law-shell" }) }))
+        const commands = (yield* Ref.get(seen)).join(",")
+        yield* ensure(commands === "echo law-shell", `the create.before hook saw ${commands}`)
+      }),
+  },
+  {
+    name: LAW.compaction,
+    operations: ["session.hook", "session.compact"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        yield* ctx.session.hook("compaction", (event) =>
+          Effect.sync(() => {
+            if (event.sessionID === session.id) event.messages.push({ role: "user", content: [{ type: "text", text: "law: kept for the summary" }] })
+          }),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the hooked compaction" }))
+        yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id }))
+        yield* ensure(count(yield* contextText(ctx, session.id), KEPT_IN_SUMMARY) === 1, "the compaction request did not carry the hook's message")
+      }),
+  },
+  {
+    name: LAW.window,
+    operations: ["agent.transform", "session.create"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        yield* ctx.agent.transform((editor) =>
+          editor.update(LAW_WINDOW, (agent) => {
+            agent.request.settings.compactionWindow = WINDOW_TOKENS
+          }),
+        )
+        const compacted = (sessionID: SessionID) =>
+          ctx.session.context({ sessionID }).pipe(
+            Effect.map((messages) => messages.filter((message) => Schema.is(Schema.Struct({ type: Schema.Literal("compaction"), reason: Schema.Literal("auto") }))(message)).length),
+          )
+        const windowed = yield* ctx.session.create({ title: "law", agent: Agent.ID.make(LAW_WINDOW) })
+        const plain = yield* fresh(ctx)
+        for (const session of [windowed, plain]) {
+          yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: the first turn" }))
+          yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: the second turn" }))
+        }
+        yield* ensure((yield* compacted(windowed.id)) >= 1, "the session on the windowed agent was not compacted automatically")
+        yield* ensure((yield* compacted(plain.id)) === 0, "a session without the window was compacted")
       }),
   },
   {

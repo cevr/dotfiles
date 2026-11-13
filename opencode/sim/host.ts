@@ -27,11 +27,13 @@
 // - Events reach every copy, hooks only the session's location's.
 import { Tool } from "@opencode/schema/tool"
 import type { SimulationProtocol } from "@opencode/simulation/protocol"
+import type { AgentEditor } from "@opencode/plugin/effect/agent"
+import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import { Agent } from "@opencode/schema/agent"
 import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Queue, Result, Schema } from "effect"
+import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
 import * as Http from "./http.ts"
 import { below, type JsonObject, line, plain, record as recordOf, type Runtime, type SimError } from "./runtime.ts"
 
@@ -60,6 +62,10 @@ export interface Request {
   readonly sessionID: string
   readonly kind: Kind
   readonly agent: string
+  /** The agent's system prompt, empty for one with none. */
+  readonly system: string
+  /** The model the session runs on, its variant with it. */
+  readonly model: ModelRef
   /** The conversation the request carries, as text: each message in order. */
   readonly text: string
   /** The tool names the request offers. */
@@ -161,9 +167,29 @@ export interface Shell {
   readonly command: string
 }
 
+/** A model as a session selects it: its provider, id and variant. */
+export interface ModelRef {
+  readonly providerID: string
+  readonly id: string
+  readonly variant?: string
+}
+
+/** A subagent child's run, as the fork's subagent job keeps it: the parent it reports to and the call that started it. */
+export interface Job {
+  readonly parentID: string
+  readonly agent: string
+  readonly description: string
+}
+
 export interface Session {
   readonly id: string
   readonly parentID: Option.Option<string>
+  /** The agent it runs as. */
+  agent: string
+  /** The model it selected, when it selected one; else the host's default. */
+  model: Option.Option<ModelRef>
+  /** A subagent child's job: each time it goes idle, its parent gets a `<subagent>` notice. */
+  job: Option.Option<Job>
   /** None until the first execution asks for one; then the title request's answer. */
   title: Option.Option<string>
   readonly directory: string
@@ -213,6 +239,8 @@ export interface CatalogModel {
   readonly limit: { readonly context: number; readonly input?: number }
   readonly cost: ReadonlyArray<{ readonly input: number; readonly output: number; readonly cache: { readonly read: number; readonly write: number } }>
   readonly settings?: { readonly cache?: { readonly ttl?: string } }
+  /** The reasoning variants it offers; none by default. */
+  readonly variants?: ReadonlyArray<{ readonly id: string }>
 }
 
 export const SIM_MODEL: CatalogModel = { providerID: "sim", id: "sim-model", modelID: "sim-model", limit: { context: 128_000 }, cost: [] }
@@ -246,9 +274,47 @@ export interface ModelRequestInput {
   readonly headers: { readonly [key: string]: string }
 }
 
+export type Background =
+  | { readonly kind: "shell"; readonly sessionID: string; readonly shellID: string; readonly command: string }
+  | { readonly kind: "subagent"; readonly sessionID: string; readonly childSessionID: string; readonly agent: string; readonly description: string }
+
 export interface IdleInput {
   readonly sessionID: string
-  readonly background: ReadonlyArray<{ readonly kind: "shell"; readonly sessionID: string; readonly shellID: string; readonly command: string }>
+  readonly background: ReadonlyArray<Background>
+}
+
+/** A tool call as the `execute.before` hooks see it: a hook may change its input, or fail to refuse it. */
+export interface ToolBefore {
+  tool: string
+  readonly sessionID: string
+  readonly agent: string
+  readonly messageID: string
+  readonly id: string
+  input: unknown
+}
+
+/** A tool call's end as the `execute.after` hooks see it: a hook may change its result. */
+export type ToolAfter = {
+  readonly tool: string
+  readonly sessionID: string
+  readonly agent: string
+  readonly messageID: string
+  readonly id: string
+  readonly input: unknown
+} & ({ readonly status: "completed"; result: Tool.Result } | { readonly status: "error"; error: Tool.Error })
+
+/** A shell the host is about to spawn, as the shell's `create.before` hooks see it: they may add to its environment. */
+export type ShellBefore = ShellCreateBefore
+
+/** A compaction request as the `compaction` hook sees it: a hook may add messages after the conversation. */
+export interface CompactionInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: ModelRef
+  system: Array<unknown>
+  messages: Array<unknown>
+  options: Record<string, Schema.Json>
+  tools: Record<string, { description: string; input: Schema.Json }>
 }
 
 export interface HttpRequestInput {
@@ -279,7 +345,7 @@ export interface RetryInput {
   decision: RetryDecision
 }
 
-export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput
+export type HookInput = ModelRequestInput | IdleInput | HttpRequestInput | HttpResponseInput | RetryInput | ToolBefore | ToolAfter | ShellBefore | CompactionInput
 
 export interface Hook {
   readonly instance: number
@@ -333,8 +399,69 @@ export interface Login {
 /** 2001-09-09T01:46:40Z: every world's clock starts here unless told otherwise, years from any wall-clock reading. */
 export const START = 1_000_000_000_000
 
-/** The built-in tool the registry starts with (real OpenCode has more; our plugins reach only the shell). */
-export const BUILTIN = ["shell"]
+/** The built-in tools the registry starts with (real OpenCode has more; our plugins reach only these). */
+export const BUILTIN = ["shell", "subagent"]
+
+/** The subagent tool's first line to a new child (packages/core/src/tool/plugin/subagent.ts). */
+export const SPAWNED = "You are a subagent spawned by another session."
+
+/** The subagent tool's answer: the child works in the background, and its notices wake the parent. */
+export const backgroundText = (sessionID: string) =>
+  [
+    `The subagent is working in the background (sessionID: ${sessionID}). You will receive a <subagent> message when it goes idle, and again after each later round of work.`,
+    "DO NOT sleep, poll, proactively check on its progress, or duplicate this subagent's work.",
+    "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+    "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
+  ].join("\n")
+
+/** A child with no text answer reports this (packages/core/src/session/subagent-completion.ts). */
+export const NO_TEXT = "Subagent completed without a text response."
+
+const SubagentInput = Schema.Struct({
+  agent: Schema.String,
+  description: Schema.String,
+  prompt: Schema.String,
+  model: Schema.optionalKey(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+})
+
+/** A `providerID/modelID[#variant]` reference, as the fork's `Model.Ref.parse` reads one. */
+const refOf = (input: string): Option.Option<ModelRef> => {
+  const providerEnd = input.indexOf("/")
+  if (providerEnd <= 0) return Option.none()
+  const variantStart = input.indexOf("#", providerEnd + 1)
+  const providerID = input.slice(0, providerEnd)
+  if (variantStart === -1) return Option.liftPredicate({ providerID, id: input.slice(providerEnd + 1) }, (ref) => ref.id !== "" && !providerID.includes("#"))
+  const id = input.slice(providerEnd + 1, variantStart)
+  if (id === "" || providerID.includes("#")) return Option.none()
+  const variant = input.slice(variantStart + 1)
+  if (variant === "" || variant.includes("#")) return Option.none()
+  return Option.some({ providerID, id, variant })
+}
+
+export type MutableAgent = Types.DeepMutable<Agent.Info>
+
+/** The agent editor a transform gets: the fork's own (packages/plugin/src/effect/agent.ts). */
+export type { AgentEditor }
+
+/** A new agent as the fork's `Agent.Info.default` makes it: primary, every tool allowed but `.env` reads. */
+const agentOf = (id: string): MutableAgent => {
+  const made = Agent.Info.default(Agent.ID.make(id))
+  return {
+    id: made.id,
+    name: made.name,
+    request: { settings: {}, headers: {}, body: {} },
+    mode: made.mode,
+    hidden: made.hidden,
+    permissions: made.permissions.map((rule) => ({ ...rule })),
+  }
+}
+
+/** Whether an agent's permissions deny a tool outright: its last matching rule denies every resource (packages/core/src/tool.ts `whollyDisabled`). */
+const denied = (name: string, agent: Types.DeepMutable<Agent.Info>) => {
+  const rule = agent.permissions.findLast((candidate) => candidate.action === "*" || candidate.action === name)
+  return rule?.resource === "*" && rule.effect === "deny"
+}
 
 /** OpenCode's schedule tools: built in only under `experimental.schedules` (real OpenCode's default is off). */
 export const SCHEDULES = [
@@ -348,7 +475,6 @@ export const SCHEDULES = [
 const ShellInput = Schema.Struct({ command: Schema.String, background: Schema.optional(Schema.Boolean) })
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
-const AGENT = "build"
 const MODEL = { providerID: "sim", id: "sim-model" }
 /** Where the host sends a provider's model requests before a hook moves them: Anthropic's API, as the fork's catalog names it. */
 const BASE_URL = "https://api.anthropic.com/v1"
@@ -389,6 +515,58 @@ const inboxText = (item: InboxItem) => {
   return item.text
 }
 
+const MessageParts = Schema.Struct({ content: Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) })) })
+const MessageString = Schema.Struct({ content: Schema.String })
+
+/** A request message as a hook adds it: its content a string, or parts of which the text ones are read. */
+const AddedMessage = Schema.Union([MessageString, MessageParts])
+
+/** An added message's text: its string content, or its text parts. */
+const addedText = (message: typeof AddedMessage.Type): ReadonlyArray<string> => {
+  if (Predicate.isString(message.content)) return [message.content]
+  return message.content.flatMap((part) => Arr.filter(Option.toArray(Option.fromUndefinedOr(part.text)), () => part.type === "text"))
+}
+
+/** An inbox item as `session.inbox.enqueued` carries it (packages/schema/src/session-inbox.ts `Item`). */
+const itemOf = (item: InboxItem): JsonObject => {
+  if (item.type === "prompt") return { type: "user", payload: { text: item.text }, delivery: "steer" }
+  if (item.type === "synthetic")
+    return { type: "synthetic", payload: { text: item.text, description: item.description, metadata: item.metadata }, delivery: "steer" }
+  return { type: "compaction", payload: Option.match(item.reason, { onNone: () => ({}), onSome: (reason) => ({ reason }) }), delivery: "steer" }
+}
+
+/** A child's report state, by how its execution ended. */
+const REPORTED = { model: "completed", failed: "error" } as const
+
+const RESERVE_MIN = 16_000
+const RESERVE_SHARE = 0.15
+
+/**
+ * The largest prompt a window takes before automatic compaction (packages/core/src/session/compaction.ts
+ * `calculateCeiling`): less `RESERVE_SHARE` of it, or `RESERVE_MIN` when that is more and the window holds it twice.
+ */
+const ceilingOf = (window: number) => {
+  let reserve = Math.floor(window * RESERVE_SHARE)
+  if (window >= 2 * RESERVE_MIN) reserve = Math.max(reserve, RESERVE_MIN)
+  return window - reserve
+}
+
+/** How a tool call ended, as `execute.after` sees it. */
+type ToolEnd = { readonly status: "completed"; result: Tool.Result } | { readonly status: "error"; error: Tool.Error }
+
+const toolError = (message: string) => new Tool.Error({ message })
+const completed = (result: Tool.Result): ToolEnd => ({ status: "completed", result })
+const failed = (message: string): ToolEnd => ({ status: "error", error: toolError(message) })
+
+const ExitCode = Schema.Struct({ exitCode: Schema.Number })
+
+/** A call's answer as the model reads it: its result's text, or its error's; a shell's failed exit is an error too. */
+const answerOf = (ended: ToolEnd): Answer => {
+  if (ended.status === "error") return { output: `Error: ${ended.error.message}`, error: true }
+  const exit = Schema.decodeUnknownOption(ExitCode)(ended.result.metadata)
+  return { output: resultText(ended.result), error: Option.exists(exit, (value) => value.exitCode !== 0) }
+}
+
 /** A failed tool's message: its first failure's, else the cause's text. */
 const causeText = <E>(cause: Cause.Cause<E>) => {
   for (const reason of cause.reasons) if (reason._tag === "Fail") return failureText(reason.error)
@@ -408,6 +586,8 @@ interface SessionInfo {
   title?: string
   readonly location: { readonly directory: string }
   readonly metadata: JsonObject
+  readonly agent: string
+  model?: ModelRef
   readonly time: SessionTime
 }
 
@@ -429,6 +609,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const hooks: Array<Hook> = []
   const tools = new Map<number, Map<string, Tool.Info>>()
   const removed = new Map<number, Set<string>>()
+  /** Each copy's tool updates, in the order its transform made them. */
+  const updates = new Map<number, Array<{ readonly id: string; readonly change: (tool: Types.Mutable<Tool.Info>) => void }>>()
   const rpcs = new Map<string, { readonly [method: string]: Handler }>()
   const subscribers = new Set<Subscriber>()
   const directories = new Map<number, string>()
@@ -452,6 +634,33 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     ["openai", "auto"],
   ])
   const catalogNotFound = (what: string) => new CatalogNotFound({ message: `${what} not found` })
+  /** Each copy's agent transform, in load order: the agents are rebuilt from them for each read. */
+  const agentTransforms: Array<{ readonly instance: number; readonly callback: (editor: AgentEditor) => void }> = []
+
+  /** The agents of a location: build, then each of the location's copies' transforms in load order (packages/core/src/agent.ts). */
+  const agentsOf = (directory: string) => {
+    const all = new Map<string, MutableAgent>([["build", agentOf("build")]])
+    const editor: AgentEditor = {
+      list: () => [...all.values()],
+      get: (id) => all.get(id),
+      default: () => void 0,
+      update: (id, change) => {
+        const current = all.get(id) ?? agentOf(id)
+        all.set(id, current)
+        change(current)
+        current.id = Agent.ID.make(id)
+      },
+      remove: (id) => void all.delete(id),
+    }
+    for (const transform of agentTransforms) if (directories.get(transform.instance) === directory) transform.callback(editor)
+    return all
+  }
+
+  /** The agent a session runs as, or the default one when its own is gone. */
+  const agentFor = (session: Session) => agentsOf(session.directory).get(session.agent) ?? agentOf(session.agent)
+
+  /** The model a session's requests go to: its own selection, else the host's default. */
+  const modelOf = (session: Session): ModelRef => Option.getOrElse(session.model, () => model)
 
   /** Appends one trace line: its virtual time, its kind, its data as JSON. */
   const record = <A>(kind: string, data: A) => {
@@ -560,12 +769,26 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const builtIn = [...BUILTIN, ...Arr.filter(SCHEDULES, () => options.schedules === true)]
   const toolsOf = (directory: string) => {
     const offered = new Map<string, Option.Option<Tool.Info>>(builtIn.map((name) => [name, Option.none()]))
+    offered.set("subagent", Option.some(subagentTool))
     for (const [instance, at] of directories) {
       if (at !== directory) continue
       for (const name of removed.get(instance) ?? []) offered.delete(name)
       for (const [name, tool] of tools.get(instance) ?? []) offered.set(name, Option.some(tool))
+      // An update edits a copy of the tool as the transforms before it left it; a missing id is ignored.
+      for (const update of updates.get(instance) ?? [])
+        Option.map(Option.flatten(Option.fromNullishOr(offered.get(update.id))), (tool) => {
+          const edited: Types.Mutable<Tool.Info> = { ...tool }
+          update.change(edited)
+          offered.set(update.id, Option.some(edited))
+        })
     }
     return offered
+  }
+
+  /** The tools a request of `session` offers: its location's, less those its agent denies outright. */
+  const offeredTo = (session: Session) => {
+    const agent = agentFor(session)
+    return [...toolsOf(session.directory).keys()].filter((name) => !denied(name, agent))
   }
 
   const textOf = (reply: Reply) => reply.items.flatMap(itemText).join("")
@@ -605,13 +828,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     extra: string,
   ) =>
     Effect.gen(function* () {
-      const scope = { sessionID: session.id, agent: AGENT, model }
+      const scope = { sessionID: session.id, agent: session.agent, model: modelOf(session) }
       const conversation = contextOf(session).flatMap(wireOf)
       const messages = [...conversation, ...Arr.filter([{ role: "user" as const, content: [{ type: "text", text: extra }] }], () => extra !== "")]
+      const system = ["You are OpenCode.", ...Arr.filter([agentFor(session).system ?? ""], (text) => text !== "")].join("\n")
       const sent = new Request(`${event.baseURL}/messages`, {
         method: "POST",
         headers: { ...event.headers, "content-type": "application/json", "anthropic-version": "2023-06-01" },
-        body: Http.bodyOf({ model: model.id, system: "You are OpenCode.", messages, tools }),
+        body: Http.bodyOf({ model: scope.model.id, system, messages, tools }),
       })
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
       yield* runRequestHooks("http.request", session, before)
@@ -637,22 +861,20 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   /** One model request: the hook, the request in the trace, the stream's time, the reply (the script's, or the provider's over HTTP), or its failure. */
   const attempt = (session: Session, kind: Kind, extra = "") =>
     Effect.gen(function* () {
-      const event = { sessionID: session.id, agent: AGENT, model, kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
+      const used = modelOf(session)
+      const event = { sessionID: session.id, agent: session.agent, model: used, kind, baseURL: options.provider?.baseURL ?? BASE_URL, headers: {} }
       yield* runRequestHooks("model.request", session, event, { requestKind: kind })
       const startedAt = runtime.now()
       const text = [...contextOf(session).map(renderOf), extra].filter((part) => part !== "").join("\n")
       record("request", { sessionID: session.id, requestKind: kind })
       asked.push({ at: startedAt - start, sessionID: session.id, kind, text })
-      const tools = Arr.filter([...toolsOf(session.directory).keys()], () => kind === "primary")
+      const offered = offeredTo(session)
+      const tools = Arr.filter(offered, () => kind === "primary")
+      const asking: Request = { sessionID: session.id, kind, agent: session.agent, system: agentFor(session).system ?? "", model: used, text, tools: offered }
       const outcome = yield* Option.match(
-        Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === model.providerID),
+        Option.filter(Option.fromNullishOr(options.provider), (provider) => provider.id === used.providerID),
         {
-          onNone: () =>
-            streaming.pipe(
-              Effect.andThen(
-                Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script({ sessionID: session.id, kind, agent: AGENT, text, tools: [...toolsOf(session.directory).keys()] }))),
-              ),
-            ),
+          onNone: () => streaming.pipe(Effect.andThen(Effect.sync((): Result.Result<Reply, Http.Failure> => Result.succeed(options.script(asking))))),
           onSome: (provider) => overHttp(session, provider, event, tools, extra),
         },
       )
@@ -688,8 +910,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         if (Option.isNone(gap)) return Result.fail(failure)
         const event: RetryInput = {
           sessionID: session.id,
-          agent: AGENT,
-          model,
+          agent: session.agent,
+          model: modelOf(session),
           error: { type: failure.tag, message: failure.message },
           attempt: retries + 2,
           decision: Option.match(Option.liftPredicate(gap.value, () => failure.retryable), {
@@ -731,46 +953,172 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   }
 
   /** The built-in shell: foreground runs it and answers its output; background starts it and answers at once. */
-  const shellTool = (session: Session, input: Schema.Json) =>
+  const shellTool = (session: Session, call: ToolBefore) =>
     Effect.gen(function* () {
-      const decoded = Schema.decodeUnknownExit(ShellInput)(input)
-      if (Exit.isFailure(decoded)) return { output: "Error: invalid shell input", error: true }
+      const decoded = Schema.decodeUnknownExit(ShellInput)(call.input)
+      if (Exit.isFailure(decoded)) return failed("invalid shell input")
       const { command } = decoded.value
-      if (decoded.value.background === true) return { output: `Started ${background(session, command).id} in the background: \`${command}\``, error: false }
+      // Every command the host spawns goes through the shell's `create.before` hooks first, which may add to its environment.
+      const spawning: ShellBefore = { command, cwd: session.directory, timeout: 120_000, shell: "/bin/sh", env: {} }
+      yield* runHooks("shell:create.before", session, spawning)
+      record("shell-spawn", { sessionID: session.id, command, env: plain(spawning.env) })
+      if (decoded.value.background === true) return completed({ content: `Started ${background(session, command).id} in the background: \`${command}\`` })
       const run = processes(command, runtime.now())
       yield* Effect.sleep(run.ms)
-      return { output: `exit ${run.exitCode}\n${run.stdout}`, error: run.exitCode !== 0 }
+      return completed({ content: `exit ${run.exitCode}\n${run.stdout}`, metadata: { exitCode: run.exitCode } })
     })
 
-  /** A plugin's tool: its input decoded with its own schema, then its execute on the call's context. */
-  const pluginTool = (session: Session, messageID: string, used: ToolCall, tool: Tool.Info) =>
+  /** The call's context, as the host gives a tool. */
+  const contextOfCall = (session: Session, messageID: string, used: ToolCall): Tool.Context => ({
+    sessionID: SessionID.make(session.id),
+    agent: Agent.ID.make(session.agent),
+    messageID: SessionMessage.ID.make(messageID),
+    id: Tool.CallID.make(used.id),
+    progress: () => Effect.void,
+  })
+
+  /** A plugin's tool (or a built-in one the world defines as a tool): its input decoded with its own schema, then its execute on the call's context. */
+  const pluginTool = (session: Session, messageID: string, used: ToolCall, call: ToolBefore, tool: Tool.Info) =>
     Effect.gen(function* () {
       if (!Schema.isSchema(tool.input)) return yield* Effect.die(new Error(`sim: ${used.name}'s input is not an Effect schema; the world decodes only those`))
-      const decoded = Schema.decodeUnknownExit(tool.input)(used.input)
-      if (Exit.isFailure(decoded)) return { output: `Error: invalid input for ${used.name}: ${String(decoded.cause)}`, error: true }
-      const context: Tool.Context = {
-        sessionID: SessionID.make(session.id),
-        agent: Agent.ID.make(AGENT),
-        messageID: SessionMessage.ID.make(messageID),
-        id: Tool.CallID.make(used.id),
-        progress: () => Effect.void,
-      }
-      const result = yield* Effect.exit(tool.execute(decoded.value, context))
-      if (Exit.isSuccess(result)) return { output: resultText(result.value), error: false }
-      return { output: `Error: ${causeText(result.cause)}`, error: true }
+      const decoded = Schema.decodeUnknownExit(tool.input)(call.input)
+      if (Exit.isFailure(decoded)) return failed(`invalid input for ${used.name}: ${String(decoded.cause)}`)
+      const result = yield* Effect.exit(tool.execute(decoded.value, contextOfCall(session, messageID, used)))
+      if (Exit.isSuccess(result)) return completed(result.value)
+      return failed(causeText(result.cause))
     })
 
-  /** One tool call: its answer, in the trace with its input. */
+  /**
+   * One tool call, as the fork's registry runs it (packages/core/src/tool.ts): the `execute.before` hooks of the
+   * session's location's copies, in load order, each seeing the input the one before left (one that fails refuses
+   * the call, and no `execute.after` runs); then the tool on that input; then the `execute.after` hooks, which may
+   * change its result. Its answer, in the trace with its input.
+   */
   const runTool = (session: Session, messageID: string, used: ToolCall) =>
     Effect.gen(function* () {
       record("tool", { sessionID: session.id, name: used.name, input: used.input })
+      const before: ToolBefore = { tool: used.name, sessionID: session.id, agent: session.agent, messageID, id: used.id, input: used.input }
+      const refused = yield* toolBefore(session, before)
+      if (Option.isSome(refused)) {
+        const answer = { output: `Error: ${refused.value}`, error: true }
+        record("tool-answer", { sessionID: session.id, name: used.name, output: answer.output, error: answer.error })
+        return answer
+      }
       const offered = toolsOf(session.directory).get(used.name)
-      let answer: Answer = { output: `Error: unknown tool ${used.name}`, error: true }
-      if (offered !== void 0 && Option.isSome(offered)) answer = yield* pluginTool(session, messageID, used, offered.value)
-      else if (offered !== void 0 && used.name === "shell") answer = yield* shellTool(session, used.input)
-      else if (offered !== void 0) answer = { output: `Error: ${used.name} is not modelled in the world`, error: true }
+      let ended: ToolEnd = failed(`unknown tool ${used.name}`)
+      if (offered !== void 0 && Option.isSome(offered)) ended = yield* pluginTool(session, messageID, used, before, offered.value)
+      else if (offered !== void 0 && used.name === "shell") ended = yield* shellTool(session, before)
+      else if (offered !== void 0) ended = failed(`${used.name} is not modelled in the world`)
+      const after: ToolAfter = { tool: used.name, sessionID: session.id, agent: session.agent, messageID, id: used.id, input: before.input, ...ended }
+      yield* runHooks("tool:execute.after", session, after, { tool: used.name })
+      const answer = answerOf(after)
       record("tool-answer", { sessionID: session.id, name: used.name, output: answer.output, error: answer.error })
       return answer
+    })
+
+  /** The `execute.before` hooks on one call: the refusal's message, when one refused it. */
+  const toolBefore = (session: Session, event: ToolBefore) =>
+    Effect.gen(function* () {
+      record("hook", { name: "tool:execute.before", sessionID: session.id, tool: event.tool })
+      for (const hook of hooks.filter((entry) => entry.name === "tool:execute.before" && entry.directory === session.directory)) {
+        const exit = yield* Effect.exit(hook.callback(event))
+        if (Exit.isFailure(exit)) {
+          const message = causeText(exit.cause)
+          record("tool-refused", { sessionID: session.id, tool: event.tool, message })
+          return Option.some(message)
+        }
+      }
+      return Option.none<string>()
+    })
+
+  /**
+   * The built-in subagent tool, as the fork's (packages/core/src/tool/plugin/subagent.ts): a new child session of
+   * the caller, on the agent asked, its model the one asked, else the agent's, else the parent's; or, with a
+   * `sessionID`, a follow-up to the caller's child. The child is prompted and runs in the background; the call
+   * answers at once, and each time the child goes idle its parent gets a `<subagent>` notice that wakes it.
+   */
+  const subagentTool: Tool.Info<typeof SubagentInput> = {
+    name: "subagent",
+    description: "Spawns an agent in a child session to work on the specified task.",
+    input: SubagentInput,
+    execute: (input, context) =>
+      Effect.gen(function* () {
+        const parent = yield* sessionOr(context.sessionID).pipe(Effect.mapError(() => toolError(`Parent session not found: ${context.sessionID}`)))
+        if (Option.isSome(parent.parentID))
+          return yield* toolError('Subagent depth limit reached (1). Increase "experimental.subagent_depth" to allow nested subagents.')
+        const agent = agentsOf(parent.directory).get(input.agent)
+        if (agent === void 0) return yield* toolError(`Unknown agent: ${input.agent}`)
+        if (agent.mode === "primary") return yield* toolError(`Agent ${input.agent} cannot run as a subagent`)
+        const existing = yield* Option.match(Option.fromNullishOr(input.sessionID), {
+          onNone: () => Effect.succeed(Option.none<Session>()),
+          onSome: (id) => sessionOr(id).pipe(Effect.map(Option.some), Effect.mapError(() => toolError(`Subagent session not found: ${id}`))),
+        })
+        if (Option.isSome(existing) && Option.getOrElse(existing.value.parentID, () => "") !== parent.id)
+          return yield* toolError(`Session ${existing.value.id} is not a child of the current session`)
+        const override = yield* Option.match(Option.fromNullishOr(input.model), { onNone: () => Effect.succeed(Option.none<ModelRef>()), onSome: resolveModel })
+        const child = yield* Option.match(existing, {
+          onNone: () =>
+            createSession({
+              directory: parent.directory,
+              parentID: parent.id,
+              title: input.description,
+              agent: agent.id,
+              model: Option.getOrUndefined(Option.orElse(override, () => Option.orElse(Option.fromNullishOr(agent.model), () => parent.model))),
+            }),
+          onSome: (found) =>
+            Effect.sync(() => {
+              // A follow-up with another agent switches the child; a model asked, or the new agent's, wins.
+              const switched = found.agent !== agent.id
+              found.agent = agent.id
+              found.model = Option.orElse(Option.orElse(override, () => Option.filter(Option.fromNullishOr(agent.model), () => switched)), () => found.model)
+              return found
+            }),
+        })
+        child.job = Option.some({ parentID: parent.id, agent: agent.name, description: input.description })
+        let text = input.prompt
+        if (Option.isNone(existing)) text = `${SPAWNED}\n${input.prompt}`
+        yield* admit(child, { id: mint("msg_"), type: "prompt", text, resume: true })
+        const output = { sessionID: child.id, status: "running" as const, output: backgroundText(child.id) }
+        return { output, content: output.output, metadata: { sessionID: child.id, status: "running" } }
+      }),
+  }
+
+  /** A model the subagent call names: one the catalog offers, its variant one the model has. */
+  const resolveModel = (input: string) =>
+    Effect.gen(function* () {
+      const ref = yield* Effect.fromOption(refOf(input)).pipe(
+        Effect.mapError(() => toolError(`Invalid model "${input}". Use "providerID/modelID" or "providerID/modelID#variant".`)),
+      )
+      const found = models.find((entry) => entry.providerID === ref.providerID && entry.id === ref.id)
+      if (found === void 0) return yield* toolError(`Model "${ref.providerID}/${ref.id}" is not available. Use the models tool to see what is available.`)
+      const variants = found.variants ?? []
+      if (ref.variant !== void 0 && !variants.some((variant) => variant.id === ref.variant))
+        return yield* toolError(`Variant "${ref.variant}" is not available for "${ref.providerID}/${ref.id}".`)
+      return Option.some(ref)
+    })
+
+  /** A child's report to its parent as it goes idle (packages/core/src/session/subagent-completion.ts `deliver`). */
+  const report = (session: Session, ended: "completed" | "error") =>
+    Option.match(session.job, {
+      onNone: () => Effect.void,
+      onSome: (job) =>
+        Effect.gen(function* () {
+          const parent = sessions.get(job.parentID)
+          if (parent === void 0) return
+          const last = contextOf(session).findLast((message) => message.type === "assistant" || message.type === "error")
+          let body = NO_TEXT
+          if (last?.type === "assistant" && last.text !== "") body = last.text
+          if (ended === "error") body = "Subagent failed"
+          if (ended === "error" && last?.type === "error") body = last.message
+          yield* admit(parent, {
+            id: mint("msg_"),
+            type: "synthetic",
+            text: `<subagent sessionID="${session.id}" state="${ended}" description="${job.description}">\n${body}\n</subagent>`,
+            description: job.description,
+            metadata: { source: "subagent", childID: session.id, agent: job.agent, state: ended },
+            resume: true,
+          })
+        }),
     })
 
   /** A compaction: the held summary, else a `compaction` request; then its completed message. */
@@ -782,7 +1130,25 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       if (Option.isSome(held)) {
         summary = held.value
         record("held-summary-used", { sessionID: session.id })
-      } else summary = textOf((yield* request(session, "compaction", "summarize the conversation above")).reply)
+      } else {
+        // The `compaction` hooks see the request's conversation and may add messages after it, before the summary prompt.
+        const conversation = contextOf(session).flatMap(wireOf)
+        const event: CompactionInput = {
+          sessionID: session.id,
+          agent: session.agent,
+          model: modelOf(session),
+          system: [],
+          messages: [...conversation],
+          options: {},
+          tools: {},
+        }
+        yield* runHooks("compaction", session, event)
+        // Each added message read as a request message: one of another shape adds no text.
+        const added = event.messages
+          .slice(conversation.length)
+          .flatMap((message) => Option.match(Schema.decodeUnknownOption(AddedMessage)(message), { onNone: () => [], onSome: addedText }))
+        summary = textOf((yield* request(session, "compaction", [...added, "summarize the conversation above"].join("\n"))).reply)
+      }
       let reason: Reason = "manual"
       if (options.compactionReason !== false) reason = Option.getOrElse(item.reason, (): Reason => "manual")
       session.messages.push({ type: "compaction", id: item.id, created: runtime.now(), status: "completed", summary, reason })
@@ -859,8 +1225,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         text: textOf(reply),
         call: used,
         tokens: { input: usage.input, cache: { read: usage.read, write: usage.write } },
-        model,
-        agent: AGENT,
+        model: modelOf(session),
+        agent: session.agent,
       })
       if (Option.isNone(used)) return "answered" as const
       const answer = yield* runTool(session, messageID, used.value)
@@ -888,6 +1254,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
           if (!session.inbox.some((item) => item.resume)) return stepped
           continue
         }
+        // Before a step, a prompt past the ceiling of the agent's window compacts first (automatic compaction).
+        if ((stepped === "model" || session.inbox.length > 0) && overWindow(session))
+          yield* compaction(session, { id: mint("msg_"), type: "compaction", reason: Option.some("auto"), resume: true })
         const taken = yield* deliver(session)
         if (taken === 0 && stepped === "control") return stepped
         stepped = "model"
@@ -909,10 +1278,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       yield* publish({ type: "session.execution.started", data: { sessionID: session.id } })
       let ended: "control" | "model" | "failed" = yield* turn(session)
       while (ended === "model") {
-        yield* runHooks("experimental.idle", session, {
-          sessionID: session.id,
-          background: session.shells.map((shell) => ({ kind: "shell", sessionID: session.id, shellID: shell.id, command: shell.command })),
-        })
+        yield* runHooks("experimental.idle", session, { sessionID: session.id, background: backgroundOf(session) })
         if (!session.inbox.some((item) => item.resume)) break
         ended = yield* turn(session)
       }
@@ -921,9 +1287,38 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       // A failed step ends the execution failed: `experimental.idle` does not run after a failure.
       if (ended === "failed") yield* publish({ type: "session.execution.failed", data: { sessionID: session.id } })
       else yield* publish({ type: "session.execution.succeeded", data: { sessionID: session.id } })
+      // A subagent child that went idle after model work reports to its parent.
+      if (ended !== "control") yield* report(session, REPORTED[ended])
       precompute(session)
       wake(session)
     })
+
+  /** What still runs of a session's own as it goes idle: its background shells, then its running subagent children. */
+  const backgroundOf = (session: Session): ReadonlyArray<Background> => [
+    ...session.shells.map((shell): Background => ({ kind: "shell", sessionID: session.id, shellID: shell.id, command: shell.command })),
+    ...[...sessions.values()].flatMap((child) =>
+      Option.match(Option.filter(child.job, (job) => job.parentID === session.id && child.running), {
+        onNone: (): ReadonlyArray<Background> => [],
+        onSome: (job): ReadonlyArray<Background> => [{ kind: "subagent", sessionID: session.id, childSessionID: child.id, agent: job.agent, description: job.description }],
+      }),
+    ),
+  ]
+
+  /** Whether the session's prompt is past the ceiling of its window: the model's, narrowed to its agent's `compactionWindow`. */
+  const overWindow = (session: Session) => {
+    const context = contextOf(session)
+    const anchor = context.findLastIndex((message) => message.type === "assistant")
+    const last = context[anchor]
+    if (last?.type !== "assistant") return false
+    const measured = last.tokens.input + last.tokens.cache.read + last.tokens.cache.write
+    const estimated = context.slice(anchor + 1).reduce((sum, message) => sum + Math.ceil(renderOf(message).length / 4), 0)
+    const used = modelOf(session)
+    const limit = models.find((entry) => entry.providerID === used.providerID && entry.id === used.id)?.limit
+    let window = Math.min(limit?.input ?? Number.POSITIVE_INFINITY, limit?.context ?? Number.POSITIVE_INFINITY)
+    const own = agentFor(session).request.settings["compactionWindow"]
+    if (Predicate.isNumber(own) && Number.isInteger(own) && own > 0 && own < window) window = own
+    return Number.isFinite(window) && measured + estimated > ceilingOf(window)
+  }
 
   /** Background compaction: a summary written ahead for a session idle near its window's ceiling. */
   const precompute = (session: Session) => {
@@ -959,7 +1354,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       touch(session)
       session.inbox.push(item)
       record("admitted", { sessionID: session.id, id: item.id, type: item.type, resume: item.resume, text: inboxText(item) })
-      yield* publish({ type: "session.inbox.enqueued", data: { sessionID: session.id, inboxID: item.id } })
+      yield* publish({ type: "session.inbox.enqueued", data: { sessionID: session.id, inboxID: item.id, item: itemOf(item) } })
       if (item.resume) wake(session)
     })
 
@@ -983,6 +1378,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     readonly parentID?: string
     readonly title?: string
     readonly metadata?: JsonObject
+    readonly agent?: string
+    readonly model?: ModelRef
   }) =>
     Effect.gen(function* () {
       const existing = sessions.get(input.id ?? "")
@@ -990,6 +1387,11 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const session: Session = {
         id: input.id ?? mint("ses_"),
         parentID: Option.fromNullishOr(input.parentID),
+        agent: input.agent ?? "build",
+        // A model selected with no variant is named at its `default`, as the fork's session store records it.
+        model: Option.map(Option.fromNullishOr(input.model), (ref) => ({ ...ref, variant: ref.variant ?? "default" })),
+        // A child reports each completed round to its parent, however it was made (the fork's session.create).
+        job: Option.map(Option.fromNullishOr(input.parentID), (parentID) => ({ parentID, agent: input.agent ?? "build", description: input.title ?? "" })),
         title: Option.fromNullishOr(input.title),
         directory: input.directory,
         metadata: { ...input.metadata },
@@ -1018,8 +1420,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       id: session.id,
       location: { directory: session.directory },
       metadata: { ...session.metadata },
+      agent: session.agent,
       time,
     }
+    if (Option.isSome(session.model)) info.model = { ...session.model.value }
     if (Option.isSome(session.parentID)) info.parentID = session.parentID.value
     if (Option.isSome(session.title)) info.title = session.title.value
     return info
@@ -1099,6 +1503,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     callRpc,
     stop,
     resume,
+    agentTransforms,
+    agentsOf,
+    updates,
+    model,
   }
 }
 
