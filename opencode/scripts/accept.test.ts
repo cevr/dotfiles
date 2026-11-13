@@ -431,6 +431,8 @@ describe("a deep run yields the lock to a land run", () => {
         land: land.code,
         inBudget: land.seconds < 20,
         waitedUnder5: Option.exists(waited, (each) => each.waited < 5),
+        // The wait ends as the lock is taken: its line comes before the first file, so it counts the wait alone.
+        waitBeforeFiles: land.lines.findIndex((line) => line.startsWith("accept: waited ")) < land.lines.findIndex((line) => line.startsWith("accept: passed ")),
         onClock: Option.exists(waited, (each) => each.onClock === each.waited),
         seen,
         deep: deep.code,
@@ -440,6 +442,7 @@ describe("a deep run yields the lock to a land run", () => {
         land: 0,
         inBudget: true,
         waitedUnder5: true,
+        waitBeforeFiles: true,
         onClock: true,
         seen: { groups: expect.any(Array), alive: [] },
         deep: 0,

@@ -490,11 +490,10 @@ const underLock = <A>(signalled: Deferred.Deferred<boolean>, body: Effect.Effect
       }
       // A deep run takes the lock only while no live mark is set.
       const may = mode === "land" || Yield.deepMayTake(true, liveMarks())
-      const held = (may && (yield* tryLock(Effect.andThen(Effect.sync(writeOwner), Effect.sync(unmark)).pipe(Effect.andThen(body))))) || Option.none<A>()
-      if (Option.isSome(held)) {
-        yield* say(waitLine(sinceStart() - from, behindLand))
-        return held
-      }
+      // The wait ends as the lock is taken: its line comes before the run under it.
+      const taken = Effect.andThen(Effect.sync(writeOwner), Effect.sync(unmark)).pipe(Effect.andThen(Effect.suspend(() => say(waitLine(sinceStart() - from, behindLand)))))
+      const held = (may && (yield* tryLock(Effect.andThen(taken, body)))) || Option.none<A>()
+      if (Option.isSome(held)) return held
       const owner = Option.map(holder(), (each) => each.mode)
       if (Yield.marks(mode, owner) && !existsSync(MARK)) disk.write(MARK, String(process.pid))
       const line = waitingLine(owner)
@@ -571,7 +570,7 @@ const deep = Effect.fn("Accept.deep")(function* (run: Run) {
     if (!hold.value.yielded) return { outcomes, stopped: false }
     const marked = liveMarks()
     const cut = hold.value.outcomes.filter((outcome) => outcome.status === "owed" && outcome.why === "yielded").map((outcome) => outcome.file)
-    yield* say(`accept: yielded the lock to a land run (pid ${marked.join(", ") || "gone"}); stopped ${cut.length} files: ${cut.join(", ") || "none"}; it goes on once the lock is free and no land run wants it`)
+    yield* say(`accept: yielded the lock to a land run (pid ${marked.join(", ") || "gone"}); ${cut.length} files stopped or not yet started stay owed until it goes on: ${cut.join(", ") || "none"}; it goes on once the lock is free and no land run wants it`)
   }
 })
 
