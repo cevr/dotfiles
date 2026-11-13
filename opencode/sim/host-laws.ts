@@ -989,6 +989,41 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
+    name: LAW.idleBackground,
+    operations: ["session.hook", "session.prompt", "session.list"],
+    // What a plugin reads to hold off while a session's subagent still works (the orchestrate plugin's idle root).
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        yield* ctx.agent.transform((editor) =>
+          editor.update(LAW_CHILD, (agent) => {
+            agent.mode = "subagent"
+          }),
+        )
+        const parent = yield* fresh(ctx)
+        const idles = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.session.hook("experimental.idle", (input) => {
+          if (input.sessionID !== parent.id) return Effect.void
+          const listed = input.background.map((item) => {
+            if (item.kind === "subagent") return `subagent ${item.childSessionID}`
+            return item.kind
+          })
+          return Ref.update(idles, (all) => [...all, listed.join(",")])
+        })
+        // The child works a few seconds in a foreground shell, past the parent's own turn.
+        const call = callFor("subagent", { agent: LAW_CHILD, description: "law busy child", prompt: callFor("shell", { command: "sleep 3" }) })
+        yield* probe.turn(parent.id, ctx.session.prompt({ sessionID: parent.id, text: call }))
+        const children = (yield* ctx.session.list({ parentID: parent.id })).data
+        yield* ensure(children.length === 1, `the call made ${children.length} children`)
+        const child = children[0]!
+        // The child's notice wakes the parent, whose turn on it ends in a second idle.
+        for (let waited = 0; (yield* Ref.get(idles)).length < 2 && waited < 60_000; waited += 100) yield* Effect.sleep("100 millis")
+        yield* settle
+        const seen = yield* Ref.get(idles)
+        yield* ensure(seen[0] === `subagent ${child.id}`, `the parent's first idle listed [${seen[0] ?? "no idle"}], not its running child`)
+        yield* ensure(seen.length >= 2 && seen.at(-1) === "", `after the child's notice the parent's idles listed ${seen.map((line) => `[${line}]`).join(" ")}`)
+      }),
+  },
+  {
     name: LAW.hooks,
     operations: ["tool.hook", "tool.transform"],
     check: (ctx, probe) =>
