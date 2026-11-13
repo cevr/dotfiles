@@ -18,22 +18,27 @@ export interface Clock {
 
 /** The system clock. */
 export const system: Clock = {
+  // oxlint-disable-next-line effect/noGlobals -- the system clock: the TUI clock's one adapter to the platform
   now: () => Date.now(),
   once: (ms, run) => {
+    // oxlint-disable-next-line effect/noGlobals -- the system clock: the TUI clock's one adapter to the platform
     const timer = setTimeout(run, ms)
     return () => clearTimeout(timer)
   },
   every: (ms, run) => {
+    // oxlint-disable-next-line effect/noGlobals -- the system clock: the TUI clock's one adapter to the platform
     const timer = setInterval(run, ms)
     return () => clearInterval(timer)
   },
 }
 
 const KEY = Symbol.for("dotfiles.tui-clock")
-const registry: { [key: symbol]: Clock | undefined } = globalThis
+const registry: { [key: symbol]: Clock } = globalThis
+// The first copy of this module in the process puts the system clock in.
+registry[KEY] ??= system
 
 /** The clock in force: the installed one, else the system's. */
-export const current = (): Clock => registry[KEY] ?? system
+export const current = (): Clock => registry[KEY]
 
 /** Makes `clock` the clock every plugin reads from now on; the returned function puts the one before it back. */
 export const install = (clock: Clock) => {

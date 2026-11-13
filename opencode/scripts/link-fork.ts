@@ -146,7 +146,7 @@ function linkThrough(link: string, under: string) {
   const text = `${path.relative(path.dirname(link), anchor)}/${under}`
   const current = linkOf(link)
   if (current === text) return
-  if (current !== undefined && ours(current)) rmSync(link)
-  else if (current !== undefined) return
+  if (ours(current)) rmSync(link)
+  else if (current) return
   symlinkSync(text, link)
 }

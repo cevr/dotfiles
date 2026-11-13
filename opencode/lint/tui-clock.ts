@@ -19,7 +19,7 @@ interface Node {
   readonly value?: unknown
   readonly callee?: Node
   readonly arguments?: ReadonlyArray<Node>
-  readonly parent?: Node | null
+  readonly parent?: Node
 }
 
 interface Context {
@@ -37,15 +37,18 @@ const CLOCKS: ReadonlyArray<readonly [string, string]> = [
   ["process", "hrtime"],
 ]
 
-const nameOf = (node: Node | undefined, computed = false): string => {
-  if (node === undefined) return ""
+/** A node that names nothing: what `nameOf` reads when there is no node. */
+const NOTHING: Node = { type: "" }
+
+const nameOf = (node: Node = NOTHING, computed = false): string => {
   if (!computed && node.type === "Identifier") return String(node.name)
-  if (node.type === "Literal" && typeof node.value === "string") return node.value
+  // A string literal is the one value its own String() is.
+  if (node.type === "Literal" && String(node.value) === node.value) return String(node.value)
   return ""
 }
 
 const MESSAGE =
-  "A TUI plugin reads time and sets timers through decider/tui-clock.ts (now, after, every), the clock a simulated TUI holds: a raw timer or clock here runs on the wall clock."
+  "A TUI plugin reads time and sets timers through decider/tui-clock.ts (now, once, every), the clock a simulated TUI holds: a raw timer or clock here runs on the wall clock."
 
 /** The member's `object.property` names, when both are plain. */
 const member = (node: Node) => [nameOf(node.object), nameOf(node.property, node.computed)] as const
@@ -56,8 +59,10 @@ const tuiClockOnly = {
       if (!TIMERS.has(String(node.name))) return
       const parent = node.parent
       // A property name (`x.setTimeout`, `{ setTimeout: … }`) is not the global, unless the object is the global object.
-      if (parent?.type === "MemberExpression" && parent.property === node && !parent.computed)
-        return GLOBALS.has(nameOf(parent.object)) ? context.report({ node, message: MESSAGE }) : undefined
+      if (parent?.type === "MemberExpression" && parent.property === node && !parent.computed) {
+        if (GLOBALS.has(nameOf(parent.object))) context.report({ node, message: MESSAGE })
+        return
+      }
       if (parent?.type === "Property" || parent?.type === "MethodDefinition" || parent?.type === "PropertyDefinition") return
       if (parent?.type === "ImportSpecifier" || parent?.type === "ExportSpecifier") return
       context.report({ node, message: MESSAGE })
