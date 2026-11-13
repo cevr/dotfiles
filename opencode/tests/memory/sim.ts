@@ -35,7 +35,7 @@ interface ChatRequest {
   readonly messages?: ReadonlyArray<ChatMessage>
 }
 
-type Reply =
+export type Reply =
   | { readonly kind: "text"; readonly text: string }
   | { readonly kind: "tool"; readonly name: string; readonly input: Record<string, unknown> }
 
@@ -47,7 +47,8 @@ const text = (content: unknown): string => {
     .join("")
 }
 
-const SCRIPTS: Readonly<Record<string, ReadonlyArray<Reply>>> = {
+/** Each task's tool calls, in order; the model answers `DONE` after the last one's result (cmd/memory/memory.sim.test.ts reads them too). */
+export const SCRIPTS: Readonly<Record<string, ReadonlyArray<Reply>>> = {
   [SAVE_TASK]: [
     { kind: "tool", name: "memory_save", input: { text: FACT, scope: "global", tags: ["bun"] } },
     { kind: "tool", name: "memory_save", input: { text: REPEAT, scope: "global" } },
