@@ -19,12 +19,16 @@
  * `$XDG_STATE_HOME/opencode-mail/pairs.json` (0600).
  */
 import { hostname } from "node:os"
-import { Effect, Option, Schema } from "effect"
+import { Clock, Effect, Layer, Option, Schema } from "effect"
 import * as FilePairs from "@dotfiles/opencode-mail/filestore/pairs"
-import { keyed, token } from "@dotfiles/opencode-mail/node/keyed"
+import * as HttpPeers from "@dotfiles/opencode-mail/http/peers"
+import { keyed, tokens } from "@dotfiles/opencode-mail/node/keyed"
 import { INVITE_MS, invited, joined, validName } from "@dotfiles/opencode-mail/pairing"
 import { PairAnswer, ROUTES } from "@dotfiles/opencode-mail/peer"
-import { PairStore } from "@dotfiles/opencode-mail/service"
+import { Net, PairStore, Tokens } from "@dotfiles/opencode-mail/service"
+
+/** How long the inviter's listener has to answer a join. */
+export const JOIN_TIMEOUT_MS = 10_000
 
 /** This host's default mail name. */
 export const defaultName = (): string => hostname().toLowerCase().replace(/\.local$/, "")
@@ -53,9 +57,10 @@ export const pair = (args: ReadonlyArray<string>, script = import.meta.path) =>
     if (command === "invite") {
       const pairs = yield* store.read
       if (pairs.url === undefined) return failed("No mail listener has run on this host: set the mail plugin's `listen` option and restart OpenCode.")
-      const code = token(18)
+      const code = yield* (yield* Tokens).token(18)
       const name = pairs.name ?? named ?? defaultName()
-      yield* store.update((current) => [undefined, invited(current, name, code, Date.now(), keyed)])
+      const now = yield* Clock.currentTimeMillis
+      yield* store.update((current) => [undefined, invited(current, name, code, now, keyed)])
       return {
         ok: true,
         out: [
@@ -72,20 +77,18 @@ export const pair = (args: ReadonlyArray<string>, script = import.meta.path) =>
       const pairs = yield* store.read
       if (pairs.url === undefined) return failed("No mail listener has run on this host, so the other host could not answer it: set the mail plugin's `listen` option and restart OpenCode.")
       const self = pairs.name ?? named ?? defaultName()
-      const reply = yield* Effect.tryPromise(async () => {
-        const response = await fetch(new URL(ROUTES.pair, url), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code, name: self, url: pairs.url }),
-          signal: AbortSignal.timeout(10_000),
-        })
-        return { status: response.status, text: await response.text() }
-      }).pipe(Effect.orElseSucceed(() => undefined))
+      const net = yield* Net
+      const body = JSON.stringify({ code, name: self, url: pairs.url })
+      const reply = yield* Effect.try(() => new URL(ROUTES.pair, url).href).pipe(
+        Effect.flatMap((target) => net.post(target, { headers: {}, body }, JOIN_TIMEOUT_MS)),
+        Effect.orElseSucceed(() => undefined),
+      )
       if (reply === undefined) return failed(`${url} did not answer.`)
-      if (reply.status !== 200) return failed(`${url} refused: ${reply.text.trim()}`)
-      const answer = Schema.decodeUnknownOption(Schema.fromJsonString(PairAnswer))(reply.text)
+      if (reply.status !== 200) return failed(`${url} refused: ${reply.body.trim()}`)
+      const answer = Schema.decodeUnknownOption(Schema.fromJsonString(PairAnswer))(reply.body)
       if (Option.isNone(answer)) return failed(`${url} answered something that is not a pairing.`)
-      yield* store.update((current) => [undefined, joined(current, self, { name: answer.value.name, url, secret: answer.value.secret }, Date.now())])
+      const now = yield* Clock.currentTimeMillis
+      yield* store.update((current) => [undefined, joined(current, self, { name: answer.value.name, url, secret: answer.value.secret }, now)])
       return { ok: true, out: `Paired: this host is ${self}; ${answer.value.name} is at ${url}.` } satisfies Outcome
     }
 
@@ -118,7 +121,7 @@ export const pair = (args: ReadonlyArray<string>, script = import.meta.path) =>
 if (import.meta.main) {
   const outcome = await Effect.runPromise(
     pair(process.argv.slice(2)).pipe(
-      Effect.provide(FilePairs.layer(FilePairs.fileOf(process.env))),
+      Effect.provide(Layer.mergeAll(FilePairs.layer(FilePairs.fileOf(process.env)), HttpPeers.liveNet, tokens)),
       Effect.catch((failure) => Effect.succeed(failed(failure.message))),
     ),
   )

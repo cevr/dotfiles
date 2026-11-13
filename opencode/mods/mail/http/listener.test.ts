@@ -5,8 +5,9 @@ import { Deferred, Effect, Exit, Fiber, Layer, Logger, References, Scope } from 
 import { TestClock } from "effect/testing"
 import { EMPTY } from "../pairing.ts"
 import { PairStore } from "../service.ts"
-import { keyed } from "../node/keyed.ts"
+import { keyed, tokens } from "../node/keyed.ts"
 import { RETRY, serve } from "./listener.ts"
+import { liveNet } from "./peers.ts"
 
 test("a listener waiting on an occupied port can unload while that port stays occupied", () =>
   Effect.runPromise(
@@ -25,7 +26,6 @@ test("a listener waiting on an occupied port can unload while that port stays oc
           { hostname: "127.0.0.1", port: occupied.port! },
           { cards: () => Effect.succeed([]), receive: () => Effect.succeed({ outcome: "unknown" }) },
           keyed,
-          () => "test-secret",
         ).pipe(
           Effect.provideService(Scope.Scope, plugin),
           Effect.provide(Logger.layer([logger])),
@@ -47,10 +47,14 @@ test("a listener waiting on an occupied port can unload while that port stays oc
     ).pipe(
       Effect.provide(TestClock.layer()),
       Effect.provide(
-        Layer.succeed(PairStore, {
-          read: Effect.succeed(EMPTY),
-          update: (change) => Effect.sync(() => change(EMPTY)[0]),
-        }),
+        Layer.mergeAll(
+          Layer.succeed(PairStore, {
+            read: Effect.succeed(EMPTY),
+            update: (change) => Effect.sync(() => change(EMPTY)[0]),
+          }),
+          liveNet,
+          tokens,
+        ),
       ),
     ),
   ),

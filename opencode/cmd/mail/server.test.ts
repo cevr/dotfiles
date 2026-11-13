@@ -7,6 +7,8 @@
 import { describe, expect, test } from "bun:test"
 import type { Tool } from "@opencode/plugin/effect"
 import { Effect, Layer, Logger, type Scope } from "effect"
+import * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
+import * as MemoryTokens from "@dotfiles/opencode-mail/memory/tokens"
 import { EMPTY } from "@dotfiles/opencode-mail/pairing"
 import { PairStore, Peers, PeerUnreachable } from "@dotfiles/opencode-mail/service"
 import { type Host as SessionsHost, layer as sessionsLayer, type SessionView, type Synthetic } from "@dotfiles/opencode-mail/opencode/sessions"
@@ -73,7 +75,7 @@ const start = (state: World) =>
           }),
       },
     } as unknown as Host
-    yield* make(() => Layer.mergeAll(sessionsLayer(state.host), NO_PEERS, NO_PAIRS)).effect(host)
+    yield* make(() => Layer.mergeAll(sessionsLayer(state.host), NO_PEERS, NO_PAIRS, MemoryNet.make().layer("127.0.0.1"), MemoryTokens.layer)).effect(host)
     const execute = (name: string, input: unknown, sessionID: string) => {
       const tool = added.find((item) => item.name === name)
       return tool === undefined

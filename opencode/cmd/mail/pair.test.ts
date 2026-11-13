@@ -13,10 +13,10 @@ import type { SessionCard } from "@dotfiles/opencode-mail/directory"
 import * as FilePairs from "@dotfiles/opencode-mail/filestore/pairs"
 import * as Listener from "@dotfiles/opencode-mail/http/listener"
 import * as HttpPeers from "@dotfiles/opencode-mail/http/peers"
-import { keyed, token } from "@dotfiles/opencode-mail/node/keyed"
+import { keyed, token, tokens } from "@dotfiles/opencode-mail/node/keyed"
 import { HEADERS, sign } from "@dotfiles/opencode-mail/pairing"
 import { ROUTES, type Parcel } from "@dotfiles/opencode-mail/peer"
-import { PairStore, Peers } from "@dotfiles/opencode-mail/service"
+import { type Net, PairStore, Peers, type Tokens } from "@dotfiles/opencode-mail/service"
 import { pair } from "./pair.ts"
 
 const root = mkdtempSync(join(tmpdir(), "mail-pair-"))
@@ -33,7 +33,8 @@ const host = async (name: string, cards: ReadonlyArray<SessionCard>) => {
   const received: Array<{ readonly peer: string; readonly parcel: Parcel }> = []
   const logs: Array<string> = []
   const logger = Logger.make((entry) => void logs.push(String(Array.isArray(entry.message) ? entry.message.join(" ") : entry.message)))
-  const context = await Effect.runPromise(Layer.buildWithScope(Layer.mergeAll(store, HttpPeers.layer(keyed, () => token(16)).pipe(Layer.provide(store)), Logger.layer([logger])), scope))
+  const outside = Layer.mergeAll(store, HttpPeers.liveNet, tokens)
+  const context = await Effect.runPromise(Layer.buildWithScope(Layer.mergeAll(outside, HttpPeers.layer(keyed).pipe(Layer.provide(outside)), Logger.layer([logger])), scope))
   const handlers: Listener.Handlers = {
     cards: ({ children }) => Effect.succeed(cards.filter((card) => children || card.parentID === undefined)),
     receive: (peer, parcel) =>
@@ -44,8 +45,8 @@ const host = async (name: string, cards: ReadonlyArray<SessionCard>) => {
         return { outcome: "delivered" as const, to: found, delivery: "woke" as const }
       }),
   }
-  await Effect.runPromise(Listener.serve({ hostname: "127.0.0.1", port: 0 }, handlers, keyed, () => token(32)).pipe(Effect.provide(context), Scope.provide(scope)))
-  const run = <A, E>(effect: Effect.Effect<A, E, PairStore | Peers>) => Effect.runPromise(effect.pipe(Effect.provide(context)))
+  await Effect.runPromise(Listener.serve({ hostname: "127.0.0.1", port: 0 }, handlers, keyed).pipe(Effect.provide(context), Scope.provide(scope)))
+  const run = <A, E>(effect: Effect.Effect<A, E, PairStore | Peers | Net | Tokens>) => Effect.runPromise(effect.pipe(Effect.provide(context)))
   const url = (await run(Effect.flatMap(PairStore, (pairs) => pairs.read))).url ?? ""
   return { name, file, url, received, logs, run, command: (...args: ReadonlyArray<string>) => run(pair([...args, "--name", name], "pair.ts")) }
 }
@@ -123,8 +124,8 @@ describe("the listener", () => {
     const logger = Logger.make((entry) => void logs.push(String(entry.message)))
     await Effect.runPromise(
       Effect.scoped(
-        Listener.serve({ hostname: "0.0.0.0", port: 0 }, { cards: () => Effect.succeed([]), receive: () => Effect.succeed({ outcome: "unknown" }) }, keyed, () => "s").pipe(
-          Effect.provide(FilePairs.layer(join(root, "wild", "pairs.json"))),
+        Listener.serve({ hostname: "0.0.0.0", port: 0 }, { cards: () => Effect.succeed([]), receive: () => Effect.succeed({ outcome: "unknown" }) }, keyed).pipe(
+          Effect.provide(Layer.mergeAll(FilePairs.layer(join(root, "wild", "pairs.json")), HttpPeers.liveNet, tokens)),
           Effect.provide(Logger.layer([logger])),
         ),
       ),
