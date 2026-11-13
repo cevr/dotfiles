@@ -3,11 +3,12 @@
 // repository, and fails closed when it cannot tell. The domain fence keeps
 // the root off its folders, so the stand-ins are built here from service.ts.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import * as Model from "./model.ts"
 import type { ProcessInfo } from "./kill.ts"
 import { launcherScript } from "./launcher.ts"
 import {
+  Checkouts,
   Launchers,
   LauncherUnavailable,
   Processes,
@@ -84,6 +85,9 @@ const subagents = Layer.succeed(
   }),
 )
 
+/** No checkout on the stand-in disk: the worktree rule's own cases run on the simulated host (cmd/guard/guard.sim.test.ts). */
+const noCheckouts = Layer.succeed(Checkouts, Checkouts.of({ of: () => Effect.succeed(Option.none()), warmSources: Effect.succeed([]) }))
+
 const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, table: ReadonlyArray<ProcessInfo> | "unreadable" = TABLE, reads = { count: 0 }) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -96,7 +100,7 @@ const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, tab
     }).pipe(
       Effect.provide(
         Model.layer({ home: HOME, server: SERVER }).pipe(
-          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, subagents, processes(table, reads))),
+          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, subagents, processes(table, reads), noCheckouts)),
         ),
       ),
     ),
