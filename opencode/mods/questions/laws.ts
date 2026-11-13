@@ -25,6 +25,8 @@ const two: Sheet = {
   rows: [
     { id: "q1", sessionID: "ses_a", question: "Which port?", assume: "8080", askedAt: ASKED, answered: { answer: "3000", delivery: "msg_a" } },
     { id: "q2", sessionID: "ses_a", question: "Keep the old flag?", assume: "yes", askedAt: ASKED + 1 },
+    // Dismissed beside q1's answer, on its assumption: it rides in the same message, named as dismissed.
+    { id: "q3", sessionID: "ses_a", question: "Log the change?", assume: "no", askedAt: ASKED + 2, answered: { answer: "no", delivery: "msg_a", dismissed: true } },
   ],
 }
 

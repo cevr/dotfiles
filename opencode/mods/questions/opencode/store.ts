@@ -8,7 +8,7 @@
 // outlive a restart and every directory's server reads the same ones. Its
 // get, set, remove and scan never fail; `scan` pages by `next`.
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { EMPTY, type Row, Sheet } from "../question.ts"
 import { QuestionStore, QuestionsUnreadable } from "../service.ts"
 
@@ -41,7 +41,11 @@ const rowJson = (row: Row): Schema.Json => {
       option.description === undefined ? { label: option.label } : { label: option.label, description: option.description },
     )
   if (row.from !== undefined) json.from = { plugin: row.from.plugin, key: row.from.key }
-  if (row.answered !== undefined) json.answered = { answer: row.answered.answer, delivery: row.answered.delivery }
+  if (row.answered !== undefined) {
+    // A question dismissed beside answers keeps its mark, so its message names it as dismissed, not answered.
+    const { dismissed, ...kept } = row.answered
+    json.answered = Option.match(Option.fromNullishOr(dismissed), { onNone: () => kept, onSome: (mark) => ({ ...kept, dismissed: mark }) })
+  }
   return json
 }
 
