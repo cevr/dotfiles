@@ -298,15 +298,37 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
   directory: session.location.directory,
 })
 
+/** The outside systems the filesystem and processes provide: the files the plugin keeps, git, the scripts it runs. */
+export type Kept = Ledger | Findings | Branches | CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet
+
 /**
  * The outside systems as OpenCode, the filesystem and processes provide them;
  * `start` runs a latched child through the subagent tool.
  */
 export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background): Layer.Layer<Externals> =>
+  Layer.merge(
+    hosted(ctx, start, background),
+    Layer.mergeAll(
+      LedgerLive.layer(options.ledger, options.cadence),
+      FindingsLive.layer,
+      GitBranches.layer,
+      CallLogLive.layer(options.log),
+      UnitLogsLive.layer(options.unitLog, { journal: options.drops }),
+      CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
+      StepLogLive.layer(options.log),
+      SkillLive.layer(options.skill),
+      RunRecordsLive.layer,
+      GitFleet.layer(Option.fromNullishOr(options.fleet)),
+    ),
+  )
+
+/**
+ * The outside systems OpenCode provides, on the plugin's context alone: its sessions, models and steering, and the
+ * pool's, the wakes', the status's, the questions' and the queue's RPC. Any host that gives the context gives these
+ * (the simulated one too: sim/plugins.ts); `start` runs a latched child through the subagent tool.
+ */
+export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background: Background): Layer.Layer<Exclude<Externals, Kept>> =>
   Layer.mergeAll(
-    LedgerLive.layer(options.ledger, options.cadence),
-    FindingsLive.layer,
-    GitBranches.layer,
     SteerLive.remindLayer(synthetic(ctx)),
     // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
     // work of its own; a session that cannot be read does not.
@@ -321,12 +343,10 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
           Effect.orElseSucceed(() => background(sessionID) > 0),
         ),
     }),
-    CallLogLive.layer(options.log),
     SessionsLive.layer(
       (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
     ),
-    UnitLogsLive.layer(options.unitLog, { journal: options.drops }),
     ModelsLive.layer({
       session: (sessionID) =>
         ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
@@ -344,9 +364,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
       (input) => ctx.rpc(POOL_STATUS).pace(input),
       (input) => ctx.rpc(POOL_STATUS).started(input),
     ),
-    CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
     LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
-    StepLogLive.layer(options.log),
     RunsLive.layer(() => ctx.rpc(STATUS).status({})),
     HoldsLive.layer({
       pending: (input) => ctx.rpc(WAKES).pending({ sessionIDs: [...input.sessionIDs] }),
@@ -355,9 +373,6 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
     }),
     SteerLive.layer(synthetic(ctx)),
     SteerLive.tellLayer(synthetic(ctx)),
-    SkillLive.layer(options.skill),
-    RunRecordsLive.layer,
-    GitFleet.layer(Option.fromNullishOr(options.fleet)),
   )
 
 /** A host time (epoch ms, a Date or a DateTime) as epoch ms. */
