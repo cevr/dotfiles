@@ -1,12 +1,13 @@
-// accept: deep (18.7 s alone on a quiet host: 1-minute load 45.1–62.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (18.7 s alone on a quiet host before the monitor moved to the simulated host: 1-minute load 45.1–62.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public seam: real OpenCode with `experimental.schedules` on, the real wake
 // server plugin, the built-in schedule plugin off as daily writes it, and a
-// scripted model. scenarios/wake-repeat.ts asks the model once (keeping the
-// tools it was offered), sets a `repeat: "change"` monitor on a status file,
-// changes the file twice and cancels the monitor. The schedule tools must be
-// gone from the request while the flag is on, the `/schedule` command from
-// the server's commands, and each change must reach the
-// session as one short synthetic notice, never a user prompt.
+// scripted model. scenarios/wake-repeat.ts asks the model once, keeping the
+// tools it was offered. The schedule tools must be gone from the request
+// while the flag is on, and the `/schedule` command from the server's
+// commands: what the real host's config (the built-in plugin off) shows. The
+// repeating monitor (each change one short synthetic notice, never a user
+// prompt; a cancel stops it) runs on the simulated host under the same name:
+// cmd/wake/wake-repeat.sim.test.ts, by tests/parity/wake.json.
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -16,15 +17,6 @@ import { keptScratch } from "./scratch.ts"
 interface Request {
   readonly session?: "root" | "title"
   readonly request: string
-}
-interface Message {
-  readonly type?: string
-  readonly text?: string
-  readonly metadata?: { readonly source?: string; readonly kind?: string; readonly outcome?: string; readonly repeat?: string; readonly fires?: number }
-}
-interface Session {
-  readonly id: string
-  readonly messages: ReadonlyArray<Message>
 }
 
 const label = "wake-repeat"
@@ -61,25 +53,5 @@ describe.skipIf(!fork)("with OpenCode's schedules on", () => {
       expect(request.request).not.toMatch(/schedule_(create|list|pause|resume|delete)/)
       expect(request.request).toContain("wake_cancel")
     }
-
-    // The baseline fired nothing; each change woke the idle session once, and the unchanged output never again.
-    expect(read("set.txt")).not.toContain("Saw fire")
-    expect(read("first.txt")).toContain("Saw fire 1.")
-    expect(read("second.txt")).toContain("Saw fire 2.")
-    expect(read("second.txt")).not.toContain("Saw fire 3.")
-    expect(read("stopped.txt")).toContain("Watch stopped.")
-
-    const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
-    const messages = sessions.flatMap((session) => session.messages)
-    const fired = messages.filter((message) => message.metadata?.source === "wake")
-    expect(fired.map((message) => [message.type, message.metadata?.kind, message.metadata?.outcome, message.metadata?.repeat, message.metadata?.fires])).toEqual([
-      ["synthetic", "monitor", "matched", "change", 1],
-      ["synthetic", "monitor", "matched", "change", 2],
-    ])
-    expect(fired[0]?.text).toContain("Note: WATCH: the status changed\nOutput (exit 0):\nstatus two")
-    expect(fired[1]?.text).toContain("Output (exit 0):\nstatus three")
-    for (const message of fired) expect((message.text ?? "").length).toBeLessThan(600)
-    // No user message carries the note: the only user prompts are the three steps typed.
-    expect(messages.filter((message) => message.type === "user" && (message.text ?? "").includes("WATCH"))).toEqual([])
   }), 180_000)
 })

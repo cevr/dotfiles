@@ -40,9 +40,12 @@ const checksOf = (world: World) =>
     }),
   )
 
-/** The wakes plugin (`cmd/wake/server.ts`'s `make`) on the world: OpenCode's adapters on its context, its shell for checks. */
-export const wake = (world: World) => {
-  const runner = MemoryRunner.empty()
+/**
+ * The wakes plugin (`cmd/wake/server.ts`'s `make`) on the world: OpenCode's adapters on its context, its shell for
+ * checks. Its jobs are `runner`'s, which the test drives as the job's command would (`MemoryRunner.running`, `ended`):
+ * one runner across restarts, as a job outlives the server.
+ */
+export const wake = (world: World, runner: MemoryRunner.MemoryRunner = MemoryRunner.empty()) => {
   return makeWake((ctx, options) =>
     Layer.mergeAll(
       OpenCodeStore.fromContext(ctx),
