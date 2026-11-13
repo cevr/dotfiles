@@ -13,7 +13,7 @@ import { type Command, DEFAULT_CADENCE, dueOf, HandBack, Land, machine, type Mac
 import { driftOf, scoreOf } from "@dotfiles/opencode-orchestrate/drift"
 import {
   aliasLine,
-  existingLanes,
+  laneDecision,
   type Lane,
   LAND_NEXT,
   laneBranchOf,
@@ -472,21 +472,48 @@ seeded("a lane's Rift, on the Mac's naming or the workbox's, is the one a land r
       const workbox = random() < 0.5
       // The units the machine holds, their implementors started with no `(rift: …)`: the name rule alone finds their Rifts.
       const state = units.reduce((held, unit) => decider.evolve(held, UnitStarted.make({ unit, round: 1, direct: false, at: 0 })), decider.initial)
-      // Each unit's lane, made on its default branch with the naming the host uses.
-      const lanes: ReadonlyArray<Lane> = units.map((unit) => {
-        const branch = laneBranchOf({ unit })
-        const named = Option.getOrElse(Option.liftPredicate(workriftName(branch), () => workbox), () => unit)
-        return { path: `/code/.rifts/app/${named}`, branch, head: "abc1234", state: "clean" }
-      })
-      const resolved = resolveLand({ action: "land", units }, lanes, state, nextOf(state, 0, DUE))
+      const nameOf = (unit: string) => Option.getOrElse(Option.liftPredicate(workriftName(laneBranchOf({ unit })), () => workbox), () => unit)
+      // Each unit's lane, decided by the tool and made by the host in order, on its default branch with the naming the
+      // host uses. One directory is one Rift (host law): a lane whose name is taken never makes a second.
+      const lanes: Array<Lane> = []
+      const laned: Array<string> = []
+      for (const unit of units) {
+        const decided = laneDecision(unit, laneBranchOf({ unit }), nameOf(unit), workbox, lanes, state)
+        // Refused only when workrift names an earlier unit's branch alike (`feat/w` and `feat/w-` are both `feat-w`).
+        const clash = Arr.some(laned, (earlier) => workbox && nameOf(earlier) === nameOf(unit))
+        expect(["refused" in decided, unit, laned]).toEqual([clash, unit, laned])
+        expect("found" in decided).toBe(false)
+        if ("make" in decided) {
+          lanes.push({ path: `/code/.rifts/app/${decided.make}`, branch: laneBranchOf({ unit }), head: "abc1234", state: "clean" })
+          laned.push(unit)
+        }
+      }
+      // Each laned unit lands from its own Rift, and two units never share one.
+      const resolved = resolveLand({ action: "land", units: laned }, lanes, state, nextOf(state, 0, DUE))
       expect("rifts" in resolved && resolved.rifts.map((rift) => rift.path)).toEqual(lanes.map((lane) => lane.path))
+      expect(Arr.dedupe(lanes.map((lane) => lane.path))).toHaveLength(laned.length)
       // A lane again finds the one it made, by the same name.
-      units.forEach((unit, index) => {
-        const named = Option.getOrElse(Option.liftPredicate(workriftName(laneBranchOf({ unit })), () => workbox), () => unit)
-        expect(existingLanes(unit, named, lanes, state).map((lane) => lane.path)).toEqual(Option.toArray(Option.map(Arr.get(lanes, index), (lane) => lane.path)))
+      laned.forEach((unit, index) => {
+        const decided = laneDecision(unit, laneBranchOf({ unit }), nameOf(unit), workbox, lanes, state)
+        expect("found" in decided && decided.found.path).toEqual(Option.getOrElse(Option.map(Arr.get(lanes, index), (lane) => lane.path), () => ""))
       })
-      expect(Arr.dedupe(lanes.map((lane) => lane.path))).toHaveLength(units.length)
     }
+  }),
+)
+
+seeded("on the workbox, a unit whose branch workrift names like another lane's is refused, never answered that lane (SIM_SEED=1640407: w and w-)", ({ expect }) =>
+  Effect.sync(() => {
+    const decider = machine()
+    const state = ["w", "w-"].reduce((held, unit) => decider.evolve(held, UnitStarted.make({ unit, round: 1, direct: false, at: 0 })), decider.initial)
+    expect(workriftName(laneBranchOf({ unit: "w-" }))).toBe(workriftName(laneBranchOf({ unit: "w" })))
+    const lanes: ReadonlyArray<Lane> = [{ path: "/code/.rifts/app/feat-w", branch: "feat/w", head: "abc1234", state: "clean" }]
+    const decided = laneDecision("w-", "feat/w-", "feat-w", true, lanes, state)
+    expect("refused" in decided && decided.refused).toContain('orchestrate({ action: "lane", unit: "w-", branch: "<branch>" })')
+    // Its own branch named apart, it makes its own Rift; on the Mac its name is its own.
+    expect(laneDecision("w-", "feat/w-x", workriftName("feat/w-x"), true, lanes, state)).toEqual({ make: "feat-w-x" })
+    expect(laneDecision("w-", "feat/w-", "w-", false, lanes, state)).toEqual({ make: "w-" })
+    // The lane it already has is answered.
+    expect(laneDecision("w", "feat/w", "feat-w", true, lanes, state)).toEqual({ found: lanes[0] })
   }),
 )
 

@@ -944,11 +944,10 @@ export const make = (
           const listed = yield* listLanes(sessionID, source)
           // On the workbox, workrift names a Rift after its branch; elsewhere it is the unit's.
           const name = Option.getOrElse(Option.liftPredicate(workriftName(branch), () => listed.workrift), () => unit)
-          const existing = Tools.existingLanes(unit, name, listed.rifts, yield* machines.state(sessionID))
-          if (existing.length > 1) return yield* failWith(Tools.lanesRefusal(unit, existing))
-          const found = Arr.head(existing)
-          if (Option.isSome(found)) return Tools.laneAnswer(unit, found.value, false)
-          const ask = { sessionID, branch, name }
+          const decided = Tools.laneDecision(unit, branch, name, listed.workrift, listed.rifts, yield* machines.state(sessionID))
+          if ("refused" in decided) return yield* failWith(decided.refused)
+          if ("found" in decided) return Tools.laneAnswer(unit, decided.found, false)
+          const ask = { sessionID, branch, name: decided.make }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
           return Tools.laneAnswer(unit, created.rift, true)
         })

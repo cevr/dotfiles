@@ -236,6 +236,42 @@ export const existingLanes = (unit: string, name: string, lanes: ReadonlyArray<L
     { onEmpty: () => lanesOf(unit, lanes, state), onNonEmpty: (named) => named },
   )
 
+/** What a lane does: answers the Rift it finds, makes one of `name`, or is refused. */
+export type LaneDecision = { readonly found: Lane } | { readonly make: string } | { readonly refused: string }
+
+/**
+ * A lane of `unit` on `branch`, where the Rift it makes is named `name`. On the workbox (`workrift`), workrift names a
+ * Rift after its branch (`workspaceName`), so two branches can take one name (`feat/w` and `feat/w-` are both
+ * `feat-w`): a Rift of that name on another branch is another lane's, and this one is refused rather than answered
+ * it. On the Mac the name is the unit's own, so its Rift is the unit's on any branch.
+ */
+export const laneDecision = (
+  unit: string,
+  branch: string,
+  name: string,
+  workrift: boolean,
+  lanes: ReadonlyArray<Lane>,
+  state: MachineState,
+): LaneDecision => {
+  const taken = Arr.findFirst(lanes, (lane) => workrift && baseOf(lane.path) === name && lane.branch !== branch)
+  if (Option.isSome(taken))
+    return {
+      refused: `orchestrate: workrift names the Rift of branch ${branch} ${name}, and ${taken.value.path} (${Option.getOrElse(
+        Option.map(Option.fromUndefinedOr(taken.value.branch), (other) => `branch ${other}`),
+        () => `detached at ${taken.value.head}`,
+      )}) already has that name: it is another lane's. Lane ${unit} on a branch whose name is its own: ${callOf("lane", [
+        ["unit", quote(unit)],
+        ["branch", quote("<branch>")],
+      ])}.`,
+    }
+  const existing = existingLanes(unit, name, lanes, state)
+  return Arr.match(existing, {
+    onEmpty: (): LaneDecision => ({ make: name }),
+    onNonEmpty: (found): LaneDecision =>
+      Arr.match(Arr.drop(found, 1), { onEmpty: () => ({ found: Arr.headNonEmpty(found) }), onNonEmpty: () => ({ refused: lanesRefusal(unit, found) }) }),
+  })
+}
+
 /** The Rift a verify makes for a batch: `verify-<batch>`. */
 export const verifyLaneOf = (batch: string): string => `verify-${batch}`
 
