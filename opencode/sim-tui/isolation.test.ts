@@ -15,11 +15,12 @@ import { platformTest } from "./effect-test.ts"
 
 // Each file's seeds checked alone. In prime-escape and prime-sidebar every test reads one play a seed, so seed 1
 // is the first after the boot in both runs and seeds 2 to 4 are the ones a seed before could reach. escape-states
-// runs 3 seeds, each test its own play: its seed 1 of every test but the first follows the test before.
+// runs 2 seeds, each test its own play: its seed 1 of every test but the first follows the test before, and its
+// seed 2 follows seed 1; both are checked, every seed it has.
 const FILES = new Map([
   ["cmd/prime/prime-escape.sim.test.tsx", [2, 3, 4]],
   ["cmd/prime/prime-sidebar.sim.test.tsx", [2, 3, 4]],
-  ["cmd/escape/escape-states.sim.test.tsx", [1, 2, 3]],
+  ["cmd/escape/escape-states.sim.test.tsx", [1, 2]],
 ])
 const RUN_MS = 300_000
 

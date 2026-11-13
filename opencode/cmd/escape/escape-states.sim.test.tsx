@@ -13,8 +13,12 @@ import { type Model, shell, stall, text } from "../../sim-tui/server.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/escape/escape-states.sim.test.tsx"
-/** Seeds this file runs: its five cases at 4 seeds each (20 runs) took 3.5–4.9 s of the 5 s of CPU a file has (measured at load 30–130); 3 each leave a fifth of it. */
-const SEEDS = 3
+/**
+ * Seeds this file runs, per case. CPU under contention runs up to 1.42x what the same seeds take in another
+ * run at the same load (the land gate of 2026-11-13, load 154–185: 3546 ms in the suite, 5033 ms in
+ * isolation.test.ts's child), so a file keeps half its 5 s: 3 each (15 runs) took 3.2–3.5 s; 2 each take about 2.4 s.
+ */
+const SEEDS = 2
 const { seeded } = App.runner(FILE, SEEDS)
 const BOOT: App.BootOptions = {
   file: FILE,

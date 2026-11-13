@@ -12,8 +12,12 @@ import * as Golden from "../../sim-tui/golden.ts"
 import { MODEL_REF, type Model, reasoning, stall, subagent, text } from "../../sim-tui/server.ts"
 
 const FILE = "cmd/prime/prime-sidebar.sim.test.tsx"
-/** Seeds this file runs: 20 took 4.4–5.0 s of the 5 s of CPU a file has (measured at load 35–140); 16 leave a fifth of it. */
-const SEEDS = 16
+/**
+ * Seeds this file runs. CPU under contention runs up to 1.42x what the same seeds take in another run at the
+ * same load (the land gate of 2026-11-13, load 154–185), so a file keeps half its 5 s: 16 took 3.7 s there
+ * (about 230 ms a seed); 10 take about 2.3 s.
+ */
+const SEEDS = 10
 const { seeded } = App.runner(FILE, SEEDS)
 // The scenario's widths are 160 and 106.
 const WIDE = 160
