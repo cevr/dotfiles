@@ -1,6 +1,6 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
@@ -9,13 +9,18 @@ import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
 const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
+
+/** A config file's plugin list, as JSON. */
+const PluginsJson = Schema.fromJsonString(Schema.Struct({ plugins: Schema.Array(Schema.Unknown) }))
+const encodePlugins = Schema.encodeSync(PluginsJson)
+const decodePlugins = Schema.decodeUnknownSync(PluginsJson)
 
 describe("the server config", () => {
   test("puts our plugins first, replaces our old entries and keeps everyone else's", () => {
@@ -37,6 +42,33 @@ describe("the server config", () => {
     const existing = { plugins: [`${MODS}/anthropic-auth`, "/elsewhere/plugin"] }
     const merged = mergeServer(existing, [`${CMD}/anthropic-auth`], {}, [MODS, CMD])
     expect(merged.plugins).toEqual([`${CMD}/anthropic-auth`, "/elsewhere/plugin"])
+  })
+
+  test("an update's stage drops the deleted web plugin's entries (its cmd/ root and its mod) from both configs before the handoff restarts the service", () => {
+    // The update's install runs `daily.ts --stage` from the advanced checkout (mods/update/process/builder.ts),
+    // the same on the Mac and the workbox, and only then hands off the restart (mods/update/model.test.ts pins
+    // advance, keep config, stage, handoff). A restart that read an entry naming a deleted directory fails
+    // that plugin's load, and the handoff's health check rolls the update back.
+    using scratch = scratchDir("daily-configs-")
+    const config = join(scratch.path, ".config/opencode")
+    const checkout = join(DOTFILES, "opencode")
+    const deleted = [join(checkout, "cmd", "web"), join(checkout, "mods", "web")]
+    expect(deleted.some((dir) => existsSync(join(dir, "package.json")))).toBe(false)
+    mkdirSync(config, { recursive: true })
+    writeFileSync(join(config, "opencode.json"), encodePlugins({ plugins: [join(checkout, "cmd/guard"), deleted[0], { package: deleted[1], options: {} }, "/elsewhere/plugin"] }))
+    writeFileSync(join(config, "cli.json"), encodePlugins({ plugins: [deleted[0], "/elsewhere/tui"] }))
+    writeConfigs({ config, server: [pluginDir("guard")], cli: [pluginDir("prime")], models: {}, owned: ownedDirs(join(scratch.path, "share")) })
+    const plugins = (file: string) => decodePlugins(readFileSync(join(config, file), "utf8")).plugins
+    expect(plugins("opencode.json")).toEqual([pluginDir("guard"), "/elsewhere/plugin"])
+    expect(plugins("cli.json")).toEqual([pluginDir("prime"), "/elsewhere/tui"])
+  })
+
+  test("daily writes the configs on every run, a stage too: the one write comes before the --stage branch, which only skips the restart", () => {
+    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
+    const main = source.slice(source.indexOf("if (import.meta.main)"))
+    const writes = main.split("writeConfigs(").length - 1
+    const stage = main.split('args.has("--stage")')
+    expect({ writes, stageBranches: stage.length - 1, writeBeforeStage: (stage[0] ?? "").includes("writeConfigs(") }).toEqual({ writes: 1, stageBranches: 1, writeBeforeStage: true })
   })
 
   test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
