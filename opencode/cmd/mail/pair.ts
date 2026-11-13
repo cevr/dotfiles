@@ -38,8 +38,12 @@ const flag = (args: ReadonlyArray<string>, name: string): string | undefined => 
   return at === -1 ? undefined : args[at + 1]
 }
 
+/**
+ * The arguments without `--name` and its value, the one flag. A code is base64url, so
+ * it may itself start with `-` or `--`: only the flag's own spelling is a flag.
+ */
 const positional = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
-  args.filter((arg, index) => !arg.startsWith("--") && !(index > 0 && args[index - 1]?.startsWith("--")))
+  args.filter((arg, index) => arg !== "--name" && !(index > 0 && args[index - 1] === "--name"))
 
 /** What a run prints, or why it failed. */
 export type Outcome = { readonly ok: true; readonly out: string } | { readonly ok: false; readonly error: string }
