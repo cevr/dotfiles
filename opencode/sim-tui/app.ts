@@ -52,13 +52,14 @@ const CLOSE_TIMEOUT_MS = 30_000
 /**
  * A simulated TUI file's runner: sim/seed.ts's, on the file's first `count` seeds. A file whose
  * 20 seeds do not fit the runner's 5 s budget on a loaded host takes the largest count that does
- * (each file's count is in its header); a seed past it passes without running.
+ * (each file's count is in its header); a fixed seed past it passes without running. A seed past the
+ * fixed ones (a swarm's, or one `sim/seeds.json` replays) always runs.
  */
 export const runner = (file: string, count: number) => {
   const { seeded } = Seed.runner(file)
   return {
     seeded: <E>(name: string, body: (run: Seed.Seeded) => Effect.Effect<void, E>) =>
-      seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count)).pipe(Effect.asVoid)),
+      seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count || run.seed > Seed.SEEDS)).pipe(Effect.asVoid)),
   }
 }
 /**

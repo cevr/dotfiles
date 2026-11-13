@@ -11,7 +11,7 @@ import { Option } from "effect"
 import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
-import { isSerial, plan, poolWidth, requestedWidth, scenariosOf, timingSigns } from "./accept-plan.ts"
+import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmFirst, swarmRead, swarmSlot, timingSigns } from "./accept-plan.ts"
 import { parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
 import { acceptanceTests, acceptReach, load, packageOf, reach } from "./reach.ts"
@@ -162,6 +162,9 @@ const scratchEnv = (dir: string, extra: Record<string, string> = {}) => ({
   ACCEPT_LOCK: join(dir, "lock"),
   ACCEPT_LEDGER: join(dir, "ledger.json"),
   ACCEPT_LOGS: join(dir, "logs"),
+  ACCEPT_SWARM: join(dir, "swarm.json"),
+  // No simulated suite unless a test names its own stand-ins: a run swarms none of the real ones.
+  ACCEPT_SIM_FILES: join(dir, "sim", "*.sim.test.ts"),
   ...extra,
 })
 
@@ -269,13 +272,14 @@ describe("the acceptance tiers over the real tree", () => {
     expect(wrong).toEqual([])
   })
 
-  test("every path the runner reads from the environment (ACCEPT_*) is in scratch for every test that runs it: none touches the owner's ledger, lock or logs", () => {
+  test("every path the runner reads from the environment (ACCEPT_*) is in scratch for every test that runs it: none touches the owner's ledger, lock, logs or swarm state, or swarms the real suites", () => {
     const read = new Set(Array.from(readFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
-    // Not paths: the land budget, and the files glob each test sets to its own stand-ins.
-    const paths = [...read].filter((name) => name !== "ACCEPT_BUDGET_MS" && name !== "ACCEPT_FILES").sort()
+    // Not paths: the land budget, the long swarm's box, and the files glob each test sets to its own stand-ins. The
+    // simulated suites' glob is one: unset, a run swarms the real suites.
+    const paths = [...read].filter((name) => name !== "ACCEPT_BUDGET_MS" && name !== "ACCEPT_LONG_SWARM_MS" && name !== "ACCEPT_FILES").sort()
     const env = new Map(Object.entries(scratchEnv("/scratch/x")))
     expect({ paths, outside: paths.filter((name) => !Option.exists(Option.fromUndefinedOr(env.get(name)), (value) => value.startsWith("/scratch/x/"))) }).toEqual({
-      paths: ["ACCEPT_LEDGER", "ACCEPT_LOCK", "ACCEPT_LOGS"],
+      paths: ["ACCEPT_LEDGER", "ACCEPT_LOCK", "ACCEPT_LOGS", "ACCEPT_SIM_FILES", "ACCEPT_SWARM"],
       outside: [],
     })
   })
@@ -688,3 +692,142 @@ const counted = (name: string, body: string) =>
     "})",
     "",
   ].join("\n")
+
+describe("the swarm's plan", () => {
+  test("a swarm's first seed is past the gate's fixed seeds, the same for one head and purpose, another for another, and leaves a day's seeds inside 32 bits", () => {
+    const heads = Array.from({ length: 200 }, (_, index) => `${index.toString(16).padStart(40, "0")}`)
+    const firsts = heads.map((head) => swarmFirst(head, "land"))
+    expect({
+      // sim/seed.ts's own constant, read from its text: the runner's gate seeds.
+      fixed: readFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
+      past: firsts.every((first) => first > FIXED_SEEDS),
+      inRange: firsts.every((first) => first + 10_000_000 < 2 ** 31 - 1),
+      same: swarmFirst("abc", "land") === swarmFirst("abc", "land"),
+      distinct: new Set(firsts).size,
+      daily: swarmFirst("abc", "land") !== swarmFirst("abc", "daily:2026-11-13") && swarmFirst("abc", "daily:2026-11-13") !== swarmFirst("abc", "daily:2026-11-14"),
+    }).toEqual({ fixed: true, past: true, inRange: true, same: true, distinct: 200, daily: true })
+  })
+
+  test("the box is a third of the land budget; suites that fit at once each get all of it, more share it by waves", () => {
+    expect([swarmBox(60_000), swarmBox(6000), swarmSlot(20_000, 4, 3), swarmSlot(20_000, 4, 8), swarmSlot(20_000, 1, 11), swarmSlot(20_000, 0, 2)]).toEqual([20_000, 2000, 20_000, 10_000, 1818, 10_000])
+  })
+
+  // scripts/reach.ts's reach, the gate's: a package reaches all of its files, and the world (sim/plugins.ts) loads
+  // every server plugin together, so a server-side change reaches every server suite; a TUI pane's change reaches
+  // only the TUI suites that load it, and a change no suite loads reaches none.
+  test("the change reaches a suite through what it loads: an escape change only the escape suite, the TUI harness only the TUI suites, the world only the server suites, a git change none", async () => {
+    const workspace = await load()
+    const suites = workspace.files.filter(isSimSuite)
+    const memo = new Map<string, ReadonlyArray<string>>()
+    const reached = (file: string) => reachedSuites(suites, (suite) => reach(workspace, [suite], memo), [file])
+    const tui = suites.filter((suite) => suite.endsWith(".tsx"))
+    expect({
+      escape: reached("mods/escape/escape.ts").includes("cmd/escape/escape-states.sim.test.tsx"),
+      escapeServer: reached("mods/escape/escape.ts").filter((suite) => !tui.includes(suite)),
+      harness: reached("sim-tui/app.ts"),
+      world: reached("sim/world.ts").filter((suite) => tui.includes(suite)),
+      worldServer: reached("sim/world.ts").includes("cmd/wake/wake.sim.test.ts"),
+      git: reached("mods/git/branch.ts"),
+      itself: reachedSuites(suites, () => new Set(), ["cmd/wake/wake.sim.test.ts"]),
+    }).toEqual({ escape: true, escapeServer: [], harness: tui, world: [], worldServer: true, git: [], itself: ["cmd/wake/wake.sim.test.ts"] })
+  })
+
+  test("reads a suite's swarm output: the seeds it passed, and each failing seed of that suite alone", () => {
+    const output = [
+      "sim-swarm cmd/a.sim.test.ts 900",
+      "sim-swarm cmd/a.sim.test.ts 901",
+      "sim-swarm cmd/b.sim.test.ts 900",
+      "error: SIM_SEED=902 bun test cmd/a.sim.test.ts: a name",
+      "error: SIM_SEED=902 bun test cmd/a.sim.test.ts: a name",
+      "error: SIM_SEED=7 bun test cmd/b.sim.test.ts: another",
+    ].join("\n")
+    expect([swarmRead(output, "cmd/a.sim.test.ts"), swarmRead("", "cmd/a.sim.test.ts"), replayLine("cmd/a.sim.test.ts", 902)]).toEqual([
+      { passed: 2, failing: [902] },
+      { passed: 0, failing: [] },
+      "SIM_SEED=902 bun test cmd/a.sim.test.ts",
+    ])
+  })
+
+  test("the long swarm is due when it never ran or last ran to its end a day ago", () => {
+    const day = 24 * 60 * 60 * 1000
+    expect([longSwarmDue(Option.none(), 5), longSwarmDue(Option.some(0), day - 1), longSwarmDue(Option.some(0), day)]).toEqual([true, false, true])
+  })
+})
+
+/** The stand-in suite with a bug only seed-dependent input reaches (sim/fixtures/swarm-bug.fixture.ts). */
+const BUG = "sim/fixtures/swarm-bug.fixture.ts"
+
+/** A `bun test` of `file` from opencode/ with `env` over this process's, stdout and stderr in one stream. */
+const bunTest = async (file: string, env: Record<string, string> = {}) => {
+  const child = owned(["/bin/sh", "-c", 'exec "$0" test "$1" 2>&1', process.execPath, `./${file}`], { cwd: ROOT, env: { ...INHERITED, ...env }, stdout: "pipe" })
+  const out = await Bun.readableStreamToText(child.stdout)
+  return { code: await child.exited, out }
+}
+
+describe("a land run's swarm", () => {
+  test(
+    "finds a bug the gate's 20 fixed seeds miss within its box, fails the run with the line that replays it, and the line replays it red, three times",
+    async () => {
+      using dir = scratch("accept-swarm-")
+      const gate = await bunTest(BUG)
+      const env = scratchEnv(dir.path, { ACCEPT_FILES: join(dir.path, "none", "*.test.ts"), ACCEPT_SIM_FILES: join(ROOT, BUG), ACCEPT_BUDGET_MS: "15000" })
+      const land = await accept(["--land"], env)
+      const failing = land.lines.flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^accept: swarm: a failing seed: SIM_SEED=(\d+) bun test (\S+)$/.exec(line)), (match) => ({ seed: Number(match[1]), file: String(match[2]) }))))
+      const swarmed = land.lines.flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^accept: swarm \(land\): (\d+) seeds over 1 simulated suites in ([\d.]+) s, ([\d.]+) seeds\/s/.exec(line)), (match) => ({ seeds: Number(match[1]), seconds: Number(match[2]) }))))
+      const seed = failing[0]?.seed ?? 0
+      const replays: Array<{ code: number; out: string }> = []
+      for (const _ of [1, 2, 3]) replays.push(await bunTest(BUG, { SIM_SEED: String(seed) }))
+      expect({
+        gate: gate.code,
+        land: land.code,
+        files: failing.map((each) => each.file),
+        pastFixed: seed > 20,
+        found: Option.exists(Option.fromUndefinedOr(swarmed[0]), (each) => each.seeds > 0),
+        // Inside the box (a third of the 15 s budget) and its grace.
+        inBox: bound(Option.exists(Option.fromUndefinedOr(swarmed[0]), (each) => each.seconds < 5 + 3 + 1)),
+        closing: closingOf(land.lines),
+        replays: replays.map((each) => ({ code: each.code, names: each.out.includes(`SIM_SEED=${seed} bun test ${BUG}: every queued message is delivered`) })),
+      }).toEqual({
+        gate: 0,
+        land: 1,
+        files: [BUG],
+        pastFixed: true,
+        found: true,
+        inBox: true,
+        closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 0, deep: 0, budget: 0 }),
+        replays: [1, 2, 3].map(() => ({ code: 1, names: true })),
+      })
+    },
+    RUN_MS,
+  )
+
+  test("a simulated TUI file's seeds past the fixed ones reach its body: its gate seeds pass, a swarm of it fails", async () => {
+    const file = "sim-tui/fixtures/swarm-count.fixture.tsx"
+    const gate = await bunTest(file)
+    const swarm = await bunTest(file, { SIM_SWARM: "100", SIM_SWARM_MS: "500" })
+    expect({ gate: gate.code, swarm: swarm.code, seed: swarm.out.includes(`SIM_SEED=100 bun test ${file}`) }).toEqual({ gate: 0, swarm: 1, seed: true })
+  }, RUN_MS)
+})
+
+describe("the deep run's daily long swarm", () => {
+  test(
+    "runs every suite once a day: the first owed run swarms and reports the failing seed, the next one the same day does not swarm",
+    async () => {
+      using dir = scratch("accept-long-swarm-")
+      const env = scratchEnv(dir.path, { ACCEPT_FILES: join(dir.path, "none", "*.test.ts"), ACCEPT_SIM_FILES: join(ROOT, BUG), ACCEPT_LONG_SWARM_MS: "3000" })
+      const first = await accept(["--owed"], env)
+      const second = await accept(["--owed"], env)
+      const daily = (lines: ReadonlyArray<string>) => lines.filter((line) => line.startsWith("accept: swarm (daily): ")).length
+      expect({
+        first: first.code,
+        swarmed: daily(first.lines),
+        failing: first.lines.some((line) => line.startsWith(`accept: swarm: a failing seed: SIM_SEED=`) && line.endsWith(` bun test ${BUG}`)),
+        closing: closingOf(first.lines),
+        state: existsSync(join(dir.path, "swarm.json")),
+        second: second.code,
+        again: daily(second.lines),
+      }).toEqual({ first: 1, swarmed: 2, failing: true, closing: Option.some({ mode: "owed", passed: 0, failed: 1, owed: 0, deep: 0, budget: 0 }), state: true, second: 0, again: 0 })
+    },
+    RUN_MS,
+  )
+})
