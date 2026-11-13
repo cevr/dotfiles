@@ -172,6 +172,20 @@ describe("a land by receipts, on real Git", () => {
     )
   })
 
+  test("a Rift whose head moved to a commit of the same tree runs its focused gate: a receipt for another head is refused", () => {
+    const made = bench()
+    return made.run(
+      Effect.gen(function* () {
+        yield* made.receipt(made.x)
+        sh(made.x, "git", "commit", "-q", "--allow-empty", "-m", "same tree")
+        yield* made.receipt(made.y)
+        const answer = yield* made.land(["feat-x", "feat-y"])
+        expect(answer).toContain("  feat/x: its head moved since its receipt, so its focused gate ran in the land")
+        expect(made.marked().map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual([`focus ${made.x}`, `merge-check ${made.integrate}`])
+      }),
+    )
+  })
+
   test("a Rift's receipt stands current for its head and tracked files as they were; a tracked file edited on disk, a new head, a red run or none says so", () => {
     const made = bench()
     const kit = ProcessLanding.receipts(made.logs, ENV)
@@ -187,6 +201,13 @@ describe("a land by receipts, on real Git", () => {
         // The scratch index the snapshot reads through is gone, and the Rift's own index untouched.
         expect(readdirSync(join(made.x, ".git")).some((file) => file.endsWith(".rift-receipt"))).toBe(false)
         expect(sh(made.x, "git", "status", "--porcelain")).toBe("")
+        // A new head with the same tree (an empty commit, an amend) is not the head the receipt names.
+        const named = made.head(made.x)
+        sh(made.x, "git", "commit", "-q", "--allow-empty", "-m", "same tree")
+        expect(sh(made.x, "git", "rev-parse", "HEAD^{tree}")).toBe(sh(made.x, "git", "rev-parse", `${named}^{tree}`))
+        expect(yield* standing).toBe("Moved")
+        yield* made.receipt(made.x)
+        expect(yield* standing).toBe("Current")
         writeFileSync(join(made.x, "x.txt"), "x, edited\n")
         expect(yield* standing).toBe("Moved")
         expect(sh(made.x, "git", "status", "--porcelain")).toBe("M x.txt")
