@@ -12,11 +12,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { availableParallelism, homedir, loadavg } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
-import { exclusively, exclusivelySync, holding, type LockMode } from "./flock.ts"
+import { exclusively, exclusivelySync, holding, type LockMode, oneGate } from "./flock.ts"
 
 export interface Options {
   /** Where each check's log is written, `<rift name>.<gate|accept>.log`. */
@@ -41,10 +41,13 @@ export const checkArgv = (command: string, log: string, host: Host): ReadonlyArr
 /**
  * The lock files a land's checks hold, under `logs`, one set per host. `checks`: every gate and accept check
  * holds it shared, so a post-land step that changes what they read (the dotfiles' fork checkout) holds it
- * exclusively for that short change alone. `accept`: each accept check holds it exclusively, and so does a
- * post-land step's own heavy test run, so the two never run at once.
+ * exclusively for that short change alone, and a full gate run by hand holds it exclusively for its whole run
+ * (flock.ts's `gateTurn`). `accept`: each accept check holds it exclusively, and so does a
+ * post-land step's own heavy test run, so the two never run at once. `wanted`: every gate and accept check
+ * holds it shared from before it waits for `checks` until it ends, so a full gate waiting for its turn lets
+ * a land's check go first.
  */
-export const lockFiles = (logs: string) => ({ checks: join(logs, "locks", "checks.lock"), accept: join(logs, "locks", "accept.lock") })
+export const lockFiles = (logs: string) => ({ checks: join(logs, "locks", "checks.lock"), accept: join(logs, "locks", "accept.lock"), wanted: join(logs, "locks", "checks.wanted.lock") })
 
 type LockFiles = ReturnType<typeof lockFiles>
 
@@ -58,16 +61,22 @@ export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_
  * This host's land locks for a script that changes what a land's checks read outside any land (`bun run
  * daily`): `move` runs a change to the fork checkout (a fast-forward, an install) holding the checks lock,
  * `moveSync` the same for a synchronous one, and `tests` runs the fork's tests holding the accept lock.
+ * `gate` runs a full gate (`bun run gate`) in its turn, one at a time per host and after any land's check
+ * that came while it waited; as is when `env` says a land runs it as its gate check (RIFT_LAND_CHECK=gate).
  */
 export const hostLocks = (env: NodeJS.ProcessEnv) => {
   const files = lockFiles(landLogs(env))
-  return { files, move: exclusively(files.checks), moveSync: exclusivelySync(files.checks), tests: exclusively(files.accept) }
+  return { files, move: exclusively(files.checks), moveSync: exclusivelySync(files.checks), tests: exclusively(files.accept), gate: (root: string) => oneGate(files, root, Option.fromUndefinedOr(env["RIFT_LAND_CHECK"])) }
 }
 
 /** The locks each check holds while it runs; a post-land step takes its own, by the paths it is given. */
 const CHECK_LOCKS: Readonly<Record<"gate" | "accept" | "post-land", (files: LockFiles) => ReadonlyArray<readonly [string, LockMode]>>> = {
-  gate: (files) => [[files.checks, "shared"]],
+  gate: (files) => [
+    [files.wanted, "shared"],
+    [files.checks, "shared"],
+  ],
   accept: (files) => [
+    [files.wanted, "shared"],
     [files.checks, "shared"],
     [files.accept, "exclusive"],
   ],
@@ -235,7 +244,8 @@ export const layer = (options: Options) => {
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
     const argv = checkArgv(command, log, { scope: yield* scope, ionice: ioniceAvailable(options.platform ?? process.platform) })
-    const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, env))
+    // RIFT_LAND_CHECK tells the command which check it runs: a full gate run as the land's gate check runs under these locks, not in a turn of its own.
+    const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, { ...env, RIFT_LAND_CHECK: label }))
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
     return { code: ran.code, seconds: Math.round((Date.now() - started) / 1000), log, output } satisfies Ran
   })

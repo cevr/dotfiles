@@ -17,15 +17,24 @@
 // `bun run accept` (all) and `bun run accept:affected` (those that reach a
 // changed file) run them.
 //
+// One full gate runs on a host at a time: the whole run, link included, holds
+// the host's checks lock (the one a land's gate and accept checks hold
+// shared; mods/rift/process/flock.ts's `gateTurn`) exclusively. A second gate
+// waits for its turn, saying who holds the lock and since when, and a land's
+// check that comes while it waits goes first. The land's own gate check
+// (RIFT_LAND_CHECK=gate) runs at once, under the locks its land holds.
+// Focused runs (`bun test <files>`) never take it.
+//
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
 // The cache is node_modules/.cache/gate/passed.json; deleting it is safe.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
+import { hostLocks } from "../mods/rift/process/landing.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
 
-const started = performance.now()
+const ENV = process.env
 const all = process.argv.includes("--all")
 const CACHE = path.join(ROOT, "node_modules/.cache/gate")
 const PASSED = path.join(CACHE, "passed.json")
@@ -45,21 +54,20 @@ interface Leg {
 }
 
 /** Runs `argv` in ROOT, capturing its output. */
-const run = async (name: string, argv: ReadonlyArray<string>, env: Record<string, string | undefined> = process.env, note?: string): Promise<Leg> => {
+const run = (name: string, argv: ReadonlyArray<string>, env: Record<string, string | undefined> = ENV, note?: string): Promise<Leg> => {
   const from = performance.now()
   const child = Bun.spawn([...argv], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" })
-  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-  return { name, ok: code === 0, output: `${out}${err}`, time: elapsed(from), ...(note === undefined ? {} : { note }) }
-}
-
-const link = await run("link", [process.execPath, "scripts/link-fork.ts"])
-if (!link.ok) {
-  process.stderr.write(link.output)
-  process.exit(1)
+  return Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).then(([out, err, code]) => ({
+    name,
+    ok: code === 0,
+    output: `${out}${err}`,
+    time: elapsed(from),
+    ...(note === undefined ? {} : { note }),
+  }))
 }
 
 /** Every project in one `bun check -b` (scripts/typecheck.ts). */
-const types = () => run("types", [...checkCommand(), "--no-pretty"], process.env, `${projects().length + 1} projects`)
+const types = () => run("types", [...checkCommand(), "--no-pretty"], ENV, `${projects().length + 1} projects`)
 
 const unit = async (): Promise<Leg> => {
   const from = performance.now()
@@ -74,7 +82,7 @@ const unit = async (): Promise<Leg> => {
   const due = files.filter((file) => all || !passed[file]?.includes(keys.get(file)!))
   const note = `${due.length} of ${files.length} files run`
   if (due.length === 0) return { name: "unit", ok: true, output: "", time: elapsed(from), note: `${note}; all passed unchanged` }
-  const env = { ...process.env }
+  const env = { ...ENV }
   delete env.ANTHROPIC_BASE_URL
   const leg = await run(
     "unit",
@@ -104,16 +112,26 @@ const unit = async (): Promise<Leg> => {
   return { ...leg, time: elapsed(from), note }
 }
 
-const legs = await Promise.all([
-  run("lint", [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet"]),
-  run("debt", [process.execPath, "scripts/effect-debt.ts", "--check"]),
-  run("agents", [process.execPath, "scripts/agents.ts", "--check"]),
-  types(),
-  unit(),
-])
+/** The gate in its turn: the link, then the five legs at once; answers its exit code. */
+const gate = async (): Promise<number> => {
+  const started = performance.now()
+  const link = await run("link", [process.execPath, "scripts/link-fork.ts"])
+  if (!link.ok) {
+    process.stderr.write(link.output)
+    return 1
+  }
+  const legs = await Promise.all([
+    run("lint", [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet"]),
+    run("debt", [process.execPath, "scripts/effect-debt.ts", "--check"]),
+    run("agents", [process.execPath, "scripts/agents.ts", "--check"]),
+    types(),
+    unit(),
+  ])
+  for (const leg of legs.filter((each) => !each.ok)) process.stderr.write(`\n── ${leg.name} failed ──\n${leg.output.trimEnd()}\n`)
+  const line = legs.map((leg) => `${leg.ok ? "✓" : "✗"} ${leg.name} ${leg.time}${leg.note ? ` (${leg.note})` : ""}`).join("  ·  ")
+  const ok = legs.every((leg) => leg.ok)
+  console.log(`${line}\n${ok ? "gate green" : "gate red"} in ${elapsed(started)}`)
+  return ok ? 0 : 1
+}
 
-for (const leg of legs.filter((each) => !each.ok)) process.stderr.write(`\n── ${leg.name} failed ──\n${leg.output.trimEnd()}\n`)
-const line = legs.map((leg) => `${leg.ok ? "✓" : "✗"} ${leg.name} ${leg.time}${leg.note ? ` (${leg.note})` : ""}`).join("  ·  ")
-const ok = legs.every((leg) => leg.ok)
-console.log(`${line}\n${ok ? "gate green" : "gate red"} in ${elapsed(started)}`)
-process.exit(ok ? 0 : 1)
+process.exit(await hostLocks(ENV).gate(ROOT)(gate))

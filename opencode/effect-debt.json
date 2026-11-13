@@ -910,7 +910,7 @@
     "scripts/fork-work.test.ts": {"effect/noAsyncFunction":8,"effect/noGlobals":2,"effect/noNewError":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":1,"effect/noTestLifecycleHooks":1,"effect/noThrowStatement":1},
     "scripts/fork-work.ts": {"effect/maxCognitiveComplexity":1,"effect/noAsyncFunction":6,"effect/noGlobals":3,"effect/noNewPromise":2,"effect/noNodeBuiltinImport":1,"effect/noNullish":17,"effect/noTernary":9},
     "scripts/fork.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":2,"effect/noTernary":3},
-    "scripts/gate.ts": {"effect/noAsyncFunction":8,"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":16,"effect/noNewPromise":2,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":7},
+    "scripts/gate.ts": {"effect/noAsyncFunction":8,"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":13,"effect/noNewPromise":2,"effect/noNodeBuiltinImport":2,"effect/noNullish":3,"effect/noTernary":7},
     "scripts/layout.test.ts": {"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noTernary":2},
     "scripts/leaks.test.ts": {"effect/noAsyncFunction":18,"effect/noFixedWaitInTests":2,"effect/noGlobals":5,"effect/noTryCatch":1},
     "scripts/leaks.ts": {"effect/noAsyncFunction":2,"effect/noGlobals":5,"effect/noNullish":5,"effect/noTryCatch":1},
