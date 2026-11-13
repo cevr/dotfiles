@@ -4,10 +4,10 @@
 import { describe } from "bun:test"
 import { Effect } from "effect"
 import { reconnectTest, restart, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
-import { keptScratch } from "./scratch.ts"
+import { forkRuns, keptScratch } from "./scratch.ts"
 
-describe(SUITE, () => {
-  const kept = keptScratch(true, "rs-child-")
+describe.skipIf(!forkRuns)(SUITE, () => {
+  const kept = keptScratch(forkRuns, "rs-child-")
   test(
     "after `service restart` the TUI keeps a subagent session without an error toast in any frame",
     reconnectTest(kept, (fixture) =>

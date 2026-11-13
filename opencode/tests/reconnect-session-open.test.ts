@@ -3,9 +3,9 @@
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"
 import { openWhileDown, reconnectTest, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
-import { keptScratch } from "./scratch.ts"
+import { forkRuns, keptScratch } from "./scratch.ts"
 
-describe(SUITE, () => {
-  const kept = keptScratch(true, "rs-open-")
+describe.skipIf(!forkRuns)(SUITE, () => {
+  const kept = keptScratch(forkRuns, "rs-open-")
   test("a TUI opened while the service is down or booting waits for it, says so, and opens its session", reconnectTest(kept, openWhileDown), TIMEOUT_MS)
 })

@@ -72,6 +72,13 @@ export interface Kept {
   readonly done: () => void
 }
 
+/**
+ * Whether OPENCODE_DEV names a fork: an OpenCode e2e suite runs only then, and without one it skips
+ * and makes no directory (`describe.skipIf(!forkRuns)`, `keptScratch(forkRuns, …)`), as
+ * tests/scratch.test.ts runs the suites. Read at load: bun:test decides a skip before a case runs.
+ */
+export const forkRuns = Boolean(processEnv["OPENCODE_DEV"])
+
 /** A suite's directory name, unique but not made yet; "" for a suite that does not run. */
 const suitePath = (runs: boolean, prefix: string) => {
   if (!runs) return ""
