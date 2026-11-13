@@ -479,6 +479,10 @@ const fixture = (root: string) =>
       XDG_CACHE_HOME: `${home}/.cache`,
       OPENCODE_DB: `${root}/opencode.db`,
       OPENCODE_DISABLE_MODELS_FETCH: "1",
+      // No file watching in the scratch service and TUIs: the TUI's plugin load waits for a watch on every
+      // plugin source directory, and on a Mac with a busy fseventsd each watch costs 0.1 to 2 s, so the cases'
+      // TUIs sat on "Loading plugins…" past their windows. These cases test reconnects, not live reload.
+      OPENCODE_DISABLE_FILEWATCHER: "1",
       ...launch.env,
     }
     const tuiEnv = { ...env, ...Object.fromEntries([["BUN_OPTIONS", ""]].filter(() => Option.isSome(old))) }
