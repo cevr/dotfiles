@@ -232,7 +232,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
           return Effect.succeed({ output: { sessionID: "ses_ran", status: "running", output: "working" }, content: "working" })
         }),
     }
-    for (const transform of toolTransforms) transform({ update: (id: string, edit: (tool: EditedTool) => void) => (id === "subagent" ? edit(subagent) : undefined) })
+    for (const transform of toolTransforms) transform({ add: () => {}, update: (id: string, edit: (tool: EditedTool) => void) => (id === "subagent" ? edit(subagent) : undefined) })
     /** The subagent tool run with the input the hooks left, in the root session's call. */
     const runTool = (input: unknown) => subagent.execute(input, { sessionID: "root", agent: "build", messageID: "msg", id: "call", progress: () => Effect.void })
     /** The wakes asking the opener to open a latch. */
@@ -1616,18 +1616,18 @@ describe("an idle root with units to move or a batch to land", () => {
         for (const plugin of [three, old, fresh, hot, slow]) yield* plugin.idle("root")
         yield* eventually(() =>
           expect(hot.nudges.map((nudge) => nudge.text)).toEqual([
-            'idle with a batch due (1 ready): hotfix; land it with rift({ action: "land", rifts: ["p5/hotfix"] }).',
+            'idle with a batch due (1 ready): hotfix; land it with orchestrate({ action: "land", units: ["hotfix"] }).',
           ]),
         )
         yield* eventually(() =>
           expect(three.nudges.map((nudge) => nudge.text)).toEqual([
-            'idle with a batch due (3 ready): lexer, parser, docs; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser", "p5/docs"] }).',
+            'idle with a batch due (3 ready): lexer, parser, docs; land it with orchestrate({ action: "land", units: ["lexer", "parser", "docs"] }).',
           ]),
         )
         // The log's time is to the minute, so the age is 45 or, across a minute's turn, 46.
         yield* eventually(() =>
           expect(old.nudges.map((nudge) => nudge.text)).toEqual([
-            expect.stringMatching(/^idle with a batch due \(lexer ready 4[56] min\): lexer; land it with rift\(\{ action: "land", rifts: \["p5\/lexer"\] \}\)\.$/),
+            expect.stringMatching(/^idle with a batch due \(lexer ready 4[56] min\): lexer; land it with orchestrate\(\{ action: "land", units: \["lexer"\] \}\)\.$/),
           ]),
         )
         expect(fresh.nudges).toEqual([])
@@ -2259,7 +2259,7 @@ describe("the batch machine", () => {
         yield* named.idle("ses_d")
         expect(named.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "db", round: 2, rift: "/u/.rifts/app/db-2" }))
         const partial = yield* land(named, ["/u/.rifts/app/db-2"])
-        expect(partial.refused?.message).toContain('rifts: [{ path: "/u/.rifts/app/db-2-first", unit: "db-2" }, { path: "/u/.rifts/app/db-2", unit: "db" }]')
+        expect(partial.refused?.message).toContain('Land every ready unit in one call: orchestrate({ action: "land" }) lands db-2, db.')
         expect((yield* land(named, ["/u/.rifts/app/db-2"], "probe")).refused).toBeUndefined()
         yield* landed(named, ["/u/.rifts/app/db-2"])
         expect(named.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["db"] })

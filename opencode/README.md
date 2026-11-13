@@ -620,6 +620,45 @@ options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
+### The orchestrate tool
+
+The plugin adds one direct tool, `orchestrate` (`mods/orchestrate/tools.ts`:
+its input, its one description, every answer's and refusal's words), whose
+actions are the run's steps for the root session that runs its units. Its
+description tells the loop in order: lane → implement → ready → land → verify
+→ fold.
+
+- `orchestrate({ action: "lane", unit, run?, branch?, source? })`: the unit's
+  Rift, named for the unit (on the workbox as `workrift` names it, after the
+  branch) on `branch`, else `<run>/<unit>`, else `feat/<unit>`. A unit whose
+  Rift exists is answered that Rift, and nothing is made. The answer ends
+  with the `(rift: <path>)` its implementor's description takes.
+- `orchestrate({ action: "land", units?, departs? })`: the batch. With no
+  `units` it lands every unit the root's machine holds ready. Each unit's
+  Rift is the path given (`{ unit, path }`), else the one its implementor was
+  started on (the ledger), else the one Rift of the warm source the machine's
+  own name rule reads as that unit; none or two, or a unit the machine does
+  not hold, is refused. The machine decides it once, in the same two land
+  hooks a `rift` land passes; then the rift plugin's land runs, unchanged.
+  Its answer is the rift land's, then `orchestrate: next:` naming the verify.
+- `orchestrate({ action: "verify", batch, head? })`: the batch verifier's
+  clean checkout, the Rift `verify-<batch>` detached at `head` (default:
+  origin's default branch head, read then), and the `subagent` call that
+  starts it. Refused, in the machine's words, when nothing landed awaits a
+  verifier or one runs; the start itself is still decided at that call.
+- `orchestrate({ action: "status" })`: the machine's brief, each unit's lane,
+  and one `next:` line naming the call to make.
+
+A subagent is refused `lane`, `land` and `verify` (the root lands); `status`
+answers it. A call carrying another action's field (a `land` with `unit`, a
+`lane` with `units`) is refused with a call that decodes. Its Rifts and land
+go to this location's rift plugin over the rift RPC
+(`@dotfiles/opencode-rift/rpc`), on the model the `rift` tool runs on. In a
+root that runs units, a `rift` create or land still runs for one release,
+and its answer starts with the `orchestrate` call to use; every other
+session's `rift` answers are unchanged. `orchestrate` is in the kernel's
+`HOOKED_TOOLS`: a cell never reaches it past the land hooks.
+
 The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, its
@@ -1778,7 +1817,9 @@ Claude Code's markers).
 kernel cell reaches it as `tools.rift`) and takes OpenCode's worktree tools
 (`opencode_worktree_create`, `_list`, `_remove`) out of the registry: they
 make Git worktrees, and on Rifts they failed (10 times in 7 sessions on the
-workbox in a week). One input, with an `action`:
+workbox in a week). A root session that runs orchestrate units makes and
+lands its units' Rifts with the `orchestrate` tool's `lane` and `land`
+instead (The orchestrate tool). One input, with an `action`:
 
 - `{ action: "create", branch, name?, source? }` makes a Rift of the warm
   source the session's directory (or `source`) belongs to, on `branch` (the

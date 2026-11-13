@@ -137,7 +137,7 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -167,7 +167,9 @@ import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
-import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused } from "@dotfiles/opencode-orchestrate/machine"
+import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused, refusalOf, Start, verdictPending } from "@dotfiles/opencode-orchestrate/machine"
+import * as Tools from "@dotfiles/opencode-orchestrate/tools"
+import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-rift/rpc"
 import * as GitBranches from "@dotfiles/opencode-orchestrate/git/branches"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
@@ -191,7 +193,7 @@ import {
   type RunRecords,
   type Fleet,
   type Runs,
-  type Sessions,
+  Sessions,
   type Skill,
   type Steer,
   type StepLog,
@@ -509,10 +511,20 @@ const targetOf = (rift: unknown): ReadonlyArray<LandTarget> => {
 
 /** A `rift` land's Rifts and its stated departure; none for any other call. */
 const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string } | undefined => {
-  if (tool !== RIFT || !isObject(input) || input.action !== "land" || !Array.isArray(input.rifts)) return undefined
+  if ((tool !== RIFT && tool !== Tools.ORCHESTRATE) || !isObject(input) || input.action !== "land" || !Array.isArray(input.rifts)) return undefined
   const rifts = input.rifts.flatMap(targetOf)
   return typeof input.departs === "string" && input.departs.trim() !== "" ? { rifts, departs: input.departs.trim() } : { rifts }
 }
+
+/** A rift RPC call that did not act, in the rift tool's words. */
+interface RiftFailed {
+  readonly outcome: "failed"
+  readonly message: string
+}
+const isRiftFailed = (answer: { readonly outcome: string }): answer is RiftFailed => answer.outcome === "failed"
+
+/** A `rift` create or land: the calls whose answer, in a root that runs units, names the `orchestrate` call first. */
+const decodeAliased = Schema.decodeUnknownOption(Schema.Struct({ action: Schema.Literals(["create", "land"]) }))
 
 /** The shell tool, by its name and its former one. */
 const SHELLS = new Set(["shell", "bash"])
@@ -866,6 +878,147 @@ export const make = (
         })
         .pipe(Effect.orDie)
 
+      // The `orchestrate` tool (mods/orchestrate/tools.ts): the run's steps for a root that runs units, one direct
+      // tool. Its lanes, its verify checkout and its land go to this location's rift plugin over the rift RPC
+      // (`@dotfiles/opencode-rift/rpc`), on the model the `rift` tool runs on. A land is decided on the root's machine
+      // by the land hooks, as a `rift` land is: the first below resolves its units to their Rifts and writes them into
+      // the call's input, where the next one reads and decides them, once. The host decodes a call's input after its
+      // hooks, which drops what the tool's schema lacks, so the Rifts a call resolved are kept by its call for its
+      // execute; one with none kept (no hook ran, or a refused one) lands nothing.
+      const riftRpc = () => ctx.rpc(RIFT_RPC)
+      const sessions = Context.get(services, Sessions)
+      const resolvedLands = new Map<string, { readonly rifts: ReadonlyArray<Tools.UnitRift>; readonly departs: Option.Option<string> }>()
+      const failWith = (message: string) => Effect.fail(new Tool.Error({ message }))
+      const unanswered = () => new Tool.Error({ message: "orchestrate: the rift plugin did not answer over its RPC; it is loaded with this plugin in every location." })
+      /** A rift RPC answer, or its failure's words. */
+      const answeredOr = <A extends { readonly outcome: string }>(answer: A | RiftFailed): Effect.Effect<A, Tool.Error> => {
+        if (isRiftFailed(answer)) return failWith(answer.message)
+        return Effect.succeed(answer)
+      }
+      /** Whether a session is a subagent's: the root lanes, lands and verifies. */
+      const isChild = (sessionID: string) => Effect.map(sessions.parentOf(sessionID), Predicate.isNotUndefined)
+      /** The warm source's Rifts, as the rift plugin lists them for the session. */
+      const listLanes = (sessionID: string, source: Option.Option<string>) =>
+        riftRpc().list(Option.match(source, { onNone: () => ({ sessionID }), onSome: (directory) => ({ sessionID, source: directory }) })).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Listed)),
+          Effect.mapError(unanswered),
+          Effect.flatMap(answeredOr),
+        )
+      /** A new Rift, made by the rift plugin's create. */
+      const createRift = (ask: { readonly sessionID: string; readonly branch: string; readonly name: string; readonly source?: string; readonly at?: string }) =>
+        riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+      /** Why a call does not run: the input rule, then its names. */
+      const refusedInput = (input: Tools.OrchestrateInput) => Option.orElse(Tools.inputRefusal(input), () => Tools.nameRefusal(input))
+
+      // A land's units, resolved to their Rifts before the machine decides it (the next hook): refused here, nothing
+      // is decided. Registered before that hook, so it reads the Rifts this one wrote.
+      yield* ctx.tool.hook("execute.before", (event) =>
+        Option.match(
+          Option.filter(Schema.decodeUnknownOption(Tools.OrchestrateInput)(event.input), (input) => event.tool === Tools.ORCHESTRATE && input.action === "land"),
+          {
+            onNone: () => Effect.void,
+            onSome: (input) =>
+              Effect.gen(function* () {
+                const key = callKey(event.sessionID, event.id)
+                resolvedLands.delete(key)
+                if (yield* isChild(event.sessionID)) return yield* failWith(Tools.parentRefusal("land"))
+                const refused = refusedInput(input)
+                if (Option.isSome(refused)) return yield* failWith(refused.value)
+                const state = yield* machines.state(event.sessionID)
+                const listed = yield* listLanes(event.sessionID, Option.none())
+                const resolved = Tools.resolveLand(input, listed.rifts, state, Tools.nextOf(state, yield* Clock.currentTimeMillis, options.cadence))
+                if ("refused" in resolved) return yield* failWith(resolved.refused)
+                resolvedLands.set(key, { rifts: resolved.rifts, departs: Option.fromUndefinedOr(input.departs) })
+                event.input = { ...input, rifts: resolved.rifts.map((rift) => ({ path: rift.path, unit: rift.unit })) }
+              }),
+          },
+        ),
+      )
+
+      /** A lane: the unit's Rift, answered when one is its own, else made. */
+      const lane = (input: Tools.OrchestrateInput, sessionID: string) =>
+        Effect.gen(function* () {
+          const unit = input.unit ?? ""
+          const branch = Tools.laneBranchOf({ ...input, unit })
+          const source = Option.fromUndefinedOr(input.source)
+          const listed = yield* listLanes(sessionID, source)
+          // On the workbox, workrift names a Rift after its branch; elsewhere it is the unit's.
+          const name = Option.getOrElse(Option.liftPredicate(workriftName(branch), () => listed.workrift), () => unit)
+          const existing = Tools.existingLanes(unit, name, listed.rifts, yield* machines.state(sessionID))
+          if (existing.length > 1) return yield* failWith(Tools.lanesRefusal(unit, existing))
+          const found = Arr.head(existing)
+          if (Option.isSome(found)) return Tools.laneAnswer(unit, found.value, false)
+          const ask = { sessionID, branch, name }
+          const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
+          return Tools.laneAnswer(unit, created.rift, true)
+        })
+
+      /** A verify: the batch verifier's checkout at the batch head, and the subagent call that starts it. */
+      const verify = (input: Tools.OrchestrateInput, sessionID: string) =>
+        Effect.gen(function* () {
+          const batch = input.batch ?? ""
+          const now = yield* Clock.currentTimeMillis
+          // Its dead steps handed back first, as a start's decision reads them.
+          yield* machines.brief(sessionID)
+          const state = yield* machines.state(sessionID)
+          if (Predicate.isNotUndefined(state.verifier))
+            return yield* failWith(refusalOf(state, "VerifierRunning", Start.make({ role: "verifier", name: batch, round: 1, direct: false }), now, options.cadence))
+          if (!verdictPending(state)) return yield* failWith(Tools.nothingToVerify(state, Tools.nextOf(state, now, options.cadence)))
+          const name = Tools.verifyLaneOf(batch)
+          const chosen = Option.match(Option.fromUndefinedOr(input.head), { onNone: () => "origin" as const, onSome: () => "given" as const })
+          const listed = yield* listLanes(sessionID, Option.none())
+          const found = Tools.laneNamed(name, listed.rifts)
+          if (Option.isSome(found)) return Tools.verifyAnswer(batch, found.value, false, chosen)
+          const created = yield* createRift({ sessionID, branch: name, name, at: input.head ?? "origin/HEAD" })
+          return Tools.verifyAnswer(batch, created.rift, true, chosen)
+        })
+
+      /** A land the machine decided (the land hooks): the Rifts it resolved, landed by the rift plugin's land. */
+      const land = (key: string, sessionID: string) =>
+        Effect.gen(function* () {
+          const decided = Option.fromUndefinedOr(resolvedLands.get(key))
+          resolvedLands.delete(key)
+          if (Option.isNone(decided)) return yield* failWith(Tools.UNDECIDED)
+          const rifts = decided.value.rifts.map((rift) => ({ path: rift.path, unit: rift.unit }))
+          const ask = Option.match(decided.value.departs, { onNone: () => ({ sessionID, rifts }), onSome: (departs) => ({ sessionID, rifts, departs }) })
+          const landed = yield* riftRpc().land(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(LandAnswered)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+          return Tools.landAnswer(landed.text)
+        })
+
+      /** Status: the run from the ledger, each unit's lane and the next call. */
+      const status = (sessionID: string) =>
+        Effect.gen(function* () {
+          const brief = yield* machines.brief(sessionID)
+          const state = yield* machines.state(sessionID)
+          if (!Tools.runsUnits(state) && brief === "") return Tools.NO_UNITS
+          const rifts = Option.getOrElse(Option.map(yield* Effect.option(listLanes(sessionID, Option.none())), (listed) => listed.rifts), () => [])
+          const lanes = Object.keys(state.units).map((unit) => [unit, Arr.head(Tools.lanesOf(unit, rifts, state))] as const)
+          return Tools.statusAnswer(brief, lanes, Tools.nextOf(state, yield* Clock.currentTimeMillis, options.cadence))
+        })
+
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: Tools.ORCHESTRATE,
+          description: Tools.ORCHESTRATE_DESCRIPTION,
+          input: Tools.OrchestrateInput,
+          options: { codemode: false },
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              const refused = refusedInput(input)
+              if (Option.isSome(refused)) return yield* failWith(refused.value)
+              if (input.action !== "status" && (yield* isChild(context.sessionID))) return yield* failWith(Tools.parentRefusal(input.action))
+              const text = yield* Match.value(input.action).pipe(
+                Match.when("status", () => status(context.sessionID)),
+                Match.when("lane", () => lane(input, context.sessionID)),
+                Match.when("verify", () => verify(input, context.sessionID)),
+                Match.when("land", () => land(callKey(context.sessionID, context.id), context.sessionID)),
+                Match.exhaustive,
+              )
+              return { content: [{ type: "text" as const, text }], metadata: { action: input.action } }
+            }),
+        }),
+      )
+
       yield* ctx.tool.hook("execute.before", (event) => {
         const call = { sessionID: event.sessionID, callID: event.id }
         if (event.tool !== SUBAGENT) {
@@ -999,6 +1152,20 @@ export const make = (
           ],
           { discard: true },
         )
+      })
+      // A `rift` create or land in a root that runs units runs as before, and its answer starts with the `orchestrate`
+      // call to use (an alias for one release). After the land's own after-hook, so the line comes first; any other
+      // session's answer, and every other action's, is left as the rift plugin gave it.
+      yield* ctx.tool.hook("execute.after", (event) => {
+        if (event.tool !== RIFT || event.status !== "completed") return Effect.void
+        const done = event
+        return Option.match(decodeAliased(done.input), {
+          onNone: () => Effect.void,
+          onSome: (aliased) =>
+            Effect.map(machines.state(done.sessionID), (state) => {
+              if (Tools.runsUnits(state)) done.result = prepend(done.result, Tools.aliasLine(aliased.action))
+            }),
+        })
       })
     }),
   })

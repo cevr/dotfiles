@@ -5,7 +5,21 @@
 // verifier's start, and the rift plugin makes and lands the Rifts over its RPC.
 import { Array as Arr, Match, Option, Predicate, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
-import { BATCH, type Cadence, coverOf, dueOf, type MachineState, unfoldedOf, unitOfEntry, unitOfFinding, unitsIn, unresolvedOf, verdictPending } from "./machine.ts"
+import {
+  BATCH,
+  type Cadence,
+  coverOf,
+  dueOf,
+  entryOf,
+  type LandTarget,
+  type MachineState,
+  unfoldedOf,
+  unitOfEntry,
+  unitOfFinding,
+  unitsIn,
+  unresolvedOf,
+  verdictPending,
+} from "./machine.ts"
 
 /** The tool's name: a direct tool, its policy in the plugin's hooks. */
 export const ORCHESTRATE = "orchestrate"
@@ -80,6 +94,23 @@ export const landCallOf = (units: ReadonlyArray<LandUnit>, departs: Option.Optio
     ...Arr.match(units, { onEmpty: () => [], onNonEmpty: (named) => [["units", `[${named.map(unitLiteral).join(", ")}]`] as const] }),
     ...Option.toArray(Option.map(departs, (why) => ["departs", quote(why)] as const)),
   ])
+
+/**
+ * A land's Rifts as the `orchestrate` land that departs on purpose names them (a refusal's way to go against its
+ * rule): each Rift's unit by name, or `{ unit, path }` for one the input gave a path for; a Rift of no unit as
+ * `{ unit: "<unit>", path }`.
+ */
+export const departingLandCallOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): string =>
+  landCallOf(
+    rifts.map((target) => {
+      const entry = entryOf(target)
+      return Option.match(Option.fromUndefinedOr(unitOfEntry(target, Object.keys(state.units), ownedOf(state))), {
+        onNone: (): LandUnit => ({ unit: "<unit>", path: entry.rift }),
+        onSome: (unit): LandUnit => Option.match(Option.fromUndefinedOr(entry.unit), { onNone: () => unit, onSome: () => ({ unit, path: entry.rift }) }),
+      })
+    }),
+    Option.some("<why>"),
+  )
 
 /** The lane call for a unit. */
 export const laneCallOf = (unit: string): string => callOf("lane", [["unit", quote(unit)]])
@@ -192,6 +223,29 @@ export const lanesOf = (unit: string, lanes: ReadonlyArray<Lane>, state: Machine
   return lanes.filter((lane) => Option.contains(unitOfLane(lane, units, state), unit))
 }
 
+/** The last segment of a path. */
+const baseOf = (path: string): string => Option.getOrElse(Arr.last(path.replace(/\/+$/, "").split("/")), () => path)
+
+/**
+ * The Rifts a lane of `unit` would answer instead of making one: the Rift of the name it makes (`name`: the unit on
+ * the Mac, workrift's name for the branch on the workbox), else those that read as the unit (`lanesOf`).
+ */
+export const existingLanes = (unit: string, name: string, lanes: ReadonlyArray<Lane>, state: MachineState): ReadonlyArray<Lane> =>
+  Arr.match(
+    lanes.filter((lane) => baseOf(lane.path) === name),
+    { onEmpty: () => lanesOf(unit, lanes, state), onNonEmpty: (named) => named },
+  )
+
+/** The Rift a verify makes for a batch: `verify-<batch>`. */
+export const verifyLaneOf = (batch: string): string => `verify-${batch}`
+
+/** The Rift of `name` among `lanes`, by its last segment. */
+export const laneNamed = (name: string, lanes: ReadonlyArray<Lane>): Option.Option<Lane> => Arr.findFirst(lanes, (lane) => baseOf(lane.path) === name)
+
+/** Two Rifts a lane would answer: refused, naming them. */
+export const lanesRefusal = (unit: string, lanes: ReadonlyArray<Lane>): string =>
+  `orchestrate: ${lanes.length} Rifts read as ${unit}: ${lanes.map((lane) => lane.path).join(", ")}. Remove the one that is not its lane with rift({ action: "remove", path }), or land it as ${landCallOf([{ unit, path: "<its Rift>" }])}.`
+
 /** Where a land finds a unit's Rift: given, its implementor's (the ledger), or the one of the warm source's that reads as it. */
 export type Found = { readonly found: UnitRift } | { readonly refused: string }
 
@@ -203,13 +257,16 @@ export type Found = { readonly found: UnitRift } | { readonly refused: string }
 export const riftOfUnit = (asked: LandUnit, lanes: ReadonlyArray<Lane>, state: MachineState): Found => {
   if (!Predicate.isString(asked)) return { found: asked }
   const unit = asked
+  // A unit the machine does not hold has no round to land: its land would pass by the machine, deciding nothing.
+  if (Predicate.isUndefined(state.units[unit]))
+    return { refused: `orchestrate: the machine holds no unit ${unit}: a unit is the machine's once its implementor starts. ${nowOf(state)}` }
   const owned = ownedOf(state)
   const started = Option.filter(Option.fromUndefinedOr(state.units[unit]?.rifts?.at(-1)), (path) =>
     Object.entries(owned).every(([other, rifts]) => other === unit || !rifts.includes(path)),
   )
   if (Option.isSome(started)) return { found: { unit, path: started.value } }
   return Arr.match(lanesOf(unit, lanes, state), {
-    onEmpty: () => ({ refused: `orchestrate: no Rift of the warm source reads as ${unit}${unknownOf(unit, state)}. ${nameItOf(unit, "<its Rift>")}` }),
+    onEmpty: () => ({ refused: `orchestrate: no Rift of the warm source reads as ${unit}. ${nameItOf(unit, "<its Rift>")}` }),
     onNonEmpty: (found) =>
       Arr.match(Arr.drop(found, 1), {
         onEmpty: () => ({ found: { unit, path: Arr.headNonEmpty(found).path } }),
@@ -217,9 +274,6 @@ export const riftOfUnit = (asked: LandUnit, lanes: ReadonlyArray<Lane>, state: M
       }),
   })
 }
-
-/** A unit the machine does not hold, said. */
-const unknownOf = (unit: string, state: MachineState) => Option.match(Option.fromUndefinedOr(state.units[unit]), { onNone: () => ` (the machine holds no unit ${unit})`, onSome: () => "" })
 
 const nameItOf = (unit: string, path: string) => `Name its Rift: ${landCallOf([{ unit, path }])}.`
 

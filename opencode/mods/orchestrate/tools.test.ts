@@ -155,7 +155,8 @@ const jsonOf = (literal: string): string => {
   return out
 }
 
-const decodeCall = Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrateInput))
+// A field the schema lacks fails the decode, as the model would read it as a field the call takes.
+const decodeCall = (text: string) => Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrateInput))(text, { onExcessProperty: "error" })
 
 /** Each call `text` names, decoded, or the literal that does not decode. */
 const decodedIn = (text: string) => callsIn(text).map((literal) => ({ literal, decoded: decodeCall(jsonOf(literal)) }))
@@ -405,5 +406,7 @@ describe("the lane name rule", () => {
     const bare = decider.evolve(implementing(["gamma"], false), UnitHandedBack.make({ unit: "gamma", ready: true, said: "ready", at: 7 }))
     expect(resolveLand({ action: "land" }, [], bare, next)).toEqual({ refused: expect.stringContaining('Name its Rift: orchestrate({ action: "land", units: [{ unit: "gamma", path: "<its Rift>" }] })') })
     expect(resolveLand({ action: "land" }, [], machine().initial, next)).toEqual({ refused: expect.stringContaining("no unit is ready to land") })
+    // A named unit the machine does not hold is refused, though a Rift reads as it: its land would decide nothing.
+    expect(resolveLand({ action: "land", units: ["alpha", "delta"] }, [laneOf("delta")], ready, next)).toEqual({ refused: expect.stringContaining("the machine holds no unit delta") })
   })
 })
