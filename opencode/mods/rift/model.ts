@@ -8,7 +8,7 @@
 // calls this and nothing else.
 import { Clock, Context, Effect, Layer, Option, Predicate, Scope, Semaphore } from "effect"
 import { findRift, resolvePath } from "./find.ts"
-import { CHECK_EVERY, baseOf, deferredText, forcedLine, headOf, observe, overloaded, owe, pay, settled, unitsOf, verdict, type Debts, type Trigger } from "./owed.ts"
+import { CHECK_EVERY, baseOf, forcedLine, headOf, loadedLine, loadWord, observe, overloaded, owe, pay, pays, phase, ran, unitsOf, type Debts, type Trigger } from "./owed.ts"
 import {
   GateMissing,
   INTEGRATION,
@@ -241,8 +241,10 @@ export const layer = Layer.effect(
      * steps never overlap, from any plugin instance on the host. A land waits for the claim; the minute check
      * (`holdIfFree`) leaves it to whoever holds it. It reads the owed step once it holds the claim, so a
      * claimer that waited behind another's run finds nothing left to run, and every Git step in the
-     * post-land Rift runs under it. On a host loaded past its cores it stays owed (`verdict`, owed.ts), and a
-     * land says so; once it ran, it is paid unless a newer land owes one meanwhile.
+     * post-land Rift runs under it. Its phase (`phase`, owed.ts) is its RIFT_POST_LAND_LOAD: on a host loaded
+     * past its cores a land runs it `loaded`, and so does the minute check every LOADED_EVERY; a loaded run
+     * does what a loaded host allows and leaves it owed. Any other run pays it, unless a newer land owes one
+     * meanwhile. A loaded run that exits 0 with an empty report wakes no one.
      */
     const runOwed = (source: string, trigger: Trigger) => {
       const step = Effect.gen(function* () {
@@ -250,28 +252,31 @@ export const layer = Layer.effect(
         if (Option.isNone(found)) return
         const owed = found.value
         const { load, readings, now } = yield* reading
-        const decided = verdict(owed, readings, now, trigger)
-        if (decided === "defer") {
-          if (trigger === "land") yield* notices.wake(owed.sessionID, { text: deferredText(owed, load, readings, now), description: "rift land · post-land owed (load)" })
-          return
-        }
+        const decided = phase(owed, readings, now, trigger)
+        if (decided === "wait") return
         const result = yield* Effect.result(
           Effect.gen(function* () {
             const path = yield* claimed(Effect.tap(keptRift(source, POST_LAND), (kept) => Effect.sync(() => busy.set(kept, `the post-land step of ${branchList(unitsOf(owed))} runs there`))))
             return yield* Effect.gen(function* () {
               const started = yield* landing.start(path, owed.main)
               yield* landing.install(path, started.previous)
-              return yield* landing.postLand(path, owed.command, { RIFT_LAND_BASE: baseOf(owed), RIFT_LAND_HEAD: headOf(owed) })
+              return yield* landing.postLand(path, owed.command, { RIFT_LAND_BASE: baseOf(owed), RIFT_LAND_HEAD: headOf(owed), RIFT_POST_LAND_LOAD: loadWord(decided) })
             }).pipe(Effect.ensuring(Effect.sync(() => busy.delete(path))))
           }),
         )
-        // Paid once it ran, red or not: a failed run would fail the same at the next check.
-        yield* changeOwed((all) => pay(all, source, headOf(owed)))
+        // Paid once it ran, red or not: a failed run would fail the same at the next check. A loaded run only
+        // records when it ended, from which the minute check counts to its next loaded run.
+        const ended = yield* Clock.currentTimeMillis
+        yield* changeOwed((all) => Option.match(Option.liftPredicate(decided, pays), { onNone: () => ran(all, source, ended), onSome: () => pay(all, source, headOf(owed)) }))
         if (result._tag === "Failure") return yield* notices.wake(owed.sessionID, notRun(unitsOf(owed), result.failure))
-        const ran = result.success
-        const lines = [postLandedText(unitsOf(owed), ran)]
+        const done = result.success
+        const blank = Option.exists(Option.fromUndefinedOr(done.report), (report) => report.trim() === "")
+        if (decided === "loaded" && done.code === 0 && blank) return
+        const lines = [postLandedText(unitsOf(owed), done)]
         if (decided === "forced") lines.unshift(forcedLine(owed, load, readings, now))
-        yield* notices.wake(owed.sessionID, { text: lines.join("\n"), description: `rift land · post-land ${ran.code === 0 ? "ran" : "failed"}` })
+        if (decided === "loaded") lines.unshift(loadedLine(owed, load, readings, now))
+        const how = { run: "", forced: "", loaded: " loaded" }[decided]
+        yield* notices.wake(owed.sessionID, { text: lines.join("\n"), description: `rift land · post-land ${done.code === 0 ? "ran" : "failed"}${how}` })
       })
       if (trigger === "land") return claim.hold(step)
       return Effect.asVoid(claim.holdIfFree(step))
@@ -288,13 +293,16 @@ export const layer = Layer.effect(
         yield* runOwed(source, "land")
       }).pipe(Effect.catch((failure: RiftFailed) => notices.wake(sessionID, notRun(units, failure))))
 
-    /** One periodic check: read the load while a step is owed, and run each owed step once the readings settled. */
+    /**
+     * One periodic check: read the load while a step is owed, and run each owed step once the readings settled,
+     * or loaded once LOADED_EVERY has passed since its last run; never while another run holds the claim.
+     */
     const check = Effect.gen(function* () {
       const all = (yield* debts.read).owed
       if (all.length === 0) return
       const { readings, now } = yield* reading
-      if (!settled(readings, now)) return
-      yield* Effect.forEach(all, (owed) => runOwed(owed.source, "settled"), { discard: true })
+      const due = all.filter((owed) => phase(owed, readings, now, "settled") !== "wait")
+      yield* Effect.forEach(due, (owed) => runOwed(owed.source, "settled"), { discard: true })
     }).pipe(Effect.catch((failure) => Effect.logWarning("rift: the post-land check failed", failure)))
     yield* Effect.forkIn(Effect.forever(Effect.andThen(Effect.sleep(CHECK_EVERY), check)), scope)
 

@@ -404,15 +404,34 @@ seeded("a refresh the endpoint refused writes nothing and asks for a new sign-in
   }),
 )
 
+seeded("a refused refresh token is never traded again: each later resolve fails rejected with the endpoint's words", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    let answer: Provider.TokenAnswer = { kind: "rejected" }
+    const bench_ = yield* bench(seed, ["alpha"], { expires: World.START - 1000, token: () => answer })
+    const { source, trades, world } = bench_
+    const first = yield* failure(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))
+    expect(first.kind).toBe("rejected")
+    expect(trades()).toBe(1)
+
+    // The endpoint would take it now: it is not asked.
+    answer = { kind: "rotate" }
+    for (const _ of [1, 2, 3]) {
+      yield* world.runtime.advance(10 * 60_000)
+      const again = yield* failure(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))
+      expect([again.kind, again.message]).toEqual(["rejected", first.message])
+    }
+    expect(trades()).toBe(1)
+  }),
+)
+
 seeded("a refresh whose write failed is held, and written later only over the login it replaced", ({ seed, expect }) =>
   Effect.gen(function* () {
     const bench_ = yield* bench(seed, ["alpha"], { expires: World.START - 1000 })
     const { slots, provider, source, trades, file } = bench_
     const before = file("alpha")
-    // The store's directory refuses the write, as a read-only directory does.
+    // The store's directory refuses the write, as a read-only directory does: the new token serves all the same.
     slots.failWrites(1)
-    const error = yield* failure(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))
-    expect(error.kind).toBe("persist")
+    expect((yield* done(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))).access).toBe(provider.tokens("alpha").access)
     expect(file("alpha")).toBe(before)
     expect([...(yield* slots.files.names(SLOTS))]).toEqual(["alpha"])
 
@@ -427,9 +446,9 @@ seeded("a refresh whose write failed is held, and written later only over the lo
 seeded("a held refresh is dropped when another process wrote another login meanwhile", ({ seed, expect }) =>
   Effect.gen(function* () {
     const bench_ = yield* bench(seed, ["alpha"], { expires: World.START - 1000, extra: ["theirs"] })
-    const { slots, source, trades, drawn } = bench_
+    const { slots, source, trades, drawn, provider } = bench_
     slots.failWrites(1)
-    expect((yield* failure(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))).kind).toBe("persist")
+    expect((yield* done(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))).access).toBe(provider.tokens("alpha").access)
 
     const theirs = { ...drawn["theirs"], expires: World.START + 8 * HOUR }
     signIn(slots, "alpha", theirs, { signedInAt: Option.some(1_800_000_000_000) })
@@ -446,8 +465,10 @@ seeded("a refresh whose write failed keeps the store's lock: no other holder tra
     // beta is good for hours: a resolve of it needs no refresh.
     signIn(slots, "beta", { ...drawn["beta"], expires: World.START + 8 * HOUR })
     slots.failWrites(1)
-    expect((yield* failure(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))).kind).toBe("persist")
+    // The new token serves at once, though its write failed.
+    const served = yield* done(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))
     const rotated = provider.tokens("alpha")
+    expect(served.access).toBe(rotated.access)
 
     // Another process that must refresh waits on the lock, and never reads alpha's spent token to trade it.
     const theirs = pollingIn(storeProcess(), 3)
@@ -464,6 +485,23 @@ seeded("a refresh whose write failed keeps the store's lock: no other holder tra
     // Every trade presented a refresh token the provider still held.
     expect(provider.received().filter((request) => request.path === "/v1/oauth/token" && request.account === "")).toEqual([])
     expect(trades()).toBe(2)
+  }),
+)
+
+seeded("a held refresh lands on its own within a minute with no request, and frees the lock for the other holders", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const bench_ = yield* bench(seed, ["alpha"], { expires: World.START - 1000 })
+    const { slots, provider, source, trades, pollingIn, world } = bench_
+    slots.failWrites(1)
+    yield* done(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))
+    const rotated = provider.tokens("alpha")
+
+    // This process makes no request again; a minute on, the rotation is in the file and the lock is free.
+    yield* world.runtime.advance(60_000)
+    expect(Option.map(stored(slots, "alpha"), (login) => login.refresh)).toEqual(Option.some(rotated.refresh))
+    const theirs = pollingIn(storeProcess(), 3)
+    expect((yield* done(bench_, theirs.resolveEffect(`${STORE_PREFIX}alpha`))).access).toBe(rotated.access)
+    expect(trades()).toBe(1)
   }),
 )
 

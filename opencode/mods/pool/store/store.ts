@@ -39,7 +39,9 @@
  * else nothing. The usage sweep reads through it, so a sweep never refreshes.
  *
  * A failed refresh writes nothing: the refresh token in the file is still the
- * one to retry with. A refresh that worked but whose write failed keeps the
+ * one to retry with, unless the endpoint refused it: then it is never traded
+ * again, and every resolve fails `rejected` with the endpoint's words, until
+ * the file holds another login. A refresh that worked but whose write failed keeps the
  * new tokens in memory, and keeps the store's lock: the refresh token in the
  * file is spent, so no other holder may read it and trade it again (the
  * endpoint would refuse it and sign the login out). The next resolve, of any
@@ -144,7 +146,10 @@ export const StoreFailureKind = Schema.Literals([
   "unavailable",
   /** The store's lock stayed held for the whole wait. */
   "busy",
-  /** The refresh worked but its write failed; the new tokens are held in memory. */
+  /**
+   * The refresh worked but its write failed; the new tokens are held in memory. Only a write reports it: a resolve
+   * serves the held tokens instead.
+   */
   "persist",
 ])
 export type StoreFailureKind = typeof StoreFailureKind.Type
@@ -472,8 +477,11 @@ interface StoreState {
   readonly pending: Map<string, { readonly next: Tokens; readonly replaces: string }>
   /** Per label: the refresh token of the login whose access token a provider rejected. */
   readonly rejected: Map<string, string>
-  /** Per label: the refresh token the token endpoint refused, and since when; it stands while the file holds it. */
-  readonly refused: Map<string, { readonly refresh: string; readonly since: number }>
+  /**
+   * Per label: the refresh token the token endpoint refused, since when, and what it said; it stands while the file
+   * holds it, and that token is never traded again.
+   */
+  readonly refused: Map<string, { readonly refresh: string; readonly since: number; readonly message: string }>
   /** The run of failed trades this store is in, if any, and the last cause the endpoint gave. */
   failingSince: number | undefined
   lastFailureAt: number | undefined
@@ -490,6 +498,8 @@ interface StoreState {
    * file holds the new refresh token, no other holder may read the spent one and trade it.
    */
   lock: Option.Option<Effect.Effect<void>>
+  /** Whether a loop is writing the held rotations again on its own (`landLater`). */
+  landing: boolean
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
@@ -507,6 +517,7 @@ const freshState = (): StoreState => ({
   pausedUntil: 0,
   lastTradeAt: -Infinity,
   lock: Option.none(),
+  landing: false,
 })
 
 /** This process's stores' state: on `globalThis`, so it outlives a hot reload and every copy of this module shares it. */
@@ -795,10 +806,16 @@ export class StoreSource {
         // The held rotation lands only over the login it replaced; any other
         // writer's login wins and the held one is dropped.
         if (stored.refresh === pending.replaces) {
-          yield* this.write(label, stored, pending.next, pending.replaces)
+          const fresh = { access: pending.next.access, expires: pending.next.expires }
+          // A write that fails again keeps the rotation held, and its token still serves.
+          const landed = yield* this.write(label, stored, pending.next, pending.replaces).pipe(
+            Effect.as(true),
+            Effect.catchIf((error) => error.kind === "persist", () => Effect.succeed(false)),
+          )
+          if (!landed) return fresh
           this.state.pending.delete(label)
           this.state.rejected.delete(label)
-          return { access: pending.next.access, expires: pending.next.expires }
+          return fresh
         }
         this.state.pending.delete(label)
       }
@@ -806,6 +823,12 @@ export class StoreSource {
       const rejected = this.state.rejected.get(label) === stored.refresh
       if (!rejected && !this.due(label, stored.expires)) return served
       const usable = !rejected && this.fresh(stored.expires)
+
+      // A refresh token the endpoint refused is never traded again: the login fails as its refusal did, until a new
+      // sign-in (another login in its file).
+      const lost = Option.filter(Option.fromNullishOr(this.state.refused.get(label)), (refused) => refused.refresh === stored.refresh)
+      if (Option.isSome(lost))
+        return yield* failure("rejected", lost.value.message || `The store account "${label}" needs a new sign-in. Sign in to it again.`)
 
       const held = this.held()
       if (held !== undefined) {
@@ -821,8 +844,12 @@ export class StoreSource {
         ),
       )
       if (next === undefined) return served
-      yield* this.write(label, stored, next, stored.refresh)
-      this.state.rejected.delete(label)
+      // A write that fails holds the rotation (and the lock) until it lands; the new access token serves meanwhile.
+      const landed = yield* this.write(label, stored, next, stored.refresh).pipe(
+        Effect.as(true),
+        Effect.catchIf((error) => error.kind === "persist", () => Effect.succeed(false)),
+      )
+      if (landed) this.state.rejected.delete(label)
       return { access: next.access, expires: next.expires }
     })
   }
@@ -844,7 +871,7 @@ export class StoreSource {
 
   /**
    * `use` under the store's lock. While a rotation is held for a write the lock
-   * stays taken, past `use`, until a later resolve lands it: another holder
+   * stays taken, past `use`, until a later resolve or `landLater` lands it: another holder
    * reads the file only once it holds the new refresh token. The OS frees the
    * lock if the process dies.
    */
@@ -858,12 +885,34 @@ export class StoreSource {
         Effect.suspend(() => {
           if (this.state.pending.size > 0) {
             this.state.lock = Option.some(release)
+            this.landLater()
             return Effect.void
           }
           this.state.lock = Option.none()
           return release
         }),
     )
+  }
+
+  /**
+   * Every held rotation is written again every `RETRY_MS` until none is left, whether or not a request comes: a
+   * process gone idle would otherwise keep the lock for good, and every other holder of the store would wait on it.
+   * One loop per store in this process.
+   */
+  private landLater() {
+    if (this.state.landing) return
+    this.state.landing = true
+    const land = serialized(
+      this.state,
+      this.locked(
+        Effect.suspend(() => Effect.forEach([...this.state.pending.keys()].sort(), (label) => this.landHeld(label).pipe(Effect.ignore))),
+      ),
+    ).pipe(Effect.ignore)
+    const loop: Effect.Effect<void> = Effect.suspend(() => {
+      if (this.state.pending.size === 0) return Effect.void
+      return this.sleep(RETRY_MS).pipe(Effect.andThen(land), Effect.andThen(loop))
+    })
+    Effect.runForkWith(this.context)(loop.pipe(Effect.ensuring(Effect.sync(() => (this.state.landing = false)))))
   }
 
   private write(label: string, stored: StoredOAuth, next: Tokens, replaces: string): Effect.Effect<void, StoreCredentialError> {
@@ -907,21 +956,24 @@ export class StoreSource {
       Effect.tapError((error) =>
         Effect.sync(() => {
           if (error.kind === "unavailable") this.failed()
-          else if (error.kind === "rejected") this.answered(label, refreshToken)
+          else if (error.kind === "rejected") this.answered(label, refreshToken, error.message)
         }),
       ),
     )
   }
 
-  /** A trade the endpoint answered ends the store's run of failures; a refusal marks the login lost until its file changes. */
-  private answered(label: string, refused: string | undefined) {
+  /**
+   * A trade the endpoint answered ends the store's run of failures; a refusal marks the login lost until its file
+   * changes, with the endpoint's words.
+   */
+  private answered(label: string, refused: string | undefined, message = "") {
     const state = this.state
     state.failingSince = undefined
     state.lastFailureAt = undefined
     state.failures = 0
     state.cause = undefined
     if (refused === undefined) state.refused.delete(label)
-    else if (state.refused.get(label)?.refresh !== refused) state.refused.set(label, { refresh: refused, since: this.now() })
+    else if (state.refused.get(label)?.refresh !== refused) state.refused.set(label, { refresh: refused, since: this.now(), message })
   }
 
   /** A trade that could not happen now extends the store's run of failures. */

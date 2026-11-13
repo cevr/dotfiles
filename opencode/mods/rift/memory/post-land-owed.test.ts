@@ -89,6 +89,8 @@ interface Seen {
   readonly startedAt: Array<number>
   /** Each run's head as it ended, uninterrupted. */
   readonly completed: Array<string>
+  /** Each loaded run (RIFT_POST_LAND_LOAD=loaded): its head and the minute it started. It never pays the step. */
+  readonly loaded: Array<{ readonly head: string; readonly at: number }>
   /** The runs going now. */
   running: number
   /** The runs started while the load was at or past the cores. */
@@ -109,9 +111,18 @@ const worldOf = (next: () => number) => {
   landing.headOf = (push) => `h${push}`
   const debts = MemoryDebts.world()
   const woken: Array<MemoryNotices.Woken> = []
-  const seen: Seen = { landed: [], started: [], startedAt: [], completed: [], running: 0, forced: 0, completedForced: [], violations: [] }
+  const seen: Seen = { landed: [], started: [], startedAt: [], completed: [], loaded: [], running: 0, forced: 0, completedForced: [], violations: [] }
   /** Each running step's end, which the clock steps release. */
   const holds: Array<{ readonly end: number; readonly done: Deferred.Deferred<void> }> = []
+  /** A loaded run: it lasts its minutes like any run, and is recorded apart, never as the step's run. */
+  const loadedRun = (head: string, now: number) =>
+    Effect.gen(function* () {
+      seen.loaded.push({ head, at: now / MINUTE })
+      seen.running += 1
+      const done = yield* Deferred.make<void>()
+      holds.push({ end: now + between(next, 0, 4) * MINUTE, done })
+      yield* Deferred.await(done).pipe(Effect.ensuring(Effect.sync(() => (seen.running -= 1))))
+    })
   landing.postLandHold = Effect.gen(function* () {
     const head = String(landing.steps.at(-1)).split(" ")[3]
     const now = yield* Clock.currentTimeMillis
@@ -119,11 +130,15 @@ const worldOf = (next: () => number) => {
     if (seen.running > 0) violation("two post-land steps at once")
     const newest = Option.fromNullishOr(seen.landed.at(-1))
     if (Option.exists(newest, (land) => land.head !== head)) violation("not the newest land's step")
+    // A loaded run does what a loaded host allows and leaves the step owed: it is judged apart.
+    if (landing.postLandEnvs.at(-1)?.["RIFT_POST_LAND_LOAD"] === "loaded") return yield* loadedRun(head, now)
     if (seen.completed.includes(head)) violation("a step that already ran")
     if (seen.landed.findIndex((land) => land.head === head) <= paidThrough(seen)) violation("a step a newer run had paid")
     // The settle window: every load reading the tool took in the SETTLE before this run (from a land, the
     // minute check, or a server before a restart) was under the cores, else this is the max wait's run.
     const loadedLately = landing.readings.some((reading) => reading.load.load >= reading.load.cores && now - reading.at < Duration.toMillis(SETTLE))
+    const word = landing.postLandEnvs.at(-1)?.["RIFT_POST_LAND_LOAD"]
+    if (word !== ((loadedLately && "forced") || "settled")) violation(`run with RIFT_POST_LAND_LOAD=${word}`)
     if (loadedLately) {
       seen.forced += 1
       const oldest = Option.fromNullishOr(seen.landed[paidThrough(seen) + 1])
@@ -256,7 +271,7 @@ const judge = (seed: number, world: World) => {
     running: world.seen.running,
     saidForced: saidForced(world),
     notRun: described(world, "rift land · post-land did not run"),
-    deferredPastLands: described(world, "rift land · post-land owed (load)") > world.seen.landed.length,
+    loadedWakesPastRuns: described(world, "rift land · post-land ran loaded") > world.seen.loaded.length,
   }).toEqual({
     seed,
     violations: [],
@@ -266,7 +281,7 @@ const judge = (seed: number, world: World) => {
     // One report per run that ended, from the one instance that ran it.
     saidForced: world.seen.completedForced,
     notRun: 0,
-    deferredPastLands: false,
+    loadedWakesPastRuns: false,
   })
 }
 
@@ -324,11 +339,18 @@ describe("an owed post-land step", () => {
         // Calm for 3 minutes, loaded, then calm again: the step waited for a whole settle window after the second calm.
         expect(world.seen.started).toEqual(["h1"])
         expect(world.seen.startedAt).toEqual([41])
+        // Meanwhile it ran loaded: the land's at once (it ran to minute 4), and after the restart the minute
+        // check's, once 30 minutes had passed since that one ended: the kept end survived the restart.
+        expect(world.seen.loaded).toEqual([
+          { head: "h1", at: 0 },
+          { head: "h1", at: 34 },
+        ])
         expect(world.woken.map((woken) => woken.notice.description).filter((description) => description.includes("post-land"))).toEqual([
-          "rift land · post-land owed (load)",
+          "rift land · post-land ran loaded",
+          "rift land · post-land ran loaded",
           "rift land · post-land ran",
         ])
-        expect(world.landing.steps.filter((step) => step.startsWith(`post-land ${POST_LAND}`))).toEqual([`post-land ${POST_LAND} base0 h1`])
+        expect(world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded", "loaded", "settled"])
         judge(1, world)
       }),
     ))
@@ -431,15 +453,17 @@ describe("an owed post-land step", () => {
       }),
     ))
 
-  test(`one owed step and ${INSTANCES} plugin instances, each with its minute check: one run, every Git step in the post-land Rift under the claim, one report`, () =>
+  test(`one owed step and ${INSTANCES} plugin instances, each with its minute check: the land's loaded run, then one settled run, every Git step in the post-land Rift under the claim, one report each`, () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const ops: ReadonlyArray<Op> = [Op.Load({ load: 30 }), Op.Land(), Op.Load({ load: 2 }), Op.Wait({ minutes: 10 })]
         const world = yield* play(5, ops)
         expect(world.seen.started).toEqual(["h1"])
-        expect(world.landing.steps.filter((step) => step.includes(POST_LAND))).toEqual([`start ${POST_LAND} main`, `post-land ${POST_LAND} base0 h1`, `ended post-land ${POST_LAND}`])
+        const run = [`start ${POST_LAND} main`, `post-land ${POST_LAND} base0 h1`, `ended post-land ${POST_LAND}`]
+        expect(world.landing.steps.filter((step) => step.includes(POST_LAND))).toEqual([...run, ...run])
+        expect(world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded", "settled"])
         expect(world.woken.map((woken) => woken.notice.description).filter((description) => description.includes("post-land"))).toEqual([
-          "rift land · post-land owed (load)",
+          "rift land · post-land ran loaded",
           "rift land · post-land ran",
         ])
         judge(5, world)

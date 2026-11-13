@@ -4,7 +4,8 @@
 // sees: the tools offered, the rift tool's answers and refusals, the options.
 // tests/rift.test.ts runs it in OpenCode on the scripted model and real Rift.
 import { describe, expect, test } from "bun:test"
-import { Cause, Effect, Exit, Layer, Schema, type Scope } from "effect"
+import { Cause, Effect, Exit, Layer, Schema, Scope } from "effect"
+import { TestClock } from "effect/testing"
 import * as MemoryDebts from "@dotfiles/opencode-rift/memory/debts"
 import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
@@ -27,7 +28,7 @@ type Editor = { add: (tool: Registered) => void; remove: (id: string) => void }
 const SOURCE = "/code/app"
 
 /** The plugin started on a stand-in host whose registry already holds the built-in tools. */
-const start = (options: Record<string, unknown> = { workrift: false }, state = MemoryRifts.world([SOURCE]), landing = MemoryLanding.world()) =>
+const start = (options: Record<string, unknown> = { workrift: false }, state = MemoryRifts.world([SOURCE]), landing = MemoryLanding.world(), debts = MemoryDebts.world()) =>
   Effect.gen(function* () {
     const woken: Array<MemoryNotices.Woken> = []
     const tools = new Map<string, Registered | "builtin">([["shell", "builtin"], ["opencode_session_move", "builtin"], ...WORKTREE_TOOLS.map((id) => [id, "builtin"] as const)])
@@ -48,7 +49,7 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
         MemoryLanding.layer(landing),
         MemoryNotices.layer(woken),
         MemoryWorkbox.layer(false),
-        MemoryDebts.layer(MemoryDebts.world()),
+        MemoryDebts.layer(debts),
       ),
     ).effect(host)
 
@@ -68,6 +69,9 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
+
+/** Lets the plugin's background fibers (a land's post-land step, the minute check) run as far as they can without the clock. */
+const settle = Effect.forEach(Array.from({ length: 30 }), () => Effect.yieldNow, { discard: true })
 
 describe("the rift plugin", () => {
   test("offers the rift tool as a direct tool in place of OpenCode's worktree tools", () =>
@@ -115,6 +119,58 @@ describe("the rift plugin", () => {
         expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2" }] })).toStartWith("refused input:")
         expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here the rift tool offers create, list, remove and land.")
       }),
+    ))
+
+  test("a land on a loaded host runs the post-land step loaded and leaves it owed; it survives a restart, and the minute check runs it settled once the load settles, which pays it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")])
+        const landing = MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept", { postLand: "bun scripts/post-land.ts" }) })
+        landing.load = { load: 20, cores: 8 }
+        const debts = MemoryDebts.world()
+        const first = yield* Scope.make()
+        const { call, woken } = yield* Scope.provide(start({ workrift: false }, state, landing, debts), first)
+        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        yield* settle
+        const loads = () => landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])
+        const postLandWakes = () => woken.map((wake) => wake.notice.description).filter((description) => description.includes("post-land"))
+        expect({ loads: loads(), wakes: postLandWakes(), owed: debts.debts.owed.length }).toEqual({ loads: ["loaded"], wakes: ["rift land · post-land ran loaded"], owed: 1 })
+        // A server restart: the step is still owed, and the new server's minute check runs it settled once the
+        // load has stayed under the cores for the settle window.
+        yield* Scope.close(first, Exit.void)
+        const second = yield* Scope.make()
+        const again = yield* Scope.provide(start({ workrift: false }, state, landing, debts), second)
+        landing.load = { load: 0.5, cores: 8 }
+        for (const _ of Array.from({ length: 8 })) {
+          yield* TestClock.adjust("1 minute")
+          yield* settle
+        }
+        expect({ loads: loads(), wakes: [...postLandWakes(), ...again.woken.map((wake) => wake.notice.description)], owed: debts.debts.owed.length }).toEqual({
+          loads: ["loaded", "settled"],
+          wakes: ["rift land · post-land ran loaded", "rift land · post-land ran"],
+          owed: 0,
+        })
+        yield* Scope.close(second, Exit.void)
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
+  test("a loaded run that ran nothing (exit 0, an empty report) wakes no one, and the step stays owed", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")])
+        const landing = MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept", { postLand: "bun scripts/post-land.ts" }) })
+        landing.load = { load: 20, cores: 8 }
+        landing.postLandRun = { code: 0, output: "", report: "" }
+        const debts = MemoryDebts.world()
+        const { call, woken } = yield* start({ workrift: false }, state, landing, debts)
+        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        yield* settle
+        expect({
+          loads: landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"]),
+          wakes: woken.filter((wake) => wake.notice.description.includes("post-land")).length,
+          owed: debts.debts.owed.length,
+        }).toEqual({ loads: ["loaded"], wakes: 0, owed: 1 })
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("takes workrift from PATH when the option is absent, and stops on a malformed option", () =>

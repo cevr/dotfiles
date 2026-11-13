@@ -1,6 +1,7 @@
 // The seed runner's budget: a file whose seeds spend more CPU than its budget
 // fails, saying its CPU and wall time; one whose wall time runs long while it
-// spends little CPU (a loaded host's time, not the file's work) passes.
+// spends little CPU (a loaded host's time, not the file's work) passes. A
+// file's past failing seeds run after the fixed ones.
 import { Effect, Exit } from "effect"
 import { describe, expect } from "bun:test"
 import { TestClock } from "effect/testing"
@@ -45,5 +46,15 @@ describe("the seed runner's budget", () => {
       expect(spent.wall).toBe(120_000)
       expect(spent.cpu).toBeLessThan(50)
     }).pipe(Effect.provide(TestClock.layer())),
+  )
+})
+
+describe("a file's past failing seeds", () => {
+  Seed.effect("run after 1 to SEEDS, in order, each once, with none of 1 to SEEDS twice",
+    Effect.gen(function* () {
+      const fixed = Array.from({ length: Seed.SEEDS }, (_, index) => index + 1)
+      expect(yield* Seed.seedsOf([353, 27, 353, 2])).toEqual([...fixed, 27, 353])
+      expect(yield* Seed.seeds).toEqual(fixed)
+    }),
   )
 })
