@@ -78,7 +78,7 @@ export default OpenCodeDriver.use(
       yield* until((frame) => frame.includes("Subagents") && frame.includes("Wakes") && frame.includes("Monitors"), 50)
       yield* keep("panel", true)
       // → past Shell reaches Wakes. The note shows in the transcript too: the tab's row is what follows it.
-      const alarmRow = "ALPHA: check the deploy · wake · once"
+      const alarmRow = "ALPHA: check the deploy  wake · once"
       for (let step = 0; step < 6; step++) {
         const frame = text(yield* ui.capture())
         if (frame.includes(alarmRow)) break
@@ -97,7 +97,7 @@ export default OpenCodeDriver.use(
       yield* until((frame) => frame.includes("No pending wakes"), 80)
       yield* keep("cancelled", true)
       yield* ui.press("right")
-      yield* until((frame) => frame.includes("echo still-waiting · every 1s") && !frame.includes("not checked yet"), 80)
+      yield* until((frame) => frame.includes("echo still-waiting  still-waiting"), 80)
       yield* keep("monitors", true)
       // Escape closes the panel: the dock is back, counting the monitor and no wake.
       yield* ui.press("escape")
@@ -108,11 +108,11 @@ export default OpenCodeDriver.use(
       yield* until((frame) => frame.includes("Wakes") && frame.includes("Monitors"), 50)
       for (let step = 0; step < 8; step++) {
         const frame = text(yield* ui.capture())
-        if (frame.includes("echo still-waiting · every 1s")) break
+        if (frame.includes("echo still-waiting  still-waiting")) break
         yield* ui.press("right")
         yield* Effect.sleep("150 millis")
       }
-      yield* until((frame) => frame.includes("echo still-waiting · every 1s"), 50)
+      yield* until((frame) => frame.includes("echo still-waiting  still-waiting"), 50)
       yield* ui.press("d", { ctrl: true })
       yield* until((frame) => frame.includes("No monitors"), 80)
       yield* ui.press("escape")

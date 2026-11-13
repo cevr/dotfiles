@@ -108,7 +108,7 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
   test("Down on the empty prompt opens the Subagents picker, listing the running workers", kept.test(() => {
     const text = frames.picker.join("\n")
     expect(text).toContain("Subagents")
-    for (const worker of WORKERS) expect(text).toMatch(new RegExp(`General: ${worker.title} +Running`))
+    for (const worker of WORKERS) expect(text).toMatch(new RegExp(`[◆◇◈] general +\\S+ +${worker.title} .* working +\\d+s$`, "m"))
   }))
 
   test("Enter in the picker opens a subagent, with its brief and its loader", kept.test(() => {
@@ -130,6 +130,6 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
   test("a click on the dock's subagent count opens the Subagents picker", kept.test(() => {
     const text = frames.dock.join("\n")
     expect(frames.dock[0]).not.toContain("›")
-    for (const worker of WORKERS) expect(text).toMatch(new RegExp(`General: ${worker.title} +Running`))
+    for (const worker of WORKERS) expect(text).toMatch(new RegExp(`[◆◇◈] general +\\S+ +${worker.title} .* working +\\d+s$`, "m"))
   }))
 })
