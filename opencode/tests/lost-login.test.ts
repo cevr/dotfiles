@@ -2,8 +2,8 @@
 // Public UI seam: real OpenCode, the real pool and status plugins, a login
 // store on disk and a fake token endpoint. A pooled store login whose refresh
 // token the endpoint refuses shows in the sidebar's Pool section, with the
-// slot file to sign it in to again, and as a toast; a refresh that succeeds
-// clears both. scenarios/lost-login.ts drives it.
+// slot file to sign it in to again, and as a toast; once it is signed in again,
+// a refresh that succeeds clears both. scenarios/lost-login.ts drives it.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr } from "effect"
 import { existsSync, readFileSync } from "node:fs"
