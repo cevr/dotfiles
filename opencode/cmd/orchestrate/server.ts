@@ -281,6 +281,22 @@ export type Background = (sessionID: string) => number
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
+type HostSession = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
+/** What the guard reads of the host's session record. */
+export type StepHostSession = Pick<HostSession, "parentID" | "agent" | "outcome" | "metadata"> & {
+  readonly time: Pick<HostSession["time"], "busy">
+  readonly location: { readonly directory: string }
+}
+
+/** A step's session as the guard reads it (SessionsLive): a stopped one is a session whose last turn was interrupted. */
+export const stepSessionOf = (session: StepHostSession): SessionsLive.Session => ({
+  ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
+  ...(session.agent === undefined ? {} : { agent: session.agent }),
+  started: session.time.busy !== undefined || session.outcome !== undefined,
+  stopped: session.outcome === "interrupted",
+  ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
+  directory: session.location.directory,
+})
 
 /**
  * The outside systems as OpenCode, the filesystem and processes provide them;
@@ -307,17 +323,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
     }),
     CallLogLive.layer(options.log),
     SessionsLive.layer(
-      (sessionID) =>
-        ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
-          Effect.map((session) => ({
-            ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
-            ...(session.agent === undefined ? {} : { agent: session.agent }),
-            started: session.time.busy !== undefined || session.outcome !== undefined,
-            stopped: session.outcome === "interrupted",
-            ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
-            directory: session.location.directory,
-          })),
-        ),
+      (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
     ),
     UnitLogsLive.layer(options.unitLog, { journal: options.drops }),

@@ -41,7 +41,7 @@ import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHold
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import { eventuallyPasses } from "../../tests/wait.ts"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -1834,6 +1834,15 @@ describe("the batch machine", () => {
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "none" }))
       }),
     ))
+
+  test("subagent-handle: the live sessions read a session whose last turn was interrupted as stopped, and no other", () => {
+    const fresh: StepHostSession = { time: {}, location: { directory: "/work" } }
+    const ended = (outcome: "succeeded" | "failed" | "interrupted"): StepHostSession => ({ ...fresh, outcome })
+    expect(stepSessionOf(ended("interrupted"))).toEqual({ started: true, stopped: true, directory: "/work" })
+    expect(stepSessionOf(ended("succeeded"))).toEqual({ started: true, stopped: false, directory: "/work" })
+    expect(stepSessionOf(ended("failed")).stopped).toBe(false)
+    expect(stepSessionOf(fresh)).toEqual({ started: false, stopped: false, directory: "/work" })
+  })
 
   // subagent-handle: a step its root stopped (the `subagents` tool's stop, the host's interrupt) ends with its last
   // words an earlier turn's. They are no hand-back: the ledger sees it stopped.
