@@ -1,0 +1,48 @@
+                                             long suite  $0.00
+
+  opencode vlocal
+  model simulation/gpt-sim-model
+  cwd ~/files
+
+ ┃ Check the build, then run the long suite.
+
+  ● Ran 2 commands
+  ├ ✓ shell · printf 'build a ok\n' · ↑ 1 ↓ 1 lines · 77ms
+  │ ╰─ build a ok
+  └ ✓ shell · printf 'build b ok\n' · ↑ 1 ↓ 1 lines · 77ms
+    ╰─ build b ok
+
+  ✓ shell · printf 'lint ok\n' · ↑ 1 ↓ 1 lines · 15ms
+    ╰─ lint ok
+
+  Both builds pass. Running the long suite.
+
+  ✓ shell · sleep 6; printf 'suite ok\n' · ↑ 1 ↓ 1 lines · 6.0s
+    ╰─ suite ok
+
+ ┃ Also read the notes file.
+
+  ✓ read · notes.md · ↑ 1 ↓ 2 lines · 4ms
+    ╰─ Read file notes.md, lines 1-1
+       1: ship it
+
+  Suite passed; the notes say ship it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ┃
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ⦿ UI  Theme  Tools  Experiments

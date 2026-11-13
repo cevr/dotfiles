@@ -9,6 +9,7 @@
     "./tui": "./tui.ts"
   },
   "dependencies": {
+    "@dotfiles/decider": "workspace:*",
     "@dotfiles/opencode-orchestrate": "workspace:*",
     "@dotfiles/opencode-pool": "workspace:*",
     "@dotfiles/opencode-questions": "workspace:*",

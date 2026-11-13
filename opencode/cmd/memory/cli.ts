@@ -20,11 +20,11 @@
  * Exit 0 on success, 1 when a note is missing or a value is refused, 2 on a usage error.
  */
 import { parseArgs } from "node:util"
-import { Data, Effect } from "effect"
+import { Data, Effect, type Layer, Option } from "effect"
 import { auditOf, statOf } from "@dotfiles/opencode-memory/audit"
 import { LIMITS } from "@dotfiles/opencode-memory/digest"
 import { bucketOf, type Bucket, matchQuery, mergeTags, type Note, type Scope, tagsOf, textOf, visible } from "@dotfiles/opencode-memory/note"
-import { NoteStore } from "@dotfiles/opencode-memory/service"
+import { type MemoryStoreFailed, NoteStore } from "@dotfiles/opencode-memory/service"
 import * as SqliteStore from "@dotfiles/opencode-memory/sqlite/store"
 
 export const USAGE = `usage: bun opencode/cmd/memory/cli.ts <command> [--db <file>] [--json]
@@ -102,8 +102,15 @@ const OPTIONS = {
   "stale-days": { type: "string" },
 } as const
 
+/** Where the CLI runs: its default file, its clock (epoch ms), and the host's files (default the disk's SQLite files). */
+export interface Context {
+  readonly db: string
+  readonly now: number
+  readonly files?: (path: string) => Layer.Layer<NoteStore, MemoryStoreFailed>
+}
+
 /** Runs one command against the file at `--db`, else `db`. `now` is the clock, epoch ms. */
-export const main = async (argv: ReadonlyArray<string>, context: { readonly db: string; readonly now: number }): Promise<Outcome> => {
+export const main = async (argv: ReadonlyArray<string>, context: Context): Promise<Outcome> => {
   let parsed: ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true; args: Array<string> }>>
   try {
     parsed = parseArgs({ args: [...argv], options: OPTIONS, allowPositionals: true })
@@ -252,7 +259,7 @@ export const main = async (argv: ReadonlyArray<string>, context: { readonly db: 
 
   return Effect.runPromise(
     program.pipe(
-      Effect.provide(SqliteStore.layer(values.db ?? context.db)),
+      Effect.provide(Option.getOrElse(Option.fromNullishOr(context.files), () => SqliteStore.layer)(values.db ?? context.db)),
       Effect.map((out): Outcome => ({ code: 0, out })),
       Effect.catch((failure) =>
         Effect.succeed<Outcome>(failure._tag === "Refused" ? { code: failure.code, out: failure.message } : { code: 1, out: `memory: ${failure.message}` }),

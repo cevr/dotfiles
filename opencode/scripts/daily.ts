@@ -33,7 +33,7 @@ import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
-import { checkFork } from "./fork.ts"
+import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
@@ -270,6 +270,29 @@ const writeJson = (path: string, value: Json) => {
 }
 
 /**
+ * The plugin directories daily owns in a host's configs: this checkout's `mods/` and `cmd/`, and the
+ * loader directory earlier runs loaded the auth plugin through. Any entry under one that the current
+ * lists leave out (a deleted plugin, such as the web plugin) is dropped.
+ */
+export const ownedDirs = (share: string): ReadonlyArray<string> => [MODS, CMD, join(share, "anthropic-auth")]
+
+/**
+ * Merges ours into the host's server and TUI configs in `config`. Every run writes them, a stage
+ * (`--stage`, the update's build ahead) too, so the service the handoff restarts reads only plugins
+ * the advanced checkout has.
+ */
+export const writeConfigs = (to: {
+  readonly config: string
+  readonly server: ReadonlyArray<PluginEntry>
+  readonly cli: ReadonlyArray<string>
+  readonly models: Record<string, string>
+  readonly owned: ReadonlyArray<string>
+}) => {
+  writeJson(join(to.config, "opencode.json"), mergeServer(readJson(join(to.config, "opencode.json")), to.server, to.models, to.owned))
+  writeJson(join(to.config, "cli.json"), mergeCli(readJson(join(to.config, "cli.json")), to.cli, to.owned))
+}
+
+/**
  * Moves prime-look to origin (`sync`) and, when it moved and is checked out there (`head`), installs what
  * the move changed (`install`: the build skips its own install), all in one hold of the land's checks lock
  * (`move`), since a land's gate and accept read the checkout. A failed install is logged, lets go of the
@@ -344,7 +367,7 @@ if (import.meta.main) {
   // From the update plugin (mods/update): the verified target's fork commit, built instead of origin's prime-look.
   const forkTarget = flagValue([...args], "--fork-target")
   const env = process.env
-  const checked = checkFork(env.OPENCODE_DEV || DEFAULT_FORK)
+  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
   const cli = join(fork, "packages/cli")
@@ -442,7 +465,6 @@ if (import.meta.main) {
     pluginDir("rift"),
     pluginDir("tool-names"),
     pluginDir("cache"),
-    pluginDir("web"),
     pluginDir("memory"),
     pluginDir("stall"),
     pluginDir("escape"),
@@ -452,11 +474,10 @@ if (import.meta.main) {
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
   rmSync(loader, { recursive: true, force: true })
-  const owned = [MODS, CMD, loader]
   const config = join(home, ".config/opencode")
   const models = roleModels(catalog)
-  writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))
-  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF], owned))
+  const tui = [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF]
+  writeConfigs({ config, server, cli: tui, models, owned: ownedDirs(share) })
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 

@@ -1,0 +1,39 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/mail.test.ts": {
+      "simulated": "cmd/mail/mail.sim.test.ts",
+      "tests": [
+        {
+          "name": "a message wakes an idle session, which answers its sender, and a running session reads one at its next step",
+          "expects": 20,
+          "carried": "simulated",
+          "why": "the sessions, letters, receipts and requests on the world, the host's reads and inbox held by the law 'get and synthetic of an id the host lacks…'; the ✉ notice row in A's frame stays real as 'the TUI draws a letter in the sender's transcript…' until sim-tui draws it"
+        }
+      ]
+    },
+    "tests/mail-peer.test.ts": {
+      "simulated": "cmd/mail/mail-peer.sim.test.ts",
+      "tests": [
+        {
+          "name": "paired once, a message reaches the other host's session as mail, and its answer comes back the same way",
+          "expects": 12,
+          "carried": "simulated",
+          "why": "two hosts on one clock over the memory network, held to the real one by mods/mail/http/net-laws.ts on loopback; two real services, the pair command as its own process and the services' passwords stay real as 'two real services pair with the pair command…'"
+        }
+      ]
+    },
+    "tests/mail-start.test.ts": {
+      "simulated": "cmd/mail/mail-start.sim.test.ts",
+      "tests": [
+        {
+          "name": "a fresh service, with no client, session or turn, accepts a signed delivery from a paired host",
+          "expects": 3,
+          "carried": "simulated",
+          "why": "the listener's address and answer on a fresh host of the world; that opencode service start loads the resident location stays real as 'opencode service start, through daily's launcher…'"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

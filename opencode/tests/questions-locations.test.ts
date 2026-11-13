@@ -5,15 +5,15 @@
 // and sent by that directory's plugin alone: one letter, and no other copy
 // finding the question already closed (`questions: the form's answers were
 // not recorded … NotOpen`, which a submit logged once per other directory).
-// The same run has a root session and a subagent of it: the subagent's
-// question, answered in the root's form, wakes the subagent with the letter,
-// and the root, not woken by the notice, reads it at its next turn, which
-// OpenCode starts with the subagent's next idle report.
+// The same test runs on the simulated host
+// (cmd/questions/questions-locations.sim.test.ts); it stays here too while no
+// host law pins where a form's reply is heard (tests/parity/subagents.json).
+// The subagent's question, answered in its root's form, moved there.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./questions/run.ts"
-import { answeredAfter, ANSWERED, IDLE, isNotice, isReport, LETTER, messagesOf, NOTICE, ROOT_TOLD } from "./questions/sim.ts"
+import { ANSWERED, IDLE, LETTER, messagesOf } from "./questions/sim.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -53,13 +53,9 @@ const run = async (): Promise<Result> => {
   return JSON.parse(readFileSync(result, "utf8")) as Result
 }
 
-/** The one run both tests read. */
-let once: Promise<Result> | undefined
-const shared = () => (once ??= run())
-
 describe.skipIf(!fork)("questions with two directories open on one server", () => {
   test("one form submit: one letter in the asking session, no copy of the plugin finds the question closed", async () => {
-    const result = await shared()
+    const result = await run()
     const letters = messagesOf(result.asked).filter((message) => message.metadata?.source === "questions")
     expect(letters).toHaveLength(1)
     expect(JSON.stringify(result.asked)).toContain(LETTER)
@@ -69,35 +65,5 @@ describe.skipIf(!fork)("questions with two directories open on one server", () =
     expect(messagesOf(result.other).some((message) => message.metadata?.source === "questions")).toBe(false)
     expect(JSON.stringify(result.other)).toContain(IDLE)
     expect(result.warnings.filter((warning) => warning.message.startsWith("questions:"))).toEqual([])
-  }, 150_000)
-
-  test("a subagent's question, answered in its root's form: the subagent wakes on the answer, the root reads a notice at its next turn", async () => {
-    const { subagent, warnings } = await shared()
-    // The root's form keys the subagent's question by the subagent's session.
-    expect(subagent.field).toMatch(/^ask_user_async:ses_\w+:q1$/)
-    // The letter went to the subagent, which woke and read it.
-    expect(messagesOf(subagent.child).filter((message) => message.metadata?.source === "questions")).toHaveLength(1)
-    expect(JSON.stringify(subagent.child)).toContain(LETTER)
-    expect(JSON.stringify(subagent.child)).toContain(ANSWERED)
-    // The notice did not wake the root. OpenCode wakes it with each idle report of the subagent: the run lets
-    // the first report's turn end before the answer, and holds the subagent's turn on the letter, so while it is
-    // held the notice, sent with the letter, is the only thing that could wake the root, and the root takes no
-    // turn: its first turn and the first report's, nothing after.
-    const untold = messagesOf(subagent.untold)
-    const turns = (messages: ReadonlyArray<{ readonly type?: string }>) => messages.filter((message) => message.type === "assistant").length
-    expect(untold.filter(isReport)).toHaveLength(1)
-    expect(answeredAfter(untold, isReport)).toBe(true)
-    expect(turns(untold)).toBe(2)
-    expect(answeredAfter(untold, isNotice)).toBe(false)
-    // Its next turn, on the subagent's second report, read it.
-    const root = messagesOf(subagent.root)
-    expect(root.filter(isReport)).toHaveLength(2)
-    expect(root.findIndex(isNotice)).toBeGreaterThan(root.findIndex(isReport))
-    expect(answeredAfter(root, isNotice)).toBe(true)
-    expect(turns(root)).toBe(3)
-    expect(JSON.stringify(subagent.root)).toContain(NOTICE)
-    expect(JSON.stringify(subagent.root)).toContain(ROOT_TOLD)
-    expect(JSON.stringify(subagent.root)).not.toContain(LETTER)
-    expect(warnings.filter((warning) => warning.message.startsWith("questions:"))).toEqual([])
   }, 150_000)
 })

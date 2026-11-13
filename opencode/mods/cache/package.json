@@ -9,6 +9,7 @@
     "./*": "./*.ts"
   },
   "dependencies": {
+    "@dotfiles/decider": "workspace:*",
     "@dotfiles/opencode-pool": "workspace:*"
   }
 }

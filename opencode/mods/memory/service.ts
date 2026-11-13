@@ -1,7 +1,7 @@
 // The contracts memory needs from outside: a store for the notes and each
 // session's digest, and what the host says about a session. What every
 // NoteStore owes is in laws.ts.
-import { Context, type Effect, Schema } from "effect"
+import { Context, type Effect, type Option, Schema } from "effect"
 import type { Bucket, Draft, Note } from "./note.ts"
 
 /** The store could not be read or written. */
@@ -27,6 +27,8 @@ export type Reading = "uses" | "shown"
  * - `read` adds one to each note's `reading` counter and sets its `used` to `now`.
  * - `keepDigest` keeps the session's digest the first time it is asked and answers the kept one ever after, with
  *   `fresh` true only for the call that kept it: whichever copy of the plugin asks first decides.
+ * - `keptDigest` answers the session's kept digest, none when none is kept yet, and writes nothing: a store whose
+ *   writes fail still answers it.
  */
 export class NoteStore extends Context.Service<
   NoteStore,
@@ -44,6 +46,7 @@ export class NoteStore extends Context.Service<
       text: string,
       now: number,
     ) => Effect.Effect<{ readonly text: string; readonly fresh: boolean }, MemoryStoreFailed>
+    readonly keptDigest: (sessionID: string) => Effect.Effect<Option.Option<string>, MemoryStoreFailed>
   }
 >()("dotfiles-opencode/memory/NoteStore") {}
 
@@ -52,9 +55,18 @@ export interface SessionFacts {
   readonly project: string
   readonly directory: string
   readonly child: boolean
+  /** The digest the session holds itself (`hold`), for when the memory file could not keep one. */
+  readonly held: Option.Option<string>
 }
 
+/**
+ * OpenCode's sessions: `facts` reads one; `hold` keeps a digest on the session itself, in the host's session store,
+ * so a copy that starts after a restart sends the digest the memory file could not keep.
+ */
 export class Sessions extends Context.Service<
   Sessions,
-  { readonly facts: (sessionID: string) => Effect.Effect<SessionFacts, SessionUnreadable> }
+  {
+    readonly facts: (sessionID: string) => Effect.Effect<SessionFacts, SessionUnreadable>
+    readonly hold: (sessionID: string, digest: string) => Effect.Effect<void, SessionUnreadable>
+  }
 >()("dotfiles-opencode/memory/Sessions") {}

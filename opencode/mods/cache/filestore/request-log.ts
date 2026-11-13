@@ -4,14 +4,14 @@
 // own beside it (`last/<sessionID>.json`), written whole to a temporary file
 // and renamed over the old one, so a reader never sees half of it.
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Effect, Layer, Option, Schema } from "effect"
 import { Kept, LedgerLine } from "../request-log.ts"
 import { LedgerUnavailable, RequestLog } from "../service.ts"
 
 /** Where the ledger lives unless the plugin's `dir` option names another directory. */
-export const DEFAULT_DIR = join(homedir(), ".cache/opencode-cache-ledger")
+export const DEFAULT_DIR = join(TuiDirs.dirs().home, ".cache/opencode-cache-ledger")
 export const FILE_NAME = "ledger.jsonl"
 /** The directory beside the ledger that keeps each session's newest judged request. */
 export const LAST_DIR = "last"

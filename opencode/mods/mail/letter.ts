@@ -49,6 +49,8 @@ export type Rejection = NoSuchSession | AmbiguousTitle | SelfAddressed | EmptyMe
 
 /** What the receiving session is handed: the model's text, the transcript's line and the message's metadata. */
 export interface Letter {
+  /** Its inbox id, when it has one: a letter admitted twice under one id is held once (the host's first admission wins). */
+  readonly id?: string
   readonly text: string
   readonly description: string
   readonly metadata: {

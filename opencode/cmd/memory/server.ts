@@ -47,6 +47,9 @@ import * as SqliteStore from "@dotfiles/opencode-memory/sqlite/store"
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
+/** A tool's or hook's session id, as the host's session calls take it. */
+const idOf = (sessionID: string) => sessionID as SessionID
+
 const withDefault =
   <A>(fallback: A) =>
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
@@ -64,12 +67,23 @@ export type Options = typeof Options.Type
 /** The outside systems memory runs on. */
 export type Externals = NoteStore | Sessions
 
-/** The outside systems on this host: its memory file and OpenCode's sessions. */
-export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals, MemoryStoreFailed> =>
-  Layer.merge(
-    SqliteStore.layer(options.path ?? SqliteStore.defaultPath()),
-    OpenCodeSessions.layer((sessionID) => ctx.session.get({ sessionID: sessionID as SessionID })),
-  )
+/** A host's memory files: the store on the file at a path. */
+export type Files = (path: string) => Layer.Layer<NoteStore, MemoryStoreFailed>
+
+/** The outside systems on a host whose memory files are `files`: the memory file the options name, and OpenCode's sessions. */
+export const liveWith =
+  (files: Files) =>
+  (ctx: Plugin.Context, options: Options): Layer.Layer<Externals, MemoryStoreFailed> =>
+    Layer.merge(
+      files(options.path ?? SqliteStore.defaultPath()),
+      OpenCodeSessions.layer(
+        (sessionID) => ctx.session.get({ sessionID: idOf(sessionID) }),
+        (sessionID, metadata) => ctx.session.update({ sessionID: idOf(sessionID), metadata }),
+      ),
+    )
+
+/** The outside systems on this host: its memory file on disk and OpenCode's sessions. */
+export const live = liveWith(SqliteStore.layer)
 
 const messageOf = (failure: Rejection | MemoryStoreFailed | SessionUnreadable): string => {
   if (failure._tag === "MemoryStoreFailed") return `Memory could not be read or written: ${failure.message}`

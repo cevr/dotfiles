@@ -22,7 +22,7 @@
  *   else `$XDG_CONFIG_HOME/opencode`, `~/.config/opencode`).
  */
 import { Plugin, Skill } from "@opencode/plugin/effect"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Context, Effect, Layer, Option, Schema, Stream } from "effect"
 import { SKILLS } from "@dotfiles/opencode-skills/catalog"
@@ -42,8 +42,8 @@ const withDefault =
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
 // OpenCode's Global.home and Global.config (packages/util/src/global.ts).
-const home = () => process.env.OPENCODE_TEST_HOME || homedir()
-const config = () => process.env.OPENCODE_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode")
+const home = () => process.env.OPENCODE_TEST_HOME || TuiDirs.dirs().home
+const config = () => process.env.OPENCODE_CONFIG_DIR || join(TuiDirs.dirs().config, "opencode")
 
 export const Options = Schema.Struct({
   home: Schema.NonEmptyString.pipe(withDefault(home())),

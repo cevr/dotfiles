@@ -17,15 +17,20 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
-import { type Asked, type Message, makeHost, type Session, type Options, type Process, START } from "./host.ts"
+import * as Forms from "./forms.ts"
+import { type Asked, type Message, makeHost, type ModelRef, type RpcFault, type Session, type Options, type Process, type Spawned, START } from "./host.ts"
 import * as Provider from "./provider.ts"
-import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
+import { type JsonObject, type LogLine, makeRuntime, Owner, type Runtime, SimError } from "./runtime.ts"
 
 export {
   call,
   PROCESSES,
   type Asked,
+  type CatalogModel,
+  type Kind,
   type Message,
+  type ModelRef,
+  type RpcFault,
   type Options,
   type Process,
   type Reply,
@@ -33,7 +38,12 @@ export {
   type Script,
   say,
   SIM_MODEL,
+  SHELL,
+  SHELL_CREATE,
+  type Spawned,
   START,
+  TOOL_BEFORE,
+  aliasNote,
   USAGE,
   type Usage,
 } from "./host.ts"
@@ -53,24 +63,51 @@ interface Instance {
 export interface WorldOptions extends Options {
   /** Anthropic as part of the world (sim/provider.ts): sessions run on `anthropic/claude-haiku-4-5` and their requests go to it over HTTP. */
   readonly anthropic?: Omit<Provider.Options, "seed">
+  /** Another host on this world's clock, scheduler and seed: a second OpenCode server beside `beside` (sim/hosts.ts). */
+  readonly beside?: { readonly start: number; readonly runtime: Runtime; readonly members: Members }
+}
+
+/** One host on a shared runtime: whose plugin copies it runs, where their log lines and stale timers go. */
+interface Member {
+  readonly owns: (owner: number) => boolean
+  readonly log: (entry: LogLine) => void
+  readonly stale: (owner: number) => void
+}
+
+/** The hosts on one runtime, and the copy numbers they share, so each copy's number names one host's. */
+interface Members {
+  readonly list: Array<Member>
+  readonly counter: { instances: number }
 }
 
 export const make = (worldOptions: WorldOptions) => {
-  const start = worldOptions.start ?? START
+  const start = worldOptions.beside?.start ?? worldOptions.start ?? START
   const logs: Array<LogLine & { readonly at: number }> = []
   /** Timers that fired for a copy already closed: none, unless a restart leaks one. */
   const stale: Array<number> = []
   const instances: Array<Instance> = []
   const loads: Array<Loaded> = []
-  const runtime = makeRuntime({
-    seed: worldOptions.seed,
-    start,
+  const members: Members = worldOptions.beside?.members ?? { list: [], counter: { instances: 0 } }
+  /** A line or a timer of copy `owner` goes to the host that runs it; the host's own (0), and a closed copy's, to the first host. */
+  const memberOf = (owner: number) => members.list.find((member) => member.owns(owner)) ?? members.list[0]
+  const runtime =
+    worldOptions.beside?.runtime ??
+    makeRuntime({
+      seed: worldOptions.seed,
+      start,
+      log: (entry, owner) => memberOf(owner)?.log(entry),
+      fired: (owner) => {
+        if (owner === 0 || members.list.some((member) => member.owns(owner))) return
+        memberOf(owner)?.stale(owner)
+      },
+    })
+  members.list.push({
+    owns: (owner) => instances.some((instance) => instance.number === owner),
     log: (entry) => {
       logs.push({ ...entry, at: runtime.now() })
       host.record("log", entry)
     },
-    fired: (owner) => {
-      if (owner === 0 || instances.some((instance) => instance.number === owner)) return
+    stale: (owner) => {
       stale.push(owner)
       host.record("stale-timer", { owner })
     },
@@ -89,7 +126,8 @@ export const make = (worldOptions: WorldOptions) => {
     },
   })
   const host = makeHost(options, runtime, start)
-  const counter = { instances: 0 }
+  const forms = Forms.make(host)
+  const counter = members.counter
 
   /** Runs `effect` in the world to rest; fails when a plugin reached for something the world does not model. */
   const run = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | SimError> => runtime.run(effect).pipe(Effect.tap(() => unmodelled))
@@ -145,10 +183,14 @@ export const make = (worldOptions: WorldOptions) => {
   return {
     start,
     runtime,
+    /** The hosts on this world's runtime (`beside`). */
+    members,
     /** The world's Anthropic: what it received, each account's tokens. Fails a world made without one. */
     provider: () => Option.getOrThrowWith(provider, () => new SimError({ message: "this world has no provider: make it with `anthropic`" })),
     sessions: host.sessions,
     storage: host.storage,
+    /** Faults to put into the host: a storage write that fails (sim/faults.ts). */
+    faults: host.faults,
     record: host.record,
     /** The trace so far, one JSON line per record. */
     trace: () => host.trace.join("\n"),
@@ -166,6 +208,10 @@ export const make = (worldOptions: WorldOptions) => {
     /** The owners of the timers still set. */
     timers: () => runtime.timers(),
     isUp: () => host.state.up,
+    /** Every command the world's shell spawned, as its `create.before` hooks left it. */
+    spawned: (): ReadonlyArray<Spawned> => host.spawned,
+    /** How many hooks of `name` (a session hook's name, or `TOOL_BEFORE`, `SHELL_CREATE`) the live copies hold. */
+    hooked: (name: string) => host.hooks.filter((hook) => hook.name === name).length,
     /** What a command prints in the world's shell at `now`. */
     processes: (command: string, now: number): Process => host.processes(command, now),
     /** The session's context, as `session.context` answers it, before the views. */
@@ -195,22 +241,44 @@ export const make = (worldOptions: WorldOptions) => {
       host.record("up", {})
       return startAll.pipe(Effect.andThen(run(Effect.sync(host.resume))))
     }),
-    /** A new root session in `directory`: its id. */
-    session: (directory: string, input: { readonly id?: string; readonly parentID?: string } = {}) =>
+    /** A new session in `directory`, a root or, with `parentID`, a subagent of that session (on an agent and a model, as the owner may pick them): its id. */
+    session: (
+      directory: string,
+      input: { readonly id?: string; readonly parentID?: string; readonly title?: string; readonly agent?: string; readonly model?: ModelRef } = {},
+    ) =>
       run(host.createSession({ directory, ...input })).pipe(Effect.map((session) => session.id)),
+    /** The owner opens a form in a session (`session.form.create`) and answers it (`session.form.reply`): sim/forms.ts. */
+    form: {
+      create: (sessionID: string, input: Forms.FormInput) => run(forms.create(sessionID, input)),
+      reply: (formID: string, answer: { readonly [key: string]: Schema.Json }) => run(forms.reply(formID, answer)),
+    },
     /** The owner sends `text` to the session: a prompt, which wakes it. */
     prompt: (sessionID: string, text: string) =>
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
+    /** The owner moves an idle session to `directory` (host law: move): from then on that location's copies decide it. */
+    move: (sessionID: string, directory: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.move(session, directory)))),
     /** The session is deleted. */
     remove: (sessionID: string) =>
-      run(
-        Effect.suspend(() => {
-          if (!host.sessions.delete(sessionID)) return Effect.void
-          return host.publish({ type: "session.deleted", data: { sessionID } })
-        }),
-      ),
+      run(Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => Effect.void, onSome: host.removeSession })),
+    /** The owner archives the session from a client. */
+    archive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.archive(session)))),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */
     rpc: (id: string, method: string, input: Schema.Json) => run(host.callRpc(id, method, input)),
+    /**
+     * The same call as an Effect for a client's own fiber in the world (`runtime.fork`, a TUI's heartbeat): it does
+     * not run the world to rest itself, so it never nests a run.
+     */
+    clientRpc: (id: string, method: string, input: Schema.Json) => host.callRpc(id, method, input),
+    /**
+     * A fault on one RPC method, from now on: its handler dies (the call fails, host law: RPC faults) or never answers
+     * (the call waits on the caller's own timeout); `none` clears it.
+     */
+    rpcFault: (id: string, method: string, fault: RpcFault | "none") =>
+      Effect.sync(() => {
+        host.record("rpc-fault", { id, method, fault })
+        if (fault === "none") host.rpcFaults.delete(`${id}.${method}`)
+        else host.rpcFaults.set(`${id}.${method}`, fault)
+      }),
     /** Calls a tool as a session's model would, outside a turn: its answer. */
     tool: (sessionID: string, name: string, input: Schema.Json) =>
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.runTool(session, host.mint("msg_"), { id: host.mint("call_"), name, input })))),

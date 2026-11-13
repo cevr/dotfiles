@@ -21,7 +21,7 @@
 // - the notice: the TUI draws a synthetic message's description as a `◈`
 //   notice row (packages/tui/src/routes/session/index.tsx:2160-2197).
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Layer } from "effect"
+import { Clock, Effect, Layer, Random } from "effect"
 import type { Letter } from "../reply.ts"
 import { Courier, DeliveryRefused } from "../service.ts"
 
@@ -76,7 +76,28 @@ export const minter = (now: () => number = Date.now, random: (bytes: Uint8Array)
   }
 }
 
-export const layer = (host: Host, mint: () => string = minter()) => {
+/**
+ * The minter on Effect's `Clock` and `Random`: the same ids, its time and its
+ * letters read through the services, so a seeded clock and random replay them.
+ */
+export const minted = (): Effect.Effect<string> => {
+  let now = 0
+  let bytes: ReadonlyArray<number> = []
+  const mint = minter(
+    () => now,
+    (target) => {
+      target.set(bytes)
+      return target
+    },
+  )
+  return Effect.gen(function* () {
+    now = yield* Clock.currentTimeMillis
+    bytes = yield* Effect.forEach(Array.from({ length: 14 }), () => Random.nextIntBetween(0, 255))
+    return mint()
+  })
+}
+
+export const layer = (host: Host, mint: Effect.Effect<string> = minted()) => {
   const put = (resume: boolean) => (sessionID: string, delivery: string, letter: Letter) =>
     host
       .synthetic({
@@ -96,7 +117,7 @@ export const layer = (host: Host, mint: () => string = minter()) => {
             : new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false }),
         ),
       )
-  return Layer.succeed(Courier, { newDelivery: Effect.sync(mint), deliver: put(true), notify: put(false) })
+  return Layer.succeed(Courier, { newDelivery: mint, deliver: put(true), notify: put(false) })
 }
 
 type Input = Parameters<Plugin.Context["session"]["synthetic"]>[0]

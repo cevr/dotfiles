@@ -39,6 +39,8 @@ export interface SessionView {
 
 /** A synthetic message, as the host's `session.synthetic` takes it. */
 export interface Synthetic {
+  /** The inbox id; the host mints one when none is given. */
+  readonly id?: string
   readonly sessionID: string
   readonly text: string
   readonly description: string
@@ -100,6 +102,7 @@ export const layer = (host: Host) =>
       deliver: (sessionID, letter: Letter, wake) =>
         host
           .synthetic({
+            ...Option.match(Option.fromNullishOr(letter.id), { onNone: () => ({}), onSome: (id) => ({ id }) }),
             sessionID,
             text: letter.text,
             description: letter.description,
@@ -115,6 +118,9 @@ export const layer = (host: Host) =>
   )
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+type MessageID = NonNullable<Parameters<Plugin.Context["session"]["synthetic"]>[0]["id"]>
+/** A host message id: one that starts `msg_` (packages/schema/src/session-message.ts `ID`). */
+const isMessageID = (id: string): id is MessageID => id.startsWith("msg_")
 type SessionInfo = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 
 const millis = (time: DateTime.Utc | undefined) => (time === undefined ? undefined : DateTime.toEpochMillis(time))
@@ -138,5 +144,10 @@ export const fromContext = (ctx: Plugin.Context) =>
       ctx.session
         .list({ ...(children ? {} : { parentID: null }), archived: false, order: "desc", limit })
         .pipe(Effect.map((page) => page.data.map(viewOf))),
-    synthetic: (input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID }),
+    synthetic: ({ id, ...input }) =>
+      ctx.session.synthetic({
+        ...input,
+        ...Option.match(Option.filter(Option.fromNullishOr(id), isMessageID), { onNone: () => ({}), onSome: (given) => ({ id: given }) }),
+        sessionID: input.sessionID as SessionID,
+      }),
   })

@@ -85,7 +85,7 @@ describe("runtime imports", () => {
   test("a checkout in a directory named oxlint-* is not the lint tool", () => {
     const root = "/Users/x/Developer/personal/.rifts/dotfiles/oxlint-x/opencode"
     const lintTool = (target: string) => forbiddenAt(root, target, LINT_TOOL)
-    expect(lintTool(`${root}/mods/web/search.ts`)).toBe(false)
+    expect(lintTool(`${root}/mods/skills/catalog.ts`)).toBe(false)
     expect(lintTool(`${root}/scripts/daily.ts`)).toBe(false)
     expect(lintTool(`${root}/scripts/effect-debt.ts`)).toBe(true)
     expect(lintTool(`${root}/scripts/effect-debt-merge.ts`)).toBe(true)

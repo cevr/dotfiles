@@ -22,7 +22,8 @@ import { Array as Arr, Effect, Option } from "effect"
 import { decodeDeepReport, type DeepReport } from "./accept-ledger.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { exclusively, exclusivelySync } from "../mods/rift/process/flock.ts"
-import { checkFork } from "./fork.ts"
+import { landLogs, scriptReceipt } from "../mods/rift/process/landing.ts"
+import { readyFork } from "./fork.ts"
 import { type ForkWork, droppable, forkWork, forkWorkText, ghLookup, readAgents } from "./fork-work.ts"
 import { DEFAULT_FORK } from "../testbeds/gamut/gamut.ts"
 import { BRANCH, forkChecks, mergeUpstream, type Outcome, ownsFork, syncFork, UPSTREAM_BRANCH, UPSTREAM_REMOTE, upstreamReading, withUpstreamLock } from "./upstream.ts"
@@ -198,7 +199,7 @@ if (import.meta.main) {
   const home = homedir()
   const opencode = resolve(import.meta.dir, "..")
   const env = process.env
-  const checked = checkFork(env.OPENCODE_DEV || DEFAULT_FORK)
+  const checked = readyFork(env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
   const state = join(home, ".local/state/opencode-daily")
@@ -207,23 +208,37 @@ if (import.meta.main) {
   const run = (argv: ReadonlyArray<string>) => Bun.spawnSync([...argv], { cwd: opencode, stdout: "pipe", stderr: "pipe" })
   const git = (...args: ReadonlyArray<string>) => run(["git", "-C", fork, ...args]).stdout.toString().trim()
   const agents = readAgents(join(opencode, "AGENTS.md"))
-  const checksLock = exclusivelySync(env.RIFT_LAND_CHECKS_LOCK || "")
+  // A fork move holds the checks lock and the fork lock, as `bun run daily`'s does (mods/rift/process/landing.ts's `hostLocks`).
+  const checksOnly = exclusivelySync(env.RIFT_LAND_CHECKS_LOCK || "")
+  const forkLock = exclusivelySync(env.RIFT_LAND_FORK_LOCK || "")
+  const checksLock = <A>(step: () => A): A => checksOnly(() => forkLock(step))
   const acceptLock = exclusively(env.RIFT_LAND_ACCEPT_LOCK || "")
   const log = console.log
   const checkout = () => run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+  // Each deep run's receipt, for the next batch's verifier: in the land's receipts folder, else this host's.
+  const logs = env.RIFT_LAND_LOGS || landLogs(env)
   const text = await postLand({
     // The deep run takes the machine's accept lock itself and yields it to a land's run; it never holds the
     // land's accept flock (RIFT_LAND_ACCEPT_LOCK), which a land's check takes before its own run starts.
-    deep: async (ask) => {
+    deep: (ask) => {
       const out = join(tmpdir(), `post-land-deep-${process.pid}.json`)
       rmSync(out, { force: true })
       const settled = Arr.filter(["--settled"], () => ask.settled)
       const width = Option.toArray(Option.map(ask.width, (each) => `--parallel=${each}`))
+      const argv = ["scripts/accept.ts", "--owed", ...settled, ...width, "--json", out]
       // Its output goes into the step's own log.
-      Bun.spawnSync([process.execPath, "scripts/accept.ts", "--owed", ...settled, ...width, "--json", out], { cwd: opencode, stdout: "inherit", stderr: "inherit" })
-      const read = Option.flatMap(Option.liftPredicate(out, existsSync), (file) => decodeDeepReport(readFileSync(file, "utf8")))
-      rmSync(out, { force: true })
-      return { report: read, log: join(env.ACCEPT_LOGS || join(home, ".cache/opencode-accept/logs"), checkout().slice(0, 12)) }
+      const deepRun = () =>
+        Bun.spawn([process.execPath, ...argv], { cwd: opencode, stdout: "inherit", stderr: "inherit" }).exited.then(() => {
+          const read = Option.flatMap(Option.liftPredicate(out, existsSync), (file) => decodeDeepReport(readFileSync(file, "utf8")))
+          rmSync(out, { force: true })
+          return read
+        })
+      // Red when it wrote no outcome, as the deep block reads it.
+      const code = Option.match({ onNone: () => 1, onSome: (report: DeepReport) => Math.min(1, report.files.filter((file) => file.status === "failed").length) })
+      return scriptReceipt(logs, resolve(opencode, ".."), "deep", `bun ${argv.join(" ")}`, deepRun, code).then((read) => ({
+        report: read,
+        log: join(env.ACCEPT_LOGS || join(home, ".cache/opencode-accept/logs"), checkout().slice(0, 12)),
+      }))
     },
     checkout,
     host: hostname(),

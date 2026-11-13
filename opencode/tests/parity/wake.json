@@ -1,0 +1,28 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/wake-repeat.test.ts": {
+      "simulated": "cmd/wake/wake-repeat.sim.test.ts",
+      "tests": [
+        {
+          "name": "the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice",
+          "expects": 15,
+          "carried": "both",
+          "why": "the repeating monitor (the baseline, one notice per change, the cancel) on the world; real too for what only the real host's config shows: the server's commands without /schedule, and the requests without the schedule tools, with the built-in schedule plugin off as daily writes it"
+        }
+      ]
+    },
+    "tests/job.test.ts": {
+      "simulated": "cmd/wake/job.sim.test.ts",
+      "tests": [
+        {
+          "name": "a job's end steers a letter with its exit, log tail and note into the idle session; a killed job wakes nobody",
+          "expects": 10,
+          "carried": "both",
+          "why": "the plugin's decisions (the receipt, the poll finding the end, the letter's exit, tail, note and progress, a kill answered killed and no letter) on the world with the runner's memory double; real too as the smoke of a real detached job, its log file and drip file; a real kill is mods/wake/process/runner.test.ts's"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

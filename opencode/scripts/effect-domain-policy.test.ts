@@ -28,7 +28,7 @@ const TEST_TIMEOUT = 240_000
 /**
  * The files whose try statements the domain kept when the rule became an error, each with its
  * count. The inventory only shrinks: a file leaves it once its tries are gone, and no file joins
- * it, even one whose budget would keep the total under nine.
+ * it, even one whose budget would keep the total under seven.
  */
 const LEGACY_TRIES: ReadonlyArray<{ readonly file: string; readonly count: number }> = [
   { file: "decider/tool-input.ts", count: 1 },
@@ -38,7 +38,6 @@ const LEGACY_TRIES: ReadonlyArray<{ readonly file: string; readonly count: numbe
   { file: "mods/kernel/tools.ts", count: 1 },
   { file: "mods/kernel/wire.ts", count: 1 },
   { file: "mods/wake/wake.ts", count: 1 },
-  { file: "mods/web/fetch.ts", count: 2 },
 ]
 
 /** The legacy files a budget names past the pinned inventory: one not in it, or over its pinned count. */
@@ -406,7 +405,6 @@ const FENCES = [
   "mods/prime/tui/**",
   "mods/skills/*.ts",
   "mods/skills/tui/**",
-  "mods/web/*.ts",
 ]
 
 /** Each pinned fence: a file its glob matches, and a specifier the first banned pattern of its override names (none when the override is gone). */
@@ -497,8 +495,8 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
     expect(Arr.filter(legacy, (file) => !inDomain(file))).toEqual([])
   })
 
-  test("a new file cannot take a fixed legacy file's place in the try inventory, though the total stays at nine", () => {
-    const added = { file: "mods/web/search.ts", count: 1 }
+  test("a new file cannot take a fixed legacy file's place in the try inventory, though the total stays at seven", () => {
+    const added = { file: "mods/skills/catalog.ts", count: 1 }
     const swapped = [...Arr.drop(LEGACY_TRIES, 1), added]
     const raised = Arr.map(LEGACY_TRIES, (entry) => ({ ...entry, count: entry.count + Number(entry.file === "mods/guard/kill.ts") }))
     expect({
@@ -507,7 +505,7 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
       raised: unpinned(raised),
       pinned: unpinned(LEGACY_TRIES),
       shrunk: unpinned(Arr.drop(LEGACY_TRIES, 3)),
-    }).toEqual({ swappedTotal: 9, swapped: [added], raised: [{ file: "mods/guard/kill.ts", count: 2 }], pinned: [], shrunk: [] })
+    }).toEqual({ swappedTotal: 7, swapped: [added], raised: [{ file: "mods/guard/kill.ts", count: 2 }], pinned: [], shrunk: [] })
   })
 
   test.concurrent(

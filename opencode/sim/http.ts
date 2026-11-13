@@ -177,14 +177,15 @@ const extend = (block: Block, event: typeof Event.Type) => {
 /** The body the host sends Anthropic's messages API for a request. */
 export const bodyOf = (input: {
   readonly model: string
-  readonly system: string
+  /** The system prompt's parts, in order. */
+  readonly system: ReadonlyArray<string>
   readonly messages: ReadonlyArray<{ readonly role: "user" | "assistant"; readonly content: ReadonlyArray<Schema.Json> }>
   readonly tools: ReadonlyArray<string>
 }) =>
   line({
     model: input.model,
     max_tokens: 32_000,
-    system: [{ type: "text", text: input.system }],
+    system: input.system.map((text) => ({ type: "text", text })),
     messages: input.messages,
     ...(input.tools.length > 0 && { tools: input.tools.map((name) => ({ name, description: `the ${name} tool`, input_schema: { type: "object", properties: {} } })) }),
     stream: true,

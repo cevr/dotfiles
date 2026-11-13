@@ -57,7 +57,10 @@ const start = (options: Record<string, unknown> = {}) =>
     const externals = () =>
       Layer.merge(
         SqliteStore.layer(":memory:"),
-        OpenCodeSessions.layer((id) => (SESSIONS[id] === undefined ? Effect.fail(new Error(`no session ${id}`)) : Effect.succeed(SESSIONS[id]!))),
+        OpenCodeSessions.layer(
+          (id) => (SESSIONS[id] === undefined ? Effect.fail(new Error(`no session ${id}`)) : Effect.succeed(SESSIONS[id]!)),
+          () => Effect.void,
+        ),
       )
     yield* make(externals).effect(host)
 

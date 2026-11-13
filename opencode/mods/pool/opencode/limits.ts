@@ -6,7 +6,7 @@
 // skill's models.ts read. Instances on one host write the same file: each
 // merges what the file holds before it writes (limits.ts `merge`).
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Clock, Effect, Layer, Ref } from "effect"
 import type { PoolId } from "../account-pool.ts"
@@ -33,7 +33,7 @@ import { PAGE } from "./ledger.ts"
 const PREFIX = "limits/use/"
 
 /** Where the tally is kept unless the options say otherwise: `$XDG_STATE_HOME/opencode-pool/limits.json`. */
-export const defaultPath = () => join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), "opencode-pool", "limits.json")
+export const defaultPath = () => join(TuiDirs.dirs().state, "opencode-pool", "limits.json")
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value)

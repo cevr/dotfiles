@@ -935,6 +935,69 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
+  /** An implementor's latch as the wakes hand it to the opener: made on `model`, with the opener's `context`. */
+  const implementorLatch = (model: string, context: Latch["context"]): Latch => ({
+    kind: "latch",
+    id: "w000001",
+    sessionID: "root",
+    directory: "/work",
+    setAt: now,
+    child: "ses_latched1",
+    subagent: { agent: "implementor", description: "FlowProducer close/add race", prompt: "x", model, from: "build", messageID: "msg", callID: "call" },
+    hold: "pace",
+    reason: "all pool accounts are held",
+    opensAt: now,
+    recheckAt: now,
+    context,
+  })
+
+  test("Codex never implements: an implementor latch kept with a Codex fallback (an older build's) opens on Opus or latches again, never on Codex", () =>
+    scenario(
+      Effect.gen(function* () {
+        // codex-no-implement: the workbox's 66 Codex implementors on 11-10 and 11-11 fell back so; a latch kept then keeps its fallback.
+        const latch = implementorLatch("anthropic/claude-opus#medium", { reason: "kept", models: { primary: "anthropic/claude-opus#medium", fallback: "openai/gpt-6.1-sol#high" } })
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
+        expect(yield* plugin.open(latch)).toMatchObject({ outcome: "held" })
+        expect(plugin.ran).toEqual([])
+        expect(asked).toEqual([])
+        // Opus with room: it opens there.
+        const later = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked) })
+        expect(yield* later.open(latch)).toEqual({ outcome: "opened" })
+        expect(later.ran).toMatchObject([{ input: { model: "anthropic/claude-opus#medium" } }])
+      }),
+    ))
+
+  test("Codex never implements: an implementor whose own model is Codex (a Codex parent's) runs on the newest Opus at its effort", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sol = { providerID: "openai", id: "gpt-6.1-sol-ultrafast" }
+        const opus: ReadonlyArray<Offered> = [
+          { providerID: "anthropic", id: "claude-opus-5-1", family: "claude-opus", time: { released: 1 }, variants: [{ id: "medium" }] },
+          { providerID: "anthropic", id: "claude-opus-5-5", family: "claude-opus", time: { released: 2 }, variants: [{ id: "medium" }, { id: "high" }] },
+        ]
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model: sol, variants: ["high"], others: [...codexOffered, ...opus], codex: admits(asked) })
+        const call = yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })
+        expect(call.input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus-5-5#medium" })
+        expect(call.refused).toBeUndefined()
+        expect(asked).toEqual([])
+        // A verifier on a Codex parent stays on the model it inherits: Codex plans and verifies.
+        const verifier = yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })
+        expect(verifier.input).toEqual({ agent: "verifier", prompt: "x" })
+        expect(verifier.refused).toBeUndefined()
+        // With no Opus offered, the start is refused: it never runs on Codex.
+        const bare = yield* start({ now: WEDNESDAY }, { model: sol, variants: ["high"], others: codexOffered, codex: admits(asked) })
+        expect(yield* bare.call("subagent", "root", { agent: "implementor", prompt: "x" })).toMatchObject({ refused: { message: expect.stringContaining("Codex never implements") } })
+        // A latch made on Codex opens on Opus, or fails with no Opus offered.
+        const latch = implementorLatch("openai/gpt-6.1-sol-ultrafast#high", { reason: "kept" })
+        expect(yield* plugin.open(latch)).toEqual({ outcome: "opened" })
+        expect(plugin.ran).toMatchObject([{ input: { model: "anthropic/claude-opus-5-5#medium" } }])
+        expect(yield* bare.open(latch)).toMatchObject({ outcome: "failed" })
+        expect(bare.ran).toEqual([])
+      }),
+    ))
+
   test("the spend-evenly pace alone holds a planner or verifier but not an implementor, which starts on Opus", () =>
     scenario(
       Effect.gen(function* () {
@@ -1133,6 +1196,73 @@ describe("the planner's first model", () => {
         const named = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: "openai/gpt-6.1-sol", prompt: "x" })
         expect(named.input).toMatchObject({ model: "openai/gpt-6.1-sol" })
         for (const text of plugin.logged()) expect(JSON.parse(text).first).toBeUndefined()
+      }),
+    ))
+
+  // The workbox's Ergo root named `model: "anthropic/claude-fable-5-2"` on 11 planner starts (2026-11-12/13): kept as
+  // asked, they ran at Fable's default effort, $20.6 a plan against $5 at medium (dream 2026-11-13, candidate 5).
+  test("a planner naming its first model, at any variant or none, runs on it at the planner's effort; its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        for (const asked of ["anthropic/claude-fable", "anthropic/claude-fable#max", "anthropic/claude-fable#medium", "claude-fable", "claude-fable#max"]) {
+          const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol] })
+          const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: asked, prompt: "x" })
+          expect(call.input, asked).toMatchObject({ model: "anthropic/claude-fable#medium" })
+          expect(line(plugin.logged()), asked).toMatchObject({ agent: "planner", reason: "model-dropped", model: "anthropic/claude-fable#medium" })
+        }
+      }),
+    ))
+
+  test("a planner naming another model with no variant runs it at the planner's effort when that model offers it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sage: Offered = { providerID: "anthropic", id: "claude-sage", family: "claude-sage", variants: [{ id: "medium" }, { id: "high" }] }
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol, sage] })
+        const bare = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: "anthropic/claude-sage", prompt: "x" })
+        expect(bare.input).toMatchObject({ model: "anthropic/claude-sage#medium" })
+        // A variant it names is kept: the orchestrator chose it.
+        const high = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: "anthropic/claude-sage#high", prompt: "x" })
+        expect(high.input).toMatchObject({ model: "anthropic/claude-sage#high" })
+        // Any other role naming a model keeps it as named.
+        const verifier = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-1 r1", model: "anthropic/claude-sage", prompt: "x" })
+        expect(verifier.input).toMatchObject({ model: "anthropic/claude-sage" })
+      }),
+    ))
+
+  test("a host offering the first model without the planner's effort starts the planner on Opus at it, and its line says why", () =>
+    scenario(
+      Effect.gen(function* () {
+        const noMedium: Offered = { ...fable, variants: [{ id: "high" }, { id: "max" }] }
+        for (const asked of [{}, { model: "anthropic/claude-fable" }]) {
+          const plugin = yield* start(options, { model, variants: ["medium"], others: [noMedium, sol] })
+          const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x", ...asked })
+          expect(call.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
+          expect(line(plugin.logged())).toMatchObject({
+            model: "anthropic/claude-opus#medium",
+            first: { model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable offers no medium" },
+          })
+        }
+      }),
+    ))
+
+  test("every new planner start carries the planner's effort, or its line names why it could not: over what it names and what the host offers", () =>
+    scenario(
+      Effect.gen(function* () {
+        const offers: ReadonlyArray<ReadonlyArray<string>> = [["medium", "max"], ["max"], [], ["low", "medium", "high", "xhigh", "max"]]
+        const names = ["", "anthropic/claude-opus", "anthropic/claude-opus#max", "anthropic/claude-fable", "anthropic/claude-fable#high", "claude-fable"]
+        const onFable = { model: "anthropic/claude-fable#medium" }
+        const onOpus = { model: "anthropic/claude-opus#medium", first: { model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable offers no medium" } }
+        for (const variants of offers)
+          for (const asked of names) {
+            const host: Offered = { ...fable, variants: variants.map((id) => ({ id })) }
+            const plugin = yield* start(options, { model, variants: ["medium"], others: [host, sol] })
+            // An empty model is no model.
+            const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x", model: asked })
+            const at = `"${asked}" on a Fable offering [${variants.join(",")}]`
+            const ran = Option.match(Option.liftPredicate(variants, (offered) => offered.includes("medium")), { onNone: () => onOpus, onSome: () => onFable })
+            expect(call.input, at).toMatchObject({ model: ran.model })
+            expect(line(plugin.logged()), at).toMatchObject(ran)
+          }
       }),
     ))
 

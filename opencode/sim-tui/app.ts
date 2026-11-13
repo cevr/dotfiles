@@ -52,13 +52,14 @@ const CLOSE_TIMEOUT_MS = 30_000
 /**
  * A simulated TUI file's runner: sim/seed.ts's, on the file's first `count` seeds. A file whose
  * 20 seeds do not fit the runner's 5 s budget on a loaded host takes the largest count that does
- * (each file's count is in its header); a seed past it passes without running.
+ * (each file's count is in its header); a fixed seed past it passes without running. A seed past the
+ * fixed ones (a swarm's, or one `sim/seeds.json` replays) always runs.
  */
 export const runner = (file: string, count: number) => {
   const { seeded } = Seed.runner(file)
   return {
     seeded: <E>(name: string, body: (run: Seed.Seeded) => Effect.Effect<void, E>) =>
-      seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count)).pipe(Effect.asVoid)),
+      seeded(name, (run) => Effect.when(Effect.suspend(() => body(run)), Effect.sync(() => run.seed <= count || run.seed > Seed.SEEDS)).pipe(Effect.asVoid)),
   }
 }
 /**
@@ -139,7 +140,10 @@ interface Harness {
   ended: boolean
   frame: Frame
   key: string
-  scratch: Option.Option<string>
+  /** Every frame drawn while a seed records (`Tui.record`), as text, each one once. */
+  recorded: Option.Option<Array<ReadonlyArray<string>>>
+  /** The file's host dirs (`hold`), made when its app starts and removed by the file's last test (`shutdown`, `dropHost`) or the next start. */
+  host: Option.Option<string>
   release: () => void
 }
 const harness: Harness = {
@@ -151,22 +155,27 @@ const harness: Harness = {
   ended: false,
   frame: { lines: [] },
   key: "",
-  scratch: Option.none(),
+  recorded: Option.none(),
+  host: Option.none(),
   release: () => {},
 }
 
-/** The wall clock under fake timers: a scratch file's modification time. */
+/** The wall clock under fake timers: the modification time of a file written in a folder made for the read and removed with it. */
 const realNow = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const scratch = yield* Option.match(harness.scratch, {
-    onSome: Effect.succeed,
-    onNone: () => fs.makeTempDirectory({ prefix: "sim-tui-clock-" }).pipe(Effect.map((dir) => path.join(dir, "now"))),
-  })
-  harness.scratch = Option.some(scratch)
-  yield* fs.writeFileString(scratch, "")
-  const info = yield* fs.stat(scratch)
+  const now = path.join(yield* fs.makeTempDirectoryScoped({ prefix: "sim-tui-clock-" }), "now")
+  yield* fs.writeFileString(now, "")
+  const info = yield* fs.stat(now)
   return Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() })
+}).pipe(Effect.scoped)
+
+/** Removes the file's host dirs, once its app has closed or its start failed; none made is fine. */
+const dropHost = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const made = harness.host
+  harness.host = Option.none()
+  if (Option.isSome(made)) yield* fs.remove(made.value, { recursive: true, force: true })
 })
 
 /** The process's CPU time so far, in milliseconds. */
@@ -359,6 +368,11 @@ export const hostEnv = (host: string) => ({
 /** The theme document the real drive installs, read from themes/prime.json. */
 const Theme = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
 
+/** Adds `frame` to a recording unless it is the frame drawn just before it. */
+const keep = (frames: Array<ReadonlyArray<string>>, frame: ReadonlyArray<string>) => {
+  if (frames.at(-1)?.join("\n") !== frame.join("\n")) frames.push(frame)
+}
+
 /** One pass: the due timers (on a settle's first pass), the double's queued events, a real turn for I/O, one render. */
 const pump = (app: Booted, render: boolean, timers: boolean) =>
   Effect.gen(function* () {
@@ -377,6 +391,7 @@ const pump = (app: Booted, render: boolean, timers: boolean) =>
     }
     yield* Effect.yieldNow
     if (render) yield* Effect.promise(() => app.fixture.renderOnce())
+    if (render) Option.map(harness.recorded, (frames) => keep(frames, textOf(capture(app.fixture))))
   })
 
 /** Comes to rest: the double owes nothing, the client waits on nothing, and two renders in a row are equal. */
@@ -455,8 +470,10 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   const theme = yield* fs.readFileString(path.join(root, "themes/prime.json")).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Theme)))
   const traced = { trace: new Array<TraceEntry>(), started: EPOCH }
   // A file before this one in the process gave its holds back when it closed; a seeded test run alone holds them for good.
-  const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
   harness.release()
+  yield* dropHost
+  const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
+  harness.host = Option.some(host)
   hold(simClock((entry) => traced.trace.push(entry), () => traced.started), host)
   jest.setSystemTime(EPOCH)
   const lobby = Server.make({ draw: () => 0, now: TuiClock.system.now, model: lobbyModel })
@@ -534,7 +551,8 @@ export const shutdown = Effect.gen(function* () {
     yield* close(app)
   }
   harness.release()
-}).pipe(Effect.provide(NodeServices.layer))
+  // The host dirs go however the file ends: its app closed, its close failed, or its start failed with no app made.
+}).pipe(Effect.ensuring(Effect.orDie(dropHost)), Effect.provide(NodeServices.layer))
 
 /** The app for `options.file`, booted once per process: the app of another file closes first, so its timers and requests stop. */
 export const boot = (options: BootOptions) =>
@@ -574,6 +592,13 @@ export interface Tui {
   readonly press: (key: Key) => Effect.Effect<void, SimTuiError>
   readonly type: (text: string) => Effect.Effect<void, SimTuiError>
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, SimTuiError>
+  /** A mouse event at a cell: a move, a left button's press or release, or a wheel step. */
+  readonly mouse: (event: Mouse) => Effect.Effect<void, SimTuiError>
+  /**
+   * Runs `during` and returns, with its result, every frame drawn meanwhile (as text, a frame
+   * drawn twice in a row once), as a real scenario captures frames back to back.
+   */
+  readonly record: <A, E>(during: Effect.Effect<A, E>) => Effect.Effect<readonly [A, ReadonlyArray<ReadonlyArray<string>>], E>
   readonly navigate: (sessionID: string) => Effect.Effect<void, SimTuiError>
   /** Virtual milliseconds since the seed began. */
   readonly elapsed: () => number
@@ -641,6 +666,23 @@ const pressOn = (fixture: Fixture, key: Key) => {
   if (key.name === "enter") return fixture.mockInput.pressEnter(modifiers)
   if (key.name === "up" || key.name === "down" || key.name === "left" || key.name === "right") return fixture.mockInput.pressArrow(key.name, modifiers)
   return fixture.mockInput.pressKey(key.name, modifiers)
+}
+
+export interface Mouse {
+  readonly action: "move" | "down" | "up" | "scroll"
+  readonly x: number
+  readonly y: number
+  /** A wheel step's way: up by default. */
+  readonly direction?: "up" | "down"
+}
+
+/** A mouse event, as the terminal sends it (OpenTUI's mock mouse, no delay). */
+const mouseOn = (fixture: Fixture, event: Mouse) => {
+  const mouse = fixture.mockMouse
+  if (event.action === "scroll") return mouse.scroll(event.x, event.y, event.direction ?? "up")
+  if (event.action === "down") return mouse.pressDown(event.x, event.y)
+  if (event.action === "up") return mouse.release(event.x, event.y)
+  return mouse.moveTo(event.x, event.y)
 }
 
 /** A key as the trace names it. */
@@ -729,6 +771,17 @@ export const seed = <A, E>(options: BootOptions, seedOptions: SeedOptions, body:
             Effect.andThen(settled(Effect.sync(() => Array.from(text, (char) => app.fixture.mockInput.pressKey(char))))),
           ),
         resize: (cols, rows) => settled(Effect.sync(() => app.fixture.resize(cols, rows))),
+        mouse: (event) =>
+          Effect.sync(() => record({ at: since(), kind: "key", value: ["mouse", event.action, ...Option.toArray(Option.fromUndefinedOr(event.direction)), `${event.x},${event.y}`].join(" ") })).pipe(
+            Effect.andThen(settled(Effect.promise(() => mouseOn(app.fixture, event)))),
+          ),
+        record: (during) =>
+          Effect.gen(function* () {
+            const frames: Array<ReadonlyArray<string>> = [textOf(harness.frame)]
+            harness.recorded = Option.some(frames)
+            const result = yield* during.pipe(Effect.ensuring(Effect.sync(() => (harness.recorded = Option.none()))))
+            return [result, frames] as const
+          }),
         navigate: (target) => settled(navigateTo(target)),
         elapsed: since,
         trace: () => app.trace,

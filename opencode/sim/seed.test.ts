@@ -4,7 +4,7 @@
 // file's past failing seeds run after the fixed ones. A seeded test past its
 // timeout is stopped, its seeds with it, before the next test starts.
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Effect, Exit, Stream } from "effect"
+import { Effect, Exit, FileSystem, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect } from "bun:test"
 import { TestClock } from "effect/testing"
@@ -115,5 +115,24 @@ describe("a seeded test past its timeout", () => {
       expect(said).toMatch(/^ 1 pass\n 1 fail$/m)
       expect(said).not.toContain("Unhandled error between tests")
     }),
+  )
+})
+
+describe("the seeds a swarm once found (sim/seeds.json)", () => {
+  Seed.effect("each is replayed on every run of its file: the fixture listed there fails on its listed seed",
+    Effect.gen(function* () {
+      const said = yield* fixtureRun("./sim/fixtures/seeds-json.fixture.ts")
+      expect(said).toContain("SIM_SEED=77777 bun test sim/fixtures/seeds-json.fixture.ts: a seed sim/seeds.json lists is replayed")
+      expect(said).toMatch(/^ 0 pass\n 1 fail$/m)
+    }),
+  )
+
+  Seed.effect("names only files that exist, each with whole seeds past the fixed ones",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const listed = Object.entries(Seed.FOUND)
+      const missing = yield* Effect.filter(listed, ([file]) => Effect.map(fs.exists(file), (exists) => !exists))
+      expect({ missing, wrong: listed.filter(([, seeds]) => !seeds.every((seed) => Number.isInteger(seed) && seed > Seed.SEEDS)) }).toEqual({ missing: [], wrong: [] })
+    }).pipe(Effect.provide(NodeServices.layer)),
   )
 })

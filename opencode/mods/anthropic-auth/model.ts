@@ -430,7 +430,17 @@ export const layer = (config: Config) =>
           Effect.gen(function* () {
             if (input.status === 401 && input.bearer) {
               const source = yield* sources.find(input.credentialID)
-              if (source !== undefined) yield* source.rejected(input.bearer)
+              if (source !== undefined) {
+                yield* source.rejected(input.bearer)
+                // A sourced login refreshes itself: it trades now, not when the host would. A login whose new
+                // token cannot be had (a refused refresh: it needs a new sign-in; a busy or paused store) is held
+                // as that says, and the 401's own hold would only hide it.
+                const refreshed = yield* login(input.credentialID).pipe(
+                  Effect.as(true),
+                  Effect.catchTags({ LoginFailed: () => Effect.succeed(false), LoginRefused: () => Effect.succeed(false) }),
+                )
+                if (!refreshed) return
+              }
             }
             const refusal = refusalOf({
               status: input.status,

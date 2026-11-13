@@ -4,13 +4,14 @@
 // without a law: every one of them is named by one.
 import type { Plugin } from "@opencode/plugin/effect"
 import { describe, expect } from "bun:test"
-import { Array as Arr, Effect, Predicate, type Schema } from "effect"
+import { Array as Arr, Effect, Option, Predicate, Schema } from "effect"
 import { OPERATIONS } from "./context.ts"
-import { LAWS } from "./host-laws.ts"
+import { ClientAsk, type Law, LAWS, probeOf } from "./host-laws.ts"
 import * as Provider from "./provider.ts"
+import { plain } from "./runtime.ts"
 import * as Seed from "./seed.ts"
-import { answer, BROKEN, DONE, KEPT, LAW_FOLDER, LAW_LOGIN, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
-import Probe from "./server.ts"
+import { answer, BROKEN, callFor, callOf, CLIENT, DONE, KEPT, LAW_FOLDER, LAW_LIMIT_MS, LAW_LOGIN, LAW_SOCKET, LAW_SOL, NAMES, outcome, PROBE_OPTIONS } from "./law-names.ts"
+import Probe, { runLaws } from "./server.ts"
 import * as World from "./world.ts"
 
 const { seeded } = Seed.runner("sim/host-laws.test.ts")
@@ -26,34 +27,100 @@ const textsOf = (value: Schema.Json): ReadonlyArray<string> => {
   return Object.entries(value).flatMap(([key, inner]) => Arr.filter([inner], () => TEXTS.has(key)).flatMap(textsOf))
 }
 
+/** A messages body's messages, as the host sends them: each one's content blocks. */
+const Messages = Schema.Array(Schema.Struct({ content: Schema.Array(Schema.Struct({ type: Schema.String })) }))
+
+/** How many tool results a messages body carries: the `tool_result` blocks of its messages. */
+const toolResults = (messages: Schema.Json): number =>
+  Option.match(Schema.decodeUnknownOption(Messages)(messages), {
+    onNone: () => 0,
+    onSome: (all) => all.flatMap((message) => message.content).filter((block) => block.type === "tool_result").length,
+  })
+
+/** The last text of a request's last message: a law's `law-call:` prompt, or what a tool answered. */
+const lastText = (messages: Schema.Json) => {
+  if (!Array.isArray(messages)) return Option.none<string>()
+  return Option.flatMap(Arr.last(messages), (message) => Arr.last(textsOf(message)))
+}
+
+/** A law call's input, as law-names.ts `callOf` gives its text: a JSON object. */
+const CallInput = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
+
 /**
  * The law model over HTTP, as real OpenCode's scripted model answers (tests/host-laws/real.ts): a turn offers tools,
  * a compaction asks for the summary, a title is the rest; each answered as law-names.ts `answer` says.
  */
 const lawModel = ({ body }: Provider.RequestInfo): Provider.Answer => {
-  const text = textsOf(body["messages"] ?? []).join("\n")
+  const messages = body["messages"] ?? []
+  // The system prompt comes first, as real OpenCode's scripted model reads its system message first.
+  const text = [...textsOf(body["system"] ?? []), ...textsOf(messages)].join("\n")
   const tools = body["tools"]
-  if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: answer("primary", text) }
+  const asked = Option.flatMap(lastText(messages), (said) =>
+    Option.flatMap(Arr.head(callOf(said)), (call) => Option.map(Schema.decodeUnknownOption(CallInput)(call.input), (input) => ({ name: call.name, input }))),
+  )
+  if (Array.isArray(tools) && tools.length > 0 && Option.isSome(asked)) return { kind: "ok", tool: { name: asked.value.name, input: plain(asked.value.input) } }
+  if (Array.isArray(tools) && tools.length > 0) {
+    const call = callFor("primary", text, toolResults(messages))
+    if (call !== void 0) return { kind: "ok", tool: { name: call.name, input: call.input } }
+    return { kind: "ok", text: answer("primary", text) }
+  }
   if (text.includes("summarize the conversation above")) return { kind: "ok", text: answer("compaction", text) }
   return { kind: "ok", text: answer("title", text) }
 }
 
-/** One world on `seed` with the probe loaded for the law folder, run until it has run every law: its log. */
+/**
+ * The probe's outcome lines on `seed`, from one world run per seed: the probe runs every law in that one run, and a
+ * seed's run is the same every time, so each law's test reads the seed's run rather than playing it again.
+ */
 const lawsOn = (seed: number) =>
+  Option.match(Option.fromNullishOr(runs.get(seed)), {
+    onSome: Effect.succeed,
+    onNone: () => playLaws(seed).pipe(Effect.tap((lines) => Effect.sync(() => runs.set(seed, lines)))),
+  })
+const runs = new Map<number, ReadonlyArray<string>>()
+
+/** One world on `seed` with the probe loaded for the law folder, run until it has run every law: its log. */
+const playLaws = (seed: number) =>
   Effect.gen(function* () {
     // The model goes over HTTP, as on real OpenCode, so the HTTP and retry laws have a wire to hook; the integration law a login.
     const world = World.make({
       seed,
       schedules: true,
-      script: (request) => World.say(answer(request.kind, request.text)),
+      script: (request) => World.say(answer(request.kind, `${request.system}\n${request.text}`)),
       model: { providerID: "sim", id: "sim-model" },
+      // As real OpenCode's law config: the sim model, a sol of a family with a release date, and the socket law's model,
+      // which streams over a WebSocket as real OpenCode's OpenAI Responses provider does.
+      models: [
+        World.SIM_MODEL,
+        { ...World.SIM_MODEL, id: LAW_SOL.id, modelID: LAW_SOL.id, family: LAW_SOL.family, time: { released: Date.parse(LAW_SOL.releaseDate) } },
+        { ...LAW_SOCKET, modelID: LAW_SOCKET.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" } },
+      ],
       anthropic: { accounts: {}, anonymous: true, script: lawModel },
       integrations: { anthropic: [{ ...LAW_LOGIN, expires: World.START + 8 * 3_600_000 }] },
     })
     yield* world.load(Probe, { directory: `/scratch/${LAW_FOLDER}`, options: PROBE_OPTIONS })
-    yield* world.until(() => world.logs().some((line) => line.message === DONE), 20 * 60_000, 500)
+    // What the probe asks of the host's client, the world's driver does, as the real run's SDK does.
+    const asks = () => world.logs().flatMap((line) => Arr.filter([line.message.slice(CLIENT.length)], () => line.message.startsWith(CLIENT)))
+    const done = () => world.logs().some((line) => line.message === DONE)
+    for (let handled = 0; !done(); ) {
+      yield* world.until(() => done() || asks().length > handled, 20 * 60_000, 500)
+      for (const json of asks().slice(handled)) {
+        handled += 1
+        yield* act(world, yield* decodeAsk(json))
+      }
+    }
     return world.logs().flatMap(lawLine)
   })
+
+const decodeAsk = Schema.decodeUnknownEffect(Schema.fromJsonString(ClientAsk))
+
+/** Does a law's ask of the client with the world's own driver. */
+const act = (world: World.World, ask: ClientAsk) => {
+  if (ask.action === "archive") return world.archive(ask.sessionID)
+  return world.form
+    .create(ask.sessionID, { title: "law", fields: [{ key: ask.key }] })
+    .pipe(Effect.flatMap((formID) => world.form.reply(formID, { [ask.key]: ask.value })))
+}
 
 /** A law's outcome line, alone; nothing for another. */
 const lawLine = (line: { readonly message: string }) => {
@@ -62,6 +129,7 @@ const lawLine = (line: { readonly message: string }) => {
 }
 
 describe("the host laws on the world", () => {
+  // One world per seed runs every law; each law's test reads its own line of that run, as the real run's tests do.
   for (const law of LAWS)
     seeded(law.name, ({ seed, expect: check }) =>
       Effect.gen(function* () {
@@ -88,6 +156,30 @@ describe("the host laws on the world", () => {
       }
       yield* world.load(walker, { directory: "/scratch/walk" })
       expect(offered.toSorted()).toEqual([...OPERATIONS].toSorted())
+    }),
+  )
+
+  Seed.effect(
+    "a law that never ends breaks on its time limit, naming it, and the laws after it still run",
+    Effect.gen(function* () {
+      const world = World.make({ seed: 1, script: () => World.say("") })
+      const laws: ReadonlyArray<Law> = [
+        { name: "hangs", operations: [], check: () => Effect.never },
+        { name: "after", operations: [], check: () => Effect.void },
+      ]
+      const runner: Plugin.Plugin = {
+        id: "dotfiles-opencode.sim-law-limit",
+        effect: (ctx) =>
+          Effect.gen(function* () {
+            const probe = yield* probeOf(ctx)
+            yield* Effect.forkScoped(runLaws(laws, ctx, probe))
+          }),
+      }
+      yield* world.load(runner, { directory: `/scratch/${LAW_FOLDER}` })
+      const took = yield* world.until(() => world.logs().some((line) => line.message === DONE), 20 * 60_000, 1_000)
+      expect(world.logs().flatMap(lawLine)).toEqual([`${BROKEN}hangs: ran past its limit of ${LAW_LIMIT_MS / 1000} s on the host's clock`, `${KEPT}after`])
+      // A hang names itself within about two minutes of the host's clock, not after the real run's 300 s.
+      expect(took).toBeLessThan(125_000)
     }),
   )
 })

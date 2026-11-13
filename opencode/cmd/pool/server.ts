@@ -386,6 +386,9 @@ const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
 /** How many started steps' models are held at most until their steps end. */
 const STEP_MODELS = 1_000
 
+/** The events that end a session's execution: the session goes idle on each, but an interruption for a shutdown. */
+const EXECUTION_ENDED = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] as const
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0)
 
@@ -553,14 +556,12 @@ export const make = (
         )
 
       yield* ctx.session.hook("retry", (event) =>
-        pool.retry({ providerID: event.model.providerID, sessionID: event.sessionID }).pipe(
+        pool.retry({ providerID: event.model.providerID, sessionID: event.sessionID, error: event.error.type }).pipe(
           Effect.map((failOver) => {
             if (failOver) event.decision = { retry: true, delay: 0 }
           }),
         ),
       )
-
-      yield* ctx.session.hook("experimental.idle", (event) => pool.release(event.sessionID))
 
       // The model each step runs, by its assistant message, from its start until it ends: the end names none.
       const stepModels = new Map<string, { readonly providerID: string; readonly id: string }>()
@@ -581,10 +582,17 @@ export const make = (
       }
 
       // A session going idle ends its run; a step's price counts on its account, and its tokens in the limit tally.
+      // The host has no idle event: an execution that succeeded, failed or was interrupted is the session going
+      // idle, as the host's own Idle message reads it. A shutdown is not: the resumed execution goes on with the run.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", "session.idle"] }).pipe(
+        ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
           Stream.runForEach((event) => {
-            if (event.type === "session.idle") return pool.release(event.data.sessionID)
+            if (event.type === "session.execution.interrupted") {
+              if (event.data.reason === "shutdown") return Effect.void
+              return pool.release(event.data.sessionID)
+            }
+            if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed")
+              return pool.release(event.data.sessionID)
             if (event.type === "session.step.started") {
               // A step that never ends leaves its entry: past a bound, the oldest go.
               if (stepModels.size >= STEP_MODELS) stepModels.delete(stepModels.keys().next().value ?? "")

@@ -4,12 +4,15 @@
 // and runs the workbox's own scripts through Workbox. A land's accept check
 // runs in the background, in this layer's scope, and wakes the calling
 // session through Notices. A repository with `rift.push` false is checked,
-// not pushed: each Rift answered green or red, every Rift kept. The plugin
-// calls this and nothing else.
-import { Clock, Context, Effect, Layer, Option, Predicate, Scope, Semaphore } from "effect"
+// not pushed: each Rift answered green or red, every Rift kept. With
+// `rift.mergeCheck` a land goes by receipts (`cover`, `mergeGate`, `recordOf`, `afterPush`): never the full
+// gate. The plugin calls this and nothing else.
+import { Array as Arr, Clock, Context, Data, DateTime, Effect, Layer, Option, Predicate, Result, Scope, Semaphore } from "effect"
 import { findRift, resolvePath } from "./find.ts"
+import { focusLine, shareOf, type Covered, type Receipt, type Standing } from "./receipt.ts"
 import { CHECK_EVERY, baseOf, forcedLine, headOf, loadedLine, loadWord, observe, overloaded, owe, pay, pays, phase, ran, unitsOf, type Debts, type Trigger } from "./owed.ts"
 import {
+  ACCEPT,
   GateMissing,
   INTEGRATION,
   LandRefused,
@@ -22,9 +25,14 @@ import {
   explainLand,
   landedText,
   postLandedText,
+  ACCEPT_APART,
+  RECEIPT_CLI,
+  receiptLandedText,
+  receiptLines,
   type LandConfig,
   type Landed,
   type Outcome,
+  type Ran,
   type Unit,
 } from "./land.ts"
 import {
@@ -76,6 +84,41 @@ const inOrder = (units: ReadonlyArray<Unit>, outcomes: ReadonlyArray<Outcome>): 
   units.flatMap((unit) => outcomes.filter((outcome) => outcome.unit.path === unit.path))
 
 const branchList = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
+
+/** How a batch's checks went before its push: the full gate's run (`rift.gate`), or the Rifts' receipts and the merge check, when it ran. */
+type Gated = Data.TaggedEnum<{
+  Gate: { readonly ran: Ran }
+  Receipts: { readonly covered: ReadonlyArray<Covered>; readonly merge: Option.Option<{ readonly ran: Ran; readonly receipt: Receipt }> }
+}>
+const Gated = Data.taggedEnum<Gated>()
+
+/** Why a land ran a Rift's focused gate, by how its newest receipt stood. */
+const BY: Readonly<Record<Standing["_tag"], Covered["by"]>> = { Current: "held", Missing: "missing", Moved: "moved", Red: "red" }
+
+/** A red check's exit, time, log and the lines of its output worth reading. */
+const ranDetail = (ran: Ran): string => `exit ${ran.code} in ${ran.seconds}s; log: ${ran.log}\n${digest(ran.output)}`
+
+/** The merge check's run, when the land ran one. */
+const mergedRan = (gated: Gated): Option.Option<Ran> =>
+  Gated.$match(gated, { Gate: () => Option.none(), Receipts: ({ merge }) => Option.map(merge, (done) => done.ran) })
+
+/** A checked land's gate when the merge fast-forwarded to one Rift's checked head: its receipt stands for it. */
+const COVERED_RAN: Ran = { code: 0, seconds: 0, log: "(its receipt)", output: "" }
+
+/** How a Rift without a current receipt stood, as the refusal names it. */
+const WHY: Readonly<Record<Standing["_tag"], string>> = {
+  Current: "it holds a current receipt",
+  Missing: "it holds no receipt",
+  Moved: "its head or tracked files moved since its receipt",
+  Red: "its receipt is red",
+}
+
+/** Why a land by receipts cannot cover a Rift with no focused gate to run. */
+const uncoveredDetail = (now: Standing): string =>
+  `${WHY[now._tag]}, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a Rift. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`
+
+/** The first line of a reason, when there is one. */
+const firstLine = (text: Option.Option<string>): string => Option.match(text, { onNone: () => "", onSome: (some) => some.split("\n")[0]! })
 
 /** At most `limit` lines, indented, and how many more there are. */
 const some = (lines: ReadonlyArray<string>, limit = 10): string =>
@@ -182,10 +225,32 @@ export const layer = Layer.effect(
         return undefined
       }).pipe(Effect.catch((failure: RiftFailed) => Effect.succeed(failureText(failure))))
 
-    /** The batch's accept check in the integration Rift, then the wake. Runs in the background. */
-    const accept = (sessionID: string, integration: string, units: ReadonlyArray<Unit>, command: string, base: string) =>
+    /**
+     * A batch landed by receipts: its accept check in its own Rift (ACCEPT), put at origin's newest default
+     * branch, its receipt written for the verifier. The integration Rift is free meanwhile.
+     */
+    const acceptApart = (source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string) => {
+      const checkIn = Effect.fn("RiftTool.acceptApart")(function* (path: string) {
+        const started = yield* landing.start(path, main)
+        yield* landing.install(path, started.previous)
+        return (yield* landing.receipted(path, "accept", command, { RIFT_LAND_BASE: base })).ran
+      })
+      return claimed(Effect.tap(keptRift(source, ACCEPT), (path) => Effect.sync(() => busy.set(path, `the accept check of ${branchList(units)} runs there`)))).pipe(
+        Effect.flatMap((path) => checkIn(path).pipe(Effect.ensuring(Effect.sync(() => busy.delete(path))))),
+      )
+    }
+
+    /** The batch's accept check in the integration Rift (or `checking`, a land by receipts' own), then the wake. Runs in the background. */
+    const accept = (
+      sessionID: string,
+      integration: string,
+      units: ReadonlyArray<Unit>,
+      command: string,
+      base: string,
+      checking: Effect.Effect<Ran, RiftFailed> = landing.check(integration, "accept", command, { RIFT_LAND_BASE: base }),
+    ) =>
       accepts
-        .withPermits(1)(landing.check(integration, "accept", command, { RIFT_LAND_BASE: base }))
+        .withPermits(1)(checking)
         .pipe(
           Effect.flatMap((ran) =>
             notices.wake(sessionID, {
@@ -355,6 +420,7 @@ export const layer = Layer.effect(
       if (workspace.source) return yield* new LandRefused({ path, reason: "is a warm source; land a Rift made from one." })
       if (baseName(path) === INTEGRATION) return yield* new LandRefused({ path, reason: "is the integration Rift land merges in; land the Rifts it merged." })
       if (baseName(path) === POST_LAND) return yield* new LandRefused({ path, reason: "is the Rift the post-land step runs in; it holds no work to land." })
+      if (baseName(path) === ACCEPT) return yield* new LandRefused({ path, reason: "is the Rift a land's accept check runs in; it holds no work to land." })
       if (!workspace.git || workspace.branch === undefined) return yield* new LandRefused({ path, reason: "is not on a Git branch." })
       const own = yield* landing.ownChanges(path, source)
       if (own.length > 0) return yield* new LandRefused({ path, reason: `holds uncommitted changes; commit them first:\n${some(own)}` })
@@ -370,6 +436,104 @@ export const layer = Layer.effect(
         }),
       )
 
+    /**
+     * One Rift's cover in a land by receipts, before any merge: its current round receipt, else its focused
+     * gate (`rift.focus`) run in the Rift now, its receipt kept there. Red, or no focused gate to run (the
+     * full gate never runs for it), fails.
+     */
+    const coverOne = Effect.fn("RiftTool.coverOne")(function* (unit: Unit, config: LandConfig, threads: number) {
+      const now = yield* landing.standing(unit.path)
+      if (now._tag === "Current") return { branch: unit.branch, path: unit.path, receipt: now.receipt, by: "held" } satisfies Covered
+      const focus = config.focus
+      if (Option.isNone(focus)) return yield* new LandStopped({ path: unit.path, step: "focus", detail: uncoveredDetail(now) })
+      const done = yield* landing.receipted(unit.path, "round", focusLine(focus.value, yield* landing.changed(unit.path, config.main), threads), {})
+      if (done.ran.code !== 0) return yield* new LandStopped({ path: unit.path, step: "focus", detail: ranDetail(done.ran) })
+      return { branch: unit.branch, path: unit.path, receipt: done.receipt, by: BY[now._tag] } satisfies Covered
+    })
+
+    /** Each Rift's cover in a land by receipts, in order, one at a time: the receipt it lands on, or why it has none. */
+    const cover = (units: ReadonlyArray<Unit>, config: LandConfig) =>
+      Effect.flatMap(landing.hostLoad, (load) =>
+        Effect.forEach(units, (unit) =>
+          coverOne(unit, config, shareOf(load.cores)).pipe(
+            Effect.catchTag("RiftFailed", (failure) => Effect.fail(new LandStopped({ path: unit.path, step: "focus", detail: failure.message }))),
+            Effect.result,
+          ),
+        ),
+      )
+
+    /** The full gate's run on the batch, as the land by `rift.gate` takes it: none merged or red stops the land. */
+    const fullGate = Effect.fn("RiftTool.fullGate")(function* (integration: string, ran: Option.Option<Ran>) {
+      if (Option.isNone(ran)) return yield* new LandStopped({ path: integration, step: "gate", detail: "no Rift merged" })
+      const gate = ran.value
+      if (gate.code !== 0) return yield* new LandStopped({ path: integration, step: "gate", detail: ranDetail(gate) })
+      return Gated.Gate({ ran: gate })
+    })
+
+    /**
+     * A land by receipts' one check of its own: the merged tree's `rift.mergeCheck`, unless the land
+     * fast-forwarded to one Rift's own checked head, whose receipt covers the tree that lands.
+     */
+    const mergeGate = Effect.fn("RiftTool.mergeGate")(function* (integration: string, covered: ReadonlyArray<Covered>, command: string, base: string) {
+      const head = yield* landing.headOf(integration)
+      if (covered.length === 1 && covered.every((each) => each.receipt.head === head)) return Gated.Receipts({ covered, merge: Option.none() })
+      const done = yield* landing.receipted(integration, "merge", command, { RIFT_LAND_BASE: base })
+      return Gated.Receipts({ covered, merge: Option.some(done) })
+    })
+
+    /** A pushed land's merge check: red stops the push. */
+    const pushedMergeGate = (integration: string, covered: ReadonlyArray<Covered>, command: string, base: string) =>
+      mergeGate(integration, covered, command, base).pipe(
+        Effect.catchTag("RiftFailed", (failure) => Effect.fail(new LandStopped({ path: integration, step: "merge-check", detail: failure.message }))),
+        Effect.filterOrFail(
+          (gated) => !Option.exists(mergedRan(gated), (ran) => ran.code !== 0),
+          (gated) => new LandStopped({ path: integration, step: "merge-check", detail: Option.match(mergedRan(gated), { onNone: () => "", onSome: ranDetail }) }),
+        ),
+      )
+
+    /** The land's record (what it took and ran) under the pushed head, for the next batch's verifier; a failed write is named, never fatal. */
+    const recordOf = Effect.fn("RiftTool.recordOf")(
+      function* (integration: string, base: string, gated: Gated) {
+        if (gated._tag === "Gate") return ""
+        const head = yield* landing.headOf(integration)
+        const at = DateTime.formatIso(yield* DateTime.now)
+        return yield* landing.record({ head, base, units: gated.covered, merge: Option.map(gated.merge, (done) => done.receipt), at })
+      },
+      (effect) => Effect.catch(effect, (failure: RiftFailed) => Effect.succeed(`not written (${failureText(failure)})`)),
+    )
+
+    /**
+     * After the push, in the background and in order: the accept check, then the post-land step. By `rift.gate`
+     * the accept check holds the integration Rift (busy until it ends); by receipts it runs in a Rift of its own.
+     * Answers whether it holds the integration Rift.
+     */
+    const afterPush = Effect.fn("RiftTool.afterPush")(function* (
+      sessionID: string,
+      source: string,
+      integration: string,
+      units: ReadonlyArray<Unit>,
+      config: LandConfig,
+      base: string,
+      head: string,
+      gated: Gated,
+    ) {
+      const after = Option.match(Option.fromUndefinedOr(config.postLand), {
+        onNone: () => Effect.void,
+        onSome: (step) => postLand(sessionID, source, config.main, units, step, base, head),
+      })
+      const holding = (accepted: string) =>
+        Effect.sync(() => busy.set(integration, `the accept check of ${branchList(units)} runs there`)).pipe(
+          Effect.andThen(Effect.forkIn(Effect.andThen(accept(sessionID, integration, units, accepted, base).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration)))), after), scope)),
+          Effect.as(true),
+        )
+      const apart = (accepted: string) =>
+        Effect.forkIn(Effect.andThen(accept(sessionID, integration, units, accepted, base, acceptApart(source, config.main, units, accepted, base)), after), scope).pipe(Effect.as(false))
+      return yield* Option.match(Option.fromUndefinedOr(config.accept), {
+        onNone: () => Effect.as(Effect.forkIn(after, scope), false),
+        onSome: (accepted) => Gated.$match(gated, { Gate: () => holding(accepted), Receipts: () => apart(accepted) }),
+      })
+    })
+
     const land = Effect.fn("RiftTool.land")(function* (sessionID: string, directory: string, source: string, input: RiftInput) {
       // A `{ path, unit }` entry is its path here: the unit is the orchestrate plugin's.
       const targets = (input.rifts ?? []).map((target) => (typeof target === "string" ? target : target.path))
@@ -380,6 +544,8 @@ export const layer = Layer.effect(
       const config = yield* landing.config(source)
       const gateCommand = config.gate
       if (gateCommand === undefined) return yield* new GateMissing({ source })
+      // A land by receipts (`rift.mergeCheck`): the Rifts' receipts and one merge check, never the full gate.
+      const byReceipts = config.mergeCheck
 
       // One batch at a time in an integration Rift, its accept check included.
       const integration = yield* claimed(
@@ -393,11 +559,17 @@ export const layer = Layer.effect(
       let accepting = false
       return yield* Effect.gen(function* () {
         const stopped = (step: LandStopped["step"], detail: string, path = integration) => new LandStopped({ path, step, detail })
+        const coverage = yield* Option.match(byReceipts, { onNone: () => Effect.succeed([]), onSome: () => cover(units, config) })
+        // A pushed land stops at a Rift it cannot cover; a checked one reds that Rift alone and merges it not.
+        const failed = coverage.flatMap((each) => Result.match(each, { onSuccess: () => [], onFailure: (failure) => [failure] }))
+        if (config.push && Arr.isReadonlyArrayNonEmpty(failed)) return yield* failed[0]
+        const uncovered = new Map(failed.map((failure) => [failure.path, failure.detail]))
+        const covered = coverage.flatMap((each) => Result.match(each, { onSuccess: (one) => [one], onFailure: () => [] }))
         const started = yield* landing.start(integration, config.main).pipe(Effect.mapError((failure) => stopped("start", failure.message)))
         const locks: Array<string> = []
         // A batch that is not pushed checks the Rifts that merge; a conflict reds only its own Rift.
         const conflicts = new Map<string, ReadonlyArray<string>>()
-        for (const unit of units) {
+        for (const unit of units.filter((each) => !uncovered.has(each.path))) {
           const merged = yield* landing.merge(integration, unit, config).pipe(Effect.mapError((failure) => stopped("merge", failure.message, unit.path)))
           if (merged._tag === "Conflict") {
             if (config.push) return yield* stopped("conflict", some(merged.files, 50), unit.path)
@@ -406,29 +578,46 @@ export const layer = Layer.effect(
           }
           locks.push(...merged.regenerated)
         }
-        const merged = units.filter((unit) => !conflicts.has(unit.path))
+        const merged = units.filter((unit) => !conflicts.has(unit.path) && !uncovered.has(unit.path))
         locks.push(...(yield* landing.install(integration, started.previous).pipe(Effect.mapError((failure) => stopped("install", failure.message)))))
         // A clean merge can still leave a generated file stale (its sources changed in another Rift): write them again every batch.
         if (config.regenerate !== undefined && merged.length > 0)
           locks.push(...(yield* landing.regenerate(integration, config).pipe(Effect.mapError((failure) => stopped("regenerate", failure.message)))))
-        const gate = merged.length === 0 ? undefined : yield* landing.check(integration, "gate", gateCommand, {})
+        const gate = merged.length === 0 || Option.isSome(byReceipts) ? undefined : yield* landing.check(integration, "gate", gateCommand, {})
 
         if (!config.push) {
           const conflicted = (unit: Unit): Outcome => ({ unit, verdict: "red", note: `conflicts with the batch: ${conflicts.get(unit.path)!.join(", ")}` })
-          const answer = (outcomes: ReadonlyArray<Outcome>) => ({
-            text: checkedText({
-              units,
-              main: config.main,
-              base: started.base,
-              integration,
-              gate,
-              locks: [...new Set(locks)],
-              outcomes: inOrder(units, [...outcomes, ...units.filter((unit) => conflicts.has(unit.path)).map(conflicted)]),
-              accepting,
-              pushBranches: config.pushBranches,
-            }),
+          const unreceipted = (unit: Unit): Outcome => ({ unit, verdict: "red", note: `no current receipt: ${firstLine(Option.fromUndefinedOr(uncovered.get(unit.path)))}` })
+          const answer = (outcomes: ReadonlyArray<Outcome>, ran = gate, extra: ReadonlyArray<string> = []) => ({
+            text: [
+              checkedText({
+                units,
+                main: config.main,
+                base: started.base,
+                integration,
+                gate: ran,
+                locks: [...new Set(locks)],
+                outcomes: inOrder(units, [...outcomes, ...units.filter((unit) => conflicts.has(unit.path)).map(conflicted), ...units.filter((unit) => uncovered.has(unit.path)).map(unreceipted)]),
+                accepting,
+                pushBranches: config.pushBranches,
+              }),
+              ...extra,
+            ].join("\n"),
             metadata: { action: "land" as const, source, path: integration, rifts: paths },
           })
+          if (Option.isSome(byReceipts) && Arr.isReadonlyArrayNonEmpty(merged)) {
+            // By receipts: the merge check is the batch's gate; the accept check runs apart, a receipt for the next verifier that holds no Rift.
+            const command = byReceipts.value
+            const by = yield* mergeGate(integration, covered, command, started.base).pipe(Effect.mapError((failure) => stopped("merge-check", failure.message)))
+            const ran = Option.getOrElse(mergedRan(by), () => COVERED_RAN)
+            const lines = receiptLines(covered, mergedRan(by), yield* recordOf(integration, started.base, by))
+            if (ran.code !== 0) return answer(merged.map((unit) => ({ unit, verdict: "red" as const, note: "the merge check failed" })), ran, lines)
+            const apart = Option.map(Option.fromUndefinedOr(config.accept), (accepted) =>
+              accept(sessionID, integration, merged, accepted, started.base, acceptApart(source, config.main, merged, accepted, started.base)),
+            )
+            yield* Effect.forkIn(Option.getOrElse(apart, () => Effect.void), scope)
+            return answer(yield* greens(merged, config.pushBranches), ran, [...lines, ...Option.toArray(Option.map(apart, () => ACCEPT_APART))])
+          }
           if (gate === undefined) return answer([])
           if (gate.code !== 0) return answer(merged.map((unit) => ({ unit, verdict: "red" as const, note: "the batch gate failed" })))
           if (config.accept === undefined) return answer(yield* greens(merged, config.pushBranches))
@@ -442,27 +631,27 @@ export const layer = Layer.effect(
           return answer(merged.map((unit) => ({ unit, verdict: "pending" as const, note: "the accept check runs" })))
         }
 
-        if (gate === undefined) return yield* stopped("gate", "no Rift merged")
-        if (gate.code !== 0) return yield* stopped("gate", `exit ${gate.code} in ${gate.seconds}s; log: ${gate.log}\n${digest(gate.output)}`)
+        const gated = yield* Option.match(byReceipts, {
+          onNone: () => fullGate(integration, Option.fromUndefinedOr(gate)),
+          onSome: (command) => pushedMergeGate(integration, covered, command, started.base),
+        })
         const pushed = yield* landing.push(integration, config.main).pipe(Effect.mapError((failure) => stopped("push", failure.message)))
+        const record = yield* recordOf(integration, started.base, gated)
 
         const kept: Array<{ path: string; why: string }> = []
         for (const unit of units) {
           const why = yield* removeLanded(unit.path, source, directory)
           if (why !== undefined) kept.push({ path: unit.path, why })
         }
-        const landed: Landed = { units, main: config.main, base: started.base, pushed, gate, locks: [...new Set(locks)], kept }
-        // After the push, in the background and in order: the accept check, holding the integration Rift, then the post-land step.
-        const head = pushed.split(" ")[0] ?? ""
-        const after = config.postLand === undefined ? Effect.void : postLand(sessionID, source, config.main, units, config.postLand, started.base, head)
-        if (config.accept !== undefined) {
-          busy.set(integration, `the accept check of ${branchList(units)} runs there`)
-          accepting = true
-          const checked = accept(sessionID, integration, units, config.accept, started.base).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration))))
-          yield* Effect.forkIn(Effect.andThen(checked, after), scope)
-        } else if (config.postLand !== undefined) yield* Effect.forkIn(after, scope)
+        const landed = { units, main: config.main, base: started.base, pushed, locks: [...new Set(locks)], kept }
+        accepting = yield* afterPush(sessionID, source, integration, units, config, started.base, pushed.split(" ")[0] ?? "", gated)
+        const acceptsAfter = Predicate.isNotUndefined(config.accept)
+        const postLands = Predicate.isNotUndefined(config.postLand)
         return {
-          text: landedText(landed, integration, config.accept !== undefined, config.postLand !== undefined),
+          text: Gated.$match(gated, {
+            Gate: ({ ran }) => landedText({ ...landed, gate: ran } satisfies Landed, integration, acceptsAfter, postLands),
+            Receipts: (by) => receiptLandedText({ ...landed, covered: by.covered, merge: Option.map(by.merge, (done) => done.ran), record }, acceptsAfter, postLands),
+          }),
           metadata: { action: "land" as const, source, path: integration, rifts: paths },
         }
       }).pipe(Effect.ensuring(Effect.sync(() => (accepting ? undefined : busy.delete(integration)))))

@@ -42,8 +42,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
 (`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
@@ -875,6 +874,24 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   running implementor (its `sessionID`) or a new fix unit. The next land
   carries the folded findings to the next batch verifier, whose prompt ends
   with them and whose start answers with them.
+- **The heavy footer.** Every implementor and verifier prompt the plugin
+  sends ends with one footer (`mods/orchestrate/heavy.ts`), after the
+  verifier's folds: a new start's, a follow-up's (an older footer in the
+  prompt is replaced, never doubled), and a latched start's as its latch
+  opens, at the share of that moment. It names the agent's heavy-check
+  thread share, `max(4, floor(cores / (working + 2)))` capped at the
+  host's cores, where `working` counts the implementors and verifiers the
+  call log shows working on the host now, every root's, each while its
+  session still works (12 h at most), the prompted one not counted; with
+  the flags for it (`bun test --parallel=<share>`, Go's `-p` with
+  `GOMAXPROCS`, Cargo's `-j`). It says an implementor runs its spec's round
+  gate only, and a verifier reads the batch's gate and accept logs and
+  reruns neither, since the batch runs the full gate, the full e2e and the
+  affected acceptance once. A host that cannot be read within two seconds
+  gives the share of its cores with no one else working; a start never
+  waits on it or is refused for it. The share is advice, not a cap, and no
+  option turns the footer off. Planner and worker prompts are untouched,
+  and nothing is added to a system prompt.
 - **A land's units.** A unit is named by its role call's description
   (`implementor <unit> rN`); no prompt is read. An implementor's description
   may end `(rift: <path>)`: the ledger keeps that Rift as the unit's, across
@@ -1614,6 +1631,31 @@ holds the setup against the six caching rules and the lifetime fit
 the config's model and MCP server names, with the window's breaks as the
 evidence, `pass`, `warn` or `fail` per rule with the file responsible.
 
+### Keepalive
+
+Most wasted writes are `ttl-expiry`: a subagent waits 5 to 20 minutes on a
+running tool and its 5-minute cache expires. Anthropic refreshes a cache only
+when a request reads the same cached prefix, so the server half keeps a
+subagent's last primary request on a cache of 5 minutes or less as the auth
+plugin signed it (its hook runs after the auth plugin's: the same URL,
+headers, login and body), in memory only, and while one of the session's tool
+calls runs (`session.tool.called` to its `success` or `failed`, a tool the
+provider runs aside) re-sends it with `max_tokens: 1` (`keepalive.ts`). The
+first ping goes 4.5 minutes after the request, each next one 4.5 minutes after
+the ping before, at most 4 a wait; none once the cache's lifetime since the
+last request or ping has passed. The ping goes straight to the network on the
+login the request went out on (`fetch/pinger.ts`): no hook, no event, never
+the session's history, and its answer is read for its usage and dropped. A
+root session waiting on the owner is never pinged, nor an hour's cache, an
+unsigned request, or a body that thinks on a budget (`max_tokens: 1` is
+refused there). The tool's return (a ping in flight aborted), the session's
+next request, its execution's end or its deletion end the wait; a refused or
+failed ping ends its pings. It is always on, on every host. Each ping is a
+line of `keepalive.jsonl` beside the ledger (`filestore/ping-log.ts`): the
+session, agent, model, login, its place in the wait, the gap since the request
+or ping before, the answer's status or error, its input, cache read and write
+and output tokens, and the answer's `anthropic-ratelimit-*` headers.
+
 ## Guard
 
 `cmd/guard` is a server plugin that refuses a shell command that loses work
@@ -1814,14 +1856,72 @@ knows no repository's commands:
 
 | Key | Meaning |
 | --- | --- |
-| `rift.gate` | the fast check run before the push; required |
+| `rift.gate` | the fast check run before the push; required; with `rift.mergeCheck` set it never runs on a batch |
 | `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
+| `rift.mergeCheck` | set, the land lands by receipts (below): the one quick check of the merged tree (typecheck, lint of the changed files), run in the integration Rift with `RIFT_LAND_BASE` set, in place of `rift.gate` |
+| `rift.focus` | with `rift.mergeCheck`, the focused gate a land runs in a Rift holding no current receipt: `{paths}` becomes the files the Rift changed since the default branch (absolute, quoted), `{threads}` a quarter of the host's cores; unset, such a Rift is not landed |
 | `rift.generated` | one value per generated file (repository-relative): its conflict is settled by writing it again, and its rewrite after every batch is committed |
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
 | `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
 | `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land Rift (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit), `RIFT_POST_LAND_LOAD` (`settled`, `forced` or `loaded`: what the host allows; the step decides what each word means) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines), and a `loaded` run that exits 0 with an empty report wakes no one. A step is owed from the push until it has run, one per warm source over every land since one last ran (`mods/rift/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once (`settled`) when no reading in the last 5 minutes was at or past the cores, and else runs it `loaded`, which never pays it: it stays owed, and the wake says what ran and what still waits; the plugin itself reads the load every minute while one is owed, runs it `loaded` again 30 minutes after its last run ended (never while another run holds the claim), and runs it `settled` once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/rift/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration Rift is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its Rift) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/rift/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/rift/process/landing.ts`). `remove` refuses the integration and post-land Rifts while a step runs there |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
+
+### Landing by receipts
+
+A full gate on a batch takes 30 minutes here and over two hours in Ergo, so
+a repository can land on the proof its rounds already made instead. With
+`rift.mergeCheck` set, a land (pushed, or checked with `rift.push` false)
+never runs `rift.gate` on the batch:
+
+1. Before any merge, each Rift's receipt is read (`mods/rift/receipt.ts`):
+   the newest one in its Git dir (`rift-receipt.json`). It is current when it
+   names the Rift's head and the tree of its tracked files as they are on
+   disk, and every check in it exited 0. A Rift without a current one (none,
+   red, or its head or files moved since) runs `rift.focus` in its own Rift,
+   and a green run is its receipt; with no `rift.focus`, or a red run, a
+   pushed land stops before any merge and a checked one reds that Rift alone.
+2. The Rifts merge as before; then `rift.mergeCheck` runs once on the merged
+   tree, unless the land fast-forwarded to one Rift's own receipted head. A
+   red one stops the push (a checked land reds the merged Rifts).
+3. After the push, its record (each Rift's receipt, how it was covered, the
+   merge check's receipt) goes to `receipts/<pushed sha>.land.json` beside
+   the land logs, for the next batch's verifier. The accept check (the full
+   suite) then runs in the background in a Rift of its own (`land-accept`,
+   kept, never a land target), so the integration Rift is free at once and
+   the next land never waits for it; a red one is fixed forward as a fix
+   unit. The post-land step follows it, and its deep run writes a `deep`
+   receipt.
+
+A receipt is any proof a round made at its head: focused tests, mutants
+killed, a Quint or model run, real-host laws, the batch verifier's verdict.
+A repository names its receipt producers by running them through one script
+in the Rift, whatever the repository:
+
+```sh
+bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<command>' ['<command>' …]
+bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts --attest '<proof, e.g. the verifier line and its findings file>' [--code N]
+```
+
+The first runs each command in turn (`sh -c`, output passed through) and
+receipts them all, red when one fails (exit 1); the second receipts a proof
+made elsewhere. Either writes the receipt into the checkout and into
+`receipts/<head>.<kind>.json` beside the land logs. Here `bun run gate` by
+hand writes one too, and `bun scripts/gate.ts --merge <base>` is the merge
+check (the link, every project's typecheck, oxlint of the `.ts` files changed
+since `<base>`).
+
+A land's own checks hold the host's `land` lock exclusively and the `fork`
+lock shared; they never take the checks or accept lock a full gate, an
+accept check or a post-land deep run holds. A fork move (`bun run daily`, the
+post-land upstream merge) holds the checks lock and then the fork lock, so a
+land's check never reads a fork in mid-move.
+
+This repository's warm source would set:
+
+```sh
+git config rift.mergeCheck 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'
+```
 
 The gate and the acceptance run always run heavy, through the guard's
 launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
@@ -1952,61 +2052,6 @@ thread. The binary's SIGPROF profile drives the same one profiler: while the
 watchdog runs, whichever of the two stops first ends the other's window, and
 the other's stop fails with a logged error (the watchdog then samples a new
 window). Send no SIGPROF to a server that runs the watchdog.
-
-## Web
-
-`cmd/web` is a server plugin that makes the built-in `websearch` and
-`webfetch` tools work where they failed. It replaces neither tool: it adds a
-search provider and wraps webfetch's execute through the tool transform.
-
-**websearch.** The built-in tool asks a consent form when no provider is
-chosen. In a subagent nobody answers it, and after a minute the call fails
-`Web search cancelled` (measured over 7 days: 7 of 7 calls on the workbox,
-7 of 51 on the Mac, all in subagents). The plugin registers a provider, `web`,
-that asks the host's providers by id in `order` (a query by id never asks the
-form) and answers with the first that has results; a provider that fails or
-finds nothing passes to the next. `web` becomes the default unless the config
-chose one (`websearch` in `opencode.json`, a provider id or `false`). That
-default also outranks a choice saved from an earlier form, so a saved choice
-that now fails no longer breaks search. No key is needed: each built-in
-provider answers without one (probed on both hosts); with `EXA_API_KEY`,
-`TAVILY_API_KEY` and the rest set, the host sends the key. When every provider
-fails, the tool's error names each one's failure (`Unable to search the web
-for <query>: every web search provider failed: exa: HTTP 429; ...`).
-
-**webfetch.** The built-in runs first, untouched; the plugin acts only on its
-failure:
-
-- a PDF (`Unsupported fetched file content type: application/pdf`, or a
-  generic binary type from a `.pdf` path) is fetched again, up to `pdfMB`, and
-  answered as its text through `pdftotext -layout` (Homebrew's `poppler`,
-  `poppler-utils` on Linux), cut to `cutKB` with a note; without pdftotext the
-  error says what to install;
-- a body over the built-in's 5 MB limit is fetched again, only its first
-  `cutKB`, and answered under a first line `[webfetch: the body cut to the
-  first 512 KB of 6.2 MB. For the rest, download it (curl ...) and read the
-  file in parts.]`; cut HTML is reduced to its text unless the call asked for
-  `html`;
-- a 404 or 410 fails with what to do instead of guessing again: for a
-  `raw.githubusercontent.com` or GitHub blob URL, `okra repo fetch
-  <owner/repo>` and read the checkout; elsewhere, websearch for the real page
-  or `okra repo fetch`.
-
-Any other failure (a timeout, a 406, a 500) is the built-in's. The refetch
-follows redirects without the built-in's per-redirect permission check, which
-matters only to a config that denies some webfetch URLs.
-
-Options: `order` (default `exa, parallel, tavily, firecrawl, tinyfish`),
-`cutKB` (512), `pdfMB` (50).
-
-The model (the domain files at the root of `mods/web`): `search.ts` holds the
-order and the default, `fetch.ts` reads the built-in's failure and writes the
-words the agent reads, and `model.ts` handles both over the contracts in
-`service.ts`: `Pages` (`http/`), `PdfText` (`process/`) and `SearchProviders`
-(`opencode/`), with `memory/` implementations and the laws in `laws.ts`.
-`tests/web.test.ts` proves it in real OpenCode: a choice of a failing provider
-saved from the form, then a subagent's search that asks no form and answers
-from the next provider, and a PDF, a 6 MB body and a 404 from a loopback site.
 
 ## Idle compaction
 
@@ -3211,8 +3256,8 @@ construction or Promise statics), `noThrowStatement`, `noNodeBuiltinImport`,
 still hold a mutable value) and `noTryCatch`. Nested folders (adapters, UI),
 `cmd/`, `scripts/` and the test files keep the boundary and test policy;
 `scripts/effect-domain-policy.test.ts` lints generated forms in generated
-domain and outside paths with the real config. Eight domain files keep their
-try statements (nine in all) as legacy debt: the `noTryCatch` override's
+domain and outside paths with the real config. Seven domain files keep one
+try statement each as legacy debt: the `noTryCatch` override's
 `excludeFiles` names exactly the domain files `effect-debt.json` budgets for
 it, so one more try there passes oxlint and fails the ratchet:
 
@@ -3225,7 +3270,6 @@ it, so one more try there passes oxlint and fails the ratchet:
 | `mods/kernel/tools.ts` | 1 |
 | `mods/kernel/wire.ts` | 1 |
 | `mods/wake/wake.ts` | 1 |
-| `mods/web/fetch.ts` | 2 |
 
 Two files keep one finding each a newer
 commit brought, as an exact-file override in `.oxlintrc.json` and a budget:

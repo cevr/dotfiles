@@ -22,10 +22,12 @@
 // lint/test-env.test.ts holds a case for each of these, so removing any one's
 // handling turns a case red.
 //
-// `dotfiles/kept-suite-folders` lives in lint/kept-scratch.ts, `dotfiles/tui-clock-only` in lint/tui-clock.ts.
+// `dotfiles/kept-suite-folders` lives in lint/kept-scratch.ts, `dotfiles/tui-clock-only` in lint/tui-clock.ts,
+// `dotfiles/tui-dirs-only` in lint/tui-dirs.ts.
 
 import keptSuiteFolders from "./kept-scratch.ts"
 import tuiClockOnly from "./tui-clock.ts"
+import tuiDirsOnly from "./tui-dirs.ts"
 
 interface Node {
   readonly type: string
@@ -165,5 +167,5 @@ const noModuleEnvInTests = {
 
 export default {
   meta: { name: "dotfiles" },
-  rules: { "no-module-env-in-tests": noModuleEnvInTests, "kept-suite-folders": keptSuiteFolders, "tui-clock-only": tuiClockOnly },
+  rules: { "no-module-env-in-tests": noModuleEnvInTests, "kept-suite-folders": keptSuiteFolders, "tui-clock-only": tuiClockOnly, "tui-dirs-only": tuiDirsOnly },
 }

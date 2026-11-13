@@ -1,22 +1,26 @@
 // Landing over Git and the shell, run as child processes. The repository's
 // commands come from its warm source's Git config (`rift.gate`,
 // `rift.accept`, `rift.generated`, `rift.regenerate`, `rift.push`,
-// `rift.pushBranches`, `rift.postLand`, the default branch from
+// `rift.pushBranches`, `rift.postLand`, `rift.mergeCheck`, `rift.focus`, the default branch from
 // `workrift.main` else origin's HEAD) and run through `sh -c`, their output
 // kept in a log under `logs`; the gate and the acceptance run always run
 // heavy, through the guard's launcher (`checkArgv`). A lock file is installed again with its package
 // manager (frozen first, then free, as a merged lock file may need) and
 // committed when the install rewrote it. `rift.regenerate` runs after every
-// batch's merges, and what it rewrote is committed.
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
-import { availableParallelism, homedir, loadavg } from "node:os"
+// batch's merges, and what it rewrote is committed. Receipts (`receipts`) are read and written here: a
+// checkout's in its Git dir, every one in the host's receipts folder beside the logs; `scriptReceipt` and
+// `scriptReceipts` give them to scripts outside Effect (scripts/gate.ts, post-land.ts, receipt.ts).
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { availableParallelism, loadavg } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
-import { Effect, Layer } from "effect"
+import { Clock, Console, DateTime, Effect, Layer, Match, Option, Predicate, Result, Schema } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
+import { type LandRecord, LandRecordJson, type Receipt, ReceiptJson, type Snapshot, standing as standingOf } from "../receipt.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
-import { exclusively, exclusivelySync, holding, type LockMode } from "./flock.ts"
+import { exclusively, exclusivelySync, holding, type LockMode, oneGate } from "./flock.ts"
 
 export interface Options {
   /** Where each check's log is written, `<rift name>.<gate|accept>.log`. */
@@ -41,10 +45,25 @@ export const checkArgv = (command: string, log: string, host: Host): ReadonlyArr
 /**
  * The lock files a land's checks hold, under `logs`, one set per host. `checks`: every gate and accept check
  * holds it shared, so a post-land step that changes what they read (the dotfiles' fork checkout) holds it
- * exclusively for that short change alone. `accept`: each accept check holds it exclusively, and so does a
- * post-land step's own heavy test run, so the two never run at once.
+ * exclusively for that short change alone, and a full gate run by hand holds it exclusively for its whole run
+ * (flock.ts's `gateTurn`). `accept`: each accept check holds it exclusively, and so does a
+ * post-land step's own heavy test run, so the two never run at once. `wanted`: every gate and accept check
+ * holds it shared from before it waits for `checks` until it ends, so a full gate waiting for its turn lets
+ * a land's check go first. `fork`: a fork move holds it exclusively with `checks`, for that short change, and a
+ * land's own checks by receipts (a Rift's focused gate, the merge check) hold it shared, so they wait for a
+ * fork move alone; they hold `land` exclusively, one at a time per host, and no other check or step takes it,
+ * so a full gate, an accept check or a post-land step (its deep run) never holds up a land.
  */
-export const lockFiles = (logs: string) => ({ checks: join(logs, "locks", "checks.lock"), accept: join(logs, "locks", "accept.lock") })
+export const lockFiles = (logs: string) => ({
+  checks: join(logs, "locks", "checks.lock"),
+  accept: join(logs, "locks", "accept.lock"),
+  wanted: join(logs, "locks", "checks.wanted.lock"),
+  fork: join(logs, "locks", "fork.lock"),
+  land: join(logs, "locks", "land.lock"),
+})
+
+/** The host's receipts folder (receipt.ts), beside the land logs: every receipt by head and kind, and each land's record. */
+export const receiptsDir = (logs: string): string => join(logs, "receipts")
 
 type LockFiles = ReturnType<typeof lockFiles>
 
@@ -52,22 +71,46 @@ type LockFiles = ReturnType<typeof lockFiles>
  * This host's land logs and their lock files, `${XDG_CACHE_HOME:-~/.cache}/rift-land` read from `env`: the one
  * place the rift tool (cmd/rift) and a script that takes its locks (scripts/daily.ts) find them.
  */
-export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "rift-land")
+export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_HOME"] || join(TuiDirs.dirs().home, ".cache"), "rift-land")
 
 /**
  * This host's land locks for a script that changes what a land's checks read outside any land (`bun run
- * daily`): `move` runs a change to the fork checkout (a fast-forward, an install) holding the checks lock,
- * `moveSync` the same for a synchronous one, and `tests` runs the fork's tests holding the accept lock.
+ * daily`): `move` runs a change to the fork checkout (a fast-forward, an install) holding the checks lock and
+ * the fork lock, `moveSync` the same for a synchronous one, and `tests` runs the fork's tests holding the accept lock.
+ * `gate` runs a full gate (`bun run gate`) in its turn, one at a time per host and after any land's check
+ * that came while it waited; as is when `env` says a land runs it as its gate check (RIFT_LAND_CHECK=gate).
  */
 export const hostLocks = (env: NodeJS.ProcessEnv) => {
   const files = lockFiles(landLogs(env))
-  return { files, move: exclusively(files.checks), moveSync: exclusivelySync(files.checks), tests: exclusively(files.accept) }
+  const checks = exclusively(files.checks)
+  const fork = exclusively(files.fork)
+  const checksSync = exclusivelySync(files.checks)
+  const forkSync = exclusivelySync(files.fork)
+  return {
+    files,
+    move: <A>(step: () => Promise<A>) => checks(() => fork(step)),
+    moveSync: <A>(step: () => A) => checksSync(() => forkSync(step)),
+    tests: exclusively(files.accept),
+    gate: (root: string) => oneGate(files, root, Option.fromUndefinedOr(env["RIFT_LAND_CHECK"])),
+  }
 }
 
 /** The locks each check holds while it runs; a post-land step takes its own, by the paths it is given. */
-const CHECK_LOCKS: Readonly<Record<"gate" | "accept" | "post-land", (files: LockFiles) => ReadonlyArray<readonly [string, LockMode]>>> = {
-  gate: (files) => [[files.checks, "shared"]],
+const CHECK_LOCKS: Readonly<Record<"gate" | "accept" | "post-land" | "focus" | "merge", (files: LockFiles) => ReadonlyArray<readonly [string, LockMode]>>> = {
+  focus: (files) => [
+    [files.fork, "shared"],
+    [files.land, "exclusive"],
+  ],
+  merge: (files) => [
+    [files.fork, "shared"],
+    [files.land, "exclusive"],
+  ],
+  gate: (files) => [
+    [files.wanted, "shared"],
+    [files.checks, "shared"],
+  ],
   accept: (files) => [
+    [files.wanted, "shared"],
     [files.checks, "shared"],
     [files.accept, "exclusive"],
   ],
@@ -109,8 +152,147 @@ const same = (left: string, right: string): boolean => {
   }
 }
 
+/** The receipt file a kind of run writes for `head` in the host's receipts folder. */
+const hostReceipt = (logs: string, receipt: Receipt): string => join(receiptsDir(logs), `${receipt.head}.${receipt.kind}.json`)
+
+/**
+ * Receipts on disk (receipt.ts), for the land and for a script that writes one (scripts/gate.ts,
+ * scripts/post-land.ts): `snapshot` reads a checkout's head and the tree of its tracked files as they are on
+ * disk (through a scratch copy of its index, so its own index is untouched); `write` keeps a receipt in the
+ * host's receipts folder under `logs` by head and kind, and a `round` one in its checkout too (its Git dir's
+ * `rift-receipt.json`), where `newest` reads it back.
+ */
+export const receipts = (logs: string, env: Readonly<Record<string, string>> = {}) => {
+  const { run } = commands(env)
+  const trimmed = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path).pipe(Effect.map((out) => out.trim()))
+  const gitPath = (path: string, name: string) => trimmed(path, "rev-parse", "--path-format=absolute", "--git-path", name)
+  const io = <A>(operation: string, step: () => A) => Effect.try({ try: step, catch: (cause) => new RiftFailed({ operation, message: String(cause) }) })
+  const encode = (receipt: Receipt) => Schema.encodeEffect(ReceiptJson)(receipt).pipe(Effect.mapError((error) => new RiftFailed({ operation: "receipt", message: error.message })))
+
+  const snapshot = Effect.fn("Receipts.snapshot")(function* (path: string) {
+    const head = yield* trimmed(path, "rev-parse", "HEAD")
+    const index = yield* gitPath(path, "index")
+    const scratch = `${index}.rift-receipt`
+    const tree = yield* Effect.acquireUseRelease(
+      io("copy index", () => copyFileSync(index, scratch)),
+      () =>
+        run(["git", "-C", path, "add", "-u"], path, { GIT_INDEX_FILE: scratch }).pipe(
+          Effect.andThen(run(["git", "-C", path, "write-tree"], path, { GIT_INDEX_FILE: scratch })),
+          Effect.map((out) => out.trim()),
+        ),
+      () => Effect.sync(() => rmSync(scratch, { force: true })),
+    )
+    return { head, tree } satisfies Snapshot
+  })
+
+  const write = Effect.fn("Receipts.write")(function* (receipt: Receipt) {
+    const text = yield* encode(receipt)
+    const file = hostReceipt(logs, receipt)
+    yield* io("write receipt", () => {
+      mkdirSync(receiptsDir(logs), { recursive: true })
+      writeFileSync(file, `${text}\n`)
+    })
+    if (receipt.kind !== "round") return file
+    const kept = yield* gitPath(receipt.repo, "rift-receipt.json")
+    yield* io("write receipt", () => writeFileSync(kept, `${text}\n`))
+    return file
+  })
+
+  const newest = Effect.fn("Receipts.newest")(function* (path: string) {
+    const kept = yield* gitPath(path, "rift-receipt.json")
+    const text = yield* io("read receipt", () => Option.liftPredicate(kept, existsSync).pipe(Option.map((file) => readFileSync(file, "utf8"))))
+    return Option.flatMap(text, Schema.decodeUnknownOption(ReceiptJson))
+  })
+
+  /** A receipt of `kind` for `path` at `at`, its checks as they ran, ended now. */
+  const made = (path: string, at: Snapshot, kind: Receipt["kind"], checks: Receipt["checks"]) =>
+    Effect.map(DateTime.now, (now): Receipt => ({ repo: path, head: at.head, tree: at.tree, kind, checks, at: DateTime.formatIso(now) }))
+
+  return { snapshot, write, newest, made }
+}
+
+/** A check run for a receipt: its command line as the receipt names it, its run, and the exit its answer means. */
+export interface ReceiptStep<A, E, R> {
+  readonly command: string
+  readonly run: Effect.Effect<A, E, R>
+  readonly code: (answer: A) => number
+}
+
+/**
+ * Runs `steps` in turn for the checkout at `path` and writes their one receipt of `kind`, from where the
+ * checkout stood before the first (its head and tracked files) and with each step's exit and seconds; answers
+ * the steps' answers and the receipt's file in the host's receipts folder.
+ */
+export const receiptedSteps = <A, E, R>(logs: string, path: string, kind: Receipt["kind"], steps: ReadonlyArray<ReceiptStep<A, E, R>>) =>
+  Effect.gen(function* () {
+    const kit = receipts(logs)
+    const at = yield* kit.snapshot(path)
+    const ran = yield* Effect.forEach(steps, timed)
+    const file = yield* Effect.flatMap(kit.made(path, at, kind, ran.map((each) => each.check)), kit.write)
+    return { answers: ran.map((each) => each.answer), checks: ran.map((each) => each.check), file }
+  })
+
+/** A step run, its answer and its check as a receipt names it. */
+const timed = <A, E, R>(step: ReceiptStep<A, E, R>) =>
+  Effect.gen(function* () {
+    const from = yield* Clock.currentTimeMillis
+    const answer = yield* step.run
+    const to = yield* Clock.currentTimeMillis
+    return { answer, check: { command: step.command, code: step.code(answer), seconds: Math.round((to - from) / 1000) } }
+  })
+
+/**
+ * A script's receipt of `kind` for the checkout at `path`, outside Effect (scripts/receipt.ts): each step's
+ * `exit` is its run to an exit code, run in turn, or the exit of a proof already made, not run here; answers
+ * the checks as written and the receipt's file in the host's receipts folder.
+ */
+export const scriptReceipts = (
+  logs: string,
+  path: string,
+  kind: Receipt["kind"],
+  steps: ReadonlyArray<{ readonly command: string; readonly exit: number | (() => Promise<number>) }>,
+): Promise<{ readonly checks: Receipt["checks"]; readonly file: string }> =>
+  Effect.runPromise(
+    receiptedSteps(
+      logs,
+      path,
+      kind,
+      steps.map((step) => ({
+        command: step.command,
+        run: Match.value(step.exit).pipe(
+          Match.when(Predicate.isNumber, (code) => Effect.succeed(code)),
+          Match.orElse((run) => Effect.promise(run)),
+        ),
+        code: (answer: number) => answer,
+      })),
+    ),
+  )
+
+/**
+ * One check a script outside Effect runs for its receipt (scripts/gate.ts's full gate, scripts/post-land.ts's
+ * deep run): `step` run as `command` from where the checkout at `path` stands now, its receipt of `kind`
+ * written from there with the exit `code` reads off its answer. The step runs even when the receipt cannot be
+ * read or written, which is said on stderr; its answer stands.
+ */
+export const scriptReceipt = <A>(logs: string, path: string, kind: Receipt["kind"], command: string, step: () => Promise<A>, code: (answer: A) => number): Promise<A> => {
+  const kit = receipts(logs)
+  const unwritten = (failure: RiftFailed) => Console.error(`${command}: its receipt was not written: ${failure.message}`)
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const at = yield* Effect.result(kit.snapshot(path))
+      const ran = yield* timed({ command, run: Effect.promise(step), code })
+      yield* Result.match(at, {
+        onFailure: unwritten,
+        onSuccess: (from) => Effect.flatMap(kit.made(path, from, kind, [ran.check]), kit.write).pipe(Effect.asVoid, Effect.catch(unwritten)),
+      })
+      return ran.answer
+    }),
+  )
+}
+
 export const layer = (options: Options) => {
   const { spawn, run } = commands(options.env)
+  const kept = receipts(options.logs, options.env)
   /** Whether a systemd scope is available: on Linux, the probe exits 0; asked once, at the first check. */
   let scoped: boolean | undefined
   const scope = Effect.suspend(() =>
@@ -153,6 +335,8 @@ export const layer = (options: Options) => {
       push: (yield* flag(source, "rift.push")) ?? true,
       pushBranches: (yield* flag(source, "rift.pushBranches")) ?? false,
       postLand: yield* setting(source, "rift.postLand"),
+      mergeCheck: Option.fromUndefinedOr(yield* setting(source, "rift.mergeCheck")),
+      focus: Option.fromUndefinedOr(yield* setting(source, "rift.focus")),
     } satisfies LandConfig
   })
 
@@ -230,12 +414,13 @@ export const layer = (options: Options) => {
   })
 
   const locks = lockFiles(options.logs)
-  const check = Effect.fn("Landing.check")(function* (path: string, label: "gate" | "accept" | "post-land", command: string, env: Readonly<Record<string, string>>) {
+  const check = Effect.fn("Landing.check")(function* (path: string, label: keyof typeof CHECK_LOCKS, command: string, env: Readonly<Record<string, string>>) {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
     const argv = checkArgv(command, log, { scope: yield* scope, ionice: ioniceAvailable(options.platform ?? process.platform) })
-    const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, env))
+    // RIFT_LAND_CHECK tells the command which check it runs: a full gate run as the land's gate check runs under these locks, not in a turn of its own.
+    const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, { ...env, RIFT_LAND_CHECK: label }))
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
     return { code: ran.code, seconds: Math.round((Date.now() - started) / 1000), log, output } satisfies Ran
   })
@@ -244,8 +429,50 @@ export const layer = (options: Options) => {
     mkdirSync(options.logs, { recursive: true })
     const report = join(options.logs, `${basename(path)}.post-land.report.md`)
     rmSync(report, { force: true })
-    const ran = yield* check(path, "post-land", command, { ...env, RIFT_POST_LAND_REPORT: report, RIFT_LAND_CHECKS_LOCK: locks.checks, RIFT_LAND_ACCEPT_LOCK: locks.accept })
+    const ran = yield* check(path, "post-land", command, {
+      ...env,
+      RIFT_POST_LAND_REPORT: report,
+      RIFT_LAND_CHECKS_LOCK: locks.checks,
+      RIFT_LAND_ACCEPT_LOCK: locks.accept,
+      RIFT_LAND_FORK_LOCK: locks.fork,
+      RIFT_LAND_LOGS: options.logs,
+    })
     return { ...ran, report: existsSync(report) ? readFileSync(report, "utf8") : undefined } satisfies PostLanded
+  })
+
+  /** The check label (log name and locks) each kind of receipted run runs as. */
+  const LABEL = { round: "focus", merge: "merge", accept: "accept" } as const
+
+  const receipted = Effect.fn("Landing.receipted")(function* (path: string, kind: "round" | "merge" | "accept", command: string, env: Readonly<Record<string, string>>) {
+    const at = yield* kept.snapshot(path)
+    const ran = yield* check(path, LABEL[kind], command, env)
+    const receipt = yield* kept.made(path, at, kind, [{ command, code: ran.code, seconds: ran.seconds }])
+    yield* kept.write(receipt)
+    return { ran, receipt }
+  })
+
+  const standing = Effect.fn("Landing.standing")(function* (path: string) {
+    return standingOf(yield* kept.newest(path), yield* kept.snapshot(path))
+  })
+
+  const changed = Effect.fn("Landing.changed")(function* (path: string, main: string) {
+    const from = yield* trimmed(path, "merge-base", "HEAD", `origin/${main}`)
+    return lines(yield* git(path, "diff", "--name-only", "--no-renames", "--diff-filter=d", from, "HEAD")).map((file) => join(path, file))
+  })
+
+  const headOf = (path: string) => trimmed(path, "rev-parse", "HEAD")
+
+  const record = Effect.fn("Landing.record")(function* (landed: LandRecord) {
+    const text = yield* Schema.encodeEffect(LandRecordJson)(landed).pipe(Effect.mapError((error) => new RiftFailed({ operation: "land record", message: error.message })))
+    const file = join(receiptsDir(options.logs), `${landed.head}.land.json`)
+    yield* Effect.try({
+      try: () => {
+        mkdirSync(receiptsDir(options.logs), { recursive: true })
+        writeFileSync(file, `${text}\n`)
+      },
+      catch: (cause) => new RiftFailed({ operation: "land record", message: String(cause) }),
+    })
+    return file
   })
 
   const hostLoad = Effect.sync((): HostLoad => ({ load: loadavg()[0] ?? 0, cores: availableParallelism() }))
@@ -268,5 +495,8 @@ export const layer = (options: Options) => {
     yield* git(path, "fetch", "-q", "origin")
   })
 
-  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, regenerate, check, postLand, hostLoad, push, pushBranch, sync }))
+  return Layer.succeed(
+    Landing,
+    Landing.of({ config, ownChanges, start, merge, install, regenerate, check, postLand, hostLoad, push, pushBranch, sync, standing, changed, headOf, receipted, record }),
+  )
 }

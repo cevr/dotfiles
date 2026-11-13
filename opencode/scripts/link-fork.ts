@@ -13,7 +13,7 @@
 // node_modules drops the links it did not make. The TUI plugins resolve
 // `solid-js` through these links when OpenCode loads them.
 //
-// It checks the fork first (scripts/fork.ts) and touches nothing when the
+// It checks the fork first (scripts/fork.ts readyFork) and touches nothing when the
 // check fails: a path from another machine, or a fork whose own install points
 // nowhere, would leave every TUI plugin without `solid-js`. A link of ours that
 // points nowhere, left by a run against a fork that is gone, is removed.
@@ -31,15 +31,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { checkFork, FORK_MODULES } from "./fork.ts"
-
-const ANCHORS = "opencode-fork"
-
-/** sim-tui's extra links: the fork TUI's test folder (its fixture and preload) and the protocol package, by where they sit from the anchor. */
-const SIM_TUI: ReadonlyArray<readonly [string, string]> = [
-  ["@opencode-tui/test", "../test"],
-  ["@opencode/protocol", "../../protocol"],
-]
+import { ANCHORS, FORK_MODULES, readyFork, SIM_TUI } from "./fork.ts"
 
 /** A link's text, `real` for a file or folder, nothing for nothing there. */
 const linkOf = (file: string) => {
@@ -51,15 +43,8 @@ const linkOf = (file: string) => {
   }
 }
 
-const dev = process.env.OPENCODE_DEV
-// A run before 2026-11-13 linked sim-tui's scope folders whole to the fork's, so sim-tui's extra links went through
-// them into the fork's own modules, as text relative to a checkout, which points nowhere from there; the check
-// below refuses such a fork for every checkout. Such a link is ours (it names the anchors folder): it goes first.
-for (const [name] of SIM_TUI) {
-  const entry = path.join(path.resolve(dev || "."), FORK_MODULES, name)
-  if (String(linkOf(entry)).includes(path.sep + ANCHORS + path.sep)) rmSync(entry)
-}
-const checked = checkFork(dev)
+// readyFork first removes the stray an older run wrote into the fork, as every script that takes the fork does.
+const checked = readyFork(process.env.OPENCODE_DEV)
 if ("problem" in checked) {
   console.error(`link-fork: ${checked.problem}`)
   process.exit(1)

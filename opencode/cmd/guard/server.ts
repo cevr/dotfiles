@@ -39,7 +39,7 @@
  * - `cpuWeight`: the scope's `CPUWeight` on Linux, 1 to 10000; default 20.
  * - `launchers`: the directory the launchers are written to; default `~/.cache/opencode/guard-launchers`.
  */
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
@@ -69,12 +69,12 @@ const withDefault =
 const Int = (min: number, max: number) => Schema.Int.check(Schema.isBetween({ minimum: min, maximum: max }))
 
 export const Options = Schema.Struct({
-  home: Schema.String.pipe(withDefault(homedir())),
+  home: Schema.String.pipe(withDefault(TuiDirs.dirs().home)),
   heavy: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(DEFAULT_HEAVY)),
   nice: Int(0, 19).pipe(withDefault(DEFAULT_LIMITS.nice)),
   memoryMax: Schema.String.check(Schema.isPattern(/^(\d+[KMGT]?|\d+%|infinity)$/)).pipe(withDefault(DEFAULT_LIMITS.memoryMax)),
   cpuWeight: Int(1, 10_000).pipe(withDefault(DEFAULT_LIMITS.cpuWeight)),
-  launchers: Schema.String.pipe(withDefault(join(homedir(), ".cache/opencode/guard-launchers"))),
+  launchers: Schema.String.pipe(withDefault(join(TuiDirs.dirs().home, ".cache/opencode/guard-launchers"))),
 })
 export type Options = typeof Options.Type
 
@@ -93,18 +93,18 @@ export type Externals = Launchers | Processes | RepoRoots | Scopes | SessionDire
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
-/** The outside systems as the filesystem and OpenCode provide them. */
-export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> => {
+/** Where a session runs and whether it is a subagent, as OpenCode's sessions say: the same on any host. */
+export const sessionsOf = (ctx: Plugin.Context): Layer.Layer<SessionDirectories | Subagents> => {
   const get = (sessionID: string) => ctx.session.get({ sessionID: sessionID as SessionID })
   return Layer.mergeAll(
-    FilesystemRepoRoots.layer,
-    FilesystemLaunchers.layer(options.launchers),
-    PsProcesses.layer(),
-    ProcessScopes.layer(),
     OpenCodeSessionDirectories.layer((sessionID) => get(sessionID).pipe(Effect.map((session) => session.location.directory))),
     OpenCodeSubagents.layer((sessionID) => get(sessionID).pipe(Effect.map((session) => session.parentID))),
   )
 }
+
+/** The outside systems as the filesystem and OpenCode provide them. */
+export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
+  Layer.mergeAll(FilesystemRepoRoots.layer, FilesystemLaunchers.layer(options.launchers), PsProcesses.layer(), ProcessScopes.layer(), sessionsOf(ctx))
 
 /** The plugin on `externals`: the live systems in OpenCode, memory layers in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>

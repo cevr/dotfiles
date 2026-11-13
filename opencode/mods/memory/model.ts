@@ -8,8 +8,12 @@
 // - search: the session's project's notes and the global ones, best match
 //   first; each found note counts a use.
 // - digest: chosen once per session (`digestOf`) and kept, so every request of
-//   the session carries the same block; the notes it shows count `shown`.
-import { Clock, Context, Effect, Layer } from "effect"
+//   the session carries the same block; the notes it shows count `shown`. A
+//   copy sends a session the digest it sent before, even when the store fails
+//   a write (it keeps trying to keep it), and holds an unkept digest on the
+//   session itself (`Sessions.hold`) for a copy that starts after a restart,
+//   so a store fault never changes the cached prefix.
+import { Clock, Context, Effect, Layer, Option } from "effect"
 import { digestOf, LIMITS, type Limits } from "./digest.ts"
 import { DEFAULT_RESULTS, type ForgetInput, MAX_RESULTS, type Saved, type SaveInput, type SearchInput } from "./notebook.ts"
 import {
@@ -108,14 +112,60 @@ export const layer = (limits: Limits = LIMITS) =>
         return note
       })
 
+      /** Each session's digest once the store keeps it: later requests read it here, with no store call to fail. */
+      const sent = new Map<string, string>()
+
+      /**
+       * Keeps `chosen` as the session's digest: the store's kept text (another copy's, if it kept one first), or none
+       * when the store could not write. A digest kept fresh counts a showing of its notes; a showing the store could
+       * not count is lost, never the digest.
+       */
+      const keep = (sessionID: string, chosen: { readonly text: string; readonly ids: ReadonlyArray<number> }, now: number) =>
+        store.keepDigest(sessionID, chosen.text, now).pipe(
+          Effect.tap((kept) =>
+            Effect.when(
+              store.read(chosen.ids, "shown", now).pipe(Effect.catch((failure) => Effect.logWarning("memory: the digest's showing was not counted", { sessionID, failure: failure.message }))),
+              Effect.succeed(kept.fresh && chosen.ids.length > 0),
+            ),
+          ),
+          Effect.map((kept) => Option.some(kept.text)),
+          Effect.catch((failure) => Effect.logWarning("memory: the digest was not kept; the session holds it", { sessionID, failure: failure.message }).pipe(Effect.as(Option.none<string>()))),
+        )
+
+      /**
+       * Holds `text` on the session itself when the store could not keep it, so this copy's next request and a copy
+       * that starts after a restart send it too; a session the host cannot update is logged.
+       */
+      const hold = (sessionID: string, text: string) =>
+        sessions.hold(sessionID, text).pipe(Effect.catch((failure) => Effect.logWarning("memory: the digest was not held on the session", { sessionID, failure: failure.message })))
+
       const digest = Effect.fn("MemoryModel.digest")(function* (sessionID: string) {
-        const facts = yield* sessions.facts(sessionID)
+        const known = Option.fromNullishOr(sent.get(sessionID))
+        if (Option.isSome(known)) return known.value
         const now = yield* Clock.currentTimeMillis
+        // Kept by another copy or before a restart: a read, which needs no write.
+        const stored = yield* store.keptDigest(sessionID).pipe(Effect.orElseSucceed(() => Option.none<string>()))
+        if (Option.isSome(stored)) {
+          sent.set(sessionID, stored.value)
+          return stored.value
+        }
+        const facts = yield* sessions.facts(sessionID)
+        // Sent before while the store could not keep it, and held on the session: kept now if the store can, and sent
+        // whatever it answers.
+        if (Option.isSome(facts.held)) {
+          const held = facts.held.value
+          if (Option.isSome(yield* keep(sessionID, { text: held, ids: [] }, now))) sent.set(sessionID, held)
+          return held
+        }
         const notes = yield* store.list({ within: visible(facts.project), limit: DIGEST_POOL })
         const chosen = digestOf(notes, now, limits)
-        const kept = yield* store.keepDigest(sessionID, chosen.text, now)
-        if (kept.fresh && chosen.ids.length > 0) yield* store.read(chosen.ids, "shown", now)
-        return kept.text
+        const kept = yield* keep(sessionID, chosen, now)
+        if (Option.isNone(kept)) {
+          yield* hold(sessionID, chosen.text)
+          return chosen.text
+        }
+        sent.set(sessionID, kept.value)
+        return kept.value
       })
 
       return MemoryModel.of({ save, search, forget, digest })

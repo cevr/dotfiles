@@ -1,8 +1,11 @@
-// accept: deep (31.5 s alone on a quiet host: 1-minute load 8.2–10.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (31.5 s alone on a quiet host: measured before the kill moved to the simulated host, 1-minute load 8.2–10.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public tool seam: real OpenCode, the real wake server plugin with its
-// process runner, Prime and a scripted model. scenarios/job.ts runs a job whose
-// end wakes the idle session, and a job it kills. What happened is read off
-// the model's requests, the transcripts and the frames.
+// process runner, Prime and a scripted model. scenarios/job.ts runs a job, a
+// real detached process, whose end wakes the idle session. What happened is
+// read off the model's requests, the transcripts and the frames. The same
+// name runs on the simulated host with a killed job too
+// (cmd/wake/job.sim.test.ts, by tests/parity/wake.json); a real kill is
+// mods/wake/process/runner.test.ts's.
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -55,10 +58,6 @@ describe.skipIf(!fork)("jobs", () => {
     expect(letter).toContain("kappa-start\nKAPPA-DONE")
     expect(letter).toContain("compiled")
     expect(lines(read("kappa.txt"))).toContain("Woke on kappa.")
-
-    // The kill: answered killed, and no letter came.
-    expect(lines(read("killed.txt"))).toContain("Lambda killed.")
-    expect(root.some((text) => /⏰ Job j[0-9a-z]{6} [^\n]*`sleep 300`/.test(text))).toBe(false)
 
     const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
     const letters = sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.kind === "job" && message.metadata.progress !== true))

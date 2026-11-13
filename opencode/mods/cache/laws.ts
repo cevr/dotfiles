@@ -1,9 +1,60 @@
-// What every implementation of the RequestLog contract owes, as a shared test
-// suite. Each implementation's test beside it runs the suite over its Layer.
+// What every implementation of the RequestLog and PingLog contracts owes, as
+// shared test suites. Each implementation's test beside it runs the suite over
+// its Layer. Bun test bridge: no Effect test runner is installed, so each case
+// runs over its fresh Layer with Effect.runPromise.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, Option } from "effect"
+import type { PingLine } from "./keepalive.ts"
 import type { Kept, LedgerLine } from "./request-log.ts"
-import { RequestLog } from "./service.ts"
+import { PingLog, RequestLog } from "./service.ts"
+
+/** A ping that was answered: its usage and limits. */
+const answered: PingLine = {
+  at: 1,
+  host: "mac",
+  sessionID: "ses_1",
+  agent: Option.some("worker"),
+  model: "anthropic/claude-x",
+  login: Option.some("cred-a"),
+  ping: 1,
+  gapMs: 270_000,
+  ttlMs: 300_000,
+  status: Option.some(200),
+  error: Option.none(),
+  input: 3,
+  read: 90_000,
+  write: 0,
+  output: 1,
+  limits: { "anthropic-ratelimit-unified-5h-utilization": "0.4" },
+}
+
+/** A ping that got no answer, from a session with no agent or login named. */
+const unanswered: PingLine = {
+  ...answered,
+  at: 2,
+  agent: Option.none(),
+  login: Option.none(),
+  status: Option.none(),
+  error: Option.some("network down"),
+  read: 0,
+  output: 0,
+  limits: {},
+}
+
+/** Runs the laws over a fresh, empty ping log from `make`; a scoped Layer's scope closes after each case. */
+export const pingLogLaws = <E>(name: string, make: () => Layer.Layer<PingLog, E>) =>
+  describe(`${name} owes the PingLog laws`, () => {
+    test("lines read back whole, in the order they were appended; an empty log reads none", () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const log = yield* PingLog
+          expect(yield* log.read).toEqual([])
+          const lines = [answered, unanswered, { ...answered, at: 3, ping: 2 }]
+          for (const each of lines) yield* log.append(each)
+          expect(yield* log.read).toEqual(lines)
+        }).pipe(Effect.provide(make())),
+      ))
+  })
 
 const line = (at: number, cause: LedgerLine["cause"]): LedgerLine => ({
   at,

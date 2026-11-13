@@ -6,6 +6,7 @@
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Started, Unit } from "./land.ts"
 import type { Debts } from "./owed.ts"
+import type { LandRecord, Receipt, Standing } from "./receipt.ts"
 import type { Workspace } from "./workspace.ts"
 
 /** A Rift or Git command failed; `message` is what it said. */
@@ -100,6 +101,28 @@ export class Landing extends Context.Service<
     readonly pushBranch: (unit: Unit) => Effect.Effect<string, RiftFailed>
     /** Fetches origin in a landed Rift, so its commits read as pushed. */
     readonly sync: (path: string) => Effect.Effect<void, RiftFailed>
+    /** How the newest round receipt of the Rift at `path` stands against its head and tracked files now (receipt.ts). */
+    readonly standing: (path: string) => Effect.Effect<Standing, RiftFailed>
+    /** The files the Rift at `path` changed since its branch left origin's `<main>`, absolute. */
+    readonly changed: (path: string, main: string) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
+    /** The commit checked out in `path`. */
+    readonly headOf: (path: string) => Effect.Effect<string, RiftFailed>
+    /**
+     * Runs the repository's `command` in `path` like a check (heavy, its output in a log) and writes its
+     * receipt of `kind` for the head and tree it started at. `round` (a Rift's focused gate) and `merge` (the
+     * merged tree's check) hold the land's own lock alone, never a lock a full gate, an accept check or a
+     * post-land step holds, and wait only for a fork move; `accept` holds the accept check's locks. A
+     * `round` receipt is kept in the Rift, where the next land reads it; every receipt goes to the host's
+     * receipts folder too. Never fails on the command's exit code.
+     */
+    readonly receipted: (
+      path: string,
+      kind: "round" | "merge" | "accept",
+      command: string,
+      env: Readonly<Record<string, string>>,
+    ) => Effect.Effect<{ readonly ran: Ran; readonly receipt: Receipt }, RiftFailed>
+    /** Writes a land's record (what it took and ran) to the host's receipts folder under its pushed head; answers the file. */
+    readonly record: (record: LandRecord) => Effect.Effect<string, RiftFailed>
   }
 >()("dotfiles-opencode/rift/Landing") {}
 
