@@ -102,9 +102,10 @@ export interface TraceEntry {
   readonly value: string
 }
 
-/** More of the TUI config: `session.verbosity`. */
+/** More of the TUI config: `session.verbosity`, and the session tabs (off unless a file turns them on). */
 export interface TuiConfig {
   readonly session?: { readonly verbosity: "low" | "medium" | "high" }
+  readonly tabs?: { readonly mode?: "auto" | "on" | "off"; readonly scope?: "global" | "cwd" | "window" }
 }
 
 export interface BootOptions {
@@ -115,7 +116,22 @@ export interface BootOptions {
   readonly width: number
   readonly height: number
   readonly config?: TuiConfig
+  /**
+   * The session tabs another TUI on the machine left in the state dir they share when this one
+   * boots (`test/tui/tabs.json`, in its global set and this directory's).
+   */
+  readonly otherTabs?: ReadonlyArray<SharedTab>
 }
+
+/** A session tab as the TUI's shared tab file holds it. */
+export interface SharedTab {
+  readonly sessionID: string
+  readonly title: string
+}
+
+const TabSet = Schema.Struct({ tabs: Schema.Array(Schema.Struct({ sessionID: Schema.String, title: Schema.String })), unread: Schema.Struct({}) })
+/** The TUI's shared tab file: one set for every directory, and one per directory. */
+const TabsFile = Schema.fromJsonString(Schema.Struct({ global: TabSet, cwd: Schema.Record(Schema.String, TabSet) }))
 
 type Fixture = Awaited<ReturnType<typeof createAppFixture>>
 
@@ -480,6 +496,19 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   const lobbyID = lobby.session({ title: "lobby" })
   const current = { server: lobby }
   const handler = (url: URL, request: Request) => current.server.fetch(url, request).then(Option.getOrUndefined)
+  // The TUI's state dir is the fixture's own unless another TUI's tabs are planted, under the host dirs.
+  const state = yield* Option.match(Option.fromUndefinedOr(options.otherTabs), {
+    onNone: () => Effect.succeed(Option.none<string>()),
+    onSome: (tabs) =>
+      Effect.gen(function* () {
+        const dir = path.join(host, "tui-state")
+        const file = path.join(dir, "test/tui/tabs.json")
+        const set = { tabs, unread: {} }
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true })
+        yield* fs.writeFileString(file, yield* Schema.encodeEffect(TabsFile)({ global: set, cwd: { [path.resolve()]: set } }))
+        return Option.some(dir)
+      }),
+  })
   const fixture = yield* Effect.tryPromise({
     try: () =>
       createAppFixture({
@@ -496,6 +525,7 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
           ...options.config,
         },
         themes: { prime: theme },
+        state: Option.getOrUndefined(state),
         args: { sessionID: lobbyID },
         fetch: handler,
       }),
