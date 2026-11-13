@@ -875,6 +875,24 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   running implementor (its `sessionID`) or a new fix unit. The next land
   carries the folded findings to the next batch verifier, whose prompt ends
   with them and whose start answers with them.
+- **The heavy footer.** Every implementor and verifier prompt the plugin
+  sends ends with one footer (`mods/orchestrate/heavy.ts`), after the
+  verifier's folds: a new start's, a follow-up's (an older footer in the
+  prompt is replaced, never doubled), and a latched start's as its latch
+  opens, at the share of that moment. It names the agent's heavy-check
+  thread share, `max(4, floor(cores / (working + 2)))` capped at the
+  host's cores, where `working` counts the implementors and verifiers the
+  call log shows working on the host now, every root's, each while its
+  session still works (12 h at most), the prompted one not counted; with
+  the flags for it (`bun test --parallel=<share>`, Go's `-p` with
+  `GOMAXPROCS`, Cargo's `-j`). It says an implementor runs its spec's round
+  gate only, and a verifier reads the batch's gate and accept logs and
+  reruns neither, since the batch runs the full gate, the full e2e and the
+  affected acceptance once. A host that cannot be read within two seconds
+  gives the share of its cores with no one else working; a start never
+  waits on it or is refused for it. The share is advice, not a cap, and no
+  option turns the footer off. Planner and worker prompts are untouched,
+  and nothing is added to a system prompt.
 - **A land's units.** A unit is named by its role call's description
   (`implementor <unit> rN`); no prompt is read. An implementor's description
   may end `(rift: <path>)`: the ledger keeps that Rift as the unit's, across
