@@ -49,16 +49,35 @@ rule_for() {
 }
 
 # Prints "<worktree>\t<common dir>" for every git worktree under ~/Developer:
-# a .git file pointing into some repository's .git/worktrees.
+# a .git file pointing into some repository's .git/worktrees. A link git cannot
+# follow (its gitdir is gone) is skipped with a warning: it is copied as a
+# plain directory, and check.sh reports it as broken before the migration.
 find_worktrees() {
-    local file line gitdir t
+    local file line gitdir t common
     [[ -d $wb_home/Developer ]] || return 0
     while IFS= read -r -d '' file; do
         t=${file%/.git}
         IFS= read -r line < "$file" || true
         gitdir=${line#gitdir: }
         [[ $gitdir == */worktrees/* ]] || continue
-        printf '%s\t%s\n' "$t" "$(git -C "$t" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+        if ! common=$(git -C "$t" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+            warn "skipped $t: its .git names $gitdir, which git cannot open"
+            continue
+        fi
+        printf '%s\t%s\n' "$t" "$common"
+    done < <(find "$wb_home/Developer" \( -name node_modules -o \( -name .git -type d \) \) -prune -o -name .git -type f -print0)
+}
+
+# Prints each worktree link under ~/Developer whose gitdir does not exist,
+# check.sh's test for a broken link. No git: root can run it on the owner's tree.
+broken_links() {
+    local file line gitdir
+    [[ -d $wb_home/Developer ]] || return 0
+    while IFS= read -r -d '' file; do
+        IFS= read -r line < "$file" || true
+        gitdir=${line#gitdir: }
+        [[ $gitdir == /* ]] || gitdir=$(dirname "$file")/$gitdir
+        [[ -d $gitdir ]] || printf '%s\n' "${file%/.git}"
     done < <(find "$wb_home/Developer" \( -name node_modules -o \( -name .git -type d \) \) -prune -o -name .git -type f -print0)
 }
 
@@ -70,7 +89,7 @@ classify() {
     find_worktrees | sort | while IFS=$'\t' read -r t common; do
         rel=${t#"$wb_home/Developer/"}
         rule=$(rule_for "$rel")
-        branch=$(git -C "$t" branch --show-current)
+        branch=$(git -C "$t" branch --show-current 2>/dev/null) || branch=
         [[ -n $branch ]] || branch=detached/${t##*/}
         origin=$(normalized_origin "$t")
         source=$(awk -F '\t' -v o="$origin" '$1 == o && o != "" { print $2; exit }' <<< "$sources")
@@ -247,6 +266,9 @@ home_phase() {
 
     # A record of each worktree's fate; classify reads git as the owner.
     as_user bash "$here/migrate.sh" classify > "$wb_state/worktrees.tsv"
+    # Links already broken, so check.sh tells them from links the move broke.
+    [[ -f $wb_state/broken-links ]] || broken_links > "$wb_state/broken-links"
+    log "Worktree links already broken: $(wc -l < "$wb_state/broken-links")"
     log "Worktrees kept as they are: $(awk -F '\t' '$1 == "keep"' "$wb_state/worktrees.tsv" | wc -l); converted: $(converted_paths | wc -l)"
 
     local need home_kb tmp_kb btrfs_free

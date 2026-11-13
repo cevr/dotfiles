@@ -1043,7 +1043,7 @@ describe("the machine's stories", () => {
     // The refusal of a partial land names each ready unit's Rift as { path, unit }, from the starts when they named one.
     const partial = await run([...steps, [Land.make({ rifts: ["/u/.rifts/app/db-2"] }), 2 * MIN]])
     expect("refused" in partial.last && partial.last.message).toContain(
-      'rifts: [{ path: "/u/.rifts/app/db-2-first", unit: "db-2" }, { path: "/u/.rifts/app/db-2", unit: "db" }]',
+      'Land every ready unit in one call: orchestrate({ action: "land" }) lands db-2, db.',
     )
   })
 
@@ -1073,7 +1073,7 @@ describe("the machine's stories", () => {
     const partial = await run([...steps, [Land.make({ rifts: ["reset-use-3", "lu-second-try"], departs: "probe" }), 51 * MIN]])
     expect(partial.last).toEqual({ events: ["FindingUnfolded", "LandPartial"].map((rule) => expect.objectContaining({ _tag: "Departed", rule })) })
     const refused = await run([...steps, [Land.make({ rifts: ["reset-use-3", { rift: "/u/.rifts/dotfiles/lu", unit: "nope" }] }), 51 * MIN]])
-    expect("refused" in refused.last && refused.last.message).toContain('rifts: ["reset-use-3", { path: "/u/.rifts/dotfiles/lu", unit: "nope" }], departs')
+    expect("refused" in refused.last && refused.last.message).toContain('orchestrate({ action: "land", units: ["reset-use", { unit: "<unit>", path: "/u/.rifts/dotfiles/lu" }], departs: "<why>" })')
   })
 
   test("property: over arbitrary unit names, colliding ones included (db and db-2, a and feat-a), and numbered rounds, a land's entry is its own unit's or none; by the Rift its start named or { path, unit }, always its own", async () => {

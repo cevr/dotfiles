@@ -66,6 +66,7 @@ import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { type Cadence, DEFAULT_CADENCE } from "./idle.ts"
 import { described, STEPS } from "./described.ts"
+import { departingLandCallOf, landCallOf } from "./tools.ts"
 
 export { type Cadence, DEFAULT_CADENCE }
 
@@ -453,12 +454,6 @@ export const unitOfEntry = (target: LandTarget, units: ReadonlyArray<string>, ri
 const riftsIn = (state: MachineState): Readonly<Record<string, ReadonlyArray<string>>> =>
   Object.fromEntries(Object.entries(state.units).flatMap(([name, unit]) => (unit.rifts === undefined ? [] : [[name, unit.rifts]])))
 
-/** A land's target as the root wrote it in the land's input: its entry, or `{ path, unit }`. */
-const inputOf = (target: LandTarget): string => {
-  const entry = entryOf(target)
-  return entry.unit === undefined ? JSON.stringify(entry.rift) : `{ path: ${JSON.stringify(entry.rift)}, unit: ${JSON.stringify(entry.unit)} }`
-}
-
 /**
  * The units a land's `rifts` name that it lands: the ready ones, and the ended ones (an implementor's end the
  * ledger guessed, or a hand-back it did not read: the root's land is its word that the unit is ready).
@@ -556,9 +551,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
       ].join(" ")
     }
     case "LandPartial":
-      return `Land every ready unit in one call, each Rift as { path, unit }: rift({ action: "land", rifts: [${ready
-        .map((unit) => `{ path: ${JSON.stringify(state.units[unit]?.rifts?.at(-1) ?? "<its Rift>")}, unit: ${JSON.stringify(unit)} }`)
-        .join(", ")}] }).`
+      return `Land every ready unit in one call: ${landCallOf([])} lands ${list(ready)}.`
   }
 }
 
@@ -566,7 +559,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
 export const refusalOf = (state: MachineState, rule: Rule, call: Command, now: number, cadence: Cadence): string => {
   const how =
     call._tag === "Land"
-      ? `add departs: "<why>" to the land's input: rift({ action: "land", rifts: [${call.rifts.map(inputOf).join(", ")}], departs: "<why>" })`
+      ? `add departs: "<why>" to the land's input: ${departingLandCallOf(state, call.rifts)}`
       : call._tag === "Start"
         ? `end the call's description with (departs: <why>): description "${call.role} ${call.name} r${call.round} (departs: <why>)"`
         : "state (departs: <why>) in the call"

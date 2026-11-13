@@ -41,6 +41,8 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
             return { dispose: Effect.void }
           }),
       },
+      // The rift RPC registers here; rpc.test.ts calls it.
+      rpc: { register: () => Effect.succeed({}) },
     } as unknown as Host
     yield* make(() =>
       Layer.mergeAll(

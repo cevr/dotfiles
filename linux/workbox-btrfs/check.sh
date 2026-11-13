@@ -94,7 +94,14 @@ while IFS= read -r -d '' file; do
     IFS= read -r line < "$file" || true
     gitdir=${line#gitdir: }
     [[ $gitdir == /* ]] || gitdir=$(dirname "$file")/$gitdir
-    [[ -d $gitdir ]] || { bad "${file%/.git} points at a missing $gitdir"; broken=1; }
+    [[ -d $gitdir ]] && continue
+    # migrate.sh home records the links that were broken before it copied.
+    if grep -Fxq -e "${file%/.git}" "$wb_state/broken-links" 2>/dev/null; then
+        note "${file%/.git} points at a missing $gitdir, broken before the migration"
+    else
+        bad "${file%/.git} points at a missing $gitdir"
+        broken=1
+    fi
 done < <(find "$wb_home/Developer" \( -name node_modules -o \( -name .git -type d \) \) -prune -o -name .git -type f -print0 2>/dev/null)
 ((broken)) || ok 'every worktree under ~/Developer finds its repository'
 if [[ -f $wb_converted ]]; then

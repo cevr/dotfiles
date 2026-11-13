@@ -16,13 +16,16 @@
  * a post-land step owed while the host is loaded (`@dotfiles/opencode-rift/owed`)
  * to `post-land-owed.json` there, which the plugin's check reads every minute.
  *
+ * It also serves the rift RPC (`@dotfiles/opencode-rift/rpc`: create, with `at` to detach a new Rift at a commit,
+ * list, inspect, land) on the same model, for the orchestrate plugin's `orchestrate` tool.
+ *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `workrift`: make and remove Rifts with `workrift` (the workbox's branch
  *   workflow on top of Rift), and offer its own commands; default: whether
  *   `workrift` is on PATH.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Option, Schema } from "effect"
 import * as FilestoreDebts from "@dotfiles/opencode-rift/filestore/debts"
 import * as Model from "@dotfiles/opencode-rift/model"
 import * as OpenCodeNotices from "@dotfiles/opencode-rift/opencode/notices"
@@ -30,8 +33,22 @@ import * as OpenCodeSessionDirectories from "@dotfiles/opencode-rift/opencode/se
 import * as ProcessLanding from "@dotfiles/opencode-rift/process/landing"
 import * as ProcessRifts from "@dotfiles/opencode-rift/process/rifts"
 import * as ProcessWorkbox from "@dotfiles/opencode-rift/process/workbox"
-import { RIFT_DESCRIPTION, RiftInput } from "@dotfiles/opencode-rift/rift"
-import type { Landing, Notices, PostLandClaim, PostLandDebts, Rifts, SessionDirectories, Workbox } from "@dotfiles/opencode-rift/service"
+import { RIFT_DESCRIPTION, RiftInput, listed, stateOf } from "@dotfiles/opencode-rift/rift"
+import {
+  CreateAsk,
+  type Created,
+  type Failed,
+  InspectAsk,
+  type Inspected,
+  type LandAnswered,
+  LandAsk,
+  type Lane,
+  ListAsk,
+  type Listed,
+  RIFT_RPC,
+} from "@dotfiles/opencode-rift/rpc"
+import { type Landing, type Notices, type PostLandClaim, type PostLandDebts, Rifts, SessionDirectories, type Workbox } from "@dotfiles/opencode-rift/service"
+import type { Workspace } from "@dotfiles/opencode-rift/workspace"
 
 /** OpenCode's worktree tools, by their registry ids; the rift tool replaces them. */
 export const WORKTREE_TOOLS = ["opencode_worktree_create", "opencode_worktree_list", "opencode_worktree_remove"] as const
@@ -73,7 +90,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         Effect.orDie,
       )
       // Built in the plugin's scope: a land's background accept check lives as long as the plugin.
-      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(externals(ctx, options))))
+      const services = yield* Layer.build(Model.layer.pipe(Layer.provideMerge(externals(ctx, options))))
       const rift = Context.get(services, Model.RiftTool)
 
       yield* ctx.tool.transform((editor) => {
@@ -90,7 +107,69 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
             ),
         })
       })
+
+      // The rift RPC (`@dotfiles/opencode-rift/rpc`), on the model the tool runs on: the tool's answer for the same input.
+      const answers = rpcHandlers(rift, Context.get(services, Rifts), Context.get(services, SessionDirectories), options)
+      yield* ctx.rpc
+        .register(RIFT_RPC, {
+          create: (input) => answering("create", Schema.decodeUnknownEffect(CreateAsk)(input), answers.create),
+          list: (input) => answering("list", Schema.decodeUnknownEffect(ListAsk)(input), answers.list),
+          inspect: (input) => answering("inspect", Schema.decodeUnknownEffect(InspectAsk)(input), answers.inspect),
+          land: (input) => answering("land", Schema.decodeUnknownEffect(LandAsk)(input), answers.land),
+        })
+        .pipe(Effect.orDie)
     }),
   })
+
+/** A Rift as the RPC answers carry it. */
+const laneOf = (workspace: Workspace): Lane => {
+  const lane = { path: workspace.path, head: workspace.head, state: stateOf(workspace) }
+  return Option.match(Option.fromUndefinedOr(workspace.branch), { onNone: () => lane, onSome: (branch) => ({ ...lane, branch }) })
+}
+
+/** A failure in the tool's words. */
+const failedOf = (failure: Model.Failure): Failed => ({ outcome: "failed", message: Model.explain(failure) })
+
+/** An ask that does not decode, in words. */
+const malformed = (method: string) => (error: { readonly message: string }) => Effect.succeed<Failed>({ outcome: "failed", message: `not a rift ${method}: ${error.message}` })
+
+/** The RPC's handlers: each runs the tool's own model on the ask, and reads the Rifts it names for the answer's data. */
+const rpcHandlers = (rift: typeof Model.RiftTool.Service, rifts: typeof Rifts.Service, sessions: typeof SessionDirectories.Service, options: Options) => {
+  /** The warm source the session's directory, or the ask's `source` against it, belongs to. */
+  const sourceOf = (sessionID: string, source: Option.Option<string>) =>
+    sessions.directoryOf(sessionID).pipe(
+      Effect.flatMap((directory) => rifts.source(Option.match(source, { onNone: () => directory, onSome: (asked) => Model.resolvePath(directory, asked) }))),
+    )
+  const created = ({ sessionID, at, ...asked }: CreateAsk) =>
+    rift.run(sessionID, { action: "create", ...asked }, Option.fromUndefinedOr(at)).pipe(
+      Effect.flatMap((answer) => rifts.inspect(answer.metadata.path ?? "").pipe(Effect.map((workspace): Created => ({ outcome: "answered", text: answer.text, rift: laneOf(workspace) })))),
+      Effect.catch((failure) => Effect.succeed<Created>(failedOf(failure))),
+    )
+  const listedOf = ({ sessionID, ...asked }: ListAsk) =>
+    Effect.gen(function* () {
+      const answer = yield* rift.run(sessionID, { action: "list", ...asked })
+      const source = yield* sourceOf(sessionID, Option.fromUndefinedOr(asked.source))
+      const workspaces = yield* Effect.forEach(yield* rifts.list(source), rifts.inspect, { concurrency: 4 })
+      return { outcome: "answered", text: answer.text, source, workrift: options.workrift, rifts: workspaces.map(laneOf) } satisfies Listed
+    }).pipe(Effect.catch((failure) => Effect.succeed<Listed>(failedOf(failure))))
+  const inspected = (ask: InspectAsk) =>
+    Effect.gen(function* () {
+      const directory = yield* sessions.directoryOf(ask.sessionID)
+      const workspace = yield* rifts.inspect(Model.resolvePath(directory, ask.path))
+      // Its line in the tool's list answer.
+      const line = listed(directory, [workspace]).split("\n").at(-1) ?? ""
+      return { outcome: "answered", text: line, rift: laneOf(workspace) } satisfies Inspected
+    }).pipe(Effect.catch((failure) => Effect.succeed<Inspected>(failedOf(failure))))
+  const landed = ({ sessionID, ...asked }: LandAsk) =>
+    rift.run(sessionID, { action: "land", ...asked }).pipe(
+      Effect.map((answer): LandAnswered => ({ outcome: "answered", text: answer.text })),
+      Effect.catch((failure) => Effect.succeed<LandAnswered>(failedOf(failure))),
+    )
+  return { create: created, list: listedOf, inspect: inspected, land: landed }
+}
+
+/** An ask decoded, then answered; one that does not decode is refused in words. */
+const answering = <A, B>(method: string, decoded: Effect.Effect<A, { readonly message: string }>, act: (ask: A) => Effect.Effect<B>) =>
+  decoded.pipe(Effect.flatMap(act), Effect.catch(malformed(method)))
 
 export default make(live)

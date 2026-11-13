@@ -74,8 +74,11 @@ export type Failure = InputRefused | RemoveRefused | RiftFailed | SessionUnreada
 export class RiftTool extends Context.Service<
   RiftTool,
   {
-    /** Acts on one call of the tool from `sessionID`. */
-    readonly run: (sessionID: string, input: RiftInput) => Effect.Effect<Answer, Failure>
+    /**
+     * Acts on one call of the tool from `sessionID`. A create's `at` (the rift mod's RPC alone; the tool's input has
+     * no such field) detaches the new Rift at that commit (`CreateRequest.at`).
+     */
+    readonly run: (sessionID: string, input: RiftInput, at?: Option.Option<string>) => Effect.Effect<Answer, Failure>
   }
 >()("dotfiles-opencode/rift/RiftTool") {}
 
@@ -174,11 +177,12 @@ export const layer = Layer.effect(
         Effect.map((below) => [workspace, ...below.flat()]),
       )
 
-    const create = Effect.fn("RiftTool.create")(function* (directory: string, source: string, input: RiftInput) {
+    const create = Effect.fn("RiftTool.create")(function* (directory: string, source: string, input: RiftInput, at: Option.Option<string>) {
       const branch = input.branch ?? input.name
       if (branch === undefined || branch.trim() === "") return yield* new BranchMissing()
       const name = input.name ?? workspaceName(branch)
-      const path = yield* rifts.create({ source, from: directory, name, branch })
+      const request = { source, from: directory, name, branch }
+      const path = yield* rifts.create(Option.match(at, { onNone: () => request, onSome: (commit) => ({ ...request, at: commit }) }))
       const workspace = yield* rifts.inspect(path)
       return {
         text: created(workspace, source),
@@ -682,12 +686,12 @@ export const layer = Layer.effect(
       }
     })
 
-    const run = Effect.fn("RiftTool.run")(function* (sessionID: string, input: RiftInput) {
+    const run = Effect.fn("RiftTool.run")(function* (sessionID: string, input: RiftInput, at: Option.Option<string> = Option.none()) {
       const directory = yield* sessions.directoryOf(sessionID)
       const source = () => rifts.source(input.source === undefined ? directory : resolvePath(directory, input.source))
       switch (input.action) {
         case "create":
-          return yield* create(directory, yield* source(), input)
+          return yield* create(directory, yield* source(), input, at)
         case "list":
           return yield* list(yield* source())
         case "remove":

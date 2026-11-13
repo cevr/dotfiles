@@ -60,7 +60,15 @@ if (tool === "herdr") {
   } else fail(`fake herdr: unexpected ${rest.join(" ")}`, 2)
 } else if (tool === "hc") {
   if (args[0] === "ls") {
-    out({ hidden_finished: 0, terminals: world.hc.terminals })
+    // As hc 0.1.21: the list carries no labels and no foreground; `hc get` has them.
+    out({
+      hidden_finished: 0,
+      terminals: world.hc.terminals.map((t) => ({ address: t.address, agent: t.foreground?.name ?? "", cwd: "/", state: t.state })),
+    })
+  } else if (args[0] === "get") {
+    const terminal = world.hc.terminals.find((t) => t.address === args[1])
+    if (terminal === undefined) fail(`{"error":{"kind":"not_found"}}`, 3)
+    out(terminal)
   } else if (args[0] === "label") {
     const terminal = world.hc.terminals.find((t) => t.address === args[1])
     if (terminal === undefined) fail(`{"error":{"kind":"not_found"}}`, 3)

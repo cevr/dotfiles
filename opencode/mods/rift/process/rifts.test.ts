@@ -78,6 +78,8 @@ const bench = (workrift: boolean) =>
             sh(path, env, "git", "stash", "push", "-q", "-m", "wip")
           }),
         switchTo: (path: string, branch: string) => Effect.sync(() => void sh(path, env, "git", "switch", "-q", "-c", branch)),
+        head: Effect.sync(() => sh(source, env, "git", "rev-parse", "HEAD").trim()),
+        missing: "0123456789abcdef0123456789abcdef01234567",
       }
     }),
     (made) => Effect.sync(() => rmSync(made.scratch, { recursive: true, force: true })),
