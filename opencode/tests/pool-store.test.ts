@@ -186,9 +186,9 @@ describe("the pool's source over a login store", () => {
       expect(trades()).toBe(1)
 
       chmodSync(slots, 0o700)
-      expect((yield* source.resolveEffect(alpha)).access).toBe(rotated.access)
+      expect((yield* Effect.promise(() => source.resolve(alpha))).access).toBe(rotated.access)
       expect(Option.map(Option.fromNullishOr(decodeStoredOAuth(file("alpha"))), (stored) => stored.refresh)).toEqual(Option.some(rotated.refresh))
-      expect((yield* theirs.resolveEffect(alpha)).access).toBe(rotated.access)
+      expect((yield* Effect.promise(() => theirs.resolve(alpha))).access).toBe(rotated.access)
       expect(trades()).toBe(1)
     }),
   )
