@@ -19,7 +19,7 @@ import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
 import { type Asked, type Message, makeHost, type Session, type Options, type Process, START } from "./host.ts"
 import * as Provider from "./provider.ts"
-import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
+import { type JsonObject, type LogLine, makeRuntime, Owner, type Runtime, SimError } from "./runtime.ts"
 
 export {
   call,
@@ -53,24 +53,51 @@ interface Instance {
 export interface WorldOptions extends Options {
   /** Anthropic as part of the world (sim/provider.ts): sessions run on `anthropic/claude-haiku-4-5` and their requests go to it over HTTP. */
   readonly anthropic?: Omit<Provider.Options, "seed">
+  /** Another host on this world's clock, scheduler and seed: a second OpenCode server beside `beside` (sim/hosts.ts). */
+  readonly beside?: { readonly start: number; readonly runtime: Runtime; readonly members: Members }
+}
+
+/** One host on a shared runtime: whose plugin copies it runs, where their log lines and stale timers go. */
+interface Member {
+  readonly owns: (owner: number) => boolean
+  readonly log: (entry: LogLine) => void
+  readonly stale: (owner: number) => void
+}
+
+/** The hosts on one runtime, and the copy numbers they share, so each copy's number names one host's. */
+interface Members {
+  readonly list: Array<Member>
+  readonly counter: { instances: number }
 }
 
 export const make = (worldOptions: WorldOptions) => {
-  const start = worldOptions.start ?? START
+  const start = worldOptions.beside?.start ?? worldOptions.start ?? START
   const logs: Array<LogLine & { readonly at: number }> = []
   /** Timers that fired for a copy already closed: none, unless a restart leaks one. */
   const stale: Array<number> = []
   const instances: Array<Instance> = []
   const loads: Array<Loaded> = []
-  const runtime = makeRuntime({
-    seed: worldOptions.seed,
-    start,
+  const members: Members = worldOptions.beside?.members ?? { list: [], counter: { instances: 0 } }
+  /** A line or a timer of copy `owner` goes to the host that runs it; the host's own (0), and a closed copy's, to the first host. */
+  const memberOf = (owner: number) => members.list.find((member) => member.owns(owner)) ?? members.list[0]
+  const runtime =
+    worldOptions.beside?.runtime ??
+    makeRuntime({
+      seed: worldOptions.seed,
+      start,
+      log: (entry, owner) => memberOf(owner)?.log(entry),
+      fired: (owner) => {
+        if (owner === 0 || members.list.some((member) => member.owns(owner))) return
+        memberOf(owner)?.stale(owner)
+      },
+    })
+  members.list.push({
+    owns: (owner) => instances.some((instance) => instance.number === owner),
     log: (entry) => {
       logs.push({ ...entry, at: runtime.now() })
       host.record("log", entry)
     },
-    fired: (owner) => {
-      if (owner === 0 || instances.some((instance) => instance.number === owner)) return
+    stale: (owner) => {
       stale.push(owner)
       host.record("stale-timer", { owner })
     },
@@ -89,7 +116,7 @@ export const make = (worldOptions: WorldOptions) => {
     },
   })
   const host = makeHost(options, runtime, start)
-  const counter = { instances: 0 }
+  const counter = members.counter
 
   /** Runs `effect` in the world to rest; fails when a plugin reached for something the world does not model. */
   const run = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | SimError> => runtime.run(effect).pipe(Effect.tap(() => unmodelled))
@@ -145,6 +172,8 @@ export const make = (worldOptions: WorldOptions) => {
   return {
     start,
     runtime,
+    /** The hosts on this world's runtime (`beside`). */
+    members,
     /** The world's Anthropic: what it received, each account's tokens. Fails a world made without one. */
     provider: () => Option.getOrThrowWith(provider, () => new SimError({ message: "this world has no provider: make it with `anthropic`" })),
     sessions: host.sessions,

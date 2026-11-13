@@ -119,8 +119,8 @@ export interface RuntimeOptions {
   readonly seed: number
   /** The epoch ms the clock starts at. */
   readonly start: number
-  /** Each log line a fiber writes. */
-  readonly log: (line: LogLine) => void
+  /** Each log line a fiber writes, with the plugin copy the fiber works for (`Owner`). */
+  readonly log: (line: LogLine, owner: number) => void
   /** Each timer as it fires, by the copy that set it. */
   readonly fired: (owner: number) => void
 }
@@ -155,11 +155,14 @@ export const makeRuntime = (options: RuntimeOptions) => {
   }
 
   const logger = Logger.make((entry) => {
-    options.log({
-      level: entry.logLevel,
-      message: Arr.ensure(entry.message).map(String).join(" "),
-      annotations: record(entry.fiber.getRef(References.CurrentLogAnnotations)),
-    })
+    options.log(
+      {
+        level: entry.logLevel,
+        message: Arr.ensure(entry.message).map(String).join(" "),
+        annotations: record(entry.fiber.getRef(References.CurrentLogAnnotations)),
+      },
+      entry.fiber.getRef(Owner),
+    )
   })
 
   /** The world's services under an effect: its clock, the plugins' seeded random, its logger, every level. */
