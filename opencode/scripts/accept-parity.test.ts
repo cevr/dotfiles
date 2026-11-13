@@ -1,6 +1,8 @@
 // No assertion lost: a real acceptance test leaves real OpenCode only through
-// the parity manifest (tests/parity.json), and only for a simulated test, under
-// the same name, that asserts at least as much. Three rules:
+// a parity manifest (tests/parity.json, and each tests/parity/*.json beside it,
+// each with its own baseline), and only for a simulated test, under the same
+// name, that asserts at least as much. A real file all of whose tests moved is
+// gone. Three rules, over every manifest together:
 //
 // 1. Every baseline name exists today, under the same name, in its simulated
 //    file or still in its real file, where the manifest says.
@@ -43,11 +45,50 @@ const read = (file: string) =>
     return yield* fs.readFileString(path.join(ROOT, file))
   })
 
-/** The manifest, and its files as `[real file, entry]` pairs. */
-const manifest = read("tests/parity.json").pipe(
-  Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest))),
-  Effect.map((decoded) => ({ ...decoded, entries: Object.entries(decoded.files) })),
-)
+/** A real file's text, or none once every test of it has moved to its simulated file and the file is gone. */
+const readReal = (file: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    if (!(yield* fs.exists(path.join(ROOT, file)))) return ""
+    return yield* fs.readFileString(path.join(ROOT, file))
+  })
+
+/** One manifest, decoded, and its files as `[real file, entry]` pairs. */
+const decode = (file: string) =>
+  read(file).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest))),
+    Effect.map((decoded) => ({ ...decoded, entries: Object.entries(decoded.files) })),
+  )
+
+/**
+ * Every manifest: tests/parity.json and each tests/parity/*.json (one per group of conversions,
+ * each with its own baseline), held to the same three rules.
+ */
+const manifests = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const dir = path.join(ROOT, "tests/parity")
+  const more = (yield* fs.exists(dir)) ? (yield* fs.readDirectory(dir)).filter((name) => name.endsWith(".json")).toSorted() : []
+  return yield* Effect.forEach(["tests/parity.json", ...more.map((name) => `tests/parity/${name}`)], decode)
+})
+
+type Decoded = Effect.Success<ReturnType<typeof decode>>
+
+/** Rule 1 today: each name of `manifest` where it is not where the manifest says, as `name: simulated|real`. */
+export const misplaced = (manifest: { readonly entries: ReadonlyArray<readonly [string, Decoded["entries"][number][1]]> }) =>
+  Effect.gen(function* () {
+    const found: Array<string> = []
+    for (const [file, entry] of manifest.entries) {
+      const real = declared(yield* readReal(file))
+      const simulated = declared(yield* read(entry.simulated))
+      for (const item of entry.tests) {
+        if (simulated.includes(item.name) !== (item.carried !== "real")) found.push(`${item.name}: simulated`)
+        if (real.includes(item.name) !== (item.carried !== "simulated")) found.push(`${item.name}: real`)
+      }
+    }
+    return found
+  })
 
 /** A child's whole output, as text. */
 const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
@@ -94,7 +135,7 @@ describe("no assertion lost", () => {
 
   live("the manifest names every baseline test with its baseline expect() calls", () =>
     Effect.gen(function* () {
-      const { baseline, entries, retired } = yield* manifest
+      for (const { baseline, entries, retired } of yield* manifests)
       for (const [file, entry] of entries) {
         const before = yield* at(baseline, file)
         const named = [...entry.tests.map((item) => item.name), ...retired.filter((item) => item.file === file).map((item) => item.name)]
@@ -109,14 +150,19 @@ describe("no assertion lost", () => {
 
   live("every baseline name exists today where the manifest says", () =>
     Effect.gen(function* () {
-      for (const [file, entry] of (yield* manifest).entries) {
-        const real = declared(yield* read(file))
-        const simulated = declared(yield* read(entry.simulated))
-        for (const item of entry.tests) {
-          expect({ name: item.name, simulated: simulated.includes(item.name) }).toEqual({ name: item.name, simulated: item.carried !== "real" })
-          expect({ name: item.name, real: real.includes(item.name) }).toEqual({ name: item.name, real: item.carried !== "simulated" })
-        }
-      }
+      for (const manifest of yield* manifests) expect(yield* misplaced(manifest)).toEqual([])
+    }),
+  )
+
+  live("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
+    Effect.gen(function* () {
+      const tui = yield* decode("tests/parity/tui.json")
+      const [file, entry] = tui.entries[0] ?? ["", { simulated: "", tests: [] }]
+      const first = entry.tests[0]
+      const planted = { ...first, name: "a planted name no simulated file declares", expects: 0, carried: "simulated" as const }
+      const broken = { ...tui, entries: [[file, { ...entry, tests: [planted, ...entry.tests.slice(1)] }] as const] }
+      expect(yield* misplaced(broken)).toEqual(["a planted name no simulated file declares: simulated"])
+      expect(yield* misplaced({ ...tui, entries: [[file, entry] as const] })).toEqual([])
     }),
   )
 
@@ -124,9 +170,9 @@ describe("no assertion lost", () => {
     "each file's simulated and remaining real expect() calls are at least the baseline's",
     () =>
       Effect.gen(function* () {
-        for (const [file, entry] of (yield* manifest).entries) {
+        for (const [file, entry] of (yield* manifests).flatMap((manifest) => manifest.entries)) {
           const simulated = yield* simulatedCounts(entry.simulated)
-          const real = expects(yield* read(file))
+          const real = expects(yield* readReal(file))
           const carried = entry.tests.map((item) => {
             const fromSimulated = simulated.get(item.name) ?? 0
             if (item.carried === "simulated") expect({ name: item.name, counted: simulated.has(item.name) }).toEqual({ name: item.name, counted: true })
@@ -143,8 +189,11 @@ describe("no assertion lost", () => {
     "a name leaves its real file only in the commit that adds it to its simulated file, and a retired name names what carries it",
     () =>
       Effect.gen(function* () {
-        const { baseline, entries, retired } = yield* manifest
-        for (const [file, entry] of entries)
+        const all = yield* manifests
+        const entries = all.flatMap((manifest) => manifest.entries)
+        const retired = all.flatMap((manifest) => manifest.retired)
+        for (const { baseline, entries: own } of all)
+        for (const [file, entry] of own)
           for (const item of entry.tests.filter((each) => each.carried === "simulated")) {
             const log = yield* output("git", ["log", "--format=%H", `-S${item.name}`, `${baseline}..HEAD`, "--", file])
             const removals = log.stdout.split("\n").filter((commit) => commit !== "")
