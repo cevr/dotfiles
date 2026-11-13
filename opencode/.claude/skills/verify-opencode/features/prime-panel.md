@@ -21,7 +21,7 @@
 
 - **Preconditions:** none. These suites run on the simulated TUI (`sim-tui/`): the fork's real TUI in the test's process, with Prime loaded by path, in front of a server double.
 - **States:** the panel's own states are `n/a` here, since no suite opens the panel; the real path drives them.
-- **World suites:** `cmd/prime/prime-runs.sim.test.tsx`, `cmd/prime/prime-sidebar.sim.test.tsx`, `cmd/prime/prime-pin.sim.test.tsx`, `cmd/prime/prime-idle-send.sim.test.tsx`, `cmd/prime/prime-escape.sim.test.tsx`. These are Prime's other surfaces on the simulated TUI: the subagent rows, the sidebar, the pin, a send while idle, and Escape. A change to Prime's code can break any of them, so its drive runs them all.
+- **World suites:** `cmd/prime/prime-runs.sim.test.tsx`, `cmd/prime/prime-sidebar.sim.test.tsx`, `cmd/prime/prime-pin.sim.test.tsx`, `cmd/prime/prime-idle-send.sim.test.tsx`, `cmd/prime/prime-escape.sim.test.tsx`, `cmd/prime/own-tabs.sim.test.tsx`. These are Prime's other surfaces on the simulated TUI: the subagent rows, the sidebar, the pin, a send while idle, Escape, and the window's own session tabs (the `window` tab scope daily writes: another TUI's tabs never show). A change to Prime's code can break any of them, so its drive runs them all.
 - **Code:** `mods/prime/`, `cmd/prime/`
 - **Regression:** `mods/prime/panel.test.ts` (the words and columns).
 
