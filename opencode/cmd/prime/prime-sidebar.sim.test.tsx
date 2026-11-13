@@ -22,7 +22,9 @@ const ROWS = 40
 const SIDEBAR = 42
 const BOOT: App.BootOptions = {
   file: FILE,
-  plugins: ["cmd/prime"],
+  // As `bun run daily` loads them, and as every simulated file of the process does: with Prime alone after an
+  // app with both, its client lost its event stream in the first seed (cause not found; state.md, Follow-ups).
+  plugins: ["cmd/prime", "cmd/escape"],
   width: WIDE,
   height: ROWS,
   // Each call its own row, as these frames read them; the default (low) folds a turn's calls into one.

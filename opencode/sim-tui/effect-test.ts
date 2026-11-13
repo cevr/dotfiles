@@ -2,7 +2,7 @@
 // its own timeout. sim-tui resolves the fork's Effect (it runs the fork's TUI
 // in process), whose types are not those effect-bun-test and sim/seed.ts are
 // written against (the root's), so its tests register through this instead;
-// so do decider's and lint's, which resolve the fork's Effect too.
+// so do lint's, which resolves the fork's Effect too.
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { test } from "bun:test"
 import { Effect, type Layer, type Scope } from "effect"
