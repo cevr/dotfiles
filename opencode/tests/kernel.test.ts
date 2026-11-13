@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path"
 import { Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -90,20 +90,26 @@ const Notice = Schema.Struct({ type: Schema.Literal("synthetic"), text: Schema.S
 const noticesOf = (result: Result) => Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(result.messages).filter(Schema.is(Notice)).map((notice) => notice.text)
 
 /**
- * The stop run's cell saw its child running past a short wait, stopped once and then unchanged, and a stop of its own
- * session refused; the parent heard one cancelled notice and none of a finish; the child asked the model once.
+ * The stop run: the cell saw its child (mid-turn, its background shell running, a prompt queued behind it) running
+ * past a short wait, stopped once and then unchanged, still stopped after the time its shell would have ended, the
+ * shell's file never written, and a stop of its own session refused. The parent heard one cancelled notice and none
+ * of a finish; the child asked the model only for its shell and its stalled turn, never with the queued prompt, which
+ * no longer waits in its inbox.
  */
 const stoppedChild = (result: Result) => {
   const [cell] = toolParts(result.messages)
   expect(cell?.state.status).toBe("completed")
   expect((cell?.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(
-    /^waited: running, still running after 1500 ms\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\); nothing to stop\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
+    /^waited: running, still running after 3000 ms\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\)\nlater: stopped\nlate file: none\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
   )
   const notices = noticesOf(result).filter((text) => text.startsWith("<subagent "))
   expect(notices).toHaveLength(1)
   expect(notices[0]).toContain('state="cancelled"')
-  // The child's one model request is its stalled turn: nothing ran it again after the stop.
-  expect(result.seen.filter((request) => request.task.endsWith(STALL_TASK) && request.tools.length > 0)).toHaveLength(1)
+  // The child's model requests are its shell's call and its stalled turn: nothing ran it again after the stop.
+  expect(result.seen.filter((request) => request.task.endsWith(STALL_TASK) && request.tools.length > 0)).toHaveLength(2)
+  expect(result.seen.filter((request) => request.last.includes(QUEUED_PROMPT))).toEqual([])
+  // The run queued a prompt behind the child's stalled turn; the stop dropped it, so no prompt waits in its inbox.
+  expect(result.inbox).not.toContainEqual(expect.objectContaining({ type: "user" }))
 }
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {

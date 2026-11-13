@@ -302,6 +302,14 @@
     },
     {
       "files": [
+        "tests/kernel/run.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
         "mods/kernel/subagents.test.ts"
       ],
       "rules": {
