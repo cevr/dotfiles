@@ -68,7 +68,7 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   /** The model it runs on: the input's, else the role's at its effort, when that model offers it. */
   model: Schema.optionalKey(Schema.String),
   /**
-   * The model a new role start named that is the role's own (any variant or none): dropped, so the start runs
+   * The model a new role start named that is the role's own, or a planner's first model (any variant or none): dropped, so the start runs
    * as if it named none, at the role's effort, with the Codex fallback and the latch. Its reason is `model-dropped`.
    */
   dropped: Schema.optionalKey(Schema.String),

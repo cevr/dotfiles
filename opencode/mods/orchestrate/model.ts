@@ -155,6 +155,13 @@ export interface LatchedStart {
   readonly latched: SubagentLatched
 }
 
+/**
+ * The effort `level` that `model` (`provider/id[#variant]`) does not run at: none when it names `#level`, or when
+ * there is no effort to run at (none, or the worker's empty one).
+ */
+const lackedEffort = (model: string, level: Option.Option<string>): Option.Option<string> =>
+  Option.filter(level, (wanted) => wanted !== "" && !model.endsWith(`#${wanted}`))
+
 /** A latch's models, kept in its context: the first it is decided on, and the Codex fallback. */
 const LatchModels = Schema.Struct({ primary: Schema.String, fallback: Schema.String })
 
@@ -231,6 +238,8 @@ export const layer = (config: Config) =>
       const codex = yield* CodexAdmission
       const latches = yield* Latches
       const units = yield* UnitLogs
+      /** The planner's first model, when set. */
+      const firstModel = Option.fromNullishOr(config.planner).pipe(Option.flatMap((planner) => Option.fromNullishOr(parseModel(planner.model))))
 
       /** Move `unit` in the first of `directories` (or a path `named`) that has it; none found writes nothing. */
       const move = Effect.fnUntraced(function* (transition: Transition, named: ReadonlyArray<string>, directories: ReadonlyArray<string | undefined>) {
@@ -369,6 +378,9 @@ export const layer = (config: Config) =>
         const model = yield* models.at(sessionID, first, start.level === "" ? undefined : start.level)
         const ref = parseModel(model)
         if (model === undefined || ref === undefined) return fell(`${first} is not offered`)
+        // Offered without the planner's effort, it would run at the model's own default: the chain runs at it instead.
+        const lacks = lackedEffort(model, Option.fromNullishOr(start.level))
+        if (Option.isSome(lacks)) return fell(`${first} offers no ${lacks.value}`)
         if (start.resting) return { first: undefined, model, paced: undefined }
         const { hold, replies } = yield* holdOf(ref, start.agent, sessionID)
         if (hold !== undefined) return fell(`${model} held: ${hold.reason}`)
@@ -419,7 +431,11 @@ export const layer = (config: Config) =>
         // An implementor naming a Codex model runs on its role's model instead, a follow-up on the one it has: Codex never
         // implements, whether the Codex fallback is on or off (no-codex-impl r1 M1).
         const codexNamed = asks !== undefined && routed.agent === "implementor" && isCodexModel(asks, config.codex?.providers ?? [])
-        const dropped = asks !== undefined && ((bound !== undefined && namesModel(asks, bound)) || codexNamed) ? asks : undefined
+        // A new planner naming its first model (any variant or none) is the planner's start too: named, it ran at the
+        // model's default effort (the workbox's Ergo root, 2026-11-12: 11 Fable plans at 4x the cost of medium).
+        const fresh = Option.isNone(Option.fromNullishOr(child))
+        const firstNamed = Option.exists(Option.fromNullishOr(asks), (asked) => fresh && routed.agent === "planner" && Option.exists(firstModel, (first) => namesModel(asked, first)))
+        const dropped = asks !== undefined && ((bound !== undefined && namesModel(asks, bound)) || codexNamed || firstNamed) ? asks : undefined
         const level = isRole(routed.agent) ? effort(routed.agent) : undefined
         const onFirst = yield* firstOf(call.sessionID, {
           agent: routed.agent,
@@ -430,6 +446,19 @@ export const layer = (config: Config) =>
         })
         // A new role subagent runs at the role's effort, as a variant of the model it would run on; a planner on its first model, at it.
         let model = onFirst?.model ?? (dropped === undefined ? asks : undefined)
+        // A new planner naming another model with no variant runs it at the planner's effort, when that model offers it.
+        const bareNamed = Option.all({
+          named: Option.filter(Option.fromNullishOr(model), (named) => !named.includes("#")),
+          wanted: Option.filter(Option.fromNullishOr(level), (wanted) => wanted !== ""),
+        }).pipe(Option.filter(() => fresh && routed.agent === "planner"))
+        if (Option.isSome(bareNamed)) {
+          const { named, wanted } = bareNamed.value
+          const at = Option.fromNullishOr(yield* models.at(call.sessionID, named, wanted))
+          model = Option.getOrElse(
+            Option.filter(at, (offered) => Option.isNone(lackedEffort(offered, Option.some(wanted)))),
+            () => named,
+          )
+        }
         if (child === undefined && level !== undefined && level !== "" && model === undefined) {
           const variant = yield* models.variant(call.sessionID, routed.agent, level)
           if (variant) model = variant
