@@ -324,7 +324,7 @@ describe("a login whose refresh token the endpoint refused is lost until its fil
     expect(await lost(source)).toEqual([])
   })
 
-  test("our own refresh, another process's, or a removed label clears it", async () => {
+  test("a new sign-in, another process's refresh, or a removed label clears it", async () => {
     let answer: Answer = "refused"
     const { dir, source, clock, signIn } = bench(() => answer)
     signIn("alpha", clock.now - 1000)
@@ -337,6 +337,7 @@ describe("a login whose refresh token the endpoint refused is lost until its fil
     expect((await lost(source)).map((login) => login.label)).toEqual(["alpha", "beta", "gamma"])
 
     answer = "rotate"
+    signIn("alpha", clock.now - 1000)
     await source.resolve(id("alpha"))
     // Another process refreshed beta: another login in the file.
     signIn("beta", clock.now + 8 * HOUR)
