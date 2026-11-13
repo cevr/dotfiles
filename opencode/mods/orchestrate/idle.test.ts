@@ -160,7 +160,7 @@ describe("what holds the nudge back", () => {
 describe("a due batch", () => {
   const ready = (count: number, since?: number): ReadonlyArray<ReadyUnit> =>
     ["lexer", "parser", "docs"].slice(0, count).map((unit) => (since === undefined ? { run: "p5", unit } : { run: "p5", unit, since }))
-  const LAND = 'land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser", "p5/docs"] }).'
+  const LAND = 'land it with orchestrate({ action: "land", units: ["lexer", "parser", "docs"] }).'
 
   test("three ready units are due at once, two are not", () =>
     run(
@@ -194,7 +194,7 @@ describe("a due batch", () => {
         Nudged.make({
           moving: [],
           landing: ready(1, T),
-          line: 'idle with a batch due (lexer ready 30 min): lexer; land it with rift({ action: "land", rifts: ["p5/lexer"] }).',
+          line: 'idle with a batch due (lexer ready 30 min): lexer; land it with orchestrate({ action: "land", units: ["lexer"] }).',
         }),
       ),
     ))
@@ -212,7 +212,7 @@ describe("a due batch", () => {
         Nudged.make({
           moving: [],
           landing: [{ run: "p5", unit: "lexer", since: T + 10 * MINUTE }, { run: "p5", unit: "parser", since: T }],
-          line: 'idle with a batch due (parser ready 35 min): lexer, parser; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser"] }).',
+          line: 'idle with a batch due (parser ready 35 min): lexer, parser; land it with orchestrate({ action: "land", units: ["lexer", "parser"] }).',
         }),
       ),
     ))
@@ -247,7 +247,7 @@ describe("a due batch", () => {
       ),
       Story.when(nudge({ moving: [], ready: [slow, hot] })),
       Story.then(
-        Nudged.make({ moving: [], landing: [slow, hot], line: 'idle with a batch due (2 ready): lexer, hotfix; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/hotfix"] }).' }),
+        Nudged.make({ moving: [], landing: [slow, hot], line: 'idle with a batch due (2 ready): lexer, hotfix; land it with orchestrate({ action: "land", units: ["lexer", "hotfix"] }).' }),
       ),
     )
   })
@@ -258,7 +258,7 @@ describe("a due batch", () => {
       Story.given(idle),
       Story.clock(T + 10 * MINUTE),
       Story.when(nudge({ moving: [], ready: [quick] })),
-      Story.then(Nudged.make({ moving: [], landing: [quick], line: 'idle with a batch due (lexer ready 10 min): lexer; land it with rift({ action: "land", rifts: ["p5/lexer"] }).' })),
+      Story.then(Nudged.make({ moving: [], landing: [quick], line: 'idle with a batch due (lexer ready 10 min): lexer; land it with orchestrate({ action: "land", units: ["lexer"] }).' })),
     )
   })
 
@@ -340,7 +340,7 @@ describe("the units and the line", () => {
   test("the land call names every ready unit's Rift, past the eight the line lists", () => {
     const many = Array.from({ length: 9 }, (_, n) => ({ run: "r", unit: `u${n}` }))
     expect(lineOf({ moving: [], landing: { units: many, why: "9 ready" } })).toBe(
-      `idle with a batch due (9 ready): u0, u1, u2, u3, u4, u5, u6, u7 and 1 more; land it with rift({ action: "land", rifts: [${many.map((unit) => `"${unit.run}/${unit.unit}"`).join(", ")}] }).`,
+      `idle with a batch due (9 ready): u0, u1, u2, u3, u4, u5, u6, u7 and 1 more; land it with orchestrate({ action: "land", units: [${many.map((unit) => `"${unit.unit}"`).join(", ")}] }).`,
     )
   })
 

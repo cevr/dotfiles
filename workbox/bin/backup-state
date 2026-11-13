@@ -73,10 +73,20 @@ archive_paths() {
 archive_paths "$archive_root/claude-sessions.tar.gz.tmp" .claude/sessions
 mv "$archive_root/claude-sessions.tar.gz.tmp" "$archive_root/claude-sessions.tar.gz"
 
-archive_paths "$archive_root/herdr-state.tar.gz.tmp" \
-  .config/herdr \
-  .local/state/herdr
-mv "$archive_root/herdr-state.tar.gz.tmp" "$archive_root/herdr-state.tar.gz"
+# herdr-core (hc): its config and its terminals (terminals.json, screens).
+archive_paths "$archive_root/hc-state.tar.gz.tmp" \
+  .config/herdr-core \
+  .local/state/herdr-core
+mv "$archive_root/hc-state.tar.gz.tmp" "$archive_root/hc-state.tar.gz"
+
+# herdr stays installed for rollback until herdr-retire; back it up while its
+# config is there.
+if [ -d "$HOME/.config/herdr" ]; then
+  archive_paths "$archive_root/herdr-state.tar.gz.tmp" \
+    .config/herdr \
+    .local/state/herdr
+  mv "$archive_root/herdr-state.tar.gz.tmp" "$archive_root/herdr-state.tar.gz"
+fi
 
 if [ -f "$HOME/.zsh_history" ]; then
   install -m 600 "$HOME/.zsh_history" "$snapshot_root/zsh_history"

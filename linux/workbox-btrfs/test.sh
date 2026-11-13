@@ -100,6 +100,12 @@ git_ -C "$wt/lane-detached" commit --allow-empty -m 'detached work'
 # A stale entry whose directory is gone, like /tmp/opencode/*-base.
 git_ -C "$app" worktree add "$work/stale-base" -b stale-base
 rm -r "$work/stale-base"
+# A worktree link whose gitdir is gone, nested in a checkout, like the live run's
+# ergo/tmp/orchestrate/wf10/spike-syntax/proto/conformance/upstream/effect.
+broken=$app/vendor/upstream
+mkdir -p "$broken"
+echo "gitdir: $app/.git/worktrees/upstream-gone" > "$broken/.git"
+echo 'kept' > "$broken/file"
 cat > "$WB_WORKTREES_CONF" <<'EOF'
 hold lane-held owner decides
 release lane-a
@@ -137,13 +143,16 @@ grep -q 'fails under' "$work/before.log" || fail 'check.sh --before did not repo
 pass 'check.sh --before reports ext4 has no reflinks'
 
 # --- plan and convert, as the owner.
-as_owner bash "$here/migrate.sh" plan > "$work/plan.log"
+as_owner bash "$here/migrate.sh" plan > "$work/plan.log" 2> "$work/plan.err" || { cat "$work/plan.err"; fail 'plan failed'; }
+grep -q "skipped $broken: " "$work/plan.err" || { cat "$work/plan.err"; fail 'plan did not warn of the broken worktree link'; }
+grep -q "$broken" "$work/plan.log" && fail 'plan classified the broken worktree link'
 grep -q "keep .*lane-held.*held: owner decides" "$work/plan.log" || { cat "$work/plan.log"; fail 'plan did not hold lane-held'; }
 grep -q "keep .*lane-unpushed.*1 unpushed" "$work/plan.log" || { cat "$work/plan.log"; fail 'plan did not keep lane-unpushed'; }
 grep -q "convert .*lane-a " "$work/plan.log" || { cat "$work/plan.log"; fail 'plan did not convert lane-a'; }
-pass 'plan classifies held, unpushed, released and clean worktrees'
+pass 'plan classifies held, unpushed, released and clean worktrees, and skips a broken link with a warning'
 
-as_owner bash "$here/migrate.sh" convert > "$work/convert.log"
+as_owner bash "$here/migrate.sh" convert > "$work/convert.log" 2> "$work/convert.err" || { cat "$work/convert.err"; fail 'convert failed'; }
+grep -q "skipped $broken: " "$work/convert.err" || { cat "$work/convert.err"; fail 'convert did not warn of the broken worktree link'; }
 converted=$home/.local/state/workbox-btrfs/converted.tsv
 [[ $(cut -f1 "$converted" | sort | tr '\n' ' ') == 'lane-a lane-clean lane-detached ' ]] || { cat "$converted"; fail 'converted the wrong worktrees'; }
 ra=$ws/.rifts/app/lane-a
@@ -152,7 +161,7 @@ git -C "$ra" diff --cached --name-only | grep -qx src/staged.ts || fail 'staged 
 grep -q 'a = 2' "$ra/src/index.ts" || fail 'unstaged work lost'
 [[ $(cat "$ra/notes.md") == untracked ]] || fail 'untracked file lost'
 [[ $(git -C "$ws/.rifts/app/detached-lane-detached" log -1 --format=%s) == 'detached work' ]] || fail 'detached worktree lost its commit'
-as_owner bash "$here/migrate.sh" convert > /dev/null
+as_owner bash "$here/migrate.sh" convert > /dev/null 2>&1 || fail 'a rerun of convert failed'
 [[ $(wc -l < "$converted") == 3 ]] || fail 'a rerun of convert converted again'
 pass 'convert makes Rifts with commits, staged, unstaged and untracked work; reruns are no-ops'
 
@@ -197,6 +206,8 @@ cmp -s "$home/.cache/big" <(head -c $((1536 << 20)) /dev/zero) || fail 'the larg
 [[ $(stat -c %U "$home/.cache/blob") == "$user" ]] || fail 'owner lost'
 [[ $(stat -c %i "$app/node_modules/pkg/index.js") == $(stat -c %i "$home/.bun/install/cache/pkg/index.js") ]] || fail 'bun hard link split'
 [[ ! -e $wt/lane-a ]] || fail 'a converted worktree was copied'
+[[ $(cat "$broken/file") == kept ]] || fail 'the broken worktree link was not copied as it is'
+grep -q "warn .*$broken .*broken before the migration" "$work/home.log" || { cat "$work/home.log"; fail 'check.sh did not report the link broken before the migration'; }
 [[ -d $wt/lane-held && -d $wt/lane-unpushed ]] || fail 'a kept worktree is missing'
 as_owner git -C "$wt/lane-held" status --short >/dev/null || fail 'a kept worktree lost its repository'
 [[ $(grep -c 'subvol=@' "$root/etc/fstab") == 2 ]] || fail 'fstab lines missing'
@@ -206,6 +217,34 @@ pass "home moved the home and /tmp onto subvolumes (inode was $before_inode; lin
 bash "$here/migrate.sh" home > /dev/null || fail 'a rerun of home failed'
 [[ $(grep -c 'subvol=@' "$root/etc/fstab") == 2 ]] || fail 'a rerun added fstab lines'
 pass 'home reruns as a no-op'
+
+# --- check.sh's alarms. An image that may grow past ext4's free space: only the
+# file's apparent size changes (no losetup -c), so btrfs never sees it.
+size_ok=$(stat -c %s "$image")
+free=$(df -B1 --output=avail "$root" | awk 'NR == 2 { print $1 }')
+truncate -s $((size_ok + free + 1073741824)) "$image"
+bash "$here/check.sh" > "$work/check-unbacked.log" 2>&1 || true
+truncate -s "$size_ok" "$image"
+grep -q 'warn .*could fill the root' "$work/check-unbacked.log" || { cat "$work/check-unbacked.log"; fail 'check.sh did not warn of an image ext4 cannot back'; }
+bash "$here/check.sh" | grep -q 'could fill the root' && fail 'check.sh warns of a backed image'
+pass 'check.sh warns when the image may outgrow ext4 free space, and only then'
+
+# A subvolume line above the image line, in a copy of the fstab.
+bad_fstab=$work/fstab.misordered
+{ grep 'subvol=@home,' "$root/etc/fstab"; grep -v 'subvol=@home,' "$root/etc/fstab"; } > "$bad_fstab"
+if WB_FSTAB=$bad_fstab bash "$here/check.sh" > "$work/check-order.log" 2>&1; then
+    cat "$work/check-order.log"; fail 'check.sh passed an fstab with @home before the image'
+fi
+grep -q 'FAIL  @home line comes before the image line' "$work/check-order.log" || { cat "$work/check-order.log"; fail 'check.sh did not name the misordered @home line'; }
+pass 'check.sh fails an fstab that mounts a subvolume before the image'
+
+# A link the move broke still fails; only the recorded ones are warnings.
+mv "$app/.git/worktrees/lane-held" "$work/lane-held-gitdir"
+if bash "$here/check.sh" > "$work/check-link.log" 2>&1; then lane_rc=0; else lane_rc=1; fi
+mv "$work/lane-held-gitdir" "$app/.git/worktrees/lane-held"
+((lane_rc == 1)) && grep -q "FAIL  $wt/lane-held points at a missing" "$work/check-link.log" ||
+    { cat "$work/check-link.log"; fail 'check.sh passed a worktree link broken after the migration'; }
+pass 'check.sh fails a newly broken worktree link and only warns of one broken before'
 
 # --- finish: prunes, deletes the old trees, grows the image into the space.
 size_before=$(stat -c %s "$image")

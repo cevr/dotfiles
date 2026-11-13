@@ -33,25 +33,42 @@ const fail = (message: string, code = 1) => {
 if (tool === "herdr") {
   let rest = args
   let host: { snapshot: unknown; processes: Record<string, ReadonlyArray<ReadonlyArray<string>>> } = world.herdr
+  // A `--session` herdr is the same world: its panes are the default's.
   if (rest[0] === "--machine") {
     const machine = world.herdr.machines?.[rest[1] ?? ""]
     if (machine === undefined) fail(`{"error":{"code":"machine_not_found"}}`)
     host = machine!
     rest = rest.slice(2)
   } else if (rest[0] === "--session") rest = rest.slice(2)
+  const live = (pane: string) => ((host.snapshot as { panes?: Array<{ pane_id: string }> }).panes ?? []).some((p) => p.pane_id === pane)
   if (rest[0] === "api" && rest[1] === "snapshot") {
     out({ id: "cli:api:snapshot", result: { snapshot: host.snapshot } })
   } else if (rest[0] === "pane" && rest[1] === "process-info" && rest[2] === "--pane") {
     const pane = rest[3] ?? ""
+    if (!live(pane)) fail(`{"error":{"code":"pane_not_found","message":"pane ${pane} not found"}}`)
     const argvs = host.processes[pane] ?? [["-zsh"]]
     out({
       id: "cli:pane:process_info",
       result: { process_info: { pane_id: pane, foreground_processes: argvs.map((argv, i) => ({ argv, pid: 100 + i, name: argv[0] })) } },
     })
+  } else if (rest[0] === "pane" && rest[1] === "run" && rest.length >= 4) {
+    // The shell runs the command: the pane's foreground becomes it.
+    const pane = rest[2] ?? ""
+    if (!live(pane)) fail(`{"error":{"code":"pane_not_found","message":"pane ${pane} not found"}}`)
+    host.processes[pane] = [rest.slice(3).join(" ").split(" ")]
+    out({ id: "cli:pane:run", result: { type: "ok" } })
   } else fail(`fake herdr: unexpected ${rest.join(" ")}`, 2)
 } else if (tool === "hc") {
   if (args[0] === "ls") {
-    out({ hidden_finished: 0, terminals: world.hc.terminals })
+    // As hc 0.1.21: the list carries no labels and no foreground; `hc get` has them.
+    out({
+      hidden_finished: 0,
+      terminals: world.hc.terminals.map((t) => ({ address: t.address, agent: t.foreground?.name ?? "", cwd: "/", state: t.state })),
+    })
+  } else if (args[0] === "get") {
+    const terminal = world.hc.terminals.find((t) => t.address === args[1])
+    if (terminal === undefined) fail(`{"error":{"kind":"not_found"}}`, 3)
+    out(terminal)
   } else if (args[0] === "label") {
     const terminal = world.hc.terminals.find((t) => t.address === args[1])
     if (terminal === undefined) fail(`{"error":{"kind":"not_found"}}`, 3)

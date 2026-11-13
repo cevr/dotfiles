@@ -31,6 +31,11 @@ export interface CreateRequest {
   readonly name: string
   /** The branch to check out in it: the local branch, else the remote one, else a new one from the source's HEAD. */
   readonly branch: string
+  /**
+   * A commit (or a ref, `origin/HEAD` for origin's default branch) to detach the new Rift at, in place of checking
+   * `branch` out: fetched from origin first when the Rift lacks it. A detach that fails leaves no Rift behind.
+   */
+  readonly at?: string
 }
 
 /** Rift workspaces and the Git checkouts inside them. */

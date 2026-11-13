@@ -884,6 +884,8 @@ export class Machines extends Context.Service<
      * message that rides on its next request. The plugin calls it once per compaction.
      */
     readonly compacted: (sessionID: string) => Effect.Effect<BriefOutcome>
+    /** The root's state as its ledger holds it now: what the `orchestrate` tool's status, next call and lanes read. */
+    readonly state: (root: string) => Effect.Effect<MachineState>
   }
 >()("dotfiles-opencode/orchestrate/Machines") {}
 
@@ -1195,7 +1197,7 @@ export const machineLayer = (config: MachineConfig) =>
         )
       })
 
-      return { start, started, resolve, land, landed, dropped, handBack, brief, compacted }
+      return { start, started, resolve, land, landed, dropped, handBack, brief, compacted, state: ledger.state }
     }),
   )
 

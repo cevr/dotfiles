@@ -545,6 +545,16 @@
     },
     {
       "files": [
+        "scripts/verify.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noAsyncFunction": "off"
+      }
+    },
+    {
+      "files": [
         "formal/check.ts"
       ],
       "rules": {

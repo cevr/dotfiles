@@ -36,18 +36,34 @@ check_memory_protection() {
   test "$(systemctl show "$service_name" -p OOMScoreAdjust --value)" -eq "$oom_score_adjust"
 }
 
+# herdr-core (hc) holds the terminals: the same checks as workbox-health. They
+# read hc alone, so they pass with herdr running beside it or stopped.
+# `hc server status` starts the core when none runs, in its own transient unit.
+check_hc() {
+  hc_status=$(hc server status --json)
+  printf '%s' "$hc_status" | jq -e '.pid | type == "number"' >/dev/null
+  printf '%s' "$hc_status" |
+    jq -e '(.version // "" | split("-")[0] | split(".") | map(tonumber? // 0)) >= [0, 1, 21]' >/dev/null
+  printf '%s' "$hc_status" | jq -e '.keeps_running_after_logout == true' >/dev/null
+  systemctl --user is-enabled --quiet hc-core.service
+  hc_unit=$(ps -o uunit= -p "$(printf '%s' "$hc_status" | jq -er .pid)" | tr -d '[:space:]')
+  case "$hc_unit" in
+    hc-serve-*.service) ;;
+    *) return 1 ;;
+  esac
+  test "$(systemctl --user show "$hc_unit" -p OOMPolicy --value)" = continue
+}
+
 check_mode() {
-  for command in btrfs bun curl git herdr hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale workbox-release-valve workbox-rift-storage workrift zsh; do
+  for command in btrfs bun curl git hc hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale workbox-release-valve workbox-rift-storage workrift zsh; do
     check_command "$command"
   done
 
-  herdr config check
-  HERDR_SESSION=bite herdr plugin action list --plugin cvr.herdr-hunk |
-    grep -q '"action_id":"send"'
+  check_hc
   test -L "$HOME/.zshenv"
   test -L "$HOME/.zshrc"
   systemctl --user is-active --quiet sideshow.service
-  systemctl --user is-active --quiet herdr-bite.service
+  systemctl --user is-enabled --quiet opencode.service
   systemctl --user is-active --quiet workrift-prune.timer
   systemctl --user is-active --quiet workbox-backup.timer
   systemctl --user is-active --quiet workbox-health.timer
@@ -109,7 +125,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   zsh
 
 mkdir -p "$local_bin_dir" "$user_unit_dir" "$HOME/.agents"
-mkdir -p "$HOME/.config/bite-workbox/patches" "$HOME/.config/herdr" "$HOME/.config/hunk" "$HOME/.config/orchestrate"
+mkdir -p "$HOME/.config/bite-workbox/patches" "$HOME/.config/hunk" "$HOME/.config/orchestrate"
 
 ln -sfn "$workbox_dir/zshenv" "$HOME/.zshenv"
 ln -sfn "$workbox_dir/zshrc" "$HOME/.zshrc"
@@ -125,15 +141,19 @@ for script in "$workbox_dir"/bin/*; do
   install -m 755 "$script" "$local_bin_dir/$(basename "$script")"
 done
 install -m 644 "$workbox_dir/bun-tools.txt" "$HOME/.config/bite-workbox/bun-tools.txt"
-install -m 644 "$workbox_dir/herdr-plugins.txt" "$HOME/.config/bite-workbox/herdr-plugins.txt"
-install -m 644 "$workbox_dir/herdr-config.toml" "$HOME/.config/herdr/config.toml"
 install -m 644 "$workbox_dir/hunk-config.toml" "$HOME/.config/hunk/config.toml"
 install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 
 "$local_bin_dir/install-bun-tools"
-"$local_bin_dir/install-herdr-plugins"
 "$local_bin_dir/workbox-rift-storage" --apply
 "$local_bin_dir/install-node"
+
+# herdr-core (hc) holds the terminals. Its installer (herdr.dev/core) puts hc
+# and herdr-core in ~/.local/bin. It runs only when hc is missing, so a running
+# core is never touched; `hc update` updates it in place.
+if [ ! -x "$local_bin_dir/hc" ] && ! command -v hc >/dev/null 2>&1; then
+  curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+fi
 
 # `workrift init <repository> /workspaces/bite` creates the Bite warm source; rerun
 # bootstrap afterwards to give it the environment file and its warm step.
@@ -237,7 +257,11 @@ systemctl --user enable --now \
   workbox-backup.timer \
   workbox-health.timer \
   workbox-update-report.timer
-"$local_bin_dir/migrate-herdr-to-systemd"
+# hc-core.service brings the core back at boot; starting it now leaves a
+# running core alone (`hc server start` keeps its pid). The OpenCode unit only
+# needs to be enabled: the service may already run, started by hand or by daily.
+systemctl --user enable --now hc-core.service
+systemctl --user enable opencode.service
 systemctl --user restart sideshow.service
 
 if [ -d "$HOME/.config/bite-workbox/settings-source" ]; then

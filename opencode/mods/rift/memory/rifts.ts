@@ -1,7 +1,7 @@
 // Rifts held in memory, for the seam test and the model's tests: warm
 // sources and their Rifts in a mutable world the test reads and changes, laid
 // out as Rift lays them (`<parent>/.rifts/<source>/<name>`).
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 
@@ -18,6 +18,8 @@ export interface World {
   readonly stashed: Map<string, ReadonlyArray<string>>
   /** What each removal runs before it trashes, standing for a slow `rift remove`; at first, nothing. */
   removeHold: Effect.Effect<void>
+  /** The commit a create's `at` names (a commit or a ref), or none when the repository has no such commit; at first, `at` itself. */
+  commitOf: (at: string) => Option.Option<string>
 }
 
 export const world = (sources: ReadonlyArray<string>, rifts: ReadonlyArray<Workspace> = []): World => ({
@@ -25,6 +27,7 @@ export const world = (sources: ReadonlyArray<string>, rifts: ReadonlyArray<Works
   rifts: new Map(rifts.map((workspace) => [workspace.path, workspace])),
   stashed: new Map(),
   removeHold: Effect.void,
+  commitOf: Option.some,
 })
 
 /** Stashes a change in the workspace at `path` (a source or a Rift), as `git stash` there would: a new commit atop its stash. */
@@ -68,7 +71,17 @@ export const layer = (state: World) =>
         if (!state.sources.includes(request.source)) return yield* new RiftFailed({ operation: "rift create", message: `no initialized workspace at ${request.source}` })
         const path = pathOf(request.source, request.name)
         if (state.rifts.has(path)) return yield* new RiftFailed({ operation: "rift create", message: `rift directory already exists: ${path}` })
-        state.rifts.set(path, clean(path, request.branch))
+        // Detached at `at`'s commit, or nothing made: a failed detach leaves no Rift.
+        const made = yield* Option.match(Option.fromUndefinedOr(request.at), {
+          onNone: () => Effect.succeed(clean(path, request.branch)),
+          onSome: (at) =>
+            Option.match(state.commitOf(at), {
+              onNone: () => Effect.fail(new RiftFailed({ operation: "git switch", message: `the Rift ${path} was removed: no commit ${at} here or on origin` })),
+              // Detached: no branch.
+              onSome: (head) => Effect.succeed({ ...clean(path, void 0), head }),
+            }),
+        })
+        state.rifts.set(path, made)
         // A copy-on-write copy: the source's stash comes with it.
         state.stashed.set(path, [...(state.stashed.get(request.source) ?? [])])
         return path

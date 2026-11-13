@@ -69,21 +69,33 @@ check "Access slice kept out of swap" test \
 check_memory_protection Tailscale tailscaled.service 134217728 268435456 -900
 check_memory_protection Resolver systemd-resolved.service 33554432 67108864 -800
 check_memory_protection "Tailscale SSH" bite-workbox-sshd.service 33554432 67108864 -900
-check "herdr-bite.service enabled" test -L \
-  "$HOME/.config/systemd/user/default.target.wants/herdr-bite.service"
-check "herdr-bite.service active" systemctl --user is-active --quiet herdr-bite.service
-check "herdr-bite.service keeps running after pane OOM" \
-  test "$(systemctl --user show herdr-bite.service -p OOMPolicy --value)" = continue
-check "herdr-bite.service prevents duplicate restart" sh -c '
-  systemctl --user show herdr-bite.service -p RestartPreventExitStatus --value |
-    grep -qw 75
-'
-# shellcheck disable=SC2016
-check "herdr-bite.service owns Herdr" sh -c '
-  main_pid=$(systemctl --user show herdr-bite.service -p MainPID --value)
-  test "$main_pid" -gt 1 &&
-    grep -q "/herdr-bite.service" "/proc/$main_pid/cgroup"
-'
+# herdr-core (hc) holds the terminals. Its checks read hc alone, so they hold
+# while herdr still runs beside it and after herdr stops; herdr's files stay
+# for rollback until herdr-retire, unchecked. `hc server status` starts the
+# core when none runs, in its own transient unit.
+hc_status=$(hc server status --json 2>/dev/null) || hc_status=
+
+hc_status_is() {
+  printf '%s' "$hc_status" | jq -e "$1"
+}
+
+hc_core_unit_is() {
+  hc_pid=$(printf '%s' "$hc_status" | jq -er '.pid') || return 1
+  hc_unit=$(ps -o uunit= -p "$hc_pid" | tr -d '[:space:]')
+  case "$hc_unit" in
+    hc-serve-*.service) ;;
+    *) return 1 ;;
+  esac
+  test "$(systemctl --user show "$hc_unit" -p "$1" --value)" = "$2"
+}
+
+check "hc command" command -v hc
+check "hc core answers" hc_status_is '.pid | type == "number"'
+check "hc core 0.1.21 or newer" hc_status_is \
+  '(.version // "" | split("-")[0] | split(".") | map(tonumber? // 0)) >= [0, 1, 21]'
+check "hc core keeps running after logout" hc_status_is '.keeps_running_after_logout == true'
+check "hc-core.service enabled" systemctl --user is-enabled --quiet hc-core.service
+check "hc core keeps running after a terminal's OOM" hc_core_unit_is OOMPolicy continue
 check_user_service sideshow.service
 check_user_service cleanup-mosh-servers.timer
 check_user_service workbox-backup.timer
@@ -146,15 +158,9 @@ check "Workbox zshrc" test -L "$HOME/.zshrc"
 check "Claude settings" test -r "$HOME/.claude/settings.json"
 check "Codex settings" test -L "$HOME/.codex/config.toml"
 check "Sideshow MCP" grep -q '^\[mcp_servers\.sideshow\]$' /etc/codex/config.toml
-check "Claude Herdr hook" test -x "$HOME/.claude/hooks/herdr-agent-state.sh"
-check "Codex Herdr hook" test -x "$HOME/.codex/herdr-agent-state.sh"
 check "Shared Claude skills" test -L "$HOME/.claude/skills"
 check "Shared agent instructions" test -L "$HOME/.agents/AGENTS.md"
 check "Shared agent skills" test -L "$HOME/.agents/skills"
-check "Herdr Bite session state" sh -c 'herdr session list | grep -q "^bite[[:space:]]"'
-check "Herdr config" herdr config check
-check "Herdr Hunk plugin" sh -c \
-  'HERDR_SESSION=bite herdr plugin action list --plugin cvr.herdr-hunk | grep -q "\"action_id\":\"send\""'
 
 check "Bun" bun --version
 check "Pinned Node" install-node --check

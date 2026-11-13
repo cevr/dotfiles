@@ -30,7 +30,10 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 
-if [ "$(uname -s)" != Linux ] || [ ! -r /proc/loadavg ]; then
+# The test points this at a fixture procfs.
+proc_root=${WORKBOX_PROC_ROOT:-/proc}
+
+if [ "$(uname -s)" != Linux ] || [ ! -r "$proc_root/loadavg" ]; then
   printf 'workbox-release-valve: this command requires Linux procfs\n' >&2
   exit 1
 fi
@@ -99,7 +102,7 @@ find_candidate_groups() {
       *) continue ;;
     esac
 
-    process_cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+    process_cwd=$(readlink "$proc_root/$pid/cwd" 2>/dev/null || true)
     is_bite_worktree "$process_cwd" || continue
 
     case "$arguments" in
@@ -121,6 +124,8 @@ find_protected_groups() {
   # A process is known by its command, executable and script alone: a
   # Claude shell wrapper exports CODEX_COMPANION_* in its arguments, so
   # matching the whole line protects every workload Claude starts.
+  # /herdr/ also covers herdr-core: the core (`herdr-core serve`) and each
+  # terminal's holder (`herdr-core hold --socket ...`).
   awk '
     {
       line=$4 " " $6 " " $7
@@ -158,13 +163,13 @@ select_target_groups() {
 }
 
 print_pressure() {
-  load_average=$(awk '{print $1 "," $2 "," $3}' /proc/loadavg)
-  memory_available_kib=$(awk '$1 == "MemAvailable:" {print $2}' /proc/meminfo)
-  swap_total_kib=$(awk '$1 == "SwapTotal:" {print $2}' /proc/meminfo)
-  swap_free_kib=$(awk '$1 == "SwapFree:" {print $2}' /proc/meminfo)
+  load_average=$(awk '{print $1 "," $2 "," $3}' "$proc_root"/loadavg)
+  memory_available_kib=$(awk '$1 == "MemAvailable:" {print $2}' "$proc_root"/meminfo)
+  swap_total_kib=$(awk '$1 == "SwapTotal:" {print $2}' "$proc_root"/meminfo)
+  swap_free_kib=$(awk '$1 == "SwapFree:" {print $2}' "$proc_root"/meminfo)
   swap_used_kib=$((swap_total_kib - swap_free_kib))
-  memory_pressure=$(awk '/^some / {print $2; exit}' /proc/pressure/memory)
-  cpu_pressure=$(awk '/^some / {print $2; exit}' /proc/pressure/cpu)
+  memory_pressure=$(awk '/^some / {print $2; exit}' "$proc_root"/pressure/memory)
+  cpu_pressure=$(awk '/^some / {print $2; exit}' "$proc_root"/pressure/cpu)
 
   printf 'load=%s\n' "$load_average"
   printf 'memory_available_mib=%d\n' "$((memory_available_kib / 1024))"

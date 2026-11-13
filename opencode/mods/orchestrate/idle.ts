@@ -7,8 +7,8 @@
 // the oldest in `ready` for `BATCH_WAIT_MS`, by its log.md time), it is
 // steered once with one line (`lineOf`): `idle with units in plan, implement
 // or verify: <units>; start them or name what you wait on.`, and for a due
-// batch `… batch due (<why>): <units>; land it with rift({ action: "land",
-// rifts: [...] }).`
+// batch `… batch due (<why>): <units>; land it with orchestrate({ action:
+// "land", units: [...] }).`
 //
 // Once per idle period: after a nudge, the root is not nudged again until new
 // input reaches it (the owner's prompt, a wake, a worker's notice; never the
@@ -25,6 +25,7 @@
 // orchestrate skill's status script's, as the status mod reads them.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import { landCallOf } from "./tools.ts"
 
 // ── The facts ──
 
@@ -189,9 +190,8 @@ export interface Due {
   readonly landing?: { readonly units: ReadonlyArray<ReadyUnit>; readonly why: string }
 }
 
-/** The land call for the batch: every ready unit's Rift, in the runs' order. */
-export const landCall = (units: ReadonlyArray<ReadyUnit>): string =>
-  `rift({ action: "land", rifts: [${units.map((unit) => JSON.stringify(riftOf(unit))).join(", ")}] })`
+/** The land call for the batch: every ready unit, by name, in the runs' order (the `orchestrate` tool finds each one's Rift). */
+export const landCall = (units: ReadonlyArray<ReadyUnit>): string => landCallOf(units.map((unit) => unit.unit))
 
 /** The one line the root is steered with. */
 export const lineOf = ({ moving, landing }: Due): string => {
