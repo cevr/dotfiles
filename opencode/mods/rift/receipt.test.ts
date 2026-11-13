@@ -4,7 +4,7 @@
 // head or the tree differs; Red for the same head and tree without green checks; Missing for none.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Option } from "effect"
-import { type Receipt, type ReceiptCheck, standing } from "./receipt.ts"
+import { type Receipt, type ReceiptCheck, type Standing, standing } from "./receipt.ts"
 
 const NOW = { head: "head-now", tree: "tree-now" }
 const CHECKS: ReadonlyArray<readonly [string, ReadonlyArray<ReceiptCheck>]> = [
@@ -23,7 +23,7 @@ const receiptOf = (head: string, tree: string, checks: ReadonlyArray<ReceiptChec
 })
 
 /** The rule, stated apart from the code. */
-const oracle = (head: string, tree: string, checks: string): string => {
+const oracle = (head: string, tree: string, checks: string): Standing["_tag"] => {
   if (head !== NOW.head || tree !== NOW.tree) return "Moved"
   if (checks !== "green") return "Red"
   return "Current"
