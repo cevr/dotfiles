@@ -2,19 +2,28 @@
 # Checks the btrfs layout: home and /tmp on their subvolumes, reflinks working
 # under ~/Developer, the fstab order, and enough ext4 to back the image.
 #
-#   check.sh           after the migration: exits 1 when a check fails
-#   check.sh --before  before it: reports the same things, always exits 0
+#   check.sh               after the migration: exits 1 when a check fails
+#   check.sh --before      before it: reports the same things, always exits 0
+#   check.sh --after-home  between `migrate.sh home` and `migrate.sh workspaces`:
+#                          the /workspaces checks only warn
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 # shellcheck source=linux/workbox-btrfs/common.sh
 . "$here/common.sh"
 
-before=false
-[[ ${1:-} == --before ]] && before=true
+before=false after_home=false
+case ${1:-} in
+    '') ;;
+    --before) before=true ;;
+    --after-home) after_home=true ;;
+    *) die 'usage: check.sh [--before | --after-home]' ;;
+esac
 failed=0
 ok() { printf '  ok    %s\n' "$*"; }
 bad() { printf '  FAIL  %s\n' "$*"; failed=1; }
 note() { printf '  warn  %s\n' "$*"; }
+# What `migrate.sh workspaces` fixes: a warning until that phase has run.
+ws_bad() { if $before || $after_home; then note "$* (migrate.sh workspaces fixes it)"; else bad "$*"; fi; }
 
 say 'Space'
 df -h --output=source,fstype,size,used,avail,target "$wb_root" "$wb_workspaces" "$wb_home" "$wb_tmp" 2>/dev/null | awk '!seen[$0]++'
@@ -37,10 +46,23 @@ for sv in $wb_subvols; do
     if is_btrfs_mount "$mp" && [[ $(mount_subvol "$mp") == "/$name" ]]; then ok "$mp is $name"; else bad "$mp is not mounted from $name"; fi
 done
 [[ $(stat -c %a "$wb_tmp") == 1777 ]] && ok "$wb_tmp is 1777" || bad "$wb_tmp is mode $(stat -c %a "$wb_tmp"), not 1777"
+ws_root=$(mount_subvol "$wb_workspaces")
+[[ $ws_root == "/$wb_ws_subvol" ]] && ok "$wb_workspaces is $wb_ws_subvol" || ws_bad "$wb_workspaces mounts ${ws_root:-nothing}, not $wb_ws_subvol"
+shown=0
+for name in $wb_ws_subvol $(for sv in $wb_subvols; do printf '%s\n' "${sv%%:*}"; done); do
+    [[ -e $wb_workspaces/$name ]] && { ws_bad "$wb_workspaces shows $name"; shown=1; }
+done
+((shown)) || ok "no subvolume under $wb_workspaces is $wb_ws_subvol, @home or @tmp"
+tops=$(top_mounts)
+if [[ -z $tops ]]; then ok "no mount shows the image's top level"
+else while IFS= read -r t; do ws_bad "the mount at $t shows the image's top level, so every checkout in it twice"; done <<< "$tops"
+fi
 
 say 'fstab'
 image_line=$(grep -n "^$wb_image $wb_workspaces btrfs " "$wb_fstab" | cut -d: -f1 | head -n 1)
 [[ -n $image_line ]] && ok "image line at $image_line" || bad "no image line for $wb_workspaces in $wb_fstab"
+[[ ,$(image_line_opts), == *,subvol=$wb_ws_subvol,* ]] && ok "the image line mounts $wb_ws_subvol" || ws_bad "the image line mounts the top level, not $wb_ws_subvol"
+[[ $(grep -c "^[^#]* $wb_workspaces " "$wb_fstab") -le 1 ]] && ok "one line mounts $wb_workspaces" || bad "more than one line mounts $wb_workspaces"
 for sv in $wb_subvols; do
     name=${sv%%:*} mp=${sv#*:}
     n=$(grep -n "^UUID=[^ ]* $mp btrfs subvol=$name," "$wb_fstab" | cut -d: -f1 | head -n 1)

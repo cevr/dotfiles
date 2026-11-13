@@ -24,8 +24,15 @@ wb_old_home=$wb_home.pre-btrfs
 # Worktrees turned into Rifts: name, branch, old path, Rift path.
 wb_converted=$wb_home/.local/state/workbox-btrfs/converted.tsv
 wb_opts=noatime,compress=zstd:3,space_cache=v2,discard=async
-# The subvolumes, each with its mount point.
+# The subvolumes, each with its mount point. The image line in the fstab mounts
+# @workspaces at /workspaces; the UUID lines mount these two.
 wb_subvols="@home:$wb_home @tmp:$wb_tmp"
+wb_ws_subvol=@workspaces
+# The top level of the image is mounted nowhere: a mount of it shows every
+# subvolume a second time, and Ergo's closure sweep refuses a checkout it can
+# see twice. `migrate.sh workspaces --undo` mounts it here, for root, for the
+# length of the undo.
+wb_top=$wb_state/top
 
 say() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -50,6 +57,17 @@ image_loop() { losetup -n -O NAME -j "$wb_image" | head -n 1; }
 
 is_btrfs_mount() { [ "$(findmnt -n -o FSTYPE --mountpoint "$1" 2>/dev/null)" = btrfs ]; }
 mount_subvol() { findmnt -n -o FSROOT --mountpoint "$1" 2>/dev/null; }
+# Every mount of the image's top level ("/"), wherever it is: the mounts Ergo's
+# sweep refuses. findmnt pads MAJ:MIN unless -r.
+top_mounts() {
+    local dev
+    dev=$(findmnt -rn -o MAJ:MIN --mountpoint "$wb_workspaces" 2>/dev/null) || return 0
+    findmnt -rn -o TARGET,MAJ:MIN,FSROOT | awk -v d="$dev" '$2 == d && $3 == "/" { print $1 }'
+}
+# The options of the fstab line that mounts the image at /workspaces.
+image_line_opts() {
+    awk -v img="$wb_image" -v mp="$wb_workspaces" '$1 == img && $2 == mp && $3 == "btrfs" { print $4; exit }' "$wb_fstab"
+}
 
 # The fstab line of one subvolume. The image line comes first in the file, and
 # requires-mounts-for orders each subvolume after the loop mount at boot.

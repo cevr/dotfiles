@@ -6,6 +6,7 @@ image_path=${WORKBOX_RIFT_IMAGE:-/var/lib/bite-workspaces.btrfs}
 mount_path=${WORKBOX_RIFT_MOUNT:-/workspaces}
 image_size=${WORKBOX_RIFT_IMAGE_SIZE:-60G}
 fstab_options=loop,noatime,compress=zstd:3,space_cache=v2,discard=async
+fstab=${WORKBOX_RIFT_FSTAB:-/etc/fstab}
 
 usage() {
   printf 'usage: %s [--apply | --check]\n' "$0"
@@ -21,7 +22,10 @@ check_state() {
   test -d "$mount_path/.rifts"
   test -d "$mount_path/.cache/turbo"
   test -w "$mount_path"
-  grep -Fqx "$image_path $mount_path btrfs $fstab_options 0 0" /etc/fstab
+  # linux/workbox-btrfs/migrate.sh workspaces mounts the subvolume @workspaces
+  # here instead of the top level, which then shows @home and @tmp.
+  grep -Fqx -e "$image_path $mount_path btrfs $fstab_options 0 0" \
+    -e "$image_path $mount_path btrfs $fstab_options,subvol=@workspaces 0 0" "$fstab"
 }
 
 case "${1:---check}" in
@@ -77,8 +81,9 @@ else
 
   sudo install -d -m 0755 "$mount_path"
   fstab_line="$image_path $mount_path btrfs $fstab_options 0 0"
-  if ! grep -Fqx "$fstab_line" /etc/fstab; then
-    printf '%s\n' "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
+  # Any line for the image here counts: a second one would mount over it.
+  if ! grep -Fq "$image_path $mount_path btrfs " "$fstab"; then
+    printf '%s\n' "$fstab_line" | sudo tee -a "$fstab" >/dev/null
   fi
   sudo mount "$mount_path"
 fi
