@@ -19,7 +19,9 @@ import {
   shellLine,
   subagentLine,
   tabBar,
+  labelLine,
   terminalLine,
+  type Terminal,
   widths,
   type Kind,
   type Line,
@@ -41,10 +43,11 @@ export type TabsInput = {
   readonly dismiss: () => void
 }
 
-/** One row's input: which tab, which subject, the tab's subjects in order, and whether it is highlighted. */
-export type RowInput = {
+/** One row's input: which tab, which subject, the tab's subjects in order, and whether it is highlighted; a Terminals row carries its terminal. */
+export type RowInput = RowBase & ({ readonly tab: "subagents" | "shell" } | { readonly tab: "terminals"; readonly terminal?: Terminal })
+
+type RowBase = {
   readonly sessionID: string
-  readonly tab: "subagents" | "shell" | "terminals"
   readonly id: string
   readonly ids: ReadonlyArray<string>
   readonly label: string
@@ -182,7 +185,16 @@ export function PanelLine(props: { readonly host: Host; readonly line: Line; rea
 export function PanelRow(props: { readonly host: Host; readonly input: RowInput }) {
   if (props.input.tab === "subagents") return <SubagentRow host={props.host} input={props.input} />
   if (props.input.tab === "shell") return <ShellRow host={props.host} input={props.input} />
-  const line = createMemo(() => terminalLine(props.input.label, props.input.current))
+  return <TerminalRow host={props.host} input={props.input} />
+}
+
+/** A Terminals row: its terminal's title, what runs in it and its state; the `+ New terminal` row as the host words it. */
+function TerminalRow(props: { readonly host: Host; readonly input: RowInput }) {
+  const line = createMemo(() => {
+    const input = props.input
+    if (input.tab === "terminals" && input.terminal) return terminalLine(input.terminal)
+    return labelLine(input.label)
+  })
   return <PanelLine host={props.host} line={line()} widths={widths([line()])} selected={props.input.selected} />
 }
 
@@ -208,7 +220,7 @@ function SubagentRow(props: { readonly host: Host; readonly input: RowInput }) {
   const lines = createMemo(() => rows().map((row) => subagentLine(row, now(), spinner(now()))))
   const line = createMemo(() => lines()[props.input.ids.indexOf(props.input.id)])
   // A session the family reader does not know yet reads as the host words it.
-  const fallback = createMemo(() => terminalLine(props.input.label, false))
+  const fallback = createMemo(() => labelLine(props.input.label))
   return (
     <Show when={line()} fallback={<PanelLine host={props.host} line={fallback()} widths={widths([fallback()])} selected={props.input.selected} />}>
       {(shown) => <PanelLine host={props.host} line={shown()} widths={widths(lines())} selected={props.input.selected} />}
@@ -239,7 +251,7 @@ function ShellRow(props: { readonly host: Host; readonly input: RowInput }) {
     const own = shell()
     return own && shellLine(own, now(), output(), frame())
   })
-  const fallback = createMemo(() => terminalLine(props.input.label, false))
+  const fallback = createMemo(() => labelLine(props.input.label))
   return (
     <Show when={line()} fallback={<PanelLine host={props.host} line={fallback()} widths={widths([fallback()])} selected={props.input.selected} />}>
       {(shown) => <PanelLine host={props.host} line={shown()} widths={widths(lines())} selected={props.input.selected} />}
