@@ -23,8 +23,14 @@ import { below, generator, line } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-/** Seeds a sweep of 1 to 500 found failing (pool-seeds), replayed on every run. */
-const PAST = [27, 50, 126, 130, 137, 141, 150, 160, 174, 216, 220, 223, 225, 241, 245, 251, 296, 300, 318, 327, 332, 346, 353, 388, 393, 437, 452, 483, 492]
+/**
+ * Seeds a wider sweep found failing (pool-seeds), replayed on every run: 1 to 500 in round 1; 1 to 1000 in round 2,
+ * every login refused (522 and on).
+ */
+const PAST = [
+  27, 50, 126, 130, 137, 141, 150, 160, 174, 216, 220, 223, 225, 241, 245, 251, 296, 300, 318, 327, 332, 346, 353, 388, 393, 437, 452, 483, 492,
+  522, 582, 677, 956, 981, 994,
+]
 
 const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
 
@@ -209,10 +215,11 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"]) => (world: Worl
 /** The pool's own refusal: every account held, and when the first opens. */
 const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)$/
 /**
- * A login whose refresh the token endpoint refused: the store's words, from the auth plugin's request hook, which
- * the pool cannot reach (see the request's known gaps).
+ * A login whose refresh the token endpoint refused: the store's words, from the auth plugin's request hook; or the
+ * pool's own refusal once every account is held for a new sign-in, naming them.
  */
-const SIGN_IN = /^The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.$/
+const SIGN_IN =
+  /^(?:The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.|dotfiles-opencode\.pool: every pool account needs a new sign-in \(store:alpha, store:beta\)\. Sign in to them again\.)$/
 
 /** When a refusal says the first account opens, epoch ms; none for another message. */
 const opensAt = (message: string) =>

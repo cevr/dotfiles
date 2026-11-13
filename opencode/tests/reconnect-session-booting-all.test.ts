@@ -3,10 +3,10 @@
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"
 import { reconnectTest, restart, SUITE, test, TIMEOUT_MS, transcript } from "./reconnect/fixture.ts"
-import { keptScratch } from "./scratch.ts"
+import { forkRuns, keptScratch } from "./scratch.ts"
 
-describe(SUITE, () => {
-  const kept = keptScratch(true, "rs-booting-all-")
+describe.skipIf(!forkRuns)(SUITE, () => {
+  const kept = keptScratch(forkRuns, "rs-booting-all-")
   test(
     "after `service restart` the TUI keeps a draft while the service refuses everything without an error toast in any frame",
     reconnectTest(kept, (fixture) =>

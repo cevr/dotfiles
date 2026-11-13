@@ -120,6 +120,8 @@ interface Run {
   readonly signalled: Deferred.Deferred<boolean>
   /** Done when a live wanted mark asks this deep run to give the lock up; a new one per hold. */
   wanted: Deferred.Deferred<boolean>
+  /** The files whose second run ended (passed or failed) in this run. */
+  readonly retried: Set<string>
   /** The checkout's head, and where this head's logs go. */
   readonly head: string
   readonly logs: string
@@ -159,7 +161,7 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
   const head = (yield* git(["rev-parse", "HEAD"])).trim()
   const logs = path.join(LOGS, head.slice(0, 12) || "no-head")
   const wanted = yield* Deferred.make<boolean>()
-  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, head, logs }
+  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, retried: new Set(), head, logs }
   return run
 })
 
@@ -545,7 +547,8 @@ const deepHold = Effect.fn("Accept.deepHold")(function* (run: Run, done: Readonl
   const watcher = yield* Effect.forkChild(watchMarks(run))
   const ran = yield* phases(run, todo)
   const all = Accept.latest([...done, ...passedMeanwhile, ...ran])
-  const again = Accept.secondRuns(all).filter((file) => !Deferred.isDoneUnsafe(run.wanted) && !done.some((each) => each.file === file && each.status === "failed"))
+  // A first failure carried over a yield gets its second run here; one whose second run ended does not.
+  const again = Accept.secondRunsDue(all, run.retried).filter(() => !Deferred.isDoneUnsafe(run.wanted))
   const second = yield* Effect.forEach(again, (file) => secondRun(run, file))
   yield* Fiber.interrupt(watcher)
   return { outcomes: [...passedMeanwhile, ...ran, ...second], yielded: Deferred.isDoneUnsafe(run.wanted) }
@@ -555,7 +558,10 @@ const deepHold = Effect.fn("Accept.deepHold")(function* (run: Run, done: Readonl
 const secondRun = Effect.fn("Accept.secondRun")(function* (run: Run, file: string) {
   const load = load1()
   yield* say(`accept: ${file} failed; running it once more, alone, at 1-minute load ${load.toFixed(1)}`)
-  return Accept.afterSecond(yield* runFile(run, file, true), load)
+  const outcome = Accept.afterSecond(yield* runFile(run, file, true), load)
+  // A second run a yield stopped did not end: the file is owed, and a later first failure earns another.
+  if (outcome.status === "passed" || outcome.status === "failed") run.retried.add(file)
+  return outcome
 })
 
 /** The ledger read again after the lock was given up and taken back. */
@@ -586,6 +592,11 @@ const main = Effect.fn("Accept.main")(function* () {
     // A fork that is not installed here would fail every real-OpenCode test for a reason none of them names.
     const checked = checkFork(ENV.OPENCODE_DEV)
     if ("problem" in checked) return yield* refuse(checked.problem)
+    // Each package reaches the fork's modules through link-fork's links, and one added since this checkout last
+    // linked has none: real OpenCode then fails to load a plugin a test gives it (the host laws' probe in sim/,
+    // after a land), and the test fails for a reason it cannot name. Link first, as the gate does.
+    const linked = yield* Effect.promise(() => $`${process.execPath} ${path.join(ROOT, "scripts/link-fork.ts")}`.cwd(ROOT).env(ENV).nothrow().quiet())
+    if (linked.exitCode !== 0) return yield* refuse(`link-fork failed:\n${linked.stdout.toString()}${linked.stderr.toString()}`)
   }
   const signalled = yield* Deferred.make<boolean>()
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => Effect.runFork(Deferred.succeed(signalled, true)))

@@ -465,6 +465,14 @@ export const holdTiming = (selection: Selection, serial: (file: string) => boole
 export const secondRuns = (outcomes: ReadonlyArray<Outcome>): ReadonlyArray<string> =>
   outcomes.flatMap((outcome) => Arr.filter([outcome.file], () => outcome.status === "failed" && outcome.reason !== LEAKED))
 
+/**
+ * The files a deep run's hold runs once more at its end: those that failed, not by a leak, whose second run
+ * has not ended in this run (`retried`). A yield between a first failure and the second runs leaves the file
+ * failed in what the run carried over, and the next hold gives it its second run.
+ */
+export const secondRunsDue = (outcomes: ReadonlyArray<Outcome>, retried: ReadonlySet<string>): ReadonlyArray<string> =>
+  secondRuns(outcomes).filter((file) => !retried.has(file))
+
 /** A file's outcome after its second run at `load`: a pass is a pass marked `second` with that load; anything else stands as the second run ended. */
 export const afterSecond = (second: Outcome, load: number): Outcome => {
   if (second.status === "passed") return { ...second, second: load }

@@ -5,7 +5,7 @@
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Option } from "effect"
 import { owned } from "../tests/owned.ts"
@@ -143,11 +143,27 @@ const startAccept = (args: ReadonlyArray<string>, env: typeof process.env, unown
   return { child, done }
 }
 
+/** This process's environment, without the fork (its real-OpenCode tests skip) and without the clock switch below. */
+const { OPENCODE_DEV: _fork, ACCEPT_TIMED: timedSwitch, ...INHERITED } = process.env
+
+/**
+ * Whether the real runs below judge their wall-clock bounds too: only with ACCEPT_TIMED=1, set by the acceptance file
+ * tests/accept-clock.test.ts, which runs one at a time. In the gate a loaded host stretches real time many times over,
+ * and a gate unit test does not judge it: there the runs judge what happened and in what order, never how fast.
+ */
+const TIMED = timedSwitch === "1"
+
+/** A wall-clock bound: judged only when TIMED; holds otherwise. */
+const bound = (holds: boolean) => holds || !TIMED
+
 /** The environment of a run on a scratch lock and ledger, without the fork (its real-OpenCode tests skip). */
-const scratchEnv = (dir: string, extra: Record<string, string> = {}) => {
-  const { OPENCODE_DEV: _fork, ...inherited } = process.env
-  return { ...inherited, ACCEPT_LOCK: join(dir, "lock"), ACCEPT_LEDGER: join(dir, "ledger.json"), ...extra }
-}
+const scratchEnv = (dir: string, extra: Record<string, string> = {}) => ({
+  ...INHERITED,
+  ACCEPT_LOCK: join(dir, "lock"),
+  ACCEPT_LEDGER: join(dir, "ledger.json"),
+  ACCEPT_LOGS: join(dir, "logs"),
+  ...extra,
+})
 
 /** Waits until `what` holds (tests/wait.ts), for `ms` at most; a wait in vain fails the test, naming it. */
 const until = (what: string, ready: () => boolean, ms = 30_000) => waitUntil(what, ready, ms)
@@ -253,6 +269,17 @@ describe("the acceptance tiers over the real tree", () => {
     expect(wrong).toEqual([])
   })
 
+  test("every path the runner reads from the environment (ACCEPT_*) is in scratch for every test that runs it: none touches the owner's ledger, lock or logs", () => {
+    const read = new Set(Array.from(readFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
+    // Not paths: the land budget, and the files glob each test sets to its own stand-ins.
+    const paths = [...read].filter((name) => name !== "ACCEPT_BUDGET_MS" && name !== "ACCEPT_FILES").sort()
+    const env = new Map(Object.entries(scratchEnv("/scratch/x")))
+    expect({ paths, outside: paths.filter((name) => !Option.exists(Option.fromUndefinedOr(env.get(name)), (value) => value.startsWith("/scratch/x/"))) }).toEqual({
+      paths: ["ACCEPT_LEDGER", "ACCEPT_LOCK", "ACCEPT_LOGS"],
+      outside: [],
+    })
+  })
+
   test("every file allowed past the deep share exists, each with the unit that removes it: the list only shrinks", () => {
     expect(SLOW_DEEP.filter(([file, unit]) => !existsSync(join(ROOT, file)) || unit === "")).toEqual([])
   })
@@ -341,7 +368,7 @@ describe("a land run under its budget", () => {
       const alive = groups.filter(groupAlive)
       // What the run left of this test's own stand-in, ended here so a red run leaks nothing.
       for (const group of alive) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
-      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
+      expect({ failed: first.code !== 0, inTime: bound(first.seconds < 12), closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
         failed: true,
         inTime: true,
         closing: Option.some({ mode: "land", passed: 1, failed: 1, owed: 1, deep: 0, budget: 1 }),
@@ -452,8 +479,8 @@ describe("a deep run yields the lock to a land run", () => {
       const waited = waitedOf(land.lines)
       expect({
         land: land.code,
-        inBudget: land.seconds < 20,
-        waitedUnder5: Option.exists(waited, (each) => each.waited < 5),
+        inBudget: bound(land.seconds < 20),
+        waitedUnder5: bound(Option.exists(waited, (each) => each.waited < 5)),
         // The wait ends as the lock is taken: its line comes before the first file, so it counts the wait alone.
         waitBeforeFiles: land.lines.findIndex((line) => line.startsWith("accept: waited ")) < land.lines.findIndex((line) => line.startsWith("accept: passed ")),
         onClock: Option.exists(waited, (each) => each.onClock === each.waited),
@@ -488,7 +515,7 @@ describe("a deep run yields the lock to a land run", () => {
       await until("the land run's wanted mark", () => existsSync(world.mark(land.child.pid)))
       // The deep run saw the mark: it stopped the sleeper's groups to give the lock up.
       const stopping = world.groups()
-      await until("the deep run stopping the sleeper's groups", () => stopping.every((group) => !groupAlive(group)), 10_000)
+      await until("the deep run stopping the sleeper's groups", () => stopping.every((group) => !groupAlive(group)))
       land.child.kill("SIGKILL")
       const killedAt = Date.now()
       await land.done
@@ -496,11 +523,10 @@ describe("a deep run yields the lock to a land run", () => {
       await until(
         "the deep run holding the lock again",
         () => existsSync(world.owner) && statSync(world.owner).mtimeMs >= killedAt && readFileSync(world.owner, "utf8").includes(`"pid":${deep.child.pid}`),
-        10_000,
       )
       const resumedIn = Date.now() - killedAt
       const ended = await deep.done
-      expect({ within2s: resumedIn < 2000, closing: closingOf(ended.lines) }).toEqual({
+      expect({ within2s: bound(resumedIn < 2000), closing: closingOf(ended.lines) }).toEqual({
         within2s: true,
         closing: Option.some({ mode: "owed", passed: 3, failed: 0, owed: 0, deep: 0, budget: 0 }),
       })
@@ -521,9 +547,92 @@ describe("a deep run yields the lock to a land run", () => {
       const land = await accept(["--land"], world.landEnv)
       // The killed run stopped nothing: its sleeper's groups (started by this test's run) go now.
       for (const group of orphans) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
-      await until("the killed run's sleeper groups gone", () => orphans.every((group) => !groupAlive(group)), 5000)
+      await until("the killed run's sleeper groups gone", () => orphans.every((group) => !groupAlive(group)))
       const read = readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, join(dir.path, "ledger.json"))
-      expect({ land: land.code, atOnce: Option.exists(waitedOf(land.lines), (each) => each.waited < 1), problem: read.problem }).toEqual({ land: 0, atOnce: true, problem: Option.none() })
+      expect({
+        land: land.code,
+        // The killed run's flock ended with it: the land run found the lock free and waited for no one.
+        free: !land.lines.some((line) => line.startsWith("accept: waiting for")),
+        atOnce: bound(Option.exists(waitedOf(land.lines), (each) => each.waited < 1)),
+        problem: read.problem,
+      }).toEqual({ land: 0, free: true, atOnce: true, problem: Option.none() })
+    },
+    RUN_MS,
+  )
+})
+
+/** A stand-in that fails on its first run in the scratch dir and passes on every later one: a load flake. */
+const FLAKY = [
+  'import { expect, test } from "bun:test"',
+  'import { existsSync, writeFileSync } from "node:fs"',
+  'import { join } from "node:path"',
+  'const dir = process.env.YIELD_DIR ?? ""',
+  'test("fails once", () => {',
+  '  const first = !existsSync(join(dir, "flaky-ran"))',
+  '  writeFileSync(join(dir, "flaky-ran"), "")',
+  "  expect(first).toBe(false)",
+  "})",
+  "",
+].join("\n")
+
+/** A stand-in that sleeps 15 s on its first run, 1 s after: it holds the deep run's first hold open. */
+const SLOW_FIRST = [
+  'import { test } from "bun:test"',
+  'import { existsSync, writeFileSync } from "node:fs"',
+  'import { join } from "node:path"',
+  'const dir = process.env.YIELD_DIR ?? ""',
+  'test("sleeps", async () => {',
+  '  const first = !existsSync(join(dir, "slept"))',
+  '  writeFileSync(join(dir, "slept"), "")',
+  "  await Bun.sleep((first && 15_000) || 1000)",
+  "})",
+  "",
+].join("\n")
+
+/** Whether the deep run has logged `name` (its run ended and its outcome is in the run's hand). */
+const logged = (logs: string, name: string) => existsSync(logs) && readdirSync(logs).some((head) => existsSync(join(logs, head, `${name}.log`)))
+
+describe("a deep run's second runs", () => {
+  test(
+    "a file that failed once before a land run took the lock runs once more after the yield, alone, and passes: the run is green (round 1's M2)",
+    async () => {
+      using dir = scratch("accept-second-")
+      mkdirSync(join(dir.path, "deep"))
+      mkdirSync(join(dir.path, "land"))
+      writeFileSync(join(dir.path, "deep", "flaky.test.ts"), FLAKY)
+      writeFileSync(join(dir.path, "deep", "slow.test.ts"), SLOW_FIRST)
+      writeFileSync(join(dir.path, "land", "quick.test.ts"), 'import { test } from "bun:test"\ntest("quick", () => {})\n')
+      const base = scratchEnv(dir.path, { YIELD_DIR: dir.path })
+      const flaky = join(dir.path, "deep", "flaky.test.ts")
+      const deepRun = accept(["--owed", "--parallel=2"], { ...base, ACCEPT_FILES: join(dir.path, "deep", "*.test.ts") })
+      // The flaky file failed and its log is written; the slow one still runs, so the hold is open.
+      await until("the flaky file's first run ended", () => logged(join(dir.path, "logs"), "flaky.test.ts"))
+      const land = await accept(["--land"], { ...base, ACCEPT_FILES: join(dir.path, "land", "*.test.ts"), ACCEPT_BUDGET_MS: "20000" })
+      const deep = await deepRun
+      expect({
+        land: land.code,
+        deep: deep.code,
+        yields: deep.lines.filter((line) => line.startsWith("accept: yielded the lock to a land run")).length,
+        second: deep.lines.filter((line) => line.startsWith(`accept: passed ${flaky} on its second run at load`)).length,
+        closing: closingOf(deep.lines),
+      }).toEqual({ land: 0, deep: 0, yields: 1, second: 1, closing: Option.some({ mode: "owed", passed: 2, failed: 0, owed: 0, deep: 0, budget: 0 }) })
+    },
+    RUN_MS,
+  )
+
+  test(
+    "with no land run, the failed file runs once more at the end of the run and passes",
+    async () => {
+      using dir = scratch("accept-second-alone-")
+      mkdirSync(join(dir.path, "deep"))
+      writeFileSync(join(dir.path, "deep", "flaky.test.ts"), FLAKY)
+      const flaky = join(dir.path, "deep", "flaky.test.ts")
+      const deep = await accept(["--owed"], scratchEnv(dir.path, { YIELD_DIR: dir.path, ACCEPT_FILES: join(dir.path, "deep", "*.test.ts") }))
+      expect({
+        deep: deep.code,
+        second: deep.lines.filter((line) => line.startsWith(`accept: passed ${flaky} on its second run at load`)).length,
+        closing: closingOf(deep.lines),
+      }).toEqual({ deep: 0, second: 1, closing: Option.some({ mode: "owed", passed: 1, failed: 0, owed: 0, deep: 0, budget: 0 }) })
     },
     RUN_MS,
   )

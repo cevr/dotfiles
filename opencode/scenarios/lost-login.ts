@@ -3,10 +3,12 @@
 // alpha's token has expired. A fixture plugin asks the pool's own registered
 // store source for alpha's token when the scenario writes a new value to its
 // trigger file. First the endpoint refuses alpha's refresh token: the sidebar
-// names alpha as signed out with its slot file and a toast says so. Then it
-// rotates the tokens and alpha is asked for again: both go away.
+// names alpha as signed out with its slot file and a toast says so. The store
+// never trades a refused refresh token again, so alpha is signed in again (its
+// slot file gets another login, its token expired too) and asked for again: the
+// endpoint answers that login's refresh, and both go away.
 import { Effect, Schedule, Stream } from "effect"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 import { fakeAccount, startFakeAnthropic, type FakeTokenAnswer } from "../tests/fake-anthropic.ts"
@@ -15,9 +17,13 @@ const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
 const HOUR = 3_600_000
 
-const accounts = { alpha: fakeAccount(), beta: fakeAccount() }
-let answer: FakeTokenAnswer = { kind: "rejected" }
-const fake = startFakeAnthropic({ accounts, token: () => answer })
+// `again` is the login alpha is signed in to again: the endpoint refuses alpha's first refresh token, and answers the rest.
+const accounts = { alpha: fakeAccount(), beta: fakeAccount(), again: fakeAccount() }
+const answer = (account: string): FakeTokenAnswer => {
+  if (account === "alpha") return { kind: "rejected" }
+  return { kind: "rotate" }
+}
+const fake = startFakeAnthropic({ accounts, token: answer })
 
 // The store's slot files, in its shape: alpha's token has expired, beta's is good.
 const store = join(out, "store-auth")
@@ -25,7 +31,9 @@ const slots = join(store, ".slots/anthropic")
 mkdirSync(slots, { recursive: true })
 const login = (account: { access: string; refresh: string }, expires: number) =>
   JSON.stringify({ _tag: "Oauth", type: "oauth", ...account, expires, accountId: null, metadata: { owner: "store" } })
-writeFileSync(join(slots, "alpha"), login(accounts.alpha, Date.now() - 1000))
+/** An expiry already past: the login's token must refresh before it serves. */
+const expired = Date.now() - 1000
+writeFileSync(join(slots, "alpha"), login(accounts.alpha, expired))
 writeFileSync(join(slots, "beta"), login(accounts.beta, Date.now() + 8 * HOUR))
 
 // Each new value in the trigger file asks for alpha's token once, through the
@@ -88,9 +96,14 @@ export default OpenCodeDriver.use({
   yield* until((frame) => frame.includes("alpha · signed out") && !frame.includes("Pool login alpha is signed out"))
   writeFileSync(`${out}/lost-login.txt`, text(yield* ui.capture()))
   console.log("screenshot:", yield* ui.screenshot("lost-login"))
-  // A refresh that succeeds: the alert clears, and the toast ends (it lasts 10 s).
-  answer = { kind: "rotate" }
+  // Signed in again, then a refresh that succeeds: the alert clears, and the toast ends (it lasts 10 s).
+  writeFileSync(join(slots, "alpha"), login(accounts.again, expired))
   writeFileSync(trigger, "2")
+  yield* Effect.sync(() => readFileSync(asked, "utf8")).pipe(
+    Effect.filterOrFail((said) => said === "2 resolved", (said) => `pending: the second ask says "${said}"`),
+    Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
+  )
+  if (fake.tokens("again").refresh === accounts.again.refresh) return yield* Effect.fail("the new login was served without its refresh")
   yield* until((frame) => !frame.includes("signed out") && !frame.includes("sign in again into"))
   writeFileSync(`${out}/lost-login-cleared.txt`, text(yield* ui.capture()))
   console.log("screenshot:", yield* ui.screenshot("lost-login-cleared"))

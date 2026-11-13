@@ -102,9 +102,17 @@ interface Embedded {
   }
   readonly close: () => Promise<void>
 }
+/** A host log entry, as the fork's SDK emits it (packages/sdk/src/logging.ts). */
+interface LogEntry {
+  readonly level: string
+  readonly message: string
+  readonly cause?: unknown
+}
+/** The host's warnings and errors the run keeps, the last ones, to say why the probe did not finish. */
+const KEPT_WARNINGS = 40
 interface CreateOptions {
   readonly events: { readonly persist: boolean }
-  readonly log: { readonly level: string; readonly emit: (entry: { readonly message: string }) => void }
+  readonly log: { readonly level: string; readonly emit: (entry: LogEntry) => void }
   readonly config: { readonly directory: string; readonly project: boolean; readonly content: string }
 }
 interface Sdk {
@@ -156,12 +164,24 @@ const run = Effect.gen(function* () {
   })
   if (!isSdk(sdk)) return yield* new RealRunFailed({ message: "the fork's SDK has no OpenCode.create" })
   const lines: Array<string> = []
+  const warnings: Array<string> = []
+  const note = (entry: LogEntry) => {
+    if (entry.level !== "warn" && entry.level !== "error" && entry.level !== "fatal") return
+    warnings.push(`${entry.level}: ${entry.message}${Option.match(Option.fromUndefinedOr(entry.cause), { onNone: () => "", onSome: (cause) => ` (${String(cause).slice(0, 400)})` })}`)
+    if (warnings.length > KEPT_WARNINGS) warnings.shift()
+  }
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
         sdk.OpenCode.create({
           events: { persist: true },
-          log: { level: "info", emit: (entry) => Option.map(outcomeIn(entry.message), (line) => lines.push(line)) },
+          log: {
+            level: "info",
+            emit: (entry) => {
+              note(entry)
+              Option.map(outcomeIn(entry.message), (line) => lines.push(line))
+            },
+          },
           config: { directory: config, project: false, content: toJson(content) },
         }),
       catch: (cause) => new RealRunFailed({ message: "OpenCode did not start", cause }),
@@ -192,6 +212,9 @@ const run = Effect.gen(function* () {
     if (Arr.contains(lines, DONE)) return Effect.void
     return Effect.fail(new RealRunFailed({ message: "the probe has not finished" }))
   }).pipe(Effect.retry({ schedule: Schedule.spaced(POLL), times: LIMIT / POLL }), Effect.ignore)
+  // A probe that did not finish leaves a line saying how far it got and what the host warned of, for the test to show.
+  if (!Arr.contains(lines, DONE))
+    lines.push(`the probe did not finish in ${LIMIT / 1000} s, after ${lines.length} outcome lines; the host's last warnings and errors:\n${warnings.join("\n")}`)
   yield* fs.writeFileString(path.join(base, "result.json"), toJson({ lines }))
 })
 
