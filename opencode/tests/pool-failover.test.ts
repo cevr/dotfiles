@@ -7,6 +7,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { DateTime, Option, Schema } from "effect"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
@@ -28,6 +29,13 @@ if (!ready) {
 }
 
 const HOUR = 3_600_000
+
+/** A line of `opencode run --format json` that ends the run on an error, with its message. */
+const decodeEvent = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.String, error: Schema.Struct({ message: Schema.String }) })),
+)
+/** The pool's own refusal: every account held, and when the first opens. */
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\S+Z)$/
 const RUN_TIMEOUT_MS = 120_000
 
 /** Agent turns on the first login meet a plan limit; titles, and everything on the second login, go through. */
@@ -47,9 +55,15 @@ interface Run {
 
 describe.skipIf(!ready)("the pool fails a refused run over to the next login (real OpenCode, fake Anthropic)", () => {
   const kept = keptScratch(ready, "pool-failover-", true)
-  let fake: FakeAnthropic | undefined
+  // Every fake a test starts, stopped once the file is done.
+  const fakes: Array<FakeAnthropic> = []
+  const started = (options: Parameters<typeof startFakeAnthropic>[0]) => {
+    const fake = startFakeAnthropic(options)
+    fakes.push(fake)
+    return fake
+  }
   afterAll(async () => {
-    await fake?.stop()
+    for (const fake of fakes) await fake.stop()
     kept.done()
   })
 
@@ -110,8 +124,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
     )
     const timer = setTimeout(() => run.kill(), RUN_TIMEOUT_MS)
-    const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text()])
-    await run.exited
+    const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])
     clearTimeout(timer)
     return { exitCode: run.exitCode, stdout, stderr }
   }
@@ -120,15 +133,11 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
     "without the pool, the same refusal ends the run: the host does not retry a plan limit",
     kept.test(async () => {
       const accounts = { first: fakeAccount(), second: fakeAccount() }
-      const control = startFakeAnthropic({ accounts, script: firstRefused(Date.now() + 3 * HOUR) })
-      try {
-        const run = await runOpenCode("control", accounts, control.url, false)
-        const turns = control.received.filter((request) => request.path === "/v1/messages" && request.tools > 0)
-        expect(run.stdout).not.toContain("Hello from the second login.")
-        expect(turns.map((request) => [request.account, request.status])).toEqual([["first", 429]])
-      } finally {
-        await control.stop()
-      }
+      const control = started({ accounts, script: firstRefused(DateTime.toEpochMillis(DateTime.nowUnsafe()) + 3 * HOUR) })
+      const run = await runOpenCode("control", accounts, control.url, false)
+      const turns = control.received.filter((request) => request.path === "/v1/messages" && request.tools > 0)
+      expect(run.stdout).not.toContain("Hello from the second login.")
+      expect(turns.map((request) => [request.account, request.status])).toEqual([["first", 429]])
     }),
     RUN_TIMEOUT_MS + 30_000,
   )
@@ -137,8 +146,8 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
     "the first login's plan-limit 429 holds it, and the run goes out on the second",
     kept.test(async () => {
       const accounts = { first: fakeAccount(), second: fakeAccount() }
-      const resetAt = Date.now() + 3 * HOUR
-      fake = startFakeAnthropic({ accounts, script: firstRefused(resetAt) })
+      const resetAt = DateTime.toEpochMillis(DateTime.nowUnsafe()) + 3 * HOUR
+      const fake = started({ accounts, script: firstRefused(resetAt) })
       const run = await runOpenCode("pooled", accounts, fake.url, true)
       const messages = fake.received.filter((request) => request.path === "/v1/messages")
       const turns = messages.filter((request) => request.tools > 0)
@@ -166,6 +175,42 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         expect(run.stdout + run.stderr).not.toContain(account.access)
         expect(run.stdout + run.stderr).not.toContain(account.refresh)
       }
+    }),
+    RUN_TIMEOUT_MS + 30_000,
+  )
+
+  test(
+    "with both logins spent, the run ends on the pool's own refusal and when the first opens, never sent on a spent login again",
+    kept.test(async () => {
+      const accounts = { first: fakeAccount(), second: fakeAccount() }
+      const now = DateTime.toEpochMillis(DateTime.nowUnsafe())
+      // The second login resets first.
+      const spent = started({
+        accounts,
+        script: ({ account, body }) => {
+          if (!Array.isArray(body.tools) || body.tools.length === 0) return { kind: "ok", text: "Greeting" }
+          if (account === "second") return { kind: "usage-429", claim: "five_hour", resetAt: now + HOUR }
+          return { kind: "usage-429", claim: "five_hour", resetAt: now + 3 * HOUR }
+        },
+      })
+      const run = await runOpenCode("spent", accounts, spent.url, true)
+      const turns = spent.received.filter((request) => request.path === "/v1/messages" && request.tools > 0)
+      // Each login was refused once, and nothing went out on it again before its reset.
+      expect(turns.map((request) => [request.account, request.status])).toEqual([
+        ["first", 429],
+        ["second", 429],
+      ])
+      // The turn ends on the pool's words and a time to try again: the second login's reset, the soonest. Never on
+      // the provider's refusal (the retries between carry it; the turn's end does not).
+      const ends = run.stdout
+        .split("\n")
+        .flatMap((line) => Option.toArray(decodeEvent(line)))
+        .filter((event) => event.type === "error")
+        .map((event) => event.error.message)
+      expect(ends, run.stdout.slice(-2_000)).toHaveLength(1)
+      const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
+      expect(Option.isSome(opens), ends.join("")).toBe(true)
+      expect(Math.abs(Option.getOrElse(Option.map(opens, DateTime.toEpochMillis), () => 0) - (now + HOUR))).toBeLessThan(5_000)
     }),
     RUN_TIMEOUT_MS + 30_000,
   )

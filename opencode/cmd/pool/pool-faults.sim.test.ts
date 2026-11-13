@@ -7,11 +7,11 @@
 // or never in time, a one-off 429 on a request, and a restart at any point.
 //
 // After each command: every request goes out on one login the provider knows;
-// none on a login the provider refused as spent, before its reset, while
-// another login is not refused; no refresh token is presented twice, by any
-// holder. Every turn ends in an answer or in a named error that says what
-// happened, never a provider's raw error body.
-import { Array as Arr, Effect, Option } from "effect"
+// none on a login the provider refused as spent, before its reset; no refresh
+// token is presented twice, by any holder. Every turn ends in an answer or in
+// the pool's own refusal and when its first account opens (or a sign-in the
+// store asks for), never the provider's refusal or its raw error body.
+import { Array as Arr, DateTime, Effect, Option } from "effect"
 import * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
 import { encodeRefresh, decodeStoredOAuth, STORE_PREFIX, StoreSource, storeProcess } from "@dotfiles/opencode-pool/store/store"
 import * as Plugins from "../../sim/plugins.ts"
@@ -174,16 +174,15 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"]) => (world: Worl
     messages.filter((request) => request.account === ""),
     label,
   ).toEqual([])
-  // Never on a login the provider refused as spent before its reset, once the refusal is back, while another login is
-  // not refused (with every login spent the pool places on the one that resets first; see the request's finding).
+  // Never on a login the provider refused as spent before its reset, once the refusal is back: with every login spent
+  // the pool refuses the turn itself.
   const refused = (login: string, at: number, known: (refusal: { readonly index: number }) => boolean) =>
     script.refusals.some((refusal) => refusal.login === login && known(refusal) && at < refusal.resetAt)
   expect(
     messages.filter(
       (request) =>
         request.tools > 0 &&
-        refused(request.account, request.at, (refusal) => Option.getOrElse(Option.fromNullishOr(received[refusal.index]), () => request).at < request.at) &&
-        LOGINS.some((login) => !refused(login, request.at, (refusal) => refusal.index < request.index)),
+        refused(request.account, request.at, (refusal) => Option.getOrElse(Option.fromNullishOr(received[refusal.index]), () => request).at < request.at),
     ),
     label,
   ).toEqual([])
@@ -197,13 +196,31 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"]) => (world: Worl
     ).toEqual([])
 }
 
-seeded("every turn ends in an answer or a named error, never on a spent login while another is free, and no refresh token is traded twice", ({ seed, expect }) =>
+/** The pool's own refusal: every account held, and when the first opens. */
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)$/
+/**
+ * A login whose refresh the token endpoint refused: the store's words, from the auth plugin's request hook, which
+ * the pool cannot reach (see the request's known gaps).
+ */
+const SIGN_IN = /^The store account "(?:alpha|beta)" could not refresh \(400\)\. Sign in to it again\.$/
+
+/** When a refusal says the first account opens, epoch ms; none for another message. */
+const opensAt = (message: string) =>
+  Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(message)?.[1]), (iso) => Option.map(DateTime.make(iso), DateTime.toEpochMillis))
+
+seeded("every turn ends in an answer or the pool's own refusal with when it opens, never on a spent login, and no refresh token is traded twice", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { world, sessions } = yield* run(seed, invariants(seed, expect))
     for (const session of sessions) {
       expect(world.sessions.get(session)?.running, `seed ${seed}: ${session} still running: ${line(world.messages(session).slice(-2))}`).toBe(false)
-      for (const message of world.messages(session))
-        if (message.type === "error") expect(`${message.tag}: ${message.message}`, `seed ${seed}`).not.toMatch(RAW)
+      for (const message of world.messages(session)) {
+        if (message.type !== "error") continue
+        const said = `${message.tag}: ${message.message}`
+        expect(said, `seed ${seed}`).not.toMatch(RAW)
+        // Never the provider's refusal: the pool's, with a time to try again after the turn ended, or a sign-in.
+        if (SIGN_IN.test(message.message)) continue
+        expect(Option.getOrElse(opensAt(message.message), () => 0), `seed ${seed}: ${said}`).toBeGreaterThan(message.created)
+      }
     }
     // Some turn was answered, across the run.
     const answered = sessions.flatMap((session) => world.messages(session)).some((message) => message.type === "assistant")

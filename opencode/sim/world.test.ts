@@ -269,8 +269,6 @@ interface Anthropic {
   readonly tokens: Map<string, "rotate" | "rate-limited" | "unavailable">
   /** Each plan-limit refusal: the login, the provider's request index, and the reset it named. */
   readonly refusals: Array<{ readonly login: string; readonly index: number; readonly resetAt: number }>
-  /** Each plan limit the test set: on which login, from when, until when. */
-  readonly spans: Array<{ readonly login: string; readonly from: number; readonly resetAt: number }>
   /** Each login's reset grants: listed until claimed or ended. */
   readonly grants: Map<string, Array<Provider.Grant>>
   /** What the claim endpoint answers next. */
@@ -281,10 +279,7 @@ interface Anthropic {
 
 /** What the world's Anthropic is told by a command: a plan limit, a token or claim endpoint's answer, a grant listed. */
 const tell = (anthropic: Anthropic, command: Pooled, before: number) => {
-  if (command.type === "limit") {
-    anthropic.limits.set(LOGINS[command.login] ?? "first", before + command.hours * HOUR)
-    anthropic.spans.push({ login: LOGINS[command.login] ?? "first", from: before, resetAt: before + command.hours * HOUR })
-  }
+  if (command.type === "limit") anthropic.limits.set(LOGINS[command.login] ?? "first", before + command.hours * HOUR)
   if (command.type === "token") anthropic.tokens.set(LOGINS[command.login] ?? "first", command.answer)
   if (command.type === "grant") {
     const login = LOGINS[command.login] ?? "first"
@@ -302,7 +297,7 @@ const spend = (listed: ReadonlyArray<Provider.Grant>, grant: string) =>
 /** One pooled run: its world and what the provider saw. */
 const pooledRun = (seed: number, check: (world: World, anthropic: Anthropic, command: Pooled, before: number) => void = () => void 0) =>
   Effect.gen(function* () {
-    const anthropic: Anthropic = { limits: new Map(), tokens: new Map(), refusals: [], spans: [], grants: new Map(), claim: "reset", weeks: new Map() }
+    const anthropic: Anthropic = { limits: new Map(), tokens: new Map(), refusals: [], grants: new Map(), claim: "reset", weeks: new Map() }
     const accounts = Provider.accounts(seed, LOGINS)
     const world = make({
       seed,
@@ -374,23 +369,14 @@ const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, 
     label,
   ).toEqual([])
   // Never on a login the provider refused as spent, once the refusal is back (a request already sent at that instant
-  // aside), before the reset it named, while another login is not refused: with every login spent, the pool places
-  // the request on the one that resets first (mods/pool/placement.ts), and the provider refuses it.
-  // The request's own login counts as spent once its refusal came back at an earlier instant; another login as free
-  // only when no refusal before the request (in the provider's order) holds it and no plan limit covers it: the
-  // pool also reads a spent window from the usage endpoint, before any request is refused.
+  // aside), before the reset it named: with every login spent the pool refuses the turn itself.
   const refused = (login: string, at: number, known: (refusal: { readonly index: number }) => boolean) =>
     anthropic.refusals.some((refusal) => refusal.login === login && known(refusal) && at < refusal.resetAt)
   expect(
     messages.filter(
       (request) =>
         request.tools > 0 &&
-        refused(request.account, request.at, (refusal) => (received[refusal.index]?.at ?? request.at) < request.at) &&
-        LOGINS.some(
-          (login) =>
-            !refused(login, request.at, (refusal) => refusal.index < request.index) &&
-            !anthropic.spans.some((span) => span.login === login && span.from <= request.at && request.at < span.resetAt),
-        ),
+        refused(request.account, request.at, (refusal) => (received[refusal.index]?.at ?? request.at) < request.at),
     ),
     label,
   ).toEqual([])

@@ -103,9 +103,9 @@ describe("a failed request", () => {
     expect(shouldFailOver(pool(place("s1", "a"), holdOn("a", T0 + HOUR)), "s1", T0)).toBe(true)
   })
 
-  test("stays when every account is held", () => {
+  test("goes again when every account is held, so the pool refuses it by name", () => {
     const state = pool(place("s1", "a"), holdOn("b", T0 + 60_000), holdOn("a", T0 + 60_000))
-    expect(shouldFailOver(state, "s1", T0)).toBe(false)
+    expect(shouldFailOver(state, "s1", T0)).toBe(true)
   })
 })
 

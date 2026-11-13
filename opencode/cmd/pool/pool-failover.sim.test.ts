@@ -7,7 +7,7 @@
 // login answers an agent turn with a plan-limit 429; the run must finish on
 // the second, and the provider must have seen exactly that. The seed varies
 // how long each answer streams, the order of fibers and the tokens.
-import { Effect } from "effect"
+import { DateTime, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
@@ -33,13 +33,13 @@ const firstRefused =
   }
 
 /** One run of "say hello": the world with the two logins, the auth plugin and (when `pooled`) the pool, to the session's rest. */
-const run = (seed: number, pooled: boolean) =>
+const run = (seed: number, pooled: boolean, script = firstRefused(World.START + 3 * HOUR)) =>
   Effect.gen(function* () {
     const accounts = Provider.accounts(seed, ["first", "second"])
     const world = World.make({
       seed,
       script: () => World.say(""),
-      anthropic: { accounts, script: firstRefused(World.START + 3 * HOUR) },
+      anthropic: { accounts, script },
       integrations: {
         anthropic: Object.entries(accounts).map(([name, account], index) => ({
           id: `cred_${name}`,
@@ -102,4 +102,38 @@ seeded("the first login's plan-limit 429 holds it, and the run goes out on the s
       expect(printed).not.toContain(account.refresh)
     }
   }),
+)
+
+/** Every agent turn meets a plan limit: the first login resets in three hours, the second in one. */
+const bothSpent = ({ account, body }: Provider.RequestInfo): Provider.Answer => {
+  const tools = body["tools"]
+  if (!Array.isArray(tools) || tools.length === 0) return { kind: "ok", text: "Greeting" }
+  if (account === "second") return { kind: "usage-429", claim: "five_hour", resetAt: World.START + HOUR }
+  return { kind: "usage-429", claim: "five_hour", resetAt: World.START + 3 * HOUR }
+}
+
+/** The pool's own refusal: every account held, and when the first opens. */
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\S+Z)$/
+
+seeded(
+  "with both logins spent, the run ends on the pool's own refusal and when the first opens, never sent on a spent login again",
+  ({ seed, expect }) =>
+    Effect.gen(function* () {
+      const { world, turns } = yield* run(seed, true, bothSpent)
+      // Each login was refused once, and nothing went out on it again before its reset.
+      expect(turns.map((request) => [request.account, request.status])).toEqual([
+        ["first", 429],
+        ["second", 429],
+      ])
+      // The turn ends on the pool's words and a time to try again: the second login's reset, the soonest.
+      const session = [...world.sessions.keys()][0] ?? ""
+      const ends = world.messages(session).flatMap((message) => {
+        if (message.type !== "error") return []
+        return [message.message]
+      })
+      expect(ends).toHaveLength(1)
+      const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
+      expect(Option.isSome(opens), ends.join("")).toBe(true)
+      expect(Math.abs(Option.getOrElse(Option.map(opens, DateTime.toEpochMillis), () => 0) - (World.START + HOUR))).toBeLessThan(5_000)
+    }),
 )

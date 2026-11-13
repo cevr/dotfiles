@@ -137,7 +137,7 @@
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
-import { PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
@@ -506,6 +506,9 @@ export const make = (
                   if (placed.cacheLifeMs !== undefined && placed.cacheLifeMs !== cacheLifeMs)
                     event.headers[CACHE_TTL_HEADER] = ttlOf(placed.cacheLifeMs)
                 }),
+                // Every account held: the request goes out on none. The host ends the turn on the pool's own words
+                // and when the first account opens; a hook declares no failure, so the refusal is its defect.
+                Effect.catchTag("AccountsHeld", (held) => Effect.die(new Error(heldMessage(held)))),
               ),
           ),
         ),
