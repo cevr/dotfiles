@@ -165,10 +165,14 @@ const run = Effect.gen(function* () {
   if (!isSdk(sdk)) return yield* new RealRunFailed({ message: "the fork's SDK has no OpenCode.create" })
   const lines: Array<string> = []
   const warnings: Array<string> = []
+  /** The host's warnings that it could not load the probe: a plugin load failure that names the probe's folder. */
+  const unloaded: Array<string> = []
   const note = (entry: LogEntry) => {
     if (entry.level !== "warn" && entry.level !== "error" && entry.level !== "fatal") return
-    warnings.push(`${entry.level}: ${entry.message}${Option.match(Option.fromUndefinedOr(entry.cause), { onNone: () => "", onSome: (cause) => ` (${String(cause).slice(0, 400)})` })}`)
+    const said = `${entry.level}: ${entry.message}${Option.match(Option.fromUndefinedOr(entry.cause), { onNone: () => "", onSome: (cause) => ` (${String(cause).slice(0, 400)})` })}`
+    warnings.push(said)
     if (warnings.length > KEPT_WARNINGS) warnings.shift()
+    if (entry.message.includes("failed to load plugin") && String(entry.cause).includes(probe)) unloaded.push(said)
   }
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
@@ -208,12 +212,15 @@ const run = Effect.gen(function* () {
     try: () => opencode.location.get({ location: { directory: law } }),
     catch: (cause) => new RealRunFailed({ message: "the law folder did not open", cause }),
   })
+  // The wait ends at the probe's `done`, or at once when the host says it could not load the probe (each law has its
+  // own limit in the probe, sim/server.ts, so a law that hangs names itself there).
   yield* Effect.suspend(() => {
-    if (Arr.contains(lines, DONE)) return Effect.void
+    if (Arr.contains(lines, DONE) || unloaded.length > 0) return Effect.void
     return Effect.fail(new RealRunFailed({ message: "the probe has not finished" }))
   }).pipe(Effect.retry({ schedule: Schedule.spaced(POLL), times: LIMIT / POLL }), Effect.ignore)
-  // A probe that did not finish leaves a line saying how far it got and what the host warned of, for the test to show.
-  if (!Arr.contains(lines, DONE))
+  // A probe that did not finish leaves a line saying why and what the host warned of, for the test to show.
+  if (unloaded.length > 0) lines.push(`the host did not load the probe (${probe}): ${unloaded.join("\n")}`)
+  else if (!Arr.contains(lines, DONE))
     lines.push(`the probe did not finish in ${LIMIT / 1000} s, after ${lines.length} outcome lines; the host's last warnings and errors:\n${warnings.join("\n")}`)
   yield* fs.writeFileString(path.join(base, "result.json"), toJson({ lines }))
 })
