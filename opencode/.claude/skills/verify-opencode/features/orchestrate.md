@@ -11,20 +11,27 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 - `machine-brief`: after a compaction, one steered brief of the machine and the run.
 - `machine-move`: a root that moves between locations keeps one ledger.
 - `land`: the rift tool's `land` merges a batch's Rifts, takes their receipts or runs one gate, pushes once, and trashes the Rifts.
+- `orchestrate-tool`: the root's `orchestrate` tool. It has four actions:
+  - `lane` makes a unit's Rift, or answers the one that exists, ending `(rift: <path>)`;
+  - `land` with no units lands every ready unit, decided by the same machine as a rift land;
+  - `verify` makes the batch verifier's clean checkout and answers the one subagent call that starts it;
+  - `status` names each unit's state, its lane and one `next:` call.
+- `idle-root`: a root that ends its turn with nothing of its own going while units are in plan, implement or verify (or a batch is due) is steered once per idle period, with `idle with units in plan, implement or verify: …` or `… batch due …`. It is never steered while the owner drafts, while a question to him is open, or once it has a `waiting` queue item.
 
 ## How to get to it (user POV)
 
 - The root agent's `subagent` call with a role and a description in the skill's form.
 - The rift tool's `{ "action": "land", "rifts": [...] }` (on the owner's machines only).
+- The root's `orchestrate` tool: `{ "action": "lane", "unit": "billing" }`, `{ "action": "land" }`, `{ "action": "verify", "batch": "batch-7" }`, `{ "action": "status" }`.
 - A compaction of a root that runs units (the brief).
 
 ## Driving it with the world
 
 - **Preconditions:** orchestrate loaded for one or two locations over one ledger; the roles' models answer as `machine-world.ts`'s steps say; the verifiers' reports are files the plugin's own reader reads, held in memory.
 - **States:** default (a run that keeps the machine), refused (each rule), a compaction, a move between locations. Error is `cmd/orchestrate/orchestrate-faults.sim.test.ts`. Loading is `n/a`.
-- **World suites:** `cmd/orchestrate/orchestrate-machine.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`
+- **World suites:** `cmd/orchestrate/orchestrate-machine.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`, `cmd/orchestrate/idle-root-property.sim.test.ts`, `cmd/orchestrate/orch-tools.sim.test.ts`, `cmd/orchestrate/orchestrate-latch.sim.test.ts`
 - **Code:** `mods/orchestrate/`, `cmd/orchestrate/`, `mods/rift/`, `cmd/rift/`, `sim/`
-- **Regression:** `mods/orchestrate/machine.test.ts`, `mods/orchestrate/git/machine-words.test.ts` (the refusals held to SKILL.md).
+- **Regression:** `mods/orchestrate/machine.test.ts`, `mods/orchestrate/git/machine-words.test.ts` (the refusals held to SKILL.md), `cmd/rift/rpc.test.ts` (the rift plugin's RPC, which the `orchestrate` tool's lanes and lands go through).
 
 1. **Drift after a compaction.** A root runs three implementors in the background, compacts while the third runs, asks for a verifier of one unit and a land of one Rift: both are refused in the skill's words; then it lands the batch and starts its one verifier, which passes.
 2. **The pipeline.** Batch 2's implementors start while batch 1's verifier runs; its `changes` report opens findings that the next starts fold.

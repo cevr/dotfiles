@@ -24,7 +24,7 @@ Each feature file has an H1, one paragraph of user-visible behavior, then exactl
 3. `Driving it with the world`: opens with these lines, then labeled steps that pair an action, the exact prompt or code and the observable result.
    - **Preconditions:** the state the steps need beyond the baseline.
    - **States:** which of default, open, loading, empty, refused and error the steps exercise; mark the rest `n/a`.
-   - **World suites:** the `*.sim.test.ts(x)` files `verify:drive --feature <id>` runs, or `none yet` with why.
+   - **World suites:** the `*.sim.test.ts(x)` files `verify:drive --feature <id>` runs, or `none yet` with why. The list must hold every such suite under one of the feature's own `Code` folders, `sim/` aside, so a change there never lands on a receipt that skipped a suite covering it; the docs guard fails on a missing one. When you add a suite under a feature's code, list it here.
    - **Code:** the path prefixes whose change makes the feature due under `--changed`.
 4. `Driving it with real OpenCode`: opens with **Real:** (the acceptance tests and scenarios `--real` runs), then the pilotty steps.
 5. `Gotchas`: traps that waste or invalidate a run.

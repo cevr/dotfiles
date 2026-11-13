@@ -3,9 +3,9 @@
 // contract with its world suites, real checks and code on disk, the index lists exactly the feature files,
 // and AGENTS.md points verifiers at the skill.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Effect, FileSystem, Option, Path, Schema } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Path, PlatformError, Schema } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { FEATURES_DIR, parseFeature, SKILL_DIR } from "./verify-map.ts"
+import { FEATURES_DIR, parseFeature, SHARED, SKILL_DIR, undriven } from "./verify-map.ts"
 
 /** The H2s of a feature file, in order. */
 const CONTRACT = ["Sub-features", "How to get to it (user POV)", "Driving it with the world", "Driving it with real OpenCode", "Gotchas"]
@@ -37,6 +37,24 @@ const exists = (file: string) =>
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     return yield* fs.exists(path.join(yield* root, file))
+  })
+
+/** Every file under `dir` (from opencode/), node_modules and dot folders aside, as paths from opencode/. */
+const files = (dir: string): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError | PlatformError.BadArgument, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const at = yield* root
+    const found = yield* Effect.forEach(yield* fs.readDirectory(path.join(at, dir)), (name) =>
+      Effect.gen(function* () {
+        const entry = `${dir}/${name}`
+        const info = yield* fs.stat(path.join(at, entry))
+        if (info.type === "Directory" && name !== "node_modules" && !name.startsWith(".")) return yield* files(entry)
+        if (info.type === "File") return [entry]
+        return []
+      }),
+    )
+    return found.flat()
   })
 
 const backticked = (text: string): ReadonlyArray<string> => Arr.map(Array.from(text.matchAll(/`([^`\n]+)`/g)), (match) => Option.getOrElse(Option.fromNullishOr(match[1]), () => ""))
@@ -77,6 +95,19 @@ describe("the verify-opencode skill names only what the tree has", () => {
         const named = [...feature.world, ...feature.real, ...feature.code.map((prefix) => prefix.replace(/\/$/, ""))]
         expect({ file, missing: yield* Effect.filter(named, (each) => Effect.map(exists(each), (here) => !here)) }).toEqual({ file, missing: [] })
       }
+    }),
+  )
+
+  live("every world suite under a feature's own code is in its drive", () =>
+    Effect.gen(function* () {
+      const features = (yield* docs)
+        .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
+        .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
+      // The suites on disk under each claimed folder, node_modules aside; `sim/` is every feature's and no one's.
+      const folders = Arr.dedupe(features.flatMap((feature) => feature.code.filter((prefix) => prefix.endsWith("/") && prefix !== SHARED)))
+      const suites = Arr.dedupe((yield* Effect.forEach(folders, (folder) => files(folder.replace(/\/$/, "")))).flat())
+      expect(suites).toContain("cmd/queue/queue.sim.test.ts")
+      expect(features.map((feature) => ({ feature: feature.id, undriven: undriven(feature, suites) }))).toEqual(features.map((feature) => ({ feature: feature.id, undriven: [] })))
     }),
   )
 
