@@ -2,7 +2,7 @@
 // path from the repository's root, and the head's fresh seeds.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { listed, parseFeature, swarmFrom, touched, underOpencode } from "./verify-map.ts"
+import { listed, parseFeature, swarmFrom, touched, underOpencode, undriven } from "./verify-map.ts"
 
 const FILE = [
   "# Queue",
@@ -41,6 +41,14 @@ describe("the feature map", () => {
     expect(touched([queue, guard], ["mods/queue/item.ts"]).map((feature) => feature.id)).toEqual(["queue"])
     expect(touched([queue, guard], ["sim/host.ts", "cmd/queue/server.ts"]).map((feature) => feature.id)).toEqual(["queue", "guard"])
     expect(touched([queue, guard], ["README.md"])).toEqual([])
+  })
+
+  test("a world suite under a feature's own code that its drive skips is undriven; one under sim/ or listed is not", () => {
+    const queue = parseFeature("queue.md", FILE)
+    const suites = ["cmd/queue/queue.sim.test.ts", "cmd/queue/other.sim.test.ts", "cmd/queue/late.sim.test.tsx", "cmd/queue/server.test.ts", "sim/world.sim.test.ts", "cmd/guard/guard.sim.test.ts"]
+    expect(undriven(queue, suites)).toEqual(["cmd/queue/late.sim.test.tsx"])
+    const shared = parseFeature("guard.md", "# Guard\n- **World suites:** `cmd/guard/guard.sim.test.ts`\n- **Code:** `mods/guard/`, `cmd/guard/`, `sim/`")
+    expect(undriven(shared, suites)).toEqual([])
   })
 
   test("a changed path is read from opencode/, and one outside it is none", () => {

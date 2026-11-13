@@ -45,6 +45,19 @@ export const parseFeature = (file: string, text: string): Feature => ({
 export const touched = (features: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<Feature> =>
   features.filter((feature) => feature.code.some((prefix) => changed.some((path) => path.startsWith(prefix))))
 
+/** The prefix every feature claims (the world itself): a suite under it is a world law's, no one feature's drive. */
+export const SHARED = "sim/"
+
+/**
+ * The world suites under a feature's own code that its drive skips: each of `suites` (from opencode/) under one of
+ * its `Code` prefixes, `sim/` aside, that its `World suites` leave out. A change under that code is due this
+ * feature's drive, so a suite it skips there could go red under a green receipt.
+ */
+export const undriven = (feature: Feature, suites: ReadonlyArray<string>): ReadonlyArray<string> =>
+  suites.filter(
+    (suite) => /\.sim\.test\.tsx?$/.test(suite) && feature.code.some((prefix) => prefix !== SHARED && suite.startsWith(prefix)) && !feature.world.includes(suite),
+  )
+
 /** A changed path from the repository's root, as one from opencode/; none outside opencode/. */
 export const underOpencode = (path: string): Option.Option<string> =>
   Option.map(

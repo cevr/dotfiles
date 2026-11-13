@@ -50,8 +50,9 @@ const sol = (id: string, releaseDate: string): World.CatalogModel => ({
   time: { released: Date.parse(releaseDate) },
 })
 
-/** One request as the test reads it back: the agent's, its model, its text. */
+/** One request as the test reads it back: its kind, the agent's, its model, its text. */
 interface Seen {
+  readonly kind: World.Kind
   readonly agent: string
   readonly model: World.ModelRef
   readonly text: string
@@ -61,7 +62,7 @@ interface Seen {
 const model =
   (seen: Array<Seen>): World.Script =>
   (request) => {
-    seen.push({ agent: request.agent, model: request.model, text: request.text })
+    seen.push({ kind: request.kind, agent: request.agent, model: request.model, text: request.text })
     const s = request.text
     if (request.kind === "title") return World.say("export check")
     // The worker's request carries its brief, never the parent's prompt.
@@ -125,7 +126,9 @@ const boot = (seed: number) =>
     yield* world.prompt(root, ASK)
     yield* world.until(() => world.messages(root).some((message) => message.type === "assistant" && message.text === HEARD), 120_000)
     const worker = seen.filter((request) => request.agent === "planner")
-    const parent = seen.filter((request) => request.text.includes(ASK)).at(-1)
+    // The parent's last turn: its title request also carries the ask, and the host may send it after any turn
+    // (SIM_SEED=121414084 sent it last).
+    const parent = seen.filter((request) => request.kind === "primary" && request.text.includes(ASK)).at(-1)
     return { calls, paces, admits, worker, parent: Option.getOrElse(Option.fromUndefinedOr(parent?.text), () => "") }
   })
 

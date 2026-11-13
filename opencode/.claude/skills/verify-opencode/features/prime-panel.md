@@ -19,13 +19,13 @@
 
 ## Driving it with the world
 
-- **Preconditions:** none; the world has no TUI.
-- **States:** `n/a` on the world.
-- **World suites:** none yet. The world has no TUI, and the simulated TUI has no panel suite; the real scenario holds the rows and words.
+- **Preconditions:** none. These suites run on the simulated TUI (`sim-tui/`): the fork's real TUI in the test's process, with Prime loaded by path, in front of a server double.
+- **States:** the panel's own states are `n/a` here, since no suite opens the panel; the real path drives them.
+- **World suites:** `cmd/prime/prime-runs.sim.test.tsx`, `cmd/prime/prime-sidebar.sim.test.tsx`, `cmd/prime/prime-pin.sim.test.tsx`, `cmd/prime/prime-idle-send.sim.test.tsx`, `cmd/prime/prime-escape.sim.test.tsx`. These are Prime's other surfaces on the simulated TUI: the subagent rows, the sidebar, the pin, a send while idle, and Escape. A change to Prime's code can break any of them, so its drive runs them all.
 - **Code:** `mods/prime/`, `cmd/prime/`
 - **Regression:** `mods/prime/panel.test.ts` (the words and columns).
 
-`bun run verify:drive --feature prime-panel` reports it `unreachable` on the world; drive it on real OpenCode.
+`bun run verify:drive --feature prime-panel` runs those suites. The panel itself (its tabs, rows and keys) has no world suite yet, so drive it on real OpenCode below, or with `--real` for `scenarios/prime-panel.ts`.
 
 ## Driving it with real OpenCode
 

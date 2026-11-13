@@ -22,7 +22,7 @@ A subagent start that orchestrate's pace or the Sabbath holds is not refused and
 
 - **Preconditions:** orchestrate and wake loaded for one location, and a pace that holds: the suite's stand-in pool plugin holds every new agent for the first twelve seconds, then admits.
 - **States:** held (latched), open, cancelled, a reload. Error is `cmd/wake/wake-faults.sim.test.ts` (failed writes, downtime). Loading is `n/a`.
-- **World suites:** `cmd/orchestrate/orchestrate-latch.sim.test.ts`, `cmd/wake/wake.sim.test.ts`, `cmd/wake/wake-faults.sim.test.ts`
+- **World suites:** `cmd/orchestrate/orchestrate-latch.sim.test.ts`, `cmd/wake/wake.sim.test.ts`, `cmd/wake/wake-faults.sim.test.ts`, `cmd/wake/wake-repeat.sim.test.ts`, `cmd/wake/job.sim.test.ts`, and, since the latch's decision runs through orchestrate's whole server (its pace, its Sabbath, its starts), every orchestrate suite: `cmd/orchestrate/orchestrate-machine.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`, `cmd/orchestrate/idle-root-property.sim.test.ts`, `cmd/orchestrate/orch-tools.sim.test.ts`. A drive runs a suite once however many features list it.
 - **Code:** `mods/wake/`, `cmd/wake/`, `mods/orchestrate/`, `cmd/orchestrate/`, `sim/`
 - **Regression:** `mods/wake/*.test.ts`.
 
