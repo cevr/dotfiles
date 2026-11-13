@@ -8,6 +8,11 @@
 #   migrate.sh home [--stop]   copy home and /tmp, then mount the subvolumes over
 #                              them (root). --stop stops the owner's services
 #                              first and starts them again after.
+#   migrate.sh workspaces [--stop] [--undo]
+#                              after home: move the top level's contents into
+#                              @workspaces and mount that at /workspaces, so no
+#                              mount shows the top level (root). --undo moves
+#                              them back.
 #   migrate.sh finish [--yes]  after check.sh passes: prune worktree entries and
 #                              delete the moved-aside home and the old /tmp (root)
 set -euo pipefail
@@ -250,10 +255,11 @@ blockers() {
     done
 }
 
+# Waits until the function named in $1 prints no holders.
 wait_idle() {
     local busy
     for _ in $(seq 1 "${WB_IDLE_WAIT:-60}"); do
-        busy=$(blockers)
+        busy=$("$1")
         [[ -z $busy ]] && return 0
         sleep 1
     done
@@ -268,12 +274,12 @@ home_phase() {
     [[ $(id -u) == 0 ]] || die 'run home as root'
     [[ $stop == false || -z $WB_ROOT || -n ${WB_SYSTEMCTL:-} ]] || die '--stop works only on the real root (or with a fake WB_SYSTEMCTL)'
     is_btrfs_mount "$wb_workspaces" || die "$wb_workspaces is not a mounted btrfs"
-    [[ $(mount_subvol "$wb_workspaces") == / ]] || die "$wb_workspaces must mount the image's top level"
     mkdir -p "$wb_state"
     if [[ $(mount_subvol "$wb_home") == /@home ]]; then
-        say "$wb_home is already @home; run check.sh, then migrate.sh finish"
+        say "$wb_home is already @home; run migrate.sh workspaces, check.sh, then migrate.sh finish"
         return 0
     fi
+    [[ $(mount_subvol "$wb_workspaces") == / ]] || die "$wb_workspaces must mount the image's top level: run home before workspaces (or workspaces --undo)"
     [[ ! -e $wb_old_home ]] || die "$wb_old_home exists but $wb_home is not @home; inspect both"
     [[ $(mount_subvol "$wb_tmp") != /@tmp ]] || die "$wb_tmp is already @tmp but $wb_home is not @home; inspect"
 
@@ -313,7 +319,7 @@ home_phase() {
         stop_owner
     fi
     log "Waiting for $wb_home and $wb_tmp to be idle"
-    wait_idle || die "these processes still use $wb_home or $wb_tmp; stop them and rerun (the copy resumes)"
+    wait_idle blockers || die "these processes still use $wb_home or $wb_tmp; stop them and rerun (the copy resumes)"
     copy_pass final "$(subvol_path @home)" "$(subvol_path @tmp)"
     verify_copy "$(subvol_path @home)" "$(subvol_path @tmp)"
 
@@ -341,8 +347,195 @@ home_phase() {
         start_owner
     fi
     log 'Swapped. Checking'
-    bash "$here/check.sh" || die 'check.sh failed after the swap; see RUNBOOK.md, Rollback'
-    log "Done. When everything works, run: sudo $here/migrate.sh finish"
+    bash "$here/check.sh" --after-home || die 'check.sh failed after the swap; see RUNBOOK.md, Rollback'
+    log "Done. Next: sudo $here/migrate.sh workspaces --stop"
+}
+
+# --- /workspaces onto @workspaces ----------------------------------------
+
+# Subvolume paths from the top level; TOP must mount the top level.
+subvol_paths() { btrfs subvolume list "$1" | sed -E 's/^ID [0-9]+ gen [0-9]+ top level [0-9]+ path //'; }
+is_subvol() { [[ -d $1 && ! -L $1 && $(stat -c %i "$1") == 256 ]]; }
+# rename(2) and nothing else: mv would fall back to a copy.
+rename_path() { perl -e 'rename($ARGV[0], $ARGV[1]) or die "rename $ARGV[0]: $!\n"' "$1" "$2"; }
+
+# Moves SRC to DST inside one btrfs. REL is SRC's path from the top level and
+# SUBVOLS the subvolume paths. A subvolume moves by rename, which btrfs allows
+# across subvolumes (a read-only one only while writable: EROFS otherwise). A
+# plain directory that holds a subvolume moves entry by entry. Anything else
+# can only be copied across subvolumes (EXDEV): reflinked, so no data is
+# written, then removed. A rerun resumes: the copy overwrites a partial one.
+move_entry() {
+    local src=$1 dst=$2 rel=$3 subvols=$4 child
+    if is_subvol "$src"; then
+        [[ ! -e $dst ]] || die "$dst exists; inspect it and $src"
+        if [[ $(btrfs property get -ts "$src" ro) == ro=true ]]; then
+            btrfs property set -ts "$src" ro false
+            rename_path "$src" "$dst"
+            btrfs property set -ts "$dst" ro true
+        else
+            rename_path "$src" "$dst"
+        fi
+    elif [[ -d $src && ! -L $src ]] && awk -v p="$rel/" 'index($0, p) == 1 { f = 1; exit } END { exit !f }' <<< "$subvols"; then
+        [[ -d $dst ]] || mkdir "$dst"
+        while IFS= read -r -d '' child; do
+            move_entry "$child" "$dst/${child##*/}" "$rel/${child##*/}" "$subvols"
+        done < <(find "$src" -mindepth 1 -maxdepth 1 -print0)
+        chown --reference="$src" "$dst"
+        chmod --reference="$src" "$dst"
+        touch -r "$src" "$dst"
+        rmdir "$src"
+    else
+        ! is_subvol "$dst" || die "$dst is a subvolume; $src would be copied into it"
+        cp -a --reflink=always -T "$src" "$dst"
+        rm -rf --one-file-system "$src"
+    fi
+}
+
+# Moves every entry of FROM into INTO, except the names after them. FROM and
+# INTO lie on a mount of the top level, TOP.
+move_contents() {
+    local top=$1 from=$2 into=$3 entry name n=0
+    shift 3
+    local subvols
+    subvols=$(subvol_paths "$top")
+    while IFS= read -r -d '' entry; do
+        name=${entry##*/}
+        [[ " $* " == *" $name "* ]] && continue
+        move_entry "$entry" "$into/$name" "${entry#"$top"/}" "$subvols"
+        n=$((n + 1))
+    done < <(find "$from" -mindepth 1 -maxdepth 1 -print0)
+    log "Moved $n entries from $from to $into"
+}
+
+# Adds subvol=@workspaces to the image line (add), or takes it out (drop).
+# Keeps a backup of the fstab when it changes.
+set_image_subvol() {
+    local mode=$1 tmp
+    tmp=$(mktemp "$wb_fstab.XXXXXX")
+    awk -v img="$wb_image" -v mp="$wb_workspaces" -v sv="subvol=$wb_ws_subvol" -v mode="$mode" '
+        $1 == img && $2 == mp && $3 == "btrfs" {
+            n = split($4, o, ","); out = ""
+            for (i = 1; i <= n; i++) if (o[i] !~ /^subvol(id)?=/) out = out (out == "" ? "" : ",") o[i]
+            if (mode == "add") out = out "," sv
+            $4 = out
+        }
+        { print }' "$wb_fstab" > "$tmp"
+    if cmp -s "$tmp" "$wb_fstab"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    cp -p "$wb_fstab" "$wb_fstab.workbox-btrfs.$(date -u +%Y%m%d%H%M%S)"
+    chown --reference="$wb_fstab" "$tmp"
+    chmod --reference="$wb_fstab" "$tmp"
+    mv "$tmp" "$wb_fstab"
+    log "fstab: the image line is now $(image_line_opts)"
+    [[ -n $WB_ROOT ]] || "$systemctl" daemon-reload
+}
+
+# Anything with a file under /workspaces, of any user.
+ws_blockers() { holders "$wb_workspaces"; }
+
+# Stops the owner (with --stop) and waits for /workspaces to be idle. The trap
+# starts the owner again on every exit and runs the phase's own cleanup.
+ws_quiesce() {
+    local stop=$1 cleanup=$2
+    # shellcheck disable=SC2064
+    trap "$cleanup" EXIT
+    if $stop; then
+        # shellcheck disable=SC2064
+        trap "start_owner; $cleanup" EXIT
+        trap 'exit 143' TERM
+        trap 'exit 130' INT
+        trap 'exit 129' HUP
+        stop_owner
+    fi
+    log "Waiting for $wb_workspaces to be idle"
+    wait_idle ws_blockers || die "these processes still use $wb_workspaces; stop them and rerun"
+}
+
+remount_workspaces() {
+    umount "$wb_workspaces" || die "could not unmount $wb_workspaces; the fstab already names the new layout, so a reboot also applies it"
+    mount -T "$wb_fstab" "$wb_workspaces"
+}
+
+ws_preflight() {
+    [[ $(id -u) == 0 ]] || die 'run workspaces as root'
+    [[ $1 == false || -z $WB_ROOT || -n ${WB_SYSTEMCTL:-} ]] || die '--stop works only on the real root (or with a fake WB_SYSTEMCTL)'
+    is_btrfs_mount "$wb_workspaces" || die "$wb_workspaces is not a mounted btrfs"
+    [[ -n $(image_line_opts) ]] || die "no line in $wb_fstab mounts $wb_image at $wb_workspaces"
+    local sub
+    sub=$(findmnt -rn -R -o TARGET --mountpoint "$wb_workspaces" | tail -n +2)
+    [[ -z $sub ]] || die "mounts under $wb_workspaces would be hidden: $sub"
+    mkdir -p "$wb_state"
+}
+
+workspaces_phase() {
+    local stop=$1 top=$wb_workspaces
+    ws_preflight "$stop"
+    if [[ $(mount_subvol "$wb_workspaces") == "/$wb_ws_subvol" ]]; then
+        set_image_subvol add
+        say "$wb_workspaces is already $wb_ws_subvol; run check.sh"
+        return 0
+    fi
+    [[ $(mount_subvol "$wb_workspaces") == / ]] || die "$wb_workspaces mounts $(mount_subvol "$wb_workspaces"), neither the top level nor $wb_ws_subvol"
+    if [[ ! -d $top/$wb_ws_subvol ]]; then
+        btrfs subvolume create "$top/$wb_ws_subvol" >/dev/null
+        chown --reference="$top" "$top/$wb_ws_subvol"
+        chmod --reference="$top" "$top/$wb_ws_subvol"
+    fi
+    is_subvol "$top/$wb_ws_subvol" || die "$top/$wb_ws_subvol is not a subvolume"
+    ws_quiesce "$stop" :
+    local keep
+    keep=$(for sv in $wb_subvols; do printf '%s ' "${sv%%:*}"; done)
+    # shellcheck disable=SC2086
+    move_contents "$top" "$top" "$top/$wb_ws_subvol" "$wb_ws_subvol" $keep
+    set_image_subvol add
+    log "Mounting $wb_ws_subvol at $wb_workspaces"
+    remount_workspaces
+    [[ $(mount_subvol "$wb_workspaces") == "/$wb_ws_subvol" ]] || die "$wb_workspaces did not come back as $wb_ws_subvol"
+    trap - EXIT TERM INT HUP
+    $stop && start_owner
+    log 'Moved. Checking'
+    bash "$here/check.sh" || die 'check.sh failed after the move; see RUNBOOK.md, Rollback'
+    log 'Done.'
+}
+
+umount_top() {
+    if findmnt --mountpoint "$wb_top" > /dev/null; then umount "$wb_top"; fi
+    [[ ! -d $wb_top ]] || rmdir "$wb_top"
+}
+
+# The rollback: every entry of @workspaces back onto the top level, and the
+# top level mounted at /workspaces again.
+workspaces_undo() {
+    local stop=$1
+    ws_preflight "$stop"
+    if [[ $(mount_subvol "$wb_workspaces") == / ]]; then
+        set_image_subvol drop
+        say "$wb_workspaces already mounts the top level"
+        return 0
+    fi
+    [[ $(mount_subvol "$wb_workspaces") == "/$wb_ws_subvol" ]] || die "$wb_workspaces mounts $(mount_subvol "$wb_workspaces"), not $wb_ws_subvol"
+    local loop
+    loop=$(image_loop)
+    [[ -n $loop ]] || die "no loop device holds $wb_image"
+    [[ -d $wb_top ]] || mkdir -m 700 "$wb_top"
+    findmnt --mountpoint "$wb_top" > /dev/null || mount -t btrfs -o subvolid=5 "$loop" "$wb_top"
+    ws_quiesce "$stop" umount_top
+    move_contents "$wb_top" "$wb_top/$wb_ws_subvol" "$wb_top"
+    set_image_subvol drop
+    log "Mounting the top level at $wb_workspaces"
+    remount_workspaces
+    umount_top
+    [[ $(mount_subvol "$wb_workspaces") == / ]] || die "$wb_workspaces did not come back as the top level"
+    # Empty now; a rerun of workspaces makes it again.
+    btrfs subvolume delete "$wb_workspaces/$wb_ws_subvol" > /dev/null
+    trap - EXIT TERM INT HUP
+    $stop && start_owner
+    log 'Undone. Checking'
+    bash "$here/check.sh" --after-home || die 'check.sh failed after the undo'
+    log 'Done: /workspaces mounts the top level again.'
 }
 
 finish_phase() {
@@ -387,7 +580,7 @@ relocate() {
     mkdir -p "$bin"
     cp "$here"/*.sh "$bin/"
     cp "$conf" "$bin/worktrees.conf"
-    if [[ $1 == home && ${2:-} == --stop && -z ${INVOCATION_ID:-} ]]; then
+    if [[ ($1 == home || $1 == workspaces) && " $* " == *' --stop '* && -z ${INVOCATION_ID:-} ]]; then
         # Stopping the owner ends this session too, so run in a unit of its own.
         systemd-run --unit=workbox-btrfs-migrate --collect --property=Type=exec \
             --setenv=WB_RELOCATED=1 --setenv=WB_USER="$WB_USER" --setenv=WB_DISK="$WB_DISK" \
@@ -410,11 +603,25 @@ case ${1:-} in
         cd /
         home_phase "$([[ ${2:-} == --stop ]] && echo true || echo false)"
         ;;
+    workspaces)
+        [[ $(id -u) == 0 ]] || die 'run workspaces as root (sudo)'
+        ws_stop=false ws_undo=false
+        for arg in "${@:2}"; do
+            case $arg in
+                --stop) ws_stop=true ;;
+                --undo) ws_undo=true ;;
+                *) die 'usage: migrate.sh workspaces [--stop] [--undo]' ;;
+            esac
+        done
+        relocate "$@"
+        cd /
+        if $ws_undo; then workspaces_undo "$ws_stop"; else workspaces_phase "$ws_stop"; fi
+        ;;
     finish)
         [[ $(id -u) == 0 ]] || die 'run finish as root (sudo)'
         relocate "$@"
         cd /
         finish_phase "$([[ ${2:-} == --yes ]] && echo true || echo false)"
         ;;
-    *) die 'usage: migrate.sh plan | convert | home [--stop] | finish [--yes]' ;;
+    *) die 'usage: migrate.sh plan | convert | home [--stop] | workspaces [--stop] [--undo] | finish [--yes]' ;;
 esac

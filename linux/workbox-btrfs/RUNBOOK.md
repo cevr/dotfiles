@@ -114,29 +114,97 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
    `resume` drops any label whose terminal is no longer a fresh shell, then
    `hcm resume` types each one once. `verify` prints `ok` for herdr, terminals,
    labels, status and sessions.
-8. `sudo $d/check.sh`: every line `ok`. Then use the box for a while.
+8. `sudo /var/lib/workbox-btrfs/bin/migrate.sh workspaces --stop`: see
+   [/workspaces onto @workspaces](#workspaces-onto-workspaces). In the first
+   window it runs right after step 6, with steps 4 and 7 around both.
+9. `sudo $d/check.sh`: every line `ok`. Then use the box for a while.
 
 ## After the window
 
-9. `sudo /var/lib/workbox-btrfs/bin/migrate.sh finish` runs `check.sh` and prunes
-   the worktree entries of converted worktrees (and stale ones). With `--yes`
-   it deletes `/home/exedev.pre-btrfs` and the old `/tmp` hidden under the
-   mount, then runs `grow.sh`, which grows the image into the freed space
-   (to about 720 GiB on an 800 GiB disk). Minutes.
-10. At a calm time, `sudo systemctl reboot` and run `check.sh` again: it proves
+10. `sudo /var/lib/workbox-btrfs/bin/migrate.sh finish` runs `check.sh` and prunes
+    the worktree entries of converted worktrees (and stale ones). With `--yes`
+    it deletes `/home/exedev.pre-btrfs` and the old `/tmp` hidden under the
+    mount, then runs `grow.sh`, which grows the image into the freed space
+    (to about 720 GiB on an 800 GiB disk). Minutes. `check.sh` fails until
+    step 8 has run, so `finish` refuses before it.
+11. At a calm time, `sudo systemctl reboot` and run `check.sh` again: it proves
     the boot order (`/workspaces`, then `/home/exedev` and `/tmp`, before
     `local-fs.target`). `check.sh` already checks the generated units without a
     reboot.
 
+## /workspaces onto @workspaces
+
+Steps 1 to 7 left `/workspaces` mounting the image's top level, so `@home` and
+`@tmp` show up a second time as `/workspaces/@home` and `/workspaces/@tmp`. Ergo's
+closure sweep refuses a checkout it can see through a second mount ("the mount
+at /workspaces shows the checkout again (0:33 /)"). `migrate.sh workspaces`
+moves the top level's contents into the subvolume `@workspaces` and mounts that
+at `/workspaces`. Then no mount shows the top level, and every path stays the
+same: `/workspaces/bite`, `/workspaces/.rifts/...`, `/workspaces/.cache/turbo`.
+
+Window: Saturday 2026-11-14, after 21:25Z and done before Ergo's 21:55Z restart.
+The orchestrator runs it. Run from a plain `ssh bite-workbox` shell.
+
+1. Save the panes (step 4 above).
+2. `sudo $d/migrate.sh workspaces --stop`. It copies itself to
+   `/var/lib/workbox-btrfs/bin` and runs as the unit `workbox-btrfs-migrate`
+   (`journalctl -u workbox-btrfs-migrate -f`). Then it:
+   1. creates `@workspaces` on the top level, owned and moded like `/workspaces`;
+   2. blocks `exedev` logins and stops the owner's units and sessions, as in
+      step 6.2 (**your ssh session ends**), then waits up to a minute for no
+      process of any user to hold a file under `/workspaces`. Otherwise it
+      starts the units again and stops, naming the processes;
+   3. moves every entry of the top level except `@home`, `@tmp` and
+      `@workspaces` into `@workspaces`:
+      - a subvolume (a warm source such as `bite`, a Rift) by rename, at once.
+        A read-only one is made writable for the rename and read-only again;
+      - a plain directory that holds subvolumes (`.rifts`, `.rifts/<repo>`)
+        entry by entry;
+      - other plain entries (`.cache/turbo`, files) as reflinked copies, then
+        removed. No data is written. Measured on the wbtest VM: 20,000 small files in
+        0.45 s, and a 512 MiB file in 0.04 s;
+   4. adds `subvol=@workspaces` to the image's line in `/etc/fstab` (it stays
+      first, before the `@home` and `@tmp` lines; a backup goes to
+      `/etc/fstab.workbox-btrfs.<time>`), runs `systemctl daemon-reload`,
+      unmounts `/workspaces` and mounts it again from the fstab. `@home` and
+      `@tmp` keep the loop device attached, and the mount reuses it;
+   5. starts the units again and runs `check.sh`, which now also needs
+      `/workspaces` to be `@workspaces`, nothing named `@workspaces`, `@home` or
+      `@tmp` under it, no mount of the top level anywhere, and the image line
+      to carry `subvol=@workspaces`.
+   Expect a few minutes, most of it the stop and the start.
+3. Restore the panes (step 7 above), then run `sudo $d/check.sh`.
+   `workbox-health` checks the storage too: `workbox-rift-storage --check`
+   accepts the image line with `subvol=@workspaces`.
+
+A rerun resumes. Once `/workspaces` is `@workspaces`, a rerun only makes sure
+the fstab line is right.
+
 ## Rollback
+
+- `/workspaces` back to the top level: `sudo /var/lib/workbox-btrfs/bin/migrate.sh
+  workspaces --undo --stop`. It mounts the top level at
+  `/var/lib/workbox-btrfs/top` (root only, for the length of the undo). Then it
+  stops the owner as above, moves every entry of `@workspaces` back to the
+  top level the same way, takes `subvol=@workspaces` out of the image line,
+  mounts `/workspaces` from the top level again, unmounts the top mount, and
+  deletes the now empty `@workspaces`. test.sh runs it and then
+  `workspaces` again. By hand: restore `/etc/fstab` from its newest
+  `.workbox-btrfs.<time>` backup and reboot. The paths under `/workspaces` then
+  sit under `/workspaces/@workspaces/` until they are moved back.
+- If `/workspaces` would not unmount in step 2.4, the fstab already names
+  `@workspaces`: free it (`sudo lsof +f -- /workspaces`) and rerun, or reboot.
+
+Of the home and `/tmp`:
 
 - Before step 6.4 nothing moved: the units start again; rerun `home` to resume.
 - After it, while `/home/exedev.pre-btrfs` exists: stop the units as in 6.2, then
   `sudo umount /home/exedev /tmp`, `sudo rmdir /home/exedev`,
   `sudo mv /home/exedev.pre-btrfs /home/exedev`, restore `/etc/fstab` from its
   backup, `sudo systemctl daemon-reload`, and start the units (or reboot). The
-  subvolumes stay in the image; delete them with `btrfs subvolume delete
-  /workspaces/@home /workspaces/@tmp` once you are sure.
+  subvolumes stay in the image. Undo `workspaces` first, so they show as
+  `/workspaces/@home` and `/workspaces/@tmp`. Once you are sure, delete them with
+  `btrfs subvolume delete /workspaces/@home /workspaces/@tmp`.
 - A converted worktree stays in the old tree until `finish --yes`, and its
   commits are a branch of the warm source and of the main checkout either way.
 - `grow.sh` only grows; `tune2fs -m 5 /dev/vda` restores the 5% reserve.
