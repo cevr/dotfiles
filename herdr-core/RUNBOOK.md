@@ -32,7 +32,7 @@ On failure: a unit that will not stop: `systemctl --user status herdr-bite.servi
 
 ## Step 3 — Workbox, btrfs move
 
-Where and how long: `linux/workbox-btrfs/RUNBOOK.md`, "## The window", its steps 5, 6 and 8 (30 to 60 min for the first copy, 5 to 10 for the final pass, its guess). Skip its step 4 (the save was step 1 here) and its step 7 (the panes come back in step 4 here, through hc). The `@home` copy carries `~/.local/state/herdr-core-cutover/` and `~/.local/state/pane-restore/` along, at the same paths.
+Where and how long: `linux/workbox-btrfs/RUNBOOK.md`, "## The window", its steps 5, 6 and 8 (30 to 60 min for the first copy, 5 to 10 for the final pass, its guess). Its step 4 (save, `pre`, disable herdr-bite, `hc server stop`) is steps 1 and 2 here, and its step 7's hc path is step 4 here. The `@home` copy carries `~/.local/state/herdr-core-cutover/` and `~/.local/state/pane-restore/` along, at the same paths.
 
 Expect: its `check.sh`, every line `ok`.
 On failure: its "## Rollback". Herdr is only disabled, so its own rollback is this runbook's Rollback below.
@@ -61,14 +61,13 @@ Where: any shell on the Mac. Takes 3 min.
 
 Where: a plain Ghostty window outside herdr (this runbook's driver, the orchestrator, ends here; the owner runs steps 6 to 8 by hand). Takes 5 min.
 
-1. `mac/developer-volume/RUNBOOK.md`, "## Steps", its step 3 from "Then quit the agents" (its save was step 5 here), and its steps 4 (`herdr server stop`), 5 and 6 (`migrate.sh bootout`).
-2. `hc server stop`.
+1. `mac/developer-volume/RUNBOOK.md`, "## Steps", its steps 4 (quit the agents, `opencode service stop`), 5 (`herdr server stop`, then `hc server stop`), 6 (syncthing) and 7 (`migrate.sh bootout`). Its step 3 (save and `pre`) was step 5 here.
 
-On failure: whatever still runs shows up in its step 7 (`migrate.sh preflight`).
+On failure: whatever still runs shows up in its step 8 (`migrate.sh preflight`).
 
 ## Step 7 — Mac, volume move
 
-Where and how long: `mac/developer-volume/RUNBOOK.md`, "## Steps", its steps 7 to 9 (1.5 to 3 h, its guess), and its "## After" check.
+Where and how long: `mac/developer-volume/RUNBOOK.md`, "## Steps", its steps 8 to 10 (1.5 to 3 h, its guess), and its "## After" check.
 
 On failure: its "## Rollback", then step 8 here.
 
@@ -76,10 +75,10 @@ On failure: its "## Rollback", then step 8 here.
 
 Where: a new plain Ghostty window. Takes 10 min.
 
-1. `mac/developer-volume/RUNBOOK.md` step 10 **without** `herdr` and without its last sentence (`hcm apply`, `restore`, `hcm resume`; the lines below replace them): `$D/migrate.sh bootstrap`, `brew services start syncthing`, `rift gc`.
+1. `mac/developer-volume/RUNBOOK.md` step 11 (`$D/migrate.sh bootstrap`, `brew services start syncthing`, `opencode service start`, `rift gc`; herdr stays stopped). Its step 12 is the lines below.
 2. `hc server start`; `hcm apply --snapshot <saved>/snapshot.json` (expect 7 tabs).
 3. `bun herdr-core/cutover.ts labels --snapshot <saved> --save <save>`. Expect 3 `labelled` lines (as many as step 5 saved with a session) and `project=` set on each named workspace's terminal. Failures as step 4.3.
-4. `opencode service start`, then `bun herdr-core/cutover.ts resume`.
+4. The service is up from 8.1; `bun herdr-core/cutover.ts resume`.
 5. `bun herdr-core/cutover.ts verify --snapshot <saved>`, then `bun pane-restore/main.ts check <save>`. Expect every line `ok`.
 6. Clients: `curl -fsSL https://releases.herdr.dev/app/install.sh | sh` (Herdr.app), `curl -fsSL https://rodeo.lukeed.com | sh` (rodeo). Herdr.app opens on the spaces hcm wrote.
 7. `herdr plugin list`, `herdr plugin uninstall <the id it lists for cevr/herdr-hunk>`.
@@ -95,5 +94,5 @@ Per host, at any point before `herdr-retire`. Herdr, its config and its snapshot
 
 1. End the hc copies first, so no session is open twice: `hc ls`, then `hc kill <t>` for each terminal `hcm apply` made (they carry the `migrate.from` label: `hc ls --label migrate.from=<tab>` per tab, or `hc get <t>`).
 2. Start herdr: on the workbox `systemctl --user enable --now herdr-bite.service`; on the Mac `herdr`. The panes come back as shells in their folders.
-3. Reopen each session in its herdr pane by hand: `jq -r '.panes[] | select(.session) | "\(.workspace.label): opencode -s \(.session)"' <save>` lists them. (`pane-restore restore` labels hc terminals, so it is not the herdr way back.)
+3. `bun pane-restore/main.ts restore --herdr <save>` reopens each saved session in its herdr pane, only where the pane is an idle shell (pane-restore's README, "Runbook steps"). Plain `restore` (no `--herdr`) labels hc terminals and is not the way back.
 4. The storage moves roll back on their own runbooks ("## Rollback" in each), independently of this one.

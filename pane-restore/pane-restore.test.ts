@@ -366,16 +366,18 @@ describe("restore --herdr", () => {
 describe("runbooks", () => {
   const book = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8")
   const CLI = "bun ~/Developer/personal/dotfiles/pane-restore/main.ts"
+  // The hc path is herdr-core's cutover (hc-cutover): it reads this unit's save with `--save`.
+  const CUTOVER = "bun ~/Developer/personal/dotfiles/herdr-core/cutover.ts"
 
-  test("the Mac runbook saves and checks before the move, and checks and restores after", () => {
+  test("the Mac runbook saves and checks before the move, and checks and moves the panes into hc after", () => {
     const mac = book("mac/developer-volume/RUNBOOK.md")
-    const needed = [`${CLI} save`, `${CLI} check`, `${CLI} restore`, "hcm apply", "hcm resume"]
+    const needed = [`${CLI} save`, `${CLI} check`, `${CUTOVER} pre`, "hcm apply", `${CUTOVER} labels --snapshot <saved> --save <save>`, `${CUTOVER} resume`, `${CUTOVER} verify`]
     expect(needed.filter((text) => !mac.includes(text))).toEqual([])
   })
 
   test("the workbox runbook saves herdr's bite session, and restores into herdr now or hc after the cutover", () => {
     const workbox = book("linux/workbox-btrfs/RUNBOOK.md")
-    const needed = [`${CLI} save --session bite`, `${CLI} check`, `${CLI} restore --herdr`, `${CLI} restore\n`, "hcm apply", "hcm resume"]
+    const needed = [`${CLI} save --session bite`, `${CLI} check`, `${CLI} restore --herdr`, `${CUTOVER} pre --session bite`, "hcm apply", `${CUTOVER} labels --snapshot <saved> --save <save> --session bite`, `${CUTOVER} resume --session bite`, `${CUTOVER} verify`]
     expect(needed.filter((text) => !workbox.includes(text))).toEqual([])
   })
 })

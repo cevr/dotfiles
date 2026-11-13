@@ -46,6 +46,12 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
    `~/.local/state/pane-restore/<host>-<time>.json` (`--session bite`: herdr's
    `bite` session, not its stopped default). `check` exits 1 and names any
    saved session the service cannot open.
+
+   On the cutover to hc, also run
+   `bun ~/Developer/personal/dotfiles/herdr-core/cutover.ts pre --session bite`
+   here (it prints `<saved>`; see [herdr-core/RUNBOOK.md](../../herdr-core/RUNBOOK.md),
+   step 1). Then, before step 5, `systemctl --user disable --now herdr-bite.service`
+   (so step 6 does not start it again) and `hc server stop` (herdr-core's step 2).
 5. `$d/migrate.sh convert` (as `exedev`, ~1 to 3 min a lane: a snapshot, then
    the warm step) makes a Rift of each released or clean worktree. A worktree
    still in use is skipped with its process named; stop it and rerun.
@@ -57,7 +63,9 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
    2. stops what uses the home: every system unit with an `exedev` process
       (`syncthing@exedev`, `opencode-service-*.scope`, `opencode-job-*`, the
       Ergo gate scopes), then `user@1000.service` (herdr-bite, sideshow, t3code,
-      teamclaude, film-lab, sh.executor.daemon), then the `exedev` sessions
+      teamclaude, film-lab, sh.executor.daemon, and hc's core `hc-serve-*.service`
+      with its terminals, which the cutover's `hc server stop` in step 4 stops first),
+      then the `exedev` sessions
       (ssh, mosh). **Your ssh session ends here.**
    3. waits up to a minute for nothing to hold a file under the home, or an
       `exedev` file under `/tmp`; otherwise it starts the units again and stops,
@@ -85,19 +93,25 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
    `failed` for each pane, and exits 1 if any failed. A second run types
    nothing.
 
-   After the cutover to herdr-core (hc), the panes go to hc instead:
+   On the cutover to herdr-core (hc), the panes go to hc instead, with herdr-bite
+   disabled and stopped ([herdr-core/RUNBOOK.md](../../herdr-core/RUNBOOK.md),
+   step 4). `<saved>` is the folder `cutover.ts pre` printed in step 4 here, and
+   `<save>` is the file `pane-restore save` printed:
 
    ```sh
    bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
-   hcm apply                                  # if the tabs are not in hc yet
-   bun ~/Developer/personal/dotfiles/pane-restore/main.ts restore
-   herdr --session bite server stop           # from a shell outside herdr
-   hcm resume
+   hc server start
+   hcm apply --snapshot <saved>/snapshot.json
+   bun ~/Developer/personal/dotfiles/herdr-core/cutover.ts labels --snapshot <saved> --save <save> --session bite
+   bun ~/Developer/personal/dotfiles/herdr-core/cutover.ts resume --session bite
+   bun ~/Developer/personal/dotfiles/herdr-core/cutover.ts verify --snapshot <saved> --session bite
    ```
 
-   `restore` labels each moved tab's hc terminal `migrate.resume=opencode
-   --session <id>`, and `hcm resume` types it once. hcm reads herdr 0.9.5
-   snapshots; the workbox runs herdr 0.9.1, so update herdr before this path.
+   `labels` refuses while herdr runs. It labels each OpenCode pane's new hc shell
+   `migrate.resume=opencode -s <id>` (the save's id wins over the snapshot's).
+   `resume` drops any label whose terminal is no longer a fresh shell, then
+   `hcm resume` types each one once. `verify` prints `ok` for herdr, terminals,
+   labels, status and sessions.
 8. `sudo $d/check.sh`: every line `ok`. Then use the box for a while.
 
 ## After the window
