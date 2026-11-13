@@ -1,0 +1,35 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/orchestrate-machine.test.ts": {
+      "simulated": "cmd/orchestrate/orchestrate-machine.sim.test.ts",
+      "tests": [
+        {
+          "name": "the machine and the run's state follow the compaction; a verifier for one unit and a land of one Rift are refused in the skill's words; one land of three, one batch verifier",
+          "expects": 22,
+          "carried": "both",
+          "why": "the run on the world: the compaction's end event and the brief after it (host law: compaction), the refusals through execute.before (host law: hooks), the children (host law: subagent), the ledger in memory; gamma's implementor is held until the brief is in, as the real run's timing left it running. The machine block against SKILL.md's own words stays real: a read of the repo's files, which a simulated file does not make"
+        },
+        {
+          "name": "fan-out during verify, a fold into a running implementor and one into a fix unit, the land after the verdict without the running implementor, whose finding rides with its own later land; each verifier told the folds that landed with it; a land before the verdict and one with a finding unfolded are refused",
+          "expects": 15,
+          "carried": "simulated",
+          "why": "the probe turns on the world; the held verifier answers when the test opens its gate, as the real run's model held its response; the reports are read by the plugin's own reader (filestore/findings.ts findingsIn) from files held in memory; each ungated implementor is waited out to its hand-back, as the real run's timing gave it"
+        },
+        {
+          "name": "a covered unit's round 2 cannot land while its batch's verifier runs; a changes whose report does not read holds the land until it reads and its finding folds",
+          "expects": 11,
+          "carried": "simulated",
+          "why": "round 1's edges on a root of their own, on a fresh world: the real run's second root shared the first's OpenCode, and its lines and lands were read apart from the first's"
+        },
+        {
+          "name": "a land of one of two ready units made in two places is refused; a run that keeps the machine across moves is never refused",
+          "expects": 5,
+          "carried": "simulated",
+          "why": "two plugin copies, one per location, over one ledger; the owner's moves of an idle root on the world (host law: move)"
+        }
+      ]
+    }
+  },
+  "retired": []
+}
