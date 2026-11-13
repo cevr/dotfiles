@@ -521,7 +521,7 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure((yield* Ref.get(archived)) === 1, `archiving twice published session.archived ${yield* Ref.get(archived)} times`)
         const kept = yield* fresh(ctx)
         const listed = (archivedOnly: boolean) =>
-          ctx.session.list({ parentID: null, archived: archivedOnly, order: "desc", limit: 100 }).pipe(Effect.map((page) => page.data.map((info) => info.id)))
+          ctx.session.list({ archived: archivedOnly, order: "desc", limit: 100 }).pipe(Effect.map((page) => page.data.map((info) => info.id)))
         const live = yield* listed(false)
         yield* ensure(live.includes(kept.id) && !live.includes(session.id), "a list with archived: false did not leave out only the archived session")
         const gone = yield* listed(true)

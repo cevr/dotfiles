@@ -53,7 +53,7 @@ export const eventOf = (
   prompt: string,
   conversation: ReadonlyArray<unknown>,
 ): SystemInput => {
-  const event: SystemInput = { ...scope, system: [BASE_SYSTEM, prompt].filter((text) => text !== "").map((text) => ({ type: "text", text })) }
+  const event: SystemInput = { ...scope, system: [BASE_SYSTEM, prompt].values().filter((text) => text !== "").map((text) => ({ type: "text" as const, text })).toArray() }
   if (hook === "compaction") event.messages = [...conversation]
   for (const [field, empty] of Object.entries(UNMODELLED).filter(([field]) => !(field in event)))
     Object.defineProperty(event, field, {
