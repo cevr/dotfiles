@@ -115,8 +115,12 @@ export const Start = Schema.TaggedStruct("Start", {
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
 
-/** What a role agent's hand-back line said; `none` when it ended with no hand-back. */
-export const Verdict = Schema.Literals(["ready", "blocked", "accepted", "changes", "stuck", "none"])
+/**
+ * What a role agent's hand-back line said; `none` when it ended with no hand-back, `stopped` when its turn was
+ * stopped (its session interrupted, by a parent's `subagents` stop or by hand): its last words, an earlier turn's,
+ * are then no hand-back. A stopped verifier, like one that died, gave no verdict.
+ */
+export const Verdict = Schema.Literals(["ready", "blocked", "accepted", "changes", "stuck", "none", "stopped"])
 export type Verdict = typeof Verdict.Type
 
 /**
@@ -728,15 +732,17 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
       }
       case "VerifierEnded": {
         const covered = coveredOf(state)
+        // A verifier that died or was stopped gave no verdict.
+        const silent = event.verdict === "none" || event.verdict === "stopped"
         for (const [name, unit] of Object.entries(units)) {
           if (unit.state !== "verify") continue
-          // A verifier that died gave no verdict: its units are landed and unverified again.
-          if (event.verdict === "none") units[name] = { ...unit, state: "landed", since: event.at }
+          // A verifier with no verdict leaves its units landed and unverified again.
+          if (silent) units[name] = { ...unit, state: "landed", since: event.at }
           else delete units[name]
         }
         const { verifier: _, ...rest } = state
-        // A dead verifier's units, whatever round each is on now, still wait for a verdict.
-        if (event.verdict === "none") return tidy({ ...rest, units, unverified: [...new Set([...(state.unverified ?? []), ...covered])] })
+        // A silent verifier's units, whatever round each is on now, still wait for a verdict.
+        if (silent) return tidy({ ...rest, units, unverified: [...new Set([...(state.unverified ?? []), ...covered])] })
         // The verdict is in: what it checked as folded is done, and its own findings open, or its debt when they did not read.
         // A finding folded into a unit no longer in the state was checked by a verdict already: a ledger written
         // before a verifier's start stood in for a land by hand kept it open (`standInFindings`), so it goes too.

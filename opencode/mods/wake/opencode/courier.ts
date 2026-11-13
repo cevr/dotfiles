@@ -27,7 +27,7 @@
 //   the metadata whole, so a mark is merged into what the session has; the TUI
 //   reads the change from `session.metadata.updated`.
 import { Model, type Plugin } from "@opencode/plugin/effect"
-import { Effect, Layer } from "effect"
+import { Clock, Effect, Layer, Random } from "effect"
 import { MARK_KEY, type Mark } from "../latch.ts"
 import type { Letter } from "../message.ts"
 import { type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
@@ -103,13 +103,31 @@ export const minter = (
   }
 }
 
+/**
+ * The minter on Effect's `Clock` and `Random`: the same ids, its time and its
+ * letters read through the services, so a seeded clock and random replay them.
+ */
+export const minted = (prefix: string, descending = false): Effect.Effect<string> => {
+  let now = 0
+  let bytes: ReadonlyArray<number> = []
+  const mint = minter(prefix, descending, () => now, (target) => {
+    target.set(bytes)
+    return target
+  })
+  return Effect.gen(function* () {
+    now = yield* Clock.currentTimeMillis
+    bytes = yield* Effect.forEach(Array.from({ length: 14 }), () => Random.nextIntBetween(0, 255))
+    return mint()
+  })
+}
+
 const refusal = (sessionID: string) => (cause: unknown) =>
   notFound(cause) ? new DeliveryRefused({ sessionID, message: "no such session", gone: true }) : new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false })
 
-export const layer = (host: Host, mintMessage: () => string = minter("msg_"), mintSession: () => string = minter("ses_", true)) =>
+export const layer = (host: Host, mintMessage: Effect.Effect<string> = minted("msg_"), mintSession: Effect.Effect<string> = minted("ses_", true)) =>
   Layer.succeed(Courier, {
-    newDelivery: Effect.sync(mintMessage),
-    newSession: Effect.sync(mintSession),
+    newDelivery: mintMessage,
+    newSession: mintSession,
     deliver: (sessionID: string, delivery: string, letter: Letter, resume: boolean) =>
       host
         .synthetic({ sessionID, id: delivery, text: letter.text, description: letter.description, metadata: { ...letter.metadata }, delivery: "steer", resume })

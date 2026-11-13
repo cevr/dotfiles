@@ -46,6 +46,7 @@ import { decodeBinding, encodeSnapshot } from "./codec.ts"
 import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
 import { searcher, type Searcher } from "../summary.ts"
 import { handleOf, listShells, runShell } from "./shell-handle.ts"
+import { listSubagents, runSubagent, subagentHandleOf } from "./subagent-handle.ts"
 
 /** Uncaught errors kept for the next cell; later ones between two cells are dropped. */
 const MAX_STRAY_ERRORS = 20
@@ -112,14 +113,31 @@ type ToolNode = (...args: unknown[]) => unknown
  * `tools.shell(input)` runs a command and resolves to a live handle
  * (shell-handle.ts) whose methods act on it; `tools.shell.handle(id)` builds
  * one for a shell the session started, and `tools.shell.list()` one for each.
+ * `tools.subagent(input)` starts a subagent and resolves to a live handle
+ * (subagent-handle.ts) whose methods wait on, read and stop it;
+ * `tools.subagent.handle(sessionID)` and `tools.subagent.list()` build them
+ * for the session's subagents.
  */
 const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string, input: unknown) => Promise<Json>): ToolNode => {
   const callShell = (input: unknown) => callHost("shell", input)
-  const call = (id: string, input: unknown): Promise<unknown> => (id === "shell" ? runShell(input, callShell) : callHost(id, input))
+  const call = (id: string, input: unknown): Promise<unknown> => {
+    if (id === "shell") return runShell(input, callShell)
+    if (id === "subagent") return runSubagent(jsonInput(input), callHost)
+    return callHost(id, input)
+  }
   const shellNamespace: Record<string, unknown> = {
     handle: (id: unknown) => handleOf(id, callShell),
     list: () => listShells(callShell),
   }
+  const subagentNamespace = {
+    handle: (sessionID: Json) => subagentHandleOf(jsonInput(sessionID), callHost),
+    list: () => listSubagents(callHost),
+  }
+  // The functions a tool's path holds beside the tool itself, while the tool is offered.
+  const namespaces = new Map<string, typeof shellNamespace>([
+    ["shell", shellNamespace],
+    ["subagent", subagentNamespace],
+  ])
   const ids = () => listing().map((tool) => tool.id)
   const nodes = new Map<string, ToolNode>()
   const isPrefix = (path: string) => ids().some((id) => id === path || id.startsWith(`${path}.`))
@@ -158,8 +176,8 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
     const created = new Proxy(target, {
       get: (target, key, receiver) => {
         if (path === "" && typeof key === "string" && DISCOVERY.has(key)) return discovery[key as keyof typeof discovery]
-        if (path === "shell" && typeof key === "string" && Object.hasOwn(shellNamespace, key) && ids().includes("shell"))
-          return shellNamespace[key]
+        const namespace = namespaces.get(path) || {}
+        if (typeof key === "string" && Object.hasOwn(namespace, key) && ids().includes(path)) return namespace[key]
         if (!isPathKey(path, key)) return Reflect.get(target, key, receiver)
         if (isPrefix(join(path, key))) return node(join(path, key))
         throw unknown(join(path, key))

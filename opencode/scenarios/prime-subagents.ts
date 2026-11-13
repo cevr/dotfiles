@@ -136,7 +136,7 @@ export default OpenCodeDriver.use(
       yield* save(`${label}-returned`)
 
       yield* ui.arrow("down")
-      yield* until(`${label}-picker`, (frame) => frame.includes("Subagents") && frame.includes("Running"))
+      yield* until(`${label}-picker`, (frame) => frame.includes("Subagents 3"))
       yield* save(`${label}-picker`)
 
       yield* ui.enter()
@@ -153,7 +153,7 @@ export default OpenCodeDriver.use(
       yield* save(`${label}-parent`)
 
       yield* click("◆ 3 subagents")
-      yield* until(`${label}-dock`, (frame) => frame.includes("Subagents") && frame.includes("Running"))
+      yield* until(`${label}-dock`, (frame) => frame.includes("Subagents 3"))
       yield* save(`${label}-dock`)
 
       yield* ui.press("escape")

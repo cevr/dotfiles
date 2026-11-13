@@ -67,10 +67,11 @@ only the resident location's copy acts, so a host runs one updater.
 - **The target.** An accepted batch verdict records what every host installs:
   orchestrate (its `fleet` option, `{ dotfiles, fork }`, which daily writes)
   takes the heads the batch file beside the verifier's report
-  (`<run dir>/<batch>.md`) names as verified (`Dotfiles: base X, head Y`,
-  `Fork prime-look: base X, head Y`, `Fork unchanged (Y)`), never a checkout's
-  HEAD. It needs both heads: a batch file that names only one, or none,
-  publishes nothing (no kept commit stands in). It never moves the fleet
+  (`<run dir>/<batch>.md`) names in its one machine line, exactly
+  `Heads: dotfiles=<40-hex sha> fork=<40-hex sha>` (both full commits, which
+  the orchestrator resolves before writing), never prose and never a
+  checkout's HEAD. A batch file with no such line, two, or one in another form
+  (a short hash, one repository) publishes nothing (no kept commit stands in). It never moves the fleet
   back: each head must descend from the current target's (`git merge-base
   --is-ancestor`). A batch it does not publish says so, `fleet: <batch>
   accepted, but NOT published: <why>`, in the root's context, the run's
@@ -267,16 +268,31 @@ unread, in the success colour while any is pending (the warning colour with
 only notices); its parts drop from the right as the row narrows. It is read
 again on the wake mod's `changed` event and every 2 seconds.
 
-↓ on an empty prompt opens the host's composer panel. After the host's
-Subagents, Shell and Terminals tabs, Prime adds Wakes and Monitors (through
-the fork's `ui.composerTab`; `tui/composer.tsx`, the words in `wakes.ts`).
-Each lists the session's pending alarms or monitors, soonest first, one row
-each:
+↓ on an empty prompt opens the host's background-work panel. After the
+host's Subagents, Shell and Terminals tabs, Prime adds Wakes and Monitors
+(through the fork's `ui.composerTab`; `tui/composer.tsx`). Prime draws the
+whole panel through the fork's `session.composer.panel.tabs`, `.row` and
+`.footer` slots (`tui/panel.tsx`, the words and columns in `panel.ts`); the
+host keeps its keys, scrolling and highlight. The tab bar counts what each tab
+lists, the footer words keys as the hint line does, and every row of every
+tab has the same columns: the state's diamond, a subagent's role and model,
+the name, what it last did, its state in a word, a live time and, where the
+data says, how long since it was last heard from:
 
 ```
-12:36 in 9m 59s · ALPHA: check the deploy · wake · once           (Wakes: due, note, mode, repeat)
-echo still-waiting · every 1s · until /^READY$/ · still-waiting   (Monitors: command, period, stop, newest output)
+Subagents 5  ·  Shell 2  ·  Terminals  ·  Wakes 1  ·  Monitors 1                    esc
+◆ implementor gpt  Corpus HP r1           Porting Corpus HP              working  1s
+◇ printf 'serving on :4000\n'; sl…  serving on :4000                    running  12s
+◇ Check the deploy: the canary  wake · once                            pending  in 9m 59s
+◆ echo still-waiting  still-waiting                          watching  40s  checked 0s ago
+Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs
 ```
+
+As the panel narrows the parts drop in turn: the last-heard age, the model's
+version, the model, the state's word, then what it last did; the name is cut,
+then the role drops, and the name and the time go last.
+`tests/prime-panel.test.ts` runs `scenarios/prime-panel.ts` at 160 and 80
+columns (needs the fork's `panel-slots` branch).
 
 ↑/↓ move the highlight, Enter shows the whole entry (its full note, a
 monitor's newest output in full), ctrl+d cancels it as `wake_cancel` does,
@@ -537,6 +553,46 @@ before. So a shell keeps its last 8 to 16 MiB; a check says when the oldest
 was dropped. The host keeps the 100 newest ended background shells and the
 25 newest ended foreground ones, and sweeps output files after 7 days. The
 server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
+
+### Subagents
+
+A session lists, reads, waits on and stops its own subagents with the
+`subagents` tool, which the kernel plugin adds beside the kernel
+(`mods/kernel/subagents.ts`, `mods/kernel/opencode/subagents.ts`), so a
+session without the kernel has it too: `{ action: "list" }`, `{ action:
+"get", sessionID }` (its state and last message), `{ action: "wait",
+sessionID, ms? }` (10 min by default) and `{ action: "stop", sessionID }`.
+A state is `running`, `done`, `stopped` or `failed`, read off the host's
+session (its newest execution still runs, else its last outcome). Only the
+session's own descendants are reachable; any other session is refused with
+`… is not a subagent of this session`. A stop is the host's
+`session.stop` (the fork's, branch `subagent-stop`; upstream's plugin API
+has only `interrupt`), on each of the subagent's own subagents, deepest
+first, then on it, each waited on up to 30 s to settle. It ends the
+session's turn, cancels the background work it owns (its shells) and its
+queued prompts, and marks it stopped until a new task resumes it: while
+stopped, a notice (a cancelled shell's, a subagent's report) does not wake
+it, and a period of it the owner starts reports nothing to the parent. The
+host settles a running subagent as cancelled, so the parent hears it once in
+a `<subagent state="cancelled">` notice and never as finished. A second stop
+changes nothing.
+
+In a kernel cell, `await tools.subagent({ agent, description, prompt })`
+resolves to a live handle (`mods/kernel/worker/subagent-handle.ts`):
+`.sessionID`, `.description`, `.agent`, `.state`, `.message`, `.note`, and
+`.wait(ms?)`, `.stop()`, `.read()`, `.refresh()`, each a `subagents` call
+with its sessionID that updates the handle in place and resolves to it.
+`await tools.subagent.handle(sessionID)` rebuilds one (after a kernel
+restart, which keeps a handle's data but not its methods), and `await
+tools.subagent.list()` gives one per subagent. Orchestrate reads a stopped
+step's session as handed back `stopped`, never as the verdict an earlier
+turn wrote; a stopped verifier gave no verdict.
+
+```ts
+const probe = await tools.subagent({ agent: "worker", description: "probe", prompt: "…" })
+await probe.wait(60_000) // probe.state, probe.message
+if (probe.state === "running") await probe.stop()
+```
 
 ## Orchestrate
 
@@ -1315,7 +1371,8 @@ made when the TUI opens it.
 
 ## Escape
 
-`cmd/escape` is a TUI plugin that makes one Escape on a busy session stop
+`cmd/escape` is a TUI plugin (and a small server one, see Waiting prompts as
+one) that makes one Escape on a busy session stop
 its run, taking back the prompt just sent. Within the grace (5 s after the
 session's newest prompt with text was sent), Escape with an empty composer
 stops the run, reverts the session to before the prompt and puts its text
@@ -1323,8 +1380,10 @@ back in the composer: it runs the host's own `session.undo`. Past the grace,
 with a draft in the composer or with no editor focused, it interrupts
 (`session.interrupt` with `resume`), and the prompt and its partial answer
 stay. A prompt still waiting in the session's inbox (queued, or a steer the
-model has not read) comes back to the composer whatever the grace, appended
-to any draft, and the turn it waited behind is interrupted in the same press
+model has not read) comes back to the composer whatever the grace, with
+every other prompt waiting there (one text, oldest first, a newline between,
+attachments and all; see Waiting prompts as one), appended to any draft, and
+the turn it waited behind is interrupted in the same press
 (without `resume`, so the inbox is not resumed ahead of the take-back): a
 prompt sent while the model works is never dropped, and the run never keeps
 going behind it. When the taken-back run called a shell, a toast says
@@ -1418,6 +1477,41 @@ a turn stuck in a shell call, one prompt queued and one in the composer;
 the call is cut, the turn reads `■ Interrupted`, both prompts go out after
 it, the queued one first, each once in the transcript and in what the model
 is sent, and a second press with nothing waiting interrupts nothing.
+
+### Waiting prompts as one
+
+Prompts that wait behind a turn act as one prompt. When a session goes idle
+with two or more prompts queued for after the turn (leader+Enter,
+`◌ after the turn`), they arrive as one user message: the texts in the order
+queued, a newline between, each one's attachments in order (an @mention
+keeps its place in its own text). One queued prompt goes out as it was.
+Steers (`◌ queued`) keep their own delivery, each its own message at the
+next step, and a queued compaction or move still runs where it was queued:
+only the prompts before it merge. The server half, `cmd/escape/server.ts`,
+answers the fork's `experimental.queue.deliver` session hook, which offers
+the queued user prompts at each idle boundary and merges as many as the
+plugin takes (the fork's `queue-merge` branch, `SessionInbox.promote`); on a
+host without it each queued prompt goes out alone.
+
+Up on the composer's first row, with prompts waiting (queued or steers), takes
+them all back into the composer instead of walking the history: one text,
+oldest first, a newline between, after any draft (on a new line), with their
+attachments; the inbox is empty after and nothing is sent. Escape on a waiting
+prompt takes them the same way. With nothing waiting, or with the cursor below
+the first row, Up is the host's. The take-back is the fork's
+`ui.composer.takeBack` (`packages/tui/src/prompt/take-back.ts`): it reads
+each prompt back (its images as bytes, before the cancel releases them),
+cancels it, and appends the ones the server cancelled, so a prompt the
+session took meanwhile goes out once and is not also in the composer
+(`N waiting prompts were not taken back: sent already, or the server did not
+answer`). The Up layer is `dotfiles.escape.take`, base mode at priority 2,
+above the composer's own history layer, on only while prompts wait
+(`firstRow` and the toasts in `mods/escape/take.ts`).
+`tests/queue-merge.test.ts` runs `scenarios/queue-merge.ts` per case: three
+queued prompts arrive as one message with two newlines; Up on the empty
+composer takes the three back as three lines, the queue empty and no request
+sent; Escape does the same and interrupts; Up with nothing queued walks the
+history.
 
 ## Cache
 

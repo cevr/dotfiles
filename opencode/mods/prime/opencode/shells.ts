@@ -23,6 +23,13 @@ async function tail(context: Plugin.Context, id: string, bytes: number) {
   return { output: page.data.output, cut: end.data.size > bytes }
 }
 
+/** The tail of a command's output a panel row reads its last line from; empty when it does not read. */
+export const shellTail = (context: Plugin.Context, id: string): Promise<string> =>
+  tail(context, id, TAIL_BYTES).then(
+    (read) => read.output,
+    () => "",
+  )
+
 export async function openShells(context: Plugin.Context, sessionID: string, current?: string): Promise<void> {
   const location = context.location
   const listed: ReadonlyArray<ShellEntry> = await context.client.shell

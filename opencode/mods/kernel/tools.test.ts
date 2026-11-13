@@ -57,6 +57,17 @@ describe("the catalog", () => {
     expect(docsOf("read", " Read a file. ")).toBe("Read a file.")
   })
 
+  test("gives the subagent tool its input and a line that names its handle; its docs carry the handle's methods and re-attach", () => {
+    const text = catalog([{ name: "subagent", description: "Start a subagent.", input: { type: "object", properties: { background: { type: "boolean" } } } }])
+    expect(text).toBe(
+      "- tools.subagent(input: { agent: string, description: string, prompt: string, model?: string, sessionID?: string }): Starts a subagent in the background and resolves to a live handle whose methods (.wait, .stop, .read, .refresh) act on it.",
+    )
+    const docs = docsOf("subagent", "Start a subagent.")
+    expect(docs).toContain("Start a subagent.\n\nIn a cell, `tools.subagent({ agent,")
+    expect(docs).toContain("`.stop()`")
+    expect(docs).toContain("rebuild it with `tools.subagent.handle(h.sessionID)`")
+  })
+
   test("reads unions, arrays, constants and nullable types; deep objects stay `object`", () => {
     expect(typeOf({ anyOf: [{ type: "string" }, { const: 1 }] })).toBe('string | 1')
     expect(typeOf({ type: "array", items: { type: ["number", "null"] } })).toBe("number[]")

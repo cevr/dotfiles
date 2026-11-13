@@ -495,3 +495,35 @@ The workbox ran at a load of 35–52 on 16 vCPUs throughout, so a single round c
 - ~~The answer's typed text is lost on a refusal.~~ Fixed in round 2 (fork `8ab6661adf`). A refused reply or cancel, such as a 500 or a connection dropped by a service restart, now brings the form back with what was typed and the error. A read of the forms already in flight when the reply goes out no longer lists the sent form again. The guards are `form.test.tsx` "a refused reply brings the form back with the typed answer and its error" and `data.test.tsx` "a read of the forms in flight when a form's reply goes out does not bring the form back". Both fail at `40879daaa7`. The latency held on the Mac (medians, closed / shown / request): small async 16/29/16 and builtin 9/25/10; 1,500 groups async 16/61/84 and builtin 11/75/98. **measured**
 - The async `shown` time still trails `closed` by 30–60 ms on the workbox: the notice row waits for `session.inbox.enqueued` to arrive and for the next frame. **inferred** from traces
 ||||||| 7d3553b8
+
+# Opening a subagent (workbox, 2026-11-13)
+
+The owner saw about 2 s from pressing a subagent in the Ergo orchestrator's panel to its transcript. The target is under 200 ms. The setup was a second TUI in its own herdr pane, attached to the live service and the Ergo session (`ses_e56ba5bf…`, 16+ subagents at work). The workbox load was 37–57 on 16 vCPUs. `open.ts` (unit scratch) sends `down enter` in the panel through herdr, then polls `herdr pane read` and times the first frame whose title names the new child. The time includes the key's send through herdr.
+
+## What it was
+
+- **No frame was drawn between the key and the transcript.** The spinners froze: the TUI's main thread was busy, not waiting on the server. **measured** (pane frames)
+- **The TUI's main thread waited about 1.5 s on the runqueue for each 1 s of CPU** (`/proc/<pid>/schedstat`), so each ms of CPU cost about 2.5 ms of wall time. **measured**
+- **The CPU went to our family views read bare.** A SIGPROF profile of the installed build showed `mods/subagents` (1,001 of 2,182 samples), `mods/herdr` (148) and `mods/prime` (95) on every update, through the bare path of `subagents/solid/reader.ts`. **measured**
+- **Cause: a second Solid in the compiled TUI.** A plugin's `.ts` module reached through a bare package import (a workspace link under `node_modules`, as `@dotfiles/opencode-subagents/solid/reader`) loaded `solid-js` from disk, not the host's. In it, `getOwner()` was null inside the host's memos, so the reader took its bare path every time, and its `perItem` and `keptMemo` memos never kept anything. Run from source, the host loads the same file from disk, which hides the bug. Bun 1.4.4's runtime `onResolve` fires for relative specifiers but never for bare ones, so OpenTUI's runtime-plugin rewrite never saw these imports. OpenTUI 0.8.4 (the latest) has the same code. **measured** (a four-way experiment: local `.ts`, package `.ts`, package `.tsx`, relative `.ts`; only the package `.ts` was wrong, and only compiled)
+
+## Fixes
+
+- Fork `5d307a41bb` (`origin/subagent-open`), `fix(tui)`: `plugin/runtime-plugin-support.bun.ts` registers the host's runtime modules (`solid-js`, `solid-js/store`, `@opentui/core`, `@opentui/solid` and its subpaths) by their bare specifiers with `build.module`, as it already did for `effect`. Guard: `test/plugin/runtime-modules.test.ts` (red at `5587bf4f47`). An upstream draft is in the unit's `upstream-issue.md`; the related issue is anomalyco/opencode#39986.
+- Dotfiles `perf(herdr)`: the reporter reads its view through `keptView` (`mods/herdr/opencode/asked.ts`), one memo per session, so a change to one subagent reads that subagent alone, and opening a child of the same family reads no session again. Guards: `asked.test.ts` "the kept view: …" (two of the three fail with the bare read).
+
+## Before and after
+
+The installed build `eb399567` against `eb39956735` plus the fix, built with the installed version string so it reuses the running service. Same session, same children, alternating, 10 opens each; opens 8 and 10 landed on the child already shown and are left out. Times in ms from the key. **measured**
+
+| | Before | After |
+| --- | --- | --- |
+| opens | 776, 1,717, 815, 2,363, 474, 1,048, 1,607, 2,776 | 289, 918, 915, 460, 431, 250, 599, 2,196 |
+| median | 1,328 | 530 |
+| idle CPU per 20 s (main thread run / runqueue wait) | 1.50 s / 0.99 s | 0.70 s / 0.35 s |
+
+Under 200 ms is not reached on the workbox under this load. What remains in the open window of a profile of the fixed build: 228 samples in the host (Solid's updates, layout and paint of the new transcript) and 128 in our plugins (`mods/herdr` 55, `mods/subagents` 37, `mods/prime` 31). The herdr share is the one `kept.ts` removes. The runqueue wait multiplies all of it. **measured** (profile `pb.cpuprofile`)
+
+## Note for the next run
+
+A TUI of another version replaces the running service: `service.ensure` sees a version mismatch and starts its own. A first run of the fixed build here (version `so5d307a4`) did that at 03:33:50Z; the service came back on `eb399567`, and the owner's TUIs reconnected. Build a test TUI with the installed version string (`OPENCODE_VERSION=<installed>`), or attach it with `--server`.

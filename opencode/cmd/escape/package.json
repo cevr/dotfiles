@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The escape mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-escape.",
+  "description": "The escape mod's OpenCode plugins, Escape, Up and Ctrl+Enter (tui) and queued prompts as one message (server): the composition root of @dotfiles/opencode-escape.",
   "exports": {
+    "./server": "./server.ts",
     "./tui": "./tui.ts"
   },
   "dependencies": {

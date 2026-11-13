@@ -125,13 +125,19 @@ export interface InACell {
 /**
  * How a tool differs in a cell from what its own description says: the shell
  * tool only runs commands there, and acts on a shell through its handle's
- * methods (worker/shell-handle.ts).
+ * methods (worker/shell-handle.ts); the subagent tool resolves to a handle
+ * whose methods wait on and stop the subagent (worker/subagent-handle.ts).
  */
 export const IN_A_CELL: Readonly<Record<string, InACell>> = {
   shell: {
     input: "{ command: string, workdir?: string, timeout?: number, description?: string, background?: boolean }",
     line: "Runs a command and resolves to a live handle whose methods (.wait, .kill, .refresh, .read) act on that shell.",
     note: "In a cell, `tools.shell({ command, workdir?, timeout?, description?, background? })` only runs a command, and resolves to a live handle: `.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`, and methods that act on that shell, update the handle in place and resolve to it: `.refresh()` (its state now), `.read({ offset?, lines? })`, `.wait(ms?)` (up to 10 min by default), `.kill()`. `.output` is the command's output the handle has seen, newest last: a method adds what is new, so after `await h.wait()` it holds the output from the start; `.read` with an offset or lines puts what it asked for there instead. `await tools.shell.handle(id)` builds one for a shell this session started, and `await tools.shell.list()` one for each of them (with `.description` and `.command`). Example: `const h = await tools.shell({ command: 'bun dev', background: true }); await h.wait(500); await h.kill()`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.shell.handle(h.id)`. The tool's other actions (check, wait, kill, list) are these methods in a cell: an input naming one throws, naming the method.",
+  },
+  subagent: {
+    input: "{ agent: string, description: string, prompt: string, model?: string, sessionID?: string }",
+    line: "Starts a subagent in the background and resolves to a live handle whose methods (.wait, .stop, .read, .refresh) act on it.",
+    note: "In a cell, `tools.subagent({ agent, description, prompt, model?, sessionID? })` starts a subagent in the background (or, with a sessionID, sends one more work) and resolves to a live handle: `.sessionID`, `.description`, `.agent`, `.state` (running, done, stopped, failed), `.message` (its last message, as the latest method read it), `.note` (what the latest method did), and methods that update the handle in place and resolve to it: `.wait(ms?)` (up to 10 min by default, until it goes idle; `.message` is then its final message, and `.note` says when it still runs), `.stop()` (ends its turn, its background shells and queued prompts, and its own subagents'; you hear once that it was cancelled, never that it finished; a second stop changes nothing), `.read()` and `.refresh()` (its state now and its last message). `await tools.subagent.handle(sessionID)` builds one for a subagent of this session, and `await tools.subagent.list()` one for each. Example: `const h = await tools.subagent({ agent: 'worker', description: 'probe', prompt: '…' }); await h.wait(60_000); if (h.state === 'running') await h.stop()`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.subagent.handle(h.sessionID)`. The `subagents` tool does the same outside a cell.",
   },
 }
 

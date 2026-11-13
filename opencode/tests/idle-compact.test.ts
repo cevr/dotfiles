@@ -1,10 +1,12 @@
 // accept: one at a time (it bounds when the idle compaction fires against its due time).
 // Idle compaction in real OpenCode (the fork, through its SDK) on the scripted
-// model, on a 20 s cache and a 5 s margin: a large session that goes idle is
-// not compacted while its cache has time left, and is compacted through
-// OpenCode's own compaction once the cache is 5 s from expiring, and so is one
-// whose background shell outlives the cache, before the shell's notice wakes
-// it. Its due time counts from the request's start as the host saw it, the
+// model, on a 20 s cache and a 5 s margin, for what rests on host behaviour no
+// host law pins yet (tests/parity.json says which): a session whose background
+// shell outlives the cache is compacted through OpenCode's own compaction
+// before the shell's notice wakes it, and one whose summary the host held is
+// compacted on it. The plain idle run and its recorded reason run on the
+// simulated host (cmd/idle-compact/idle-compact.sim.test.ts), with the host's
+// compaction pinned by sim/host-laws.ts. Its due time counts from the request's start as the host saw it, the
 // plugin's clock, not from when the sim got it. With other directories open, so the host runs a copy of the plugin for
 // each, the session is still compacted once. The rule and its timer are tested
 // beside their code in mods/idle-compact and cmd/idle-compact.
@@ -12,7 +14,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec, Started } from "./idle-compact/run.ts"
-import { ANSWER, BACKGROUND_SECONDS, EARLY_MS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
+import { BACKGROUND_SECONDS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -53,14 +55,6 @@ const run = async (name: string, options: { readonly background?: boolean; reado
   return JSON.parse(readFileSync(result, "utf8")) as Result
 }
 
-/** The idle run, shared by the tests that read it. */
-let idleRun: Promise<Result> | undefined
-const idle = () => (idleRun ??= run("idle"))
-
-// Whether the checkout's compaction request takes a `reason` the compaction message records.
-const recordsReason = (dir: string) =>
-  readFileSync(join(dir, "packages/schema/src/session-inbox.ts"), "utf8").includes("reason: SessionMessage.CompactionReason")
-
 interface Message {
   readonly type: string
   readonly status?: string
@@ -78,49 +72,6 @@ const messagesOf = (context: unknown): ReadonlyArray<Message> => (Array.isArray(
 const compactions = (context: unknown) => messagesOf(context).filter((message) => message.type === "compaction")
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
-  test(
-    "an idle session is not compacted while its cache has time left, and is compacted once it is a margin from expiring",
-    async () => {
-      const result = await idle()
-      const turn = result.seen.find((item) => item.kind === "turn")
-      expect(turn).toBeDefined()
-      // Ten seconds in, with five left before the margin: the session sat idle and nothing compacted it.
-      expect(compactions(result.early)).toEqual([])
-      expect(JSON.stringify(result.early)).toContain(ANSWER)
-      expect(result.seen.filter((item) => item.at <= (turn?.at ?? 0) + EARLY_MS).map((item) => item.kind)).not.toContain("compaction")
-      // Then, once: OpenCode's compaction ran on the sim, no sooner than the cache's lifetime less the margin.
-      const summaries = result.seen.filter((item) => item.kind === "compaction")
-      expect(summaries).toHaveLength(1)
-      const due = dueAfter(result.started.find((item) => item.kind === "primary"))
-      expect(summaries[0]?.at).toBeGreaterThanOrEqual(due)
-      expect(summaries[0]?.at).toBeLessThan(due + 5_000)
-      const [compaction] = compactions(result.late)
-      expect(compaction?.status).toBe("completed")
-      expect(compaction?.summary).toContain(SUMMARY)
-      // No turn came after the prompt's: the compaction ran on its own.
-      expect(result.seen.filter((item) => item.kind === "turn")).toHaveLength(1)
-    },
-    120_000,
-  )
-
-  test.skipIf(!fork || !recordsReason(fork))(
-    "the idle compaction is recorded as automatic",
-    async () => {
-      const [compaction] = compactions((await idle()).late)
-      expect(compaction?.reason).toBe("auto")
-    },
-    120_000,
-  )
-
-  test.skipIf(!fork || recordsReason(fork))(
-    "a host without a compaction reason records the idle compaction as manual",
-    async () => {
-      const [compaction] = compactions((await idle()).late)
-      expect(compaction?.reason).toBe("manual")
-    },
-    120_000,
-  )
-
   test(
     "with copies of the plugin for other directories on the host, the idle session is compacted once, by its own directory's",
     async () => {

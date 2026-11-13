@@ -8,8 +8,8 @@
 import { decide } from "@dotfiles/opencode-herdr/activity"
 import * as SocketHerdr from "@dotfiles/opencode-herdr/herdr/socket"
 import { reporter } from "@dotfiles/opencode-herdr/model"
-import { followAsked } from "@dotfiles/opencode-herdr/opencode/asked"
-import { membersOf, read } from "@dotfiles/opencode-herdr/opencode/view"
+import { followAsked, keptView } from "@dotfiles/opencode-herdr/opencode/asked"
+import { membersOf } from "@dotfiles/opencode-herdr/opencode/view"
 import { paneOf } from "@dotfiles/opencode-herdr/report"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { Plugin } from "@opencode/plugin/tui"
@@ -47,8 +47,12 @@ export default Plugin.define({
         },
         () => membersOf(context.data, route()),
       )
-      createEffect(() => reporting.show(decide(read(context.data, route(), asked))))
-      return dispose
+      const kept = keptView(context.data, route, asked)
+      createEffect(() => reporting.show(decide(kept.view())))
+      return () => {
+        kept.dispose()
+        dispose()
+      }
     })
     // Told to stop, OpenCode tears down for up to 10 s, and whoever stops it may not wait that long (a
     // supervisor's SIGKILL a second later): the pane is released at once, not at the end of the teardown.

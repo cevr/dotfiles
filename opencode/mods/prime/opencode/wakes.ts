@@ -19,6 +19,7 @@ const Answer = Schema.Struct({
       id: Schema.String,
       kind: Schema.Literals(["alarm", "monitor", "latch"]),
       dueAt: Schema.Number,
+      setAt: Schema.optional(Schema.Number),
       note: Schema.String,
       mode: Schema.Literals(["wake", "notify"]),
       everySeconds: Schema.optional(Schema.Number),
