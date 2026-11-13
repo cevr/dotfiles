@@ -82,6 +82,14 @@ describe("pairing two hosts", async () => {
     expect(workbox.logs.some((line) => line.includes("refused /mail/v1/pair") && line.includes("the code is unknown, used or expired"))).toBe(true)
   })
 
+  test("a code that starts with -- is a code, not a flag: join sends it to the inviter", async () => {
+    // A base64url code starts with `--` once in 4096 (SIM_SEED=121415603 of mail-peer.sim.test.ts drew one).
+    expect(await mac.command("join", workbox.url, "--AbCdEfGhIjKlMnOpQrSt")).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("the code is unknown, used or expired"),
+    })
+  })
+
   test("each host lists the other's sessions and hands it a parcel", async () => {
     const parcel = (to: string): Parcel => ({ to, from: { id: "ses_x", title: "X" }, replyTo: { id: "ses_x", title: "X" }, body: "hi", wake: true })
     expect(await mac.run(Effect.flatMap(Peers, (peers) => peers.names))).toEqual(["workbox"])
