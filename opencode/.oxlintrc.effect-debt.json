@@ -302,6 +302,23 @@
     },
     {
       "files": [
+        "mods/kernel/subagents.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/kernel/worker/subagent-handle.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "mods/stall/model.test.ts"
       ],
       "rules": {
