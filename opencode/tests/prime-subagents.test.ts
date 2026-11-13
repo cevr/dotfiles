@@ -35,6 +35,14 @@ const hint = (frame: ReadonlyArray<string>) => {
   while (at > 0 && /^ (?:┃|[› ] [◇◆] )/.test(frame[at - 1] ?? "")) at--
   return frame[at - 1]?.trim()
 }
+/** The dock's first line, trimmed: the row right under the composer's rail. */
+const under = (frame: ReadonlyArray<string>) => frame[frame.findLastIndex((line) => line.startsWith(" ┃")) + 1]?.trim()
+
+/** In the main session the way down sits under the composer, the model at the line's right, and the line above it holds no hint. */
+function expectDownUnder(frame: ReadonlyArray<string>) {
+  expect(under(frame)).toMatch(/^↓ subagents +gpt-sim-model$/)
+  expect(hint(frame) ?? "").not.toContain(DOWN)
+}
 
 /** A subagent's frame reads like the main session's: its brief, its own steps, its loader, the way back. */
 function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[number]) {
@@ -69,9 +77,9 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     for (const name of names) frames[name] = readFileSync(join(out, `subagents-${name}.txt`), "utf8").split("\n")
   }, 300_000))
 
-  test("while subagents run, the main session says Down reaches them", kept.test(() => {
+  test("while subagents run, the main session says Down reaches them, under the composer", kept.test(() => {
     expect(frames.started[0]).not.toContain("›")
-    expect(hint(frames.started)).toStartWith(DOWN)
+    expectDownUnder(frames.started)
     expect(frames.started.join("\n")).toContain("◆ 3 subagents")
   }))
 
@@ -101,7 +109,7 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     for (const frame of [frames.returned, frames.parent]) {
       expect(frame[0]).not.toContain("›")
       expect(frame).toContain("  ● Started 3 agents")
-      expect(hint(frame)).toStartWith(DOWN)
+      expectDownUnder(frame)
     }
   }))
 

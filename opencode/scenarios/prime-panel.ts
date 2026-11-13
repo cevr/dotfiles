@@ -7,8 +7,10 @@
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-panel.ts
 //
 // It writes, under SCENARIO_OUT, `panel-<cols>-<tab>.txt` and `.json` for each
-// tab at each width (`subagents`, `shell`, `wakes`, `monitors`), and
-// `panel-160-tick`: the Subagents tab again once its rows' times moved on.
+// tab at each width (`subagents`, `shell`, `wakes`, `monitors`),
+// `panel-<cols>-dock`: the session with the panel closed, its `↓ subagents`
+// hint and dock, and `panel-160-tick`: the Subagents tab again once its rows'
+// times moved on.
 // `BEFORE=1` runs it against a look without the panel slots: it keeps the same
 // frames, but waits on no time moving. It waits on what the frame shows, never
 // on a clock; a wait that runs out writes `panel-<name>.timeout.txt`.
@@ -118,6 +120,8 @@ export default OpenCodeDriver.use(
         Effect.gen(function* () {
           yield* ui.resize({ cols, rows: 40 })
           yield* until(`${cols}-resized`, (frame) => frame.split("\n").every((line) => Array.from(line).length <= cols) && !frame.includes("Subagents"))
+          yield* until(`${cols}-dock`, (frame) => frame.includes("↓ subagents") && frame.includes("5 subagents"))
+          yield* keep(`${cols}-dock`)
           yield* ui.press("down")
           yield* until(`${cols}-subagents`, shows(["Monitors", ...LANES.map((lane) => lane.unit.slice(0, 6))]))
           const first = yield* keep(`${cols}-subagents`)

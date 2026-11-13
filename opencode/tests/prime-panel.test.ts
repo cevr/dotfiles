@@ -96,6 +96,21 @@ function expectSubagents(wide: Shown, narrow: Shown) {
   for (const { unit } of LANES) expect(narrow.subagents?.rows.join("\n")).toContain(unit.slice(0, 12))
 }
 
+/**
+ * The closed panel's frame: `↓ subagents` is the dock's first line, right
+ * under the composer's rail with the model at its right, and the line above
+ * the composer no longer holds it.
+ */
+function expectDownUnder(frame: string) {
+  const lines = frame.split("\n")
+  const rail = lines.findLastIndex((line) => line.startsWith(" ┃"))
+  const first = lines.findIndex((line) => line.startsWith(" ┃"))
+  expect(lines[rail + 1]?.trim()).toMatch(/^↓ subagents +gpt-sim-model(?: {2}|$)/)
+  expect(lines[first - 1]?.trim()).toBe("")
+  expect(lines.filter((line) => line.includes("↓ subagents"))).toHaveLength(1)
+  expect(lines[rail + 3]?.trim()).toStartWith("◆ 5 subagents  ·  2 shells")
+}
+
 /** Shell, Wakes and Monitors at one width. */
 function expectOtherTabs(shown: Shown) {
   // Shell: the command, its last output line, `running` and how long.
@@ -116,7 +131,9 @@ describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DE
   test(
     "every row says its name, what it last did, its state and a time that moves on, in shared columns, at 160 and 80 columns",
     kept.test(async () => {
-      const { wide, narrow } = await scenario(kept.dir("prime-panel-"))
+      const dir = kept.dir("prime-panel-")
+      const { wide, narrow } = await scenario(dir)
+      for (const cols of [160, 80]) expectDownUnder(readFileSync(join(dir, `panel-${cols}-dock.txt`), "utf8"))
       for (const shown of [wide, narrow]) {
         expect(shown.subagents?.bar).toMatch(/^Subagents 5 {2}· {2}Shell 2 {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 +esc$/)
         expect(shown.subagents?.footer).toBe("Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs")
