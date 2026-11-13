@@ -13,9 +13,8 @@
 //   of a note it can see removes it;
 // - the notes in the file are exactly those saved and not forgotten (the CLI's
 //   list), and no search answers a forgotten id;
-// - a session's requests carry one digest at most, across restarts; one may go
-//   without it only when a write failed during one of its requests (round 1's
-//   finding 1: the digest is then missing, and the cached prefix changes);
+// - every request of a session carries the same system prompt, across write
+//   failures and restarts: the cached prefix holds;
 // - no timer of a closed copy fires.
 // And one seed run twice gives byte-equal traces.
 import { expect as bunExpect } from "bun:test"
@@ -246,9 +245,7 @@ const settled = (state: State, fail: (why: string) => void) =>
     if (sorted(ids) !== sorted(state.live)) fail(`the file holds ${line(ids)}, not ${line([...state.live])}`)
     for (const session of state.sessions) {
       const systems = new Set(state.world.asked().flatMap((asked) => Arr.filter([asked.system], () => asked.sessionID === session.id && asked.kind === "primary")))
-      const digests = [...systems].filter((system) => system !== BARE)
-      if (digests.length > 1) fail(`session ${session.id} sent ${digests.length} digests`)
-      if (systems.size > 1 && !state.faulted.has(session.id)) fail(`session ${session.id} lost or gained its digest with no write failing`)
+      if (systems.size > 1) fail(`session ${session.id} sent ${systems.size} system prompts: ${line([...systems].map((system) => system === BARE))} bare`)
     }
     if (state.world.stale().length > 0) fail(`timers of closed copies fired: ${line(state.world.stale())}`)
   })
