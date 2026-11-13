@@ -35,6 +35,7 @@ export const LAW = {
   retry:
     "a response http.response turns into a rate-limit 429 fails the request and the retry hook sees it to be retried; a usage-limit 429 comes to it not retried; a retry it decides with no delay sends the request again, model.request running again",
   refused: "a usage-limit 429 the retry hook leaves unretried ends the turn: one request, no answer, and no experimental.idle after it",
+  died: "an http.request hook that dies ends the turn: one request, no answer, the retry hook not asked, and the session at rest",
   integration:
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
   provider: "a provider a transform turns on is in the provider list",

@@ -25,7 +25,7 @@ import { below, line, type Runtime } from "./runtime.ts"
 
 /** A failure as the host names it, and whether it may be sent again. */
 export interface Failure {
-  readonly tag: "QuotaExceeded" | "RateLimit" | "Authentication" | "ProviderInternal" | "InvalidRequest" | "Transport"
+  readonly tag: "QuotaExceeded" | "RateLimit" | "Authentication" | "ProviderInternal" | "InvalidRequest" | "Transport" | "Unknown"
   readonly status: number
   readonly message: string
   readonly retryable: boolean

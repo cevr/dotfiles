@@ -18,7 +18,7 @@ const split = (path: string) => {
 export const make = () => {
   const files = new Map<string, string>()
   const locks = new Set<string>()
-  const faults = { writes: 0 }
+  const faults = { writes: 0, failed: 0 }
 
   const slots: SlotFiles = {
     names: (path) =>
@@ -32,6 +32,7 @@ export const make = () => {
       Effect.suspend(() => {
         if (faults.writes > 0) {
           faults.writes -= 1
+          faults.failed += 1
           return Effect.fail({ code: "EIO", message: `the write of ${path} failed` })
         }
         files.set(path, content)
@@ -60,6 +61,8 @@ export const make = () => {
     failWrites: (count: number) => {
       faults.writes = count
     },
+    /** How many writes failed so far. */
+    failed: () => faults.failed,
   }
 }
 

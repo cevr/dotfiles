@@ -393,6 +393,27 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
+    name: LAW.died,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const retries = yield* Ref.make(0)
+        yield* ctx.session.hook("http.request", (event) =>
+          Effect.suspend(() => {
+            if (event.sessionID === session.id && event.kind === "primary") return Effect.die(new Error("law: the hook died"))
+            return Effect.void
+          }),
+        )
+        yield* ctx.session.hook("retry", (event) => Effect.when(Ref.update(retries, (n) => n + 1), Effect.succeed(event.sessionID === session.id)))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: died" }))
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(primary.length === 1, `a turn whose hook died made ${primary.length} requests`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard died") === 0, "a turn whose hook died was answered")
+        yield* ensure((yield* Ref.get(retries)) === 0, "the retry hook was asked about a hook that died")
+      }),
+  },
+  {
     name: LAW.integration,
     operations: ["integration.get", "integration.transform", "integration.connection"],
     check: (ctx) =>

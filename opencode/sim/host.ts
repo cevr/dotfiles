@@ -217,6 +217,9 @@ export class SessionNotFound extends Data.TaggedError("Session.NotFoundError")<{
 export class CatalogNotFound extends Data.TaggedError("NotFoundError")<{ readonly message: string }> {}
 export class RpcNotFound extends Data.TaggedError("RpcNotFoundError")<{ readonly message: string }> {}
 
+/** An HTTP hook that died, as the request carries it out of the hooks: its message, as an error's or the value's own. */
+class HookDied extends Data.TaggedError("HookDied")<{ readonly name: string; readonly message: string }> {}
+
 // ── The host's registrations ──
 
 export interface HostEvent {
@@ -473,7 +476,20 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const runHttpHooks = (name: "http.request" | "http.response", session: Session, event: HttpRequestInput | HttpResponseInput) =>
     Effect.gen(function* () {
       record("hook", { name, sessionID: session.id })
-      for (const hook of hooks.filter((entry) => entry.name === name && entry.directory === session.directory)) yield* Effect.orDie(hook.callback(event))
+      for (const hook of hooks.filter((entry) => entry.name === name && entry.directory === session.directory))
+        yield* Effect.orDie(hook.callback(event)).pipe(
+          Effect.catchDefect((defect) =>
+            Effect.die(
+              new HookDied({
+                name,
+                message: Option.getOrElse(
+                  Option.map(Option.liftPredicate(defect, (value): value is Error => value instanceof Error), (error) => error.message),
+                  () => String(defect),
+                ),
+              }),
+            ),
+          ),
+        )
     })
 
   /** Runs the hook `name` of the session's location's copies, in the order they registered; a failing hook is the host's log, not the turn's end. */
@@ -773,7 +789,14 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     Effect.gen(function* () {
       title(session)
       session.held = Option.none()
-      const answered = yield* primary(session)
+      // An HTTP hook that died ends the execution failed, past the retry policy, its message the session's error (the
+      // fork's `toSessionError` of the squashed cause: `unknown`).
+      const answered = yield* primary(session).pipe(
+        Effect.catchDefect((defect) => {
+          if (!(defect instanceof HookDied)) return Effect.die(defect)
+          return Effect.succeed(Result.fail<Http.Failure>({ tag: "Unknown", status: 0, message: defect.message, retryable: false, retryAfterMs: 0 }))
+        }),
+      )
       if (Result.isFailure(answered)) {
         const failure = answered.failure
         session.messages.push({ type: "error", id: mint("msg_"), created: runtime.now(), tag: failure.tag, message: failure.message })
