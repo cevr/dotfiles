@@ -1,4 +1,5 @@
-// A generated property over faults, on the simulated host at 20 seeds: the
+// A generated property over faults, on the simulated host at 20 seeds and the
+// past failing ones: the
 // pool on two Claude accounts of one login store, held by the pool's process
 // and by another process (a second holder of the same slots and lock), the
 // seed choosing up to 40 commands of turns, plan limits, token expiries,
@@ -10,7 +11,9 @@
 // none on a login the provider refused as spent, before its reset; no refresh
 // token is presented twice, by any holder. Every turn ends in an answer or in
 // the pool's own refusal and when its first account opens (or a sign-in the
-// store asks for), never the provider's refusal or its raw error body.
+// store asks for), never the provider's refusal or its raw error body. Then,
+// every limit past and no fault left, one more turn in each session is
+// answered, or names the sign-in when every login's refresh token was refused.
 import { Array as Arr, DateTime, Effect, Option } from "effect"
 import * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
 import { encodeRefresh, decodeStoredOAuth, STORE_PREFIX, StoreSource, storeProcess } from "@dotfiles/opencode-pool/store/store"
@@ -20,7 +23,10 @@ import { below, generator, line } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts")
+/** Seeds a sweep of 1 to 500 found failing (pool-seeds), replayed on every run. */
+const PAST = [27, 50, 126, 130, 137, 141, 150, 160, 174, 216, 220, 223, 225, 241, 245, 251, 296, 300, 318, 327, 332, 346, 353, 388, 393, 437, 452, 483, 492]
+
+const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"
@@ -160,6 +166,12 @@ const run = (seed: number, check: (world: World.World, script: Script, command: 
     // Every turn to its end: the token endpoint answers again and every limit resets.
     for (const login of LOGINS) script.tokens.set(login, "rotate")
     yield* world.advance(6 * HOUR)
+    // Then one more turn in each session, with no fault left (every limit past, no one-off rate limit waiting): each
+    // must be answered (see the test).
+    script.bursts.clear()
+    for (const session of sessions) yield* world.prompt(session, "final turn")
+    yield* world.runtime.settle
+    yield* world.advance(HOUR)
     return { world, sessions }
   })
 
@@ -220,8 +232,17 @@ seeded("every turn ends in an answer or the pool's own refusal with when it open
         expect(Option.getOrElse(opensAt(message.message), () => 0), `seed ${seed}: ${said}`).toBeGreaterThan(message.created)
       }
     }
-    // Some turn was answered, across the run.
-    const answered = sessions.flatMap((session) => world.messages(session)).some((message) => message.type === "assistant")
-    expect(answered || sessions.every((session) => world.messages(session).length === 0), `seed ${seed}`).toBe(true)
+    // The final turn, every limit past and the token endpoint answering, is answered in every session. Only when the
+    // endpoint refused the refresh token of every login (its last trade a 400: it rotated none since) may it end in
+    // the store's sign-in instead.
+    const tokenTrades = world.provider().received().filter((request) => request.path === "/v1/oauth/token")
+    const lost = LOGINS.every((login) => tokenTrades.findLast((request) => request.account === login)?.status === 400)
+    for (const session of sessions) {
+      const messages = world.messages(session)
+      const final = messages.slice(messages.findLastIndex((message) => message.type === "user") + 1)
+      const answered = final.some((message) => message.type === "assistant")
+      const signIn = lost && final.some((message) => message.type === "error" && SIGN_IN.test(message.message))
+      expect(answered || signIn, `seed ${seed}: ${session}'s final turn: ${line(final)}`).toBe(true)
+    }
   }),
 )
