@@ -106,7 +106,9 @@ done < <(find "$wb_home/Developer" \( -name node_modules -o \( -name .git -type 
 ((broken)) || ok 'every worktree under ~/Developer finds its repository'
 if [[ -f $wb_converted ]]; then
     while IFS=$'\t' read -r name _ _ rift head; do
-        git -C "$rift" merge-base --is-ancestor "$head" HEAD 2>/dev/null && ok "$name is the Rift $rift" || bad "$name: $rift lacks $head"
+        # As the owner: git refuses root a repository it does not own unless
+        # sudo's SUDO_UID says whose it is, and systemd-run sets none.
+        as_user git -C "$rift" merge-base --is-ancestor "$head" HEAD 2>/dev/null && ok "$name is the Rift $rift" || bad "$name: $rift lacks $head"
     done < "$wb_converted"
 fi
 for unit in "$wb_home"/.config/systemd/user/*.service; do

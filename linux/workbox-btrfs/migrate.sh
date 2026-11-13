@@ -18,6 +18,9 @@ conf=${WB_WORKTREES_CONF:-$here/worktrees.conf}
 # sudo's PATH lacks the owner's ~/.local/bin.
 workrift=${WB_WORKRIFT:-$(command -v workrift || echo "$wb_home/.local/bin/workrift")}
 rsync_flags=(-aHAXS --numeric-ids)
+# test.sh drives `home --stop` in a scratch root with fakes of these two.
+systemctl=${WB_SYSTEMCTL:-systemctl}
+loginctl=${WB_LOGINCTL:-loginctl}
 # Private /tmp directories belong to running services' namespaces.
 tmp_excludes=(--exclude=/systemd-private-* --exclude=/snap-private-tmp)
 
@@ -208,22 +211,32 @@ owner_units() {
 stop_owner() {
     local uid unit
     uid=$(id -u "$WB_USER")
+    # No new logins of the owner while the home is copied: a login (ssh, the
+    # Herdr app reconnecting every ~30 s) would start user@ again, and its
+    # services would write to the home during the final pass (live run 2).
+    mkdir -p "$(dirname "$wb_nologin")"
+    touch "$wb_nologin"
+    "$systemctl" mask --runtime --quiet "user@$uid.service" || true
     : > "$wb_state/stopped"
     for unit in $(owner_units); do
-        systemctl stop "$unit" && printf '%s\n' "$unit" >> "$wb_state/stopped"
+        "$systemctl" stop "$unit" && printf '%s\n' "$unit" >> "$wb_state/stopped"
     done
-    systemctl stop "user@$uid.service" && printf 'user@%s.service\n' "$uid" >> "$wb_state/stopped"
+    "$systemctl" stop "user@$uid.service" && printf 'user@%s.service\n' "$uid" >> "$wb_state/stopped"
     log "Stopped: $(tr '\n' ' ' < "$wb_state/stopped")"
     # Ends ssh and mosh sessions, which hold the home as their directory.
-    loginctl terminate-user "$WB_USER" || true
+    "$loginctl" terminate-user "$WB_USER" || true
 }
 
 start_owner() {
+    local unit uid
+    uid=$(id -u "$WB_USER")
+    # Lift the login block first, whatever was stopped.
+    "$systemctl" unmask --runtime --quiet "user@$uid.service" 2>/dev/null || true
+    rm -f "$wb_nologin"
     [[ -s $wb_state/stopped ]] || return 0
-    local unit
     # The user manager first: it starts the owner's own services.
     for unit in $(grep '^user@' "$wb_state/stopped"; grep -v '^user@' "$wb_state/stopped"); do
-        systemctl start "$unit" 2>/dev/null || warn "did not start $unit (a scope starts again with its owner)"
+        "$systemctl" start "$unit" 2>/dev/null || warn "did not start $unit (a scope starts again with its owner)"
     done
     : > "$wb_state/stopped"
 }
@@ -253,7 +266,7 @@ subvol_path() { printf '%s/%s' "$wb_workspaces" "$1"; }
 home_phase() {
     local stop=$1 uuid stamp line sv
     [[ $(id -u) == 0 ]] || die 'run home as root'
-    [[ $stop == false || -z $WB_ROOT ]] || die '--stop works only on the real root'
+    [[ $stop == false || -z $WB_ROOT || -n ${WB_SYSTEMCTL:-} ]] || die '--stop works only on the real root (or with a fake WB_SYSTEMCTL)'
     is_btrfs_mount "$wb_workspaces" || die "$wb_workspaces is not a mounted btrfs"
     [[ $(mount_subvol "$wb_workspaces") == / ]] || die "$wb_workspaces must mount the image's top level"
     mkdir -p "$wb_state"
@@ -291,8 +304,13 @@ home_phase() {
     copy_pass '' "$(subvol_path @home)" "$(subvol_path @tmp)"
 
     if $stop; then
-        stop_owner
+        # Armed before the first stop, so every exit lifts the login block and
+        # starts the units again; a signal exits through the EXIT trap too.
         trap 'start_owner' EXIT
+        trap 'exit 143' TERM
+        trap 'exit 130' INT
+        trap 'exit 129' HUP
+        stop_owner
     fi
     log "Waiting for $wb_home and $wb_tmp to be idle"
     wait_idle || die "these processes still use $wb_home or $wb_tmp; stop them and rerun (the copy resumes)"
@@ -306,7 +324,7 @@ home_phase() {
         line=$(fstab_line "$uuid" "${sv%%:*}" "${sv#*:}")
         grep -Fqx -e "$line" "$wb_fstab" || printf '%s\n' "$line" >> "$wb_fstab"
     done
-    [[ -n $WB_ROOT ]] || systemctl daemon-reload
+    [[ -n $WB_ROOT ]] || "$systemctl" daemon-reload
 
     log "Swapping $wb_home for @home"
     mv "$wb_home" "$wb_old_home"
@@ -319,7 +337,7 @@ home_phase() {
     mount -T "$wb_fstab" "$wb_tmp"
 
     if $stop; then
-        trap - EXIT
+        trap - EXIT TERM INT HUP
         start_owner
     fi
     log 'Swapped. Checking'

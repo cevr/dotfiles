@@ -134,6 +134,38 @@ case \$1 in
     echo '$ws/.rifts/app/'"\$name" ;;
 esac
 EOF
+# Fakes of systemctl and loginctl for `home --stop`: they record each call in
+# $fake/log. A masked unit refuses to start, as systemd's does. terminate-user
+# plays the Mac reconnecting over ssh at once: pam_nologin refuses the login
+# while /run/nologin exists, else logind starts user@<uid> again.
+fake=$work/fake
+mkdir -p "$fake"
+cat > "$work/bin/systemctl" <<EOF
+#!/bin/bash
+args=(); for a in "\$@"; do [[ \$a == --* ]] || args+=("\$a"); done
+echo "systemctl \$*" >> '$fake/log'
+case \${args[0]} in
+  mask) touch '$fake/masked-'"\${args[1]}" ;;
+  unmask) rm -f '$fake/masked-'"\${args[1]}" ;;
+  start)
+    if [[ -e '$fake/masked-'"\${args[1]}" ]]; then echo "refused \${args[1]} (masked)" >> '$fake/log'; exit 1; fi
+    echo "started \${args[1]}" >> '$fake/log' ;;
+esac
+exit 0
+EOF
+cat > "$work/bin/loginctl" <<EOF
+#!/bin/bash
+echo "loginctl \$*" >> '$fake/log'
+[[ \$1 == terminate-user ]] || exit 0
+if [[ -e '$root/run/nologin' ]]; then echo 'login refused (nologin)' >> '$fake/log'
+else '$work/bin/systemctl' start "user@\$(id -u "\$2").service" || echo 'login refused (user@ masked)' >> '$fake/log'
+fi
+EOF
+chmod 755 "$work/bin/systemctl" "$work/bin/loginctl"
+stop_env=(WB_SYSTEMCTL="$work/bin/systemctl" WB_LOGINCTL="$work/bin/loginctl" INVOCATION_ID=test-sh)
+# No start of user@ before the unmask: the login in the window was kept out.
+no_login_in_window() { awk '/systemctl unmask/ { exit } /^started user@/ { bad = 1 } END { exit bad }' "$fake/log"; }
+block_lifted() { [[ ! -e $root/run/nologin ]] && ! compgen -G "$fake/masked-*" > /dev/null; }
 chmod 755 "$WB_WORKRIFT" "$work" "$work/bin"
 chmod 644 "$WB_WORKTREES_CONF"
 
@@ -193,10 +225,33 @@ sleep 0.5
 if WB_IDLE_WAIT=2 bash "$here/migrate.sh" home > "$work/home-busy.log" 2>&1; then fail 'home ran while a process used the home'; fi
 grep -q 'sleep (pid' "$work/home-busy.log" || { cat "$work/home-busy.log"; fail 'home did not name the busy process'; }
 [[ ! -e $home.pre-btrfs ]] || fail 'a refused run moved the home'
-kill "$holder_pid"; wait "$holder_pid" 2>/dev/null || true; holder_pid=
 pass 'home refuses and names the process while the home is in use'
 
-bash "$here/migrate.sh" home > "$work/home.log" 2>&1 || { cat "$work/home.log"; fail 'home failed'; }
+# --stop that fails (the holder outlives the stop): the trap lifts the login block.
+if env "${stop_env[@]}" WB_IDLE_WAIT=2 bash "$here/migrate.sh" home --stop > "$work/home-stop-busy.log" 2>&1; then fail 'home --stop ran while a process used the home'; fi
+grep -q 'login refused' "$fake/log" || { cat "$fake/log"; fail 'home --stop did not block logins during the window'; }
+block_lifted || { cat "$fake/log"; fail 'a failed home --stop left /run/nologin or user@ masked'; }
+[[ ! -e $home.pre-btrfs ]] || fail 'a refused run moved the home'
+pass 'a failed home --stop lifts the login block on exit'
+
+# Killed during the window (TERM): the block is lifted too.
+: > "$fake/log"
+env "${stop_env[@]}" WB_IDLE_WAIT=60 bash "$here/migrate.sh" home --stop > "$work/home-stop-term.log" 2>&1 &
+stop_pid=$!
+for _ in $(seq 1 100); do grep -q 'Waiting for' "$work/home-stop-term.log" && break; sleep 0.2; done
+[[ -e $root/run/nologin ]] || { cat "$work/home-stop-term.log"; fail 'no /run/nologin during the window'; }
+kill -TERM "$stop_pid"; wait "$stop_pid" 2>/dev/null || true
+block_lifted || { cat "$fake/log"; fail 'a killed home --stop left /run/nologin or user@ masked'; }
+pass 'a killed home --stop lifts the login block'
+kill "$holder_pid"; wait "$holder_pid" 2>/dev/null || true; holder_pid=
+
+: > "$fake/log"
+env "${stop_env[@]}" bash "$here/migrate.sh" home --stop > "$work/home.log" 2>&1 || { cat "$work/home.log"; fail 'home failed'; }
+no_login_in_window || { cat "$fake/log"; fail 'a login during the window started user@'; }
+grep -q 'login refused' "$fake/log" || { cat "$fake/log"; fail 'the login in the window was not refused'; }
+grep -q '^started user@' "$fake/log" || { cat "$fake/log"; fail 'home --stop did not start user@ again'; }
+block_lifted || fail 'home --stop left the login block'
+pass 'home --stop keeps logins out during the window and starts user@ after'
 [[ $(findmnt -n -o FSROOT --mountpoint "$home") == /@home ]] || fail 'home is not @home'
 [[ $(findmnt -n -o FSROOT --mountpoint "$root/tmp") == /@tmp ]] || fail '/tmp is not @tmp'
 cmp -s "$home/.cache/big" <(head -c $((1536 << 20)) /dev/zero) || fail 'the large file changed'
@@ -217,6 +272,14 @@ pass "home moved the home and /tmp onto subvolumes (inode was $before_inode; lin
 bash "$here/migrate.sh" home > /dev/null || fail 'a rerun of home failed'
 [[ $(grep -c 'subvol=@' "$root/etc/fstab") == 2 ]] || fail 'a rerun added fstab lines'
 pass 'home reruns as a no-op'
+
+# Root without sudo's SUDO_UID, as under systemd-run on the workbox: git trusts
+# a repository root does not own only through SUDO_UID, so check.sh must read
+# the owner's Rifts as the owner.
+env -u SUDO_UID -u SUDO_GID -u SUDO_USER bash "$here/check.sh" > "$work/check-nosudo.log" 2>&1 ||
+    { cat "$work/check-nosudo.log"; fail 'check.sh as plain root fails on the owner-owned Rifts'; }
+grep -q 'ok    lane-a is the Rift' "$work/check-nosudo.log" || { cat "$work/check-nosudo.log"; fail 'check.sh did not check the Rifts'; }
+pass 'check.sh reads the owner-owned Rifts as the owner'
 
 # --- check.sh's alarms. An image that may grow past ext4's free space: only the
 # file's apparent size changes (no losetup -c), so btrfs never sees it.

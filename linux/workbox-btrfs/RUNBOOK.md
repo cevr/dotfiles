@@ -60,7 +60,9 @@ are copied as they are. `effect-machine-m46` has no warm source with its origin
    for the final pass). It copies itself to `/var/lib/workbox-btrfs/bin` and runs
    as the system unit `workbox-btrfs-migrate`, then:
    1. creates `@home` and `@tmp` and copies home and `/tmp` while everything runs;
-   2. stops what uses the home: every system unit with an `exedev` process
+   2. blocks `exedev` logins (`/run/nologin`, `user@1000` masked for this boot;
+      the Mac reconnects every ~30 s and would start `user@` again), lifted on
+      every exit, failure and kill included; then stops what uses the home: every system unit with an `exedev` process
       (`syncthing@exedev`, `opencode-service-*.scope`, `opencode-job-*`, the
       Ergo gate scopes), then `user@1000.service` (herdr-bite, sideshow, t3code,
       teamclaude, film-lab, sh.executor.daemon, and hc's core `hc-serve-*.service`

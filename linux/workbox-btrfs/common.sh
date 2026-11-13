@@ -17,6 +17,8 @@ wb_image=$WB_ROOT/var/lib/bite-workspaces.btrfs
 wb_workspaces=$WB_ROOT/workspaces
 wb_fstab=${WB_FSTAB:-$WB_ROOT/etc/fstab}
 wb_state=$WB_ROOT/var/lib/workbox-btrfs
+# pam_nologin refuses every non-root login while it exists.
+wb_nologin=$WB_ROOT/run/nologin
 # Moved-aside trees wait here until `migrate.sh finish`.
 wb_old_home=$wb_home.pre-btrfs
 # Worktrees turned into Rifts: name, branch, old path, Rift path.
