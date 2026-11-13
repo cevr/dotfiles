@@ -10,6 +10,7 @@ import { make as makeAuth, makeShared } from "@dotfiles/opencode-cmd-anthropic-a
 import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
 import Questions from "@dotfiles/opencode-cmd-questions/server"
 import { LIVE_STORE_HOST, type StoreHost, liveWith, make as makePool } from "@dotfiles/opencode-cmd-pool/server"
+import * as Lease from "@dotfiles/opencode-pool/lease"
 import * as MemoryPeers from "@dotfiles/opencode-pool/memory/peers"
 import type * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
 import { type CredentialSource, storeProcess } from "@dotfiles/opencode-pool/store/store"
@@ -63,13 +64,15 @@ export const questions = Questions
 
 /**
  * The pool (`cmd/pool/server.ts`'s `make`) on the world: OpenCode's adapters on its context, as the plugin
- * OpenCode loads; the fleet's peers are the world's (`peers`, each a report or a refusal), not SSH.
+ * OpenCode loads; the fleet's peers are the world's (`peers`, each a report or a refusal), not SSH. Its
+ * leases are its own simulated process's, as `Lease.HOST` is a real process's: on the world's clock, never
+ * the test runner's table.
  */
-export const pool = (peers: ReadonlyMap<string, MemoryPeers.Answer> = new Map(), stores: StoreHost = LIVE_STORE_HOST) =>
-  makePool(
-    liveWith(() => MemoryPeers.layer(peers)),
-    stores,
-  )
+export const pool = (peers: ReadonlyMap<string, MemoryPeers.Answer> = new Map(), stores: StoreHost = LIVE_STORE_HOST) => {
+  const leases = Layer.succeed(Lease.Leases, Lease.make())
+  const externals = liveWith(() => MemoryPeers.layer(peers))
+  return makePool((...args: Parameters<typeof externals>) => Layer.merge(externals(...args), leases), stores)
+}
 
 /**
  * The login stores of one simulated process: their files (shared by every process on the host), this process's
