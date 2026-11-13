@@ -1,3 +1,4 @@
+// accept: deep (29.6 s alone on a quiet host: 1-minute load 6.7–9.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode with the fork's /goal, the real wake server
 // plugin, Prime and a scripted model (scenarios/prime-goal.ts). Read off the
 // frames: the dock counts a background shell and a wake and shows no goal

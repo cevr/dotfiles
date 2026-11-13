@@ -1,3 +1,4 @@
+// accept: deep (25.6 s alone on a quiet host: 1-minute load 20.0–21.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode, the real queue plugin (and the real kernel),
 // a scripted model that starts two background subagents, keeps the queue
 // through the `queue` tool directly or from a kernel cell, and later marks an

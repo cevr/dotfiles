@@ -246,12 +246,14 @@ export const lastPlacedAt = (state: AccountPoolState, sessionID: string): number
 
 /**
  * Whether a failed primary request of `sessionID` should go again at once:
- * its account is now held and another account is not.
+ * its account is now held. It goes out on another account that is not, or,
+ * with every account held, the pool refuses it by name (`AccountsHeld`): the
+ * turn ends on the pool's words and when the first account opens, not on the
+ * provider's refusal.
  */
 export const shouldFailOver = (state: AccountPoolState, sessionID: string, now: number): boolean => {
   const account = placedOn(state, sessionID, "primary")
-  if (account === undefined || !held(state, account, now)) return false
-  return state.credentials.some((credentialID) => credentialID !== account && !held(state, credentialID, now))
+  return account !== undefined && held(state, account, now)
 }
 
 /**

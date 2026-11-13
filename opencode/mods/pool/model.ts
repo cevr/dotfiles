@@ -10,6 +10,7 @@ import { Clock, Context, Effect, Layer, Option, Ref, Scope, Semaphore, Stream, S
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
+  type AccountsHeld,
   ClearHold,
   ListLogins,
   PlaceRequest,
@@ -149,7 +150,7 @@ export class Pool extends Context.Service<
      * A model request goes out: the login it goes out on, and the lifetime its
      * cache is written for when its agent keeps its own (the provider's once
      * the session has outlived it); none when the provider is not pooled or
-     * lists no login.
+     * lists no login. Every account held refuses it: `AccountsHeld`, with when the first opens.
      */
     readonly place: (input: {
       readonly providerID: string
@@ -159,7 +160,7 @@ export class Pool extends Context.Service<
       readonly cacheLifeMs?: number
       /** The session whose cache the request reads when the session has none of its own: a fork's source. */
       readonly cacheOf?: string
-    }) => Effect.Effect<Placed | undefined>
+    }) => Effect.Effect<Placed | undefined, AccountsHeld>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
@@ -291,7 +292,7 @@ export const layer = (config: Config) =>
 
       /** `send`, for a command that declares no rejection: only PlaceRequest can be refused. */
       const apply = (pool: SynchronizedRef.SynchronizedRef<AccountPoolState>, id: PoolId, command: Exclude<Command, PlaceRequest>) =>
-        send(pool, id, command).pipe(Effect.catchTag("NoAccount", Effect.die))
+        send(pool, id, command).pipe(Effect.catchTags({ NoAccount: Effect.die, AccountsHeld: Effect.die }))
 
       const pools = new Map<PoolId, SynchronizedRef.SynchronizedRef<AccountPoolState>>()
       for (const id of poolsOf(config)) {

@@ -1,3 +1,4 @@
+// accept: deep (56.4 s alone on a quiet host: 1-minute load 9.8–12.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The guard in real OpenCode (the fork, through its SDK) on the scripted
 // model, beside the kernel. `git reset --hard` is refused as a direct shell
 // call and as a kernel cell's `tools.shell` call; the work repository's HEAD

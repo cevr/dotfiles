@@ -1,3 +1,4 @@
+// accept: deep (25.3 s alone on a quiet host: 1-minute load 33.4–69.7 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The rift tool and the tool-name repair in real OpenCode (the fork, through
 // its SDK) on the scripted model and the real `rift` CLI, in a scratch HOME.
 // The model makes a Rift for a branch, commits in it, lists it, is refused

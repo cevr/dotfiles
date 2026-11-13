@@ -1,3 +1,4 @@
+// accept: deep (16.5 s alone on a quiet host: 1-minute load 5.8–14.1 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // A compaction's summary request keeps the cached prefix, in real OpenCode (the
 // fork, through its SDK) on the scripted model, with the plugins that write the
 // system prompt loaded as the owner loads them. For each way a session

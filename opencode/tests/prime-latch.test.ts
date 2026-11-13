@@ -1,3 +1,4 @@
+// accept: deep (39.5 s alone on a quiet host: 1-minute load 6.3–7.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-latch.ts with the Prime look, the orchestrate and
 // wakes plugins and a stand-in pool against an OpenCode checkout: a worker
 // started in the foreground while the pace holds latches instead of being

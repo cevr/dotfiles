@@ -1,3 +1,4 @@
+// accept: deep (43.4 s alone on a quiet host: 1-minute load 8.8–11.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-rows.ts with the Prime look and the orchestrate plugin
 // against an OpenCode checkout and asserts on the live subagent rows beneath
 // the composer: each says how it stands by its leading diamond's fill and

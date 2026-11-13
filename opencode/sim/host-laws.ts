@@ -13,14 +13,15 @@
 // it publishes and the hooks it runs. The probe (`probeOf`) is made of the
 // same: it counts each session's executions from the host's events and the
 // model's requests from the `model.request` hook.
-import type { Plugin } from "@opencode/plugin/effect"
+import { Integration, type Plugin } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Provider } from "@opencode/schema/provider"
-import type { SessionID } from "@opencode/schema/session-id"
+import { AbsolutePath } from "@opencode/schema/schema"
+import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { LAW, LAW_FOLDER } from "./law-names.ts"
+import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -100,8 +101,14 @@ const contextText = (ctx: Plugin.Context, sessionID: SessionID) =>
 
 const count = (text: string, part: string) => text.split(part).length - 1
 
+/** A provider's 429 with `body`, as the law puts it in place of an answer. */
+const limited = (body: string) => new Response(body, { status: 429, headers: { "content-type": "application/json" } })
+
 /** A short wait on the host's clock: long enough for work that would start to start. */
 const settle = Effect.sleep("2 seconds")
+
+/** A gap on the host's clock between two session writes, so their update times differ (the store keeps ms). */
+const STEP = "20 millis"
 
 /** A session list's "no parent", as the fork's API takes it and idle compaction asks for its roots (JSON null). */
 const ROOT = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null")
@@ -158,6 +165,15 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(count(yield* contextText(ctx, session.id), "heard prompt") === 1, "the session does not hold the model's answer to the prompt")
         const info = yield* ctx.session.get({ sessionID: session.id })
         yield* ensure(info.id === session.id, "get answered another session")
+        // A prompt with an id (wake's): a second admission of the id is not taken again.
+        const once = { sessionID: session.id, id: SessionMessage.ID.make("msg_lawpromptonce001"), text: "law: prompt once" }
+        yield* probe.turn(session.id, ctx.session.prompt(once))
+        yield* ctx.session.prompt(once).pipe(Effect.ignore)
+        yield* settle
+        const asked = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(asked.length === 2, `the two prompts, the second with a repeated id, brought ${asked.length} requests`)
+        const held = count(yield* contextText(ctx, session.id), "law: prompt once")
+        yield* ensure(held === 1, `the session holds the prompt with an id ${held} times`)
       }),
   },
   {
@@ -256,22 +272,47 @@ export const LAWS: ReadonlyArray<Law> = [
   },
   {
     name: LAW.sessions,
-    operations: ["session.create", "session.list", "session.get", "session.update"],
-    check: (ctx) =>
+    operations: ["session.create", "session.list", "session.get", "session.update", "session.prompt"],
+    // Every argument our plugins pass to session.list (idle-compact: parentID, ROOT with directory,
+    // order "desc", limit) and the key it sorts by: the last update (an update or an admitted prompt
+    // bumps it), newest first by default.
+    check: (ctx, probe) =>
       Effect.gen(function* () {
+        const ids = (list: { readonly data: ReadonlyArray<{ readonly id: string }> }) => list.data.map((session) => session.id).join(",")
+        // A session created as wake creates one: its own id, a location and metadata; created again, the same session.
+        const chosen = { id: SessionID.make("ses_lawchosen0000001"), location: { directory: ctx.location.directory }, title: "law chosen", metadata: { law: "chosen" } }
+        const made = yield* ctx.session.create(chosen)
+        const again = yield* ctx.session.create({ ...chosen, metadata: { law: "again" } })
+        const found = yield* ctx.session.get({ sessionID: chosen.id })
+        yield* ensure(made.id === chosen.id && again.id === chosen.id, `create with an id answered ${made.id} and ${again.id}`)
+        yield* ensure(found.location.directory === ctx.location.directory, `the chosen session is in ${found.location.directory}`)
+        yield* ensure(Schema.is(Schema.Struct({ law: Schema.Literal("chosen") }))(found.metadata), "the chosen session's metadata is not the first create's")
         const parent = yield* fresh(ctx)
-        const child = yield* ctx.session.create({ parentID: parent.id, title: "law child" })
+        const older = yield* ctx.session.create({ parentID: parent.id, title: "law older child" })
+        yield* Effect.sleep(STEP)
+        const newer = yield* ctx.session.create({ parentID: parent.id, title: "law newer child" })
         const children = yield* ctx.session.list({ parentID: parent.id })
-        yield* ensure(children.data.map((session) => session.id).join(",") === child.id, "the parent's children are not its one child")
+        yield* ensure(ids(children) === `${newer.id},${older.id}`, `with no order the children were ${ids(children)}, not the newer child first`)
         const roots = yield* ctx.session.list({ parentID: ROOT, directory: ctx.location.directory })
         yield* ensure(
           roots.data.some((session) => session.id === parent.id),
           "the roots miss the parent",
         )
-        yield* ensure(!roots.data.some((session) => session.id === child.id), "the roots list a child")
-        yield* ctx.session.update({ sessionID: child.id, metadata: { law: "kept" } })
-        const info = yield* ctx.session.get({ sessionID: child.id })
+        yield* ensure(!roots.data.some((session) => session.id === older.id), "the roots list a child")
+        const elsewhere = yield* ctx.session.list({ parentID: ROOT, directory: AbsolutePath.make(`${ctx.location.directory}-elsewhere`) })
+        yield* ensure(!elsewhere.data.some((session) => session.id === parent.id), "the roots of another directory list the parent")
+        yield* Effect.sleep(STEP)
+        yield* ctx.session.update({ sessionID: older.id, metadata: { law: "kept" } })
+        const info = yield* ctx.session.get({ sessionID: older.id })
         yield* ensure(Schema.is(Schema.Struct({ law: Schema.Literal("kept") }))(info.metadata), "get does not answer the updated metadata")
+        const latest = yield* ctx.session.list({ parentID: parent.id, order: "desc", limit: 1 })
+        yield* ensure(ids(latest) === older.id, `desc limit 1 after the older child's update was ${ids(latest)}, not the updated child`)
+        const ascending = yield* ctx.session.list({ parentID: parent.id, order: "asc" })
+        yield* ensure(ids(ascending) === `${newer.id},${older.id}`, `asc after the update was ${ids(ascending)}`)
+        yield* Effect.sleep(STEP)
+        yield* probe.turn(newer.id, ctx.session.prompt({ sessionID: newer.id, text: "law: list order" }))
+        const prompted = yield* ctx.session.list({ parentID: parent.id, order: "desc", limit: 1 })
+        yield* ensure(ids(prompted) === newer.id, `desc limit 1 after a prompt to the newer child was ${ids(prompted)}`)
       }),
   },
   {
@@ -301,6 +342,201 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ctx.agent.get({ agentID: Agent.ID.make("build"), location })
         const none = yield* Effect.exit(ctx.agent.get({ agentID: Agent.ID.make("law-none"), location }))
         yield* ensure(none._tag === "Failure", "an agent the host lacks was found")
+      }),
+  },
+  {
+    name: LAW.http,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        const mine = (sessionID: string) => sessionID === session.id
+        yield* ctx.session.hook("model.request", (event) =>
+          Effect.sync(() => {
+            if (mine(event.sessionID)) event.headers["x-law-mark"] = "marked"
+          }),
+        )
+        yield* ctx.session.hook("http.request", (event) =>
+          Effect.gen(function* () {
+            if (!mine(event.sessionID)) return
+            yield* Ref.update(seen, (all) => [...all, `request ${event.kind} ${event.request.headers.get("x-law-mark") ?? "unmarked"}`])
+            const headers = new Headers(event.request.headers)
+            headers.set("x-law-second", "replaced")
+            event.request = new Request(event.request, { headers })
+          }),
+        )
+        yield* ctx.session.hook("http.response", (event) =>
+          Effect.gen(function* () {
+            if (!mine(event.sessionID)) return
+            yield* Ref.update(seen, (all) => [...all, `response ${event.kind} ${event.request.headers.get("x-law-second") ?? "kept"} ${event.response.status}`])
+          }),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: http" }))
+        const lines = yield* Ref.get(seen)
+        const primary = lines.filter((entry) => entry.includes(" primary "))
+        yield* ensure(primary.join(",") === "request primary marked,response primary replaced 200", `the HTTP hooks saw ${lines.join(", ")}`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard http") === 1, "the replaced request was not answered")
+      }),
+  },
+  {
+    name: LAW.retry,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const answered = yield* Ref.make(0)
+        const decisions = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.session.hook("http.response", (event) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id || event.kind !== "primary") return
+            const index = yield* Ref.getAndUpdate(answered, (n) => n + 1)
+            if (index === 0) event.response = limited(RATE_LIMITED)
+            if (index === 1) event.response = limited(USAGE_LIMITED)
+          }),
+        )
+        yield* ctx.session.hook("retry", (event) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id) return
+            yield* Ref.update(decisions, (all) => [...all, String(event.decision.retry)])
+            event.decision = { retry: true, delay: 0 }
+          }),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: retry" }))
+        const decided = (yield* Ref.get(decisions)).join(",")
+        yield* ensure(decided === "true,false", `the retry hook saw the decisions ${decided}`)
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(primary.length === 3, `model.request ran ${primary.length} times for the retried turn`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard retry") === 1, "the retried request was not answered once")
+      }),
+  },
+  {
+    name: LAW.refused,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const idles = yield* Ref.make(0)
+        yield* ctx.session.hook("http.response", (event) =>
+          Effect.sync(() => {
+            if (event.sessionID === session.id && event.kind === "primary") event.response = limited(USAGE_LIMITED)
+          }),
+        )
+        yield* ctx.session.hook("experimental.idle", (event) => Effect.when(Ref.update(idles, (n) => n + 1), Effect.succeed(event.sessionID === session.id)))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: refused" }))
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(primary.length === 1, `a refused turn made ${primary.length} requests`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard refused") === 0, "a refused turn was answered")
+        yield* ensure((yield* Ref.get(idles)) === 0, "experimental.idle ran after a failed turn")
+      }),
+  },
+  {
+    name: LAW.died,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const retries = yield* Ref.make(0)
+        yield* ctx.session.hook("http.request", (event) =>
+          Effect.suspend(() => {
+            if (event.sessionID === session.id && event.kind === "primary") return Effect.die(new Error("law: the hook died"))
+            return Effect.void
+          }),
+        )
+        yield* ctx.session.hook("retry", (event) => Effect.when(Ref.update(retries, (n) => n + 1), Effect.succeed(event.sessionID === session.id)))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: died" }))
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(primary.length === 1, `a turn whose hook died made ${primary.length} requests`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard died") === 0, "a turn whose hook died was answered")
+        yield* ensure((yield* Ref.get(retries)) === 0, "the retry hook was asked about a hook that died")
+      }),
+  },
+  {
+    name: LAW.unauthorized,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const answers = yield* Ref.make<ReadonlyArray<string>>([])
+        const decisions = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.session.hook("http.request", (event) =>
+          Effect.sync(() => {
+            if (event.sessionID === session.id && event.kind === "primary")
+              event.request = new Request("data:text/plain,law%3A%20offline", { method: "GET", signal: event.request.signal })
+          }),
+        )
+        yield* ctx.session.hook("http.response", (event) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id || event.kind !== "primary") return
+            const sent = event.response
+            const text = yield* Effect.promise(() => sent.text())
+            yield* Ref.update(answers, (all) => [...all, `${sent.status} ${text}`])
+            event.response = new Response(UNAUTHORIZED, { status: 401, headers: { "content-type": "application/json" } })
+          }),
+        )
+        yield* ctx.session.hook("retry", (event) =>
+          Effect.when(
+            Ref.update(decisions, (all) => [...all, `${event.decision.retry} ${event.error.message.includes("law: sign in again")}`]),
+            Effect.succeed(event.sessionID === session.id),
+          ),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: unauthorized" }))
+        const answered = (yield* Ref.get(answers)).join(",")
+        yield* ensure(answered === "200 law: offline", `the data: request was answered ${answered}`)
+        const decided = (yield* Ref.get(decisions)).join(",")
+        yield* ensure(decided === "false true", `the retry hook saw ${decided}`)
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(primary.length === 1, `a turn its 401 ended made ${primary.length} requests`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard unauthorized") === 0, "a turn its 401 ended was answered")
+      }),
+  },
+  {
+    name: LAW.integration,
+    operations: ["integration.get", "integration.transform", "integration.connection"],
+    check: (ctx) =>
+      Effect.gen(function* () {
+        const held = yield* ctx.integration.get({ integrationID: Integration.ID.make("anthropic") })
+        const login = held.data.connections.filter((connection) => connection.type === "credential" && connection.id === LAW_LOGIN.id)
+        yield* ensure(login.length === 1, `the integration lists ${held.data.connections.length} connections, the law login ${login.length} times`)
+        const active = yield* ctx.integration.connection.active("anthropic")
+        yield* ensure(active?.type === "credential" && active.id === LAW_LOGIN.id, "the active login is not the one held")
+        const credential = Option.fromNullishOr(yield* ctx.integration.connection.resolve(login[0]))
+        yield* ensure(
+          Option.exists(credential, (value) => value.type === "oauth" && value.access === LAW_LOGIN.access),
+          "resolve does not answer the login's credential",
+        )
+        yield* ctx.integration.connection.status({ integrationID: "anthropic", connection: login[0], status: { status: "needs_auth", message: "law: sign in again" } })
+        const marked = (yield* ctx.integration.get({ integrationID: Integration.ID.make("anthropic") })).data.connections.filter(
+          (connection) => connection.type === "credential" && connection.id === LAW_LOGIN.id,
+        )
+        yield* ensure(marked[0]?.type === "credential" && marked[0].status?.status === "needs_auth", "the login's mark is not on its connection")
+        yield* ctx.integration.transform((draft) => {
+          draft.method.update({
+            integrationID: "anthropic",
+            method: { id: "law-method", type: "oauth", label: "Law" },
+            authorize: () => Effect.die(new LawBroken({ message: "the law's method was asked to authorize" })),
+          })
+        })
+        const unknown = yield* Effect.exit(ctx.integration.get({ integrationID: Integration.ID.make("law-none") }))
+        yield* ensure(unknown._tag === "Failure", "an integration the host lacks was found")
+      }),
+  },
+  {
+    name: LAW.provider,
+    operations: ["provider.transform", "provider.list"],
+    check: (ctx) =>
+      Effect.gen(function* () {
+        yield* ctx.provider.transform((editor) => {
+          if (editor.get("openai")?.provider.activation === "auto")
+            editor.update("openai", (provider) => {
+              provider.activation = "enabled"
+            })
+        })
+        const providers = yield* ctx.provider.list({ location: { directory: ctx.location.directory } })
+        yield* ensure(
+          providers.data.some((provider) => provider.id === "openai"),
+          `the provider list after the transform is ${providers.data.map((provider) => provider.id).join(",")}`,
+        )
       }),
   },
   {

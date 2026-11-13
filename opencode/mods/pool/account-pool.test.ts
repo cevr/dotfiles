@@ -7,6 +7,7 @@ import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
 import {
   AccountPool,
+  AccountsHeld,
   LedgerPruned,
   ListLogins,
   LoginsListed,
@@ -93,6 +94,29 @@ describe("a request is placed", () => {
         ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 30_000, at: T0 } }),
       ),
       ...placed("s1", "b", T0),
+    )
+  })
+
+  test("every account held refuses the request, a run's own too, naming when the first opens", () => {
+    const held = (credentialID: string, until: number) => [
+      Story.given(
+        ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind: "rate-limit", until } }), hold: { kind: "rate-limit", until, at: T0 } }),
+      ),
+    ]
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      ...placed("s1", "a", T0),
+      ...held("a", T0 + HOUR),
+      ...placed("s1", "b", T0),
+      ...held("b", T0 + 30 * MINUTE),
+      Story.when(PlaceRequest.make({ sessionID: "s1", kind: "primary" })),
+      Story.rejected(new AccountsHeld({ sessionID: "s1", kind: "primary", retryAt: T0 + 30 * MINUTE })),
+      Story.when(PlaceRequest.make({ sessionID: "s2", kind: "title" })),
+      Story.rejected(new AccountsHeld({ sessionID: "s2", kind: "title", retryAt: T0 + 30 * MINUTE })),
+      // Once the first hold ends, the request goes out there.
+      Story.clock(T0 + 30 * MINUTE),
+      ...placed("s1", "b", T0 + 30 * MINUTE),
     )
   })
 

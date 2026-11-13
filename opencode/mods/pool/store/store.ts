@@ -40,8 +40,13 @@
  *
  * A failed refresh writes nothing: the refresh token in the file is still the
  * one to retry with. A refresh that worked but whose write failed keeps the
- * new tokens in memory; the next resolve writes them
- * under the lock, but only while the file still holds the login they replace.
+ * new tokens in memory, and keeps the store's lock: the refresh token in the
+ * file is spent, so no other holder may read it and trade it again (the
+ * endpoint would refuse it and sign the login out). The next resolve, of any
+ * label, writes them again, but only while the file still holds the login
+ * they replace, and frees the lock once nothing is held. Another holder waits
+ * meanwhile: a token still good is served, one that must be refreshed fails
+ * `busy`.
  *
  * Only accounts signed in to the store itself (an `owner` in their metadata)
  * are listed. The default entry and linked slots are Claude Code's own logins,
@@ -64,7 +69,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs"
 import { open, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
-import { Context, Effect, Logger, Schema } from "effect"
+import { Clock, Context, Effect, Logger, Option, Schema } from "effect"
 
 /** The token endpoint Claude Code and the Anthropic auth plugin refresh at, and Claude Code's public client id. */
 export const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -174,11 +179,21 @@ export interface StoreSourceOptions {
   /** The least time between two trades from this store, ms. Default `REFRESH_GAP_MS`. */
   readonly refreshGapMs?: number
   /**
-   * What `resolve` and `peek` run with: the host's loggers, from the plugin's
-   * context. Default none, so the source logs nothing.
+   * What `resolve` and `peek` run with: the host's loggers and clock, from the
+   * plugin's context. Default none, so the source logs nothing.
    */
   readonly context?: Context.Context<never>
+  /** The store's files and lock. Default the disk (`NODE_FILES`). */
+  readonly files?: SlotFiles
+  /** The process the source runs in: its stores' state. Default this process's, shared by every copy of this module. */
+  readonly process?: StoreProcess
 }
+
+/** One process's state of each store it uses, by directory: what a second process holding the same store does not share. */
+export type StoreProcess = Map<string, Partial<StoreState>>
+
+/** A process of its own, as another process holding the same store would have. */
+export const storeProcess = (): StoreProcess => new Map()
 
 /**
  * How much a label adds to the refresh-ahead window, ms in `[0, maxMs]`: the
@@ -282,6 +297,22 @@ export const writeSlotAtomic = (path: string, content: string): Effect.Effect<vo
     }).pipe(Effect.tapError(() => attempt(() => rm(staging, { force: true })).pipe(Effect.ignore)))
   })
 
+/**
+ * A store's files and its lock, as a `StoreSource` reaches them: the disk and
+ * SQLite in OpenCode (`NODE_FILES`), a memory double on the simulated world
+ * (`memory/slots.ts`). Both keep the laws in `laws.ts`.
+ */
+export interface SlotFiles {
+  /** The entries of the directory at `path`; a failure when it cannot be read. */
+  readonly names: (path: string) => Effect.Effect<ReadonlyArray<string>, unknown>
+  /** The file at `path`, as text; a missing file fails with `{ code: "ENOENT" }`. */
+  readonly read: (path: string) => Effect.Effect<string, unknown>
+  /** The file at `path` replaced whole by `content`, mode 0600, or left as it was. */
+  readonly write: (path: string, content: string) => Effect.Effect<void, unknown>
+  /** One try at the store's lock: its release when taken, none while another holder has it. */
+  readonly tryLock: (dir: string) => Effect.Effect<Option.Option<Effect.Effect<void>>>
+}
+
 const isBusy = (error: unknown) => isRecord(error) && error.code === "SQLITE_BUSY"
 
 const BUSY = Symbol("busy")
@@ -315,34 +346,49 @@ export const withStoreLock = <A, E, R>(
   dir: string,
   use: Effect.Effect<A, E, R>,
   polls: number = LOCK_POLLS,
-): Effect.Effect<A, E | StoreCredentialError, R> => {
-  const locks = join(dir, ".locks")
-  const file = join(locks, `${encodeURIComponent(PROVIDER)}.lock.db`)
-  const take = (poll: number): Effect.Effect<Database, StoreCredentialError> =>
-    begin(file).pipe(
-      Effect.flatMap((db) => {
-        if (db !== BUSY) return Effect.succeed(db)
-        if (poll >= polls)
-          return Effect.fail(
-            failure(
-              "busy",
-              "the login store is busy: its Anthropic lock stayed held for the whole wait",
-              Date.now() + RETRY_MS,
-            ),
-          )
-        return Effect.sleep(LOCK_POLL_MS).pipe(Effect.andThen(take(poll + 1)))
-      }),
-    )
-  return Effect.try({ try: () => mkdirSync(locks, { recursive: true }), catch: (cause) => cause }).pipe(
-    Effect.orDie,
-    Effect.andThen(
-      Effect.acquireUseRelease(
-        take(0),
-        () => use,
-        (db) => Effect.sync(() => db.close()),
-      ),
-    ),
+  files: SlotFiles = NODE_FILES,
+): Effect.Effect<A, E | StoreCredentialError, R> =>
+  Effect.acquireUseRelease(
+    takeStoreLock(dir, polls, files),
+    () => use,
+    (release) => release,
   )
+
+/** The store's lock, polled while another holder has it: its release, or `busy` once the wait is over. */
+const takeStoreLock = (dir: string, polls: number, files: SlotFiles): Effect.Effect<Effect.Effect<void>, StoreCredentialError> => {
+  const take = (poll: number): Effect.Effect<Effect.Effect<void>, StoreCredentialError> =>
+    files.tryLock(dir).pipe(
+      Effect.flatMap(
+        Option.match({
+          onSome: (release) => Effect.succeed(release),
+          onNone: () => {
+            if (poll < polls) return Effect.sleep(LOCK_POLL_MS).pipe(Effect.andThen(take(poll + 1)))
+            return Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                Effect.fail(failure("busy", "the login store is busy: its Anthropic lock stayed held for the whole wait", now + RETRY_MS)),
+              ),
+            )
+          },
+        }),
+      ),
+    )
+  return take(0)
+}
+
+/** The store on disk, as OpenCode keeps it: slot files written atomically, the lock an exclusive SQLite transaction. */
+export const NODE_FILES: SlotFiles = {
+  names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
+  read: (path) => Effect.try({ try: () => readFileSync(path, "utf8"), catch: (cause) => cause }),
+  write: writeSlotAtomic,
+  tryLock: (dir) => {
+    const locks = join(dir, ".locks")
+    const file = join(locks, `${encodeURIComponent(PROVIDER)}.lock.db`)
+    return Effect.try({ try: () => mkdirSync(locks, { recursive: true }), catch: (cause) => cause }).pipe(
+      Effect.orDie,
+      Effect.andThen(begin(file)),
+      Effect.map((db) => Option.map(Option.liftPredicate(db, (taken): taken is Database => taken !== BUSY), (taken) => Effect.sync(() => taken.close()))),
+    )
+  },
 }
 
 /**
@@ -439,6 +485,11 @@ interface StoreState {
   pausedUntil: number
   /** When (epoch ms) this store's last trade went out; the next waits `REFRESH_GAP_MS` after it. */
   lastTradeAt: number
+  /**
+   * The release of the store's lock, kept while a rotation is held for a write: until the
+   * file holds the new refresh token, no other holder may read the spent one and trade it.
+   */
+  lock: Option.Option<Effect.Effect<void>>
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
@@ -455,7 +506,14 @@ const freshState = (): StoreState => ({
   queue: Promise.resolve(),
   pausedUntil: 0,
   lastTradeAt: -Infinity,
+  lock: Option.none(),
 })
+
+/** This process's stores' state: on `globalThis`, so it outlives a hot reload and every copy of this module shares it. */
+const thisProcess = (): StoreProcess => {
+  const global = globalThis as unknown as Record<symbol, StoreProcess | undefined>
+  return (global[STATES] ??= new Map())
+}
 
 /**
  * The store's state in this process. It outlives a hot reload, so a state an
@@ -463,9 +521,8 @@ const freshState = (): StoreState => ({
  * filled in, and what the older copy kept (its queue, pause, pending writes)
  * stays.
  */
-const stateOf = (dir: string): StoreState => {
-  const global = globalThis as unknown as Record<symbol, Map<string, Partial<StoreState>> | undefined>
-  const states = (global[STATES] ??= new Map())
+const stateOf = (dir: string, owner: StoreProcess = thisProcess()): StoreState => {
+  const states = owner
   const kept = states.get(dir)
   if (kept === undefined) {
     const state = freshState()
@@ -509,19 +566,23 @@ export class StoreSource {
   private readonly gapMs: number
   private readonly context: Context.Context<never>
   private readonly state: StoreState
+  private readonly files: SlotFiles
 
   constructor(options: StoreSourceOptions) {
     this.dir = resolve(expandHome(options.dir))
     this.slots = join(this.dir, ".slots", encodeURIComponent(PROVIDER))
     this.tokenURL = options.tokenURL ?? CLAUDE_TOKEN_URL
     this.fetch = options.fetch ?? globalThis.fetch
-    this.now = options.now ?? Date.now
+    this.context = options.context ?? Context.make(Logger.CurrentLoggers, new Set())
+    // The time is the context's clock: the host's, from the plugin.
+    const clock = Context.get(this.context, Clock.Clock)
+    this.now = options.now ?? (() => clock.currentTimeMillisUnsafe())
     this.lockPolls = options.lockPolls ?? LOCK_POLLS
     const sleep = options.sleep
     this.sleep = sleep === undefined ? (ms) => Effect.sleep(ms) : (ms) => Effect.promise(() => sleep(ms))
     this.gapMs = options.refreshGapMs ?? REFRESH_GAP_MS
-    this.context = options.context ?? Context.make(Logger.CurrentLoggers, new Set())
-    this.state = stateOf(this.dir)
+    this.files = options.files ?? NODE_FILES
+    this.state = stateOf(this.dir, options.process)
   }
 
   /** The pool's credential id of a label. */
@@ -539,13 +600,13 @@ export class StoreSource {
   }
 
   /** The accounts signed in to the store, by label, and the labels this source leaves alone. */
-  readonly listing: Effect.Effect<StoreListing, StoreUnreadable> = Effect.suspend(() => {
-    const names = this.names()
-    if (names === undefined) return Effect.succeed({ accounts: [], skipped: [] })
-    return Effect.gen({ self: this }, function* (this: StoreSource) {
+  readonly listing: Effect.Effect<StoreListing, StoreUnreadable> = Effect.suspend(() =>
+    Effect.gen({ self: this }, function* (this: StoreSource) {
+      // A slot directory that cannot be read lists no account.
+      const names = yield* this.files.names(this.slots).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
       const accounts: Array<string> = []
       const skipped: Array<{ label: string; reason: string }> = []
-      for (const name of names.sort()) {
+      for (const name of [...names].sort()) {
         if (name.startsWith(".")) continue
         const label = this.decodeName(name)
         if (label === undefined || !SLOT.test(label) || label === "default") continue
@@ -556,8 +617,8 @@ export class StoreSource {
         else accounts.push(StoreSource.id(label))
       }
       return { accounts, skipped }
-    })
-  })
+    }),
+  )
 
   /** `listing`, for a caller outside Effect. An unreadable store throws, as a failed read does. */
   list(): StoreListing {
@@ -572,14 +633,16 @@ export class StoreSource {
       const stored = yield* this.owned(label, yield* this.read(label))
       const served = { access: stored.access, expires: stored.expires }
       const settled = !this.state.pending.has(label) && this.state.rejected.get(label) !== stored.refresh
-      if (settled && !this.due(label, stored.expires)) return served
+      // A rotation held for a write, any label's, is written again first: the lock stays this process's until it lands.
+      const writing = this.state.pending.size > 0
+      if (!writing && settled && !this.due(label, stored.expires)) return served
       // A token still good past its last minute can wait for its refresh: a
       // trade that cannot happen now serves it, and a later request tries again.
       const usable = settled && this.fresh(stored.expires)
-      if (usable && this.held() !== undefined) return served
+      if (!writing && usable && this.held() !== undefined) return served
       // Under the lock the file is read again and a failed trade serves what it holds; a lock
       // held for the whole wait serves the token read here.
-      return yield* serialized(this.state, withStoreLock(this.dir, this.refreshLocked(label), this.lockPolls)).pipe(
+      return yield* serialized(this.state, this.locked(this.refreshLocked(label))).pipe(
         Effect.catchIf(
           (error) => usable && error._tag === "StoreCredentialError" && error.kind === "busy",
           () => Effect.succeed(served),
@@ -667,15 +730,6 @@ export class StoreSource {
     return join(this.slots, encodeURIComponent(label))
   }
 
-  /** The slot directory's entries, or none when it cannot be read. */
-  private names(): Array<string> | undefined {
-    try {
-      return readdirSync(this.slots)
-    } catch {
-      return undefined
-    }
-  }
-
   private decodeName(name: string): string | undefined {
     try {
       return decodeURIComponent(name)
@@ -687,7 +741,7 @@ export class StoreSource {
   /** The label's sign-in, `null` when the label holds none, `undefined` when its file does not decode. */
   private read(label: string): Effect.Effect<Stored, StoreUnreadable> {
     const path = this.file(label)
-    return Effect.try({ try: () => readFileSync(path, "utf8"), catch: (cause) => cause }).pipe(
+    return this.files.read(path).pipe(
       Effect.map((text): Stored => decodeStoredOAuth(text)),
       Effect.catch((cause) =>
         isRecord(cause) && cause.code === "ENOENT"
@@ -729,6 +783,10 @@ export class StoreSource {
    */
   private refreshLocked(label: string): Effect.Effect<{ access: string; expires: number }, StoreCredentialError | StoreUnreadable> {
     return Effect.gen({ self: this }, function* (this: StoreSource) {
+      // Every other label's held rotation is written again too: one that fails stays held, and so does the lock.
+      for (const other of [...this.state.pending.keys()].filter((held) => held !== label).sort())
+        yield* this.landHeld(other).pipe(Effect.ignore)
+
       const stored = yield* this.owned(label, yield* this.read(label))
       const served = { access: stored.access, expires: stored.expires }
 
@@ -769,8 +827,47 @@ export class StoreSource {
     })
   }
 
+  /** Under the lock: write `label`'s held rotation over the login it replaced, or drop it when the file holds another. */
+  private landHeld(label: string): Effect.Effect<void, StoreCredentialError | StoreUnreadable> {
+    return Effect.gen({ self: this }, function* (this: StoreSource) {
+      const pending = Option.fromNullishOr(this.state.pending.get(label))
+      if (Option.isNone(pending)) return
+      const { next, replaces } = pending.value
+      const stored = yield* this.read(label)
+      if (stored && isStoreOwned(stored) && stored.refresh === replaces) {
+        yield* this.write(label, stored, next, replaces)
+        this.state.rejected.delete(label)
+      }
+      this.state.pending.delete(label)
+    })
+  }
+
+  /**
+   * `use` under the store's lock. While a rotation is held for a write the lock
+   * stays taken, past `use`, until a later resolve lands it: another holder
+   * reads the file only once it holds the new refresh token. The OS frees the
+   * lock if the process dies.
+   */
+  private locked<A, E>(use: Effect.Effect<A, E>): Effect.Effect<A, E | StoreCredentialError> {
+    return Effect.acquireUseRelease(
+      Effect.suspend(() =>
+        Option.match(this.state.lock, { onNone: () => takeStoreLock(this.dir, this.lockPolls, this.files), onSome: Effect.succeed }),
+      ),
+      () => use,
+      (release) =>
+        Effect.suspend(() => {
+          if (this.state.pending.size > 0) {
+            this.state.lock = Option.some(release)
+            return Effect.void
+          }
+          this.state.lock = Option.none()
+          return release
+        }),
+    )
+  }
+
   private write(label: string, stored: StoredOAuth, next: Tokens, replaces: string): Effect.Effect<void, StoreCredentialError> {
-    return writeSlotAtomic(this.file(label), encodeRefresh(stored, next)).pipe(
+    return this.files.write(this.file(label), encodeRefresh(stored, next)).pipe(
       Effect.catch(() =>
         Effect.suspend(() => {
           this.state.pending.set(label, { next, replaces })

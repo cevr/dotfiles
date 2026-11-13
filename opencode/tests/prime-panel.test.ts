@@ -1,16 +1,20 @@
 // accept: one at a time (its scenario drives a real TUI and waits on its frames under a deadline).
 // Runs scenarios/prime-panel.ts with the Prime look and the wake plugin against
 // an OpenCode checkout: five background subagents, two background shells, an
-// alarm and a monitor, then the background-work panel (Down on an empty
-// prompt) at 160 and at 80 columns. Each row of every tab says its name, what
-// it last did, its state and a time that moves on with the clock, in columns
-// the tab's rows share; the tab bar counts each tab and the footer words its
-// keys as Prime's hint line does. Needs OPENCODE_DEV, a fork with the
-// `session.composer.panel.*` slots (its panel-slots branch).
+// alarm, a monitor and two terminals, then the background-work panel (Down on
+// an empty prompt) at 160 and at 80 columns. Each row of every tab says its
+// name, what it last did and its state, and a time that moves on with the
+// clock where one exists (a terminal has none: the PTY service keeps no start
+// time), in columns the tab's rows share; the tab bar counts each tab and the
+// footer words its keys as Prime's hint line does. The rows are asserted
+// through `ROWS` in scenarios/prime-panel-rows.ts, which the scenario's waits
+// read too. Needs OPENCODE_DEV, a fork with the `session.composer.panel.*`
+// slots and a Terminals row's terminal in its input (panel-terminal-state).
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { panelOf as panel, ROWS, type Tab } from "../scenarios/prime-panel-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -26,23 +30,10 @@ const LANES = [
   { role: "planner", unit: "port phase d r1" },
   { role: "general", unit: "Fold the MONO1 IR-G pass" },
 ]
-const NAMES = ["subagents", "tick", "shell", "wakes", "monitors"] as const
+const NAMES = ["subagents", "tick", "shell", "terminals", "wakes", "monitors"] as const
 /** At 80 columns the scenario keeps no tick frame. */
-const NARROW = ["subagents", "shell", "wakes", "monitors"] as const
-
-/** The panel in a frame: its tab bar, its rows and its footer, without the rail or what the screen draws beside it. */
-const panel = (frame: string) => {
-  const lines = frame.split("\n")
-  const bar = lines.findIndex((line) => line.includes("Subagents") && line.includes("Monitors"))
-  const right = (lines[bar] ?? "").indexOf(" esc") + 4
-  const footer = lines.findIndex((line, at) => at > bar && line.includes("←/→ tabs"))
-  const clean = (line: string) => line.slice(0, right).replace(/^ ┃ {0,2}/, "").trimEnd()
-  return {
-    bar: clean(lines[bar] ?? ""),
-    rows: lines.slice(bar + 1, footer).map(clean).filter((line) => line !== ""),
-    footer: clean(lines[footer] ?? ""),
-  }
-}
+const NARROW = ["subagents", "shell", "terminals", "wakes", "monitors"] as const
+const OTHER_TABS: ReadonlyArray<Tab> = ["shell", "terminals", "wakes", "monitors"]
 
 /** Runs the scenario and reads each tab's frame at each width. */
 const scenario = async (dir: string) => {
@@ -111,18 +102,20 @@ function expectDownUnder(frame: string) {
   expect(lines[rail + 3]?.trim()).toStartWith("◆ 5 subagents  ·  2 shells")
 }
 
-/** Shell, Wakes and Monitors at one width. */
+/**
+ * Shell, Terminals, Wakes and Monitors at one width: each tab's rows as ROWS
+ * has them (the scenario kept the frame on the same rows). Shell: the command,
+ * its last output line, `running` and how long. Terminals: the title, what runs
+ * in it, `running` or `exited 3`. Wakes: the note, mode and repeat, `pending`
+ * and how long until due. Monitors: the command, its newest output,
+ * `watching`, how long, and when it last checked.
+ */
 function expectOtherTabs(shown: Shown) {
-  // Shell: the command, its last output line, `running` and how long.
-  expect(shown.shell?.rows).toEqual([
-    expect.stringMatching(/^[◆◇] printf 'serving on :4000\\n'; sl… {2}serving on :4000 +running +\d+s$/),
-    expect.stringMatching(/^[◆◇] printf 'watching src\\n'; sleep… {3}watching src +running +\d+s$/),
-  ])
+  for (const tab of OTHER_TABS) expect(shown[tab]?.rows, tab).toEqual(ROWS[tab].map((row) => expect.stringMatching(row)))
   expect(shown.shell?.footer).toBe("Enter output · Ctrl+D kill · ←/→ tabs")
-  // Wakes: the note, its mode and repeat, `pending` and how long until it is due.
-  expect(shown.wakes?.rows).toEqual([expect.stringMatching(/^◇ Check the deploy: the canary {2}wake · once +pending {2}in 9m \d\ds$/)])
-  // Monitors: the command, its newest output, `watching`, how long, and when it last checked.
-  expect(shown.monitors?.rows).toEqual([expect.stringMatching(/^[◆◇] echo still-waiting {2}still-waiting +watching +\d+s {2}checked \d+s ago$/)])
+  // The Terminals rows line their columns up: the commands start in one column.
+  const terminals = shown.terminals?.rows.slice(0, 2) ?? []
+  expect(new Set(terminals.map((row) => row.indexOf("sh -c"))).size).toBe(1)
 }
 
 describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DEV)", () => {

@@ -19,6 +19,9 @@
 // Every key also covers the shared inputs: the root manifest, lock file,
 // bunfig, tsconfig, the lint policy, these scripts, Bun's version and the OpenCode
 // checkout in OPENCODE_DEV, whose modules the packages link.
+// An acceptance file's key (`acceptKey`, the ledger of scripts/accept-ledger.ts)
+// leaves out what no acceptance run loads: the packages' own unit tests,
+// benches and Markdown, and the lint policy and the gate (`ACCEPT_SHARED`).
 import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
@@ -207,7 +210,8 @@ const hashOf = (file: string) => {
   let hash = contentHashes.get(file)
   if (hash === undefined) {
     try {
-      hash = Bun.hash(readFileSync(path.join(ROOT, file))).toString(36)
+      // resolve, not join: an acceptance stand-in (ACCEPT_FILES) may be an absolute path; a relative one hashes as before.
+      hash = Bun.hash(readFileSync(path.resolve(ROOT, file))).toString(36)
     } catch {
       hash = "missing"
     }
@@ -216,20 +220,79 @@ const hashOf = (file: string) => {
   return hash
 }
 
-/** What every key shares: the shared files, Bun, and the OpenCode checkout the packages link. */
-export const sharedKey = async (extra: ReadonlyArray<string> = []) => {
-  const hash = createHash("sha256")
-  for (const file of SHARED) hash.update(`${file}:${hashOf(file)}\n`)
-  hash.update(`bun:${Bun.version}:${Bun.revision}\n`)
+/** The OpenCode checkout in OPENCODE_DEV as a key line: its path, head, uncommitted diff and installed lock file. */
+const forkLine = async () => {
   const fork = process.env.OPENCODE_DEV
   if (fork !== undefined && existsSync(fork)) {
     const head = await $`git rev-parse HEAD`.cwd(fork).quiet().nothrow().text()
     const diff = await $`git diff HEAD`.cwd(fork).quiet().nothrow().arrayBuffer()
     const lock = path.join(fork, "bun.lock")
     const installed = existsSync(lock) ? Bun.hash(readFileSync(lock)) : 0
-    hash.update(`fork:${path.resolve(fork)}:${head.trim()}:${Bun.hash(diff)}:${installed}\n`)
-  } else hash.update("fork:none\n")
+    return `fork:${path.resolve(fork)}:${head.trim()}:${Bun.hash(diff)}:${installed}`
+  }
+  return "fork:none"
+}
+
+/** What every key shares: the shared files, Bun, and the OpenCode checkout the packages link. */
+export const sharedKey = (extra: ReadonlyArray<string> = []) =>
+  forkLine().then((fork) => {
+    const hash = createHash("sha256")
+    for (const file of SHARED) hash.update(`${file}:${hashOf(file)}\n`)
+    hash.update(`bun:${Bun.version}:${Bun.revision}\n`)
+    hash.update(`${fork}\n`)
+    for (const each of extra) hash.update(`${each}\n`)
+    return hash.digest("hex")
+  })
+
+/**
+ * What every acceptance key shares (scripts/accept.ts, scripts/accept-ledger.ts): the inputs a
+ * real-OpenCode run loads whatever the file, and the runner itself. Unlike SHARED it leaves out
+ * what only the lint and the gate read (`.oxlintrc.json`, `.oxlintrc.effect-debt.json`,
+ * `lint/package.json`, `effect-debt.json`, `scripts/effect-debt.ts`, `scripts/gate.ts`): a change to
+ * those reruns no acceptance file.
+ */
+export const ACCEPT_SHARED = [
+  "package.json",
+  "bun.lock",
+  "bunfig.toml",
+  "tsconfig.json",
+  "scripts/reach.ts",
+  "scripts/link-fork.ts",
+  "scripts/accept.ts",
+  "scripts/accept-plan.ts",
+  "scripts/accept-ledger.ts",
+  "scripts/leaks.ts",
+  "scripts/fork.ts",
+]
+
+/** What no acceptance run loads although a package holds it: its own unit tests, benches and Markdown. */
+const PACKAGE_ONLY = /(\.test\.tsx?|\.bench\.ts|\.md)$/
+
+/** Whether a reached file is an input of an acceptance run: anything but a package's unit test, bench or Markdown. */
+export const isAcceptInput = (file: string) => !packageOf(file) || !PACKAGE_ONLY.test(file)
+
+/** What an acceptance file reaches as an input: the file itself and its reach (`reach`), less what `isAcceptInput` leaves out. */
+export const acceptReach = (workspace: Workspace, file: string, memo = new Map<string, ReadonlyArray<string>>()): ReadonlySet<string> =>
+  new Set([file, ...[...reach(workspace, [file], memo)].filter(isAcceptInput)])
+
+/** The acceptance shared key from a hash of each file and the fork's line (pure: the model test hands both in). */
+export const acceptSharedFrom = (hashFile: (file: string) => string, fork: string, extra: ReadonlyArray<string>) => {
+  const hash = createHash("sha256")
+  for (const file of ACCEPT_SHARED) hash.update(`${file}:${hashFile(file)}\n`)
+  hash.update(`bun:${Bun.version}:${Bun.revision}\n`)
+  hash.update(`${fork}\n`)
   for (const each of extra) hash.update(`${each}\n`)
+  return hash.digest("hex")
+}
+
+/** The acceptance shared key of this checkout, Bun and the fork in OPENCODE_DEV; `extra` adds the ledger's version and the run's flags. */
+export const acceptSharedKey = (extra: ReadonlyArray<string>) => forkLine().then((fork) => acceptSharedFrom(hashOf, fork, extra))
+
+/** An acceptance file's key: the shared key and the contents of the inputs it reaches (`isAcceptInput` applied again, so a caller's set cannot widen it). */
+export const acceptKey = (shared: string, reached: Iterable<string>, hashFile: (file: string) => string = hashOf) => {
+  const hash = createHash("sha256")
+  hash.update(shared)
+  for (const file of [...reached].filter(isAcceptInput).sort()) hash.update(`${file}:${hashFile(file)}\n`)
   return hash.digest("hex")
 }
 

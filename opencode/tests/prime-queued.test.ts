@@ -1,3 +1,4 @@
+// accept: deep (28.8 s alone on a quiet host: 1-minute load 7.8–9.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-queued.ts with the Prime look against an OpenCode
 // checkout and asserts how prompts sent during an automatic compaction read:
 // two steers and one prompt sent to the queue wait in one list above the
