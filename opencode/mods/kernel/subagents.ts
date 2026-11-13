@@ -4,12 +4,13 @@
 // A session reaches only its own descendants: a child, a child's child, and
 // so on. Any other session is refused, so no session stops another's work.
 //
-// A stop interrupts the subagent's turn through the host's own session
-// interrupt, after interrupting each of its own running subagents, deepest
-// first, and waits for each to settle. The host then settles the stopped
-// subagent as cancelled: its parent hears it once, in a `<subagent
-// state="cancelled">` notice, and never as a finished one. A subagent that is
-// not running is left as it is, so a second stop changes nothing.
+// A stop is the host's own session stop, on each of the subagent's own
+// subagents, deepest first, then on it, each waited on to settle: it ends the
+// session's turn, the background work it owns (its shells) and its queued
+// input, and keeps it from waking on a notice until it is given a new task.
+// The host settles a running subagent as cancelled: its parent hears it once,
+// in a `<subagent state="cancelled">` notice, and never that it finished,
+// even when it is woken later. A second stop changes nothing.
 //
 // State, from the host's session: `running` while its newest execution has
 // not ended (or before its first one), else by that execution's outcome:
@@ -33,11 +34,12 @@ export interface Session {
   readonly idle: Option.Option<number>
 }
 
-/** The host's sessions: read one, list one's children, interrupt one, wait for one to go idle, its last words. */
+/** The host's sessions: read one, list one's children, stop one, wait for one to go idle, its last words. */
 export interface Host {
   readonly get: (sessionID: string) => Effect.Effect<Option.Option<Session>>
   readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<Session>>
-  readonly interrupt: (sessionID: string) => Effect.Effect<boolean>
+  /** Ends the session's turn, its background work and queued input, and resolves once it settled; whether a turn ran. */
+  readonly stop: (sessionID: string) => Effect.Effect<boolean>
   readonly wait: (sessionID: string) => Effect.Effect<void>
   readonly lastWords: (sessionID: string) => Effect.Effect<string>
 }
@@ -63,7 +65,7 @@ export class Refused extends Schema.TaggedError<Refused>()("SubagentRefused", { 
 /** How far up a parent chain a reach looks, and how many descendants a stop walks. */
 const MAX_DEPTH = 32
 const MAX_TREE = 200
-/** The longest a stop waits for each interrupted session to settle. */
+/** The longest a stop waits for each stopped session to settle. */
 const SETTLE = Duration.seconds(30)
 /** The most characters of a subagent's last words a view carries: the newest. */
 export const MAX_MESSAGE_CHARS = 20_000
@@ -122,14 +124,12 @@ export const make = (host: Host) => {
     return found.slice(0, MAX_TREE)
   })
 
-  /** Interrupts the session when it runs, and waits for it to settle; whether it ran. */
-  const interrupt = Effect.fn("Subagents.interrupt")(function* (session: Session) {
-    const now = yield* fresh(session)
-    if (stateOf(now) !== "running") return false
-    yield* host.interrupt(now.id)
-    yield* host.wait(now.id).pipe(Effect.timeoutOption(SETTLE))
-    return true
-  })
+  /** Stops the session, whether or not its turn runs (its shells may), up to SETTLE; whether a turn ran (or still settles). */
+  const halt = (session: Session) =>
+    host.stop(session.id).pipe(
+      Effect.timeoutOption(SETTLE),
+      Effect.map(Option.getOrElse(() => true)),
+    )
 
   return {
     /** The caller's own subagents, newest first. */
@@ -153,18 +153,18 @@ export const make = (host: Host) => {
     }),
 
     /**
-     * Stops one of the caller's subagents: its own running subagents first, deepest first, then its turn, each
-     * through the host's interrupt and waited on to settle. One that does not run is left as it is.
+     * Stops one of the caller's subagents: its own subagents first, deepest first, then it, each through the host's
+     * stop and waited on to settle. One whose turn does not run keeps its state; its background work stops all the same.
      */
     stop: Effect.fn("Subagents.stop")(function* (caller: string, target: string) {
       const session = yield* own(caller, target)
       const tree = yield* below(session.id)
-      const nested = (yield* Effect.forEach(tree.toReversed(), interrupt)).filter(Boolean).length
-      const ran = yield* interrupt(session)
+      const nested = (yield* Effect.forEach(tree.toReversed(), halt)).filter(Boolean).length
+      const ran = yield* halt(session)
       const now = yield* fresh(session)
       const notes: Array<string> = []
       if (ran) notes.push("stopped")
-      else notes.push(`it was not running (${stateOf(now)}); nothing to stop`)
+      else notes.push(`it was not running (${stateOf(now)})`)
       if (nested > 0) notes.push(`stopped ${nested} of its own subagents too`)
       return yield* view(now, notes.join("; "))
     }),

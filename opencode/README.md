@@ -549,14 +549,17 @@ sessionID, ms? }` (10 min by default) and `{ action: "stop", sessionID }`.
 A state is `running`, `done`, `stopped` or `failed`, read off the host's
 session (its newest execution still runs, else its last outcome). Only the
 session's own descendants are reachable; any other session is refused with
-`… is not a subagent of this session`. A stop interrupts each of the
-subagent's own running subagents, deepest first, then its turn, through the
-host's own `session.interrupt`, and waits up to 30 s for each to settle; the
-host settles it as cancelled, so the parent hears it once in a `<subagent
-state="cancelled">` notice and never as finished. A stop of one that does not
-run changes nothing. Its background shells keep running: no plugin API
-cancels a session's jobs or queued prompts short of deleting it, and a
-shell's end wakes it again.
+`… is not a subagent of this session`. A stop is the host's
+`session.stop` (the fork's, branch `subagent-stop`; upstream's plugin API
+has only `interrupt`), on each of the subagent's own subagents, deepest
+first, then on it, each waited on up to 30 s to settle. It ends the
+session's turn, cancels the background work it owns (its shells) and its
+queued prompts, and marks it stopped until a new task resumes it: while
+stopped, a notice (a cancelled shell's, a subagent's report) does not wake
+it, and a period of it the owner starts reports nothing to the parent. The
+host settles a running subagent as cancelled, so the parent hears it once in
+a `<subagent state="cancelled">` notice and never as finished. A second stop
+changes nothing.
 
 In a kernel cell, `await tools.subagent({ agent, description, prompt })`
 resolves to a live handle (`mods/kernel/worker/subagent-handle.ts`):

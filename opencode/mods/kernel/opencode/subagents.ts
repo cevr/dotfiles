@@ -4,9 +4,11 @@
 // `tools.subagents`; a cell's subagent handle (../worker/subagent-handle.ts)
 // calls it underneath.
 //
-// A stop is the host's own session interrupt (`ctx.session.interrupt`, the
-// same one upstream's plugin API offers): the host settles the interrupted
-// subagent as cancelled and tells its parent once.
+// A stop is the host's own session stop (`ctx.session.stop`, the fork's
+// addition to the plugin API; upstream has only `interrupt`, which leaves the
+// session's shells and queued input to wake it): it ends the subagent's turn,
+// its background shells and its queued prompts, and the host settles it as
+// cancelled and tells its parent once, never later that it finished.
 //
 // Every answer is `{ subagents }`: the session's subagents for a list, the one
 // it named for the other actions.
@@ -38,7 +40,7 @@ export const Output = Listed
 export const description = [
   "List, read, wait on and stop this session's own subagents (the sessions the subagent tool started, and theirs).",
   '{ action: "list" } lists them with their state: running, done, stopped or failed. { action: "get", sessionID } gives one\'s state and last message. { action: "wait", sessionID, ms? } waits up to ms (default 10 min) for it to go idle.',
-  '{ action: "stop", sessionID } stops it: it ends its turn, after its own running subagents\'; you hear once that it was cancelled, never that it finished. A stop of one that is not running changes nothing. Its background shells keep running.',
+  '{ action: "stop", sessionID } stops it, and its own subagents first: it ends its turn, its background shells and its queued prompts; you hear once that it was cancelled, never that it finished. A second stop changes nothing.',
   "Only this session's own subagents are reachable; any other session is refused. To give a subagent more work, call subagent with its sessionID.",
 ].join("\n")
 
@@ -84,10 +86,10 @@ export const hostOf = (ctx: Plugin.Context): Host => ({
       Effect.map((page) => page.data.map(sessionOf)),
       Effect.catchCause(() => Effect.succeed<ReadonlyArray<Session>>([])),
     ),
-  interrupt: (sessionID) =>
-    ctx.session.interrupt({ sessionID: SessionID.make(sessionID) }).pipe(
+  stop: (sessionID) =>
+    ctx.session.stop({ sessionID: SessionID.make(sessionID) }).pipe(
       Effect.map((result) => result.interrupted),
-      Effect.catchCause(() => Effect.succeed(false)),
+      Effect.catchCause((cause) => Effect.as(Effect.logWarning("subagents: a stop of a session failed", { sessionID, cause }), false)),
     ),
   wait: (sessionID) =>
     ctx.session
