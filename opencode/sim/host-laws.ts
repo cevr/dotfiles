@@ -441,16 +441,18 @@ export const LAWS: ReadonlyArray<Law> = [
   {
     name: LAW.steps,
     operations: ["event.subscribe", "session.prompt", "session.context"],
-    // The pool prices a step from its end and its model from its start, and listens for session.idle.
+    // The pool prices a step from its end and its model from its start, and releases a session when its execution
+    // ends (cmd/pool/server.ts `EXECUTION_ENDED`): the host has no session.idle.
     check: (ctx, probe) =>
       Effect.gen(function* () {
         const session = yield* fresh(ctx)
         const seen = yield* Ref.make<ReadonlyArray<string>>([])
         yield* Effect.forkScoped(
-          ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", "session.idle"] }).pipe(
+          ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", "session.idle", "session.execution.succeeded"] }).pipe(
             Stream.runForEach((event) => {
               if (event.type === "session.idle") return Ref.update(seen, (all) => [...all, "idle"])
               if (event.data.sessionID !== session.id) return Effect.void
+              if (event.type === "session.execution.succeeded") return Ref.update(seen, (all) => [...all, "succeeded"])
               if (event.type === "session.step.started") {
                 const { agent, model, assistantMessageID } = event.data
                 return Ref.update(seen, (all) => [...all, `started ${assistantMessageID} ${agent} ${model.providerID}/${model.id}`])
@@ -468,7 +470,7 @@ export const LAWS: ReadonlyArray<Law> = [
         })
         yield* ensure(assistant.length === 1, `the turn holds ${assistant.length} assistant messages`)
         const lines = (yield* Ref.get(seen)).join(", ")
-        yield* ensure(lines === `started ${assistant[0]} build sim/sim-model, ended ${assistant[0]}`, `the step events were ${lines}`)
+        yield* ensure(lines === `started ${assistant[0]} build sim/sim-model, ended ${assistant[0]}, succeeded`, `the step events were ${lines}`)
       }),
   },
   {

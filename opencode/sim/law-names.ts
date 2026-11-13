@@ -93,7 +93,7 @@ export const LAW = {
   sessions:
     "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
   steps:
-    "each step of a turn publishes session.step.started then session.step.ended for its assistant message, on the session's agent and model, and the host publishes no session.idle",
+    "each step of a turn publishes session.step.started then session.step.ended for its assistant message, on the session's agent and model, then session.execution.succeeded ends the turn; the host publishes no session.idle",
   removed: "a removed session publishes session.deleted once and is gone",
   archived:
     "a plugin's update does not archive a session (the plugin host drops `archived`); a client's archive publishes session.archived once, and archiving it again publishes nothing; a list with archived: false leaves it out and archived: true lists it",
