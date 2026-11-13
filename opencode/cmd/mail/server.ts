@@ -33,9 +33,9 @@ import { DEFAULT_PORT } from "@dotfiles/opencode-mail/peer"
 import * as FilePairs from "@dotfiles/opencode-mail/filestore/pairs"
 import * as Listener from "@dotfiles/opencode-mail/http/listener"
 import * as HttpPeers from "@dotfiles/opencode-mail/http/peers"
-import { keyed, token } from "@dotfiles/opencode-mail/node/keyed"
+import { keyed, tokens } from "@dotfiles/opencode-mail/node/keyed"
 import * as OpenCodeSessions from "@dotfiles/opencode-mail/opencode/sessions"
-import { type DeliveryRefused, PairStore, type Peers, type Sessions, type SessionsUnreadable } from "@dotfiles/opencode-mail/service"
+import type { DeliveryRefused, Net, PairStore, Peers, Sessions, SessionsUnreadable, Tokens } from "@dotfiles/opencode-mail/service"
 
 export const Options = Schema.Struct({
   listen: Schema.optional(
@@ -48,13 +48,18 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems mail runs on. */
-export type Externals = Sessions | Peers | PairStore
+export type Externals = Sessions | Peers | PairStore | Net | Tokens
+
+/**
+ * The outside systems on `host`'s pairing store, network and tokens, the sessions through OpenCode's context: the
+ * peers are that network's.
+ */
+export const externalsOn = (ctx: Plugin.Context, host: Layer.Layer<PairStore | Net | Tokens>): Layer.Layer<Externals> =>
+  Layer.mergeAll(OpenCodeSessions.fromContext(ctx), host, HttpPeers.layer(keyed).pipe(Layer.provide(host)))
 
 /** The outside systems as OpenCode and this host provide them: the sessions, the pairing file, and the peers over HTTP. */
-export const live = (ctx: Plugin.Context): Layer.Layer<Externals> => {
-  const pairs = FilePairs.layer(FilePairs.fileOf(process.env))
-  return Layer.mergeAll(OpenCodeSessions.fromContext(ctx), pairs, HttpPeers.layer(keyed, () => token(16)).pipe(Layer.provide(pairs)))
-}
+export const live = (ctx: Plugin.Context): Layer.Layer<Externals> =>
+  externalsOn(ctx, Layer.mergeAll(FilePairs.layer(FilePairs.fileOf(process.env)), HttpPeers.liveNet, tokens))
 
 /** What the agent reads when a message is not sent. */
 const messageOf = (failure: Rejection | SessionsUnreadable | DeliveryRefused) => {
@@ -81,11 +86,7 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<Externals>)
 
       if (options.listen !== undefined) {
         const listen = { hostname: options.listen.hostname, port: options.listen.port ?? DEFAULT_PORT }
-        yield* Effect.forkScoped(
-          Listener.serve(listen, { cards: mail.cards, receive: mail.receive }, keyed, () => token(32)).pipe(
-            Effect.provideService(PairStore, Context.get(outside, PairStore)),
-          ),
-        )
+        yield* Effect.forkScoped(Listener.serve(listen, { cards: mail.cards, receive: mail.receive }, keyed).pipe(Effect.provideContext(outside)))
       }
 
       yield* ctx.tool.transform((editor) => {

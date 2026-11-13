@@ -12,7 +12,7 @@
  *   `~/.claude/skills/orchestrate/scripts/status.ts`.
  */
 import { Plugin } from "@opencode/plugin/effect"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Context, Effect, Layer, Schema } from "effect"
 import * as CallLogFile from "@dotfiles/opencode-status/filestore/call-log"
@@ -32,8 +32,8 @@ const withDefault =
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
 export const Options = Schema.Struct({
-  log: Schema.String.pipe(withDefault(join(homedir(), ".cache/orchestrate/opencode-agents.jsonl"))),
-  statusScript: Schema.String.pipe(withDefault(join(homedir(), ".claude/skills/orchestrate/scripts/status.ts"))),
+  log: Schema.String.pipe(withDefault(join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl"))),
+  statusScript: Schema.String.pipe(withDefault(join(TuiDirs.dirs().home, ".claude/skills/orchestrate/scripts/status.ts"))),
 })
 export type Options = typeof Options.Type
 

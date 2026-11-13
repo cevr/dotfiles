@@ -1,18 +1,18 @@
 // The memory plugin in real OpenCode (the fork, through its SDK) on the
-// scripted model, on a scratch memory file. A save, then a near repeat of it,
-// keep one note, which a search finds; the next session starts with that note
-// in its system prompt, and a note it saves mid-session leaves every one of
-// its requests' system prompts as they were (the cached prefix holds) and
-// shows in the session after. The CLI then reads the same file. A second run
-// sends an id, a limit and tags as strings, as models do, and they are read as
-// the number and the list (decider/tool-input.ts). The plugin on
-// its own is tested beside its code in mods/memory and cmd/memory.
+// scripted model, on a scratch memory file. A run sends an id, a limit and
+// tags as strings, as models do, and they are read as the number and the list
+// (decider/tool-input.ts); a word for an id is refused in the host's words.
+// The save, repeat, search, digest and CLI run moved to the simulated host
+// (cmd/memory/memory.sim.test.ts, tests/parity/memory.json); this one runs
+// there too, and stays here for the host's refusal words, which no law pins
+// yet. The plugin on its own is tested beside its code in mods/memory and
+// cmd/memory.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { main } from "../cmd/memory/cli.ts"
 import type { Result, Spec } from "./memory/run.ts"
-import { AGAIN_TASK, DEPLOY, DEPLOY_FIXED, LATE, RECALL_TASK, REPEAT, SAVE_TASK, STRINGS_TASK } from "./memory/sim.ts"
+import { DEPLOY, DEPLOY_FIXED, STRINGS_TASK } from "./memory/sim.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -65,46 +65,6 @@ const toolParts = (messages: unknown): ToolPart[] =>
 const said = (part: ToolPart | undefined) => (part?.state.content ?? []).map((item) => item.text ?? "").join("\n")
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
-  test(
-    "a note saved and repeated is one note; the next session starts with it, the same on every request; the CLI reads it",
-    async () => {
-      const result = await run()
-
-      const [saved, repeated, searched, ...rest] = toolParts(result.messages[SAVE_TASK])
-      expect(rest).toEqual([])
-      expect(said(saved)).toBe("Saved #1 (global).")
-      expect(said(repeated)).toStartWith("Updated #1 (global), which said nearly the same")
-      expect(said(searched)).toContain(`#1 [global] ${REPEAT} [bun]`)
-
-      // The first session had no notes when it started: no memory block, on any of its requests.
-      expect(result.systems[SAVE_TASK]?.length).toBe(4)
-      for (const system of result.systems[SAVE_TASK] ?? []) expect(system).not.toContain("# Memory")
-
-      // The second starts with the note, and its own save mid-session leaves its system prompt unchanged.
-      const recall = result.systems[RECALL_TASK] ?? []
-      expect(recall).toHaveLength(2)
-      expect(recall[0]).toContain(`# Memory`)
-      expect(recall[0]).toContain(`- #1 ${REPEAT} [bun]`)
-      expect(recall[1]).toBe(recall[0]!)
-      expect(recall[0]).not.toContain(LATE)
-      expect(said(toolParts(result.messages[RECALL_TASK])[0])).toBe("Saved #2 (project).")
-
-      // The third sees both.
-      const again = result.systems[AGAIN_TASK]?.[0] ?? ""
-      expect(again).toContain(`- #1 ${REPEAT}`)
-      expect(again).toContain(`- #2 ${LATE}`)
-
-      // The CLI reads the plugin's file: two notes, the global one found by the search, the first shown in two digests.
-      const stats = await main(["stats", "--json"], { db: result.db, now: Date.now() })
-      expect(stats.code).toBe(0)
-      const audit = JSON.parse(stats.out)
-      expect(audit.total).toBe(2)
-      expect(audit.notes[0]).toMatchObject({ id: 1, scope: "global", uses: 2, shown: 2 })
-      expect(audit.notes[1]).toMatchObject({ id: 2, scope: "project", shown: 1 })
-    },
-    150_000,
-  )
-
   test(
     "an id, a limit and tags sent as strings are read as the number and the list; a word for an id is refused",
     async () => {

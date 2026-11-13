@@ -13,6 +13,8 @@ import * as Server from "./server.ts"
 /** A law on the double takes a few milliseconds. */
 const TIMEOUT_MS = 5_000
 const BRIEF = "Worker brief."
+/** The command the shell law runs: real OpenCode runs it. */
+const SHELL = "printf 'ok\\n'"
 const Json = Schema.fromJsonString(Schema.Unknown)
 const toJson = Schema.encodeSync(Json)
 
@@ -21,6 +23,7 @@ const model: Server.Model = ({ text: prompt, step }) => {
   if (prompt.includes(BRIEF)) return [Server.reasoning("Looking."), Server.stall].filter(() => step === 0)
   if (step > 0) return []
   if (prompt.includes("stall")) return [Server.text("Working on it"), Server.stall]
+  if (prompt.includes("shell")) return [Server.ranShell({ id: "call_shell", command: SHELL, output: "ok\n" })]
   if (prompt.includes("spawn"))
     return [
       Server.subagent({

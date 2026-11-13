@@ -4,10 +4,10 @@
 // started in the foreground while the pace holds latches instead of being
 // refused. The call answers at once and the parent goes on; the worker's row
 // beneath the composer reads latched, with the hold and when it opens;
-// wake_list shows the latch. Decided again while the pace still holds, it
-// latches again; once the pace admits, the worker starts in the background
-// on the child made when it latched, and its answer wakes the parent. It
-// needs OPENCODE_DEV, the fork with the plugin hook points the Prime rows use.
+// once the pace admits, the worker runs and its answer wakes the parent. The
+// listing and the latch's decisions run on the simulated host:
+// cmd/orchestrate/orchestrate-latch.sim.test.ts (tests/parity/orchestrate.json).
+// It needs OPENCODE_DEV, the fork with the plugin hook points the Prime rows use.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -20,15 +20,6 @@ if (!fork) console.warn("tests/prime-latch.test.ts: skipped. Set OPENCODE_DEV to
 const root = join(import.meta.dir, "..")
 const names = ["latch-latched", "latch-done"] as const
 const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { "latch-latched": [], "latch-done": [] }
-let listing = ""
-let calls: ReadonlyArray<Record<string, unknown>> = []
-let paces: ReadonlyArray<Record<string, unknown>> = []
-
-const jsonl = (path: string) =>
-  readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, unknown>)
 
 /** The row lines beneath the dock's rule and its count line (gone while nothing is active), up to the first blank line. */
 function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
@@ -53,9 +44,6 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-    listing = (JSON.parse(readFileSync(join(out, "latch-wakes.json"), "utf8")) as { request: string }).request
-    calls = jsonl(join(out, "agents.jsonl"))
-    paces = jsonl(join(out, "pace.jsonl"))
   }, 300_000))
 
   test("the held foreground call answers latched at once, and the parent goes on", kept.test(() => {
@@ -65,26 +53,6 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
   test("its row reads latched, with the hold and when it opens, and the dock counts it", kept.test(() => {
     expect(rows(frames["latch-latched"])).toEqual([expect.stringMatching(/^◇ worker gpt  Check the export  pace · opens \d\d:\d\d · \d+s$/)])
     expect(frames["latch-latched"].some((line) => line.includes("◆ 1 subagent  ·"))).toBe(true)
-  }))
-
-  test("wake_list shows the latch: the subagent, its child, the hold and when it opens", kept.test(() => {
-    expect(listing).toContain("latch · the worker subagent \\\"Check the export\\\" (sessionID: ses_")
-    expect(listing).toContain("held by the pace: scripted 5h window is full · opens ")
-  }))
-
-  test("decided again while still held it latches again; once admitted it starts in the background on its child", kept.test(() => {
-    expect(calls.map((line) => line.kind)).toEqual(["latched", "done", "latched", "call", "done"])
-    const child = calls[0]?.child
-    expect(typeof child).toBe("string")
-    expect(calls.every((line) => line.child === child)).toBe(true)
-    expect(calls[1]).toMatchObject({ status: "latched" })
-    expect(calls[3]).toMatchObject({ agent: "worker", description: "Check the export", background: true })
-    expect(calls[4]).toMatchObject({ status: "running" })
-    // The pace was asked three times, about six seconds apart (no busy loop), and told of the start once.
-    expect(paces.map((line) => (line.started === true ? "started" : line.ok === true ? "ok" : "held"))).toEqual(["held", "held", "ok", "started"])
-    const at = paces.map((line) => Number(line.at))
-    expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(5_000)
-    expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(5_000)
   }))
 
   test("its answer wakes the parent, and its row reads done", kept.test(() => {

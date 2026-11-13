@@ -54,9 +54,15 @@ const CONNECTIONS = [
 const model = { providerID: "anthropic", id: "claude-haiku-4-5" }
 
 interface SessionEvent {
-  readonly type: "session.step.started" | "session.step.ended" | "session.idle"
+  readonly type:
+    | "session.step.started"
+    | "session.step.ended"
+    | "session.execution.succeeded"
+    | "session.execution.failed"
+    | "session.execution.interrupted"
   readonly data: {
     readonly sessionID: string
+    readonly reason?: "user" | "shutdown" | "superseded" | "inactivity"
     readonly cost?: number
     readonly assistantMessageID?: string
     readonly model?: { readonly providerID: string; readonly id: string }
@@ -223,7 +229,11 @@ const start = (
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(events) },
+      // As the host does, a subscription gets the event types it names.
+      event: {
+        subscribe: (input: { readonly types: ReadonlyArray<string> }) =>
+          Stream.fromQueue(events).pipe(Stream.filter((event) => input.types.includes(event.type))),
+      },
       tool: {
         transform: (callback: (editor: { readonly add: (tool: ToolDefinition) => void }) => void) =>
           Effect.sync(() => {
@@ -298,9 +308,8 @@ const start = (
       yield* (yield* registered(hooks, "retry"))(event)
       return event.decision
     })
-    const idle = Effect.fn("PoolServerTest.idle")(function* (sessionID: string) {
-      yield* (yield* registered(hooks, "experimental.idle"))({ sessionID, background: [] })
-    })
+    /** The session's execution succeeded: it goes idle. */
+    const idle = (sessionID: string) => emit({ type: "session.execution.succeeded", data: { sessionID } })
     const method = (name: string) => Effect.flatMap(registered(rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, name))
     const pace = Effect.fn("PoolServerTest.pace")(function* (providerID: string, sessionID?: string) {
       return (yield* (yield* method("pace"))({ providerID, ...(sessionID === undefined ? {} : { sessionID }) })) as Pace
@@ -542,11 +551,28 @@ describe("the hooks", () => {
           ["cred-b", 0, 0],
         ])
         expect(yield* plugin.request("ses_2")).toBe("cred-b")
-        // The run of an idle session ends, whichever way the host says so.
-        yield* plugin.emit({ type: "session.idle", data: { sessionID: "ses_1" } })
+        yield* plugin.idle("ses_1")
         yield* plugin.idle("ses_2")
+        // Their caches still live on their logins.
         const live = (yield* plugin.status).anthropic?.accounts.map((account) => account.live)
         expect(live).toEqual([1, 1])
+      }),
+    ))
+
+  test("a run ends however its execution ends, but for a shutdown, which the resumed execution goes on from", () =>
+    scenario(
+      Effect.gen(function* () {
+        // A cache that lives 1 ms: `live` counts runs alone.
+        const plugin = yield* start({ sweepMinutes: 0, cacheLifeMs: 1 })
+        const sessions = ["ses_ok", "ses_failed", "ses_user", "ses_shutdown"]
+        for (const sessionID of sessions) yield* plugin.request(sessionID)
+        const live = Effect.map(plugin.status, (status) => status.anthropic?.accounts.reduce((total, account) => total + account.live, 0))
+        expect(yield* live).toBe(4)
+        yield* plugin.emit({ type: "session.execution.succeeded", data: { sessionID: "ses_ok" } })
+        yield* plugin.emit({ type: "session.execution.failed", data: { sessionID: "ses_failed" } })
+        yield* plugin.emit({ type: "session.execution.interrupted", data: { sessionID: "ses_user", reason: "user" } })
+        yield* plugin.emit({ type: "session.execution.interrupted", data: { sessionID: "ses_shutdown", reason: "shutdown" } })
+        expect(yield* live).toBe(1)
       }),
     ))
 })

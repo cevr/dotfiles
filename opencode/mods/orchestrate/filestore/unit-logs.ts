@@ -6,7 +6,7 @@
 // allow. Whatever log.ts says, the call goes on. The drops a root logged are
 // read from the journal log.ts keeps of them, each checked against its log.md.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { Effect, Layer, Option, Schema } from "effect"
 import { type LoggedDrop, UnitLogs } from "../service.ts"
@@ -41,7 +41,7 @@ export interface Options {
  * The units' logs, written by `script` (the skill's log.ts). The host's binary
  * is Bun underneath, so BUN_BE_BUN runs the script as Bun.
  */
-export const make = (script: string, { home = homedir(), journal = DROPS_JOURNAL }: Options = {}) =>
+export const make = (script: string, { home = TuiDirs.dirs().home, journal = DROPS_JOURNAL }: Options = {}) =>
   UnitLogs.of({
     find: Effect.fn("UnitLogs.find")(function* ({ unit, named, directory }: { readonly unit: string; readonly named: ReadonlyArray<string>; readonly directory?: string }) {
       return yield* Effect.sync(() => {
@@ -80,7 +80,7 @@ export const make = (script: string, { home = homedir(), journal = DROPS_JOURNAL
 export const layer = (script: string, options: Options = {}) => Layer.succeed(UnitLogs, make(script, options))
 
 /** Where log.ts journals each written drop when `ORCHESTRATE_DROPS` names no other file (log.ts `journalDrop`). */
-export const DROPS_JOURNAL = join(homedir(), ".cache", "orchestrate", "drops.jsonl")
+export const DROPS_JOURNAL = join(TuiDirs.dirs().home, ".cache", "orchestrate", "drops.jsonl")
 
 /** One line of the drops journal: the session whose shell ran log.ts, and the unit dir it resolved. */
 const JournalEntry = Schema.fromJsonString(Schema.Struct({ session: Schema.String, dir: Schema.String }))

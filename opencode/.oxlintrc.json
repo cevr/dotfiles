@@ -85,11 +85,31 @@
     },
     {
       "files": [
+        "mods/**",
+        "cmd/**"
+      ],
+      "rules": {
+        "dotfiles/tui-dirs-only": "error"
+      }
+    },
+    {
+      "files": [
+        "mods/pool/ssh/push.ts",
+        "mods/pool/ssh/report.ts",
+        "mods/pool/ssh/lease.ts"
+      ],
+      "rules": {
+        "dotfiles/tui-dirs-only": "off"
+      }
+    },
+    {
+      "files": [
         "**/*.test.ts",
         "**/*.test.tsx"
       ],
       "rules": {
-        "dotfiles/tui-clock-only": "off"
+        "dotfiles/tui-clock-only": "off",
+        "dotfiles/tui-dirs-only": "off"
       }
     },
     {
@@ -1015,31 +1035,6 @@
     },
     {
       "files": [
-        "mods/web/*.ts"
-      ],
-      "rules": {
-        "no-restricted-imports": [
-          "error",
-          {
-            "patterns": [
-              {
-                "group": [
-                  "*",
-                  "!effect",
-                  "!effect/*",
-                  "*/**/effect",
-                  "!./*.ts",
-                  "!bun:test"
-                ],
-                "message": "The web domain fence: the web mod's domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
         "mods/orchestrate/machine.ts"
       ],
       "rules": {
@@ -1089,8 +1084,7 @@
         "mods/guard/kill.ts",
         "mods/kernel/tools.ts",
         "mods/kernel/wire.ts",
-        "mods/wake/wake.ts",
-        "mods/web/fetch.ts"
+        "mods/wake/wake.ts"
       ],
       "rules": {
         "effect/noTryCatch": "error"

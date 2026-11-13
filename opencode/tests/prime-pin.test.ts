@@ -1,4 +1,4 @@
-// accept: deep (18.2 s alone on a quiet host: 1-minute load 6.3–7.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (18.2 s alone on a quiet host: 1-minute load 6.3–7.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long; the gate runs its names simulated, cmd/prime/prime-pin.sim.test.tsx)
 // Runs scenarios/prime-pin.ts with the Prime look against an OpenCode checkout
 // and asserts the ask pinned over the transcript: none at the bottom; scrolled
 // up, the transcript's first row is the prompt the top of the view answers,

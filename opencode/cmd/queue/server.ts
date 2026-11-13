@@ -18,7 +18,7 @@
  *   (`~/.local/state/opencode-queue`), one JSON file per session.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
 import { DESCRIPTION, listing } from "@dotfiles/opencode-queue/description"
@@ -37,7 +37,7 @@ const withDefault =
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
-const stateHome = () => process.env.XDG_STATE_HOME || join(homedir(), ".local/state")
+const stateHome = () => TuiDirs.dirs().state
 
 export const Options = Schema.Struct({
   dir: Schema.NonEmptyString.pipe(withDefault(join(stateHome(), "opencode-queue"))),

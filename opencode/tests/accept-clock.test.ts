@@ -4,17 +4,17 @@
 // and a gate unit test does not judge it. Here, one at a time, ACCEPT_TIMED=1 makes the same runs judge their
 // clock bounds too: a land run ends near its budget; the lock is free within 5 s of a land run's mark; a deep
 // run takes the lock back within 2 s of the marking land run's death; a land run takes the lock of a killed deep
-// run at once.
+// run at once; a land run's swarm ends inside its box and grace.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 /** The real runs of scripts/accept.test.ts that carry a clock bound. */
-const TIMED_RUNS = "a land run under its budget|a deep run yields the lock to a land run"
+const TIMED_RUNS = "a land run under its budget|a deep run yields the lock to a land run|a land run's swarm"
 
 /** How many tests TIMED_RUNS names: a filter that matched fewer would judge less. */
-const TIMED_COUNT = 4
+const TIMED_COUNT = 6
 
 /** The timed runs' bun test, from opencode/, with its output and its exit code. */
 const timedRuns = Effect.gen(function* () {

@@ -1,0 +1,40 @@
+                                             slow suite  $0.00
+
+  opencode vlocal
+  model simulation/gpt-sim-model
+  cwd ~/files
+
+ ┃ Run the slow suite.
+
+  Running it
+
+  ● Running sleep 600
+
+  ⠦ Executing · 0s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ◌ after the turn · Then tag the release.
+
+ Ctrl+Enter interrupt and send
+ ┃ Skip the suite, ship it.
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ● UI  Theme  Tools  Experiments

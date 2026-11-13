@@ -33,7 +33,7 @@ if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV
 
 const ROOT = join(import.meta.dir, "..")
 const TUI_PLUGINS = ["prime", "status", "git", "cache", "questions", "btw", "skills", "recover", "orchestrate", "escape"]
-const SERVER_PLUGINS = ["orchestrate", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "web", "memory"]
+const SERVER_PLUGINS = ["orchestrate", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "memory"]
 const TIMEOUT_MS = 180_000
 /** How long the dock has, once the TUI can read what runs on the new service, to drop the rows whose turns ended. */
 const SETTLE_MS = 20_000

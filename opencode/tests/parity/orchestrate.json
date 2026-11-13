@@ -1,0 +1,146 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/orchestrate.test.ts": {
+      "simulated": "cmd/orchestrate/orchestrate.sim.test.ts",
+      "tests": [
+        {
+          "name": "each role's prompt and description are the Claude Code agent's, word for word",
+          "expects": 4,
+          "carried": "real",
+          "why": "reads the Claude Code agent files on disk against the role definitions; no host runs"
+        },
+        {
+          "name": "every role may ask the owner in the background: ask_user_async is not denied under the deny-all rule",
+          "expects": 2,
+          "carried": "real",
+          "why": "a unit check of the role permissions; no host runs"
+        },
+        {
+          "name": "--check passes on the written file and fails on a hand edit",
+          "expects": 4,
+          "carried": "real",
+          "why": "runs scripts/agents.ts on a scratch tree; no host runs"
+        },
+        {
+          "name": "pace: with no wakes to keep a latch, an over-limit pool refuses new agents with when it opens; under pace they run",
+          "expects": 5,
+          "carried": "simulated",
+          "why": "the fixture pool registers only `pace` over the world's RPC, as the real run's fake plugin does; the subagent tool and its children are the world's (host law: a subagent call starts a child session)"
+        },
+        {
+          "name": "codex pace: a subagent on a Codex-paced provider asks the Codex admission, with its model and role",
+          "expects": 6,
+          "carried": "simulated",
+          "why": "the admission is asked at the CodexAdmission port: its memory double records the model and the role the plugin asks with, where the real run read the script's `--model <m> --role <r>` args; the script's own argv is mods/orchestrate/codex/admission.ts's, covered by its unit test"
+        },
+        {
+          "name": "guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as the verifier at medium effort",
+          "expects": 10,
+          "carried": "simulated",
+          "why": "the world's subagent tool, agent editor and per-agent tool permissions follow the fork's (host laws: subagent, agents, update); the call log is the memory double the plugin writes"
+        },
+        {
+          "name": "worker ceiling: under a root at max, the untyped worker runs at its model's default and the parent is told why; the verifier at medium",
+          "expects": 4,
+          "carried": "simulated",
+          "why": "a model asked with no variant is stored at `default`, as the fork's session create does (host law: subagent)"
+        },
+        {
+          "name": "compaction: on a 1M model, a planner session at 350k compacts at the 400k window; a worker session at 200k does not",
+          "expects": 12,
+          "carried": "simulated",
+          "why": "the world's automatic compaction keeps the fork's window and ceiling (host law: window) and runs the `compaction` hooks before the summary prompt (host law: compaction)"
+        },
+        {
+          "name": "units: an implementor's start and its hand-back move its unit in the run's log.md",
+          "expects": 2,
+          "carried": "real",
+          "why": "the unit's log.md is written by the skill's log.ts, a process the world does not run"
+        },
+        {
+          "name": "Sabbath: on Friday evening the subagent calls are refused with when work resumes, and no child starts",
+          "expects": 5,
+          "carried": "simulated",
+          "why": "the refusal is the plugin's tool.execute.before hook on the world's clock (host law: hooks)"
+        }
+      ]
+    },
+    "tests/prime-latch.test.ts": {
+      "simulated": "cmd/orchestrate/orchestrate-latch.sim.test.ts",
+      "tests": [
+        {
+          "name": "the held foreground call answers latched at once, and the parent goes on",
+          "expects": 1,
+          "carried": "real",
+          "why": "read off the TUI's frame: sim-tui's to move"
+        },
+        {
+          "name": "its row reads latched, with the hold and when it opens, and the dock counts it",
+          "expects": 2,
+          "carried": "real",
+          "why": "the worker's row and the dock, read off the TUI's frame: sim-tui's to move"
+        },
+        {
+          "name": "wake_list shows the latch: the subagent, its child, the hold and when it opens",
+          "expects": 2,
+          "carried": "simulated",
+          "why": "the wakes plugin's wake_list output on the world, read from the tool result where the real run read the request that carried it (the same text, JSON-escaped there)"
+        },
+        {
+          "name": "decided again while still held it latches again; once admitted it starts in the background on its child",
+          "expects": 9,
+          "carried": "simulated",
+          "why": "the scenario's stand-in pool on the world's RPC and clock; the wakes' latch re-decides on the world's timers (host laws: rpc, subagent)"
+        },
+        {
+          "name": "its answer wakes the parent, and its row reads done",
+          "expects": 2,
+          "carried": "real",
+          "why": "the done row, read off the TUI's frame: sim-tui's to move"
+        }
+      ]
+    },
+    "tests/idle-root.test.ts": {
+      "simulated": "cmd/orchestrate/idle-root.sim.test.ts",
+      "tests": [
+        {
+          "name": "is steered once, after its planner ends and the owner's draft clears, and names its wait",
+          "expects": 11,
+          "carried": "both",
+          "why": "the nudges, the holds and the requests on the world: the running planner is the root's idle background (host law: idleBackground), the draft is the TUI's IDLE.draft report from a client of the world, the runs are the status script's table in the world's shell (the RunTables laws on both adapters), the wait is the queue's item over its RPC; the root's answer, the draft in the composer and the sidebar's wait stay real, read off the TUI's frames: sim-tui's to move"
+        }
+      ]
+    },
+    "tests/prime-fallback.test.ts": {
+      "simulated": "cmd/orchestrate/orchestrate-fallback.sim.test.ts",
+      "tests": [
+        {
+          "name": "the pool holds the first model, and the admission script is asked about the newest sol for the role",
+          "expects": 2,
+          "carried": "simulated",
+          "why": "the scenario's stand-in pool on the world's RPC; the admission is asked at the CodexAdmission port, whose memory double records the model and the role the plugin asks with, where the real run read the script's `--model <m> --role <r>` args (the argv is mods/orchestrate/codex/admission.ts's); the sols' family and release on the world's catalog (host law: catalog)"
+        },
+        {
+          "name": "it starts at once on sol, never latched, and the call log says why",
+          "expects": 3,
+          "carried": "simulated",
+          "why": "the call log is the memory double the plugin writes; the child's model as the world's subagent tool takes it (host law: subagent)"
+        },
+        {
+          "name": "the worker's request goes to sol",
+          "expects": 1,
+          "carried": "simulated",
+          "why": "the request's model is the child session's, as the world's provider receives it"
+        },
+        {
+          "name": "the parent reads where it ran and why, first in the call's result, then the answer, and its row shows sol",
+          "expects": 4,
+          "carried": "both",
+          "why": "the call's result and the completion notice in the parent's request on the world (host law: subagent); the parent's answer on screen and the planner's row stay real, read off the TUI's frame: sim-tui's to move"
+        }
+      ]
+    }
+  },
+  "retired": []
+}

@@ -1,0 +1,48 @@
+                                             long suite  $0.00
+
+  opencode vlocal
+  model simulation/gpt-sim-model
+  cwd ~/files
+ ┃ Check the build, then run the long suite.
+  ● Ran 2 commands
+  ● Ran 1 command
+  Both builds pass. Running the long suite.
+  ● Ran 1 command
+ ┃ Also read the notes file.
+  ● Read 1 file
+  Suite passed; the notes say ship it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ┃
+                                                                                            gpt-sim-model
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ⦿ UI  Theme  Tools  Experiments

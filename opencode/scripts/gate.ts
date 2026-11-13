@@ -17,16 +17,35 @@
 // `bun run accept` (all) and `bun run accept:affected` (those that reach a
 // changed file) run them.
 //
+// One full gate runs on a host at a time: the whole run, link included, holds
+// the host's checks lock (the one a land's gate and accept checks hold
+// shared; mods/rift/process/flock.ts's `gateTurn`) exclusively. A second gate
+// waits for its turn, saying who holds the lock and since when, and a land's
+// check that comes while it waits goes first. The land's own gate check
+// (RIFT_LAND_CHECK=gate) runs at once, under the locks its land holds.
+// Focused runs (`bun test <files>`) never take it.
+//
+// Receipts (mods/rift/receipt.ts): a gate run by hand writes a `round` receipt for the head and tracked
+// files it started at into the checkout (its Git dir's rift-receipt.json) and the host's receipts folder,
+// green or red; a land takes it instead of running the Rift's checks again (any other proof of a round
+// is written with scripts/receipt.ts). `--merge <base>` is a land's merge check (`rift.mergeCheck`): the link, every
+// project's typecheck and oxlint over the files changed since <base>, no lock and no receipt (the land
+// writes it).
+//
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
+//        bun scripts/gate.ts --merge <base>
 // The cache is node_modules/.cache/gate/passed.json; deleting it is safe.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
+import { Array as Arr, Option } from "effect"
+import { hostLocks, landLogs, scriptReceipt } from "../mods/rift/process/landing.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
 
-const started = performance.now()
-const all = process.argv.includes("--all")
+const ENV = process.env
+const ARGV = process.argv.slice(2)
+const all = ARGV.includes("--all")
 const CACHE = path.join(ROOT, "node_modules/.cache/gate")
 const PASSED = path.join(CACHE, "passed.json")
 const REPORT = path.join(CACHE, "unit.xml")
@@ -45,21 +64,20 @@ interface Leg {
 }
 
 /** Runs `argv` in ROOT, capturing its output. */
-const run = async (name: string, argv: ReadonlyArray<string>, env: Record<string, string | undefined> = process.env, note?: string): Promise<Leg> => {
+const run = (name: string, argv: ReadonlyArray<string>, env: Record<string, string | undefined> = ENV, note?: string): Promise<Leg> => {
   const from = performance.now()
   const child = Bun.spawn([...argv], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" })
-  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-  return { name, ok: code === 0, output: `${out}${err}`, time: elapsed(from), ...(note === undefined ? {} : { note }) }
-}
-
-const link = await run("link", [process.execPath, "scripts/link-fork.ts"])
-if (!link.ok) {
-  process.stderr.write(link.output)
-  process.exit(1)
+  return Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).then(([out, err, code]) => ({
+    name,
+    ok: code === 0,
+    output: `${out}${err}`,
+    time: elapsed(from),
+    ...(note === undefined ? {} : { note }),
+  }))
 }
 
 /** Every project in one `bun check -b` (scripts/typecheck.ts). */
-const types = () => run("types", [...checkCommand(), "--no-pretty"], process.env, `${projects().length + 1} projects`)
+const types = () => run("types", [...checkCommand(), "--no-pretty"], ENV, `${projects().length + 1} projects`)
 
 const unit = async (): Promise<Leg> => {
   const from = performance.now()
@@ -74,7 +92,7 @@ const unit = async (): Promise<Leg> => {
   const due = files.filter((file) => all || !passed[file]?.includes(keys.get(file)!))
   const note = `${due.length} of ${files.length} files run`
   if (due.length === 0) return { name: "unit", ok: true, output: "", time: elapsed(from), note: `${note}; all passed unchanged` }
-  const env = { ...process.env }
+  const env = { ...ENV }
   delete env.ANTHROPIC_BASE_URL
   const leg = await run(
     "unit",
@@ -104,16 +122,65 @@ const unit = async (): Promise<Leg> => {
   return { ...leg, time: elapsed(from), note }
 }
 
-const legs = await Promise.all([
-  run("lint", [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet"]),
-  run("debt", [process.execPath, "scripts/effect-debt.ts", "--check"]),
-  run("agents", [process.execPath, "scripts/agents.ts", "--check"]),
-  types(),
-  unit(),
-])
+/** Prints the failed legs' output and the summary line; answers the exit code. */
+const summary = (name: string, started: number, legs: ReadonlyArray<Leg>): number => {
+  for (const leg of legs.filter((each) => !each.ok)) process.stderr.write(`\n── ${leg.name} failed ──\n${leg.output.trimEnd()}\n`)
+  const line = legs.map((leg) => `${leg.ok ? "✓" : "✗"} ${leg.name} ${leg.time}${leg.note ? ` (${leg.note})` : ""}`).join("  ·  ")
+  const ok = legs.every((leg) => leg.ok)
+  console.log(`${line}\n${name} ${ok ? "green" : "red"} in ${elapsed(started)}`)
+  return ok ? 0 : 1
+}
 
-for (const leg of legs.filter((each) => !each.ok)) process.stderr.write(`\n── ${leg.name} failed ──\n${leg.output.trimEnd()}\n`)
-const line = legs.map((leg) => `${leg.ok ? "✓" : "✗"} ${leg.name} ${leg.time}${leg.note ? ` (${leg.note})` : ""}`).join("  ·  ")
-const ok = legs.every((leg) => leg.ok)
-console.log(`${line}\n${ok ? "gate green" : "gate red"} in ${elapsed(started)}`)
-process.exit(ok ? 0 : 1)
+/** The link, then `legs` at once, as `name`; answers its exit code. */
+const linked = async (name: string, legs: () => ReadonlyArray<Promise<Leg>>): Promise<number> => {
+  const started = performance.now()
+  const link = await run("link", [process.execPath, "scripts/link-fork.ts"])
+  if (!link.ok) {
+    process.stderr.write(link.output)
+    return 1
+  }
+  return summary(name, started, await Promise.all(legs()))
+}
+
+/** The gate in its turn: the link, then the five legs at once; answers its exit code. */
+const gate = () =>
+  linked("gate", () => [
+    run("lint", [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet"]),
+    run("debt", [process.execPath, "scripts/effect-debt.ts", "--check"]),
+    run("agents", [process.execPath, "scripts/agents.ts", "--check"]),
+    types(),
+    unit(),
+  ])
+
+/** The files oxlint reads among those changed since `base`, relative to this folder, that still exist. */
+const changedSince = (base: string): Promise<ReadonlyArray<string>> =>
+  $`git -C ${ROOT} diff --name-only --relative --diff-filter=d ${base} HEAD -- .`
+    .nothrow()
+    .quiet()
+    .text()
+    .then((out) => out.split("\n").filter((file) => /\.tsx?$/.test(file) && existsSync(path.join(ROOT, file))))
+
+/** A land's merge check of the merged tree: the link, every project's typecheck, oxlint over the files changed since `base`. */
+const mergeCheck = (base: string) =>
+  linked("merge check", () => [
+    changedSince(base).then((files) =>
+      // oxlint given no file lints the whole folder; with none changed there is nothing to lint.
+      run("lint", Arr.match(files, { onEmpty: () => ["true"], onNonEmpty: (some) => [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet", ...some] }), ENV, `${files.length} changed files`),
+    ),
+    types(),
+  ])
+
+/** The full gate: by hand, its `round` receipt written from where the repository stood; under a land (RIFT_LAND_CHECK set), the land writes its own. */
+const fullGate = () =>
+  Option.match(Option.fromUndefinedOr(ENV.RIFT_LAND_CHECK), {
+    onSome: gate,
+    onNone: () => scriptReceipt(landLogs(ENV), path.resolve(ROOT, ".."), "round", "bun run gate", gate, (code) => code),
+  })
+
+const merging = Option.filter(Option.some(ARGV.indexOf("--merge")), (at) => at >= 0)
+process.exit(
+  await Option.match(merging, {
+    onSome: (at) => mergeCheck(ARGV[at + 1] ?? "HEAD"),
+    onNone: () => hostLocks(ENV).gate(ROOT)(fullGate),
+  }),
+)

@@ -51,11 +51,12 @@ import { $, type Subprocess } from "bun"
 import { Console, Deferred, Effect, Fiber, Option } from "effect"
 import { holdingIfFree } from "../mods/rift/process/flock.ts"
 import { descendants, listing, type Proc, servers, stop, survivors, table, watch, type Watch } from "./leaks.ts"
-import { checkFork } from "./fork.ts"
+import { readyFork } from "./fork.ts"
+import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
-import { acceptanceTests, acceptKey, acceptReach, acceptSharedKey, load, packageOf, ROOT } from "./reach.ts"
+import { acceptanceTests, acceptKey, acceptReach, acceptSharedKey, load, packageOf, reach, ROOT, type Workspace } from "./reach.ts"
 
 const ENV = { ...process.env }
 const ARGS = process.argv.slice(2)
@@ -74,6 +75,12 @@ const OWNER = `${LOCK}.owner.json`
 const MARKS = `${LOCK}.wanted`
 const MARK = path.join(MARKS, String(process.pid))
 const LOGS = ENV.ACCEPT_LOGS ?? path.join(os.homedir(), ".cache/opencode-accept/logs")
+/** When the daily long swarm last ran to its end on this host. */
+const SWARM_STATE = ENV.ACCEPT_SWARM ?? path.join(path.dirname(LEDGER), "swarm.json")
+/** The daily long swarm's box (ACCEPT_LONG_SWARM_MS, for the runner's own test). */
+const LONG_SWARM_MS = Number(ENV.ACCEPT_LONG_SWARM_MS ?? Swarm.LONG_SWARM_MS)
+/** How long past its box a suite's swarm may run before it is stopped (its last seed, a TUI's boot). */
+const SWARM_GRACE_MS = 3000
 /** How many heads' logs are kept. */
 const LOG_HEADS = 5
 /** Where each file's junit report goes. */
@@ -123,6 +130,11 @@ interface Run {
   /** The checkout's head, and where this head's logs go. */
   readonly head: string
   readonly logs: string
+  /** The workspace, and its simulated suites (`*.sim.test.ts`, or ACCEPT_SIM_FILES). */
+  readonly workspace: Workspace
+  readonly suites: ReadonlyArray<string>
+  /** What the swarms of this run found failing: one failed outcome per suite with a failing seed. */
+  readonly swarmed: Array<Accept.Outcome>
 }
 
 /** A file's `bun test` while it runs. */
@@ -136,10 +148,22 @@ interface Running {
 const filesOf = (all: ReadonlyArray<string>) =>
   Option.match(Option.fromUndefinedOr(ENV.ACCEPT_FILES), {
     onNone: () => all,
-    onSome: (glob) => {
-      const { dir, rest: pattern } = Accept.globRoot(path.resolve(ROOT, glob))
-      return [...new Bun.Glob(pattern).scanSync({ cwd: dir })].map((file) => path.join(dir, file)).sort()
-    },
+    onSome: (glob) => globbed(glob),
+  })
+
+/** A glob's files, absolute and sorted; none when its folder does not exist. */
+const globbed = (glob: string) => {
+  const { dir, rest: pattern } = Accept.globRoot(path.resolve(ROOT, glob))
+  if (!existsSync(dir)) return []
+  return [...new Bun.Glob(pattern).scanSync({ cwd: dir })].map((file) => path.join(dir, file)).sort()
+}
+
+/** The simulated suites: every `*.sim.test.ts(x)` the workspace holds, or ACCEPT_SIM_FILES (a glob, for the runner's own test's stand-ins). */
+const suitesOf = (workspace: Workspace) =>
+  Option.match(Option.fromUndefinedOr(ENV.ACCEPT_SIM_FILES), {
+    onNone: () => workspace.files.filter(Swarm.isSimSuite).sort(),
+    // Named from opencode/ where they are inside it, as sim/seed.ts's runner names them in what it prints.
+    onSome: (glob) => globbed(glob).map((file) => Option.getOrElse(Option.liftPredicate(path.relative(ROOT, file), (each) => !each.startsWith("..")), () => file)),
   })
 
 const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Deferred<boolean>) {
@@ -159,7 +183,8 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
   const head = (yield* git(["rev-parse", "HEAD"])).trim()
   const logs = path.join(LOGS, head.slice(0, 12) || "no-head")
   const wanted = yield* Deferred.make<boolean>()
-  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, head, logs }
+  const suites = suitesOf(workspace)
+  const run: Run = { files, text, reached, keys, tiers, candidates, named, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled, wanted, head, logs, workspace, suites, swarmed: [] }
   return run
 })
 
@@ -183,6 +208,18 @@ const land = Effect.fn("Accept.land")(function* (run: Run) {
   yield* say(
     `accept: land: ${order.length} due land files (${near.size} near the ${changed.length} files changed), ${width} at a time (${cores} cores, 1-minute load ${(run.loads[0] ?? 0).toFixed(1)}); no start after ${seconds(window.startBy)}, stop at ${seconds(window.stopAt)}`,
   )
+  // First the swarm: the simulated suites the change reaches, fresh seeds from the head, for a third of the budget.
+  const memo = new Map<string, ReadonlyArray<string>>()
+  const suites = Option.match(Option.fromUndefinedOr(ENV.ACCEPT_SIM_FILES), {
+    // A stand-in suite is outside the workspace: every one named is reached.
+    onSome: () => run.suites,
+    onNone: () => Swarm.reachedSuites(run.suites, (suite) => reach(run.workspace, [suite], memo), changed),
+  })
+  const box = Swarm.swarmBox(window.end)
+  if (listOnly) {
+    yield* say(`accept: swarm (land): would run ${suites.length} simulated suites the change reaches for ${seconds(box)}, from seed ${Swarm.swarmFirst(run.head, "land")}`)
+    yield* say(...suites.map((suite) => `  swarm: ${suite}`))
+  } else yield* swarm(run, "land", suites, box, width)
   if (!listOnly) return yield* pool(run, order, width)
   const played = Accept.simulate(order, estimate, width, window, elapsed())
   yield* say(...played.ran.map((slot) => `  due: ${slot.file} (would ${(slot.stopped && "be stopped") || "run"}, est ${seconds(estimate(slot.file))})`))
@@ -299,6 +336,65 @@ const runFile = Effect.fn("Accept.runFile")(function* (run: Run, file: string, s
   return outcome
 })
 
+/**
+ * A swarm (`what`: `land`, or `daily` in the deep run): `suites` run `width` at a time, each its own `bun test`
+ * under sim/seed.ts's swarm mode, from the head's first seed, on its slot of `boxMs`; a suite still running past
+ * the box (with SWARM_GRACE_MS) is stopped, the seeds it passed still counted, and none starts after the box. A
+ * signal or a land run's mark stops it too. Each suite with a failing seed is a failed outcome naming the replay
+ * line, kept in `run.swarmed`. True when it ran to its end (no signal, no yield).
+ */
+const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "daily", suites: ReadonlyArray<string>, boxMs: number, width: number) {
+  if (suites.length === 0) return true
+  const label = (what === "land" && "land") || `daily:${Math.floor(wallNow() / Swarm.LONG_SWARM_EVERY_MS)}`
+  const first = Swarm.swarmFirst(run.head, label)
+  const slot = Swarm.swarmSlot(boxMs, width, suites.length)
+  const began = elapsed()
+  const endsAt = began + boxMs + SWARM_GRACE_MS
+  yield* say(`accept: swarm (${what}): ${suites.length} simulated suites, ${Math.min(width, suites.length)} at a time, ${seconds(slot)} each in a ${seconds(boxMs)} box, from seed ${first}`)
+  const ran = yield* Effect.forEach(
+    suites,
+    (file) =>
+      Effect.suspend(() => {
+        if (Deferred.isDoneUnsafe(run.signalled) || Deferred.isDoneUnsafe(run.wanted) || elapsed() >= began + boxMs) return Effect.succeed({ file, passed: 0, failing: [], code: 0, cut: true })
+        return swarmSuite(run, file, first, slot, endsAt)
+      }),
+    { concurrency: Math.max(1, width) },
+  )
+  const seeds = ran.reduce((sum, each) => sum + each.passed + each.failing.length, 0)
+  yield* say(Swarm.swarmLine(what, suites, seeds, elapsed() - began, first))
+  for (const each of ran) {
+    if (each.failing.length > 0) {
+      yield* say(...each.failing.map((seed) => `accept: swarm: a failing seed: ${Swarm.replayLine(each.file, seed)}`))
+      run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `a swarm seed failed: ${each.failing.map((seed) => Swarm.replayLine(each.file, seed)).join("; ")}` })
+    } else if (each.code !== 0 && !each.cut) run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `its swarm exited ${each.code} with no failing seed named (log ${logOf(run, each.file)})` })
+  }
+  return !Deferred.isDoneUnsafe(run.signalled) && !Deferred.isDoneUnsafe(run.wanted)
+})
+
+/** One suite's swarm: its `bun test` under SIM_SWARM, stopped at `endsAt`, a signal or a yield; the seeds it passed and those that failed. */
+const swarmSuite = Effect.fn("Accept.swarmSuite")(function* (run: Run, file: string, first: number, slot: number, endsAt: number) {
+  const running = spawnTest(file, [], { SIM_SWARM: String(first), SIM_SWARM_MS: String(slot) })
+  const child = running.child
+  // Read from the start, so a suite stopped at the box still says which seeds it passed.
+  const output = yield* Effect.forkChild(
+    Effect.map(Effect.all([Effect.promise(() => new Response(child.stdout).text()), Effect.promise(() => new Response(child.stderr).text())], { concurrency: 2 }), ([out, err]) => `${out}${err}`),
+  )
+  const box = Effect.as(Effect.suspend(() => Effect.sleep(Math.max(0, endsAt - elapsed()))), stopped("budget"))
+  const ended = yield* Effect.raceFirst(
+    Effect.map(Effect.promise(() => child.exited), (code): Ended => ({ why: Option.none(), code, output: "" })),
+    Effect.raceAll([box, Effect.as(Deferred.await(run.signalled), stopped("signal")), Effect.as(Deferred.await(run.wanted), stopped("yielded"))]),
+  )
+  if (Option.isSome(ended.why)) yield* stopRun(running)
+  const text = yield* Fiber.join(output)
+  running.watching.stop()
+  writeLog(run, file, text, false)
+  const read = Swarm.swarmRead(text, file)
+  const cut = Option.isSome(ended.why)
+  if (cut) yield* say(`accept: swarm: stopped ${file} (${Accept.whyWords(Option.getOrElse(ended.why, () => "budget" as const))}) after ${read.passed} seeds`)
+  if (read.failing.length > 0 || (!cut && ended.code !== 0)) yield* say(text)
+  return { file, passed: read.passed, failing: read.failing, code: Number(!cut) * ended.code, cut }
+})
+
 /** Writes a file's output to its log; a second run's goes after the first's. */
 const writeLog = (run: Run, file: string, output: string, second: boolean) => {
   mkdirSync(run.logs, { recursive: true })
@@ -320,9 +416,17 @@ const pruneLogs = () => {
 /** Starts a file's `bun test` in a process group of its own and watches what it starts. */
 const start = (file: string, report: string): Running => {
   mkdirSync(REPORTS, { recursive: true })
-  const env = Object.fromEntries(Object.entries(ENV).filter(([name]) => name !== "ANTHROPIC_BASE_URL" && !name.startsWith("ACCEPT_")))
+  return spawnTest(file, ["--reporter=junit", `--reporter-outfile=${report}`, ...rest], {})
+}
+
+/**
+ * A `bun test` of `file` with `flags`, in a process group of its own, watched: this process's environment less the
+ * real model's URL, the runner's own ACCEPT_* and any SIM_* (a seed to replay, a swarm), with `extra` over it.
+ */
+const spawnTest = (file: string, flags: ReadonlyArray<string>, extra: Readonly<Record<string, string>>): Running => {
+  const env = { ...Object.fromEntries(Object.entries(ENV).filter(([name]) => name !== "ANTHROPIC_BASE_URL" && !name.startsWith("ACCEPT_") && !name.startsWith("SIM_"))), ...extra }
   const target = (path.isAbsolute(file) && file) || `./${file}`
-  const child = Bun.spawn([process.execPath, "test", "--timeout", "300000", "--reporter=junit", `--reporter-outfile=${report}`, ...rest, target], {
+  const child = Bun.spawn([process.execPath, "test", "--timeout", "300000", ...flags, target], {
     cwd: ROOT,
     env,
     stdin: "ignore",
@@ -406,7 +510,7 @@ const leaked = Effect.fn("Accept.leaked")(function* (seen: ReadonlyArray<Proc>, 
 /** Prints the shares and the closing line, writes `--json`; the run's exit code. */
 const finish = Effect.fn("Accept.finish")(function* (run: Run, ran: ReadonlyArray<Accept.Outcome>) {
   run.loads.push(load1())
-  const outcomes = Accept.latest([...run.selection.settled, ...ran])
+  const outcomes = Accept.latest([...run.selection.settled, ...ran, ...run.swarmed])
   const quiet = Accept.isQuiet(cores, run.loads)
   const judged = Accept.shares(mode, run.timed, quiet)
   yield* say(...judged.reported)
@@ -543,8 +647,22 @@ const deepHold = Effect.fn("Accept.deepHold")(function* (run: Run, done: Readonl
   // Every first failure with no second run that ended, carried over a yield (before or during its second run) too.
   const again = Accept.secondRunsDue([...done, ...passedMeanwhile, ...ran]).filter(() => !Deferred.isDoneUnsafe(run.wanted))
   const second = yield* Effect.forEach(again, (file) => secondRun(run, file))
+  yield* longSwarm(run)
   yield* Fiber.interrupt(watcher)
   return { outcomes: [...passedMeanwhile, ...ran, ...second], yielded: Deferred.isDoneUnsafe(run.wanted) }
+})
+
+/**
+ * The daily long swarm, in an owed run that names no files: every simulated suite for LONG_SWARM_MS, once
+ * the last one that ran to its end is a day old (SWARM_STATE). A yield or a signal cuts it; it stays due,
+ * and the next hold runs it again.
+ */
+const longSwarm = Effect.fn("Accept.longSwarm")(function* (run: Run) {
+  if (mode !== "owed" || listOnly || run.named.length > 0 || run.suites.length === 0 || Deferred.isDoneUnsafe(run.wanted)) return
+  const last = Option.flatMap(disk.read(SWARM_STATE), Swarm.decodeSwarmState)
+  if (!Swarm.longSwarmDue(Option.map(last, (state) => state.at), wallNow())) return
+  const whole = yield* swarm(run, "daily", run.suites, LONG_SWARM_MS, poolWidth(cores, load1(), requested()))
+  if (whole) disk.write(SWARM_STATE, Swarm.encodeSwarmState({ at: wallNow(), head: run.head }))
 })
 
 /** A failed file's second run, alone, at the end of the run; the load is printed with it. */
@@ -581,7 +699,7 @@ const main = Effect.fn("Accept.main")(function* () {
   if (!ENV.OPENCODE_DEV) yield* say("accept: OPENCODE_DEV is not set, so the real-OpenCode tests skip and record no pass. Point it at the fork.")
   else {
     // A fork that is not installed here would fail every real-OpenCode test for a reason none of them names.
-    const checked = checkFork(ENV.OPENCODE_DEV)
+    const checked = readyFork(ENV.OPENCODE_DEV)
     if ("problem" in checked) return yield* refuse(checked.problem)
     // Each package reaches the fork's modules through link-fork's links, and one added since this checkout last
     // linked has none: real OpenCode then fails to load a plugin a test gives it (the host laws' probe in sim/,

@@ -135,7 +135,10 @@ export const ours = async (dir: string, variant: Variant = VARIANTS.production):
   const path = join(dir, "memory.db")
   const externals = Layer.merge(
     SqliteStore.layer(path),
-    OpenCodeSessions.layer(() => Effect.succeed({ projectID: PROJECT, location: { directory: "/repo" } })),
+    OpenCodeSessions.layer(
+      () => Effect.succeed({ projectID: PROJECT, location: { directory: "/repo" } }),
+      () => Effect.void,
+    ),
   )
   // The store's scope stays open for the episode and closes with `close`.
   let release: () => void = () => {}

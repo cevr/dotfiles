@@ -10,16 +10,19 @@
 // Opus first, Codex second: a new start the pace holds on its model, with a
 // Codex fallback whose pace admits it, starts at once on the fallback and says
 // why (`fallback`). Only when both are held does it latch, on whichever opens
-// first. The Sabbath holds both: it latches on the first model.
+// first. The Sabbath holds both: it latches on the first model. Only a planner
+// or verifier ever takes the fallback (role.ts `onCodex`): any other held agent
+// latches on its own model, and a new implementor whose model is a Codex one is
+// refused (CodexNeverImplements). Codex never implements.
 //
 // `decide` never reads the state. A kernel cell's tool calls share the cell's
 // call id, so one call can start several subagents, and a finish can arrive
 // for a start the log never saw (the plugin loaded mid-call). Every command is
 // decided on its own inputs; the state is what the history says happened.
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { PaceHold, Whose } from "./pace.ts"
-import { capEffort, Reason, route, unspecific } from "./role.ts"
+import { capEffort, IMPLEMENTOR, onCodex, Reason, route, unspecific } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
 
 // ── The id ──
@@ -68,7 +71,7 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   /** The model it runs on: the input's, else the role's at its effort, when that model offers it. */
   model: Schema.optionalKey(Schema.String),
   /**
-   * The model a new role start named that is the role's own (any variant or none): dropped, so the start runs
+   * The model a new role start named that is the role's own, or a planner's first model (any variant or none): dropped, so the start runs
    * as if it named none, at the role's effort, with the Codex fallback and the latch. Its reason is `model-dropped`.
    */
   dropped: Schema.optionalKey(Schema.String),
@@ -85,6 +88,8 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   fallback: Schema.optionalKey(Fallback),
   /** When the follow-up's child, still latched, opens (epoch ms). */
   childLatched: Schema.optionalKey(Schema.Number),
+  /** The Codex model (role.ts `isCodexModel`) a new start would run on, with no Opus offered: a new implementor on it is refused, since Codex never implements. */
+  codex: Schema.optionalKey(Schema.String),
 })
 export interface StartSubagent extends Schema.Schema.Type<typeof StartSubagent> {}
 
@@ -151,8 +156,14 @@ export class StillLatched extends Schema.TaggedError<StillLatched>()("StillLatch
   opensAt: Schema.Number,
 }) {}
 
+/** A new implementor would run on a Codex model and no Opus is offered for it: Codex never implements. */
+export class CodexNeverImplements extends Schema.TaggedError<CodexNeverImplements>()("CodexNeverImplements", {
+  agent: Schema.String,
+  model: Schema.String,
+}) {}
+
 export declare namespace StartSubagent {
-  export type Rejections = SabbathRest | StillLatched
+  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements
 }
 
 /** A held agent asks again no sooner than this after now. */
@@ -190,7 +201,8 @@ const admit = (
   if (rests !== undefined)
     return SubagentLatched.make({ ...fields, hold: "sabbath", why: explain(rests.resumes, rests.place), opensAt: rests.resumes, recheckAt: rests.resumes })
   if (hold === undefined) return SubagentStarted.make(fields)
-  if (fallback === undefined) return pacedOf(fields, hold, now)
+  // Codex plans and verifies, never implements: any other agent waits for its own model, whatever fallback was gathered.
+  if (fallback === undefined || !onCodex(fields.agent)) return pacedOf(fields, hold, now)
   const moved = { ...fields, model: fallback.model, fallback: `${fields.model ?? "its model"} held: ${hold.reason}` }
   if (fallback.hold === undefined) return SubagentStarted.make(moved)
   return opensOf(fallback.hold, now) < opensOf(hold, now) ? pacedOf(moved, fallback.hold, now) : pacedOf(fields, hold, now)
@@ -246,6 +258,16 @@ const decideStart = (
   const rests = resumes === undefined ? undefined : { resumes, place: command.place }
   return Effect.succeed([admit(fields, now, rests, command.hold, command.child === undefined ? command.fallback : undefined)])
 }
+
+/** A new implementor that would run on a Codex model is refused: Codex never implements. Any other start is decided. */
+const decideStartOnModel = (command: StartSubagent, now: number) =>
+  Option.match(
+    Option.filter(Option.fromNullishOr(command.codex), () => routeOf(command).agent === IMPLEMENTOR),
+    {
+      onNone: () => decideStart(command, now),
+      onSome: (model) => Effect.fail(new CodexNeverImplements({ agent: IMPLEMENTOR, model })),
+    },
+  )
 
 // ── OpenLatch ──
 // A latch's time came: the start is decided again on its own terms, its first
@@ -360,14 +382,14 @@ export type Stage = typeof Stage.Type
 
 export type Command = StartSubagent | OpenLatch | UseTool | FinishSubagent
 export type Event = SubagentStarted | SubagentLatched | SubagentFinished
-export type Rejection = SabbathRest | StillLatched
+export type Rejection = SabbathRest | StillLatched | CodexNeverImplements
 
 export const ToolCall: Decider<Stage, Command, Event, Rejection> = {
   initial: Idle.make({}),
   decide: (_state, command, now) => {
     switch (command._tag) {
       case "StartSubagent":
-        return decideStart(command, now)
+        return decideStartOnModel(command, now)
       case "OpenLatch":
         return decideOpen(command, now)
       case "UseTool":

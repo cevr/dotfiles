@@ -3,12 +3,12 @@
 // own scratch HOME, with the mail plugin listening on its own loopback port
 // (where a host listens on its Tailscale address), on one scripted model.
 //
-// The workbox invites with the real pair command and the Mac joins. Then the
-// Mac's session lists the sessions (the workbox's, marked `on workbox`) and
-// messages a workbox session by id; that session wakes on a letter naming the
-// Mac's session `on host mac`, and answers it at the id the letter gives,
-// which reaches the Mac's session the same way. A request from an unpaired
-// host is refused.
+// What only real servers show stays here: the workbox invites with the pair
+// command run as its own process and the Mac joins, over Bun's server and
+// fetch; then a message by id crosses from one service to the other, and
+// neither service's password reaches a model. The listing, the letter's
+// header, the answer coming back and the unpaired host's refusal are
+// cmd/mail/mail-peer.sim.test.ts's (tests/parity/mail.json).
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -57,16 +57,11 @@ const textOf = (content: unknown): string =>
       ? content.map((part: unknown) => (typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? part.text : "")).join("")
       : ""
 
-/** The id a letter's header says to answer. */
-const replyID = (text: string) => /\{ "to": "(ses_[A-Za-z0-9]+)"/.exec(text)?.[1]
-
 type Reply = { readonly text: string } | { readonly tool: string; readonly input: Record<string, unknown> }
 
 /**
- * The scripted model both hosts use, by the conversation's last message:
- * `mail-list` lists the sessions, `mail-send <id> <text>` messages that id,
- * a letter carrying `ping-from-mac` answers its sender `pong-from-workbox`,
- * and anything else (a tool's result, the pong) closes the turn.
+ * The scripted model both hosts use, by the conversation's last message: `mail-send <id> <text>` messages that id,
+ * and anything else (a tool's result, a letter) closes the turn.
  */
 const reply = (messages: ReadonlyArray<ChatMessage>): Reply => {
   const system = messages.filter((message) => message.role === "system").map((message) => textOf(message.content)).join("\n")
@@ -74,10 +69,8 @@ const reply = (messages: ReadonlyArray<ChatMessage>): Reply => {
   const last = messages.at(-1)
   const text = textOf(last?.content)
   if (last?.role === "tool") return { text: "done" }
-  if (text.includes("mail-list")) return { tool: "sessions", input: {} }
   const send = /mail-send (ses_[A-Za-z0-9]+) (\S+)/.exec(text)
   if (send !== null) return { tool: "message", input: { to: send[1], text: send[2] } }
-  if (text.includes("ping-from-mac")) return { tool: "message", input: { to: replyID(text) ?? "nobody", text: "pong-from-workbox" } }
   return { text: "ok" }
 }
 
@@ -205,8 +198,9 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     return { code, out, err }
   }
 
+  // Real only: two `serve --service` processes, the pair command as its own process, Bun's server and fetch.
   test(
-    "paired once, a message reaches the other host's session as mail, and its answer comes back the same way",
+    "two real services pair with the pair command run as its own process, and a message by id crosses between them",
     kept.test(async () => {
       const [mac, workbox] = await Promise.all([start("mac"), start("workbox")])
       const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
@@ -228,12 +222,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       const joined = await pairCommand(mac, "join", join_?.[1] ?? "", join_?.[2] ?? "")
       expect([joined.code, joined.out.trim()]).toEqual([0, `Paired: this host is mac; workbox is at ${join_?.[1]}.`])
 
-      // The Mac lists the sessions: the workbox's is there, marked with its host.
-      await macClient.session.prompt({ sessionID: sender.id, text: "mail-list" })
-      await macClient.experimental.session.wait({ sessionID: sender.id })
-      expect(seen.some((request) => request.includes(`${target.id} \\"Workbox PR\\" · idle`) && request.includes("on workbox"))).toBe(true)
-
-      // The Mac messages it by id; the workbox session wakes on a letter from the Mac's.
+      // The Mac messages the workbox session by id; it crosses to the other service and wakes it.
       await macClient.session.prompt({ sessionID: sender.id, text: `mail-send ${target.id} ping-from-mac` })
       await macClient.experimental.session.wait({ sessionID: sender.id })
       expect(seen.some((request) => request.includes(`Delivered to session \\"Workbox PR\\" (${target.id}) on host workbox.`))).toBe(true)
@@ -242,26 +231,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
         (value) => value !== undefined,
         () => `the workbox's letter (${workbox.stderr().slice(-500)})`,
       )
-      expect(letter).toContain(`✉ Message from session \\"Mac main\\" (${sender.id}) on host mac, sent with the message tool. It is not the user speaking.`)
-      expect(letter).toContain(`To answer, call the message tool with { \\"to\\": \\"${sender.id}\\", \\"text\\": \\"…\\" }`)
-
-      // The workbox session answers at that id; it reaches the Mac's session, which wakes on it.
-      const pong = await until(
-        () => seen.find((request) => request.includes("pong-from-workbox") && request.includes(`✉ Message from session \\"Workbox PR\\" (${target.id}) on host workbox`)),
-        (value) => value !== undefined,
-        () => `the Mac's answer (${mac.stderr().slice(-500)})`,
-      )
-      expect(pong).toContain("mail-send")
-      expect(seen.some((request) => request.includes(`Delivered to session \\"Mac main\\" (${sender.id}) on host mac.`))).toBe(true)
-
-      // A host it never paired with is refused at the listener.
-      const listener = (readJson(workbox.pairs) as { url: string }).url
-      const stranger = await fetch(new URL("/mail/v1/list", listener), {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-mail-peer": "laptop", "x-mail-time": String(Date.now()), "x-mail-nonce": "n".repeat(22), "x-mail-signature": "x" },
-        body: JSON.stringify({ children: false }),
-      })
-      expect([stranger.status, await stranger.json()]).toEqual([401, { reason: '"laptop" is not paired with this host' }])
+      expect(letter).toContain(`(${sender.id}) on host mac`)
 
       // Neither host's secret or server password shows in what the models read.
       const secret = (readJson(mac.pairs) as { peers: Record<string, { secret: string }> }).peers.workbox?.secret ?? ""

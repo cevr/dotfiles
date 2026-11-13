@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Moves ~/Developer onto its own APFS volume (setup.sh) and keeps rift and git
 # worktree clones as clones. Rerun it to resume; it never deletes: the old tree
-# and the old bun cache go to ~/.Trash once the copy verifies.
+# and the old caches go to ~/.Trash once the copy verifies.
 #
 #   migrate.sh                     run or resume the whole migration
+#   migrate.sh preflight [ROOT...] list what uses ROOT (default ~/Developer and the two
+#                                  caches) and what to quit; exit 1 when anything does
 #   migrate.sh copy ORIGIN SRC DST copy SRC into DST, where ORIGIN is the path
 #                                  the tree's worktree links name (used by test.sh)
+#   migrate.sh bootout             boot out each loaded launch agent that refers to ~/Developer
+#                                  (plist or script) and record it
+#   migrate.sh bootstrap           load the recorded agents again from their plists
+#   migrate.sh move-cache CACHE TARGET
+#                                  move one cache to TARGET behind a link (used by test.sh)
 set -euo pipefail
 PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
@@ -15,13 +22,33 @@ rsync=/opt/homebrew/bin/rsync
 rsync_flags=(-aHAXN --numeric-ids)
 dev=$HOME/Developer
 old=$HOME/Developer.pre-volume
+trash=${DEVELOPER_MIGRATE_TRASH:-$HOME/.Trash}
+# The after check's records: the symlinks into ~/Developer, and fseventsd samples.
+state=${DEVELOPER_VOLUME_STATE:-$HOME/.local/state/developer-volume}
+uid=$(id -u)
 rift_db=${DEVELOPER_MIGRATE_RIFT_DB:-"$HOME/Library/Application Support/rift/rift.sqlite"}
+syncthing_config=${DEVELOPER_MIGRATE_SYNCTHING_CONFIG:-"$HOME/Library/Application Support/Syncthing/config.xml"}
+opencode_config=$HOME/.config/opencode/opencode.json
+launch_agents=${DEVELOPER_MIGRATE_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}
+# The estimated length of the whole run, in hours (RUNBOOK.md, measured on today's tree);
+# a launch agent due within it blocks the run.
+hours=${DEVELOPER_MIGRATE_HOURS:-6}
+# Caches that move onto the volume, as "<path>:<name under ~/Developer/.cache>". bun
+# clones packages out of its cache, and clones cannot cross volumes; okra's repo cache
+# is source trees that gain from no Spotlight index and no FSEvents log.
+caches=("$HOME/.bun/install/cache:bun" "$HOME/.cache/repo:repo")
+# Agent transcripts and state, moved only with --with-transcripts, as "<path>:<name under
+# ~/Developer/.agents>". By default they stay on the FileVault volume: they hold
+# conversation text and pasted secrets, and they write little.
+transcripts=("$HOME/.claude:claude" "$HOME/.codex:codex" "$HOME/.local/share/opencode:opencode-share" "$HOME/.local/state/opencode:opencode-state")
+with_transcripts=false
 # Free space kept in the shared APFS container while copying.
 reserve_kb=${DEVELOPER_MIGRATE_RESERVE_KB:-$((20 * 1024 * 1024))}
 # Removed rifts wait in .rifts/<repo>/.trash for `rift gc`; they are not copied.
+# `rift gc` drops a trash row whose directory is gone and exits 0 (measured, rift 0.0.13).
 trash_pattern='.rifts/*/.trash/'
-# Files the volume makes for itself at its root.
-volume_files=(/.fseventsd/ /.dotfiles-developer-volume /.Spotlight-V100/ /.Trashes/ /.TemporaryItems/ /.DocumentRevisions-V100/ /.cache/)
+# Files the volume makes for itself at its root, and the caches moved there.
+volume_files=(/.fseventsd/ /.dotfiles-developer-volume /.Spotlight-V100/ /.Trashes/ /.TemporaryItems/ /.DocumentRevisions-V100/ /.cache/ /.agents/)
 
 die() { printf 'developer migrate: %s\n' "$*" >&2; exit 1; }
 say() { printf '==> %s\n' "$*"; }
@@ -30,8 +57,8 @@ used_kb() { du -sk "$1" 2>/dev/null | awk '{ print $1 }'; }
 gib() { awk -v k="$1" 'BEGIN { printf "%.1f GiB", k / 1048576 }'; }
 
 # Prints "<worktree>\t<main checkout>" for each worktree whose files are clones
-# of a main checkout in the tree, both relative to SRC: git worktrees (rift
-# makes these) and rift's own parent links.
+# of a main checkout in the tree, both relative to SRC: git worktrees and rift's
+# parent links (a rift is a full clone, its own .git included, of its parent).
 worktrees() {
     local origin=$1 src=$2 file line gitdir t w
     while IFS= read -r -d '' file; do
@@ -73,7 +100,8 @@ copy_worktree() {
         for entry in "$dst/$w"/* "$dst/$w"/.[!.]* "$dst/$w"/..?*; do
             [[ -e $entry || -L $entry ]] || continue
             name=${entry##*/}
-            [[ $name != .git ]] || continue
+            # A git worktree's .git is a file of its own; a rift's .git directory is a clone.
+            if [[ $name == .git ]] && ! [[ -d $src/$t/.git && ! -L $src/$t/.git ]]; then continue; fi
             # Never clone a directory that holds a worktree into that worktree.
             if awk -F '\t' -v p="$w/$name" '$1 == p || index($1, p "/") == 1 { hit = 1 } END { exit !hit }' "$map"; then continue; fi
             cp -c -p -R "$entry" "$dst/$t/"
@@ -113,7 +141,7 @@ copy_tree() {
         : > "$work/next"
         cut -f1 "$work/pending" > "$work/waiting"
         while IFS=$'\t' read -r t w; do
-            # A worktree of a worktree waits for its parent.
+            # A worktree of a worktree (a rift of a rift) waits for its parent.
             if grep -Fxq -e "$w" "$work/waiting"; then
                 printf '%s\t%s\n' "$t" "$w" >> "$work/next"
                 continue
@@ -141,62 +169,220 @@ copy_tree() {
     rm -rf "$work"
 }
 
-# Prints the processes holding files or directories under $1.
+# What to quit for a process, by its command name and line.
+hint() {
+    case $2 in
+        *' serve --service'*) printf 'the OpenCode service: opencode service stop' ;;
+        */mods/kernel/worker/*) printf 'an OpenCode kernel worker: it stops with opencode service stop' ;;
+        */cmd/wake/job.ts*) printf 'an OpenCode job: let it end, or opencode service stop' ;;
+        *herdr*) printf 'herdr (its panes run inside): herdr server stop' ;;
+        *syncthing*) printf 'Syncthing: brew services stop syncthing' ;;
+        *opencode*) printf 'an OpenCode TUI or session: quit it' ;;
+        *) case $1 in
+            *herdr*) printf 'herdr (its panes run inside): herdr server stop' ;;
+            *) printf 'quit it (editor, agent, dev server, shell inside)' ;;
+        esac ;;
+    esac
+}
+
+# Prints "<pid>\t<command line>" for each process that holds a file or a directory
+# (its cwd included) under a ROOT, or names a path under one on its command line.
+# This script's own process and its children are left out.
 holders() {
-    lsof -nP -w -F pcn 2>/dev/null | awk -v root="$1" '
-        /^p/ { pid = substr($0, 2); next }
-        /^c/ { cmd = substr($0, 2); next }
-        /^n/ { n = substr($0, 2); if (n == root || index(n, root "/") == 1) print pid "\t" cmd }' | sort -u
+    local listing pids
+    listing=$(ps -axo pid=,ppid=,command=)
+    pids=$({
+        lsof -nP -w -F pn 2>/dev/null | awk -v roots="$*" '
+            BEGIN { n = split(roots, r, " ") }
+            /^p/ { pid = substr($0, 2); next }
+            /^n/ { f = substr($0, 2); for (i = 1; i <= n; i++) if (f == r[i] || index(f, r[i] "/") == 1) print pid }'
+        printf '%s\n' "$listing" | awk -v roots="$*" '
+            BEGIN { n = split(roots, r, " ") }
+            { line = $0; sub(/^ *[0-9]+ +[0-9]+ /, "", line)
+              for (i = 1; i <= n; i++) if (index(line, r[i] "/") || index(line " ", r[i] " ")) { print $1; break } }'
+    } | sort -un | tr '\n' ' ')
+    printf '%s\n' "$listing" | awk -v self="$$" -v pids="$pids" '
+        { ppid[$1] = $2; line = $0; sub(/^ *[0-9]+ +[0-9]+ /, "", line); cmd[$1] = line }
+        END {
+            n = split(pids, want, " ")
+            for (k = 1; k <= n; k++) {
+                p = want[k]; if (!(p in cmd)) continue
+                q = p; mine = 0
+                while (q > 1 && (q in ppid)) { if (q == self) { mine = 1; break }; q = ppid[q] }
+                if (!mine) print p "\t" cmd[p]
+            }
+        }' | sort -n
+}
+
+# Lists what uses ROOT... and what to quit; returns 1 when anything does.
+preflight() {
+    local roots=("$@") busy=0 pid line root path plist label
+    while IFS=$'\t' read -r pid line; do
+        [[ -n $pid ]] || continue
+        printf '  pid %s  %s\n      quit %s\n' "$pid" "${line:0:120}" "$(hint "$(ps -o comm= -p "$pid" 2>/dev/null || true)" "$line")"
+        busy=1
+    done < <(holders "${roots[@]}")
+    for root in "${roots[@]}"; do
+        # The service loads its plugins from the dotfiles even when no file is open.
+        if [[ -f $opencode_config ]] && grep -qF "\"$root/" "$opencode_config" &&
+            pgrep -f -- ' serve --service' >/dev/null; then
+            printf '  the OpenCode service loads plugins from %s\n      quit: opencode service stop\n' "$root"
+            busy=1
+        fi
+        # Syncthing would see a folder vanish and come back while the copy runs.
+        if [[ -f $syncthing_config ]] && pgrep -x syncthing >/dev/null; then
+            while IFS= read -r path; do
+                printf '  Syncthing syncs %s\n      quit: brew services stop syncthing\n' "$path"
+                busy=1
+            done < <(grep -o 'path="[^"]*"' "$syncthing_config" | sed 's/^path="//; s/"$//' |
+                awk -v r="$root" '$0 == r || index($0, r "/") == 1')
+        fi
+        # A loaded agent due before the estimated finish would run from the half-copied tree.
+        while IFS=$'\t' read -r label loaded due plist; do
+            [[ $loaded == loaded ]] || continue
+            if [[ $due == later ]]; then
+                printf '  note: launch agent %s refers to %s, next due after the estimated finish (%s h)\n      boot it out anyway: migrate.sh bootout\n' "$label" "$root" "$hours"
+            else
+                printf '  launch agent %s refers to %s and is due %s, before the estimated finish (%s h)\n      quit: migrate.sh bootout (or launchctl bootout gui/%s/%s)\n' "$label" "$root" "$due" "$hours" "$uid" "$label"
+                busy=1
+            fi
+        done < <(agents "$root")
+    done
+    return "$busy"
+}
+
+# The launch agents that refer to ROOT, in their plist or their script, with their
+# state and next fire time (launchd-due.ts).
+agents() {
+    local bun=$HOME/.bun/bin/bun here
+    here=$(cd "$(dirname "$0")" && pwd -P)
+    [[ -x $bun ]] || bun=$(command -v bun) || die 'Needs bun for the launch agent check.'
+    "$bun" "$here/launchd-due.ts" "$1" "$hours" "$launch_agents"
+}
+
+# Boots out each loaded launch agent that refers to ~/Developer, and records it so
+# `bootstrap` loads the same plists again. Never `launchctl submit`.
+bootout() {
+    local label loaded due plist
+    mkdir -p "$state"
+    while IFS=$'\t' read -r label loaded due plist; do
+        [[ $loaded == loaded ]] || continue
+        launchctl bootout "gui/$uid/$label"
+        printf '%s\t%s\n' "$label" "$plist" >> "$state/agents-booted-out.tsv"
+        say "Booted out $label"
+    done < <(agents "$dev")
+    [[ -f $state/agents-booted-out.tsv ]] && say "Recorded in $state/agents-booted-out.tsv; migrate.sh bootstrap loads them again."
+    return 0
+}
+
+bootstrap() {
+    local label plist
+    [[ -f $state/agents-booted-out.tsv ]] || { say 'No booted-out agents recorded.'; return 0; }
+    sort -u "$state/agents-booted-out.tsv" | while IFS=$'\t' read -r label plist; do
+        if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then say "$label is loaded"; continue; fi
+        launchctl bootstrap "gui/$uid" "$plist" && say "Bootstrapped $label"
+    done
+    mv "$state/agents-booted-out.tsv" "$state/agents-booted-out.$(date +%Y%m%d-%H%M%S).done"
 }
 
 require_idle() {
-    local busy
-    busy=$(holders "$1")
-    [[ -z $busy ]] && return
-    printf '%s\n' "$busy" | awk -F '\t' '{ print "  " $2 " (pid " $1 ")" }' >&2
-    die "These processes use $1. Quit them (editors, agents, dev servers, shells inside it) and rerun."
+    local report
+    if report=$(preflight "$@"); then return; fi
+    printf '%s\n' "$report" >&2
+    die "These use $*. Quit them and rerun; nothing was moved."
+}
+
+# What to start again once the tree is on the volume.
+restart_steps() {
+    say 'Start again what you quit:'
+    printf '  ~/Developer/personal/dotfiles/mac/developer-volume/migrate.sh bootstrap\n  opencode service start\n  herdr\n'
+    if [[ -f $syncthing_config ]] && ! pgrep -x syncthing >/dev/null &&
+        grep -qF "path=\"$dev/" "$syncthing_config"; then printf '  brew services start syncthing\n'; fi
+    printf '  rift gc   (clears rift'\''s list of the trash that stayed behind)\n'
+}
+
+# Moves cache CACHE to TARGET and leaves a link at its old path; the old directory
+# goes to the Trash once the copy verifies. Resumable.
+move_cache() {
+    local cache=$1 target=$2 stamp
+    stamp=$(date +%Y%m%d-%H%M%S)
+    if [[ -d $cache && ! -L $cache ]]; then
+        require_idle "$cache"
+        mkdir -p "$(dirname "$target")"
+        (($(avail_kb "$(dirname "$target")") - $(used_kb "$cache") > reserve_kb)) ||
+            die "Moving $cache needs about $(gib "$(used_kb "$cache")") more than the $(gib "$reserve_kb") reserve; free space and rerun."
+        say "Moving $cache onto the volume"
+        mkdir -p "$target"
+        "$rsync" "${rsync_flags[@]}" "$cache/" "$target/"
+        local diff
+        diff=$("$rsync" "${rsync_flags[@]}" --dry-run --delete --itemize-changes "$cache/" "$target/")
+        if [[ -n $diff ]] && grep -vq '^\.d[^ ]* \./$' <<< "$diff"; then die "$target differs from $cache; nothing was removed."; fi
+        mv "$cache" "$trash/${target##*/}-pre-volume-$stamp"
+    fi
+    if [[ ! -e $cache && ! -L $cache && -d $target ]]; then
+        mkdir -p "$(dirname "$cache")"
+        ln -s "$target" "$cache"
+    fi
 }
 
 mounted() { [[ -d $1 && $(stat -f %d "$1") != $(stat -f %d "$(dirname "$1")") ]]; }
 
 migrate() {
     [[ $(uname -s) == Darwin ]] || die 'This helper requires macOS.'
-    [[ $(id -u) != 0 ]] || die 'Run as your login user, not root.'
+    [[ $uid != 0 ]] || die 'Run as your login user, not root.'
     [[ $("$rsync" --version 2>/dev/null) =~ version\ [3-9]\. ]] || die 'Needs rsync 3: brew install rsync.'
     command -v sqlite3 >/dev/null || die 'Needs sqlite3.'
     cd "$HOME"
-    local here stamp
+    local here stamp entry
     here=$(cd "$(dirname "$0")" && pwd -P)
     stamp=$(date +%Y%m%d-%H%M%S)
+    local cache_paths=() moves=("${caches[@]/%/:.cache}")
+    if [[ $with_transcripts == true ]]; then
+        printf '%s\n' 'Moving agent transcripts and state onto the UNENCRYPTED Developer volume (--with-transcripts).'
+        moves+=("${transcripts[@]/%/:.agents}")
+    fi
+    for entry in "${moves[@]}"; do cache_paths+=("${entry%%:*}"); done
+
+    # The symlinks into ~/Developer (dotfiles links, mostly), for the after check.
+    if [[ ! -f $state/links-before.tsv ]]; then "$here/check.sh" --links; fi
+    [[ -f $state/fseventsd.tsv ]] ||
+        say "No fseventsd baseline in $state; the after check will have nothing to compare (check.sh --baseline)."
 
     if mounted "$dev"; then
-        [[ -d $old ]] || { say "$dev is already its own volume; checking it"; "$here/setup.sh"; return; }
+        if [[ -d $old ]]; then
+            require_idle "$dev" "$old" "${cache_paths[@]}"
+        else
+            say "$dev is already its own volume; checking it"
+        fi
     elif [[ ! -e $old ]]; then
-        require_idle "$dev"
+        require_idle "$dev" "${cache_paths[@]}"
         say "Moving $dev aside to $old"
         mv "$dev" "$old"
         mkdir "$dev"
     elif [[ -n $(ls -A "$dev" 2>/dev/null) ]]; then
         die "$old exists and $dev holds files but is not a volume; inspect both."
+    else
+        require_idle "$old" "${cache_paths[@]}"
     fi
     "$here/setup.sh"
     mounted "$dev" || die "$dev is not mounted after setup."
-    require_idle "$old"
 
-    copy_tree "$dev" "$old" "$dev"
-
-    # bun clones packages out of its cache, and clones cannot cross volumes.
-    local cache=$HOME/.bun/install/cache
-    if [[ -d $cache && ! -L $cache ]]; then
-        say "Moving the bun cache onto the volume"
-        mkdir -p "$dev/.cache/bun"
-        "$rsync" "${rsync_flags[@]}" "$cache/" "$dev/.cache/bun/"
-        mv "$cache" "$HOME/.Trash/bun-install-cache-$stamp"
-        ln -s "$dev/.cache/bun" "$cache"
+    if [[ -d $old ]]; then
+        require_idle "$old" "$dev"
+        copy_tree "$dev" "$old" "$dev"
     fi
-
-    mv "$old" "$HOME/.Trash/Developer.pre-volume-$stamp"
-    say "Done. The old tree is ~/.Trash/Developer.pre-volume-$stamp; empty the Trash to reclaim its space."
+    local path name parent
+    for entry in "${moves[@]}"; do
+        path=${entry%%:*} name=${entry#*:} parent=${name#*:} name=${name%%:*}
+        move_cache "$path" "$dev/$parent/$name"
+    done
+    if [[ -d $old ]]; then
+        mv "$old" "$trash/Developer.pre-volume-$stamp"
+        say "The old tree is ~/.Trash/Developer.pre-volume-$stamp; empty the Trash to reclaim its space."
+    fi
+    say 'After check'
+    "$here/check.sh" "$dev" || say 'The after check failed (above); see README, Recovery.'
+    restart_steps
 }
 
 relocate() {
@@ -205,13 +391,26 @@ relocate() {
     local here copy
     here=$(cd "$(dirname "$0")" && pwd -P)
     copy=$(mktemp -d)
-    cp "$here/migrate.sh" "$here/setup.sh" "$copy/"
+    cp "$here/migrate.sh" "$here/setup.sh" "$here/check.sh" "$here/watch-bench.ts" "$here/launchd-due.ts" "$copy/"
     # caffeinate keeps the Mac awake for the length of the copy.
     DEVELOPER_MIGRATE_RELOCATED=1 exec caffeinate -i "$BASH" "$copy/migrate.sh" "$@"
 }
 
 case ${1:-} in
-    '') relocate "$@"; migrate ;;
+    '' | --with-transcripts)
+        [[ ${1:-} == --with-transcripts ]] && with_transcripts=true
+        relocate "$@"
+        migrate ;;
+    preflight)
+        shift
+        if (($# == 0)); then set -- "$dev"; for entry in "${caches[@]}"; do set -- "$@" "${entry%%:*}"; done; fi
+        if [[ ${1:-} == --with-transcripts ]]; then
+            shift; set -- "$dev"; for entry in "${caches[@]}" "${transcripts[@]}"; do set -- "$@" "${entry%%:*}"; done
+        fi
+        preflight "$@" && say "Nothing uses $*." ;;
     copy) [[ $# == 4 ]] || die 'usage: migrate.sh copy ORIGIN SRC DST'; copy_tree "$2" "$3" "$4" ;;
-    *) die 'usage: migrate.sh [copy ORIGIN SRC DST]' ;;
+    bootout) bootout ;;
+    bootstrap) bootstrap ;;
+    move-cache) [[ $# == 3 ]] || die 'usage: migrate.sh move-cache CACHE TARGET'; move_cache "$2" "$3" ;;
+    *) die 'usage: migrate.sh [--with-transcripts | preflight [--with-transcripts | ROOT...] | bootout | bootstrap | copy ORIGIN SRC DST | move-cache CACHE TARGET]' ;;
 esac

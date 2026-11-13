@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { Landing } from "../service.ts"
-import { exclusively, exclusivelySync, hold, type LockMode } from "./flock.ts"
+import { exclusively, exclusivelySync, gateTurn, hold, type LockMode } from "./flock.ts"
 import * as ProcessLanding from "./landing.ts"
 
 const ENV = {
@@ -67,7 +67,7 @@ const bench = () => {
   const integration = clone("integrate", "integrate")
   const x = clone("feat-x", "feat/x")
   const y = clone("feat-y", "feat/y")
-  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false, postLand: undefined }
+  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false, postLand: undefined, mergeCheck: Option.none(), focus: Option.none() }
   const run = <A, E>(use: (landing: typeof Landing.Service) => Effect.Effect<A, E>, logs = join(scratch, "logs")) =>
     Effect.runPromise(Effect.flatMap(Landing, use).pipe(Effect.provide(ProcessLanding.layer({ logs, env: ENV }))))
   return { scratch, origin, source, integration, x, y, settings, run }
@@ -81,6 +81,7 @@ describe("process Landing", () => {
     sh(made.source, "git", "config", "--add", "rift.generated", "other.json")
     sh(made.source, "git", "config", "rift.regenerate", "ls pkgs > gen.txt")
     sh(made.source, "git", "config", "rift.postLand", "bun scripts/post-land.ts")
+    sh(made.source, "git", "config", "rift.mergeCheck", 'bun scripts/gate.ts --merge "$RIFT_LAND_BASE"')
     expect(await made.run((landing) => landing.config(made.source))).toEqual({
       main: "main",
       gate: "bun run gate",
@@ -90,6 +91,8 @@ describe("process Landing", () => {
       push: true,
       pushBranches: false,
       postLand: "bun scripts/post-land.ts",
+      mergeCheck: Option.some('bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'),
+      focus: Option.none(),
     })
     sh(made.source, "git", "config", "workrift.main", "trunk")
     // A repository that lands through pull requests: Git's own booleans.
@@ -241,15 +244,20 @@ describe("process Landing", () => {
         rmSync(go, { force: true })
         const running = yield* Effect.forkChild(landing.check(made.integration, label, `touch "${started}"; i=0; while [ ! -f "${go}" ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done`, {}))
         yield* appeared(started)
-        const seen = { checksExclusive: yield* free(locks.checks, "exclusive"), checksShared: yield* free(locks.checks, "shared"), accept: yield* free(locks.accept, "exclusive") }
+        const seen = {
+          checksExclusive: yield* free(locks.checks, "exclusive"),
+          checksShared: yield* free(locks.checks, "shared"),
+          accept: yield* free(locks.accept, "exclusive"),
+          wanted: yield* free(locks.wanted, "exclusive"),
+        }
         writeFileSync(go, "")
         yield* Fiber.join(running)
         return seen
       })
     return made.run((landing) =>
       Effect.gen(function* () {
-        expect(yield* during(landing, "gate")).toEqual({ checksExclusive: false, checksShared: true, accept: true })
-        expect(yield* during(landing, "accept")).toEqual({ checksExclusive: false, checksShared: true, accept: false })
+        expect(yield* during(landing, "gate")).toEqual({ checksExclusive: false, checksShared: true, accept: true, wanted: false })
+        expect(yield* during(landing, "accept")).toEqual({ checksExclusive: false, checksShared: true, accept: false, wanted: false })
         const told = yield* landing.postLand(made.integration, 'printf "%s %s" "$RIFT_LAND_CHECKS_LOCK" "$RIFT_LAND_ACCEPT_LOCK" > "$RIFT_POST_LAND_REPORT"', {})
         expect(told.report).toBe(`${locks.checks} ${locks.accept}`)
         expect({ checks: yield* free(locks.checks, "exclusive"), accept: yield* free(locks.accept, "exclusive") }).toEqual({ checks: true, accept: true })
@@ -315,6 +323,143 @@ describe("process Landing", () => {
           expect(yield* whileChecking(landing, "gate", () => locks.tests(() => promises.readFile(note, "utf8")))).toEqual({ early: true, after: "ran" })
         }),
       ProcessLanding.landLogs(env),
+    )
+  })
+
+  /** Waits, briefly, until `lines` holds a line `pattern` matches. */
+  const said = (lines: ReadonlyArray<string>, pattern: RegExp) =>
+    Effect.sync(() => lines.some((line) => pattern.test(line))).pipe(
+      Effect.filterOrFail(
+        (seen) => seen,
+        () => `no line matched ${pattern}`,
+      ),
+      Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 250 }),
+    )
+
+  /** A full gate's run for `gateTurn`: records its start, waits for `go` when given one, records its end. */
+  const gateRun = (order: Array<string>, name: string, entered: Deferred.Deferred<string>, go: Deferred.Deferred<string>) =>
+    Effect.sync(() => order.push(`${name} starts`)).pipe(
+      Effect.andThen(Deferred.succeed(entered, name)),
+      Effect.andThen(Deferred.await(go)),
+      Effect.andThen(Effect.sync(() => order.push(`${name} ends`))),
+    )
+
+  test("two full gates started together run one after the other: the second waits, saying which gate holds the checks lock and since when, and runs once the first ends", () => {
+    const made = bench()
+    const locks = ProcessLanding.lockFiles(join(made.scratch, "logs"))
+    const order: Array<string> = []
+    const lines: Array<string> = []
+    const say = (line: string) => Effect.sync(() => void lines.push(line))
+    return made.run(() =>
+      Effect.gen(function* () {
+        const [firstIn, firstGo, secondIn, secondGo] = yield* Effect.all([Deferred.make<string>(), Deferred.make<string>(), Deferred.make<string>(), Deferred.make<string>()])
+        const first = yield* Effect.forkChild(gateTurn(locks, "/work/first", gateRun(order, "first", firstIn, firstGo), say))
+        const second = yield* Effect.forkChild(gateTurn(locks, "/work/second", gateRun(order, "second", secondIn, secondGo), say))
+        yield* Deferred.await(firstIn)
+        yield* said(lines, /^gate: waiting for the checks lock: the gate in \/work\/first \(pid \d+\) holds it since \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/)
+        expect(Option.isSome(yield* Deferred.await(secondIn).pipe(Effect.timeoutOption("400 millis")))).toBe(false)
+        yield* Deferred.succeed(firstGo, "go")
+        yield* Fiber.join(first)
+        yield* Deferred.succeed(secondGo, "go")
+        yield* Fiber.join(second)
+        expect(order).toEqual(["first starts", "first ends", "second starts", "second ends"])
+        expect(existsSync(`${locks.checks}.gate.json`)).toBe(false)
+      }),
+    )
+  })
+
+  test("a land arriving while a full gate waits goes first: its check runs as the holder ends, and the waiting gate runs after it", () => {
+    const made = bench()
+    const locks = ProcessLanding.lockFiles(join(made.scratch, "logs"))
+    const landRan = join(made.scratch, "land-ran")
+    const order: Array<string> = []
+    const lines: Array<string> = []
+    const say = (line: string) => Effect.sync(() => void lines.push(line))
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        const [firstIn, firstGo, secondIn, secondGo] = yield* Effect.all([Deferred.make<string>(), Deferred.make<string>(), Deferred.make<string>(), Deferred.make<string>()])
+        const first = yield* Effect.forkChild(gateTurn(locks, "/work/first", gateRun(order, "first", firstIn, firstGo), say))
+        yield* Deferred.await(firstIn)
+        const second = yield* Effect.forkChild(
+          gateTurn(locks, "/work/second", Effect.sync(() => order.push(`second starts, land ran: ${existsSync(landRan)}`)).pipe(Effect.andThen(Deferred.succeed(secondIn, "in")), Effect.andThen(Deferred.await(secondGo))), say),
+        )
+        yield* said(lines, /the gate in \/work\/first/)
+        const land = yield* Effect.forkChild(landing.check(made.integration, "gate", `touch "${landRan}"`, {}))
+        yield* said(lines, /a land's check holds it or wants it/)
+        yield* Deferred.succeed(firstGo, "go")
+        expect((yield* Fiber.join(land)).code).toBe(0)
+        yield* Deferred.await(secondIn)
+        yield* Deferred.succeed(secondGo, "go")
+        yield* Fiber.join(second)
+        yield* Fiber.join(first)
+        expect(order).toEqual(["first starts", "first ends", "second starts, land ran: true"])
+      }),
+    )
+  })
+
+  test("a full gate never takes its turn while a land's check holds the wanted lock, even with the checks lock free: it waits until that land lets go", () => {
+    const made = bench()
+    const locks = ProcessLanding.lockFiles(join(made.scratch, "logs"))
+    const order: Array<string> = []
+    const lines: Array<string> = []
+    const say = (line: string) => Effect.sync(() => void lines.push(line))
+    return made.run(() =>
+      Effect.gen(function* () {
+        const [held, release, gateIn, gateGo] = yield* Effect.all([Deferred.make<string>(), Deferred.make<string>(), Deferred.make<string>(), Deferred.make<string>()])
+        // A land's check that took the wanted lock and has yet to take the checks lock.
+        const land = yield* Effect.forkChild(
+          Effect.scoped(hold(locks.wanted, "shared").pipe(Effect.andThen(Deferred.succeed(held, "held")), Effect.andThen(Deferred.await(release)), Effect.andThen(Effect.sync(() => order.push("land ends"))))),
+        )
+        yield* Deferred.await(held)
+        const gate = yield* Effect.forkChild(gateTurn(locks, "/work/gate", gateRun(order, "gate", gateIn, gateGo), say))
+        yield* said(lines, /a land's check holds it or wants it/)
+        expect(Option.isSome(yield* Deferred.await(gateIn).pipe(Effect.timeoutOption("600 millis")))).toBe(false)
+        yield* Deferred.succeed(release, "released")
+        yield* Fiber.join(land)
+        yield* Deferred.succeed(gateGo, "go")
+        yield* Fiber.join(gate)
+        expect(order).toEqual(["land ends", "gate starts", "gate ends"])
+      }),
+    )
+  })
+
+  test("a full gate run by a land's gate check (RIFT_LAND_CHECK=gate) runs at once under the land's locks; a full gate outside a land waits for that check to end", () => {
+    const made = bench()
+    const env = { XDG_CACHE_HOME: join(made.scratch, "cache") }
+    const note = join(made.scratch, "note")
+    writeFileSync(note, "ran")
+    /** While the tool runs a gate check whose command waits, at most 10 s, for a go file, a full gate under `gateEnv` starts: whether it ended before the check let go, and what it answered. */
+    const whileChecking = (landing: typeof Landing.Service, gateEnv: NodeJS.ProcessEnv) =>
+      Effect.gen(function* () {
+        const call = mkdtempSync(join(made.scratch, "gate-"))
+        const started = join(call, "started")
+        const go = join(call, "go")
+        const check = yield* Effect.forkChild(landing.check(made.integration, "gate", `touch "${started}"; i=0; while [ ! -f "${go}" ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done`, {}))
+        yield* appeared(started)
+        const gate = yield* Effect.forkChild(Effect.promise(() => ProcessLanding.hostLocks(gateEnv).gate(made.integration)(() => promises.readFile(note, "utf8"))))
+        const early = yield* Fiber.join(gate).pipe(Effect.timeoutOption("400 millis"))
+        writeFileSync(go, "")
+        yield* Fiber.join(check)
+        return { early: Option.isSome(early), after: yield* Fiber.join(gate) }
+      })
+    return made.run(
+      (landing) =>
+        Effect.gen(function* () {
+          expect(yield* whileChecking(landing, { ...env, RIFT_LAND_CHECK: "gate" })).toEqual({ early: true, after: "ran" })
+          expect(yield* whileChecking(landing, env)).toEqual({ early: false, after: "ran" })
+          expect(yield* whileChecking(landing, { ...env, RIFT_LAND_CHECK: "post-land" })).toEqual({ early: false, after: "ran" })
+        }),
+      ProcessLanding.landLogs(env),
+    )
+  })
+
+  test("a land's gate and accept checks are told which check they run (RIFT_LAND_CHECK)", () => {
+    const made = bench()
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        expect((yield* landing.check(made.integration, "gate", 'printf "%s" "$RIFT_LAND_CHECK"', {})).output).toBe("gate")
+        expect((yield* landing.check(made.integration, "accept", 'printf "%s" "$RIFT_LAND_CHECK"', {})).output).toBe("accept")
+      }),
     )
   })
 

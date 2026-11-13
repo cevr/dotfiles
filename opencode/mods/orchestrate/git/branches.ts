@@ -1,7 +1,7 @@
 // A Rift's branch as git sees it (service.ts `Branches`): the branch HEAD
 // names in the checkout at a land's path entry, `~/` read from home. A
 // detached HEAD, no checkout there, or a git that does not answer is none.
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Effect, Layer } from "effect"
 import { Branches } from "../service.ts"
@@ -10,7 +10,7 @@ import { Branches } from "../service.ts"
 const TIMEOUT_MS = 5_000
 
 /** `path` with a leading `~/` read from `home`. */
-export const expand = (path: string, home: string = homedir()): string => (path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path)
+export const expand = (path: string, home: string = TuiDirs.dirs().home): string => (path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path)
 
 /** The branch checked out at `path`; none when git gives none. */
 export const branchAt = (path: string) =>

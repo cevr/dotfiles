@@ -8,7 +8,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
-import { type Handler, type Hook, type HookInput, type Host, type HostEvent, type Login, type Subscriber } from "./host.ts"
+import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, type Subscriber } from "./host.ts"
 import { type JsonObject, plain } from "./runtime.ts"
 
 /** A plugin as OpenCode loads it: its definition, where, and its options. */
@@ -40,6 +40,8 @@ export const OPERATIONS = [
   "event.subscribe",
   "tool.transform",
   "tool.list",
+  "tool.hook",
+  "shell.hook",
   "rpc",
   "rpc.register",
   "session.hook",
@@ -51,11 +53,15 @@ export const OPERATIONS = [
   "session.create",
   "session.prompt",
   "session.update",
+  "session.move",
   "model.list",
+  "model.default",
   "provider.list",
   "provider.get",
   "agent.list",
   "agent.get",
+  "agent.transform",
+  "session.remove",
   "provider.transform",
   "integration.get",
   "integration.transform",
@@ -76,6 +82,8 @@ const SyntheticInput = Schema.Struct({
   text: Schema.String,
   description: Schema.optional(Schema.String),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+  // Steered, the host's default: taken at the session's next step. A queued one (after the turn) is not modelled.
+  delivery: Schema.optional(Schema.Literals(["steer"])),
   resume: Schema.optional(Schema.Boolean),
 })
 const CreateInput = Schema.Struct({
@@ -83,25 +91,41 @@ const CreateInput = Schema.Struct({
   location: Schema.optional(Schema.Struct({ directory: Schema.String })),
   parentID: Schema.optional(Schema.String),
   title: Schema.optional(Schema.String),
+  agent: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.Struct({ providerID: Schema.String, id: Schema.String, variant: Schema.optional(Schema.String) })),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
 })
 const PromptInput = Schema.Struct({ sessionID: Schema.String, id: Schema.optional(Schema.String), text: Schema.String })
-const UpdateInput = Schema.Struct({ sessionID: Schema.String, metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)) })
+// `archived` is taken and dropped, as the fork's plugin host does (packages/core/src/plugin/host.ts `update`): only a client archives.
+const UpdateInput = Schema.Struct({
+  sessionID: Schema.String,
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+  archived: Schema.optional(Schema.Boolean),
+})
+const MoveInput = Schema.Struct({ sessionID: Schema.String, directory: Schema.String })
 const ListInput = Schema.Struct({
   parentID: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.optional(Schema.String),
+  // true lists only the sessions a client archived, false leaves them out (the fork's store `list`).
+  archived: Schema.optional(Schema.Boolean),
   order: Schema.optional(Schema.Literals(["asc", "desc"])),
   limit: Schema.optional(Schema.Number),
 })
-const ProviderInput = Schema.Struct({ providerID: Schema.String })
-const AgentInput = Schema.Struct({ agentID: Schema.String })
+/** The Location a catalog read names: the plugin's own when absent. */
+const At = Schema.optional(Schema.Struct({ directory: Schema.String }))
+const ProviderInput = Schema.Struct({ providerID: Schema.String, location: At })
+const AgentInput = Schema.Struct({ agentID: Schema.String, location: At })
+const LocationInput = Schema.Struct({ location: At })
 const SubscribeInput = Schema.Struct({ types: Schema.optional(Schema.Array(Schema.String)) })
 
-/** A plugin's input to an operation, parsed as the host's schema would: a malformed one is the plugin's defect. */
+/**
+ * A plugin's input to an operation, parsed as the host's schema would: a malformed one is the plugin's defect. A field
+ * the world does not read is refused, not dropped: the host would act on it, so the world would be kinder than it.
+ */
 const parse =
   <S extends Schema.Codec<unknown, unknown>>(schema: S, operation: string) =>
   <I>(input: I): Effect.Effect<S["Type"]> =>
-    Schema.decodeUnknownEffect(schema)(plain(input)).pipe(
+    Schema.decodeUnknownEffect(schema)(plain(input), { onExcessProperty: "error" }).pipe(
       Effect.catch((error) => Effect.die(new Error(`sim: ${operation} got an input the host refuses: ${error.message}`))),
     )
 
@@ -134,9 +158,15 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
   const storage: Storage = {
     get: (key) => Effect.sync(() => namespace.get(key)),
     set: (key, value) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        // A write the test made fail (sim/faults.ts): it dies, the value not stored.
+        if (host.faults.takeWrite(plugin)) {
+          host.record("store-set-failed", { plugin, key })
+          return Effect.die(new Error(`sim: a write of ${plugin}'s storage failed`))
+        }
         namespace.set(key, plain(value))
         host.record("store-set", { plugin, key, value })
+        return Effect.void
       }),
     remove: (key) =>
       Effect.sync(() => {
@@ -155,6 +185,7 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
 
   const own = host.tools.get(instance) ?? new Map()
   const gone = host.removed.get(instance) ?? new Set<string>()
+  const edits = host.updates.get(instance) ?? []
   const editor: ToolEditor = {
     list: () => [...own.values()].map((tool) => ({ ...tool, id: tool.name })),
     get: (id) => Option.getOrUndefined(Option.map(Option.fromNullishOr(own.get(id)), (tool) => ({ ...tool, id }))),
@@ -163,7 +194,10 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       own.set(tool.name, tool)
       host.record("tool-added", { name: tool.name, instance })
     },
-    update: (id) => void unmodelled(`ctx.tool.transform: editor.update(${id})`),
+    update: (id, change) => {
+      edits.push({ id, change })
+      host.record("tool-updated", { name: id, instance })
+    },
     remove: (id) => {
       gone.add(id)
       host.record("tool-removed", { name: id, instance })
@@ -179,8 +213,9 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       Effect.acquireRelease(
         Effect.gen(function* () {
           const subscriber: Subscriber = {
+            directory: loaded.directory,
             types: Option.map(Option.fromNullishOr(input.types), (types) => new Set(types)),
-            queue: yield* Queue.unbounded<HostEvent>(),
+            queue: yield* Queue.unbounded<Published>(),
           }
           host.subscribers.add(subscriber)
           return subscriber
@@ -321,8 +356,22 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     models: new Map(),
   })
 
-  /** The catalog's transform: a plugin may turn a provider on (`activation`); nothing else is modelled. */
+  /**
+   * The catalog's transform: a plugin may turn a provider on (`activation`); nothing else is modelled. A change
+   * publishes `provider.updated`, then `model.updated` (the fork's model catalog follows the providers'), for the
+   * copy's Location.
+   */
   const providerTransform = (callback: (editor: ProviderEditor) => void) =>
+    Effect.gen(function* () {
+      const before = host.providers().map((provider) => provider.id).join(",")
+      const registered = yield* providerRegistration(callback)
+      if (host.providers().map((provider) => provider.id).join(",") === before) return registered
+      yield* changed("provider.updated")
+      yield* changed("model.updated")
+      return registered
+    })
+
+  const providerRegistration = (callback: (editor: ProviderEditor) => void) =>
     registration(
       () =>
         callback({
@@ -349,7 +398,8 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     const matching = [...host.sessions.values()].filter((session) => {
       const parent = Option.getOrElse(session.parentID, () => "")
       const parentMatches = input.parentID === void 0 || parent === (input.parentID ?? "")
-      return parentMatches && (input.directory === void 0 || session.directory === input.directory)
+      const archiveMatches = input.archived === void 0 || host.archived.has(session.id) === input.archived
+      return parentMatches && archiveMatches && (input.directory === void 0 || session.directory === input.directory)
     })
     // As the fork's store (packages/core/src/session/store.ts `list`): by last update, newest first unless
     // `order: "asc"`, the id string breaking a tie the same way; then `limit`.
@@ -362,16 +412,30 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     return { data: ordered.slice(0, input.limit ?? ordered.length).map(host.infoOf) }
   }
 
+  /** A hook of the copy's location, by its domain-qualified name (a session hook's is its own), for the copy's life. */
+  const hookOf = (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) =>
+    registration(
+      (): Hook => {
+        const hook = { instance, directory: loaded.directory, name, callback }
+        host.hooks.push(hook)
+        return hook
+      },
+      (hook) => void host.hooks.splice(host.hooks.indexOf(hook), 1),
+    )
+
+  /**
+   * A hook of another domain than the session's, kept in the host's hooks under `prefix:name`: only the names the
+   * world runs (`modelled`); registering any other is an unmodelled reach.
+   */
+  const domainHook =
+    (prefix: string, modelled: ReadonlySet<string>) =>
+    (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>): Effect.Effect<{ readonly dispose: Effect.Effect<void> }, never, Scope.Scope> => {
+      if (!modelled.has(name)) return unmodelled(`ctx.${prefix}.hook(${name})`)()
+      return hookOf(`${prefix}:${name}`, callback)
+    }
+
   const session = {
-    hook: (name: string, callback: (input: HookInput) => Effect.Effect<void, unknown>) =>
-      registration(
-        (): Hook => {
-          const hook = { instance, directory: loaded.directory, name, callback }
-          host.hooks.push(hook)
-          return hook
-        },
-        (hook) => void host.hooks.splice(host.hooks.indexOf(hook), 1),
-      ),
+    hook: hookOf,
     get: <I>(input: I) =>
       parse(
         SessionInput,
@@ -379,6 +443,14 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       )(input).pipe(
         Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
         Effect.map(host.infoOf),
+      ),
+    remove: <I>(input: I) =>
+      parse(
+        SessionInput,
+        "session.remove",
+      )(input).pipe(
+        Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
+        Effect.flatMap(host.removeSession),
       ),
     list: <I>(input: I) => parse(ListInput, "session.list")(input).pipe(Effect.map(list)),
     context: <I>(input: I) =>
@@ -443,7 +515,9 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         Effect.flatMap((parsed) =>
           host.sessionOr(parsed.sessionID).pipe(
             Effect.map((found) => {
-              found.metadata = { ...(parsed.metadata ?? found.metadata) }
+              // An update naming no metadata changes nothing: the fork's sets only what the input names.
+              if (parsed.metadata === void 0) return host.infoOf(found)
+              found.metadata = { ...parsed.metadata }
               host.touch(found)
               host.record("session-updated", { sessionID: found.id, metadata: found.metadata })
               return host.infoOf(found)
@@ -451,9 +525,44 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           ),
         ),
       ),
+    move: <I>(input: I) =>
+      parse(
+        MoveInput,
+        "session.move",
+      )(input).pipe(Effect.flatMap((parsed) => host.sessionOr(parsed.sessionID).pipe(Effect.flatMap((found) => host.move(found, parsed.directory))))),
   }
 
-  const agents = [{ id: "build", request: {} }]
+  /** The directory a catalog read is of: the one it names, else the plugin's. */
+  const directoryOf = (at: typeof At.Type) => Option.getOrElse(Option.map(Option.fromNullishOr(at), (place) => place.directory), () => loaded.directory)
+
+  /** A catalog change of this copy's Location, as the fork's state publishes one: tagged with the Location. */
+  const changed = (type: string) => host.publish({ type, data: {}, location: { directory: loaded.directory } }, loaded.directory)
+
+  /** The agents of a location, as the agent domain answers them. */
+  const agentsAt = (input: typeof LocationInput.Type) => [...host.agentsOf(directoryOf(input.location)).values()]
+  /** The catalog's models, as the model domain answers them: each with its variants. */
+  const catalog = () => host.models.map((entry) => ({ ...entry, variants: entry.variants ?? [] }))
+
+  /**
+   * A copy's agents transform, run on the location's agents at each read, in load order, for the copy's life. One that
+   * adds an agent changes its Location's catalog, which publishes `agent.updated`.
+   */
+  const agentTransform = (callback: (editor: AgentEditor) => void) =>
+    Effect.gen(function* () {
+      const before = host.agentsOf(loaded.directory).size
+      const registered = yield* registration(
+        () => {
+          const transform = { instance, callback }
+          host.agentTransforms.push(transform)
+          host.record("agent-transform", { instance })
+          return transform
+        },
+        (transform) => void host.agentTransforms.splice(host.agentTransforms.indexOf(transform), 1),
+      )
+      if (host.agentsOf(loaded.directory).size !== before) yield* changed("agent.updated")
+      return registered
+    })
+
   const modelled = {
     options: loaded.options,
     location: { directory: loaded.directory },
@@ -465,18 +574,29 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
           () => {
             host.tools.set(instance, own)
             host.removed.set(instance, gone)
+            host.updates.set(instance, edits)
             callback(editor)
           },
           () => {
             host.tools.delete(instance)
             host.removed.delete(instance)
+            host.updates.delete(instance)
           },
         ),
       list: () => Effect.sync(() => [...host.toolsOf(loaded.directory).keys()].map((name) => ({ id: name, name }))),
+      hook: domainHook("tool", new Set(["execute.before", "execute.after"])),
     },
+    shell: { hook: domainHook("shell", new Set(["create.before"])) },
     rpc: Object.assign(client, { register }),
     session,
-    model: { list: () => Effect.sync(() => ({ data: host.models })) },
+    model: {
+      list: () => Effect.sync(() => ({ data: catalog() })),
+      // The model a session with no selection runs on: the host's, as the catalog has it.
+      default: () =>
+        Effect.sync(() => ({
+          data: catalog().find((entry) => entry.providerID === host.model.providerID && entry.id === host.model.id) ?? { ...host.model, variants: [] },
+        })),
+    },
     integration,
     provider: {
       transform: providerTransform,
@@ -492,13 +612,14 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         ),
     },
     agent: {
-      list: () => Effect.sync(() => ({ data: agents })),
+      transform: agentTransform,
+      list: <I>(input: I) => parse(LocationInput, "agent.list")(input ?? {}).pipe(Effect.map((parsed) => ({ data: agentsAt(parsed) }))),
       get: <I>(input: I) =>
         parse(
           AgentInput,
           "agent.get",
         )(input).pipe(
-          Effect.flatMap(({ agentID }) => Effect.fromOption(Option.fromNullishOr(agents.find((agent) => agent.id === agentID)))),
+          Effect.flatMap((parsed) => Effect.fromOption(Option.fromNullishOr(agentsAt(parsed).find((agent) => agent.id === parsed.agentID)))),
           Effect.map((data) => ({ data })),
           Effect.mapError(() => host.catalogNotFound("agent")),
         ),

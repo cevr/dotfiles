@@ -1,13 +1,15 @@
 // Wakes in real OpenCode, with a scripted model, in the Prime look:
-// - step-wake: the root sets a 3 s alarm and ends its turn; the alarm wakes the idle
+// - step-wake: the root sets a 10 min alarm and ends its turn; the alarm wakes the idle
 //   session with its note, and the model answers it.
-// - step-notify: a 2 s notice; its fire starts no turn, the tray counts it, and the
+// - step-notify: a 10 min notice; its fire starts no turn, the tray counts it, and the
 //   next turn (step-after-notice) reads it.
 // - step-monitor: a monitor checks a command every second until its stdout says READY
 //   (about 3 s on), then wakes the session with the note and the last output.
-// - step-cancel: a 4 s alarm, cancelled with wake_cancel; it never fires.
-// - step-reload: an 8 s alarm, then the plugin reloads (its entry is rewritten, so
+// - step-cancel: a 10 min alarm, cancelled with wake_cancel; it never fires.
+// - step-reload: a 10 min alarm, then the plugin reloads (its entry is rewritten, so
 //   the module watcher loads it again) before the alarm is due; it fires once.
+// Each alarm's 10 min pass on the server's simulated clock: the scenario advances it
+// (scenarios/sim-clock.ts), so the fork must answer `clock.advance`.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/wake.ts
 //
 // The server plugin loads through a wrapper package under SCENARIO_OUT
@@ -23,6 +25,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import * as SimClock from "./sim-clock.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -54,15 +57,22 @@ type ToolInput = Parameters<typeof Llm.toolCall>[0]["input"]
 const call = (id: string, name: string, input: ToolInput) => Stream.make(Llm.toolCall({ index: 0, id, name, input }), Llm.finish("tool-calls"))
 const say = (text: string) => Stream.make(Llm.text(text), Llm.finish())
 
+/**
+ * Every alarm and notice is 10 min out: no wait in this run comes near it, so each fires only because the
+ * scenario advances the server's clock past it (scenarios/sim-clock.ts, the fork's `clock.advance`).
+ */
+const ALARM_SECONDS = 600
+const ALARM_MS = ALARM_SECONDS * 1000
+
 const READY_AT = { value: 0 }
 const MONITOR_COMMAND = () => `if [ "$(date +%s)" -ge ${READY_AT.value} ]; then echo READY; else echo waiting; fi`
 
 /** The root's next step: the reply to whatever came last in its conversation. */
 const rules: ReadonlyArray<readonly [string, (request: string) => Stream.Stream<Llm.Output>]> = [
-  ["step-wake", () => call("call_wake_alpha", "wake", { afterSeconds: 3, note: "ALPHA: check that the build finished" })],
+  ["step-wake", () => call("call_wake_alpha", "wake", { afterSeconds: ALARM_SECONDS, note: "ALPHA: check that the build finished" })],
   ["call_wake_alpha", () => say("Alpha alarm set.")],
   ["Note: ALPHA", () => say("Woke on alpha.")],
-  ["step-notify", () => call("call_notify_beta", "wake", { afterSeconds: 2, mode: "notify", note: "BETA: glance at the deploy" })],
+  ["step-notify", () => call("call_notify_beta", "wake", { afterSeconds: ALARM_SECONDS, mode: "notify", note: "BETA: glance at the deploy" })],
   ["call_notify_beta", () => say("Beta notice set.")],
   ["step-after-notice", (s) => say(s.includes("Note: BETA") ? "Saw the beta notice." : "Missed the beta notice.")],
   [
@@ -71,7 +81,7 @@ const rules: ReadonlyArray<readonly [string, (request: string) => Stream.Stream<
   ],
   ["call_monitor_gamma", () => say("Gamma monitor set.")],
   ["Note: GAMMA", () => say("Woke on gamma.")],
-  ["step-cancel", () => call("call_wake_delta", "wake", { afterSeconds: 4, note: "DELTA: should never fire" })],
+  ["step-cancel", () => call("call_wake_delta", "wake", { afterSeconds: ALARM_SECONDS, note: "DELTA: should never fire" })],
   [
     "call_wake_delta",
     (s) => {
@@ -81,7 +91,7 @@ const rules: ReadonlyArray<readonly [string, (request: string) => Stream.Stream<
   ],
   ["call_cancel_delta", (s) => say(s.includes("Cancelled w") ? "Delta cancelled." : "Delta not cancelled.")],
   ["Note: DELTA", () => say("Delta fired after all.")],
-  ["step-reload", () => call("call_wake_epsilon", "wake", { afterSeconds: 8, note: "EPSILON: survive the reload" })],
+  ["step-reload", () => call("call_wake_epsilon", "wake", { afterSeconds: ALARM_SECONDS, note: "EPSILON: survive the reload" })],
   ["call_wake_epsilon", () => say("Epsilon alarm set.")],
   ["Note: EPSILON", () => say("Woke on epsilon.")],
 ]
@@ -103,7 +113,7 @@ export default OpenCodeDriver.use(
     tui: { viewport: { cols: 150, rows: 50 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },
   },
-  ({ ui, llm, opencode }) =>
+  ({ ui, llm, opencode, artifacts }) =>
     Effect.gen(function* () {
       const requests: Array<{ readonly session: "root" | "title"; readonly at: number; readonly request: string }> = []
       yield* llm.serve((request) => {
@@ -138,15 +148,19 @@ export default OpenCodeDriver.use(
         })
       const tray = (frame: string) => frame.split("\n").map((line) => line.trim()).find((line) => /^◆ \d+ subagents?  ·  \d+ shells?/.test(line))?.split("  ·  ").slice(2).join("  ·  ").split(" ".repeat(4))[0] ?? ""
 
-      // A 3 s alarm wakes the idle session with its note.
+      // A 10 min alarm wakes the idle session with its note.
       yield* ui.submit("step-wake")
       yield* until((frame) => frame.includes("Alpha alarm set.") && tray(frame).includes("1 wake"))
       yield* keep("pending", true)
+      // Its 10 min pass on the server's clock at once.
+      yield* SimClock.advance(artifacts, ALARM_MS)
       yield* until((frame) => frame.includes("Woke on alpha.") && tray(frame) === "")
       yield* keep("alpha", true)
 
       // A notice starts no turn: the tray counts it until the next turn reads it.
       yield* ui.submit("step-notify")
+      yield* until((frame) => frame.includes("Beta notice set."))
+      yield* SimClock.advance(artifacts, ALARM_MS)
       yield* until((frame) => frame.includes("Beta notice set.") && tray(frame).includes("1 notice"))
       yield* keep("notice", true)
       // Past its time and some: still no turn.
@@ -167,7 +181,8 @@ export default OpenCodeDriver.use(
       // A cancelled alarm never fires.
       yield* ui.submit("step-cancel")
       yield* until((frame) => frame.includes("Delta cancelled.") || frame.includes("Delta not cancelled."))
-      yield* Effect.sleep("6 seconds")
+      // A minute past its time on the server's clock: a fire, were there one, would come now, and the transcripts read at the end hold it.
+      yield* SimClock.advance(artifacts, ALARM_MS + 60_000)
       yield* keep("cancelled")
 
       // A reload before the alarm is due: it fires once.
@@ -179,6 +194,8 @@ export default OpenCodeDriver.use(
         Effect.flatMap((log) => (log.includes("rev 2") ? Effect.void : Effect.fail("not reloaded"))),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
       )
+      // The reloaded plugin holds the alarm: its 10 min pass on the server's clock at once.
+      yield* SimClock.advance(artifacts, ALARM_MS)
       yield* until((frame) => frame.includes("Woke on epsilon."), 200)
       // Room for a second fire, were there one.
       yield* Effect.sleep("4 seconds")

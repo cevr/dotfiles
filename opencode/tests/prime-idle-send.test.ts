@@ -1,4 +1,4 @@
-// accept: deep (24.0 s alone on a quiet host: 1-minute load 7.6–8.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
+// accept: deep (24.0 s alone on a quiet host: 1-minute load 7.6–8.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long; the gate runs its names simulated, cmd/prime/prime-idle-send.sim.test.tsx)
 // Runs scenarios/prime-idle-send.ts with the Prime look against an OpenCode
 // checkout and asserts, frame by frame, that a prompt sent to an idle session
 // never shows as a queued row: it enters the transcript as the reader's

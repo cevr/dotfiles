@@ -4,15 +4,15 @@
 // the host, each copy of the plugin and the CLI share the file.
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import type { Bucket, Note } from "../note.ts"
 import { MemoryStoreFailed, NoteStore, type Reading } from "../service.ts"
 
 /** The host's memory file: `$XDG_STATE_HOME/opencode-memory/memory.db`, `~/.local/state` when unset. */
 export const defaultPath = (env: Readonly<Record<string, string | undefined>> = process.env): string =>
-  join(env["XDG_STATE_HOME"] || join(homedir(), ".local/state"), "opencode-memory", "memory.db")
+  join(env["XDG_STATE_HOME"] || join(TuiDirs.dirs().home, ".local/state"), "opencode-memory", "memory.db")
 
 /** How long a session's kept digest stays, in ms; older ones are dropped as new ones are kept. */
 const DIGEST_DAYS = 30 * 86_400_000
@@ -150,6 +150,8 @@ export const make = (db: Database): NoteStore["Service"] => {
           return { text: kept?.text ?? text, fresh }
         })(),
       ),
+    keptDigest: (sessionID) =>
+      run("keptDigest", () => Option.map(Option.fromNullishOr(db.query<{ text: string }, [string]>("SELECT text FROM digests WHERE session = ?").get(sessionID)), (row) => row.text)),
   })
 }
 

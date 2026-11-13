@@ -123,11 +123,18 @@
  *   `refuse` (default) or `warn` (the call passes, its answer carries the
  *   rule's words, the ledger records the departure).
  *
+ * - Heavy footer: every implementor and verifier prompt the plugin starts (a
+ *   new start, a follow-up, a latched start as it opens) ends with one footer
+ *   (mods/orchestrate/heavy.ts): its heavy-check thread share, from the host's
+ *   cores and the implementors and verifiers working on it then (the call
+ *   log's, every root's), and that a round runs its spec's round gate only.
+ *   No option turns it off.
+ *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
  */
-import { homedir } from "node:os"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
@@ -140,6 +147,9 @@ import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
+import * as HeavyAgentsLive from "@dotfiles/opencode-orchestrate/filestore/heavy-agents"
+import { footerFor, isHeavy, withFooter } from "@dotfiles/opencode-orchestrate/heavy"
+import * as HeavyHostLive from "@dotfiles/opencode-orchestrate/node/heavy-host"
 import * as LedgerLive from "@dotfiles/opencode-orchestrate/filestore/ledger"
 import * as FindingsLive from "@dotfiles/opencode-orchestrate/filestore/findings"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
@@ -168,6 +178,7 @@ import {
   type CallLog,
   type CodexAdmission,
   type GuardMode,
+  HeavyHost,
   type Latches,
   type Findings,
   type Ledger,
@@ -187,17 +198,17 @@ import {
   type Tell,
   type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
-import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
+import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
-export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
+export const DEFAULT_LOG = join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl")
 /** The batch machine's ledger: one line per event or refusal, of every root. */
-export const DEFAULT_LEDGER = join(homedir(), ".cache/orchestrate/machine.jsonl")
+export const DEFAULT_LEDGER = join(TuiDirs.dirs().home, ".cache/orchestrate/machine.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
-export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
+export const CODEX_BUDGET = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/scripts/budget.ts")
 /** The orchestrate skill's log.ts, the units' logs' one writer. */
-export const UNIT_LOG = join(homedir(), ".claude/skills/orchestrate/scripts/log.ts")
+export const UNIT_LOG = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/scripts/log.ts")
 /** The orchestrate skill as installed: a link into the dotfiles checkout, whose history versions it. */
-export const SKILL_DIR = join(homedir(), ".claude/skills/orchestrate")
+export const SKILL_DIR = join(TuiDirs.dirs().home, ".claude/skills/orchestrate")
 
 const SUBAGENT = "subagent"
 
@@ -298,35 +309,66 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
   directory: session.location.directory,
 })
 
+/** The outside systems the filesystem and processes provide: the files the plugin keeps, git, the scripts it runs. */
+export type Kept = Ledger | Findings | Branches | CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet
+
+/**
+ * Whether a session works: it runs a turn (its newest start is after its last end) or keeps background work of its
+ * own. A session that cannot be read does not.
+ */
+const aliveOf =
+  (ctx: Plugin.Context, background: Background) =>
+  (sessionID: string): Effect.Effect<boolean> =>
+    ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
+      Effect.map((session) => {
+        const busy = msOf(session.time.busy)
+        const idle = msOf(session.time.idle)
+        return (busy !== undefined && (idle === undefined || busy > idle)) || background(sessionID) > 0
+      }),
+      Effect.orElseSucceed(() => background(sessionID) > 0),
+    )
+
+/**
+ * The host the heavy-check footer reads: its cores and load from Node's `os`, its heavy agents working now from the
+ * call log (every root's on the host), each counted while its session works.
+ */
+export const liveHeavy = (ctx: Plugin.Context, options: Options, background: Background): Layer.Layer<HeavyHost> =>
+  HeavyHostLive.layer(HeavyAgentsLive.working(CallLogLive.read(options.log), aliveOf(ctx, background)))
+
 /**
  * The outside systems as OpenCode, the filesystem and processes provide them;
  * `start` runs a latched child through the subagent tool.
  */
 export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background): Layer.Layer<Externals> =>
+  Layer.merge(
+    hosted(ctx, start, background),
+    Layer.mergeAll(
+      LedgerLive.layer(options.ledger, options.cadence),
+      FindingsLive.layer,
+      GitBranches.layer,
+      CallLogLive.layer(options.log),
+      UnitLogsLive.layer(options.unitLog, { journal: options.drops }),
+      CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
+      StepLogLive.layer(options.log),
+      SkillLive.layer(options.skill),
+      RunRecordsLive.layer,
+      GitFleet.layer(Option.fromNullishOr(options.fleet)),
+    ),
+  )
+
+/**
+ * The outside systems OpenCode provides, on the plugin's context alone: its sessions, models and steering, and the
+ * pool's, the wakes', the status's, the questions' and the queue's RPC. Any host that gives the context gives these
+ * (the simulated one too: sim/plugins.ts); `start` runs a latched child through the subagent tool.
+ */
+export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background: Background): Layer.Layer<Exclude<Externals, Kept>> =>
   Layer.mergeAll(
-    LedgerLive.layer(options.ledger, options.cadence),
-    FindingsLive.layer,
-    GitBranches.layer,
     SteerLive.remindLayer(synthetic(ctx)),
-    // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
-    // work of its own; a session that cannot be read does not.
-    Layer.succeed(Liveness, {
-      alive: (sessionID) =>
-        ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
-          Effect.map((session) => {
-            const busy = msOf(session.time.busy)
-            const idle = msOf(session.time.idle)
-            return (busy !== undefined && (idle === undefined || busy > idle)) || background(sessionID) > 0
-          }),
-          Effect.orElseSucceed(() => background(sessionID) > 0),
-        ),
-    }),
-    CallLogLive.layer(options.log),
+    Layer.succeed(Liveness, { alive: aliveOf(ctx, background) }),
     SessionsLive.layer(
       (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
     ),
-    UnitLogsLive.layer(options.unitLog, { journal: options.drops }),
     ModelsLive.layer({
       session: (sessionID) =>
         ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
@@ -344,9 +386,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
       (input) => ctx.rpc(POOL_STATUS).pace(input),
       (input) => ctx.rpc(POOL_STATUS).started(input),
     ),
-    CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
     LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
-    StepLogLive.layer(options.log),
     RunsLive.layer(() => ctx.rpc(STATUS).status({})),
     HoldsLive.layer({
       pending: (input) => ctx.rpc(WAKES).pending({ sessionIDs: [...input.sessionIDs] }),
@@ -355,9 +395,6 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
     }),
     SteerLive.layer(synthetic(ctx)),
     SteerLive.tellLayer(synthetic(ctx)),
-    SkillLive.layer(options.skill),
-    RunRecordsLive.layer,
-    GitFleet.layer(Option.fromNullishOr(options.fleet)),
   )
 
 /** A host time (epoch ms, a Date or a DateTime) as epoch ms. */
@@ -370,7 +407,7 @@ const msOf = (time: unknown): number | undefined => {
 
 /** A steered synthetic message, as the host's `session.synthetic` takes it. */
 const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
-  ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } as SyntheticInput)
+  ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } satisfies SyntheticInput)
 
 /** A time as the model reads it: ISO 8601, and the owner's local time. */
 const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${local(ms, place)} ${place.timeZone})`
@@ -378,7 +415,12 @@ const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${l
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
 /** What the model reads when a call is refused. */
-const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched, place: Place): Tool.Error => {
+const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched | CodexNeverImplements, place: Place): Tool.Error => {
+  if (rejection._tag === "CodexNeverImplements")
+    return new Tool.Error({
+      message: `orchestrate: Codex never implements. This ${rejection.agent} would run on ${rejection.model}, and the host offers no Opus model for it. Do not name another model: start it again once an Opus model is offered.`,
+      error: rejection,
+    })
   if (rejection._tag === "SabbathRest") {
     const then =
       tool === SUBAGENT
@@ -534,9 +576,20 @@ export const greenOf = (rifts: ReadonlyArray<LandEntry>, text: string): Readonly
 type Execute = Tool.Info["execute"]
 type ToolContext = Parameters<Execute>[1]
 
-/** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
+/** How long a footer waits for the host's reading before it takes the host's cores alone. */
+const HEAVY_READ = "2 seconds"
+
+/** A subagent call's prompt, when its input has one. */
+const decodePrompted = Schema.decodeUnknownOption(Schema.Struct({ prompt: Schema.String }))
+
+/**
+ * The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. `heavy` is the host the
+ * heavy-check footer reads; the plugin OpenCode loads always has it (`liveHeavy`), and only the seam tests written
+ * before the footer leave it out.
+ */
 export const make = (
   externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
+  heavy?: (ctx: Plugin.Context, options: Options, background: Background) => Layer.Layer<HeavyHost>,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
@@ -546,6 +599,34 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.orchestrate: invalid options: ${error.message}`)),
         Effect.orDie,
       )
+      // Each session's background work of its own, as its last idle listed it: a step that went idle with a
+      // shell still running has not ended.
+      const backgrounds = new Map<string, number>()
+      const ownBackground: Background = (sessionID) => backgrounds.get(sessionID) ?? 0
+      // The footer of a heavy role's prompt (heavy.ts), its share read from the host as the prompt goes; `self`, the
+      // agent's own session when it has one, is not counted. A reading that fails or is slow takes the host's cores
+      // with no other agent working: the prompt never waits on it and the start is never refused for it.
+      const host = yield* Option.match(Option.fromNullishOr(heavy), {
+        onNone: () => Effect.succeedNone,
+        onSome: (layer) => Layer.build(layer(ctx, options, ownBackground)).pipe(Effect.map((built) => Option.some(Context.get(built, HeavyHost)))),
+      })
+      const footerNow = (agent: string, self: Option.Option<string>): Effect.Effect<Option.Option<string>> =>
+        Option.match(
+          Option.filter(host, () => isHeavy(agent)),
+          {
+            onNone: () => Effect.succeedNone,
+            onSome: (heavyHost) =>
+              heavyHost.read(self).pipe(
+                Effect.map((reading) => ({ cores: reading.host.cores, working: reading.working })),
+                Effect.timeout(HEAVY_READ),
+                Effect.catchCause(() => heavyHost.cores.pipe(Effect.map((cores) => ({ cores, working: 0 })))),
+                Effect.map(({ cores, working }) => footerFor(agent, cores, working)),
+              ),
+          },
+        )
+      /** `prompt` with the footer of `agent`'s role at its end, when it has one. */
+      const footed = (agent: string, self: Option.Option<string>, prompt: string) =>
+        footerNow(agent, self).pipe(Effect.map(Option.match({ onNone: () => prompt, onSome: (footer) => withFooter(prompt, footer) })))
       // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it,
       // in the background on the existing child.
       let subagent: Execute | undefined
@@ -571,7 +652,9 @@ export const make = (
             context,
           ).pipe(Effect.asVoid)
         })
-      const start: LatchesLive.Start = (request) => run(request, `${SPAWNED}\n${request.prompt}`)
+      // A latched child's prompt gets its footer as it opens, with the share of that moment.
+      const start: LatchesLive.Start = (request) =>
+        footed(request.agent, Option.some(request.child), `${SPAWNED}\n${request.prompt}`).pipe(Effect.flatMap((prompt) => run(request, prompt)))
       const config = {
         place: options.place,
         fullAgent: options.fullAgent,
@@ -579,10 +662,6 @@ export const make = (
         ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
         ...(options.planner === undefined ? {} : { planner: options.planner }),
       }
-      // Each session's background work of its own, as its last idle listed it: a step that went idle with a
-      // shell still running has not ended.
-      const backgrounds = new Map<string, number>()
-      const ownBackground: Background = (sessionID) => backgrounds.get(sessionID) ?? 0
       const services = yield* Layer.build(
         Layer.mergeAll(
           Model.layer(config),
@@ -825,7 +904,7 @@ export const make = (
             // A batch verifier's prompt ends with the findings it checks as folded.
             if (passed.prompt !== undefined && isObject(event.input) && typeof event.input.prompt === "string")
               event.input = { ...event.input, prompt: `${event.input.prompt}\n\n${passed.prompt}` }
-            if (Option.isNone(outcome) || !isObject(event.input)) return
+            if (Option.isNone(outcome) || !isObject(event.input)) return outcome
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
@@ -849,6 +928,19 @@ export const make = (
               input.sessionID = outcome.value.child
             }
             event.input = input
+            return outcome
+          }),
+          // A heavy role's started prompt ends with its footer, after the verifier's findings: a new start's and a
+          // follow-up's alike. A latched start's gets its own when it opens (`start`).
+          Effect.flatMap((outcome) => {
+            const input = event.input
+            const asked = decodePrompted(input)
+            if (Option.isNone(outcome) || outcome.value._tag !== "SubagentStarted" || Option.isNone(asked) || !isObject(input)) return Effect.void
+            return footed(outcome.value.agent, Option.fromNullishOr(outcome.value.child), asked.value.prompt).pipe(
+              Effect.map((prompt) => {
+                event.input = { ...input, prompt }
+              }),
+            )
           }),
         )
       })
@@ -911,4 +1003,4 @@ export const make = (
     }),
   })
 
-export default make(live)
+export default make(live, liveHeavy)

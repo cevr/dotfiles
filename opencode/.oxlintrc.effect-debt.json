@@ -475,6 +475,73 @@
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "mods/cache/filestore/ping-log.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/cache/filestore/ping-log.test.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/cache/keepalive.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/cache/laws.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/cache/fetch/pinger.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rift/memory/land-receipts.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rift/process/land-receipts.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/receipt.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
     }
   ]
 }

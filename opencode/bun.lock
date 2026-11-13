@@ -62,6 +62,7 @@
       "name": "@dotfiles/opencode-cmd-guard",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-guard": "workspace:*",
       },
     },
@@ -106,6 +107,7 @@
       "name": "@dotfiles/opencode-cmd-orchestrate",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-pool": "workspace:*",
         "@dotfiles/opencode-questions": "workspace:*",
@@ -141,6 +143,7 @@
       "name": "@dotfiles/opencode-cmd-queue",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
       },
     },
@@ -162,6 +165,7 @@
       "name": "@dotfiles/opencode-cmd-skills",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-skills": "workspace:*",
       },
     },
@@ -176,6 +180,7 @@
       "name": "@dotfiles/opencode-cmd-status",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-status": "workspace:*",
       },
     },
@@ -200,14 +205,8 @@
       "name": "@dotfiles/opencode-cmd-wake",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
-      },
-    },
-    "cmd/web": {
-      "name": "@dotfiles/opencode-cmd-web",
-      "version": "0.0.0",
-      "dependencies": {
-        "@dotfiles/opencode-web": "workspace:*",
       },
     },
     "decider": {
@@ -239,6 +238,7 @@
       "name": "@dotfiles/opencode-cache",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
@@ -395,23 +395,29 @@
         "@dotfiles/opencode-guard": "workspace:*",
       },
     },
-    "mods/web": {
-      "name": "@dotfiles/opencode-web",
-      "version": "0.0.0",
-    },
     "sim": {
       "name": "@dotfiles/opencode-sim",
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-anthropic-auth": "workspace:*",
         "@dotfiles/opencode-cmd-anthropic-auth": "workspace:*",
+        "@dotfiles/opencode-cmd-guard": "workspace:*",
         "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
+        "@dotfiles/opencode-cmd-mail": "workspace:*",
+        "@dotfiles/opencode-cmd-orchestrate": "workspace:*",
         "@dotfiles/opencode-cmd-pool": "workspace:*",
         "@dotfiles/opencode-cmd-questions": "workspace:*",
+        "@dotfiles/opencode-cmd-queue": "workspace:*",
+        "@dotfiles/opencode-cmd-status": "workspace:*",
         "@dotfiles/opencode-cmd-wake": "workspace:*",
+        "@dotfiles/opencode-guard": "workspace:*",
         "@dotfiles/opencode-idle-compact": "workspace:*",
+        "@dotfiles/opencode-mail": "workspace:*",
+        "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-pool": "workspace:*",
         "@dotfiles/opencode-questions": "workspace:*",
+        "@dotfiles/opencode-queue": "workspace:*",
+        "@dotfiles/opencode-status": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
     },
@@ -479,8 +485,6 @@
 
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
 
-    "@dotfiles/opencode-cmd-web": ["@dotfiles/opencode-cmd-web@workspace:cmd/web"],
-
     "@dotfiles/opencode-escape": ["@dotfiles/opencode-escape@workspace:mods/escape"],
 
     "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
@@ -528,8 +532,6 @@
     "@dotfiles/opencode-update": ["@dotfiles/opencode-update@workspace:mods/update"],
 
     "@dotfiles/opencode-wake": ["@dotfiles/opencode-wake@workspace:mods/wake"],
-
-    "@dotfiles/opencode-web": ["@dotfiles/opencode-web@workspace:mods/web"],
 
     "@effect/platform-bun": ["@effect/platform-bun@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-m+QR4bp39ZWujCuEsUhZADIYIOFZcUHHlmrixENZqZRbEYgaPLMUWiPrRJ69CM4BuuHW8oCOxfMGUU7oSw/o5g=="],
 

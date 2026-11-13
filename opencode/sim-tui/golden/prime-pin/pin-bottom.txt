@@ -1,0 +1,30 @@
+                                         two batches  $0.00
+  - two item 20
+  - two item 21
+  - two item 22
+  - two item 23
+  - two item 24
+  - two item 25
+  - two item 26
+  - two item 27
+  - two item 28
+  - two item 29
+  - two item 30
+  - two item 31
+  - two item 32
+  - two item 33
+  - two item 34
+  - two item 35
+  - two item 36
+  - two item 37
+  - two item 38
+  - two item 39
+  - two item 40
+
+
+
+ ┃
+                                                                                      gpt-sim-model
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ● UI  Theme  Tools  Experiments
