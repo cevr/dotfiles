@@ -16,7 +16,8 @@
 // - every request of a session carries the same system prompt, across write
 //   failures and restarts: the cached prefix holds;
 // - no timer of a closed copy fires.
-// And one seed run twice gives byte-equal traces.
+// And one seed run twice gives byte-equal traces. One fixed run holds the case
+// the seeds meet rarely: a digest the file could not keep, across a restart.
 import { expect as bunExpect } from "bun:test"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as MemoryFiles from "@dotfiles/opencode-memory/memory/files"
@@ -267,7 +268,9 @@ const runOf = (seed: number, commands: ReadonlyArray<Command>) =>
     const state = yield* stateOf(seed)
     for (const [index, command] of commands.entries()) yield* step(state, index, command)
     if (state.faulted.size > 0) state.reached.add("faulted-session")
-    return { trace: state.world.trace(), broken: state.broken, reached: state.reached }
+    const asked = state.world.asked().filter((each) => each.kind === "primary" && each.system !== BARE)
+    const digested = state.sessions.map((session) => asked.filter((each) => each.sessionID === session.id).length)
+    return { trace: state.world.trace(), broken: state.broken, reached: state.reached, digested }
   }).pipe(Effect.scoped)
 
 seeded("memory keeps its notes, its answers and each session's system prompt through write failures and restarts", ({ seed, expect }) =>
@@ -277,6 +280,33 @@ seeded("memory keeps its notes, its answers and each session's system prompt thr
     expect(first.broken).toEqual([])
     const second = yield* runOf(seed, commands)
     expect(second.trace).toBe(first.trace)
+  }),
+)
+
+/**
+ * The case the seeds meet rarely: a session's first request finds the file failing writes, its notes change, every
+ * copy restarts, and the session asks again. The file never kept that session's digest, so only the session can
+ * say which one it was sent.
+ */
+const HELD_ACROSS_RESTART: ReadonlyArray<Command> = [
+  { type: "session", child: false },
+  { type: "call", session: 0, call: { tool: "memory_save", input: { text: "The user prefers bun over npm" } } },
+  { type: "session", child: false },
+  { type: "write-fails", count: 1 },
+  { type: "call", session: 1, call: { tool: "memory_search", input: { query: "bun" } } },
+  { type: "call", session: 1, call: { tool: "memory_search", input: { query: "gate" } } },
+  { type: "call", session: 0, call: { tool: "memory_save", input: { text: "Run the gate before every push" } } },
+  { type: "restart" },
+  { type: "call", session: 1, call: { tool: "memory_search", input: { query: "bun" } } },
+]
+
+seeded("a digest the file could not keep is the session's on every request, after a restart too", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const run = yield* runOf(seed, HELD_ACROSS_RESTART)
+    expect(run.broken).toEqual([])
+    expect(run.reached.has("faulted-session")).toBe(true)
+    // The second session's requests all carry a digest: the one the failing file could not keep.
+    expect(run.digested[1]).toBeGreaterThanOrEqual(4)
   }),
 )
 
