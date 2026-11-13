@@ -126,10 +126,15 @@ const linesOf = (out: string) =>
 /** A run of scripts/accept.ts with `args` and `env`, stdout and stderr in one stream so its lines keep their order. */
 const accept = (args: ReadonlyArray<string>, env: typeof process.env) => startAccept(args, env).done
 
-/** A run of scripts/accept.ts started: its process (the `bun` the shell execs, so its pid is the run's) and its end. */
-const startAccept = (args: ReadonlyArray<string>, env: typeof process.env) => {
+/**
+ * A run of scripts/accept.ts started: its process (the `bun` the shell execs, so its pid is the run's) and its end.
+ * `owned` stops all it started when it exits, which would hide what the run itself failed to stop; `unowned` runs it
+ * bare (its own group), for a test that checks the run's own stop and then ends its stand-ins' groups itself.
+ */
+const startAccept = (args: ReadonlyArray<string>, env: typeof process.env, unowned = false) => {
   const started = performance.now()
-  const child = owned(["/bin/sh", "-c", 'exec "$0" scripts/accept.ts "$@" 2>&1', process.execPath, ...args], { cwd: ROOT, env, stdout: "pipe" })
+  const argv = ["/bin/sh", "-c", 'exec "$0" scripts/accept.ts "$@" 2>&1', process.execPath, ...args]
+  const child = (unowned && Bun.spawn(argv, { cwd: ROOT, env, stdout: "pipe", detached: true })) || owned(argv, { cwd: ROOT, env, stdout: "pipe" })
   const done = (async () => {
     const out = await Bun.readableStreamToText(child.stdout)
     const code = await child.exited
@@ -291,7 +296,14 @@ describe("the acceptance tiers over the real tree", () => {
   )
 })
 
-/** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own. */
+/**
+ * A detached child (a process group of its own, as `opencode service` is) that starts a long sleeper of
+ * its own and waits: Bun ends the direct child when its `bun test` is stopped, so only the runner's stop of
+ * the test's own processes ends the grandchild (accept-ledger-land M1). The child's pid leads its group.
+ */
+const GRANDCHILD = '  const child = Bun.spawn(["/bin/sh", "-c", "sleep 120 & wait"], { detached: true, stdout: "ignore" })'
+
+/** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own with a grandchild in it. */
 const STAND_INS = {
   "pass.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
   "fail.test.ts": 'import { expect, test } from "bun:test"\ntest("fails", () => {\n  expect(1).toBe(2)\n})\n',
@@ -300,7 +312,7 @@ const STAND_INS = {
     'import { writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
     'test("sleeps", async () => {',
-    '  const child = Bun.spawn(["sleep", "120"], { detached: true, stdout: "ignore" })',
+    GRANDCHILD,
     '  writeFileSync(join(import.meta.dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
     "  await Bun.sleep(120_000)",
     "})",
@@ -320,12 +332,16 @@ describe("a land run under its budget", () => {
       mkdirSync(files)
       for (const [name, body] of Object.entries(STAND_INS)) writeFileSync(join(files, name), body)
       const env = scratchEnv(dir.path, { ACCEPT_FILES: join(files, "*.test.ts"), ACCEPT_BUDGET_MS: "6000" })
-      const first = await accept(["--land"], env)
+      // Bare, so only the run's own stop can end the sleeper's grandchild (accept-ledger-land M1).
+      const first = await startAccept(["--land"], env, true).done
       const groups = Option.match(Option.liftPredicate(join(files, "groups.json"), existsSync), {
         onNone: () => [],
         onSome: (file): ReadonlyArray<number> => JSON.parse(readFileSync(file, "utf8")),
       })
-      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive: groups.filter(groupAlive) }).toEqual({
+      const alive = groups.filter(groupAlive)
+      // What the run left of this test's own stand-in, ended here so a red run leaks nothing.
+      for (const group of alive) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
+      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
         failed: true,
         inTime: true,
         closing: Option.some({ mode: "land", passed: 1, failed: 1, owed: 1, deep: 0, budget: 1 }),
@@ -357,10 +373,10 @@ const DEEP_STAND_INS = {
     'test("sleeps", async () => {',
     '  const first = !existsSync(join(dir, "slept"))',
     '  writeFileSync(join(dir, "slept"), "")',
-    '  const child = Bun.spawn(["sleep", "120"], { detached: true, stdout: "ignore" })',
+    GRANDCHILD,
     '  writeFileSync(join(dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
     "  await Bun.sleep((first && 60_000) || 1000)",
-    "  child.kill()",
+    "  process.kill(-child.pid, \"SIGKILL\")",
     "})",
     "",
   ].join("\n"),
