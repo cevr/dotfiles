@@ -1,3 +1,4 @@
+// accept: deep (15.5 s alone on a quiet host: 1-minute load 15.8–16.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode at a phone's size (45 columns by 25 rows), a
 // scripted model that asks a question of sixty lines through the built-in
 // `question` tool, or through `ask_user_async` answered from /answer's form.

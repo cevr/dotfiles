@@ -1,3 +1,4 @@
+// accept: deep (16.1 s alone on a quiet host: 1-minute load 13.7–14.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-waiting.ts with the Prime look and the orchestrate
 // plugin against an OpenCode checkout: a worker backgrounds a long shell and a
 // short one and ends its turn, so its row waits and the host's Subagents

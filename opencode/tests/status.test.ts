@@ -1,3 +1,4 @@
+// accept: deep (21.0 s alone on a quiet host: 1-minute load 72.7–74.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode, real status plugin, fake pool/bridge RPC,
 // real logged and running subagent; shared status.ts reads real unit logs.
 import { describe, expect, test } from "bun:test"

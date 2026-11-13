@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Row } from "@dotfiles/opencode-subagents/subagent-row"
-import { alarmLine, footer, layout, monitorLine, shellLine, subagentLine, tabBar, widths, type Cell, type Line } from "./panel.ts"
+import { alarmLine, footer, labelLine, layout, monitorLine, shellLine, subagentLine, tabBar, terminalLine, widths, type Cell, type Line, type Terminal } from "./panel.ts"
 import type { ShellEntry } from "./shells.ts"
 import type { WakeEntry } from "./wakes.ts"
 
@@ -122,6 +122,33 @@ describe("the other tabs' rows", () => {
       time: "12m",
       stale: "checked 30s ago",
     })
+  })
+})
+
+describe("a terminal's row", () => {
+  const server: Terminal = { title: "server", command: "/bin/zsh -l", status: "running", foregroundProcess: "bun" }
+
+  test("its title, what runs in front, and running, in the shell rows' words; no time, as the PTY service keeps no start", () => {
+    const line = terminalLine(server)
+    expect(line).toMatchObject({ glyph: "$", tone: "success", name: "server", status: "bun", state: "running", time: "" })
+    expect(text(layout(line, widths([line]), 80))).toMatch(/^\$ server {2}bun +running$/)
+    // With only its shell in front, the row says the command it runs.
+    expect(terminalLine({ ...server, foregroundProcess: "" })).toMatchObject({ status: "/bin/zsh -l" })
+  })
+
+  test("exited: its command and its exit code, in the error colour unless it exited 0", () => {
+    expect(terminalLine({ ...server, status: "exited", exitCode: 1 })).toMatchObject({ tone: "error", status: "/bin/zsh -l", state: "exited 1" })
+    expect(terminalLine({ ...server, status: "exited", exitCode: 0 })).toMatchObject({ tone: "muted", state: "exited 0" })
+    expect(terminalLine({ title: "zsh", command: "/bin/zsh", status: "exited" })).toMatchObject({ state: "exited ?" })
+  })
+
+  test("the tab's rows share their columns, the new-terminal row the name alone", () => {
+    const lines = [terminalLine(server), terminalLine({ title: "zsh", command: "/bin/zsh -l", status: "exited", exitCode: 1 }), labelLine("+ New terminal")]
+    expect(drawn(lines, 60)).toEqual([
+      expect.stringMatching(/^\$ server {10}bun +running$/),
+      expect.stringMatching(/^\$ zsh {13}\/bin\/zsh -l +exited 1$/),
+      "$ + New terminal",
+    ])
   })
 })
 

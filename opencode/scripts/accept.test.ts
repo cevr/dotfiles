@@ -5,12 +5,15 @@
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Option } from "effect"
 import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
 import { isSerial, plan, poolWidth, requestedWidth, scenariosOf, timingSigns } from "./accept-plan.ts"
+import { parseClosing, readLedger, tierOf } from "./accept-ledger.ts"
+import { table } from "./leaks.ts"
+import { acceptanceTests, acceptReach, load, packageOf, reach } from "./reach.ts"
 
 const ROOT = process.cwd()
 
@@ -119,53 +122,184 @@ const linesOf = (out: string) =>
     .split("\n")
     .map((line) => line.trim())
 
+/** A run of scripts/accept.ts with `args` and `env`, stdout and stderr in one stream so its lines keep their order. */
+const accept = async (args: ReadonlyArray<string>, env: typeof process.env) => {
+  const started = performance.now()
+  const run = owned(["/bin/sh", "-c", 'exec "$0" scripts/accept.ts "$@" 2>&1', process.execPath, ...args], { cwd: ROOT, env, stdout: "pipe" })
+  const out = await Bun.readableStreamToText(run.stdout)
+  const code = await run.exited
+  return { code, lines: linesOf(out).filter((line) => line !== ""), seconds: (performance.now() - started) / 1000 }
+}
+
+/** The environment of a run on a scratch lock and ledger, without the fork (its real-OpenCode tests skip). */
+const scratchEnv = (dir: string, extra: Record<string, string> = {}) => {
+  const { OPENCODE_DEV: _fork, ...inherited } = process.env
+  return { ...inherited, ACCEPT_LOCK: join(dir, "lock"), ACCEPT_LEDGER: join(dir, "ledger.json"), ...extra }
+}
+
+/** The closing line's counts, none when the run printed none. */
+const closingOf = (lines: ReadonlyArray<string>) => Option.flatMap(Option.fromNullishOr(lines.findLast((line) => line.startsWith("accept: land ") || line.startsWith("accept: owed ") || line.startsWith("accept: all "))), parseClosing)
+
+/** The files a --list printed as due. */
+const dueOf = (lines: ReadonlyArray<string>) => lines.flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^due: (\S+)/.exec(line)), (match) => String(match[1]))))
+
 describe("bun run accept", () => {
-  test("lists the pool, then the marked files one at a time", async () => {
-    const run = owned([process.execPath, "scripts/accept.ts", "--list", "--parallel=3"], { cwd: ROOT, stdout: "pipe", stderr: "pipe" })
-    const out = await Bun.readableStreamToText(run.stdout)
-    const code = await run.exited
-    const lines = linesOf(out).filter((line) => line !== "")
+  test("lists the pool, then the marked files one at a time, then the closing line", async () => {
+    using dir = scratch("accept-list-")
+    const { code, lines } = await accept(["--list", "--parallel=3"], scratchEnv(dir.path))
+    const pooled = lines.findIndex((line) => /^accept: \d+ files, \d+ at a time \(/.test(line))
     const serial = lines.findIndex((line) => line.endsWith("timing-sensitive files, one at a time"))
     const files = acceptance()
-    const pool = files.filter((file) => !isSerial(read(file)))
-    const heading = Option.map(Option.fromNullishOr(/^accept: (\d+) files, (\d+) at a time \(/.exec(String(lines[0]))), (match) => ({
+    const heading = Option.map(Option.fromNullishOr(/^accept: (\d+) files, (\d+) at a time \(/.exec(String(lines[pooled]))), (match) => ({
       files: Number(match[1]),
       width: Number(match[2]),
     }))
-    expect({ code, files: Option.map(heading, (each) => each.files), pool: lines.slice(1, serial), serial: lines.slice(serial + 1) }).toEqual({
+    expect({
+      code,
+      files: Option.map(heading, (each) => each.files),
+      pool: dueOf(lines.slice(pooled, serial)),
+      serial: dueOf(lines.slice(serial)),
+      closing: closingOf(lines),
+    }).toEqual({
       code: 0,
-      files: Option.some(pool.length),
-      pool,
+      files: Option.some(files.filter((file) => !isSerial(read(file))).length),
+      pool: files.filter((file) => !isSerial(read(file))),
       serial: files.filter((file) => isSerial(read(file))),
+      closing: Option.some({ mode: "all", passed: 0, failed: 0, owed: files.length, deep: 0, budget: 0 }),
     })
     // At most what --parallel asks, and at least one.
     expect(Option.getOrElse(Option.map(heading, (each) => each.width), () => 0)).toBeWithin(1, 4)
   })
 
   test(
-    "runs the pool to its end, then each marked file, in that order",
+    "runs the pool to its end, then each marked file, in that order; a file whose tests skip records no pass",
     async () => {
-      using lock = scratch("accept-lock-")
+      using dir = scratch("accept-run-")
       // tests/git-options.test.ts is unmarked; tests/tui-paint.test.ts is marked and, without OPENCODE_DEV, skips.
-      const { OPENCODE_DEV: _fork, ...inherited } = process.env
-      const env = { ...inherited, ACCEPT_LOCK: join(lock.path, "lock") }
-      // One stream, so accept's headings and bun's summaries keep their order.
-      const merged = 'exec "$0" scripts/accept.ts tests/tui-paint.test.ts tests/git-options.test.ts 2>&1'
-      const run = owned(["/bin/sh", "-c", merged, process.execPath], { cwd: ROOT, env, stdout: "pipe" })
-      const out = await Bun.readableStreamToText(run.stdout)
-      const code = await run.exited
-      // Each phase is its own bun test run: its heading, bun's banner with its width, then its summary.
-      const lines = linesOf(out).filter((line) => /^accept: \d|^bun test |^Ran \d+ tests? across/.test(line))
-      expect({ code, lines: lines.map((line) => line.replace(/ v[\d.]+ \(\w+\)/, "").replace(/ \(\d+ cores.*\)$/, "").replace(/ \[[\d.]+m?s\]$/, "")) }).toEqual({
+      const { code, lines } = await accept(["tests/tui-paint.test.ts", "tests/git-options.test.ts"], scratchEnv(dir.path))
+      const shown = lines
+        .filter((line) => /^accept: (\d|passed|owed|failed)/.test(line) || line.startsWith("owed: "))
+        .map((line) => line.replace(/ \(\d+ cores.*\)$/, "").replace(/ in [\d.]+ s/, ""))
+      expect({ code, shown, closing: closingOf(lines) }).toEqual({
         code: 0,
-        lines: [
+        shown: [
           "accept: 1 files, 1 at a time",
-          "bun test 1x PARALLEL",
-          "Ran 2 tests across 1 file.",
+          "accept: passed tests/git-options.test.ts",
           "accept: 1 timing-sensitive files, one at a time",
-          "bun test 1x PARALLEL",
-          "Ran 1 test across 1 file.",
+          "accept: owed tests/tui-paint.test.ts",
+          ...acceptance()
+            .filter((file) => file !== "tests/tui-paint.test.ts" && file !== "tests/git-options.test.ts")
+            .map((file) => `owed: ${file} (not named)`),
+          expect.stringMatching(/^owed: tests\/tui-paint\.test\.ts \(skipped: \d+ of \d+ tests skipped: no pass recorded\)$/),
         ],
+        closing: Option.some({ mode: "all", passed: 1, failed: 0, owed: acceptance().length - 1, deep: 0, budget: 0 }),
+      })
+      expect(Object.keys(ledgerAt(join(dir.path, "ledger.json")).passes)).toEqual(["tests/git-options.test.ts"])
+    },
+    RUN_MS,
+  )
+})
+
+/** The passes a scratch ledger holds, by file. */
+const ledgerAt = (file: string) => readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, file).ledger
+
+describe("the acceptance tiers over the real tree", () => {
+  test("each file's acceptance reach is its reach less only in-package unit tests, benches and Markdown", async () => {
+    const workspace = await load()
+    const memo = new Map<string, ReadonlyArray<string>>()
+    const wrong = acceptanceTests(workspace).flatMap((file) => {
+      const all = reach(workspace, [file], memo)
+      const inputs = acceptReach(workspace, file, memo)
+      const extra = [...inputs].filter((each) => !all.has(each))
+      const dropped = [...all].filter((each) => !inputs.has(each))
+      const unexpected = dropped.filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))
+      return [...extra.map((each) => `${file}: ${each} is not in its reach`), ...unexpected.map((each) => `${file}: ${each} dropped`)]
+    })
+    expect(wrong).toEqual([])
+  })
+
+  test("every one-at-a-time file is deep, and every deep marker names its measured time", () => {
+    const files = acceptance()
+    expect(files.filter((file) => isSerial(read(file)) && tierOf(read(file)) !== "deep")).toEqual([])
+    const markers = files.flatMap((file) => read(file).split("\n").filter((line) => line.startsWith("// accept: deep")).map((line) => `${file}: ${line}`))
+    expect(markers.filter((line) => !/: \/\/ accept: deep \(\d+(\.\d+)? s alone on a quiet host: .+\)$/.test(line))).toEqual([])
+  })
+
+  test(
+    "--list prints each tier's due files and the closing line, and exits without taking the lock",
+    async () => {
+      using dir = scratch("accept-tiers-")
+      // The lock is held by this test's own process, alive: a run that took it would wait for good.
+      mkdirSync(join(dir.path, "lock"))
+      writeFileSync(join(dir.path, "lock", "owner.json"), JSON.stringify({ pid: process.pid, root: ROOT }))
+      const files = acceptance()
+      const land = await accept(["--land", "--list"], scratchEnv(dir.path))
+      const owed = await accept(["--owed", "--list"], scratchEnv(dir.path))
+      const deep = files.filter((file) => tierOf(read(file)) === "deep")
+      expect({ code: land.code, due: [...dueOf(land.lines)].sort(), closing: closingOf(land.lines) }).toEqual({
+        code: 0,
+        due: files.filter((file) => tierOf(read(file)) === "land"),
+        closing: Option.some({ mode: "land", passed: 0, failed: 0, owed: files.length, deep: deep.length, budget: 0 }),
+      })
+      expect({ code: owed.code, due: [...dueOf(owed.lines)].sort(), closing: closingOf(owed.lines) }).toEqual({
+        code: 0,
+        due: files,
+        closing: Option.some({ mode: "owed", passed: 0, failed: 0, owed: files.length, deep: 0, budget: 0 }),
+      })
+      expect(land.lines.concat(owed.lines).filter((line) => line.includes("waiting for the run"))).toEqual([])
+    },
+    RUN_MS,
+  )
+})
+
+/** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own. */
+const STAND_INS = {
+  "pass.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
+  "fail.test.ts": 'import { expect, test } from "bun:test"\ntest("fails", () => {\n  expect(1).toBe(2)\n})\n',
+  "sleep.test.ts": [
+    'import { test } from "bun:test"',
+    'import { writeFileSync } from "node:fs"',
+    'import { join } from "node:path"',
+    'test("sleeps", async () => {',
+    '  const child = Bun.spawn(["sleep", "120"], { detached: true, stdout: "ignore" })',
+    '  writeFileSync(join(import.meta.dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    "  await Bun.sleep(120_000)",
+    "})",
+    "",
+  ].join("\n"),
+}
+
+/** Whether any process still runs in the group `group` leads. */
+const groupAlive = (group: number) => table().some((row) => row.pgid === group)
+
+describe("a land run under its budget", () => {
+  test(
+    "passes one, fails one, stops and owes the sleeper with its own group, and records the one pass; a second run skips the pass",
+    async () => {
+      using dir = scratch("accept-land-")
+      const files = join(dir.path, "files")
+      mkdirSync(files)
+      for (const [name, body] of Object.entries(STAND_INS)) writeFileSync(join(files, name), body)
+      const env = scratchEnv(dir.path, { ACCEPT_FILES: join(files, "*.test.ts"), ACCEPT_BUDGET_MS: "6000" })
+      const first = await accept(["--land"], env)
+      const groups = Option.match(Option.liftPredicate(join(files, "groups.json"), existsSync), {
+        onNone: () => [],
+        onSome: (file): ReadonlyArray<number> => JSON.parse(readFileSync(file, "utf8")),
+      })
+      expect({ failed: first.code !== 0, inTime: first.seconds < 12, closing: closingOf(first.lines), groups: groups.length, alive: groups.filter(groupAlive) }).toEqual({
+        failed: true,
+        inTime: true,
+        closing: Option.some({ mode: "land", passed: 1, failed: 1, owed: 1, deep: 0, budget: 1 }),
+        groups: 2,
+        alive: [],
+      })
+      expect(Object.keys(ledgerAt(join(dir.path, "ledger.json")).passes)).toEqual([join(files, "pass.test.ts")])
+
+      const second = await accept(["--land"], env)
+      expect({ failed: second.code !== 0, closing: closingOf(second.lines), before: second.lines.filter((line) => line.startsWith("accept: 1 files passed before")).length }).toEqual({
+        failed: true,
+        closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 1, deep: 0, budget: 1 }),
+        before: 1,
       })
     },
     RUN_MS,

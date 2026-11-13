@@ -1,3 +1,4 @@
+// accept: deep (21.7 s alone on a quiet host: 1-minute load 7.2–7.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Runs scenarios/prime-kernel.ts with the Prime look and the real kernel (as
 // the agent's runtime) against an OpenCode checkout, and asserts on the
 // finished turn's frame: a cell that describes itself draws its description

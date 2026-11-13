@@ -273,11 +273,19 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         expect(rows[2]?.text).toContain("host-c · unreachable since ")
         expect(rows[2]?.text).toContain("Connection refused; the pace goes on without it")
 
-        // The readings say B is within its pace; A's two starts at 5% each put it over.
+        // The readings say B is within its pace; A's two starts at 5% each put it over. The pace is measured as soon as
+        // one account's reading is in, and B reads its two accounts one poll apart (a loaded host spreads them further),
+        // so wait for the pace that counts both: what the assertion below is about.
         const pace = (await until(
           () => rpc(b, "pace", { providerID: "anthropic" }),
-          (value) => typeof value === "object" && value !== null && "measured" in value && value.measured === true,
-          () => "B's pace",
+          (value) =>
+            typeof value === "object" &&
+            value !== null &&
+            "measured" in value &&
+            value.measured === true &&
+            "reason" in value &&
+            String(value.reason).includes("across 2 accounts"),
+          () => "B's pace with both accounts read",
         )) as { ok: boolean; reason: string; retryAt?: number }
         expect(pace.ok).toBe(false)
         expect(pace.reason).toBe(

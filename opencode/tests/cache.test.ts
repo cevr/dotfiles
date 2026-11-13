@@ -1,3 +1,4 @@
+// accept: deep (36.0 s alone on a quiet host: 1-minute load 5.5–6.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Real OpenCode with the Prime look and the real cache mod (cmd/cache), a
 // scripted model priced like Sonnet whose cache lives 2s: scenarios/cache.ts
 // runs one turn whose 4s shell call outlives the cache, so the second request

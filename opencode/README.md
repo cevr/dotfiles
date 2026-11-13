@@ -283,6 +283,7 @@ data says, how long since it was last heard from:
 Subagents 5  ·  Shell 2  ·  Terminals  ·  Wakes 1  ·  Monitors 1                    esc
 ◆ implementor gpt  Corpus HP r1           Porting Corpus HP              working  1s
 ◇ printf 'serving on :4000\n'; sl…  serving on :4000                    running  12s
+$ server  sh -c sleep 600                                              running
 ◇ Check the deploy: the canary  wake · once                            pending  in 9m 59s
 ◆ echo still-waiting  still-waiting                          watching  40s  checked 0s ago
 Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs
@@ -291,8 +292,17 @@ Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs
 As the panel narrows the parts drop in turn: the last-heard age, the model's
 version, the model, the state's word, then what it last did; the name is cut,
 then the role drops, and the name and the time go last.
+
+A Terminals row has its terminal from the row slot's input (the host's
+persistent PTY record): its title, what runs in front (else its command) and
+its state in a shell row's words, `running` or `exited 3` (in the error
+colour unless it exited 0). It has no time: the PTY service keeps no start
+time for a terminal.
+
 `tests/prime-panel.test.ts` runs `scenarios/prime-panel.ts` at 160 and 80
-columns (needs the fork's `panel-slots` branch).
+columns (needs the fork's `panel-slots` and `panel-terminal-state`
+branches); the rows it asserts and the scenario waits for are one list,
+`ROWS` in `scenarios/prime-panel-rows.ts`.
 
 ↑/↓ move the highlight, Enter shows the whole entry (its full note, a
 monitor's newest output in full), ctrl+d cancels it as `wake_cancel` does,
@@ -3046,8 +3056,9 @@ effort on whichever model it gets. No generated prompt is edited by hand.
 ```sh
 export OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look
 bun run gate              # lint, agents --check, typecheck and unit tests at once
-bun run accept:affected   # the real-OpenCode tests that reach what changed
-bun run accept            # all of them, in parallel
+bun run accept:land       # the due land files, within 60 s; the rest owed by name (accept:affected is the same)
+bun run accept:owed       # every due file, deep ones too, no deadline
+bun run accept            # all of them, the ledger ignored
 ```
 
 `bun run gate` (`scripts/gate.ts`) links the fork, then runs five legs at
@@ -3061,32 +3072,74 @@ the fork's commit, diff and lock file). `scripts/reach.ts` derives that
 reach; `bun scripts/gate.ts --all` ignores the cache.
 
 The acceptance tests in `tests/` run real OpenCode, so they are not in the
-gate. `bun run accept` runs them all: first a parallel pool as wide as the
-cores the host's 1-minute load leaves free at the start (at least one, at most
-`--parallel=N`), then, once the pool has ended, the files marked
-`// accept: one at a time (<why>)` one by one. A file carries that marker when
-it asserts an upper bound on a time, rate or CPU (a duration, that something
-happened by a time, frames a second, a share of a core), which load breaks.
-A file that only waits for events under generous deadlines runs in the pool:
-load makes it slower, not wrong. `scripts/accept.test.ts` fails when a file
-whose text, or the scenario it drives, asserts such a bound lacks the marker
-(`scripts/accept-plan.ts`). `bun run accept:affected
-[base]` runs those that reach a file changed since `base` (default: the merge
-base with origin/main), following the scenarios, run scripts and plugin
-paths they name, and all of them when a shared input changed. A fork change
-is outside this repository: run `bun run accept` after one. `bun run test`
-still runs every file one after another.
+gate. Each file runs as its own `bun test`, in a process group of its own, and
+a host-level ledger of passes (`ACCEPT_LEDGER`, default
+`~/.cache/opencode-accept/passed.json`, `scripts/accept-ledger.ts`) records
+each pass under a key over what the file loads (`acceptKey` in
+`scripts/reach.ts`): its reach less the packages' own unit tests, benches and
+Markdown, and the acceptance shared inputs (root manifest, lock file, bunfig,
+tsconfig, `scripts/reach.ts`, `scripts/link-fork.ts`, the runner's scripts,
+Bun's version, the fork's path, commit, diff and lock file, the ledger's
+version), not the lint policy or the gate. A file is **due** when the ledger
+holds no pass with its current key younger than 24 h, so a fork change makes
+every file due, and a pass expires after a day (the daily run). A pass needs
+exit 0, tests that ran with none failed, no leaked server and no bun test
+flags. A skipped test means no pass unless the file declares it with
+`// accept: may skip <n> (<why>)` and `OPENCODE_DEV` is set: then up to `<n>`
+tests may skip, as long as one ran (`tests/idle-compact.test.ts` runs one of
+two cases by the fork's version). An undeclared skip, or any skip without
+`OPENCODE_DEV`, is owed.
+Inputs outside `opencode/` are in no key: `tests/orchestrate.test.ts` reads
+`../skills/orchestrate`, so a skill change reaches it only through the 24 h
+expiry.
+
+A file's tier is in its own text. A file marked `// accept: one at a time
+(<why>)` (it asserts an upper bound on a time, rate or CPU: a duration, that
+something happened by a time, frames a second, a share of a core, which load
+breaks) or `// accept: deep (<measured s> s alone on a quiet host: <why>)` (it
+takes over 15 s alone) is **deep**; every other file is **land**.
+`scripts/accept.test.ts` fails when a file whose text, or the scenario it
+drives, asserts such a bound lacks the one-at-a-time marker
+(`scripts/accept-plan.ts`), or a deep marker names no measured time.
+
+- `bun run accept:land [base]` (`accept:affected`, which `rift.accept` runs,
+  is the same) runs the due land files: first those whose own text or scenario
+  names a package changed since `base` (default: the merge base with
+  origin/main; `A..B` replays a range) or that reach a changed file outside the
+  packages, then the others, each group cheapest first by the recorded times.
+  It is as wide as the free cores, at least 4, and ends within 60 s of its
+  start (`ACCEPT_BUDGET_MS`), the lock wait aside (printed): no file starts
+  after second 45, the files still running at second 50 are stopped with every
+  process they started (their group, then each descendant by pid), and the
+  leak check has the rest. Every due file it did not run is owed, by name, and
+  owed files do not fail it. A land file at or over its 20 s share on a quiet
+  host (1-minute load under half the cores at the start and the end) fails the
+  run; on a loaded host it is reported, not judged.
+- `bun run accept:owed` runs every due file of both tiers with no deadline:
+  first a pool as wide as the cores the host's 1-minute load leaves free (at
+  least one, at most `--parallel=N`), then the one-at-a-time files one by one.
+  A file over the 60 s deep share is reported.
+- `bun run accept` runs every file the same way, the ledger ignored, passes
+  still recorded.
+
+Each ends with the owed files, one per line, and one closing line that
+accounts for every acceptance file: `accept: land <p> passed, <f> failed, <o>
+owed in <s> s (owed: <d> deep, <b> past the budget; run bun run accept:owed)`.
+`--list` prints the due files (in a land run, which of them the recorded times
+say fit) and the closing line without taking the lock; named files narrow a
+run, and the others it would have run are owed. `bun run test` still runs
+every file one after another.
 
 A test starts what it runs (opencode-drive, an OpenCode server, a
 `run --standalone`) through `tests/owned.ts`, which stops everything that
 child started when it exits, or when the test process does after a failure or
 a timeout. opencode-drive puts its server and TUIs in process groups of their
 own and leaves them running when it is stopped, so `owned` follows the
-child's descendants, not only its group. The accept run is a process group of
-its own, followed the same way (`scripts/leaks.ts`): an OpenCode server or
-drive run still alive 5 s after the run ends is a leak, which it names, stops
-and fails the run on. It only ever names the run's own descendants, never the
-owner's servers or TUIs.
+child's descendants, not only its group. Each file's `bun test` in an accept
+run is a process group of its own, followed the same way (`scripts/leaks.ts`):
+an OpenCode server or drive run still alive 5 s after the file ends is a leak,
+which it names, stops and fails the file on. It only ever names the run's own
+descendants, never the owner's servers or TUIs.
 
 `bun run lint` is oxlint, then the Effect debt ratchet. oxlint's errors are the
 layout fence (`.oxlintrc.json`, one import override per context; see

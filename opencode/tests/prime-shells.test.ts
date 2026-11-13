@@ -1,3 +1,4 @@
+// accept: deep (27.8 s alone on a quiet host: 1-minute load 11.1–13.9 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // Public UI seam: real OpenCode with the fork's background shells, Prime and a
 // scripted model (scenarios/prime-shells.ts). Read off the frames: a
 // foreground call past its limit moves to the background, returns its handle
