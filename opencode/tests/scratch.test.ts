@@ -1,4 +1,3 @@
-// accept: one at a time (an owned child must run and clean up within twenty seconds).
 import { describe, expect, test } from "bun:test"
 import { Array as Arr } from "effect"
 import { existsSync, readdirSync } from "node:fs"

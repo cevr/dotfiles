@@ -1,4 +1,3 @@
-// accept: one at a time (it measures waitUntil against seconds of real delay).
 // tests/wait.ts: a test's wait for background work is bounded by the event it waits for, not by a
 // second or two of wall clock that a loaded machine outruns (batch av: the scratch guard's child run
 // went red at a load of 316, the likeliest cause cmd/pool's 1 s waitFor).

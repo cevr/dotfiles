@@ -1,4 +1,4 @@
-// accept: one at a time (its scenario reads frames at set times after Escape).
+// accept: one at a time (it asserts what Escape does inside the 5 s grace and past it, pressed at set times).
 // Runs scenarios/prime-escape.ts with the Prime look against an OpenCode
 // checkout and asserts what one Escape does on a busy session with an empty
 // composer: at 1 s it cancels (the prompt leaves the transcript and is back in

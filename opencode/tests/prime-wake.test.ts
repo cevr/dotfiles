@@ -1,4 +1,3 @@
-// accept: one at a time (it waits on a real TUI for a background shell's notice to wake the worker).
 // Runs scenarios/prime-wake.ts with the Prime look and the orchestrate plugin
 // against an OpenCode checkout: a worker moves a shell command (one that runs
 // until the scenario releases it) to the background and ends its turn. While it waits its live row reads

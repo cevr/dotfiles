@@ -1,4 +1,3 @@
-// accept: one at a time (it bounds how soon the session is back after a reconnect).
 // A TUI attached to the background service keeps its session across a
 // service restart. The owner's TUIs are `opencode -s <id>` on the service
 // `daily` restarts on every install; the TUI reconnects by itself and must

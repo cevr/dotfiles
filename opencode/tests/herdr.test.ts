@@ -1,18 +1,24 @@
-// accept: one at a time (it drives a real herdr server and TUI under the scenario's deadlines; it ran red under batch bi's load).
 // Real OpenCode, the real herdr reporter (cmd/herdr), a scripted model and a
 // fake herdr socket: scenarios/herdr.ts runs one turn with a shell call while
 // the TUI believes it runs in herdr pane wtest:p1, and herdr hears the session
-// go to work, what runs, and go idle again.
+// go to work, what runs, and go idle again. The scenario then stops the TUI
+// with SIGTERM and waits for herdr to hear the pane released (an event, not
+// the driver's one-second kill grace); it listens as herdr itself and prints
+// what herdr heard, which this test reads.
 import { describe, expect, test } from "bun:test"
 import { rmSync } from "node:fs"
 import { join } from "node:path"
+import { Schema } from "effect"
 import type { Received } from "../mods/herdr/laws.ts"
-import { listen } from "../mods/herdr/herdr/fake-server.ts"
 import { owned } from "./owned.ts"
 import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/herdr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
+
+/** What the scenario printed herdr heard, in arrival order. */
+const Heard = Schema.fromJsonString(Schema.Array(Schema.Struct({ method: Schema.String, params: Schema.Unknown })))
+const HEARD = /^herdr heard: (.*)$/m
 
 const field = (request: Received, key: string): unknown =>
   typeof request.params === "object" && request.params !== null ? Reflect.get(request.params, key) : undefined
@@ -20,20 +26,19 @@ const field = (request: Received, key: string): unknown =>
 describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
   test("a turn that runs a shell command reports working, with the command as its label, then idle, and releases the pane on exit", async () => {
     const dir = scratch("herdr-").path
-    const server = listen(join(dir, "herdr.sock"))
-    if ("failed" in server) throw new Error(`the fake herdr could not listen: ${server.failed}`)
     try {
       const child = owned(["bunx", "opencode-drive", "run", "scenarios/herdr.ts"], {
         cwd: join(import.meta.dir, ".."),
-        env: { ...process.env, HERDR_FAKE_SOCKET: server.path, OPENCODE_DRIVE_MEDIA_DIR: join(dir, "media") },
+        env: { ...process.env, HERDR_FAKE_SOCKET: join(dir, "herdr.sock"), OPENCODE_DRIVE_MEDIA_DIR: join(dir, "media") },
         stdout: "pipe",
         stderr: "pipe",
       })
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
       if (code !== 0) throw new Error(`the herdr scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}`)
-      const log = JSON.stringify(server.received(), null, 1)
+      const [, log = ""] = HEARD.exec(stdout) ?? []
+      const all: ReadonlyArray<Received> = Schema.decodeUnknownSync(Heard)(log)
       const bySeq = new Map<string, Received>()
-      for (const request of server.received()) {
+      for (const request of all) {
         const seq = String(field(request, "seq"))
         if (bySeq.has(seq)) expect(bySeq.get(seq), `a seq sent twice is a retry of one request:\n${log}`).toEqual(request)
         else bySeq.set(seq, request)
@@ -68,7 +73,6 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
       // Closing the TUI releases the pane.
       expect(received.at(-1)?.method, log).toBe("pane.release_agent")
     } finally {
-      server.stop()
       rmSync(dir, { recursive: true, force: true })
     }
   }, 150_000)

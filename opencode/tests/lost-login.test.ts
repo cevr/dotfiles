@@ -1,4 +1,3 @@
-// accept: one at a time (its scenario waits on a real TUI for a login to expire and the pool to move on).
 // Public UI seam: real OpenCode, the real pool and status plugins, a login
 // store on disk and a fake token endpoint. A pooled store login whose refresh
 // token the endpoint refuses shows in the sidebar's Pool section, with the

@@ -1,4 +1,4 @@
-// accept: one at a time (it bounds a retry time against the clock and waits under deadlines).
+// accept: one at a time (it bounds a retry time against the clock).
 // The fleet across two real OpenCode servers on this machine, standing in for
 // the Mac and the workbox. Each is the fork's own `serve --service`, in its
 // own scratch HOME, publishing its service file as the live one does.

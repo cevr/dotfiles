@@ -1,10 +1,13 @@
 // How `bun run accept` orders its files: the acceptance files run in a parallel
 // pool as wide as the host can take at the start, then the timing-sensitive
-// ones one at a time. A file is timing-sensitive when it says so itself, with
-// the marker line (`// accept: one at a time`, and why) in its own text; the
+// ones one at a time. A file is timing-sensitive when it asserts an upper bound
+// on a time, rate or CPU (how long something took at most, that it happened by a
+// time, how many frames a second, what share of a core): a loaded host breaks
+// those. A wait for an event under a generous deadline only takes longer there,
+// and a lower bound (at least 5 s between retries) only gains slack. The file says
+// so itself, with the marker line (`// accept: one at a time (<why>)`); the
 // runner keeps no list of them. scripts/accept.test.ts checks that every file
-// whose text, or the scenario it drives, measures time or waits under a short
-// deadline carries the marker.
+// whose text, or the scenario it drives, asserts such a bound carries the marker.
 import { Option } from "effect"
 
 /** The marker line a timing-sensitive acceptance file carries: `// accept: one at a time (<why>)`. */
@@ -13,33 +16,29 @@ export const SERIAL_MARKER = /^\/\/ accept: one at a time\b/m
 /** Whether an acceptance file's text marks it timing-sensitive. */
 export const isSerial = (text: string) => SERIAL_MARKER.test(text)
 
-/** A deadline shorter than this, named as a `_MS` constant, is short enough that a loaded host breaks it. */
-const SHORT_MS = 30_000
-
-/** A number as written in source: `20_000`, `150`. */
-const numberOf = (written: string) => Number(written.replaceAll("_", ""))
+/** An assertion: a line that calls `expect(`. */
+const ASSERTS = /\bexpect\(/
+/** A matcher that bounds a number from above: what load makes larger can break it. */
+const BOUND = /\.(?:toBeLessThan|toBeLessThanOrEqual|toBeWithin)\(/
+/** What names a time, a rate or CPU in such a line. */
+const MEASURE = /Date\.now|performance\.now|_MS\b|\d_000\b|\.at\b|\bat\[|\bdue\b|\bbegan\b|\bstarted\b|\bseconds\b|\bretryAt\b|\bshare\b|\bloops\b|\bcpu\b|\bBUDGET\b|\bQUIET\b/
+/** A comparison with a `_MS` budget inside an assertion, the rows over it expected none: `expect(rows.filter((row) => !(row.cpu < LIVE_CPU_MS))).toEqual([])`. */
+const AGAINST_BUDGET = /[<>]=?\s*[A-Z][A-Z_]*_MS\b/
 
 /**
- * Why a file's text reads as timing-sensitive, one line per sign; none when it reads as not:
- * - it measures elapsed time (`Date.now() - start`, `performance.now() - t`, `start + ms - Date.now()`);
- * - it names a deadline under 30 s (`const BACK_WITHIN_MS = 20_000`);
- * - it asserts a bound on a time, a share or a count of frames (`toBeLessThan(due + 5_000)`,
- *   `expect(result.quiet.loops).toBeLessThan(QUIET)`).
+ * Why a file's text reads as timing-sensitive, one line per assertion that bounds a time, a rate
+ * or CPU from above; none when it reads as not. Waiting (`waitUntil`, a retry, a `_MS` deadline)
+ * is no sign, nor is a lower bound (`toBeGreaterThanOrEqual(5_000)`): only an assertion that a
+ * measured number stays under a limit is.
+ * - `expect(Date.now() - started).toBeLessThan(5_000)`, `expect(summaries[0]?.at).toBeLessThan(due + 5_000)`;
+ * - `expect(result.quiet.loops).toBeLessThan(QUIET)`, `expect(result.busy[0]!.share).toBeLessThan(BUDGET)`;
+ * - `expect(locations.filter((location) => !(location.cpu < LIVE_CPU_MS)))`.
  */
-export const timingSigns = (text: string): ReadonlyArray<string> => {
-  const lines = text.split("\n")
-  // `Date.now() - 1000` sets a time in the past; only a name or a call after the minus measures.
-  const elapsed = lines.filter((line) => /\b(?:Date|performance)\.now\(\)\s*-\s*[A-Za-z_(]|-\s*(?:Date|performance)\.now\(\)/.test(line))
-  const deadlines = lines.filter((line) => [...line.matchAll(/\bconst [A-Z][A-Z_]*_MS = ([\d_]+)\b/g)].some((named) => numberOf(String(named[1])) < SHORT_MS))
-  const bounds = lines.filter(
-    (line) => /toBeLessThan(?:OrEqual)?\(/.test(line) && /_MS\b|\d_000\b|\.at\b|\bbegan\b|\bstarted\b|\bdue\b|\bBUDGET\b|\bshare\b|\bloops\b|Date\.now/.test(line),
-  )
-  return [
-    ...elapsed.map((line) => `measures elapsed time: ${line.trim()}`),
-    ...deadlines.map((line) => `names a short deadline: ${line.trim()}`),
-    ...bounds.map((line) => `bounds a time or rate: ${line.trim()}`),
-  ]
-}
+export const timingSigns = (text: string): ReadonlyArray<string> =>
+  text
+    .split("\n")
+    .filter((line) => ASSERTS.test(line) && ((BOUND.test(line) && MEASURE.test(line)) || AGAINST_BUDGET.test(line)))
+    .map((line) => `bounds a time, rate or CPU from above: ${line.trim()}`)
 
 /** The scenarios an acceptance file drives (`scenarios/<name>.ts`, as `opencode-drive run` takes them). */
 export const scenariosOf = (text: string): ReadonlyArray<string> => [...new Set([...text.matchAll(/\bscenarios\/[\w-]+\.ts\b/g)].map((match) => match[0]))]

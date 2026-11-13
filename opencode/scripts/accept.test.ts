@@ -1,8 +1,9 @@
 // `bun run accept`'s order (scripts/accept-plan.ts, scripts/accept.ts): the
 // pool first, as wide as the host's load leaves room for, then the files marked
 // `// accept: one at a time`, one at a time; and every acceptance file that
-// measures time or waits under a short deadline (its own text or the scenario
-// it drives) carries that marker. Run from opencode/, as the gate runs it.
+// asserts an upper bound on a time, rate or CPU (its own text or the scenario
+// it drives) carries that marker, where a file that only waits for events does
+// not need it. Run from opencode/, as the gate runs it.
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -53,18 +54,31 @@ describe("the acceptance run's plan", () => {
     ])
   })
 
-  test("reads a timing sign where a file measures time, names a short deadline or bounds a time, and none where it only sets a time", () => {
-    expect(timingSigns("expect(Date.now() - started).toBeLessThan(5_000)").length).toBeGreaterThan(0)
-    expect(timingSigns("yield* Effect.sleep(Math.max(0, start + ms - Date.now()))").length).toBeGreaterThan(0)
-    expect(timingSigns("const BACK_WITHIN_MS = 20_000")).toEqual(["names a short deadline: const BACK_WITHIN_MS = 20_000"])
-    expect(timingSigns("expect(result.quiet.loops).toBeLessThan(QUIET)").length).toBeGreaterThan(0)
-    expect(timingSigns(["const TIMEOUT_MS = 180_000", "login(account, Date.now() - 1000)", "expect(rows.length).toBeLessThan(3)"].join("\n"))).toEqual([])
+  test("reads a timing sign where a file asserts a time, rate or CPU stays under a limit, and none where it only waits or bounds from below", () => {
+    const signed = [
+      "expect(Date.now() - started).toBeLessThan(5_000)",
+      "expect(summaries[0]?.at).toBeLessThan(due + 5_000)",
+      "expect(result.quiet.loops).toBeLessThan(QUIET)",
+      "expect(result.busy[0]!.share).toBeLessThan(BUDGET)",
+      "expect(result.locations.filter((location) => !(location.cpu < LIVE_CPU_MS))).toEqual([])",
+    ]
+    expect(signed.filter((line) => timingSigns(line).length === 0)).toEqual([])
+    expect(timingSigns("expect(Date.now() - started).toBeLessThan(5_000)")).toEqual(["bounds a time, rate or CPU from above: expect(Date.now() - started).toBeLessThan(5_000)"])
+    const unsigned = [
+      "const BACK_WITHIN_MS = 20_000",
+      "await waitUntil(\"the dock\", () => settled, BACK_WITHIN_MS)",
+      "yield* Effect.sleep(Math.max(0, start + ms - Date.now()))",
+      "expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(5_000)",
+      "expect(rows.length).toBeLessThan(3)",
+      "if (Date.now() > deadline) return expect.unreachable(label)",
+    ]
+    expect(unsigned.flatMap(timingSigns)).toEqual([])
     expect(scenariosOf('owned(["bunx", "opencode-drive", "run", "scenarios/prime-wake.ts"])')).toEqual(["scenarios/prime-wake.ts"])
   })
 })
 
 describe("the acceptance files", () => {
-  test("every one that measures time or waits under a short deadline, in its own text or the scenario it drives, is marked one at a time", () => {
+  test("every one that asserts an upper bound on a time, rate or CPU, in its own text or the scenario it drives, is marked one at a time", () => {
     const unmarked = acceptance().flatMap((file) => {
       const text = read(file)
       const driven = scenariosOf(text).filter((scenario) => existsSync(join(ROOT, scenario)))
@@ -75,22 +89,27 @@ describe("the acceptance files", () => {
     expect(unmarked).toEqual([])
   })
 
-  test("the files batch bi's load turned red, and those that wait on a real TUI or herdr, are marked", () => {
-    const judged = [
-      "tests/plugin-start.test.ts",
-      "tests/herdr.test.ts",
-      "tests/tui-paint.test.ts",
-      "tests/pool-store-refresh.test.ts",
-      "tests/reconnect-session.test.ts",
-      "tests/dock-reconnect.test.ts",
-      "tests/gamut.test.ts",
-      "tests/lost-login.test.ts",
-      "tests/escape-send.test.ts",
-      "tests/escape-states.test.ts",
-      "tests/escape-subagent.test.ts",
-      "tests/prime-wake.test.ts",
-    ]
-    expect(judged.filter((file) => !isSerial(read(file)))).toEqual([])
+  test("the files the survey judged: those that measure are marked, those that only wait for events are not", () => {
+    // Measured: setup CPU, paints a second, a refresh's duration, the dock's settle time, a stop check's
+    // requests within 6.5 s, a 1 s stall under the 2 s threshold. The rest wait for events under
+    // generous deadlines (herdr's release among them, since the scenario waits for it).
+    const judged = {
+      "tests/plugin-start.test.ts": true,
+      "tests/tui-paint.test.ts": true,
+      "tests/pool-store-refresh.test.ts": true,
+      "tests/dock-reconnect.test.ts": true,
+      "tests/escape-send.test.ts": true,
+      "tests/prime-escape.test.ts": true,
+      "tests/stall.test.ts": true,
+      "tests/herdr.test.ts": false,
+      "tests/reconnect-session.test.ts": false,
+      "tests/gamut.test.ts": false,
+      "tests/lost-login.test.ts": false,
+      "tests/escape-states.test.ts": false,
+      "tests/escape-subagent.test.ts": false,
+      "tests/prime-wake.test.ts": false,
+    }
+    expect(Object.fromEntries(Object.keys(judged).map((file) => [file, isSerial(read(file))]))).toEqual(judged)
   })
 })
 

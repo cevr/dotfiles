@@ -13,9 +13,8 @@
 // The files run in two phases (scripts/accept-plan.ts): first a parallel pool
 // as wide as the cores the host's 1-minute load leaves free at the start (at
 // most N with --parallel=N, at least one), then, once the pool has ended, the
-// files marked `// accept: one at a time` (those that measure time or wait on a
-// real TUI under a deadline), one at a time, so the run's own load never
-// starves them.
+// files marked `// accept: one at a time` (those that assert an upper bound on a
+// time, rate or CPU), one at a time, so the run's own load never breaks them.
 //
 // One run at a time per machine: each run already fills every free core, so a second
 // one waits for the lock (ACCEPT_LOCK, default $TMPDIR/opencode-accept.lock)
