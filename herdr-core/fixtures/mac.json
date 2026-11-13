@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "active": 1,
+  "selected": 1,
+  "workspaces": [
+    {"id": "w4", "custom_name": "manna - films", "identity_cwd": "/Users/cvr/Developer/personal/manna", "active_tab": 0, "tabs": [
+      {"custom_name": "Workbox continuation", "layout": {"Pane": 1}, "root_pane": 1, "panes": {"1": {"cwd": "/Users/cvr/Developer/personal/manna"}}}
+    ]},
+    {"id": "wC", "custom_name": "manna - apps", "identity_cwd": "/Users/cvr/Developer/personal/manna", "active_tab": 0, "tabs": [
+      {"custom_name": null, "layout": {"Pane": 2}, "root_pane": 2, "panes": {"2": {"cwd": "/Users/cvr/Developer/personal/manna",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixtureMannaApps01"]}}}}
+    ]},
+    {"id": "wN", "custom_name": null, "identity_cwd": "/Users/cvr/Developer/personal/manna", "active_tab": 0, "tabs": [
+      {"custom_name": null, "layout": {"Pane": 3}, "root_pane": 3, "panes": {"3": {"cwd": "/Users/cvr/Developer/personal/manna"}}}
+    ]},
+    {"id": "w5", "custom_name": null, "identity_cwd": "/Users/cvr/Developer/personal/budget", "active_tab": 0, "tabs": [
+      {"custom_name": null, "layout": {"Pane": 4}, "root_pane": 4, "panes": {"4": {"cwd": "/Users/cvr/Developer/personal/budget",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixtureBudget02"]}}}}
+    ]},
+    {"id": "w8", "custom_name": null, "identity_cwd": "/Users/cvr/Developer/personal/dotfiles", "active_tab": 0, "tabs": [
+      {"custom_name": null, "layout": {"Pane": 5}, "root_pane": 5, "panes": {"5": {"cwd": "/Users/cvr/Developer/personal/dotfiles", "label": "opencode",
+        "agent_resume": {"source": "dotfiles:opencode", "agent": "opencode", "argv": ["opencode", "-s", "ses_fixtureDotfiles03"]}}}}
+    ]},
+    {"id": "wK", "custom_name": "ergo macos run", "identity_cwd": "/Users/cvr/Developer/personal/ergo", "active_tab": 0, "tabs": [
+      {"custom_name": null, "layout": {"Pane": 6}, "root_pane": 6, "panes": {"6": {"cwd": "/Users/cvr/Developer/personal/ergo"}}}
+    ]},
+    {"id": "wM", "custom_name": "bite macos run", "identity_cwd": "/Users/cvr/.cache/bite-macos-run/wt", "active_tab": 0, "tabs": [
+      {"custom_name": null, "layout": {"Pane": 7}, "root_pane": 7, "panes": {"7": {"cwd": "/Users/cvr/.cache/bite-macos-run/wt"}}}
+    ]}
+  ]
+}

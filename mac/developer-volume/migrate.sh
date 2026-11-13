@@ -28,7 +28,7 @@ state=${DEVELOPER_VOLUME_STATE:-$HOME/.local/state/developer-volume}
 uid=$(id -u)
 rift_db=${DEVELOPER_MIGRATE_RIFT_DB:-"$HOME/Library/Application Support/rift/rift.sqlite"}
 syncthing_config=${DEVELOPER_MIGRATE_SYNCTHING_CONFIG:-"$HOME/Library/Application Support/Syncthing/config.xml"}
-opencode_config=$HOME/.config/opencode/opencode.json
+opencode_config=${DEVELOPER_MIGRATE_OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.json}
 launch_agents=${DEVELOPER_MIGRATE_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}
 # The estimated length of the whole run, in hours (RUNBOOK.md, measured on today's tree);
 # a launch agent due within it blocks the run.

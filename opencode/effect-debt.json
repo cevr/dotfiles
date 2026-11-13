@@ -183,7 +183,10 @@
     {"file":"mods/rift/process/land-receipts.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: no Effect test runner is installed, so each bun:test case runs a land over scratch git repositories with Effect.runPromise"},
     {"file":"mods/rift/process/land-receipts.test.ts","rule":"effect/noNodeBuiltinImport","reason":"test scratch adapter: the mod has no Effect platform layer, so the case lays out its scratch repositories and reads the marks and receipts they leave with node:fs, node:os and node:path"},
     {"file":"mods/rift/process/land-receipts.test.ts","rule":"effect/noGlobals","reason":"real-process harness: the case runs scripts/receipt.ts with Bun.spawnSync and this process's env, as a Rift's round would, and parses the land record as written"},
-    {"file":"scripts/receipt.ts","rule":"effect/noGlobals","reason":"CLI adapter: the root has no Effect platform layer, so the script reads its argv, env and cwd from process, runs each command with Bun.spawn, says its verdict on console.error and exits with process.exit"}
+    {"file":"scripts/receipt.ts","rule":"effect/noGlobals","reason":"CLI adapter: the root has no Effect platform layer, so the script reads its argv, env and cwd from process, runs each command with Bun.spawn, says its verdict on console.error and exits with process.exit"},
+    {"file":"scripts/verify.ts","rule":"effect/noGlobals","reason":"CLI and host adapter: the verify helpers serve the verify model with Bun.serve, ask the launched server over fetch with Basic auth (btoa), pass the caller's terminal env to the scratch OpenCode, stop a launch by its recorded pid with process.kill and set the exit code"},
+    {"file":"scripts/verify.ts","rule":"effect/noNodeBuiltinImport","reason":"CLI adapter: the helpers' paths are constants from the module's own URL (node:url, node:path), the doctor reads the load and cores (node:os), and the scratch secret comes from node:crypto before any Effect runs"},
+    {"file":"scripts/verify.ts","rule":"effect/noAsyncFunction","reason":"Bun.serve adapter: the verify model's fetch handler is the async function Bun.serve calls per request"}
   ],
   "budgets": {
     "cmd/anthropic-auth/server.test.ts": {"effect/noAs":47,"effect/noAsyncFunction":561,"effect/noChainedTypeAssertions":15,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":2,"effect/noGlobals":194,"effect/noKnownValueWidening":4,"effect/noModuleMocks":26,"effect/noNewError":15,"effect/noNewPromise":37,"effect/noNullish":34,"effect/noObjectParameters":1,"effect/noPromiseChainsInTests":8,"effect/noTernary":6,"effect/noThrowStatement":12,"effect/noTryCatch":46,"effect/noUnknownParameters":14,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":1},
@@ -199,7 +202,7 @@
     "cmd/git/server.ts": {"effect/noAs":3,"effect/noChainedTypeAssertions":1,"effect/noGlobals":1,"effect/noKnownValueWidening":1,"effect/noNewError":1,"effect/noNullish":2,"effect/noTernary":1},
     "cmd/git/tui.tsx": {"effect/noNullish":1,"effect/noTernary":1},
     "cmd/guard/server.test.ts": {"effect/noAs":2,"effect/noChainedTypeAssertions":1,"effect/noEffectRunInTests":1,"effect/noGlobals":2,"effect/noKnownValueWidening":1,"effect/noNullish":5,"effect/noTernary":1,"effect/noUnknownParameters":1,"effect/noUnsafeDictionaryType":3},
-    "cmd/guard/server.ts": {"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":2,"effect/noNewError":1,"effect/noNodeBuiltinImport":1,"effect/noNullish":1,"effect/noTernary":3},
+    "cmd/guard/server.ts": {"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":2,"effect/noNewError":1,"effect/noNodeBuiltinImport":1,"effect/noNullish":1,"effect/noTernary":2},
     "cmd/herdr/tui.tsx": {"effect/noAsyncFunction":4,"effect/noGlobals":1,"effect/noNullish":1},
     "cmd/idle-compact/server.test.ts": {"effect/noArrayFilterMap":5,"effect/noAs":4,"effect/noAsyncFunction":4,"effect/noChainedTypeAssertions":2,"effect/noEffectRunInTests":3,"effect/noFixedWaitInTests":1,"effect/noGlobals":1,"effect/noNewError":3,"effect/noNewPromise":1,"effect/noNullish":10,"effect/noTernary":4,"effect/noUnsafeDictionaryType":4},
     "cmd/idle-compact/server.ts": {"effect/noAs":1,"effect/noNewError":1,"effect/noNullish":1,"effect/noTernary":6},
@@ -415,7 +418,7 @@
     "mods/guard/shell-line.ts": {"effect/noNullish":7,"effect/noTernary":2},
     "mods/guard/sleep.ts": {"effect/noKnownValueWidening":1,"effect/noNullish":16,"effect/noTernary":3},
     "mods/guard/verdict.test.ts": {"effect/noNullish":1,"effect/noTernary":1},
-    "mods/guard/verdict.ts": {"effect/maxCognitiveComplexity":1,"effect/noNullish":8,"effect/noTernary":7,"effect/preferSchemaTaggedUnion":1,"effect/preferTaggedConstructors":3},
+    "mods/guard/verdict.ts": {"effect/noNullish":7,"effect/noTernary":7,"effect/preferSchemaTaggedUnion":1,"effect/preferTaggedConstructors":3},
     "mods/herdr/activity.test.ts": {"effect/noNullish":2},
     "mods/herdr/activity.ts": {"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":10,"effect/noTernary":5},
     "mods/herdr/herdr/fake-server.ts": {"effect/noGlobals":4,"effect/noNullish":6,"effect/noReflectGet":3,"effect/noRuntimeTypeof":3,"effect/noTernary":1,"effect/noTryCatch":2},

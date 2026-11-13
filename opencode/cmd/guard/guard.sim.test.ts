@@ -41,14 +41,49 @@ const SPEC = "/scratch/guard/policy/spec.json"
 const REFUSAL = "guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
 const RUN_LIMIT_MS = 300_000
 
-/** The machine: the server this test stands for (the guard reads `process.pid`), started with the spec file, beside a dev server. */
-const machine = () =>
+/** The worktree task: checkouts on a file system Rift clones, on one it does not, with and without a warm source. */
+const WORKTREE_TASK = "guard worktree"
+/** A checkout on ext4 whose origin a warm source on btrfs shares (Ergo's on the workbox). */
+const ERGO = "/scratch/guard/ergo"
+const ERGO_SOURCE = "/workspaces/ergo"
+/** A checkout on ext4 that no warm source shares. */
+const PLAIN = "/scratch/guard/plain"
+const WORKTREE_IN_WORK = "git worktree add -b feature ../feature"
+const WORKTREE_IN_ERGO = `cd ${ERGO} && env GIT_DIR=.git git worktree add ../ergo-feature`
+const WORKTREE_IN_PLAIN = `git -C ${PLAIN} worktree add ../plain-feature`
+const WORKTREE_CLEANUP = "sh -c 'git worktree list && git worktree prune' && git worktree remove ../old"
+const WORKTREE_PREFIX = "guard-worktree: "
+const RIFT_CREATE = 'make a Rift instead with the rift tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox'
+
+/** The task whose checkouts cannot all be read: a checkout under LOCKED, and the warm sources. */
+const WORKTREE_UNREADABLE_TASK = "guard worktree unreadable"
+const LOCKED = "/scratch/guard/locked"
+const WORKTREE_IN_LOCKED = `git -C ${LOCKED} worktree add ../locked-feature`
+
+/** The checkouts on the machine's disk: the work tree on btrfs, Ergo's and a plain one on ext4; Ergo's warm source on btrfs. */
+const CHECKOUTS = [
+  { root: WORK, filesystem: "btrfs", origin: Option.some("https://github.com/owner/work.git") },
+  { root: ERGO, filesystem: "ext4", origin: Option.some("git@github.com:cevr/ergo.git") },
+  { root: PLAIN, filesystem: "ext4", origin: Option.some("https://github.com/owner/plain.git") },
+]
+
+const READABLE: Plugins.GuardMachine["checkouts"] = {
+  checkouts: CHECKOUTS,
+  warmSources: [{ path: ERGO_SOURCE, origin: Option.some("https://github.com/cevr/ergo.git") }],
+}
+
+/** The same disk with a checkout under LOCKED it cannot read, and warm sources it cannot list. */
+const UNREADABLE: Plugins.GuardMachine["checkouts"] = { ...READABLE, unreadable: [LOCKED], sourcesFail: true }
+
+/** The machine: the server this test stands for (the guard reads `process.pid`), started with the spec file, beside a dev server, over `disk`. */
+const machine = (disk = READABLE) =>
   Plugins.guardMachine({
     processes: [
       { pid: process.pid, name: "bun", args: `bun tests/guard/run.ts ${SPEC}` },
       { pid: process.pid + 1, name: "vite", args: "node vite --port 5173" },
     ],
     repos: [WORK],
+    checkouts: disk,
   })
 
 /** Each task's calls, in order, as tests/guard/sim.ts scripts them (the subagent's own call aside: the world starts the child itself). */
@@ -68,6 +103,23 @@ const SCRIPTS = new Map<string, ReadonlyArray<{ readonly name: string; readonly 
       { name: "shell", input: { command: HEAVY_NICE, description: "Niceness of a heavy command" } },
       { name: "shell", input: { command: LIGHT_NICE, description: "Niceness of a light command" } },
       { name: "shell", input: { command: killByPattern(SPEC), description: "Kill by pattern" } },
+    ],
+  ],
+  [
+    WORKTREE_TASK,
+    [
+      { name: "shell", input: { command: WORKTREE_IN_WORK, description: "Worktree on btrfs" } },
+      { name: "bash", input: { command: WORKTREE_IN_ERGO, description: "Worktree beside a warm source" } },
+      { name: "shell", input: { command: WORKTREE_IN_PLAIN, description: "Worktree Rift cannot serve" } },
+      { name: "shell", input: { command: WORKTREE_CLEANUP, description: "Clean up old worktrees" } },
+    ],
+  ],
+  [
+    WORKTREE_UNREADABLE_TASK,
+    [
+      { name: "shell", input: { command: WORKTREE_IN_WORK, description: "Worktree on btrfs" } },
+      { name: "shell", input: { command: WORKTREE_IN_ERGO, description: "Worktree beside a warm source" } },
+      { name: "shell", input: { command: WORKTREE_IN_LOCKED, description: "Worktree in a checkout it cannot read" } },
     ],
   ],
 ])
@@ -95,6 +147,7 @@ const processes = (command: string): World.Process => {
   if (command === ROOT_SLEEP) return { exitCode: 0, stdout: "root slept\n", ms: 30_000 }
   if (command === CHILD_SLEEP) return { exitCode: 0, stdout: "child slept\n", ms: 60_000 }
   if (command === HEAVY_NICE || command === LIGHT_NICE) return { exitCode: 0, stdout: "0\n", ms: 30 }
+  if (command.includes(" worktree ")) return { exitCode: 0, stdout: "worktree ran\n", ms: 50 }
   return World.PROCESSES(command)
 }
 
@@ -115,11 +168,11 @@ const commandsOf = (world: World.World, id: string) =>
     .map((input) => input.command)
 
 /** One run of `task` in a root session, and of `child` in a subagent of it when given, to rest: the world, each session's tool answers. */
-const run = (seed: number, task: string, child: Option.Option<string> = Option.none()) =>
+const run = (seed: number, task: string, child: Option.Option<string> = Option.none(), disk = READABLE) =>
   Effect.gen(function* () {
     const offered: Array<ReadonlyArray<string>> = []
     const world = World.make({ seed, script: script(offered), processes })
-    const held = machine()
+    const held = machine(disk)
     yield* world.load(Plugins.guard(held), { directory: WORK, options: { home: HOME } })
     const root = yield* world.session(WORK)
     yield* world.prompt(root, task)
@@ -217,5 +270,51 @@ seeded(
       expect(kill?.name).toBe("shell")
       expect(kill?.error).toBe(true)
       expect(kill?.output).toContain("would also kill the OpenCode server this session runs on")
+    }),
+)
+
+seeded(
+  "git worktree add is refused where Rift serves the checkout (a cloning file system, or a warm source of it), naming the rift tool; elsewhere it runs, and list, prune and remove always run",
+  ({ seed, expect }) =>
+    Effect.gen(function* () {
+      const { world, root, tools } = yield* run(seed, WORKTREE_TASK)
+      expect(commandsOf(world, root)).toEqual([WORKTREE_IN_WORK, WORKTREE_IN_ERGO, WORKTREE_IN_PLAIN, WORKTREE_CLEANUP])
+      const [onBtrfs, besideSource, plain, cleanup, ...rest] = tools
+      expect(rest).toEqual([])
+      // On btrfs: refused in the guard's words, naming why and what to run instead.
+      expect(onBtrfs?.error).toBe(true)
+      expect(onBtrfs?.output).toContain(
+        `${WORKTREE_PREFIX}\`${WORKTREE_IN_WORK}\` makes a full copy of ${WORK}, and Rift makes a copy-on-write one here (its file system, btrfs, clones): ${RIFT_CREATE}`,
+      )
+      // On ext4 beside a warm source of the same origin (SSH against HTTPS), through a cd, an env prefix and the bash alias.
+      expect(besideSource?.error).toBe(true)
+      expect(besideSource?.output).toContain(`${WORKTREE_PREFIX}\`git worktree add ../ergo-feature\` makes a full copy of ${ERGO}`)
+      expect(besideSource?.output).toContain(`(its warm source is ${ERGO_SOURCE})`)
+      // On ext4 with no warm source, Rift cannot help: it runs.
+      expect(plain?.error).toBe(false)
+      expect(plain?.output).toContain("worktree ran")
+      expect(cleanup?.error).toBe(false)
+      // Only the allowed lines reached the shell, each once, as written.
+      expect(world.spawned().map((spawned) => spawned.command)).toEqual([WORKTREE_IN_PLAIN, WORKTREE_CLEANUP])
+    }),
+)
+
+seeded(
+  "git worktree add fails closed where the guard cannot read the checkout or the warm sources, and a cloning file system needs no warm source",
+  ({ seed, expect }) =>
+    Effect.gen(function* () {
+      const { world, tools } = yield* run(seed, WORKTREE_UNREADABLE_TASK, Option.none(), UNREADABLE)
+      const [onBtrfs, besideSource, locked, ...rest] = tools
+      expect(rest).toEqual([])
+      // The file system decides alone: the sources that cannot be listed are never asked.
+      expect(onBtrfs?.error).toBe(true)
+      expect(onBtrfs?.output).toContain("(its file system, btrfs, clones)")
+      expect(besideSource?.error).toBe(true)
+      expect(besideSource?.output).toContain(
+        `${WORKTREE_PREFIX}cannot tell whether Rift serves the checkout at ${ERGO} (workrift sources: workrift sources exited 1), so the guard refuses \`git worktree add ../ergo-feature\` rather than guess`,
+      )
+      expect(locked?.error).toBe(true)
+      expect(locked?.output).toContain(`${WORKTREE_PREFIX}cannot tell whether Rift serves the checkout at ${LOCKED} (${LOCKED}: permission denied)`)
+      expect(world.spawned()).toEqual([])
     }),
 )
