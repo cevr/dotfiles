@@ -553,7 +553,7 @@ export const make = (
         )
 
       yield* ctx.session.hook("retry", (event) =>
-        pool.retry({ providerID: event.model.providerID, sessionID: event.sessionID }).pipe(
+        pool.retry({ providerID: event.model.providerID, sessionID: event.sessionID, error: event.error.type }).pipe(
           Effect.map((failOver) => {
             if (failOver) event.decision = { retry: true, delay: 0 }
           }),

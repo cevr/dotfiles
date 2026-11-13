@@ -34,6 +34,14 @@ const PAST = [
 
 const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
 
+/**
+ * The revoked mode's seeds a sweep of 1 to 1000 found failing (pool-faults-bias), replayed on every run: a 401 held a
+ * revoked store login for the host's refresh (181 and on), then a restart between a 401 and its retry (60 and on).
+ */
+const REVOKED_PAST: ReadonlyArray<number> = [
+  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994,
+]
+
 const HOUR = 3_600_000
 const WORK = "/scratch/work"
 const STORE = "/scratch/store-auth"
@@ -53,6 +61,11 @@ type Command =
   | { readonly type: "burst"; readonly login: number }
   | { readonly type: "advance"; readonly ms: number }
   | { readonly type: "restart" }
+  /**
+   * The revoked mode's: the login's grant is revoked; from now on the provider refuses its access token (401) and
+   * every trade of its refresh token (400).
+   */
+  | { readonly type: "revoke"; readonly login: number }
 
 const commandOf = (pick: number, random: ReturnType<typeof generator>): Command => {
   if (pick < 2) return { type: "session" }
@@ -67,11 +80,25 @@ const commandOf = (pick: number, random: ReturnType<typeof generator>): Command 
   return { type: "restart" }
 }
 
-/** Up to 40 commands, the seed choosing each; the first opens a session. */
-const commandsOf = (seed: number): ReadonlyArray<Command> => {
-  const random = generator(`pool-faults:${seed}`)
+/** Up to 40 commands, `random` choosing each; the first opens a session. */
+const drawn = (random: ReturnType<typeof generator>): Array<Command> => {
   const count = 10 + below(random, 31)
   return [{ type: "session" }, ...Array.from({ length: count - 1 }, () => commandOf(below(random, 21), random))]
+}
+
+/** The default mode's commands of a seed. */
+const commandsOf = (seed: number): ReadonlyArray<Command> => drawn(generator(`pool-faults:${seed}`))
+
+/**
+ * The revoked mode's commands of a seed, from a generator of its own (the default mode's seeds keep their runs): the
+ * same draw, with each login revoked at a point the seed chooses, then each login's token past its expiry and a turn,
+ * so the pool trades every revoked token at least once.
+ */
+const revokedCommandsOf = (seed: number): ReadonlyArray<Command> => {
+  const random = generator(`pool-faults:revoked:${seed}`)
+  const commands = drawn(random)
+  for (const login of LOGINS.keys()) commands.splice(1 + below(random, commands.length), 0, { type: "revoke", login })
+  return [...commands, { type: "expire", login: 0 }, { type: "expire", login: 1 }, { type: "prompt", session: 0 }]
 }
 
 const slot = (label: string) => `${STORE}/.slots/anthropic/${encodeURIComponent(label)}`
@@ -82,6 +109,8 @@ interface Script {
   readonly tokens: Map<string, TokenFault>
   /** Logins whose next agent turn meets a one-off rate limit (not a plan limit). */
   readonly bursts: Set<string>
+  /** Logins whose refresh token is revoked: the endpoint refuses each trade of them, whatever `tokens` says. */
+  readonly revoked: Set<string>
   /** Each plan-limit refusal: the login, the provider's request index, and the reset it named. */
   readonly refusals: Array<{ readonly login: string; readonly index: number; readonly resetAt: number }>
   /** The store's files: how many writes failed so far. */
@@ -97,20 +126,29 @@ const tokenAnswer = (fault: TokenFault): Provider.TokenAnswer => {
 /** A provider's raw error body in a transcript: its JSON envelope or its error types. */
 const RAW = /"type":"error"|rate_limit_error|invalid_grant|overloaded_error|authentication_error/
 
-const run = (seed: number, check: (world: World.World, script: Script, command: Command, before: number) => void) =>
+const run = (
+  seed: number,
+  commands: ReadonlyArray<Command>,
+  check: (world: World.World, script: Script, command: Command, before: number) => void,
+) =>
   Effect.gen(function* () {
     const slots = MemorySlots.make()
-    const script: Script = { limits: new Map(), tokens: new Map(), bursts: new Set(), refusals: [], slots }
+    const script: Script = { limits: new Map(), tokens: new Map(), bursts: new Set(), revoked: new Set(), refusals: [], slots }
     const accounts = Provider.accounts(seed, LOGINS)
     const world = World.make({
       seed,
       script: () => World.say(""),
       anthropic: {
         accounts,
-        token: (login) => tokenAnswer(Option.getOrElse(Option.fromNullishOr(script.tokens.get(login)), (): TokenFault => "rotate")),
+        token: (login) => {
+          if (script.revoked.has(login)) return tokenAnswer("rejected")
+          return tokenAnswer(Option.getOrElse(Option.fromNullishOr(script.tokens.get(login)), (): TokenFault => "rotate"))
+        },
         script: ({ account, body }) => {
           const tools = body["tools"]
           const turn = Array.isArray(tools) && tools.length > 0
+          // A revoked login's grant is gone: its access token is refused too, the rotations it had before included.
+          if (script.revoked.has(account)) return { kind: "unauthorized" }
           const resetAt = Option.getOrElse(Option.fromNullishOr(script.limits.get(account)), () => 0)
           if (turn && resetAt > world.now()) {
             script.refusals.push({ login: account, index: world.provider().received().length, resetAt })
@@ -154,8 +192,9 @@ const run = (seed: number, check: (world: World.World, script: Script, command: 
       if (command.type === "token") script.tokens.set(LOGINS[command.login], command.answer)
       if (command.type === "write-fails") slots.failWrites(1)
       if (command.type === "burst") script.bursts.add(LOGINS[command.login])
+      if (command.type === "revoke") script.revoked.add(LOGINS[command.login])
     }
-    for (const command of commandsOf(seed)) {
+    for (const command of commands) {
       const before = world.now()
       tell(command, before)
       if (command.type === "session") sessions.push(yield* world.session(WORK))
@@ -169,7 +208,7 @@ const run = (seed: number, check: (world: World.World, script: Script, command: 
       yield* world.runtime.settle
       check(world, script, command, before)
     }
-    // Every turn to its end: the token endpoint answers again and every limit resets.
+    // Every turn to its end: the token endpoint answers again (a revoked token stays refused) and every limit resets.
     for (const login of LOGINS) script.tokens.set(login, "rotate")
     yield* world.advance(6 * HOUR)
     // Then one more turn in each session, with no fault left (every limit past, no one-off rate limit waiting): each
@@ -225,9 +264,10 @@ const SIGN_IN =
 const opensAt = (message: string) =>
   Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(message)?.[1]), (iso) => Option.map(DateTime.make(iso), DateTime.toEpochMillis))
 
-seeded("every turn ends in an answer or the pool's own refusal with when it opens, never on a spent login, and no refresh token is traded twice", ({ seed, expect }) =>
+/** The property on `commands`; whether its run ended with every login's refresh token refused. */
+const property = (seed: number, expect: Seed.Seeded["expect"], commands: ReadonlyArray<Command>) =>
   Effect.gen(function* () {
-    const { world, sessions } = yield* run(seed, invariants(seed, expect))
+    const { world, sessions } = yield* run(seed, commands, invariants(seed, expect))
     for (const session of sessions) {
       expect(world.sessions.get(session)?.running, `seed ${seed}: ${session} still running: ${line(world.messages(session).slice(-2))}`).toBe(false)
       for (const message of world.messages(session)) {
@@ -251,5 +291,21 @@ seeded("every turn ends in an answer or the pool's own refusal with when it open
       const signIn = lost && final.some((message) => message.type === "error" && SIGN_IN.test(message.message))
       expect(answered || signIn, `seed ${seed}: ${session}'s final turn: ${line(final)}`).toBe(true)
     }
+    return lost
+  })
+
+seeded("every turn ends in an answer or the pool's own refusal with when it opens, never on a spent login, and no refresh token is traded twice", ({ seed, expect }) =>
+  Effect.asVoid(property(seed, expect, commandsOf(seed))),
+)
+
+// The revoked mode: the default mode reaches a pool whose every login is refused only by chance (522 of 1 to 1000
+// was its first); here each seed revokes both logins, and the property holds there too: every final turn names
+// the sign-in.
+const revoked = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: REVOKED_PAST })
+
+revoked.seeded("with every login's refresh token revoked, every turn still ends as the property says, and the final turn asks for a sign-in", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const lost = yield* property(seed, expect, revokedCommandsOf(seed))
+    expect(lost, `seed ${seed}: the revoked mode ended with a login whose last trade was not refused`).toBe(true)
   }),
 )
