@@ -250,6 +250,15 @@ export const SIM_MODEL: CatalogModel = { providerID: "sim", id: "sim-model", mod
 export class SessionNotFound extends Data.TaggedError("Session.NotFoundError")<{ readonly sessionID: string; readonly message: string }> {}
 export class CatalogNotFound extends Data.TaggedError("NotFoundError")<{ readonly message: string }> {}
 export class RpcNotFound extends Data.TaggedError("RpcNotFoundError")<{ readonly message: string }> {}
+/** An RPC whose handler died: the call fails, as the fork's `rpc.internal`. */
+export class RpcInternal extends Data.TaggedError("RpcInternalError")<{ readonly message: string }> {}
+
+/** A fault the world sets on one RPC method: its handler dies, or never answers. */
+export type RpcFault = "die" | "hang"
+const RPC_FAULTS: Record<RpcFault, ReturnType<Handler>> = {
+  die: Effect.die(new Error("sim: the RPC handler died (a world fault)")),
+  hang: Effect.never,
+}
 
 /** An HTTP hook that died, as the request carries it out of the hooks: its message, as an error's or the value's own. */
 class HookDied extends Data.TaggedError("HookDied")<{ readonly name: string; readonly message: string }> {}
@@ -612,6 +621,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   /** Each copy's tool updates, in the order its transform made them. */
   const updates = new Map<number, Array<{ readonly id: string; readonly change: (tool: Types.Mutable<Tool.Info>) => void }>>()
   const rpcs = new Map<string, { readonly [method: string]: Handler }>()
+  /** The faults set on RPC methods, by `<id>.<method>`. */
+  const rpcFaults = new Map<string, RpcFault>()
   const subscribers = new Set<Subscriber>()
   const directories = new Map<number, string>()
   const fibers = new Set<Fiber.Fiber<unknown, unknown>>()
@@ -1443,13 +1454,25 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       (id) => ({ id }),
     )
 
-  /** Calls an RPC method across the wire: JSON in, JSON out. */
+  /**
+   * Calls an RPC method across the wire: JSON in, JSON out. A handler that dies fails the call (`rpc.internal`), as
+   * the fork's RPC turns a handler's defect into a failure; a fault the world set on the method (`rpcFaults`) makes
+   * its handler die or never answer.
+   */
   const callRpc = (id: string, method: string, input: Schema.Json) =>
     Effect.suspend(() => {
       record("rpc-call", { id, method })
       const handler = rpcs.get(id)?.[method]
       if (handler === void 0) return Effect.fail(new RpcNotFound({ message: `no RPC ${id}.${method}` }))
-      return handler(plain(input)).pipe(Effect.map(plain))
+      const fault = Option.fromUndefinedOr(rpcFaults.get(`${id}.${method}`))
+      const answered = Option.match(fault, {
+        onNone: () => handler(plain(input)),
+        onSome: (kind) => RPC_FAULTS[kind],
+      })
+      return answered.pipe(
+        Effect.map(plain),
+        Effect.catchDefect(() => Effect.fail(new RpcInternal({ message: `the handler of ${id}.${method} failed` }))),
+      )
     })
 
   /** Stops every host fiber: the server is gone. */
@@ -1477,6 +1500,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     tools,
     removed,
     rpcs,
+    rpcFaults,
     subscribers,
     directories,
     models,

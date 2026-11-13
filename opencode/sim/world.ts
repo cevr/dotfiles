@@ -17,7 +17,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Exit, Option, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
-import { type Asked, type Message, makeHost, type ModelRef, type Session, type Options, type Process, START } from "./host.ts"
+import { type Asked, type Message, makeHost, type ModelRef, type RpcFault, type Session, type Options, type Process, START } from "./host.ts"
 import * as Provider from "./provider.ts"
 import { type JsonObject, type LogLine, makeRuntime, Owner, SimError } from "./runtime.ts"
 
@@ -29,6 +29,7 @@ export {
   type Kind,
   type Message,
   type ModelRef,
+  type RpcFault,
   type Options,
   type Process,
   type Reply,
@@ -214,6 +215,16 @@ export const make = (worldOptions: WorldOptions) => {
       ),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */
     rpc: (id: string, method: string, input: Schema.Json) => run(host.callRpc(id, method, input)),
+    /**
+     * A fault on one RPC method, from now on: its handler dies (the call fails, host law: RPC faults) or never answers
+     * (the call waits on the caller's own timeout); `none` clears it.
+     */
+    rpcFault: (id: string, method: string, fault: RpcFault | "none") =>
+      Effect.sync(() => {
+        host.record("rpc-fault", { id, method, fault })
+        if (fault === "none") host.rpcFaults.delete(`${id}.${method}`)
+        else host.rpcFaults.set(`${id}.${method}`, fault)
+      }),
     /** Calls a tool as a session's model would, outside a turn: its answer. */
     tool: (sessionID: string, name: string, input: Schema.Json) =>
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.runTool(session, host.mint("msg_"), { id: host.mint("call_"), name, input })))),

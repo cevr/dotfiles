@@ -19,7 +19,7 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Cause, Data, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
 import { KEPT_IN_SUMMARY, LAW, LAW_FOLDER, lawCall, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
@@ -140,6 +140,13 @@ const ROOT = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null"
 const LAW_RPC = {
   id: "dotfiles-opencode.sim-law",
   methods: { echo: { input: { type: "object" }, output: { type: "object" } } },
+  events: {},
+}
+
+/** A law's RPC whose handlers break: one dies, one never answers. */
+const LAW_FAULT_RPC = {
+  id: "dotfiles-opencode.sim-law-faults",
+  methods: { dies: { input: { type: "object" }, output: { type: "object" } }, hangs: { input: { type: "object" }, output: { type: "object" } } },
   events: {},
 }
 
@@ -291,6 +298,19 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ctx.rpc.register(LAW_RPC, { echo: (input) => Effect.succeed({ echoed: input }) })
         const reply = yield* ctx.rpc(LAW_RPC).echo({ text: "law: rpc" })
         yield* ensure(Schema.is(Schema.Struct({ echoed: Schema.Struct({ text: Schema.Literal("law: rpc") }) }))(reply), "the RPC answered something else")
+      }),
+  },
+  {
+    name: LAW.rpcFaults,
+    operations: ["rpc", "rpc.register"],
+    // What a plugin meets when another's handler breaks (the world's RPC faults make a handler do either).
+    check: (ctx) =>
+      Effect.gen(function* () {
+        yield* ctx.rpc.register(LAW_FAULT_RPC, { dies: () => Effect.die(new Error("law: the handler died")), hangs: () => Effect.never })
+        const died = yield* Effect.exit(ctx.rpc(LAW_FAULT_RPC).dies({}))
+        yield* ensure(Exit.isFailure(died) && !Cause.hasDies(died.cause), "a handler that died did not fail the call as a failure")
+        const hung = yield* ctx.rpc(LAW_FAULT_RPC).hangs({}).pipe(Effect.timeoutOption("200 millis"))
+        yield* ensure(Option.isNone(hung), "a handler that never answers answered")
       }),
   },
   {

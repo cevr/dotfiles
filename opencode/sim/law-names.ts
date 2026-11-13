@@ -52,6 +52,7 @@ export const LAW = {
   request: "model.request runs before each request of the plugin's sessions, with the request's kind",
   tools: "a tool a transform adds is offered, and a built-in tool it removes is not",
   rpc: "an RPC method a plugin registers answers a call with its JSON",
+  rpcFaults: "an RPC handler that dies fails its call, never its caller, and one that never answers leaves the call open to the caller's own timeout",
   sessions:
     "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
   catalog: "the catalog lists the configured model, its provider and the build agent, and refuses ones it does not have",
