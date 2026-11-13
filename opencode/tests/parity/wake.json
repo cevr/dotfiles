@@ -1,0 +1,17 @@
+{
+  "baseline": "3d449520",
+  "files": {
+    "tests/wake-repeat.test.ts": {
+      "simulated": "cmd/wake/wake-repeat.sim.test.ts",
+      "tests": [
+        {
+          "name": "the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice",
+          "expects": 15,
+          "carried": "both",
+          "why": "the repeating monitor (the baseline, one notice per change, the cancel) on the world; real too for what only the real host's config shows: the server's commands without /schedule, and the requests without the schedule tools, with the built-in schedule plugin off as daily writes it"
+        }
+      ]
+    }
+  },
+  "retired": []
+}
