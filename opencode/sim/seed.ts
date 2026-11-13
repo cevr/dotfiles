@@ -12,6 +12,12 @@
 //   and on a loaded one (the gate runs every file at once, at a load past the
 //   cores) the wall time is the host's, not the file's. The wall time is
 //   reported beside it, never judged.
+// - A test (`seeded`, and `effect`) has `TIMEOUT_MS` of wall time, the
+//   runner's own, with bun's timeout `TIMEOUT_GRACE_MS` past it. The body runs
+//   on an AbortSignal that fires at the runner's timeout, so a test past it is
+//   interrupted and stops playing seeds; it fails naming its timeout, and the
+//   next test never sees its seeds run. Without it, bun would fail the test
+//   and move on while the body went on against a shared world.
 // - Each body gets `expect`, which counts its calls. With `SIM_EXPECTS=1` the
 //   runner runs one seed and prints `sim-expects <file> <test name> <calls>`
 //   after each test, which scripts/accept-parity.test.ts reads.
@@ -27,6 +33,13 @@ import { Cause, Clock, Config, Console, Data, Effect, Exit, Option } from "effec
 export const SEEDS = 20
 /** CPU time a simulated file's seeds may take together. */
 export const BUDGET_MS = 5_000
+/**
+ * Wall time a simulated test may take, seeds and all, before the runner stops it: far above the CPU budget, since a
+ * loaded host (the gate's, at a load past the cores) stretches the wall time many times over.
+ */
+export const TIMEOUT_MS = 240_000
+/** How far past the runner's timeout bun's own sits, so the runner's stops the seeds first. */
+export const TIMEOUT_GRACE_MS = 5_000
 /** The prefix of the line each test prints under `SIM_EXPECTS`. */
 export const EXPECTS = "sim-expects"
 
@@ -55,8 +68,27 @@ export interface Seeded {
   readonly expect: typeof bunExpect
 }
 
-/** A bun test whose body is an Effect: the simulated suites' Effect test integration. */
-export const effect = <A, E>(name: string, body: Effect.Effect<A, E>) => test(name, () => Effect.runPromise(Effect.asVoid(body)))
+/**
+ * `body` run within `timeoutMs` of wall time: on an AbortSignal that fires at `timeoutMs`, so a body past it is
+ * interrupted where it stands and plays nothing more into the next test; the test fails naming `label` and the
+ * timeout. bun's own timeout for the test sits `TIMEOUT_GRACE_MS` later, so the runner's ends it first.
+ */
+export const bounded = <A, E>(label: string, timeoutMs: number, body: Effect.Effect<A, E>): Promise<A> =>
+  Effect.runPromiseExit(body, { signal: AbortSignal.timeout(timeoutMs) }).then((exit) =>
+    Effect.runPromise(
+      Exit.match(exit, {
+        onSuccess: (value): Effect.Effect<A, E | SeedFailed> => Effect.succeed(value),
+        onFailure: (cause): Effect.Effect<A, E | SeedFailed> => {
+          if (!Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+          return Effect.fail(new SeedFailed({ message: `${label}: past its ${timeoutMs} ms timeout; its seeds were stopped` }))
+        },
+      }),
+    ),
+  )
+
+/** A bun test whose body is an Effect: the simulated suites' Effect test integration, within `TIMEOUT_MS`. */
+export const effect = <A, E>(name: string, body: Effect.Effect<A, E>, timeoutMs = TIMEOUT_MS) =>
+  test(name, () => bounded(name, timeoutMs, Effect.asVoid(body)), timeoutMs + TIMEOUT_GRACE_MS)
 
 /** The `expect` a body gets: bun's, each call counted. */
 const counting = (count: { calls: number }): typeof bunExpect =>
@@ -104,18 +136,24 @@ export const once = <E>(file: string, spent: Spent, name: string, seed: number, 
  * `body` on every seed, within the file's budget. `past` holds the seeds past 1 to `SEEDS` that once failed the file
  * (a wider sweep found them): every run replays them too.
  */
-export const runner = (file: string, options: { readonly past?: ReadonlyArray<number> } = {}) => {
+export const runner = (file: string, options: { readonly past?: ReadonlyArray<number>; readonly timeoutMs?: number } = {}) => {
   const spent: Spent = { cpu: 0, wall: 0 }
   const runSeeds = seedsOf(options.past ?? [])
+  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS
 
   const seeded = <E>(name: string, body: (run: Seeded) => Effect.Effect<void, E>) =>
-    test(name, () =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
-          if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
-        }),
-      ),
+    test(
+      name,
+      () =>
+        bounded(
+          `${file}: ${name}`,
+          timeoutMs,
+          Effect.gen(function* () {
+            const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
+            if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
+          }),
+        ),
+      timeoutMs + TIMEOUT_GRACE_MS,
     )
   return { seeded }
 }

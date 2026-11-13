@@ -1,8 +1,11 @@
 // The seed runner's budget: a file whose seeds spend more CPU than its budget
 // fails, saying its CPU and wall time; one whose wall time runs long while it
 // spends little CPU (a loaded host's time, not the file's work) passes. A
-// file's past failing seeds run after the fixed ones.
-import { Effect, Exit } from "effect"
+// file's past failing seeds run after the fixed ones. A seeded test past its
+// timeout is stopped, its seeds with it, before the next test starts.
+import * as NodeServices from "@effect/platform-node/NodeServices"
+import { Effect, Exit, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect } from "bun:test"
 import { TestClock } from "effect/testing"
 import * as Seed from "./seed.ts"
@@ -55,6 +58,36 @@ describe("a file's past failing seeds", () => {
       const fixed = Array.from({ length: Seed.SEEDS }, (_, index) => index + 1)
       expect(yield* Seed.seedsOf([353, 27, 353, 2])).toEqual([...fixed, 27, 353])
       expect(yield* Seed.seeds).toEqual(fixed)
+    }),
+  )
+})
+
+/** A child's whole output, as text. */
+const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
+
+/** The fixture's own `bun test`, from opencode/ in a process group of its own: its stdout and stderr together. */
+const fixture = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  // bun's timeout for the fixture's tests: past the fixture runner's 300 ms, short of its 20 seeds' 2 s.
+  const child = yield* spawner.spawn(
+    ChildProcess.make(process.execPath, ["test", "--timeout", "1000", "./sim/fixtures/seed-timeout.fixture.ts"], { stdin: "ignore", forceKillAfter: "3 seconds" }),
+  )
+  const [stdout, stderr] = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 })
+  yield* child.exitCode
+  return `${stdout}\n${stderr}`
+}).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+
+describe("a seeded test past its timeout", () => {
+  Seed.effect("is stopped with its seeds: the next test sees none of them run, and it fails naming its timeout",
+    Effect.gen(function* () {
+      const said = yield* fixture
+      expect(said).toMatch(/seed-timeout: \d+ seeds ran before, 0 after/)
+      expect(said).toContain("sim/fixtures/seed-timeout.fixture.ts: seeds that run past the timeout: past its 300 ms timeout; its seeds were stopped")
+      // The timed-out test is the one failure: the next test passed.
+      expect(said).toContain("(fail) seeds that run past the timeout")
+      expect(said).not.toContain("(fail) the next test")
+      expect(said).toMatch(/^ 1 pass\n 1 fail$/m)
+      expect(said).not.toContain("Unhandled error between tests")
     }),
   )
 })
