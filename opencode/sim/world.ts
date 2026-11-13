@@ -75,7 +75,7 @@ export const make = (worldOptions: WorldOptions) => {
       host.record("stale-timer", { owner })
     },
   })
-  const provider = Option.map(Option.fromNullishOr(worldOptions.anthropic), (anthropic) => Provider.make({ ...anthropic, seed: worldOptions.seed }, () => runtime.now()))
+  const provider = Option.map(Option.fromNullishOr(worldOptions.anthropic), (anthropic) => Provider.make({ ...anthropic, seed: worldOptions.seed }, runtime))
   const options: Options = Option.match(provider, {
     onNone: () => worldOptions,
     onSome: (served) => {
