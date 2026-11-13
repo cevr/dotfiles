@@ -416,6 +416,10 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
+  // The TUI's plugin runtime refuses, for the rest of the process, any module of an Effect that is not
+  // the host's (the root's own, which effect-bun-test runs on): a test file after this one in the
+  // process would fail to load it. It is loaded first, while it still can be.
+  yield* Effect.promise(() => import("effect-bun-test"))
   // The wall time when the fake clock takes over, given back once the boot is done (the seed runner reads it).
   const wall = yield* Clock.currentTimeMillis
   const began = yield* realNow
