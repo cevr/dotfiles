@@ -3,8 +3,9 @@
 //   sleeps 3 s and exits 4) and ends its turn; the job's end steers a letter
 //   with the exit, the log tail and the note into the idle session, and the
 //   model answers it.
-// - step-kill: the root runs `sleep 300` as a job, then kills it; the kill's
-//   answer says it was killed, and no letter follows.
+// A killed job (answered killed, no letter) runs on the simulated host
+// (cmd/wake/job.sim.test.ts); a kill of a real process group is
+// mods/wake/process/runner.test.ts's.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/job.ts
 //
 // The backstop is `off`, so the runner calls no service when the job ends and
@@ -12,7 +13,7 @@
 // processes, detached, under the instance's own XDG_STATE_HOME.
 //
 // It writes, under SCENARIO_OUT, `job-<name>.txt` for each kept frame
-// (`started`, `kappa`, `killed`), `job-timeout.txt` when a wait times out,
+// (`started`, `kappa`), `job-timeout.txt` when a wait times out,
 // `job-requests.json` and `job-transcripts.json`.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -31,23 +32,6 @@ const rules: ReadonlyArray<readonly [string, (request: string) => Stream.Stream<
   ["step-job", () => call("call_job_kappa", "job", { command: KAPPA, note: "KAPPA: read the result" })],
   ["call_job_kappa", (s) => say(/Job j[0-9a-z]{6} started/.test(s) ? "Kappa job started." : "Kappa job refused.")],
   ["Note: KAPPA", () => say("Woke on kappa.")],
-  ["step-kill", () => call("call_job_lambda", "job", { command: "sleep 300", note: "LAMBDA: should never wake" })],
-  [
-    "call_job_lambda",
-    (s) => {
-      const id = /Job (j[0-9a-z]{6}) started/.exec(s.slice(s.lastIndexOf("call_job_lambda")))?.[1] ?? "missing"
-      return call("call_kill_lambda", "job", { action: "kill", id })
-    },
-  ],
-  // The kill's answer carries the note too; only a letter opens with ⏰.
-  [
-    "call_kill_lambda",
-    (s) => {
-      const after = s.slice(s.lastIndexOf("call_kill_lambda"))
-      if (after.includes("⏰ Job")) return say("Lambda woke after all.")
-      return say(after.includes("was killed") ? "Lambda killed." : "Lambda not killed.")
-    },
-  ],
 ]
 const reply = (s: string) => {
   const last = rules.map(([marker, respond]) => ({ at: s.lastIndexOf(marker), respond })).toSorted((left, right) => right.at - left.at)[0]
@@ -106,13 +90,6 @@ export default OpenCodeDriver.use(
       yield* keep("started")
       yield* until((frame) => frame.includes("Woke on kappa."), 400)
       yield* keep("kappa", true)
-
-      // A killed job answers killed, and wakes nobody.
-      yield* ui.submit("step-kill")
-      yield* until((frame) => frame.includes("Lambda killed.") || frame.includes("Lambda not killed."), 400)
-      // Past a poll, room for a letter were there one.
-      yield* Effect.sleep("12 seconds")
-      yield* keep("killed")
       yield* dump
     }),
 )
