@@ -193,7 +193,12 @@ describe("the pool's fleet", () => {
 describe("the TUI config", () => {
   test("loads Prime first, sets the Prime theme and keeps the other keys", () => {
     const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }, [`${MODS}/prime`, `${MODS}/status`], [MODS])
-    expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] })
+    expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, tabs: { scope: "window" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] })
+  })
+
+  test("keeps each window's tabs its own, keeping the other tab settings", () => {
+    const merged = mergeCli({ tabs: { scope: "cwd", layout: "vertical" } }, [`${MODS}/prime`], [MODS])
+    expect(merged.tabs).toEqual({ scope: "window", layout: "vertical" })
   })
 
   test("Prime loads from its cmd/ composition root, and that entry replaces the old mods/prime one", () => {

@@ -45,8 +45,9 @@ service; the version change restarts that service as ours. It merges into
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
-(`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
-Prime theme. Every other key and plugin there is kept. Rerun it after a fork
+(`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions, the
+Prime theme and the `window` tab scope (a TUI window's tabs are the sessions
+opened in it, not every TUI's on the machine). Every other key and plugin there is kept. Rerun it after a fork
 change. At its end it writes what the host now runs to
 `~/.local/state/opencode/installed.json`, OpenCode's own record of the
 installed build (the version, the binary, the builds it superseded), with the
