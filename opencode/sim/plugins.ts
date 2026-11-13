@@ -8,8 +8,10 @@
 import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credential-sources"
 import { make as makeAuth, makeShared } from "@dotfiles/opencode-cmd-anthropic-auth/server"
 import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
-import { liveWith, make as makePool } from "@dotfiles/opencode-cmd-pool/server"
+import { LIVE_STORE_HOST, type StoreHost, liveWith, make as makePool } from "@dotfiles/opencode-cmd-pool/server"
 import * as MemoryPeers from "@dotfiles/opencode-pool/memory/peers"
+import type * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
+import { type CredentialSource, storeProcess } from "@dotfiles/opencode-pool/store/store"
 import * as Provider from "./provider.ts"
 import { backstopOf, make as makeWake } from "@dotfiles/opencode-cmd-wake/server"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
@@ -59,16 +61,44 @@ export const idleCompact = IdleCompact
  * The pool (`cmd/pool/server.ts`'s `make`) on the world: OpenCode's adapters on its context, as the plugin
  * OpenCode loads; the fleet's peers are the world's (`peers`, each a report or a refusal), not SSH.
  */
-export const pool = (peers: ReadonlyMap<string, MemoryPeers.Answer> = new Map()) => makePool(liveWith(() => MemoryPeers.layer(peers)))
+export const pool = (peers: ReadonlyMap<string, MemoryPeers.Answer> = new Map(), stores: StoreHost = LIVE_STORE_HOST) =>
+  makePool(
+    liveWith(() => MemoryPeers.layer(peers)),
+    stores,
+  )
+
+/**
+ * The login stores of one simulated process: their files (shared by every process on the host), this process's
+ * state of them, the world's network, and the registry this process's auth plugin reads.
+ */
+export interface Stores extends StoreHost {
+  /** The registry this process's auth plugin reads. */
+  readonly registry: SourcesLive.RegistryRead
+}
+
+/** One process's stores over `slots`, fetching from the world's `provider`. */
+export const stores = (slots: MemorySlots.MemorySlots, provider: Provider.Provider): Stores => {
+  const registry = new Map<string, Set<CredentialSource>>()
+  return {
+    source: { files: slots.files, process: storeProcess(), fetch: (url, init) => provider.fetch(url, init) },
+    register: (integrationID, source) => {
+      const sources = registry.get(integrationID) ?? new Set()
+      registry.set(integrationID, sources.add(source))
+      return () => void sources.delete(source)
+    },
+    registry: () => registry,
+  }
+}
 
 /**
  * The Anthropic auth plugin (`cmd/anthropic-auth/server.ts`'s `make`) on the world: its fetch is the world's
- * provider, `ANTHROPIC_BASE_URL` the provider's origin, and its process-wide state its own.
+ * provider, `ANTHROPIC_BASE_URL` the provider's origin, and its process-wide state its own; it reads the credential
+ * sources at `registry` (a world's `stores(...).registry`, or the process's).
  */
-export const anthropicAuth = (provider: Provider.Provider) =>
+export const anthropicAuth = (provider: Provider.Provider, registry: SourcesLive.RegistryRead = SourcesLive.processRegistry) =>
   makeAuth({
     fetch: provider.fetch,
     env: () => ({ baseUrl: Provider.ORIGIN, insecure: void 0, versionOverride: void 0 }),
     shared: makeShared(),
-    registry: SourcesLive.processRegistry,
+    registry,
   })

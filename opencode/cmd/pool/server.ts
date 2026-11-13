@@ -141,7 +141,7 @@ import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
-import { StoreSource, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
+import { StoreSource, type StoreSourceOptions, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
 import * as FleetStoreLive from "@dotfiles/opencode-pool/opencode/fleet"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
@@ -290,13 +290,32 @@ const storePool = (options: Options): PoolId | undefined => options.providers.an
  * The login stores the options name, each read in place. One per directory per
  * process. Each logs its refreshes to the host's log through `context`.
  */
-const storeSources = (options: Options, context: Context.Context<never>) =>
+const storeSources = (options: Options, context: Context.Context<never>, host: StoreHost) =>
   storePool(options) === undefined
     ? []
     : options.sources.map(
         (source) =>
-          new StoreSource({ dir: source.dir, context, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
+          new StoreSource({
+            dir: source.dir,
+            context,
+            ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }),
+            ...host.source,
+          }),
       )
+
+/**
+ * What the login stores reach outside the plugin: in OpenCode the disk, this
+ * process, the network and the process-wide registry the auth plugin reads
+ * (`LIVE_STORE_HOST`); on the simulated world, the world's.
+ */
+export interface StoreHost {
+  /** What each source reaches: its files and lock, its process, its fetch. */
+  readonly source: Pick<StoreSourceOptions, "files" | "process" | "fetch">
+  /** Registers a source with the auth plugin for an integration; the returned function removes it. */
+  readonly register: (integrationID: string, source: StoreSource) => () => void
+}
+
+export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCredentialSource }
 
 /**
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
@@ -393,6 +412,7 @@ export const make = (
     sources: ReadonlyArray<StoreSource>,
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ) => Layer.Layer<Externals>,
+  storeHost: StoreHost = LIVE_STORE_HOST,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -405,7 +425,7 @@ export const make = (
       // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
       yield* migrate(ctx.storage)
       // The plugin's context carries the host's loggers.
-      const sources = storeSources(options, yield* Effect.context<never>())
+      const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options)
       const services = yield* Layer.build(
         Model.layer({
@@ -431,7 +451,7 @@ export const make = (
       if (anthropic !== undefined)
         for (const source of sources)
           yield* Effect.acquireRelease(
-            Effect.sync(() => registerCredentialSource(anthropic, source)),
+            Effect.sync(() => storeHost.register(anthropic, source)),
             (unregister) => Effect.sync(unregister),
           )
 
