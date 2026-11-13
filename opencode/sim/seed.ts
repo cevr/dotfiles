@@ -26,13 +26,24 @@
 //   runner runs one seed and prints `sim-expects <file> <test name> <calls>`
 //   after each test, which scripts/accept-parity.test.ts reads.
 //
+// - Every run also replays the seeds `sim/seeds.json` holds for the file
+//   (seeds a swarm once found failing, added with their fix).
+// - A swarm (`SIM_SWARM=<first seed>`, `SIM_SWARM_MS=<box>`, set by
+//   scripts/accept.ts): each seeded test plays the seeds from the first on, one
+//   after another, until its share of the box (the box over the file's seeded
+//   tests) has passed in wall time, `wall-clock.ts`'s, at least one seed. It
+//   prints `sim-swarm <file> <seed>` after each seed that passed, and a failing
+//   seed fails as any does, naming `SIM_SEED=<n> bun test <file>`. The box, not
+//   the CPU budget, bounds a swarm.
+//
 // The runner reads wall time, through Effect's live clock, and the process's
 // CPU time, to hold the budget; a simulated file itself never does
 // (sim/static.test.ts). `bun test` runs a file's tests one at a time, and
 // `--parallel` gives each file its own process, so the process's CPU time over
 // a seed is that seed's.
 import { expect as bunExpect, test } from "bun:test"
-import { Cause, Clock, Config, Console, Data, Effect, Exit, Option } from "effect"
+import { Cause, Clock, Config, Console, Data, Effect, Exit, Fiber, Option } from "effect"
+import found from "./seeds.json"
 import { wallTime } from "./wall-clock.ts"
 
 export const SEEDS = 20
@@ -47,6 +58,25 @@ export const TIMEOUT_MS = 240_000
 export const TIMEOUT_GRACE_MS = 5_000
 /** The prefix of the line each test prints under `SIM_EXPECTS`. */
 export const EXPECTS = "sim-expects"
+/** The prefix of the line a swarm prints after each seed that passed. */
+export const SWARMED = "sim-swarm"
+
+/** The seeds a swarm once found failing, by file as `bun test` names it from opencode/ (`sim/seeds.json`). */
+export const FOUND: Readonly<Record<string, ReadonlyArray<number>>> = found
+
+/** A swarm: the first seed, and the box (wall ms) a file's seeded tests share. */
+export interface Swarm {
+  readonly first: number
+  readonly boxMs: number
+}
+
+/** The swarm a run plays, none unless `SIM_SWARM` and `SIM_SWARM_MS` are set and `SIM_SEED` is not (a replay plays its one seed). */
+export const swarmOf = Effect.gen(function* () {
+  if (Option.isSome(yield* Config.option(Config.Int("SIM_SEED")))) return Option.none<Swarm>()
+  const first = yield* Config.option(Config.Int("SIM_SWARM"))
+  const boxMs = yield* Config.option(Config.Int("SIM_SWARM_MS"))
+  return Option.zipWith(first, boxMs, (seed, ms): Swarm => ({ first: seed, boxMs: ms }))
+})
 
 /** A seed that failed, or a file past its budget. */
 export class SeedFailed extends Data.TaggedError("SeedFailed")<{ readonly message: string }> {}
@@ -154,22 +184,50 @@ export const once = <E>(file: string, spent: Spent, name: string, seed: number, 
  */
 export const runner = (file: string, options: { readonly past?: ReadonlyArray<number>; readonly timeoutMs?: number } = {}) => {
   const spent: Spent = { cpu: 0, wall: 0 }
-  const runSeeds = seedsOf(options.past ?? [])
-  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS
+  const runSeeds = seedsOf([...(options.past ?? []), ...(FOUND[file] ?? [])])
+  const swarm = Effect.runSync(swarmOf)
+  // The file's seeded tests, counted as they register (all before the first runs): a swarm's box is shared among them.
+  const registered = { tests: 0 }
+  const share = (each: Swarm) => Math.max(1, Math.floor(each.boxMs / Math.max(1, registered.tests)))
+  // A swarm's test runs for its share, then past it by the runner's own timeout, as any test past its seeds would.
+  const timeoutMs = (options.timeoutMs ?? TIMEOUT_MS) + Option.match(swarm, { onNone: () => 0, onSome: (each) => each.boxMs })
 
-  const seeded = <E>(name: string, body: (run: Seeded) => Effect.Effect<void, E>) =>
-    test(
+  const seeded = <E>(name: string, body: (run: Seeded) => Effect.Effect<void, E>) => {
+    registered.tests += 1
+    return test(
       name,
       () =>
         bounded(
           `${file}: ${name}`,
           timeoutMs,
-          Effect.gen(function* () {
-            const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
-            if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
+          Option.match(swarm, {
+            onSome: (each) => swarmed(file, spent, name, each.first, share(each), body),
+            onNone: () =>
+              Effect.gen(function* () {
+                const calls = yield* Effect.forEach(yield* runSeeds, (seed) => once(file, spent, name, seed, body))
+                if (Option.isSome(yield* Config.option(Config.String("SIM_EXPECTS")))) yield* Console.log(`${EXPECTS} ${file} ${name} ${Math.max(0, ...calls)}`)
+              }),
           }),
         ),
       timeoutMs + TIMEOUT_GRACE_MS,
     )
+  }
   return { seeded }
 }
+
+/**
+ * A swarm's test: the seeds from `first` on, one after another, until `shareMs` of wall time has passed (at least
+ * one seed), each that passed printed as `sim-swarm <file> <seed>`; the first that fails ends it, naming itself.
+ */
+export const swarmed = <E>(file: string, spent: Spent, name: string, first: number, shareMs: number, body: (run: Seeded) => Effect.Effect<void, E>) =>
+  Effect.gen(function* () {
+    const box = { over: false }
+    const timer = yield* Effect.forkChild(Effect.andThen(wallTime(shareMs), Effect.sync(() => (box.over = true))))
+    const seeds = Effect.gen(function* () {
+      for (let seed = first; seed === first || !box.over; seed += 1) {
+        yield* once(file, spent, name, seed, body, Number.POSITIVE_INFINITY)
+        yield* Console.log(`${SWARMED} ${file} ${seed}`)
+      }
+    })
+    yield* Effect.ensuring(seeds, Fiber.interrupt(timer))
+  })
