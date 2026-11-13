@@ -630,7 +630,7 @@ describe("a latch", () => {
         expect(w.sessions.started.get(latched.child)).toBeUndefined()
         expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(10 * MINUTE))
         expect((yield* model.pending(["ses_a"])).entries).toEqual([
-          { id: latched.id, kind: "latch", sessionID: "ses_a", mode: "wake", note: "Add the export", dueAt: 10 * MINUTE, child: latched.child },
+          { id: latched.id, kind: "latch", sessionID: "ses_a", mode: "wake", note: "Add the export", dueAt: 10 * MINUTE, setAt: 0, child: latched.child },
         ])
         expect(w.changed).toContain("ses_a")
         yield* until(2 * MINUTE - SECOND)
