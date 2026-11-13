@@ -1,0 +1,64 @@
+{
+  "baseline": "4372d6b1",
+  "files": {
+    "tests/idle-compact.test.ts": {
+      "simulated": "cmd/idle-compact/idle-compact.sim.test.ts",
+      "tests": [
+        {
+          "name": "an idle session is not compacted while its cache has time left, and is compacted once it is a margin from expiring",
+          "expects": 10,
+          "carried": "simulated",
+          "why": "the plugin's timing on the world; the host's compaction on the model is the law 'a compaction asked with a reason…'"
+        },
+        {
+          "name": "the idle compaction is recorded as automatic",
+          "expects": 1,
+          "carried": "simulated",
+          "why": "the host records the reason asked: the law 'a compaction asked with a reason…'"
+        },
+        {
+          "name": "a host without a compaction reason records the idle compaction as manual",
+          "expects": 1,
+          "carried": "simulated",
+          "why": "a host older than the fork's compaction reason; the world runs it with its reason off"
+        },
+        {
+          "name": "with copies of the plugin for other directories on the host, the idle session is compacted once, by its own directory's",
+          "expects": 6,
+          "carried": "both",
+          "why": "real too: that the host starts a copy of a config plugin for each Location it opens is no law yet"
+        },
+        {
+          "name": "with background compaction on, the idle compaction swaps in the summary the host held, and asks the model for none",
+          "expects": 8,
+          "carried": "both",
+          "why": "real too: the host's held background summary is no law yet"
+        },
+        {
+          "name": "a session idle behind a background shell that outlives its cache is compacted a margin from expiry, before the shell's notice wakes it",
+          "expects": 9,
+          "carried": "both",
+          "why": "real too: the host's background shells and their notice are no law yet"
+        }
+      ]
+    },
+    "tests/wake.test.ts": {
+      "simulated": "cmd/wake/wake.sim.test.ts",
+      "tests": [
+        {
+          "name": "an alarm wakes the idle session, a notice waits for the next turn, a monitor wakes on its match, a cancel holds, and a reload fires once",
+          "expects": 29,
+          "carried": "both",
+          "why": "real too: what the TUI draws (the ◈ rows, the dock) waits for sim-tui, and a real plugin reload is no law yet"
+        },
+        {
+          "name": "an alarm due while no server ran fires when one starts, and says it went late",
+          "expects": 10,
+          "carried": "both",
+          "why": "real too: the late ◈ row waits for sim-tui, and a real server restart is no law yet"
+        }
+      ]
+    }
+  },
+  "retired": []
+}
