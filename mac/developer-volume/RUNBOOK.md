@@ -25,14 +25,14 @@ You run every step yourself, in a plain Ghostty window outside herdr: the copy n
 | --- | --- | --- |
 | 1 | During an ordinary work day before the window (Friday is fine), take the fseventsd baseline: `$D/check.sh --baseline`. One was taken 2026-11-13, ending 16:22Z: 23.19 CPU s over 300 s (measured). | 5 min |
 | 2 | Free space: `rift gc` in each repo with rifts (it empties `.rifts/*/.trash`), then `df -h /System/Volumes/Data`. Go on only with **90 GiB or more** free. If it is still short, empty the macOS Trash or remove build output. | 5 to 30 min (guess) |
-| 3 | Quit the agents: end every Claude Code, Codex and OpenCode session, then `opencode service stop` (its kernel workers and wake jobs stop with it). | 2 min |
+| 3 | First record which OpenCode session each herdr pane has open, while herdr and the service still run: `bun ~/Developer/personal/dotfiles/pane-restore/main.ts save`, then `… main.ts check` (every saved session opens; see [pane-restore](../../pane-restore/README.md)). Then quit the agents: end every Claude Code, Codex and OpenCode session, then `opencode service stop` (its kernel workers and wake jobs stop with it). | 2 min |
 | 4 | `herdr server stop` (closes every herdr pane). Quit editors and dev servers. | 1 min |
 | 5 | `brew services stop syncthing` (it syncs `~/Developer/personal/dotfiles`; a folder that vanishes mid-copy must not sync to the workbox). | 1 min |
 | 6 | Open a new Ghostty window, `cd ~`, and boot out the launch agents that refer to `~/Developer` in their plist or script (today: the four `bun.cron.opencode-wake-*` jobs, whose scripts import `cmd/wake/backstop.ts`, and `com.cvr.cull-transcript-images`, `com.cvr.transcript-archive`, `com.cvr.upstreams-scan`): `$D/migrate.sh bootout`. It records them in `~/.local/state/developer-volume/agents-booted-out.tsv`. | 1 min |
 | 7 | `$D/migrate.sh preflight` and quit whatever it still lists (a pid, its command, and what to run). It exits 0 when nothing uses `~/Developer` or the caches. | 2 min |
 | 8 | `$D/migrate.sh`. It asks for your password once. It refuses while anything uses `~/Developer` or a launch agent is due within 6 h (`DEVELOPER_MIGRATE_HOURS`), and prints what to quit. Keep the Mac on power; it runs under `caffeinate`. | 1.5 to 3 h (guess; below) |
 | 9 | Read the after check `migrate.sh` prints (it runs `check.sh`, step "After"). | 6 min |
-| 10 | Start again: `$D/migrate.sh bootstrap`, `brew services start syncthing`, `opencode service start`, then `herdr`. Then `rift gc` once more: it drops rift's rows for the trash that stayed behind. | 3 min |
+| 10 | Start again: `$D/migrate.sh bootstrap`, `brew services start syncthing`, `opencode service start`, then `herdr`. Then `rift gc` once more: it drops rift's rows for the trash that stayed behind. Then `bun ~/Developer/personal/dotfiles/pane-restore/main.ts check`: every session saved in step 3 still opens through the service. To put each session back in its pane once the tabs are in herdr-core: `hcm apply`, `… main.ts restore` (labels each moved terminal with `opencode --session <id>`), then `hcm resume`. | 3 min |
 | 11 | After a day of work, empty the macOS Trash (the old tree and the old caches are there). | |
 
 Step 8, where the time goes (guess, from the sizes above: the `du` of the main checkouts took 36 s, the `du` of the rifts with their trash 15 min):
