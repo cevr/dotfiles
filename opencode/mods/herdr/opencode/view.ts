@@ -50,7 +50,8 @@ const runningTools = (reads: Reads, sessionID: string): ReadonlyArray<RunningToo
   })
 }
 
-const session = (reads: Reads, asked: AskedOf, id: string): SessionView => {
+/** One session of the view, by id. */
+export const session = (reads: Reads, asked: AskedOf, id: string): SessionView => {
   const title = reads.session.get(id)?.title
   return {
     id,
@@ -76,9 +77,12 @@ export const membersOf = (reads: Reads, route: Route): ReadonlyArray<string> => 
 
 const none: AskedOf = () => []
 
+/** The view off a session route: no session. */
+export const noView: View = { root: undefined, descendants: [] }
+
 /** The view of `route`: its root session and that root's family, or no session off a session route. */
 export const read = (reads: Reads, route: Route, asked: AskedOf = none): View => {
   const [root, ...descendants] = membersOf(reads, route)
-  if (root === undefined) return { root: undefined, descendants: [] }
+  if (root === undefined) return noView
   return { root: session(reads, asked, root), descendants: descendants.map((id) => session(reads, asked, id)) }
 }
