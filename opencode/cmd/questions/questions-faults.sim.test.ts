@@ -243,3 +243,15 @@ seeded("questions under faults: one letter per answer, in the session that asked
     expect(lettersOf(world, state.roots[0] ?? "").some((letter) => letter.metadata.notice !== void 0)).toBe(true)
   }),
 )
+
+seeded("one seed replays its run byte for byte: the letters' ids, minted on the world's clock and random, too", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const first = yield* run(seed, () => void 0)
+    const again = yield* run(seed, () => void 0)
+    expect(again.world.trace()).toBe(first.world.trace())
+    // The ids are the host's shape, read off the world's clock: a letter's, as the plugin minted it.
+    const ids = first.state.sessions.flatMap((sessionID) => lettersOf(first.world, sessionID).map((letter) => letter.id))
+    expect(ids.length).toBeGreaterThan(0)
+    expect(ids.every((id) => /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(id))).toBe(true)
+  }),
+)
