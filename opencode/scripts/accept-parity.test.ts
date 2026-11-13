@@ -20,6 +20,7 @@ import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NAMES } from "../sim/law-names.ts"
+import { BUDGET_MS } from "../sim/seed.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -100,8 +101,8 @@ const output = (command: string, args: ReadonlyArray<string>, env: Readonly<Reco
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const child = yield* spawner.spawn(ChildProcess.make(command, args, { cwd: ROOT, env, extendEnv: true, stdin: "ignore", forceKillAfter: "3 seconds" }))
     const [stdout, stderr] = yield* Effect.all([text(child.stdout), text(child.stderr)], { concurrency: 2 })
-    yield* child.exitCode
-    return { stdout, stderr }
+    const code = yield* child.exitCode
+    return { stdout, stderr, code: Number(code) }
   }).pipe(Effect.scoped)
 
 /** A file's text at a commit, from opencode/. */
@@ -121,15 +122,30 @@ export const expects = (source: string) => {
   )
 }
 
-/** The simulated tests' `expect()` calls at one seed, as the seed runner prints them. */
-const simulatedCounts = (file: string) =>
-  output(process.execPath, ["test", `./${file}`], { SIM_EXPECTS: "1" }).pipe(
+/**
+ * The simulated tests' `expect()` calls at one seed, as the seed runner prints them, for every simulated file in one
+ * `bun test` (the same counts as a run per file at about half the CPU: one start, not ten), and whether it passed.
+ * Its cost is judged on CPU, in the child: the seed runner fails a file whose seeds take more than `BUDGET_MS` of
+ * CPU (sim/seed.ts), and a failed run fails this test. The wall clock, which a loaded host stretches (63 s for
+ * the run per file at a 1-minute load of 423 on 12 cores), judges nothing: a gate unit test does not judge real time.
+ */
+const simulatedCounts = (files: ReadonlyArray<string>) =>
+  output(process.execPath, ["test", ...files.map((file) => `./${file}`)], { SIM_EXPECTS: "1" }).pipe(
     Effect.map((run) => {
-      const prefix = `sim-expects ${file} `
-      const lines = `${run.stdout}\n${run.stderr}`.split("\n").filter((line) => line.startsWith(prefix))
-      return new Map(lines.map((line) => [line.slice(prefix.length, line.lastIndexOf(" ")), Number(line.slice(line.lastIndexOf(" ") + 1))]))
+      const lines = `${run.stdout}\n${run.stderr}`.split("\n")
+      const counts = new Map(
+        files.map((file) => {
+          const prefix = `sim-expects ${file} `
+          const own = lines.filter((line) => line.startsWith(prefix))
+          return [file, new Map(own.map((line) => [line.slice(prefix.length, line.lastIndexOf(" ")), Number(line.slice(line.lastIndexOf(" ") + 1))]))] as const
+        }),
+      )
+      return { counts, code: run.code }
     }),
   )
+
+/** The simulated run's wall-clock ceiling, only a guard against a hung run: the CPU budgets of 20 simulated files (10 today), for a host loaded 30 times over. */
+const SIMULATED_CEILING_MS = 20 * BUDGET_MS * 30
 
 describe("no assertion lost", () => {
   const live = it.live.layer(BunServices.layer)
@@ -171,8 +187,12 @@ describe("no assertion lost", () => {
     "each file's simulated and remaining real expect() calls are at least the baseline's",
     () =>
       Effect.gen(function* () {
-        for (const [file, entry] of (yield* manifests).flatMap((manifest) => manifest.entries)) {
-          const simulated = yield* simulatedCounts(entry.simulated)
+        const entries = (yield* manifests).flatMap((manifest) => manifest.entries)
+        const run = yield* simulatedCounts([...new Set(entries.map(([, entry]) => entry.simulated))])
+        // A file over its CPU budget fails in the child (sim/seed.ts); its counts then judge nothing.
+        expect({ simulatedRun: run.code }).toEqual({ simulatedRun: 0 })
+        for (const [file, entry] of entries) {
+          const simulated = run.counts.get(entry.simulated) ?? new Map<string, number>()
           const real = expects(yield* readReal(file))
           const carried = entry.tests.map((item) => {
             const fromSimulated = simulated.get(item.name) ?? 0
@@ -183,7 +203,7 @@ describe("no assertion lost", () => {
           expect({ file, atLeastBaseline: carried.reduce((sum, calls) => sum + calls, 0) >= baseline }).toEqual({ file, atLeastBaseline: true })
         }
       }),
-    60_000,
+    SIMULATED_CEILING_MS,
   )
 
   live(
