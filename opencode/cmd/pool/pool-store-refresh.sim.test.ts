@@ -97,3 +97,59 @@ seeded("the turn completes on the second account, with no error row", ({ seed, e
     }
   }),
 )
+
+seeded("a store account that must sign in again fails the request as a 401 that says so, and the turn completes on the second account", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const accounts = Provider.accounts(seed, ["alpha", "beta"])
+    const world = World.make({
+      seed,
+      script: () => World.say(""),
+      anthropic: {
+        accounts,
+        // alpha's refresh token is refused: it needs a new sign-in.
+        token: (account) => {
+          if (account === "alpha") return { kind: "rejected" }
+          return { kind: "rotate" }
+        },
+        script: ({ body }) => {
+          const tools = body["tools"]
+          if (Array.isArray(tools) && tools.length > 0) return { kind: "ok", text: "Hello from the second store account." }
+          return { kind: "ok", text: "Greeting" }
+        },
+      },
+    })
+    const slots = MemorySlots.make()
+    signIn(slots, "alpha", { ...accounts.alpha, expires: World.START - 1000 })
+    signIn(slots, "beta", { ...accounts.beta, expires: World.START + 8 * HOUR })
+    const stores = Plugins.stores(slots, world.provider())
+    yield* world.load(Plugins.anthropicAuth(world.provider(), stores.registry), { directory: WORK })
+    yield* world.load(Plugins.pool(new Map(), stores), {
+      directory: WORK,
+      options: {
+        sweepMinutes: 0,
+        limitsFile: "/nonexistent/sim/limits.json",
+        sources: [{ kind: "store", dir: STORE, tokenURL: `${Provider.ORIGIN}/v1/oauth/token` }],
+      },
+    })
+    const session = yield* world.session(WORK)
+    yield* world.prompt(session, "say hello")
+    yield* world.until(() => world.sessions.get(session)?.running === false, RUN_LIMIT_MS)
+    const transcript = world.messages(session).map(line).join("\n")
+    const received = world.provider().received()
+
+    expect(transcript).toContain("Hello from the second store account.")
+    expect(world.messages(session).filter((message) => message.type === "error")).toEqual([])
+    // alpha's request failed as the auth plugin's 401 naming the sign-in, and the pool's retry hook sent it again at once.
+    const trace = world.trace()
+    expect(trace).toContain('"tag":"Authentication"')
+    expect(trace).toContain(`The store account \\"alpha\\" could not refresh (400). Sign in to it again.`)
+    expect(trace).toContain('"retry":true,"delay":0')
+    // Each trade was of alpha's refresh token, refused; nothing reached Anthropic's messages API on alpha.
+    const trades = received.filter((request) => request.path === "/v1/oauth/token")
+    expect(trades.length).toBeGreaterThan(0)
+    expect(trades.every((request) => request.account === "alpha" && request.status === 400)).toBe(true)
+    const messages = received.filter((request) => request.path === "/v1/messages")
+    expect(messages.every((request) => request.account === "beta")).toBe(true)
+    expect(messages.filter((request) => request.tools > 0).map((request) => request.status)).toEqual([200])
+  }),
+)

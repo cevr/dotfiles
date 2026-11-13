@@ -439,6 +439,34 @@ seeded("a held refresh is dropped when another process wrote another login meanw
   }),
 )
 
+seeded("a refresh whose write failed keeps the store's lock: no other holder trades the spent refresh token", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const bench_ = yield* bench(seed, ["alpha", "beta", "gamma"], { expires: World.START - 1000 })
+    const { slots, provider, source, trades, pollingIn, drawn } = bench_
+    // beta is good for hours: a resolve of it needs no refresh.
+    signIn(slots, "beta", { ...drawn["beta"], expires: World.START + 8 * HOUR })
+    slots.failWrites(1)
+    expect((yield* failure(bench_, source.resolveEffect(`${STORE_PREFIX}alpha`))).kind).toBe("persist")
+    const rotated = provider.tokens("alpha")
+
+    // Another process that must refresh waits on the lock, and never reads alpha's spent token to trade it.
+    const theirs = pollingIn(storeProcess(), 3)
+    expect((yield* failure(bench_, theirs.resolveEffect(`${STORE_PREFIX}alpha`))).kind).toBe("busy")
+    expect((yield* failure(bench_, theirs.resolveEffect(`${STORE_PREFIX}gamma`))).kind).toBe("busy")
+    expect(yield* done(bench_, theirs.resolveEffect(`${STORE_PREFIX}beta`))).toEqual({ access: drawn["beta"].access, expires: World.START + 8 * HOUR })
+    expect(trades()).toBe(1)
+
+    // Our next resolve, even of a label that needs no refresh, lands the held rotation and frees the lock.
+    expect((yield* done(bench_, source.resolveEffect(`${STORE_PREFIX}beta`))).access).toBe(drawn["beta"].access)
+    expect(Option.map(stored(slots, "alpha"), (login) => login.refresh)).toEqual(Option.some(rotated.refresh))
+    expect((yield* done(bench_, theirs.resolveEffect(`${STORE_PREFIX}alpha`))).access).toBe(rotated.access)
+    expect((yield* done(bench_, theirs.resolveEffect(`${STORE_PREFIX}gamma`))).access).toBe(provider.tokens("gamma").access)
+    // Every trade presented a refresh token the provider still held.
+    expect(provider.received().filter((request) => request.path === "/v1/oauth/token" && request.account === "")).toEqual([])
+    expect(trades()).toBe(2)
+  }),
+)
+
 seeded("a token the provider rejected is refreshed next time, only while the store still holds it", ({ seed, expect }) =>
   Effect.gen(function* () {
     const bench_ = yield* bench(seed, ["alpha"])

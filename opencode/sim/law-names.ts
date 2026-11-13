@@ -36,6 +36,8 @@ export const LAW = {
     "a response http.response turns into a rate-limit 429 fails the request and the retry hook sees it to be retried; a usage-limit 429 comes to it not retried; a retry it decides with no delay sends the request again, model.request running again",
   refused: "a usage-limit 429 the retry hook leaves unretried ends the turn: one request, no answer, and no experimental.idle after it",
   died: "an http.request hook that dies ends the turn: one request, no answer, the retry hook not asked, and the session at rest",
+  unauthorized:
+    "an http.request hook may send a request to a data: URL, answered in the process; a 401 http.response puts in its answer's place fails the request with its message, the retry hook asked not to retry it, and the turn ends: one request, no answer",
   integration:
     "integration.get lists the logins OpenCode holds, connection.active is the first, resolve answers its credential, status takes a mark, a transform registers a method, and an unknown integration is refused",
   provider: "a provider a transform turns on is in the provider list",
@@ -48,6 +50,8 @@ export const LAW_LOGIN = { id: "cred_law", label: "Law login", access: "law-acce
 /** The answers' error bodies the retry and refused laws put on a response, as Anthropic and OpenAI words them. */
 export const RATE_LIMITED = '{"type":"error","error":{"type":"rate_limit_error","message":"law: rate limited"}}'
 export const USAGE_LIMITED = '{"type":"error","error":{"type":"rate_limit_error","message":"You have reached your session usage limit."}}'
+/** The 401 body the unauthorized law answers with, as Anthropic words an authentication failure. */
+export const UNAUTHORIZED = '{"type":"error","error":{"type":"authentication_error","message":"law: sign in again"}}'
 
 /** Every law's name, in the order the probe runs them. */
 export const NAMES: ReadonlyArray<string> = Object.values(LAW)

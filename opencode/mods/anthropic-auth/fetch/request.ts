@@ -1,6 +1,7 @@
 // The Request and Response values the hooks build: the OAuth headers Claude
 // Code sends, the credential and cache lifetime another plugin chose, and the refused request
 // that answers as a retryable 429 without leaving the process.
+import { Schema } from "effect"
 import { betaHeader, REQUIRED_BETAS } from "../betas.ts"
 import type { Endpoint } from "../endpoint.ts"
 import { refusedBody, refusedHeaders } from "../quota.ts"
@@ -86,6 +87,21 @@ export const refusedRequest = (request: Request): Request =>
 /** What a refused request answers: Anthropic's rate-limit error, retried after `retryAfter` seconds. */
 export const refusedResponse = (retryAfter: number): Response =>
   new Response(refusedBody(retryAfter), { status: 429, headers: refusedHeaders(retryAfter) })
+
+/**
+ * What a request that could not be signed in answers: an authentication failure (401) with why, not retried by
+ * itself; the pool fails the session over to another login on it.
+ */
+export const unsignedResponse = (message: string): Response =>
+  new Response(encodeUnsigned({ type: "error", error: { type: "authentication_error", message } }), {
+    status: 401,
+    headers: { "content-type": "application/json", "x-should-retry": "false" },
+  })
+
+/** Anthropic's error envelope, as JSON text. */
+const encodeUnsigned = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.String, error: Schema.Struct({ type: Schema.String, message: Schema.String }) })),
+)
 
 /**
  * The request routed to `url` (the endpoint's), as the hook rebuilds it: the

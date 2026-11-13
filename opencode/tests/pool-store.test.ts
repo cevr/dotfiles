@@ -10,7 +10,9 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { STORE_PREFIX, StoreCredentialError, StoreSource } from "../mods/pool/store/store.ts"
+import { Clock, Effect, Option } from "effect"
+import { it } from "effect-bun-test"
+import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, StoreSource, storeProcess } from "../mods/pool/store/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { openSlotStore, type SlotStore } from "./store/store.ts"
 import { owned } from "./owned.ts"
@@ -166,4 +168,28 @@ describe("the pool's source over a login store", () => {
     expect((await store.get("alpha"))?.refresh).toBe(theirs.refresh)
     expect(trades()).toBe(1)
   })
+
+  it.live("a refresh whose write failed keeps the store's lock: no other holder trades the spent refresh token", () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const { dir, fake, source, tokenURL, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
+      const slots = join(dir, ".slots/anthropic")
+      const alpha = `${STORE_PREFIX}alpha`
+      chmodSync(slots, 0o500)
+      expect((yield* Effect.promise(() => failure(source.resolve(alpha)))).kind).toBe("persist")
+      const rotated = fake.tokens("alpha")
+
+      // Another holder of the store (its own state of it, its own SQLite connection) must refresh the same login:
+      // it waits on the lock, and never reads the spent refresh token to trade it.
+      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
+      expect((yield* Effect.promise(() => failure(theirs.resolve(alpha)))).kind).toBe("busy")
+      expect(trades()).toBe(1)
+
+      chmodSync(slots, 0o700)
+      expect((yield* Effect.promise(() => source.resolve(alpha))).access).toBe(rotated.access)
+      expect(Option.map(Option.fromNullishOr(decodeStoredOAuth(file("alpha"))), (stored) => stored.refresh)).toEqual(Option.some(rotated.refresh))
+      expect((yield* Effect.promise(() => theirs.resolve(alpha))).access).toBe(rotated.access)
+      expect(trades()).toBe(1)
+    }),
+  )
 })

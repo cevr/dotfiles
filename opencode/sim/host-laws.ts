@@ -20,7 +20,7 @@ import type { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Data, Effect, Option, Ref, Schema, type Scope, Stream } from "effect"
 import type { OPERATIONS } from "./context.ts"
-import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, USAGE_LIMITED } from "./law-names.ts"
+import { LAW, LAW_FOLDER, LAW_LOGIN, RATE_LIMITED, UNAUTHORIZED, USAGE_LIMITED } from "./law-names.ts"
 
 export type Operation = (typeof OPERATIONS)[number]
 
@@ -411,6 +411,45 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(primary.length === 1, `a turn whose hook died made ${primary.length} requests`)
         yield* ensure(count(yield* contextText(ctx, session.id), "heard died") === 0, "a turn whose hook died was answered")
         yield* ensure((yield* Ref.get(retries)) === 0, "the retry hook was asked about a hook that died")
+      }),
+  },
+  {
+    name: LAW.unauthorized,
+    operations: ["session.hook"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const answers = yield* Ref.make<ReadonlyArray<string>>([])
+        const decisions = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.session.hook("http.request", (event) =>
+          Effect.sync(() => {
+            if (event.sessionID === session.id && event.kind === "primary")
+              event.request = new Request("data:text/plain,law%3A%20offline", { method: "GET", signal: event.request.signal })
+          }),
+        )
+        yield* ctx.session.hook("http.response", (event) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id || event.kind !== "primary") return
+            const sent = event.response
+            const text = yield* Effect.promise(() => sent.text())
+            yield* Ref.update(answers, (all) => [...all, `${sent.status} ${text}`])
+            event.response = new Response(UNAUTHORIZED, { status: 401, headers: { "content-type": "application/json" } })
+          }),
+        )
+        yield* ctx.session.hook("retry", (event) =>
+          Effect.when(
+            Ref.update(decisions, (all) => [...all, `${event.decision.retry} ${event.error.message.includes("law: sign in again")}`]),
+            Effect.succeed(event.sessionID === session.id),
+          ),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: unauthorized" }))
+        const answered = (yield* Ref.get(answers)).join(",")
+        yield* ensure(answered === "200 law: offline", `the data: request was answered ${answered}`)
+        const decided = (yield* Ref.get(decisions)).join(",")
+        yield* ensure(decided === "false true", `the retry hook saw ${decided}`)
+        const primary = (yield* probe.requests).filter((request) => request.sessionID === session.id && request.kind === "primary")
+        yield* ensure(primary.length === 1, `a turn its 401 ended made ${primary.length} requests`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "heard unauthorized") === 0, "a turn its 401 ended was answered")
       }),
   },
   {

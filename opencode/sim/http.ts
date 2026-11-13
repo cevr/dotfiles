@@ -20,6 +20,8 @@
 //   minutes), for at most 10 retries. The `retry` hook sees every failure
 //   with the decision, a retryable one's or `retry: false`, and may change
 //   it; a negative or non-finite delay it sets takes the policy's.
+// - A request an `http.request` hook sends to a data: URL (the host's fetch,
+//   Bun's): answered in the process with the URL's data, never by a provider.
 import { Effect, Option, Schema } from "effect"
 import { below, line, type Runtime } from "./runtime.ts"
 
@@ -73,6 +75,20 @@ export const classify = (status: number, headers: Headers, text: string): Failur
   if (status === 408 || status === 409 || status >= 500) return failure("ProviderInternal", true)
   return failure("InvalidRequest", false)
 }
+
+/** A data: URL of text: its media type and its percent-encoded data. A base64 one is not modelled. */
+const DATA_URL = /^data:([^,;]*(?:;charset=[^,;]*)?),(.*)$/s
+
+/**
+ * A data: URL's answer, as the host's fetch gives it without the network: a 200 of the URL's data, percent-decoded,
+ * typed by its media type (text/plain without one); none for another URL.
+ */
+export const dataOf = (url: string): Option.Option<Response> =>
+  Option.map(Option.fromNullishOr(DATA_URL.exec(url)), (match) => {
+    const part = (index: number) => Option.getOrElse(Option.fromNullishOr(match[index]), () => "")
+    const type = Option.getOrElse(Option.liftPredicate(part(1), (named) => named !== ""), () => "text/plain;charset=US-ASCII")
+    return new Response(decodeURIComponent(part(2)), { status: 200, headers: { "content-type": type } })
+  })
 
 /** A request that did not connect: the provider is not where it was sent. */
 export const unreachable = (message: string): Failure => ({ tag: "Transport", status: 0, message, retryable: true, retryAfterMs: 0 })

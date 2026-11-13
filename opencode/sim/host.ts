@@ -599,7 +599,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const before: HttpRequestInput = { ...scope, kind: event.kind, request: sent }
       yield* runRequestHooks("http.request", session, before)
       // The answer arrives at once: a refusal is whole then; an answer streams for the seed's latency before it is read.
-      const answered = yield* Effect.exit(provider.handle(before.request))
+      // A data: URL is answered in the process, as the host's fetch reads one, never by the provider.
+      const answered = yield* Effect.exit(
+        Option.match(Http.dataOf(before.request.url), { onNone: () => provider.handle(before.request), onSome: Effect.succeed }),
+      )
       if (Exit.isFailure(answered)) return Result.fail(Http.unreachable(String(answered.cause)))
       const after: HttpResponseInput = { ...scope, kind: event.kind, request: before.request, response: answered.value }
       yield* runRequestHooks("http.response", session, after)
