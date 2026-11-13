@@ -449,13 +449,17 @@ module machine {
    * the tool. Unless `free`, the root lands only units whose implementor handed back (`ready`, or stopped: the
    * land is the root's word that it is ready). A free root also lands a Rift no implementor of the run worked
    * in, a unit still implementing, one landed already, or one it dropped: finding F2 (`stepLandAny`).
+   * With `tool`, the land is the `orchestrate` tool's by unit names: before the machine decides it, the tool
+   * refuses a unit the machine does not hold (mods/orchestrate/tools.ts `riftOfUnit`); the `rift` tool's land,
+   * still an alias, and a land naming `{ path, unit }` skip that refusal.
    */
-  action landCalled(free: bool): bool = {
+  action landCalled(free: bool, tool: bool): bool = {
     nondet rifts = UNITS.powerset().exclude(Set(Set())).oneOf()
     val rule = landRule(m, rifts)
     all {
       calls.size() < 2,
       free or rifts.forall(u => Set("ready", "stopped").contains(g.status.get(u))),
+      not(tool) or rifts.subseteq(m.units.keys()),
       fed({ ...NO_CMD, kind: "Land", units: rifts }, rule, m, g),
       calls' = if (rule == "") calls.union(Set({ rifts: rifts, broke: breakOf(g, rifts) })) else calls,
       landing' = landing, landingOn' = landingOn, batchCount' = batchCount,
@@ -508,27 +512,31 @@ module machine {
   /**
    * Every step, the root keeping three orders the machine does not check (the receipt's run): it starts a batch
    * verifier only once a batch landed, it lands only units that handed back, and it starts no round of a unit
-   * while that unit lands. Each order the root breaks is a finding, explored by its own step below.
+   * while that unit lands. Each order the root breaks is a finding, explored by its own step below; the `…Tool`
+   * steps land through the `orchestrate` tool by unit names (its refusal of a unit the machine does not hold).
    */
-  action step = steps(false, false, false)
+  action step = steps(false, false, false, false)
 
   /** Finding F1: the root may also start a batch verifier before its batch lands. */
-  action stepVerifyEarly = steps(true, false, false)
+  action stepVerifyEarly = steps(true, false, false, false)
+  action stepVerifyEarlyTool = steps(true, false, false, true)
 
   /** Finding F2: the root may also land any Rift, whatever the ledger holds of its unit. */
-  action stepLandAny = steps(false, true, false)
+  action stepLandAny = steps(false, true, false, false)
+  action stepLandAnyTool = steps(false, true, false, true)
 
   /** Finding F3: the ledger may also lose a unit while its land runs: its next round starts, or the root drops it. */
-  action stepRestartLanding = steps(false, false, true)
+  action stepRestartLanding = steps(false, false, true, false)
+  action stepRestartLandingTool = steps(false, false, true, true)
 
   // The simulator picks among the enabled actions evenly: the rarer calls share one pick, so a run of 40 steps
   // reaches a second batch's land with folded findings (the witnesses count how often).
-  action steps(verifyEarly: bool, landAny: bool, restartLanding: bool): bool = any {
+  action steps(verifyEarly: bool, landAny: bool, restartLanding: bool, tool: bool): bool = any {
     implementorStarts(restartLanding),
     implementorHandsBack,
     batchVerifierStarts(verifyEarly),
     verifierHandsBack,
-    landCalled(landAny),
+    landCalled(landAny, tool),
     landClaimed,
     landEnds,
     any { reportReads, unitDrops(restartLanding), unitVerifierStarts },

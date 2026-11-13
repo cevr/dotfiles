@@ -14,13 +14,14 @@ The check is a model of the machine and the world around it (implementors, one b
 
 ## Does my change touch it?
 
-Coverage record. The model describes these files and functions, as they were at the **sync commit `7f5120d8`** (`SYNC` in `opencode/formal/check.ts`):
+Coverage record. The model describes these files and functions, as they were at the **sync commit `dbefc9cc`** (`SYNC` in `opencode/formal/check.ts`):
 
 | File | What the model mirrors |
 | --- | --- |
 | `opencode/mods/orchestrate/machine.ts` | `decide` for `Start` (implementor, verifier), `HandBack`, `ReportRead`, `Land`, `Landed`, `Drop`; `evolve` for `UnitStarted`, `UnitHandedBack`, `BatchLanded`, `VerifierStarted`, `VerifierEnded`, `ReportResolved`, `FindingFolded`, `UnitDropped`; `named`, `unfoldedOf`, `holdsNoLand` (`riding`, `endedWith`), `verdictPending`, `coverOf`, `standInFindings`, `foldsOf`, `releasedBy` |
 | `opencode/mods/orchestrate/model.ts` | `Machines.land` (one `ledger.decide`, the check) and `Machines.landed` (another, the record): two steps, not one |
-| `opencode/cmd/orchestrate/server.ts` | the `rift` land's `execute.before` hook calls `machines.land`, its `execute.after` hook `machines.landed` on a completed land |
+| `opencode/cmd/orchestrate/server.ts` | a `rift` land's and an `orchestrate` land's `execute.before` hook calls `machines.land`, their `execute.after` hook `machines.landed` on a completed land |
+| `opencode/mods/orchestrate/tools.ts` | `riftOfUnit`: the `orchestrate` land refuses a unit name the machine does not hold, before the machine decides (the `…Tool` steps) |
 | `opencode/mods/rift/model.ts` | the land's claim of its integration Rift (`claimed`, `busy`): a second land while one runs is refused |
 
 Each `ledger.decide` is one step of the model (one atomic step in the code, under the store's lock). `bun formal/check.ts` prints a note when a covered file changed since the sync commit.
@@ -81,6 +82,8 @@ Three orders the machine does not check keep `pipeline` true; the check's `step`
 - **F1 `stepVerifyEarly`**: a batch verifier started before its batch lands. The machine reads the start as a land by hand (`standInFindings`): its verdict takes the ready units out of the ledger, and their later `rift` land is "none of the machine's business".
 - **F2 `stepLandAny`**: a land naming a unit the ledger does not hold as `ready` or `ended` (still `implement` because its hand-back was not read, landed already, dropped, or no unit of the run): `named` is empty, so the land passes every rule and `Landed` records nothing.
 - **F3 `stepRestartLanding`**: a unit's next round starts, or the root drops it, while its land runs: `Landed` names units by what the ledger holds when the land ends, so the land goes unrecorded and the next land passes `VerdictPending`.
+
+Each has a `…Tool` twin (`stepVerifyEarlyTool`, `stepLandAnyTool`, `stepRestartLandingTool`): the land goes through the `orchestrate` tool by unit names, which refuses a unit the machine does not hold. At `dbefc9cc` all three still break: the tool's refusal stops a land of a unit absent from the ledger, but a held unit in `implement`, `landed` or `verify` still lands with `named` empty (F2), a stand-in verifier's silent end leaves its units `landed` and landable that way (F1), and F3 is about the record, not the check.
 
 When a fix lands for one, drop its assumption from `step` (the `free` argument of its action in `machine.qnt`), and keep its step as the regression.
 

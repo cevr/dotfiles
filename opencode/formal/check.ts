@@ -40,8 +40,8 @@ const WITNESSES = ["witnessSecondBatch", "witnessFoldedLand", "witnessRefusedPen
  * behavior on the paths the runs reach; a reviewer reads the rest). Move it forward only after confirming the
  * model at the new commit (.claude/skills/formal-opencode/SKILL.md, "Keep it in step").
  */
-export const SYNC = "7f5120d8"
-export const COVERED = ["opencode/mods/orchestrate/machine.ts", "opencode/mods/orchestrate/model.ts", "opencode/cmd/orchestrate/server.ts", "opencode/mods/rift/model.ts"]
+export const SYNC = "dbefc9cc"
+export const COVERED = ["opencode/mods/orchestrate/machine.ts", "opencode/mods/orchestrate/tools.ts", "opencode/mods/orchestrate/model.ts", "opencode/cmd/orchestrate/server.ts", "opencode/mods/rift/model.ts"]
 
 const ARGV = process.argv.slice(2)
 const flag = (name: string) => ARGV.includes(name)
