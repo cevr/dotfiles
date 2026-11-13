@@ -1,9 +1,10 @@
 // The contracts the guard needs from outside: whether a path is a
 // repository's root, the directory a session's shell runs in, whether a
-// session is a subagent, the processes running on the machine, and where
+// session is a subagent, the processes running on the machine, a checkout's
+// file system and origin with Rift's warm sources, and where
 // launchers live and whether systemd scopes work. Each states its failure;
 // `laws.ts` states what every implementation owes.
-import { Context, type Effect, Schema } from "effect"
+import { Context, type Effect, type Option, Schema } from "effect"
 import type { ProcessInfo } from "./kill.ts"
 
 /** The guard could not tell whether `path` is a repository's root. */
@@ -74,6 +75,39 @@ export class Scopes extends Context.Service<
     readonly ionice: Effect.Effect<boolean>
   }
 >()("dotfiles-opencode/guard/Scopes") {}
+
+/** The guard could not read a checkout, or the warm sources Rift copies from. */
+export class CheckoutUnknown extends Schema.TaggedError<CheckoutUnknown>()("CheckoutUnknown", {
+  path: Schema.String,
+  message: Schema.String,
+}) {}
+
+/** A Git checkout as the worktree rule (worktree.ts) reads it. */
+export interface Checkout {
+  /** Its top directory, absolute. */
+  readonly root: string
+  /** The type of the file system it sits on, as `mount` names it (`apfs`, `btrfs`, `ext4`). */
+  readonly filesystem: string
+  /** Its `origin` remote's URL; none when it has no origin. */
+  readonly origin: Option.Option<string>
+}
+
+/** A warm source Rift copies from: its directory and its `origin` remote's URL. */
+export interface WarmSource {
+  readonly path: string
+  readonly origin: Option.Option<string>
+}
+
+/** Git checkouts and Rift's warm sources on this machine, read when a call makes a git worktree. */
+export class Checkouts extends Context.Service<
+  Checkouts,
+  {
+    /** The checkout `directory` (absolute) is in; none when no Git checkout holds it, or it does not exist. */
+    readonly of: (directory: string) => Effect.Effect<Option.Option<Checkout>, CheckoutUnknown>
+    /** The warm sources Rift copies from on this machine (`workrift sources`); none where no such list is kept. */
+    readonly warmSources: Effect.Effect<ReadonlyArray<WarmSource>, CheckoutUnknown>
+  }
+>()("dotfiles-opencode/guard/Checkouts") {}
 
 /** The processes running on the machine, read when a call kills by pattern. */
 export class Processes extends Context.Service<

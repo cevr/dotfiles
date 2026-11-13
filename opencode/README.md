@@ -1706,13 +1706,31 @@ cannot say whether the session is a subagent, the sleep runs: a sleep loses
 nothing. `sleep.ts` holds the rule; `Subagents` (`opencode/`: a session with
 a parent) is its contract.
 
+It refuses `git worktree add` in a checkout Rift serves, as
+`guard-worktree: <reason>.`: a worktree is a full copy of the checkout, a
+Rift a copy-on-write one. Rift serves a checkout whose file system clones
+(`apfs`, `btrfs`, `xfs`, as `mount` names it), or one a warm source shares:
+the checkout itself, or a source with the same origin, SSH and HTTPS URLs
+alike (`workrift sources` on the workbox, so Ergo's checkout on the ext4
+home is served by `/workspaces/ergo`). The reason names the replacement: the
+rift tool's `create`, or `workrift create <branch>` on the workbox. It reads
+the line as the destructive rule does, and `-C`, `--git-dir` and
+`--work-tree` move the checkout git works on. `git worktree list`, `remove`,
+`prune` and the rest run, so old worktrees can be cleaned up; a worktree in a
+checkout Rift cannot serve runs. It reads the checkout (`git`, `df -P`,
+`mount`) only for such a call, and the warm sources only off a cloning file
+system; when it cannot read either, it refuses. `worktree.ts` holds the rule;
+`Checkouts` (`process/`) is its contract.
+
 The model (the domain files at the root of `mods/guard`): `verdict.ts`
 decides a command from where it runs and which of its targets are
 repositories, `kill.ts` decides a kill from the process table, `sleep.ts` a
-subagent's sleep, `heavy.ts` and `launcher.ts` pick and write a heavy
+subagent's sleep, `worktree.ts` a worktree add from the checkout and the warm
+sources, `heavy.ts` and `launcher.ts` pick and write a heavy
 command's launcher, and `shell-line.ts` reads a command line. `model.ts`
 asks the contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path
-holding `.git`), `SessionDirectories` and `Subagents` (`opencode/`),
+holding `.git`), `Checkouts` (`process/`: `git`, `df`, `mount` and
+`workrift sources`), `SessionDirectories` and `Subagents` (`opencode/`),
 `Processes` (`process/`: `ps`), `Launchers` (`filesystem/`) and `Scopes`
 (`process/`: the `systemd-run` probe), with `memory/` implementations for
 tests and the laws in `laws.ts`.

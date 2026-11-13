@@ -15,7 +15,11 @@
  * for such a call. A subagent's foreground call that opens by sleeping 30
  * seconds or more is refused too, naming a background shell and
  * `shell({ action: "wait", id, ms })` instead (`@dotfiles/opencode-guard/sleep`);
- * a root session's runs. Everything else runs untouched.
+ * a root session's runs. So is `git worktree add` in a checkout Rift serves (its
+ * file system clones, or a warm source has its origin): a worktree is a full
+ * copy, and the refusal names the rift tool's `create` or `workrift create
+ * <branch>` (`@dotfiles/opencode-guard/worktree`); the checkout is read with
+ * `git`, `df` and `mount` only for such a call. Everything else runs untouched.
  *
  * The hook is the registry's, so it sees every call the registry runs: a
  * direct call, a call from code mode's `execute`, and a kernel cell's
@@ -52,9 +56,11 @@ import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
 import * as ProcessScopes from "@dotfiles/opencode-guard/process/scopes"
 import * as OpenCodeSessionDirectories from "@dotfiles/opencode-guard/opencode/session-directories"
 import * as OpenCodeSubagents from "@dotfiles/opencode-guard/opencode/subagents"
-import type { Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
-import { idleMessage } from "@dotfiles/opencode-guard/sleep"
-import { message } from "@dotfiles/opencode-guard/verdict"
+import * as ProcessCheckouts from "@dotfiles/opencode-guard/process/checkouts"
+import type { Checkouts, Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
+import { type Idle, idleMessage } from "@dotfiles/opencode-guard/sleep"
+import { type Destructive, message } from "@dotfiles/opencode-guard/verdict"
+import { type FullCopy, worktreeMessage } from "@dotfiles/opencode-guard/worktree"
 
 /**
  * An option that takes `fallback` when absent. A present value must decode.
@@ -88,8 +94,15 @@ const decodeInput = Schema.decodeUnknownOption(ShellInput)
 /** The input as a JSON string, as a model sometimes sends it and the input-repair hook may not have parsed yet. */
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
+/** What the model reads of a refusal, each rule in its own words. */
+const wordsOf = (refusal: Destructive | FullCopy | Idle): string => {
+  if (refusal._tag === "Idle") return idleMessage(refusal.reason)
+  if (refusal._tag === "FullCopy") return worktreeMessage(refusal.reason)
+  return message(refusal.reason)
+}
+
 /** The outside systems the model runs on. */
-export type Externals = Launchers | Processes | RepoRoots | Scopes | SessionDirectories | Subagents
+export type Externals = Checkouts | Launchers | Processes | RepoRoots | Scopes | SessionDirectories | Subagents
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
@@ -104,7 +117,14 @@ export const sessionsOf = (ctx: Plugin.Context): Layer.Layer<SessionDirectories 
 
 /** The outside systems as the filesystem and OpenCode provide them. */
 export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
-  Layer.mergeAll(FilesystemRepoRoots.layer, FilesystemLaunchers.layer(options.launchers), PsProcesses.layer(), ProcessScopes.layer(), sessionsOf(ctx))
+  Layer.mergeAll(
+    FilesystemRepoRoots.layer,
+    ProcessCheckouts.layer(),
+    FilesystemLaunchers.layer(options.launchers),
+    PsProcesses.layer(),
+    ProcessScopes.layer(),
+    sessionsOf(ctx),
+  )
 
 /** The plugin on `externals`: the live systems in OpenCode, memory layers in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
@@ -148,10 +168,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
             ...(background === true ? { background } : {}),
           })
           .pipe(
-            Effect.mapError(
-              (refusal) =>
-                new Tool.Error({ message: refusal._tag === "Idle" ? idleMessage(refusal.reason) : message(refusal.reason), error: refusal }),
-            ),
+            Effect.mapError((refusal) => new Tool.Error({ message: wordsOf(refusal), error: refusal })),
           )
       })
     }),
