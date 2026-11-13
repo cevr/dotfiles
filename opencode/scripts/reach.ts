@@ -19,6 +19,9 @@
 // Every key also covers the shared inputs: the root manifest, lock file,
 // bunfig, tsconfig, the lint policy, these scripts, Bun's version and the OpenCode
 // checkout in OPENCODE_DEV, whose modules the packages link.
+// An acceptance file's key (`acceptKey`, the ledger of scripts/accept-ledger.ts)
+// leaves out what no acceptance run loads: the packages' own unit tests,
+// benches and Markdown, and the lint policy and the gate (`ACCEPT_SHARED`).
 import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"

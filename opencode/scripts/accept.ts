@@ -111,7 +111,9 @@ const prepare = Effect.fn("Accept.prepare")(function* () {
   const workspace = yield* Effect.promise(load)
   const files = filesOf(acceptanceTests(workspace))
   const text = (file: string) => readFileSync(path.resolve(ROOT, file), "utf8")
-  if (!listOnly) yield* takeLock()
+  const signalled = yield* Deferred.make<boolean>()
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => Effect.runFork(Deferred.succeed(signalled, true)))
+  if (!listOnly && !(yield* takeLock(signalled))) return Option.none<Run>()
   const read = Accept.readLedger(disk, LEDGER)
   if (Option.isSome(read.problem)) yield* Console.error(`accept: ${read.problem.value}`)
   const shared = yield* Effect.promise(() => acceptSharedKey([`accept-ledger:${Accept.KEY_VERSION}`, "bun test --timeout 300000"]))
@@ -122,9 +124,8 @@ const prepare = Effect.fn("Accept.prepare")(function* () {
   const candidates = files.map((file) => ({ file, tier: tiers.get(file) ?? "land", key: keys.get(file) ?? "" }))
   const named = own.filter((arg) => files.includes(arg))
   const selection = Accept.select(mode, candidates, read.ledger, Date.now(), named)
-  const signalled = yield* Deferred.make<boolean>()
   const run: Run = { files, text, reached, keys, tiers, selection, ledger: read.ledger, timed: [], loads: [load1()], signalled }
-  return run
+  return Option.some(run)
 })
 
 /** A land run: the due land files, near the change first, under the window. */
@@ -340,10 +341,14 @@ const finish = Effect.fn("Accept.finish")(function* (run: Run, outcomes: Readonl
 })
 
 /** Waits for the machine's accept lock; the wait is printed and kept off the run's clock. */
-const takeLock = Effect.fn("Accept.takeLock")(function* () {
+const takeLock = Effect.fn("Accept.takeLock")(function* (signalled: Deferred.Deferred<boolean>) {
   const from = performance.now()
   let told = false
   while (!claim()) {
+    if (Deferred.isDoneUnsafe(signalled)) {
+      yield* Console.error("accept: stopped by a signal while it waited for the lock; it ran nothing, so every due file is still owed")
+      return false
+    }
     const owner = holder()
     if (Option.isSome(owner) && !alive(owner.value.pid)) {
       rmSync(LOCK, { recursive: true, force: true })
@@ -354,8 +359,9 @@ const takeLock = Effect.fn("Accept.takeLock")(function* () {
     yield* Effect.sleep(2000)
   }
   waited = performance.now() - from
-  if (told) yield* say(`accept: waited ${seconds(waited)} for the lock`)
+  yield* say(`accept: waited ${seconds(waited)} for the lock (off the run's clock)`)
   process.on("exit", release)
+  return true
 })
 
 /** Takes the lock when it is free. */
@@ -394,8 +400,9 @@ const main = Effect.fn("Accept.main")(function* () {
     const checked = checkFork(ENV.OPENCODE_DEV)
     if ("problem" in checked) return yield* refuse(checked.problem)
   }
-  const run = yield* prepare()
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => Effect.runFork(Deferred.succeed(run.signalled, true)))
+  const prepared = yield* prepare()
+  if (Option.isNone(prepared)) return 130
+  const run = prepared.value
   const outcomes = yield* Effect.suspend(() => (mode === "land" && land(run)) || phases(run))
   return yield* finish(run, outcomes)
 })
