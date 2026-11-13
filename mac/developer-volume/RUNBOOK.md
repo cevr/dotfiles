@@ -23,7 +23,7 @@ You run every step yourself, in a plain Ghostty window outside herdr: the copy n
 
 | # | Do | Takes |
 | --- | --- | --- |
-| 1 | During an ordinary work day before the window (Friday is fine), take the fseventsd baseline: `$D/check.sh --baseline`. One was taken 2026-11-13 16:31Z: 23.19 CPU s over 300 s (measured). | 5 min |
+| 1 | During an ordinary work day before the window (Friday is fine), take the fseventsd baseline: `$D/check.sh --baseline`. One was taken 2026-11-13, ending 16:22Z: 23.19 CPU s over 300 s (measured). | 5 min |
 | 2 | Free space: `rift gc` in each repo with rifts (it empties `.rifts/*/.trash`), then `df -h /System/Volumes/Data`. Go on only with **90 GiB or more** free. If it is still short, empty the macOS Trash or remove build output. | 5 to 30 min (guess) |
 | 3 | Quit the agents: end every Claude Code, Codex and OpenCode session, then `opencode service stop` (its kernel workers and wake jobs stop with it). | 2 min |
 | 4 | `herdr server stop` (closes every herdr pane). Quit editors and dev servers. | 1 min |
