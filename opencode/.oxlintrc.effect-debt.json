@@ -384,6 +384,34 @@
       "rules": {
         "effect/noEffectRunInTests": "off"
       }
+    },
+    {
+      "files": [
+        "scenarios/queue-merge.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/queue-merge.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/escape/setup.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off"
+      }
     }
   ]
 }
