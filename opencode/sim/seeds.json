@@ -1,3 +1,5 @@
 {
+  "cmd/mail/mail-peer.sim.test.ts": [121415603],
+  "cmd/orchestrate/orchestrate-fallback.sim.test.ts": [121414084],
   "sim/fixtures/seeds-json.fixture.ts": [77777]
 }
