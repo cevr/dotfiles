@@ -19,8 +19,10 @@ bun ~/Developer/personal/dotfiles/pane-restore/main.ts restore   # after `hcm ap
 | `save` | Reads every live Herdr pane (`herdr api snapshot`) and writes its workspace, tab, cwd, hcm's tab key (`migrate.from`: `<workspace id>/<tab index>`) and its OpenCode session to `~/.local/state/pane-restore/<host>-<time>.json`. It only reads. |
 | `check [file]` | Asks the OpenCode server (`opencode api GET /api/session/<id>`) that every saved session still opens. Exits 1 and names each one that does not. |
 | `restore [file]` | For each saved OpenCode pane, finds the `hc` terminal `hcm apply` made from its tab (label `migrate.from`) and sets `migrate.resume=opencode --session <id>` on it. `hcm resume` then types that once. It never types into a terminal. |
+| `restore --herdr [file]` | Back into herdr itself, after a herdr restart left the panes as plain shells: in the herdr the save read (its `--machine` or `--session`), runs `herdr pane run <pane> opencode --session <id>` in each saved pane that is an idle shell (`herdr pane process-info`). A pane that runs anything, a pane that is gone, or a session already open in another pane is not touched. A second run types nothing. |
 
-With no file, `check` and `restore` use this host's newest save.
+With no file, `check` and `restore` use the newest save of this host, or of
+`--machine <label>`.
 
 ## Where the session id comes from
 
@@ -55,6 +57,9 @@ One line per saved OpenCode pane, then the totals; it exits 1 when any failed.
 
 ## Runbook steps
 
+The Mac's are in `mac/developer-volume/RUNBOOK.md` (steps 3 and 12), the
+workbox's in `linux/workbox-btrfs/RUNBOOK.md` (steps 4 and 7); a test holds both.
+
 Before the move, while Herdr still runs:
 
 ```sh
@@ -62,7 +67,14 @@ bun ~/Developer/personal/dotfiles/pane-restore/main.ts save     # add --session 
 bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
 ```
 
-After the move:
+After the move, with the panes back in herdr as plain shells:
+
+```sh
+bun ~/Developer/personal/dotfiles/pane-restore/main.ts check
+bun ~/Developer/personal/dotfiles/pane-restore/main.ts restore --herdr
+```
+
+After the move, into herdr-core instead:
 
 ```sh
 bun ~/Developer/personal/dotfiles/pane-restore/main.ts check

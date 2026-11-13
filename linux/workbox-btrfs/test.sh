@@ -207,6 +207,26 @@ bash "$here/migrate.sh" home > /dev/null || fail 'a rerun of home failed'
 [[ $(grep -c 'subvol=@' "$root/etc/fstab") == 2 ]] || fail 'a rerun added fstab lines'
 pass 'home reruns as a no-op'
 
+# --- check.sh's alarms. An image that may grow past ext4's free space: only the
+# file's apparent size changes (no losetup -c), so btrfs never sees it.
+size_ok=$(stat -c %s "$image")
+free=$(df -B1 --output=avail "$root" | awk 'NR == 2 { print $1 }')
+truncate -s $((size_ok + free + 1073741824)) "$image"
+bash "$here/check.sh" > "$work/check-unbacked.log" 2>&1 || true
+truncate -s "$size_ok" "$image"
+grep -q 'warn .*could fill the root' "$work/check-unbacked.log" || { cat "$work/check-unbacked.log"; fail 'check.sh did not warn of an image ext4 cannot back'; }
+bash "$here/check.sh" | grep -q 'could fill the root' && fail 'check.sh warns of a backed image'
+pass 'check.sh warns when the image may outgrow ext4 free space, and only then'
+
+# A subvolume line above the image line, in a copy of the fstab.
+bad_fstab=$work/fstab.misordered
+{ grep 'subvol=@home,' "$root/etc/fstab"; grep -v 'subvol=@home,' "$root/etc/fstab"; } > "$bad_fstab"
+if WB_FSTAB=$bad_fstab bash "$here/check.sh" > "$work/check-order.log" 2>&1; then
+    cat "$work/check-order.log"; fail 'check.sh passed an fstab with @home before the image'
+fi
+grep -q 'FAIL  @home line comes before the image line' "$work/check-order.log" || { cat "$work/check-order.log"; fail 'check.sh did not name the misordered @home line'; }
+pass 'check.sh fails an fstab that mounts a subvolume before the image'
+
 # --- finish: prunes, deletes the old trees, grows the image into the space.
 size_before=$(stat -c %s "$image")
 bash "$here/migrate.sh" finish > "$work/finish-dry.log" 2>&1 || { cat "$work/finish-dry.log"; fail 'finish (dry) failed'; }

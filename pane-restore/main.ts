@@ -12,6 +12,7 @@ import { join } from "node:path"
 const USAGE = `usage: pane-restore save [--machine <herdr machine> | --session <herdr session>] [--herdr-state <session.json>]
        pane-restore check [<saved file>]
        pane-restore restore [<saved file>]
+       pane-restore restore --herdr [--machine <herdr machine>] [<saved file>]
 
 save     record every herdr pane: workspace, tab, cwd and the OpenCode session
          its TUI has open, in $XDG_STATE_HOME/pane-restore/<host>-<time>.json
@@ -19,7 +20,13 @@ check    ask the OpenCode server that every saved session still opens
 restore  after \`hcm apply\`, label each saved OpenCode pane's hc terminal with
          migrate.resume=opencode --session <id>; \`hcm resume\` then types it once.
          It never types into a terminal itself.
-With no file, check and restore use this host's newest save.`
+restore --herdr
+         after a herdr restart, run \`opencode --session <id>\` (herdr pane run)
+         in each saved pane that is back as an idle shell, in the herdr the
+         save read (its --machine or --session). A pane that runs anything, or
+         a session already open in another pane, is skipped.
+With no file, check and restore use the newest save of this host (or of
+--machine).`
 
 /** hcm's label: the command \`hcm resume\` types into the terminal, then empties. */
 const RESUME = "migrate.resume"
@@ -44,6 +51,8 @@ export interface Saved {
   readonly version: 1
   readonly host: string
   readonly machine: string | null
+  /** The named herdr session the save read (`--session`), when not the default. */
+  readonly session?: string | null
   readonly time: string
   readonly panes: ReadonlyArray<SavedPane>
 }
@@ -163,7 +172,7 @@ export const save = (options: { machine?: string; session?: string; herdrState?:
 
   const host = options.machine ?? hostname().split(".")[0] ?? "host"
   const time = new Date().toISOString()
-  const saved: Saved = { version: 1, host, machine: options.machine ?? null, time, panes }
+  const saved: Saved = { version: 1, host, machine: options.machine ?? null, session: options.machine ? null : (options.session ?? null), time, panes }
   const dir = stateDir()
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `${host}-${time.replace(/[:.]/g, "-")}.json`)
@@ -173,8 +182,8 @@ export const save = (options: { machine?: string; session?: string; herdrState?:
 
 const stateDir = () => join(process.env.XDG_STATE_HOME || join(process.env.HOME ?? "", ".local/state"), "pane-restore")
 
-const newestSave = (): string => {
-  const host = hostname().split(".")[0] ?? "host"
+const newestSave = (machine?: string): string => {
+  const host = machine ?? hostname().split(".")[0] ?? "host"
   const dir = stateDir()
   const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith(`${host}-`) && f.endsWith(".json")).sort() : []
   const newest = files.at(-1)
@@ -182,7 +191,7 @@ const newestSave = (): string => {
   return join(dir, newest)
 }
 
-const load = (path: string | undefined): Saved => JSON.parse(readFileSync(path ?? newestSave(), "utf8"))
+const load = (path: string | undefined, machine?: string): Saved => JSON.parse(readFileSync(path ?? newestSave(machine), "utf8"))
 
 // ── check ──
 
@@ -229,6 +238,46 @@ export const restore = (saved: Saved): Outcome[] => {
     })
 }
 
+/**
+ * Back into herdr itself, after a herdr restart left the panes as plain shells:
+ * `herdr pane run <pane> opencode --session <id>` in each saved pane that is an
+ * idle shell, on the herdr the save read. Never into a pane that runs anything.
+ */
+export const restoreHerdr = (saved: Saved): Outcome[] => {
+  const target = saved.machine ? ["--machine", saved.machine] : saved.session ? ["--session", saved.session] : []
+  const herdr = (...args: string[]) => exec(["herdr", ...target, ...args])
+  const live = new Set<string>((json(["herdr", ...target, "api", "snapshot"]).result.snapshot.panes ?? []).map((p: any) => p.pane_id))
+  const foreground = new Map<string, string[][]>()
+  for (const pane of live) {
+    const info = herdr("pane", "process-info", "--pane", pane)
+    if (info.code !== 0) continue
+    foreground.set(pane, (JSON.parse(info.stdout).result?.process_info?.foreground_processes ?? []).map((p: any) => p.argv ?? []))
+  }
+  /** The pane whose OpenCode TUI has `session` open now, from its arguments. */
+  const openIn = (session: string) =>
+    [...foreground].find(([, argvs]) => argvs.some((argv) => isOpencode(argv) && sessionFromArgv(argv) === session))?.[0]
+
+  return saved.panes
+    .filter((p) => p.session !== null)
+    .map((pane): Outcome => {
+      const session = pane.session!
+      const command = `opencode --session ${session}`
+      if (!live.has(pane.pane)) return { kind: "failed", line: `failed ${pane.pane}: pane not found` }
+      const argvs = foreground.get(pane.pane)
+      if (argvs === undefined) return { kind: "failed", line: `failed ${pane.pane}: herdr pane process-info failed` }
+      const elsewhere = openIn(session)
+      if (elsewhere === pane.pane) return { kind: "skipped", line: `skipped ${pane.pane}: already open` }
+      const running = argvs.map((argv) => (argv[0] ?? "").split("/").at(-1)!.replace(/^-/, "")).find((name) => !SHELLS.has(name))
+      if (running !== undefined || argvs.length === 0) return { kind: "skipped", line: `skipped ${pane.pane}: runs ${running ?? "nothing herdr can see"}` }
+      if (elsewhere !== undefined) return { kind: "skipped", line: `skipped ${pane.pane}: already open in ${elsewhere}` }
+      if (!opens(session)) return { kind: "failed", line: `failed ${pane.pane}: session ${session} does not open through the server` }
+      const result = herdr("pane", "run", pane.pane, command)
+      if (result.code !== 0) return { kind: "failed", line: `failed ${pane.pane}: herdr pane run exited ${result.code}: ${result.stderr.trim()}` }
+      foreground.set(pane.pane, [command.split(" ")])
+      return { kind: "restored", line: `restored ${pane.pane}: ${command}` }
+    })
+}
+
 // ── cli ──
 
 const main = (argv: ReadonlyArray<string>): number => {
@@ -237,7 +286,8 @@ const main = (argv: ReadonlyArray<string>): number => {
     const at = rest.indexOf(name)
     return at === -1 ? undefined : rest[at + 1]
   }
-  const positional = rest.find((arg, i) => !arg.startsWith("--") && !(rest[i - 1] ?? "").startsWith("--"))
+  const VALUED = new Set(["--machine", "--session", "--herdr-state"])
+  const positional = rest.find((arg, i) => !arg.startsWith("--") && !VALUED.has(rest[i - 1] ?? ""))
   if (command === "save") {
     if (flag("--machine") && flag("--session")) throw new Error("--machine and --session do not combine (herdr refuses them together)")
     const { path, saved } = save({ machine: flag("--machine"), session: flag("--session"), herdrState: flag("--herdr-state") })
@@ -247,16 +297,18 @@ const main = (argv: ReadonlyArray<string>): number => {
     return 0
   }
   if (command === "check") {
-    const { lines, ok } = check(load(positional))
+    const { lines, ok } = check(load(positional, flag("--machine")))
     for (const line of lines) console.log(line)
     return ok ? 0 : 1
   }
   if (command === "restore") {
-    const outcomes = restore(load(positional))
+    const intoHerdr = rest.includes("--herdr")
+    const saved = load(positional, flag("--machine"))
+    const outcomes = intoHerdr ? restoreHerdr(saved) : restore(saved)
     for (const outcome of outcomes) console.log(outcome.line)
     const count = (kind: Outcome["kind"]) => outcomes.filter((o) => o.kind === kind).length
     console.log(`${count("restored")} restored, ${count("skipped")} skipped, ${count("failed")} failed`)
-    if (count("restored") > 0) console.log("next: hcm resume (after herdr has stopped)")
+    if (!intoHerdr && count("restored") > 0) console.log("next: hcm resume (after herdr has stopped)")
     return count("failed") === 0 ? 0 : 1
   }
   console.error(USAGE)
