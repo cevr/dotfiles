@@ -61,7 +61,7 @@ export const TIMEOUT_MS = 180_000
 const CLOSE_MS = 15_000
 
 const TUI_PLUGINS = ["prime", "status", "git", "cache", "questions", "btw", "skills", "recover", "orchestrate", "escape"]
-const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "web", "memory"]
+const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "memory"]
 /** How long the TUI has, after the restarted service can serve, to show its session again. */
 const BACK_WITHIN_MS = 20_000
 /** How long the booting case refuses the session after the restarted service can serve. */

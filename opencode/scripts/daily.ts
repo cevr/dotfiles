@@ -442,7 +442,6 @@ if (import.meta.main) {
     pluginDir("rift"),
     pluginDir("tool-names"),
     pluginDir("cache"),
-    pluginDir("web"),
     pluginDir("memory"),
     pluginDir("stall"),
     pluginDir("escape"),
