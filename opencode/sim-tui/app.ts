@@ -139,6 +139,8 @@ interface Harness {
   ended: boolean
   frame: Frame
   key: string
+  /** Every frame drawn while a seed records (`Tui.record`), as text, each one once. */
+  recorded: Option.Option<Array<ReadonlyArray<string>>>
   scratch: Option.Option<string>
   release: () => void
 }
@@ -151,6 +153,7 @@ const harness: Harness = {
   ended: false,
   frame: { lines: [] },
   key: "",
+  recorded: Option.none(),
   scratch: Option.none(),
   release: () => {},
 }
@@ -359,6 +362,11 @@ export const hostEnv = (host: string) => ({
 /** The theme document the real drive installs, read from themes/prime.json. */
 const Theme = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
 
+/** Adds `frame` to a recording unless it is the frame drawn just before it. */
+const keep = (frames: Array<ReadonlyArray<string>>, frame: ReadonlyArray<string>) => {
+  if (frames.at(-1)?.join("\n") !== frame.join("\n")) frames.push(frame)
+}
+
 /** One pass: the due timers (on a settle's first pass), the double's queued events, a real turn for I/O, one render. */
 const pump = (app: Booted, render: boolean, timers: boolean) =>
   Effect.gen(function* () {
@@ -377,6 +385,7 @@ const pump = (app: Booted, render: boolean, timers: boolean) =>
     }
     yield* Effect.yieldNow
     if (render) yield* Effect.promise(() => app.fixture.renderOnce())
+    if (render) Option.map(harness.recorded, (frames) => keep(frames, textOf(capture(app.fixture))))
   })
 
 /** Comes to rest: the double owes nothing, the client waits on nothing, and two renders in a row are equal. */
@@ -574,6 +583,13 @@ export interface Tui {
   readonly press: (key: Key) => Effect.Effect<void, SimTuiError>
   readonly type: (text: string) => Effect.Effect<void, SimTuiError>
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, SimTuiError>
+  /** A mouse event at a cell: a move, a left button's press or release, or a wheel step. */
+  readonly mouse: (event: Mouse) => Effect.Effect<void, SimTuiError>
+  /**
+   * Runs `during` and returns, with its result, every frame drawn meanwhile (as text, a frame
+   * drawn twice in a row once), as a real scenario captures frames back to back.
+   */
+  readonly record: <A, E>(during: Effect.Effect<A, E>) => Effect.Effect<readonly [A, ReadonlyArray<ReadonlyArray<string>>], E>
   readonly navigate: (sessionID: string) => Effect.Effect<void, SimTuiError>
   /** Virtual milliseconds since the seed began. */
   readonly elapsed: () => number
@@ -641,6 +657,23 @@ const pressOn = (fixture: Fixture, key: Key) => {
   if (key.name === "enter") return fixture.mockInput.pressEnter(modifiers)
   if (key.name === "up" || key.name === "down" || key.name === "left" || key.name === "right") return fixture.mockInput.pressArrow(key.name, modifiers)
   return fixture.mockInput.pressKey(key.name, modifiers)
+}
+
+export interface Mouse {
+  readonly action: "move" | "down" | "up" | "scroll"
+  readonly x: number
+  readonly y: number
+  /** A wheel step's way: up by default. */
+  readonly direction?: "up" | "down"
+}
+
+/** A mouse event, as the terminal sends it (OpenTUI's mock mouse, no delay). */
+const mouseOn = (fixture: Fixture, event: Mouse) => {
+  const mouse = fixture.mockMouse
+  if (event.action === "scroll") return mouse.scroll(event.x, event.y, event.direction ?? "up")
+  if (event.action === "down") return mouse.pressDown(event.x, event.y)
+  if (event.action === "up") return mouse.release(event.x, event.y)
+  return mouse.moveTo(event.x, event.y)
 }
 
 /** A key as the trace names it. */
@@ -729,6 +762,17 @@ export const seed = <A, E>(options: BootOptions, seedOptions: SeedOptions, body:
             Effect.andThen(settled(Effect.sync(() => Array.from(text, (char) => app.fixture.mockInput.pressKey(char))))),
           ),
         resize: (cols, rows) => settled(Effect.sync(() => app.fixture.resize(cols, rows))),
+        mouse: (event) =>
+          Effect.sync(() => record({ at: since(), kind: "key", value: ["mouse", event.action, ...Option.toArray(Option.fromUndefinedOr(event.direction)), `${event.x},${event.y}`].join(" ") })).pipe(
+            Effect.andThen(settled(Effect.promise(() => mouseOn(app.fixture, event)))),
+          ),
+        record: (during) =>
+          Effect.gen(function* () {
+            const frames: Array<ReadonlyArray<string>> = [textOf(harness.frame)]
+            harness.recorded = Option.some(frames)
+            const result = yield* during.pipe(Effect.ensuring(Effect.sync(() => (harness.recorded = Option.none()))))
+            return [result, frames] as const
+          }),
         navigate: (target) => settled(navigateTo(target)),
         elapsed: since,
         trace: () => app.trace,
