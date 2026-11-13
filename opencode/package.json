@@ -24,9 +24,11 @@
     "debt": "bun scripts/effect-debt.ts"
   },
   "devDependencies": {
+    "@effect/platform-bun": "4.0.1",
     "@types/bun": "latest",
     "@xterm/headless": "6.0.0",
     "effect": "4.0.1",
+    "effect-bun-test": "0.5.0",
     "opencode-drive": "2.4.0",
     "oxlint": "1.89.0",
     "zigpty": "0.2.1"
