@@ -62,6 +62,10 @@ type Host = {
   version: string
   keeps: Keeps
   hcEnabled: boolean
+  /** The user unit `ps -o uunit=` names for the core's pid. */
+  coreUnit: string
+  /** That unit's OOMPolicy, whatever unit it is. */
+  oomPolicy: string
 }
 
 const statusJson = (host: Host) =>
@@ -84,7 +88,14 @@ const writeHost = (home: string, host: Host) => {
   mkdirSync(home, { recursive: true })
   writeFileSync(
     join(home, "host.env"),
-    `HC_ANSWERS=${host.hcAnswers ? 1 : 0}\nHC_ENABLED_EXIT=${host.hcEnabled ? 0 : 1}\nHERDR_ACTIVE_EXIT=${host.herdrActive ? 0 : 3}\n`,
+    [
+      `HC_ANSWERS=${host.hcAnswers ? 1 : 0}`,
+      `HC_ENABLED_EXIT=${host.hcEnabled ? 0 : 1}`,
+      `HERDR_ACTIVE_EXIT=${host.herdrActive ? 0 : 3}`,
+      `HC_UNIT=${host.coreUnit}`,
+      `HC_OOM=${host.oomPolicy}`,
+      "",
+    ].join("\n"),
   )
   writeFileSync(join(home, "hc-status.json"), `${statusJson(host)}\n`)
 }
@@ -95,7 +106,7 @@ const systemctlBody = `. "$HOME/host.env"
 case "$*" in
   "--user is-enabled --quiet hc-core.service") exit "$HC_ENABLED_EXIT" ;;
   "--user is-active --quiet herdr-bite.service"|"--user is-enabled --quiet herdr-bite.service") exit "$HERDR_ACTIVE_EXIT" ;;
-  "--user show hc-serve-test.service -p OOMPolicy --value") echo continue ;;
+  "--user show $HC_UNIT -p OOMPolicy --value") echo "$HC_OOM" ;;
   *" -p Slice --value") echo bite.slice ;;
   "show bite.slice -p MemoryMin --value") echo 268435456 ;;
   "show bite.slice -p MemoryLow --value") echo 536870912 ;;
@@ -125,8 +136,9 @@ case "$*" in
 esac
 exit 0`
 
-const psBody = `case "$*" in
-  "-o uunit= -p 4242") echo ' hc-serve-test.service' ;;
+const psBody = `. "$HOME/host.env"
+case "$*" in
+  "-o uunit= -p 4242") echo " $HC_UNIT" ;;
   *) exit 1 ;;
 esac`
 
@@ -217,8 +229,21 @@ const pool = async <T, R>(items: T[], width: number, f: (item: T) => Promise<R>)
   return out
 }
 
-const today: Host = { herdrActive: true, herdrPresent: true, hcAnswers: true, version: "0.1.21", keeps: true, hcEnabled: true }
+const today: Host = {
+  herdrActive: true,
+  herdrPresent: true,
+  hcAnswers: true,
+  version: "0.1.21",
+  keeps: true,
+  hcEnabled: true,
+  coreUnit: "hc-serve-b8ee8d13.service",
+  oomPolicy: "continue",
+}
 const saturday: Host = { ...today, herdrActive: false, herdrPresent: false }
+
+/** The core runs in its own hc-serve unit, which keeps running after a terminal's OOM. */
+const coreUnitSafe = (host: Host) =>
+  host.hcAnswers && /^hc-serve-.*\.service$/.test(host.coreUnit) && host.oomPolicy === "continue"
 
 describe("workbox-health", () => {
   test("today (herdr and an hc core both running) and Saturday (herdr gone) are green on every hc check", async () => {
@@ -228,7 +253,7 @@ describe("workbox-health", () => {
     }
   }, 30_000)
 
-  test("over every host state: the hc checks pass exactly when the core answers at 0.1.21+, keeps running after logout and hc-core.service is enabled; no result depends on herdr", async () => {
+  test("over every host state: the hc checks pass exactly when the core answers at 0.1.21+, keeps running after logout, hc-core.service is enabled and the core's own hc-serve unit has OOMPolicy=continue; no result depends on herdr", async () => {
     const hosts: Host[] = []
     for (const herdrActive of [true, false])
       for (const herdrPresent of [true, false])
@@ -236,25 +261,33 @@ describe("workbox-health", () => {
           for (const version of ["0.1.20", "0.1.21"])
             for (const keeps of [true, false, null] as Keeps[])
               for (const hcEnabled of [true, false])
-                hosts.push({ herdrActive, herdrPresent, hcAnswers, version, keeps, hcEnabled })
-    expect(hosts.length).toBe(96)
+                for (const coreUnit of ["hc-serve-b8ee8d13.service", "app-other.scope"])
+                  for (const oomPolicy of ["continue", "stop"])
+                    hosts.push({ herdrActive, herdrPresent, hcAnswers, version, keeps, hcEnabled, coreUnit, oomPolicy })
+    expect(hosts.length).toBe(384)
 
     const results = await pool(hosts, 4, runHealth)
     const byHcState = new Map<string, string>()
     hosts.forEach((host, i) => {
       const { hc, stdout, calls } = results[i]!
       const allPass = Object.values(hc).every((v) => v === "pass")
-      const expected = host.hcAnswers && host.version === "0.1.21" && host.keeps === true && host.hcEnabled
+      const expected =
+        host.hcAnswers && host.version === "0.1.21" && host.keeps === true && host.hcEnabled && coreUnitSafe(host)
       expect({ host, allPass }).toEqual({ host, allPass: expected })
+      // Each check reads its own input: the OOM check fails on a wrong unit or policy alone.
+      expect({ host, oom: hc["hc core keeps running after a terminal's OOM"] }).toEqual({
+        host,
+        oom: coreUnitSafe(host) ? "pass" : "fail",
+      })
       expect(Object.values(hc)).not.toContain("missing")
       // herdr is never asked, and the whole report is the same whatever herdr's state.
       expect(calls.filter((c) => c.startsWith("herdr "))).toEqual([])
-      const key = JSON.stringify([host.hcAnswers, host.version, host.keeps, host.hcEnabled])
+      const key = JSON.stringify([host.hcAnswers, host.version, host.keeps, host.hcEnabled, host.coreUnit, host.oomPolicy])
       const seen = byHcState.get(key)
       if (seen === undefined) byHcState.set(key, stdout)
       else expect(stdout).toBe(seen)
     })
-  }, 240_000)
+  }, 600_000)
 
   test("versions compare as numbers, not text", async () => {
     const cases: [string, boolean][] = [
@@ -343,11 +376,25 @@ describe("bootstrap", () => {
     }
   }, 30_000)
 
-  test("--check fails when the hc core does not answer, or hc-core.service is not enabled", async () => {
-    for (const host of [{ ...today, hcAnswers: false }, { ...today, hcEnabled: false }, { ...today, keeps: null }]) {
-      expect((await bootstrapCheck(host)).code).not.toBe(0)
+  test("--check fails on each wrong hc input alone: no core, hc-core.service not enabled, keeps unknown, the core outside an hc-serve unit, OOMPolicy=stop", async () => {
+    const wrong: Host[] = [
+      { ...today, hcAnswers: false },
+      { ...today, hcEnabled: false },
+      { ...today, keeps: null },
+      { ...today, coreUnit: "app-other.scope" },
+      { ...today, oomPolicy: "stop" },
+      { ...saturday, coreUnit: "app-other.scope" },
+      { ...saturday, oomPolicy: "stop" },
+    ]
+    for (const host of wrong) {
+      const result = await bootstrapCheck(host)
+      expect({ host, code: result.code === 0 ? 0 : "failed", passed: result.stdout.includes("checks passed") }).toEqual({
+        host,
+        code: "failed",
+        passed: false,
+      })
     }
-  }, 30_000)
+  }, 60_000)
 
   test("a full run enables hc-core.service and opencode.service, leaves herdr alone and never restarts a core", async () => {
     for (const [host, hcInstalled] of [[today, true], [saturday, true], [saturday, false]] as const) {
