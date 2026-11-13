@@ -20,7 +20,7 @@ const { seeded } = Seed.runner("cmd/wake/job.sim.test.ts")
 const WORK = "/scratch/project"
 const KAPPA = `echo kappa-start; printf 'compiled\\n' >> "$JOB_DRIP"; sleep 3; echo KAPPA-DONE; exit 4`
 
-/** scenarios/job.ts's model: the reply to whatever came last in the conversation. */
+/** scenarios/job.ts's model, its kill steps as they were at 3d449520: the reply to whatever came last in the conversation. */
 const rules: ReadonlyArray<readonly [string, (text: string) => World.Reply]> = [
   ["step-job", () => World.call("call_job_kappa", "job", { command: KAPPA, note: "KAPPA: read the result" })],
   [

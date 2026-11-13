@@ -5,7 +5,8 @@
 // `cmd/wake/server.ts`'s `make` on the world's context (sim/plugins.ts), the
 // host with `experimental.schedules` on, so the schedule tools are built in
 // (the law "a tool a transform adds is offered, and a built-in tool it removes
-// is not"); the model answers by scenarios/wake-repeat.ts's rules. The status
+// is not"); the model answers by the rules scenarios/wake-repeat.ts had
+// before its monitor moved here (3d449520). The status
 // file is the world's shell: `cat` prints what the test last wrote. What only
 // the real host shows (the server's command list without `/schedule`, with
 // the built-in schedule plugin off as daily writes it) stays in the real file.
@@ -20,7 +21,7 @@ const WORK = "/scratch/project"
 const STATUS = "/scratch/wake-repeat-status.txt"
 const READ = `cat ${STATUS}`
 
-/** scenarios/wake-repeat.ts's model: the reply to whatever came last in the conversation. */
+/** scenarios/wake-repeat.ts's model as it was at 3d449520: the reply to whatever came last in the conversation. */
 const rules: ReadonlyArray<readonly [string, (text: string) => World.Reply]> = [
   ["step-tools", () => World.say("Tools noted.")],
   [
