@@ -231,7 +231,8 @@ type Behaviour = "green" | "flaky" | "red" | "leak" | "yielded"
  * leak, run once more at the end (`secondRuns`), and each file ends as its last run did (`latest`).
  * I10: without --settled a one-at-a-time file never starts and is owed `unsettled`. I11: a pass only from a
  * green run not stopped. I12: red twice is failed, a leak is failed with no second run. I13: the outcome's
- * counts equal the sets.
+ * counts equal the sets. I15: a yield between the first runs and the second runs drops no second run, and
+ * no file runs a third time (`secondRunsDue`).
  */
 const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: ReadonlyMap<string, string>, failures: boolean, settledHost: boolean): Played => {
   const byName = new Map(model.files.map((file) => [file.name, file]))
@@ -247,13 +248,16 @@ const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
     if (behaviour(file) === "flaky" || behaviour(file) === "red") return Accept.verdict({ ...finish, code: 1 })
     return finished(draw, byName.get(file)!, 1000, skips)
   })
-  const again = Accept.secondRuns(first)
+  // The hold that runs the second runs reads the first failures as the run carried them (over a yield too), none retried yet.
+  const again = Accept.secondRunsDue(Accept.latest(first), new Set())
   const second = again.map((file) => {
     const load = draw.below(200)
     if (behaviour(file) === "red") return Accept.afterSecond({ file, status: "failed", ms: 1000, reason: "bun test exited 1" }, load)
     return Accept.afterSecond(finished(draw, byName.get(file)!, 1000, skips), load)
   })
   const ended = Accept.latest([...first, ...second])
+  // Once each second run ended, no later hold runs a file again.
+  const dueAfter = Accept.secondRunsDue(ended, new Set(again))
   const all = [...selection.settled, ...ended]
   const statusOf = (file: string) => all.find((outcome) => outcome.file === file)?.status
   const counts = Accept.countsOf(all)
@@ -271,6 +275,8 @@ const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
     ...selection.run.flatMap((file) => unless(behaviour(file) !== "leak" || (statusOf(file) === "failed" && !again.includes(file)), `I12: ${file} leaked and ended ${String(statusOf(file))}, run again ${again.includes(file)}`)),
     ...ended.flatMap((outcome) => unless(Option.isNone(Accept.secondLoad(outcome)) || behaviour(outcome.file) === "flaky", `I13: ${outcome.file} marked passed on a second run after a ${behaviour(outcome.file)} first`)),
     ...unless(counts.passed === sets.passed && counts.failed === sets.failed && counts.owed === sets.owed && counts.before === sets.before && new Set(all.map((each) => each.file)).size === all.length, `I13: counts ${counts.passed}/${counts.failed}/${counts.owed}/${counts.before} for sets ${sets.passed}/${sets.failed}/${sets.owed}/${sets.before}`),
+    ...unless(again.join(" ") === Accept.secondRuns(first).join(" "), `I15: the second runs are ${again.join(" ")}, not every first failure`),
+    ...unless(dueAfter.length === 0, `I15: ${dueAfter.join(" ")} due a third run after its second ended`),
     ...deepShares(draw),
   ]
   return { ended, selection, problems }
@@ -447,7 +453,7 @@ const playSeed = (seed: number): ReadonlyArray<string> => {
 }
 
 describe("the acceptance ledger against its model", () => {
-  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I14`, () => {
+  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I15`, () => {
     const problems = Array.from({ length: SEEDS }, (_, seed) => playSeed(seed + 1)).flat()
     expect(problems.slice(0, 5)).toEqual([])
   })
