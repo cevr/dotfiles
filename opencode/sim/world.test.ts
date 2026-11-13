@@ -460,6 +460,21 @@ describe("the world", () => {
   )
 
   Seed.effect(
+    "a field the world does not read is refused, not dropped: the host would act on it",
+    Effect.gen(function* () {
+      const world = make({ seed: 1, script: () => say("ok") })
+      const session = yield* world.session("/work")
+      // The fork's session.update renames on `title`; the world reads only metadata, so a title is the plugin's reach past it.
+      const renames = Plugin.define({
+        id: "sim-renames",
+        effect: (ctx) => ctx.session.update({ sessionID: SessionID.make(session), metadata: {}, title: "renamed" }).pipe(Effect.asVoid, Effect.orDie),
+      })
+      const loaded = yield* Effect.exit(world.load(renames, { directory: "/work" }))
+      expect(String(loaded)).toContain("sim: session.update got an input the host refuses")
+    }),
+  )
+
+  Seed.effect(
     "a simulated hour costs milliseconds",
     Effect.gen(function* () {
       const world = yield* worldOf(7)

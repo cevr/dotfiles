@@ -212,13 +212,9 @@ export const make = (worldOptions: WorldOptions) => {
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
     /** The session is deleted. */
     remove: (sessionID: string) =>
-      run(
-        Effect.suspend(() => {
-          const removed = host.sessions.get(sessionID)
-          if (removed === void 0 || !host.sessions.delete(sessionID)) return Effect.void
-          return host.publish({ type: "session.deleted", data: { sessionID } }, removed.directory)
-        }),
-      ),
+      run(Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => Effect.void, onSome: host.removeSession })),
+    /** The owner archives the session from a client. */
+    archive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.archive(session)))),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */
     rpc: (id: string, method: string, input: Schema.Json) => run(host.callRpc(id, method, input)),
     /** Calls a tool as a session's model would, outside a turn: its answer. */
