@@ -1,0 +1,13 @@
+[Unit]
+Description=Hetzner workbox firewall (linux/hetzner-workbox/firewall.nft)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/hetzner-workbox/firewall.nft
+
+[Install]
+WantedBy=sysinit.target
