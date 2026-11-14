@@ -661,7 +661,7 @@ const check = Effect.fn("EffectDebt.check")(function* (options: Options) {
   if (problems.length > 0) return yield* fail(...problems, `${problems.length} problems against ${POLICY}`)
   const held = Option.match(Option.product(scope, options.since), {
     onNone: () => "",
-    onSome: ([files, base]) => ` (the ${files.size} files changed since ${base})`,
+    onSome: ([files, base]) => ` of the ${files.size} files changed since ${base}`,
   })
   yield* Console.log(`effect-debt: ${total(counts)} diagnostics in ${files.length} source files, each (file, rule)${held} at its budget in ${POLICY}`)
 })

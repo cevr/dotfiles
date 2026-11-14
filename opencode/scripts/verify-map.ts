@@ -56,10 +56,13 @@ export const uncovered = (features: ReadonlyArray<Feature>, changed: ReadonlyArr
   changed.filter((path) => SOURCE.test(path) && !features.some((feature) => feature.code.some((prefix) => path.startsWith(prefix))))
 
 /** A drive's unreachable lines: each chosen feature with no world suite, and each changed source file no feature of `map` covers. */
-export const unreachableOf = (map: ReadonlyArray<Feature>, chosen: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<string> => [
-  ...chosen.filter((feature) => feature.world.length === 0).map((feature) => `${feature.id}: no world suite; drive it on real OpenCode (--real, or the feature file's pilotty steps)`),
-  ...uncovered(map, changed).map((file) => `${file}: changed, and no feature's Code covers it; drive it on real OpenCode or add it to a feature`),
-]
+export const unreachableOf = (map: ReadonlyArray<Feature>, chosen: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const worldless = Arr.filter(chosen, (feature) => feature.world.length === 0)
+  return [
+    ...Arr.map(worldless, (feature) => `${feature.id}: no world suite; drive it on real OpenCode (--real, or the feature file's pilotty steps)`),
+    ...Arr.map(uncovered(map, changed), (file) => `${file}: changed, and no feature's Code covers it; drive it on real OpenCode or add it to a feature`),
+  ]
+}
 
 /** The prefix every feature claims (the world itself): a suite under it is a world law's, no one feature's drive. */
 export const SHARED = "sim/"
