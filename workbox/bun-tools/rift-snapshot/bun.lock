@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "workbox-tool-rift-snapshot",
+      "dependencies": {
+        "rift-snapshot": "0.0.13",
+      },
+    },
+  },
+  "packages": {
+    "rift-snapshot": ["rift-snapshot@0.0.13", "", { "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ], "bin": { "rift": "bin/rift.js" } }, "sha512-JlTtNiuUYIWP4uPqktbqF/ANDAsSAt6rVgxUu0gPW6SeFWl9Zt3LJI+3b21pshd/+AtFXvxQv51ST9xunnQtIg=="],
+  }
+}

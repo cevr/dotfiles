@@ -1,0 +1,7 @@
+{
+  "name": "workbox-tool-hunkdiff",
+  "private": true,
+  "dependencies": {
+    "hunkdiff": "0.24.0"
+  }
+}
