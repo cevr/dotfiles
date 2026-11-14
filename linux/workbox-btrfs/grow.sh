@@ -62,6 +62,8 @@ else
     ((size - alloc <= free)) ||
         warn "the image's unallocated $(gib $((size - alloc))) exceeds ext4's free $(gib "$free"): btrfs could fill ext4. Free ext4 (migrate.sh moves home and /tmp) or grow the disk."
 fi
-# A no-op when btrfs already fills the loop device.
+# A no-op when btrfs already fills the loop device. The resize acts on the whole
+# file system through any mount of it, so /workspaces serves whether it mounts
+# the top level or @workspaces (test.sh checks both).
 run btrfs filesystem resize max "$wb_workspaces" >/dev/null
 $dry || say "btrfs now spans $(gib "$(as_root blockdev --getsize64 "$(image_loop)")")"

@@ -2,7 +2,7 @@
 // The words are the model's contract: they change only on purpose.
 import { Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
-import { MAX_DISPLAY_CHARS } from "./limits.ts"
+import { MAX_DISPLAY_CHARS, MAX_PENDING_CALLS } from "./limits.ts"
 import { catalog, IMAGE_NOTE, type Reached } from "./tools.ts"
 
 /**
@@ -30,7 +30,14 @@ export interface Limits {
 
 const DOCS = "Read a tool's docs before its first call: `tools.docs(name)` returns its full description and input schema, and `tools.docs.search(query)` ranks the tools by a query, each with its first sentence."
 
-const DIRECT_TOOLS = `Calling tools: \`await tools.<id>(input)\` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. \`tools.list()\` returns the ids and descriptions. ${DOCS} A failed tool call throws; catch it to continue. Run independent calls together with Promise.all.`
+/** How to run calls at once: what the model copies, so it comes with an example. */
+const PARALLEL = `Calls you start without awaiting run at the same time: start every call that doesn't need another's result, then await them together. \`tools.all([...])\` (an array or record of calls) and \`tools.map(items, fn, { concurrency? })\` settle each as \`{ ok, value | error }\` and never throw for one failure. Past ${MAX_PENDING_CALLS} in flight a call waits its turn. Example, one cell:
+const [status, log] = await Promise.all([tools.shell({ command: "git status --short" }), tools.shell({ command: "git log -5 --oneline" })])
+const files = await tools.map(["a.ts", "b.ts"], (path) => tools.read({ path }))`
+
+const DIRECT_TOOLS = `Calling tools: \`await tools.<id>(input)\` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. \`tools.list()\` returns the ids and descriptions. ${DOCS} A failed tool call throws; catch it to continue.
+
+${PARALLEL}`
 
 /** The opening of the runtime's words: the kernel alone, or the kernel beside the tools offered directly. */
 const runtimeOpening = (direct: boolean) =>
@@ -38,7 +45,9 @@ const runtimeOpening = (direct: boolean) =>
     ? "Calling tools: the kernel is your main tool. The few tools offered beside it you call directly; a cell reaches them on `tools` too, and they are not listed below. Every other tool"
     : "Calling tools: the kernel is your only tool. Every other tool"
 
-const runtimeTools = (direct: boolean) => `${runtimeOpening(direct)} is a function on \`tools\`, listed below with its input and the first sentence of its description: \`await tools.<name>(input)\` runs it and resolves to its result (its output, or its text). ${DOCS} Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. A tool that joins or leaves later is announced in a message; this list stays as it is. Run independent calls together with Promise.all, and print only what you need to read.`
+const runtimeTools = (direct: boolean) => `${runtimeOpening(direct)} is a function on \`tools\`, listed below with its input and the first sentence of its description: \`await tools.<name>(input)\` runs it and resolves to its result (its output, or its text). ${DOCS} Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. A tool that joins or leaves later is announced in a message; this list stays as it is. Print only what you need to read.
+
+${PARALLEL}`
 
 const ATTACH = `Seeing images: \`attach(...paths: string[])\` shows image files (PNG, JPEG, GIF, WebP; a relative path is under the working directory) to you after this call, the way a pasted image is. An image a tool returns reaches your code as \`${JSON.stringify({ type: "image", mime: "image/png", name: "<path>", note: IMAGE_NOTE })}\`, not as its data.`
 
@@ -62,7 +71,7 @@ const describeWith = (limits: Limits, direct: boolean, tools?: ReadonlyArray<Rea
 
 What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. They also survive a kernel restart: top-level imports and function and class declarations (const f = () => … included) run again from their source, each name at its latest version; then data comes back, cycles included: primitives and BigInt, plain objects, arrays, Map, Set, Date, RegExp, Buffer, typed arrays, errors (type, name, message) and instances of those classes, up to 16 MiB per binding and 256 MiB in all. Closures made inside a function, instances of classes with #private members, promises and other live objects do not. The result names each binding it dropped and why. reset: true starts an empty kernel.
 
-The result is what the code printed (console.log and friends), then the value of its last expression. Top-level await works.
+The result is what the code printed (console.log and friends), then the value of its last expression; promises in a returned array or object are awaited, so \`({ a: tools.x(…), b: tools.y(…) })\` shows both results. Top-level await works.
 
 Describing a call: description is a few words in the present tense saying what the cell does ("Merge the skill-dollar worker", "Run the failing tests"); the user sees it as the call's header, over the tool calls the cell made. Give one whenever the cell calls tools or changes anything; leave it out for a quick computation.
 
@@ -70,9 +79,9 @@ ${ATTACH}
 
 ${tools === undefined ? DIRECT_TOOLS : runtimeTools(direct)}
 
-Limits: ${limits.timeoutMs / 1000} s of compute per call, paused while tool calls run; past it the kernel is killed and bindings since the last call are lost. You see at most ${limits.viewChars.toLocaleString("en-US")} characters of output, its head and tail; ${MAX_DISPLAY_CHARS / 1024} KiB at most are kept. Keep large data in variables and print what you need.${tools === undefined ? `
+Limits: ${limits.timeoutMs / 1000} s of compute per call, paused while tool calls run; past it the kernel is killed and bindings since the last call are lost. You see at most ${limits.viewChars.toLocaleString("en-US")} characters of output, its head and tail; ${MAX_DISPLAY_CHARS / 1024} KiB at most are kept. Keep large data in variables and print what you need. Kernel calls in one session run one at a time, so put independent work in one cell rather than in several kernel calls.${tools === undefined ? `
 
-Use the kernel to compute, to chain several tool calls, to transform or filter tool results, and to keep data between steps. Call a tool directly for a single call whose full result you want to read.` : `
+Use the kernel to compute, to run several tool calls in one step, in parallel where they don't depend on each other, to transform or filter tool results, and to keep data between steps. Call a tool directly for a single call whose full result you want to read.` : `
 
 ## Tools
 

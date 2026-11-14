@@ -134,6 +134,38 @@ case \$1 in
     echo '$ws/.rifts/app/'"\$name" ;;
 esac
 EOF
+# Fakes of systemctl and loginctl for `home --stop`: they record each call in
+# $fake/log. A masked unit refuses to start, as systemd's does. terminate-user
+# plays the Mac reconnecting over ssh at once: pam_nologin refuses the login
+# while /run/nologin exists, else logind starts user@<uid> again.
+fake=$work/fake
+mkdir -p "$fake"
+cat > "$work/bin/systemctl" <<EOF
+#!/bin/bash
+args=(); for a in "\$@"; do [[ \$a == --* ]] || args+=("\$a"); done
+echo "systemctl \$*" >> '$fake/log'
+case \${args[0]} in
+  mask) touch '$fake/masked-'"\${args[1]}" ;;
+  unmask) rm -f '$fake/masked-'"\${args[1]}" ;;
+  start)
+    if [[ -e '$fake/masked-'"\${args[1]}" ]]; then echo "refused \${args[1]} (masked)" >> '$fake/log'; exit 1; fi
+    echo "started \${args[1]}" >> '$fake/log' ;;
+esac
+exit 0
+EOF
+cat > "$work/bin/loginctl" <<EOF
+#!/bin/bash
+echo "loginctl \$*" >> '$fake/log'
+[[ \$1 == terminate-user ]] || exit 0
+if [[ -e '$root/run/nologin' ]]; then echo 'login refused (nologin)' >> '$fake/log'
+else '$work/bin/systemctl' start "user@\$(id -u "\$2").service" || echo 'login refused (user@ masked)' >> '$fake/log'
+fi
+EOF
+chmod 755 "$work/bin/systemctl" "$work/bin/loginctl"
+stop_env=(WB_SYSTEMCTL="$work/bin/systemctl" WB_LOGINCTL="$work/bin/loginctl" INVOCATION_ID=test-sh)
+# No start of user@ before the unmask: the login in the window was kept out.
+no_login_in_window() { awk '/systemctl unmask/ { exit } /^started user@/ { bad = 1 } END { exit bad }' "$fake/log"; }
+block_lifted() { [[ ! -e $root/run/nologin ]] && ! compgen -G "$fake/masked-*" > /dev/null; }
 chmod 755 "$WB_WORKRIFT" "$work" "$work/bin"
 chmod 644 "$WB_WORKTREES_CONF"
 
@@ -193,10 +225,33 @@ sleep 0.5
 if WB_IDLE_WAIT=2 bash "$here/migrate.sh" home > "$work/home-busy.log" 2>&1; then fail 'home ran while a process used the home'; fi
 grep -q 'sleep (pid' "$work/home-busy.log" || { cat "$work/home-busy.log"; fail 'home did not name the busy process'; }
 [[ ! -e $home.pre-btrfs ]] || fail 'a refused run moved the home'
-kill "$holder_pid"; wait "$holder_pid" 2>/dev/null || true; holder_pid=
 pass 'home refuses and names the process while the home is in use'
 
-bash "$here/migrate.sh" home > "$work/home.log" 2>&1 || { cat "$work/home.log"; fail 'home failed'; }
+# --stop that fails (the holder outlives the stop): the trap lifts the login block.
+if env "${stop_env[@]}" WB_IDLE_WAIT=2 bash "$here/migrate.sh" home --stop > "$work/home-stop-busy.log" 2>&1; then fail 'home --stop ran while a process used the home'; fi
+grep -q 'login refused' "$fake/log" || { cat "$fake/log"; fail 'home --stop did not block logins during the window'; }
+block_lifted || { cat "$fake/log"; fail 'a failed home --stop left /run/nologin or user@ masked'; }
+[[ ! -e $home.pre-btrfs ]] || fail 'a refused run moved the home'
+pass 'a failed home --stop lifts the login block on exit'
+
+# Killed during the window (TERM): the block is lifted too.
+: > "$fake/log"
+env "${stop_env[@]}" WB_IDLE_WAIT=60 bash "$here/migrate.sh" home --stop > "$work/home-stop-term.log" 2>&1 &
+stop_pid=$!
+for _ in $(seq 1 100); do grep -q 'Waiting for' "$work/home-stop-term.log" && break; sleep 0.2; done
+[[ -e $root/run/nologin ]] || { cat "$work/home-stop-term.log"; fail 'no /run/nologin during the window'; }
+kill -TERM "$stop_pid"; wait "$stop_pid" 2>/dev/null || true
+block_lifted || { cat "$fake/log"; fail 'a killed home --stop left /run/nologin or user@ masked'; }
+pass 'a killed home --stop lifts the login block'
+kill "$holder_pid"; wait "$holder_pid" 2>/dev/null || true; holder_pid=
+
+: > "$fake/log"
+env "${stop_env[@]}" bash "$here/migrate.sh" home --stop > "$work/home.log" 2>&1 || { cat "$work/home.log"; fail 'home failed'; }
+no_login_in_window || { cat "$fake/log"; fail 'a login during the window started user@'; }
+grep -q 'login refused' "$fake/log" || { cat "$fake/log"; fail 'the login in the window was not refused'; }
+grep -q '^started user@' "$fake/log" || { cat "$fake/log"; fail 'home --stop did not start user@ again'; }
+block_lifted || fail 'home --stop left the login block'
+pass 'home --stop keeps logins out during the window and starts user@ after'
 [[ $(findmnt -n -o FSROOT --mountpoint "$home") == /@home ]] || fail 'home is not @home'
 [[ $(findmnt -n -o FSROOT --mountpoint "$root/tmp") == /@tmp ]] || fail '/tmp is not @tmp'
 cmp -s "$home/.cache/big" <(head -c $((1536 << 20)) /dev/zero) || fail 'the large file changed'
@@ -217,6 +272,102 @@ pass "home moved the home and /tmp onto subvolumes (inode was $before_inode; lin
 bash "$here/migrate.sh" home > /dev/null || fail 'a rerun of home failed'
 [[ $(grep -c 'subvol=@' "$root/etc/fstab") == 2 ]] || fail 'a rerun added fstab lines'
 pass 'home reruns as a no-op'
+
+# --- workspaces: /workspaces moves onto @workspaces, the state the workbox was
+# left in on 2026-11-13: /workspaces still mounts the top level, so @home and
+# @tmp show again under it, and Ergo's sweep refuses the second mount.
+fs_dev=$(findmnt -rn -o MAJ:MIN --mountpoint "$ws")
+top_mounts() { findmnt -rn -o TARGET,MAJ:MIN,FSROOT | awk -v d="$fs_dev" '$2 == d && $3 == "/" { print $1 }'; }
+# What the workbox's top level holds besides the warm sources and the Rifts: a
+# read-only snapshot, a plain tree (the Turbo cache), a plain file, a symlink,
+# and a plain directory that holds a subvolume next to plain files.
+mkdir -p "$ws/.cache/turbo/deep" "$ws/bite"
+head -c 1048576 /dev/urandom > "$ws/.cache/turbo/deep/blob"
+blob_sum=$(sha256sum < "$ws/.cache/turbo/deep/blob")
+echo 'note' > "$ws/note"
+ln -s app "$ws/link"
+echo 'plain beside rifts' > "$ws/.rifts/app/README"
+btrfs subvolume snapshot -r "$src" "$ws/.rifts/app/ro-snap" >/dev/null
+chown -R -h "$user:$group" "$ws/.cache" "$ws/bite" "$ws/note" "$ws/link" "$ws/.rifts/app/README"
+chmod 700 "$ws/.cache"
+chown "$user:$group" "$ws"
+ws_mode=$(stat -c '%a %U' "$ws")
+rifts_mode=$(stat -c '%a %U' "$ws/.rifts")
+[[ -d $ws/@home && -n $(top_mounts) ]] || { findmnt -rn -o TARGET,MAJ:MIN,FSROOT | grep -F "$root"; fail "the scratch root does not show the top level as the workbox does ($fs_dev)"; }
+if bash "$here/check.sh" > "$work/check-top.log" 2>&1; then cat "$work/check-top.log"; fail 'check.sh passed while /workspaces shows the top level'; fi
+grep -q "FAIL  the mount at $ws shows the image's top level" "$work/check-top.log" || { cat "$work/check-top.log"; fail 'check.sh did not name the top-level mount'; }
+grep -q "FAIL  $ws shows @home" "$work/check-top.log" || { cat "$work/check-top.log"; fail 'check.sh did not name @home under /workspaces'; }
+pass 'check.sh fails while /workspaces mounts the top level and shows @home and @tmp'
+
+(cd "$src" && exec sleep 300) &
+holder_pid=$!
+sleep 0.5
+if WB_IDLE_WAIT=2 bash "$here/migrate.sh" workspaces > "$work/ws-busy.log" 2>&1; then fail 'workspaces ran while a process used /workspaces'; fi
+grep -q 'sleep (pid' "$work/ws-busy.log" || { cat "$work/ws-busy.log"; fail 'workspaces did not name the busy process'; }
+[[ $(findmnt -n -o FSROOT --mountpoint "$ws") == / && -d $ws/app/.git ]] || fail 'a refused workspaces run moved something'
+kill "$holder_pid"; wait "$holder_pid" 2>/dev/null || true; holder_pid=
+pass 'workspaces refuses and names the process while /workspaces is in use'
+
+# The layout every later step must see, after the switch and after a reboot.
+workspaces_ok() {
+    local when=$1
+    [[ $(findmnt -n -o FSROOT --mountpoint "$ws") == /@workspaces ]] || fail "$when: $ws is not @workspaces"
+    [[ -z $(top_mounts) ]] || fail "$when: a mount still shows the top level: $(top_mounts)"
+    [[ ! -e $ws/@home && ! -e $ws/@tmp && ! -e $ws/@workspaces ]] || fail "$when: $ws shows a subvolume of the top level"
+    [[ $(stat -c %i "$src") == 256 ]] || fail "$when: the warm source is no longer a subvolume"
+    as_owner git -C "$src" status --short >/dev/null || fail "$when: the warm source lost its repository"
+    [[ $(stat -c %i "$ra") == 256 && $(git -C "$ra" log -1 --format=%s) == 'lane a' ]] || fail "$when: the Rift lane-a moved or lost its commit"
+    [[ $(btrfs property get -ts "$ws/.rifts/app/ro-snap" ro) == ro=true ]] || fail "$when: the read-only snapshot lost its flag"
+    [[ $(sha256sum < "$ws/.cache/turbo/deep/blob") == "$blob_sum" ]] || fail "$when: the Turbo cache changed"
+    [[ $(cat "$ws/note") == note && $(readlink "$ws/link") == app && $(cat "$ws/.rifts/app/README") == 'plain beside rifts' ]] || fail "$when: a plain entry was lost"
+    [[ $(stat -c '%a %U' "$ws") == "$ws_mode" && $(stat -c '%a %U' "$ws/.rifts") == "$rifts_mode" && $(stat -c '%a %U' "$ws/.cache") == "700 $user" ]] || fail "$when: an owner or mode changed"
+    [[ $(grep -c " $ws " "$root/etc/fstab") == 1 ]] || fail "$when: not one fstab line for $ws"
+    grep -q "^$image $ws btrfs loop,.*subvol=@workspaces " "$root/etc/fstab" || fail "$when: the image line does not mount @workspaces"
+    [[ $(grep -n " $ws " "$root/etc/fstab" | cut -d: -f1) -lt $(grep -n 'subvol=@home,' "$root/etc/fstab" | cut -d: -f1) ]] || fail "$when: the @home line comes before /workspaces"
+    WORKBOX_RIFT_IMAGE=$image WORKBOX_RIFT_MOUNT=$ws WORKBOX_RIFT_FSTAB=$root/etc/fstab sh "$here/../../workbox/bin/workbox-rift-storage" --check > /dev/null ||
+        fail "$when: workbox-rift-storage --check fails"
+}
+
+: > "$fake/log"
+env "${stop_env[@]}" bash "$here/migrate.sh" workspaces --stop > "$work/ws.log" 2>&1 || { cat "$work/ws.log"; fail 'workspaces failed'; }
+workspaces_ok 'after workspaces --stop'
+no_login_in_window || { cat "$fake/log"; fail 'a login during the workspaces window started user@'; }
+grep -q '^started user@' "$fake/log" || { cat "$fake/log"; fail 'workspaces --stop did not start user@ again'; }
+block_lifted || fail 'workspaces --stop left the login block'
+grep -q "ok    $ws is @workspaces" "$work/ws.log" || { cat "$work/ws.log"; fail 'workspaces did not end with a passing check.sh'; }
+pass 'workspaces moves the top level into @workspaces, keeps every path, mounts no top level, and passes check.sh'
+
+bash "$here/migrate.sh" workspaces > "$work/ws-rerun.log" 2>&1 || { cat "$work/ws-rerun.log"; fail 'a rerun of workspaces failed'; }
+bash "$here/migrate.sh" home > /dev/null 2>&1 || fail 'a rerun of home after workspaces failed'
+workspaces_ok 'after the reruns'
+pass 'workspaces and home rerun as no-ops'
+
+# Rollback, then forward again: the undo puts every entry back on the top level.
+bash "$here/migrate.sh" workspaces --undo > "$work/ws-undo.log" 2>&1 || { cat "$work/ws-undo.log"; fail 'workspaces --undo failed'; }
+[[ $(findmnt -n -o FSROOT --mountpoint "$ws") == / ]] || fail 'the undo left /workspaces off the top level'
+[[ ! -e $ws/@workspaces && $(stat -c %i "$src") == 256 && $(btrfs property get -ts "$ws/.rifts/app/ro-snap" ro) == ro=true ]] || fail 'the undo did not put the entries back'
+[[ $(sha256sum < "$ws/.cache/turbo/deep/blob") == "$blob_sum" ]] || fail 'the undo changed the Turbo cache'
+grep -q "^$image $ws btrfs loop,noatime,compress=zstd:3,space_cache=v2,discard=async 0 0\$" "$root/etc/fstab" || fail 'the undo did not restore the image line'
+[[ -z $(findmnt -rn -o TARGET | grep -F "$root/var/lib/workbox-btrfs/top") ]] || fail 'the undo left the top level mounted'
+bash "$here/migrate.sh" workspaces > "$work/ws-again.log" 2>&1 || { cat "$work/ws-again.log"; fail 'workspaces after the undo failed'; }
+workspaces_ok 'after undo and redo'
+pass 'workspaces --undo restores the top level, and workspaces runs again after it'
+
+# A reboot: unmount the image, then mount in fstab order, as systemd does.
+umount "$root/tmp" "$home" "$ws"
+for m in $(awk -v img="$image" '$1 == img || $1 ~ /^UUID=/ { print $2 }' "$root/etc/fstab"); do mount -T "$root/etc/fstab" "$m"; done
+fs_dev=$(findmnt -rn -o MAJ:MIN --mountpoint "$ws")
+workspaces_ok 'after a remount from fstab'
+[[ $(findmnt -n -o FSROOT --mountpoint "$home") == /@home && $(findmnt -n -o FSROOT --mountpoint "$root/tmp") == /@tmp ]] || fail 'home or /tmp lost its subvolume after a remount'
+pass 'the fstab mounts @workspaces, @home and @tmp from scratch'
+
+# Root without sudo's SUDO_UID, as under systemd-run on the workbox: git trusts
+# a repository root does not own only through SUDO_UID, so check.sh must read
+# the owner's Rifts as the owner.
+env -u SUDO_UID -u SUDO_GID -u SUDO_USER bash "$here/check.sh" > "$work/check-nosudo.log" 2>&1 ||
+    { cat "$work/check-nosudo.log"; fail 'check.sh as plain root fails on the owner-owned Rifts'; }
+grep -q 'ok    lane-a is the Rift' "$work/check-nosudo.log" || { cat "$work/check-nosudo.log"; fail 'check.sh did not check the Rifts'; }
+pass 'check.sh reads the owner-owned Rifts as the owner'
 
 # --- check.sh's alarms. An image that may grow past ext4's free space: only the
 # file's apparent size changes (no losetup -c), so btrfs never sees it.
@@ -261,6 +412,8 @@ mount --bind "$root" "$work/peek"
 [[ -z $(ls -A "$work/peek/tmp") ]] || fail 'old /tmp under the mount not cleared'
 umount "$work/peek"
 (($(stat -c %s "$image") > size_before)) || fail 'finish did not grow the image into the freed space'
+# grow.sh resizes btrfs through /workspaces, now a subvolume mount.
+[[ $(btrfs filesystem usage -b "$ws" | awk '/Device size/ { print $3; exit }') == $(stat -c %s "$image") ]] || fail 'btrfs does not span the grown image'
 pass 'finish prunes worktree entries, deletes the old home and /tmp, and grows the image'
 [[ -z ${WB_TEST_VERBOSE:-} ]] || cat "$work/plan.log" "$work/grow.log" "$work/home.log" "$work/finish.log"
 echo 'test.sh: all passed'

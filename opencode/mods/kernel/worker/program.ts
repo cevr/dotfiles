@@ -77,16 +77,77 @@ const RESERVED = new Set([
 ])
 /**
  * Root keys that are functions of the namespace, not tool ids: `tools.list()`,
- * `tools.docs(id)` (a tool's full description and input schema) and
+ * `tools.docs(id)` (a tool's full description and input schema),
  * `tools.docs.search(query, limit?)` (the tools that match, best first, each
- * with its first sentence; ../summary.ts).
+ * with its first sentence; ../summary.ts), and the fan-out helpers
+ * `tools.all(calls)` and `tools.map(items, fn, { concurrency? })`.
  */
-const DISCOVERY = new Set(["list", "docs"])
+const ROOT = new Set(["list", "docs", "all", "map"])
+
+/** How one call of a fan-out ended: its value, or its error as text. It never throws. */
+type Settled = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string }
+
+/** `call` settled: a function is called first, so a thunk that throws at once settles as a failure too. */
+const settle = (call: unknown): Promise<Settled> => {
+  let started: unknown
+  try {
+    started = typeof call === "function" ? call() : call
+  } catch (cause) {
+    return Promise.resolve({ ok: false, error: errorText(cause) })
+  }
+  return Promise.resolve(started).then(
+    (value): Settled => ({ ok: true, value }),
+    (cause: unknown): Settled => ({ ok: false, error: errorText(cause) }),
+  )
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+/**
+ * `tools.all(calls)`: an array or a record of calls (promises, or functions
+ * that start one), all started at once; resolves to the same shape with each
+ * one settled.
+ */
+const all = (calls: unknown): Promise<unknown> => {
+  if (Array.isArray(calls)) return Promise.all(calls.map(settle))
+  if (!isRecord(calls)) throw new TypeError("tools.all takes an array or a record of calls")
+  const keys = Object.keys(calls)
+  return Promise.all(keys.map((key) => settle(calls[key]))).then((settled) => Object.fromEntries(keys.map((key, index) => [key, settled[index]])))
+}
+
+/**
+ * `tools.map(items, fn, { concurrency? })`: `fn(item, index)` for each item,
+ * at most `concurrency` running at once (by default as many as may be in
+ * flight); resolves to each one settled, in the items' order.
+ */
+const map = (items: unknown, fn: unknown, options?: unknown): Promise<ReadonlyArray<Settled>> => {
+  if (typeof items !== "object" || items === null || typeof Reflect.get(items, Symbol.iterator) !== "function")
+    throw new TypeError("tools.map takes a list of items, then a function of one")
+  if (typeof fn !== "function") throw new TypeError("tools.map takes a list of items, then a function of one")
+  const concurrency: unknown = typeof options === "object" && options !== null ? Reflect.get(options, "concurrency") : undefined
+  if (concurrency !== undefined && !(Number.isInteger(concurrency) && (concurrency as number) >= 1))
+    throw new TypeError("tools.map's concurrency is a whole number of 1 or more")
+  const list = Array.from(items as Iterable<unknown>)
+  const results: Settled[] = []
+  let next = 0
+  const lane = async () => {
+    while (next < list.length) {
+      const index = next++
+      results[index] = await settle(() => fn(list[index], index))
+    }
+  }
+  const lanes = Math.min(list.length, (concurrency as number | undefined) ?? MAX_PENDING_CALLS)
+  return Promise.all(Array.from({ length: lanes }, lane)).then(() => results)
+}
 
 /** The source that reaches `id`: `tools.read`, `tools["x-y"]`, or `tools("list")` for a reserved name. */
 export const toolPath = (id: string): string => {
   const segments = id.split(".")
-  if (DISCOVERY.has(segments[0] ?? "") || segments.some((segment) => RESERVED.has(segment)))
+  if (ROOT.has(segments[0] ?? "") || segments.some((segment) => RESERVED.has(segment)))
     return `tools(${JSON.stringify(id)})`
   return segments.reduce(
     (path, segment) => (/^[A-Za-z_$][\w$]*$/.test(segment) ? `${path}.${segment}` : `${path}[${JSON.stringify(segment)}]`),
@@ -143,7 +204,7 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
   const isPrefix = (path: string) => ids().some((id) => id === path || id.startsWith(`${path}.`))
   const join = (path: string, key: string) => (path === "" ? key : `${path}.${key}`)
   const isPathKey = (path: string, key: string | symbol): key is string =>
-    typeof key === "string" && !RESERVED.has(key) && !(path === "" && DISCOVERY.has(key))
+    typeof key === "string" && !RESERVED.has(key) && !(path === "" && ROOT.has(key))
   const unknown = (path: string) =>
     new Error(`${toolPath(path)} is not a tool here. Tools: ${ids().map(toolPath).sort().join(", ") || "none"}`)
   // The search index, built at the first search and kept while the tools stay the same: each cell
@@ -168,14 +229,14 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
         searchOf()(String(query ?? ""), typeof limit === "number" ? limit : undefined).map(({ name, summary }) => ({ name, summary })),
     },
   )
-  const discovery = { list: () => listing().map(({ id, description }) => ({ id, description })), docs }
+  const root = { list: () => listing().map(({ id, description }) => ({ id, description })), docs, all, map }
   const node = (path: string): ToolNode => {
     const existing = nodes.get(path)
     if (existing) return existing
     const target = Object.defineProperty(() => {}, "name", { value: path || "tools" })
     const created = new Proxy(target, {
       get: (target, key, receiver) => {
-        if (path === "" && typeof key === "string" && DISCOVERY.has(key)) return discovery[key as keyof typeof discovery]
+        if (path === "" && typeof key === "string" && ROOT.has(key)) return root[key as keyof typeof root]
         const namespace = namespaces.get(path) || {}
         if (typeof key === "string" && Object.hasOwn(namespace, key) && ids().includes(path)) return namespace[key]
         if (!isPathKey(path, key)) return Reflect.get(target, key, receiver)
@@ -304,6 +365,22 @@ const display = (value: unknown): string => {
   }
 }
 
+/** A promise's value, or its error as text. */
+const outcome = (promise: Promise<unknown>): Promise<unknown> => promise.then((value) => value, errorText)
+
+/**
+ * A cell's last value with the promises one level inside an array or a plain
+ * object awaited, as a copy; any other value, or one holding no promise, as
+ * it is.
+ */
+const awaitedBag = async (value: unknown): Promise<unknown> => {
+  if (Array.isArray(value)) return value.some(isPromise) ? Promise.all(value.map((item) => (isPromise(item) ? outcome(item) : item))) : value
+  if (!isRecord(value)) return value
+  const entries = Object.entries(value)
+  if (!entries.some(([, item]) => isPromise(item))) return value
+  return Object.fromEntries(await Promise.all(entries.map(async ([key, item]) => [key, isPromise(item) ? await outcome(item) : item] as const)))
+}
+
 /**
  * The realm's evaluator. Each cell runs alone (the worker loop makes sure of
  * that); `call` is how `tools` reaches the host for the running cell.
@@ -422,15 +499,23 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       : undefined
   }
 
-  /** Runs compiled cell code at global scope with the cell's console, its promise included. */
-  const run = async (compiled: string): Promise<{ readonly result: unknown } | { readonly thrown: unknown }> => {
+  /**
+   * Runs compiled cell code at global scope with the cell's console, its
+   * promise included, and answers its last value. A value that is an array or
+   * a plain object holding promises shows each settled (a failure as its
+   * error), awaited while the cell still runs so a chained call can start; the
+   * value itself is left as it was.
+   */
+  const run = async (compiled: string): Promise<{ readonly value: unknown } | { readonly thrown: unknown }> => {
     running = true
     setConsole(cellConsole)
     try {
       let result = evaluateInRealm(compiled)
       // A thenable a cell wrote is its value; only the realm's own promise is awaited.
       if (isPromise(result)) result = await result
-      return { result }
+      // replMode wraps the last expression as `{ value }`.
+      const value: unknown = typeof result === "object" && result !== null ? Object.getOwnPropertyDescriptor(result, "value")?.value : undefined
+      return { value: await awaitedBag(value) }
     } catch (cause) {
       return { thrown: cause }
     } finally {
@@ -470,10 +555,8 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       const ran = await run(compiled)
       // After the console is back, so the cell's console never reads as a binding.
       if ("thrown" in ran) return failed(ran.thrown)
-      // replMode wraps the last expression as `{ value }`; an undefined value shows nothing.
-      const value: unknown =
-        typeof ran.result === "object" && ran.result !== null ? Object.getOwnPropertyDescriptor(ran.result, "value")?.value : undefined
-      if (value !== undefined) output.append(display(value))
+      // An undefined value shows nothing.
+      if (ran.value !== undefined) output.append(display(ran.value))
       return { ok: true, display: output.read(), truncated: output.truncated(), bindings: bound(true), attached }
     },
     /** An error cell code raised outside any awaited path: the running cell's, else held for the next. */
@@ -561,20 +644,37 @@ export const runWorker = async (transport: Transport, workingDirectory: string, 
   let calls = 0
   let active = false
   const inflight = new Set<Promise<Json>>()
+  // At most `MAX_PENDING_CALLS` calls reach the host at once; a call past them waits its turn, first come first served.
+  let sent = 0
+  const waiting: Array<() => void> = []
+  const slot = (): Promise<void> => {
+    if (sent < MAX_PENDING_CALLS) {
+      sent++
+      return Promise.resolve()
+    }
+    return new Promise((resolve) => waiting.push(resolve))
+  }
+  // A freed slot passes straight to the next waiting call.
+  const free = () => {
+    const next = waiting.shift()
+    if (next) next()
+    else sent--
+  }
+  const send = (name: string, input: Json) =>
+    new Promise<Json>((resolve, reject) => {
+      const call = String(++sequence)
+      pending.set(call, { resolve, reject })
+      transport.send({ type: "call", call, name, input }).catch((cause: unknown) => {
+        pending.delete(call)
+        reject(cause instanceof Error ? cause : new Error(String(cause)))
+      })
+    })
   const evaluator = makeEvaluator(
     {
       call: (name, input) => {
-        if (pending.size >= MAX_PENDING_CALLS) return Promise.reject(new Error(`More than ${MAX_PENDING_CALLS} tool calls in flight`))
         if (calls >= MAX_CALLS_PER_CELL) return Promise.reject(new Error(`More than ${MAX_CALLS_PER_CELL} tool calls in one cell`))
         calls++
-        const call = String(++sequence)
-        const reply = new Promise<Json>((resolve, reject) => {
-          pending.set(call, { resolve, reject })
-          transport.send({ type: "call", call, name, input }).catch((cause: unknown) => {
-            pending.delete(call)
-            reject(cause instanceof Error ? cause : new Error(String(cause)))
-          })
-        })
+        const reply = slot().then(() => send(name, input).finally(free))
         inflight.add(reply)
         const forget = () => void inflight.delete(reply)
         reply.then(forget, forget)

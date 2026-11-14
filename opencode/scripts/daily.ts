@@ -249,8 +249,16 @@ export const mergeServer = (
   }
 }
 
+/** The object at `key` of a config, or an empty one when the key holds none. */
+const objectAt = (config: Json, key: string): object => {
+  const value = config[key]
+  return typeof value === "object" && value !== null ? value : {}
+}
+
 /**
- * The TUI config with ours merged in: our plugins first (Prime before the rest), the Prime theme.
+ * The TUI config with ours merged in: our plugins first (Prime before the rest), the Prime theme,
+ * and the fork's `window` tab scope: a window's tabs are the sessions opened in it, never those
+ * of the other TUIs on the machine, since herdr gives each session its own space (owner, q61).
  * An entry of ours that names no directory (`-opencode.btw` turns a built-in off) replaces its
  * earlier copy.
  */
@@ -259,8 +267,9 @@ export const mergeCli = (existing: Json, plugins: ReadonlyArray<string>, owned: 
     const path = packageOf(entry)
     return path === undefined || (!plugins.includes(path) && !owned.some((dir) => path === dir || path.startsWith(`${dir}/`)))
   })
-  const theme = typeof existing.theme === "object" && existing.theme !== null ? existing.theme : {}
-  return { ...existing, theme: { ...theme, name: "prime" }, plugins: [...plugins, ...others] }
+  const theme = objectAt(existing, "theme")
+  const tabs = objectAt(existing, "tabs")
+  return { ...existing, theme: { ...theme, name: "prime" }, tabs: { ...tabs, scope: "window" }, plugins: [...plugins, ...others] }
 }
 
 const readJson = (path: string): Json => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {})

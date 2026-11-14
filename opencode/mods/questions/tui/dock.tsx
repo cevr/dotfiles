@@ -2,7 +2,7 @@
 // are open. Thin: it reads the questions of the session on screen and of its
 // subagents (tray.ts `under`) over the questions RPC, again on every `changed`
 // event and every 2 seconds, and keeps the last reading when a read fails.
-// /answer and shift+← (cmd/questions/setup.ts) open the host's question form
+// /answer, shift+← and a click on the tray (cmd/questions/setup.ts) open the host's question form
 // for what it read, through `Questions` (questions.ts); the host draws that
 // form in the composer's place, so the tray is hidden while it shows.
 // cmd/questions/setup.ts registers the dock on `session.composer.top`.
@@ -23,7 +23,7 @@ const SIDEBAR = 42
 /** The transcript's inset on both sides, and the glyph and its space. */
 const CHROME = 6
 
-export function Dock(props: { ctx: Plugin.Context; sessionID: string; questions: Questions }) {
+export function Dock(props: { ctx: Plugin.Context; sessionID: string; questions: Questions; open: () => void }) {
   const ctx = props.ctx
   const dimensions = useTerminalDimensions()
   const members = createMemo(() => {
@@ -76,7 +76,7 @@ export function Dock(props: { ctx: Plugin.Context; sessionID: string; questions:
   const width = () => Math.max(20, dimensions().width - CHROME - (ctx.ui.sidebar.visible(props.sessionID) ? SIDEBAR : 0))
   return (
     <Show when={questions().length > 0}>
-      <Tray ctx={ctx} questions={questions()} width={width()} />
+      <Tray ctx={ctx} questions={questions()} width={width()} open={props.open} />
     </Show>
   )
 }

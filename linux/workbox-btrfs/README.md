@@ -7,7 +7,8 @@ full copy. This is the Linux counterpart of `mac/developer-volume/`.
 | Mount | File system | Holds |
 | --- | --- | --- |
 | `/` | ext4 on `/dev/vda` | the OS core: `/usr`, `/etc`, `/var` (minus the image), `/boot`, `/swapfile`, and the headroom |
-| `/workspaces` | btrfs, top level of the loop image `/var/lib/bite-workspaces.btrfs` | warm sources and Rifts, as before |
+| `/workspaces` | btrfs subvolume `@workspaces` of the loop image `/var/lib/bite-workspaces.btrfs`; the image's line in the fstab mounts it | warm sources and Rifts, at the same paths as before |
+| (nowhere) | the image's top level, holding `@workspaces`, `@home` and `@tmp` | mounted only during `migrate.sh workspaces --undo`, for root: a mount of it shows every checkout twice, and Ergo's sweep refuses that |
 | `/home/exedev` | btrfs subvolume `@home` of the same image | the whole home: `~/Developer`, `.cache`, `.local`, `.bun`, `.codex`, `.claude`, `go` |
 | `/tmp` | btrfs subvolume `@tmp` of the same image | test caches and agent scratch |
 
@@ -17,8 +18,8 @@ exe.dev VM boots its own root image. Everything that grows moves off it instead.
 | File | Purpose |
 | --- | --- |
 | `grow.sh` | After a disk resize: grows ext4 online, lowers its root reserve to 1%, grows the sparse image as far as ext4 can back it, then `btrfs filesystem resize max`. Never shrinks. |
-| `migrate.sh` | `plan`, `convert` (worktrees to Rifts), `home` (copy home and `/tmp`, mount the subvolumes over them), `finish` (prune worktree entries, delete the old copies). Every phase resumes. |
-| `check.sh` | Before and after: space, the image-versus-ext4 rule, mounts, fstab order and the boot order systemd derives from it, `cp --reflink=always` under `~/Developer`, worktree links, the skills link, user unit paths. |
+| `migrate.sh` | `plan`, `convert` (worktrees to Rifts), `home` (copy home and `/tmp`, mount the subvolumes over them), `workspaces` (move the top level into `@workspaces` and mount that at `/workspaces`; `--undo` reverses it), `finish` (prune worktree entries, delete the old copies). Every phase resumes. |
+| `check.sh` | Before and after: space, the image-versus-ext4 rule, mounts (`/workspaces` is `@workspaces`, nothing named `@home` or `@tmp` under it, no mount of the top level), fstab order and the boot order systemd derives from it, `cp --reflink=always` under `~/Developer`, worktree links, the skills link, user unit paths. |
 | `worktrees.conf` | Which worktrees convert (`release`) and which stay (`hold`). |
 | `test.sh` | Runs all of it in a scratch root: a loop ext4 holding a loop btrfs. Needs Linux and sudo; touches only its own scratch files and loop devices. |
 | `RUNBOOK.md` | The window: what to stop, the commands, times, rollback. |

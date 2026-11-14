@@ -20,7 +20,10 @@ runner (`sim/seed.ts`) unchanged.
   scripted model (`Model`: the steps a prompt plays, made by `text`, `reasoning`,
   `stall`, `shell` and `subagent`; none ends the run). Every answer and event goes through the
   fork's own schemas (decoded, then encoded): a shape the real server would
-  not send fails. `SERVED` lists the routes it answers; a route outside it
+  not send fails. It keeps the forms a session makes (`session.form.create`,
+  announced `form.created`) pending; a seed may stand in for one of our
+  server plugins' RPCs (`rpc`, else every plugin RPC but the goal fails
+  `rpc.unavailable`). `SERVED` lists the routes it answers; a route outside it
   and outside the fixture's defaults (`FIXTURE_ROUTES`) fails the settle
   naming it.
 - `client-laws.ts`: what the double does, as laws a server keeps; run on the
