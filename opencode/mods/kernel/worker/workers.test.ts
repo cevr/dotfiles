@@ -236,6 +236,113 @@ describe("a worker", () => {
     ))
 })
 
+/** A tool that echoes its input after `ms`, counting the calls in flight host-side; input `{ fail: true }` fails it. */
+const counted = (ms = 20) => {
+  let now = 0
+  let most = 0
+  const call: Cell["call"] = (_name, input) =>
+    Effect.gen(function* () {
+      now++
+      most = Math.max(most, now)
+      yield* Effect.sleep(`${ms} millis`)
+      now--
+      if ((input as Record<string, Json>).fail === true) return yield* Effect.fail(new CallFailed({ message: "it failed" }))
+      return input
+    })
+  return { call, most: () => most }
+}
+
+const echo: ReadonlyArray<Listing> = [{ id: "echo", description: "echoes" }]
+
+describe("calls in parallel", () => {
+  test("a call past the in-flight limit waits for a free slot: Promise.all over 100 calls resolves, at most 32 in flight", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        const tool = counted()
+        const result = yield* workers.evaluate(
+          first,
+          cell("const got = await Promise.all(Array.from({ length: 100 }, (_, n) => tools.echo({ n }))); got.map((r) => r.n).join(',')", echo, tool.call),
+        )
+        expect(result).toMatchObject({ ok: true, display: Array.from({ length: 100 }, (_, n) => n).join(",") })
+        expect(tool.most()).toBe(32)
+      }),
+    ))
+
+  test("tools.all settles an array or a record of calls, each { ok, value | error }, never throwing for one failure", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        const tool = counted()
+        const run = (source: string) => workers.evaluate(first, cell(source, echo, tool.call)).pipe(Effect.map((result) => result.display))
+        expect(JSON.parse(yield* run("JSON.stringify(await tools.all([tools.echo({ n: 1 }), tools.echo({ fail: true }), () => tools.echo({ n: 3 }), 4]))"))).toEqual([
+          { ok: true, value: { n: 1 } },
+          { ok: false, error: "Error: it failed" },
+          { ok: true, value: { n: 3 } },
+          { ok: true, value: 4 },
+        ])
+        expect(JSON.parse(yield* run("JSON.stringify(await tools.all({ a: tools.echo({ n: 1 }), b: () => { throw new TypeError('sync') } }))"))).toEqual({
+          a: { ok: true, value: { n: 1 } },
+          b: { ok: false, error: "TypeError: sync" },
+        })
+        expect(tool.most()).toBeGreaterThan(1)
+        expect(yield* run("tools.all(5)")).toBe("TypeError: tools.all takes an array or a record of calls")
+      }),
+    ))
+
+  test("tools.map runs a call per item, at most `concurrency` at once, settled in input order", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        const tool = counted()
+        const run = (source: string) => workers.evaluate(first, cell(source, echo, tool.call)).pipe(Effect.map((result) => result.display))
+        const mapped = yield* run("JSON.stringify(await tools.map([1, 2, 3, 4, 5], (n) => tools.echo(n === 2 ? { fail: true } : { n }), { concurrency: 2 }))")
+        expect(JSON.parse(mapped)).toEqual([
+          { ok: true, value: { n: 1 } },
+          { ok: false, error: "Error: it failed" },
+          { ok: true, value: { n: 3 } },
+          { ok: true, value: { n: 4 } },
+          { ok: true, value: { n: 5 } },
+        ])
+        expect(tool.most()).toBe(2)
+        // By default as many at once as may be in flight; a list of 40 is one wait.
+        expect(yield* run("(await tools.map(Array.from({ length: 40 }, (_, n) => n), (n) => tools.echo({ n }))).every((r) => r.ok)")).toBe("true")
+        expect(tool.most()).toBe(32)
+        expect(yield* run("tools.map([1], (n) => n, { concurrency: 0 })")).toBe("TypeError: tools.map's concurrency is a whole number of 1 or more")
+      }),
+    ))
+
+  test("all and map are the namespace's own: tools.list() leaves them out, and a tool so named is reached by its string", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        const tools: ReadonlyArray<Listing> = [...echo, { id: "map", description: "a tool named map" }]
+        const tool = counted(1)
+        const run = (source: string) => workers.evaluate(first, cell(source, tools, tool.call)).pipe(Effect.map((result) => result.display))
+        expect(yield* run("tools.list().map((t) => t.id).join(',')")).toBe("echo,map")
+        expect(yield* run("typeof tools.map")).toBe("function")
+        expect(yield* run("(await tools('map')({ n: 9 })).n")).toBe("9")
+        expect(yield* run("Object.keys(tools).join(',')")).toBe("echo")
+      }),
+    ))
+
+  test("a returned object's calls are awaited one level deep, a failure shown as its error, and the bound object is left as it was", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        const tool = counted()
+        const run = (source: string) => workers.evaluate(first, cell(source, echo, tool.call)).pipe(Effect.map((result) => result.display))
+        // A chained call starts after the first resolves, while the cell still runs.
+        const bag = yield* run("({ a: tools.echo({ n: 1 }), b: tools.echo({ fail: true }), c: tools.echo({ n: 2 }).then((r) => tools.echo({ n: r.n + 1 })), d: 4 })")
+        expect(bag).toBe('{\n  a: {\n    n: 1,\n  },\n  b: "Error: it failed",\n  c: {\n    n: 3,\n  },\n  d: 4,\n}')
+        expect(tool.most()).toBeGreaterThan(1)
+        expect(yield* run("[tools.echo({ n: 5 })]")).toBe("[\n  {\n    n: 5,\n  }\n]")
+        expect(yield* run("const kept = { p: tools.echo({ n: 6 }) }; kept")).toContain("n: 6")
+        expect(yield* run("kept.p instanceof Promise")).toBe("true")
+      }),
+    ))
+})
+
 /** Runs `cells` in one worker, then restores its snapshot into a fresh one. */
 const restart = (...cells: ReadonlyArray<string>) =>
   Effect.gen(function* () {

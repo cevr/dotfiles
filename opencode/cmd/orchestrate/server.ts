@@ -1027,6 +1027,10 @@ export const make = (
           // A land is decided on the root's machine before it runs; a refused one never reaches the rift tool.
           // Its Rifts' branches are read now, for its answer too: a pushed land trashes them.
           return used.pipe(
+            // A `{ path, unit }` of a unit the machine does not hold, in a root that runs units, by either tool: the
+            // machine would pass it deciding nothing, and its record would land it unverified.
+            Effect.andThen(machines.state(event.sessionID)),
+            Effect.flatMap((state) => Option.match(Tools.unheldRefusal(land.rifts, state), { onNone: () => Effect.void, onSome: failWith })),
             Effect.andThen(machines.resolve(land.rifts)),
             Effect.tap((rifts) => Effect.sync(() => landRifts.set(callKey(event.sessionID, event.id), rifts))),
             Effect.flatMap((rifts) => machines.land({ root: event.sessionID, ...land, rifts }).pipe(Effect.mapError(refusedError))),

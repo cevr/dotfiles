@@ -285,6 +285,10 @@ export const lanesRefusal = (unit: string, lanes: ReadonlyArray<Lane>): string =
 /** Where a land finds a unit's Rift: given, its implementor's (the ledger), or the one of the warm source's that reads as it. */
 export type Found = { readonly found: UnitRift } | { readonly refused: string }
 
+/** A land of a unit the machine does not hold, refused: it has no round to land. */
+const unheldWords = (unit: string, state: MachineState) =>
+  `orchestrate: the machine holds no unit ${unit}: a unit is the machine's once its implementor starts. ${nowOf(state)}`
+
 /**
  * A unit's Rift for a land, in order: the path the input gives, the Rift its implementor was started on (the
  * ledger's `rifts`, its last, when no other unit's start names it), else the one Rift of `lanes` that reads as the
@@ -294,8 +298,7 @@ export const riftOfUnit = (asked: LandUnit, lanes: ReadonlyArray<Lane>, state: M
   if (!Predicate.isString(asked)) return { found: asked }
   const unit = asked
   // A unit the machine does not hold has no round to land: its land would pass by the machine, deciding nothing.
-  if (Predicate.isUndefined(state.units[unit]))
-    return { refused: `orchestrate: the machine holds no unit ${unit}: a unit is the machine's once its implementor starts. ${nowOf(state)}` }
+  if (Predicate.isUndefined(state.units[unit])) return { refused: unheldWords(unit, state) }
   const owned = ownedOf(state)
   const started = Option.filter(Option.fromUndefinedOr(state.units[unit]?.rifts?.at(-1)), (path) =>
     Object.entries(owned).every(([other, rifts]) => other === unit || !rifts.includes(path)),
@@ -442,6 +445,19 @@ export const statusAnswer = (brief: string, lanes: ReadonlyArray<readonly [strin
 
 /** Whether a root runs units: its machine holds a unit, a landed batch or a verifier. */
 export const runsUnits = (state: MachineState): boolean => Object.keys(state.units).length > 0 || verdictPending(state)
+
+/**
+ * A land, by either tool, naming as `{ path, unit }` a unit the machine does not hold: refused before the machine
+ * decides it, which would pass it deciding nothing (a unit dropped, verified already, or never started; one a
+ * verifier's start stood in the land for, whose verdict closed its findings). The form is a run's alone (`RiftInput`),
+ * and the `orchestrate` tool's units resolve to it, so both tools' lands meet it here. A Rift named by its path
+ * alone is the root's own business, as before.
+ */
+export const unheldRefusal = (rifts: ReadonlyArray<LandTarget>, state: MachineState): Option.Option<string> =>
+  Option.map(
+    Arr.findFirst(rifts, (rift) => Predicate.isNotUndefined(entryOf(rift).unit) && Predicate.isUndefined(state.units[entryOf(rift).unit ?? ""])),
+    (rift) => unheldWords(entryOf(rift).unit ?? "", state),
+  )
 
 /** The line a `rift` create or land in a root that runs units starts with: the `orchestrate` call to use. */
 export const aliasLine = (action: "create" | "land"): string =>

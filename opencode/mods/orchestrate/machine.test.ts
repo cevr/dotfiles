@@ -47,6 +47,7 @@ import {
   Landed,
   type LandTarget,
   Drop,
+  entryOf,
   machine,
   MachineState,
   notesOf,
@@ -113,6 +114,25 @@ const matched = (shadow: Shadow, rifts: ReadonlyArray<LandTarget>) => {
   const started = Object.fromEntries([...shadow.units].map(([name, unit]) => [name, unit.rifts]))
   return ready.filter((unit) => rifts.some((rift) => unitOfEntry(rift, [...shadow.units.keys()], started) === unit))
 }
+/** Every unit a land names that the shadow holds, in any state: a land naming one is checked. */
+const held = (shadow: Shadow, rifts: ReadonlyArray<LandTarget>) => {
+  const started = Object.fromEntries([...shadow.units].map(([name, unit]) => [name, unit.rifts]))
+  return [...shadow.units.keys()].filter((unit) => rifts.some((rift) => unitOfEntry(rift, [...shadow.units.keys()], started) === unit))
+}
+/**
+ * What a pushed land records: the units it lands, and each on main with no verdict over what it pushed whatever the
+ * shadow holds of it since the check (on its next round, under a verifier started before it landed, or a `{ path,
+ * unit }` the shadow no longer holds).
+ */
+const recorded = (shadow: Shadow, rifts: ReadonlyArray<LandTarget>) => [
+  ...new Set([
+    ...matched(shadow, rifts),
+    ...held(shadow, rifts).filter((unit) => !landsNow(shadow, unit)),
+    ...rifts.flatMap((rift) => Option.toArray(Option.filter(Option.fromUndefinedOr(entryOf(rift).unit), (unit) => !shadow.units.has(unit)))),
+  ]),
+]
+/** Whether a land's record moves `unit` to `landed`: held, and neither on its next round nor under a verifier. */
+const landsNow = (shadow: Shadow, unit: string) => Option.exists(Option.fromUndefinedOr(shadow.units.get(unit)), (slot) => !["implement", "verify"].includes(slot.state))
 /**
  * What a batch verifier covers: what landed and has no verifier yet, whatever round each is on since; with
  * nothing landed (a land by hand, which the plugin does not see), what is ready, so its start stands for their land.
@@ -148,7 +168,7 @@ const broken = (shadow: Shadow, command: Command, now: number): ReadonlyArray<Ru
   }
   if (command._tag === "Land") {
     const lands = matched(shadow, command.rifts)
-    if (lands.length === 0) return []
+    if (held(shadow, command.rifts).length === 0) return []
     const rules: Array<Rule> = []
     if (verdictDue(shadow)) rules.push("VerdictPending")
     if (unfolded(shadow, lands).length > 0 || shadow.unresolved.size > 0) rules.push("FindingUnfolded")
@@ -240,13 +260,14 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       return
     }
     case "Landed": {
-      const lands = matched(shadow, command.rifts)
+      const lands = recorded(shadow, command.rifts)
       for (const unit of lands) {
-        if (shadow.units.get(unit)!.direct) shadow.units.delete(unit)
-        else {
-          shadow.units.set(unit, { ...shadow.units.get(unit)!, state: "landed", since: now })
-          shadow.pending.add(unit)
-        }
+        const slot = Option.fromUndefinedOr(shadow.units.get(unit))
+        const direct = Option.exists(slot, (held) => held.direct)
+        // Not held, on its next round, or under a verifier started before it landed: its slot stays, its land waits for a verdict.
+        if (landsNow(shadow, unit) && direct) shadow.units.delete(unit)
+        else if (landsNow(shadow, unit)) for (const held of Option.toArray(slot)) shadow.units.set(unit, { ...held, state: "landed", since: now })
+        if (!direct) shadow.pending.add(unit)
       }
       if (lands.length === 0) return
       shadow.unresolved.clear()
@@ -323,10 +344,12 @@ const command = (random: () => number, shadow: Shadow): Command => {
   }
   if (roll < 0.8) return ReportRead.make({ batch: pick([...shadow.unresolved, "batch-1"]), findings: random() < 0.5 ? [] : [`${pick(UNITS)}/M3`] })
   const ready = inState(shadow, "ready")
-  // Mostly the whole ready set, sometimes a part of it or a Rift that is no unit's.
+  // Mostly the whole ready set, sometimes a part of it, a Rift that is no unit's, or a unit in any state (implementing,
+  // landed, verifying, or one the shadow does not hold) by its `{ path, unit }`.
   const some = ready.filter(() => random() < 0.8)
   const ended = inState(shadow, "ended").filter(() => random() < 0.3)
-  const rifts = [...[...(random() < 0.6 ? ready : some), ...ended].map((unit) => riftFor(unit, Math.floor(random() * 7))), ...(random() < 0.1 ? ["scratch"] : [])]
+  const any = [riftFor(pick(UNITS), 6)].filter(() => random() < 0.12)
+  const rifts = [...[...(random() < 0.6 ? ready : some), ...ended].map((unit) => riftFor(unit, Math.floor(random() * 7))), ...(random() < 0.1 ? ["scratch"] : []), ...any]
   if (roll < 0.92) return Land.make({ rifts, ...departs })
   return Landed.make({ rifts })
 }
@@ -525,6 +548,45 @@ describe("the machine's stories", () => {
     if ("refused" in running.last) expect(running.last.message).toContain("Verifier batch-1 still runs")
     const verdict = await run([...verifying, [HandBack.make({ role: "verifier", name: "batch-1", verdict: "accepted" }), 8 * MIN], [Land.make({ rifts: ["beta"] }), 9 * MIN]])
     expect(verdict.last).toEqual({ events: [] })
+  })
+
+  // formal-opencode F1-F3 (formal/orchestrate/machine.qnt `stepVerifyEarlyTool`, `stepLandAnyTool`, `stepRestartLandingTool`).
+  const verifierOf = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+  const landedOnce: ReadonlyArray<readonly [Command, number]> = [[impl("a"), 0], [ready("a"), MIN], [Land.make({ rifts: ["a"] }), 2 * MIN], [Landed.make({ rifts: ["a"] }), 3 * MIN]]
+
+  test("F2: a land naming a unit the machine holds is checked in any state: a landed one lands again only past its verdict, by name or by { path, unit }", () => {
+    expect((runNow([...landedOnce, [Land.make({ rifts: ["a"] }), 4 * MIN]])).last).toMatchObject({ refused: "VerdictPending" })
+    expect((runNow([...landedOnce, [Land.make({ rifts: [{ rift: "/r/a", unit: "a" }] }), 4 * MIN]])).last).toMatchObject({ refused: "VerdictPending" })
+    expect((runNow([...landedOnce, [verifierOf("batch-1"), 4 * MIN], [Land.make({ rifts: ["a"] }), 5 * MIN]])).last).toMatchObject({ refused: "VerdictPending" })
+  })
+
+  test("F2: a land of a unit still implementing is checked, and its record holds the next land until a verdict covers it", () => {
+    const implementing = runNow([[impl("a"), 0], [impl("b"), 0], [ready("b"), MIN], [Land.make({ rifts: ["a"] }), 2 * MIN]])
+    expect(implementing.last).toMatchObject({ refused: "LandPartial" })
+    const alone = runNow([[impl("a"), 0], [Land.make({ rifts: ["a"] }), MIN], [Landed.make({ rifts: ["a"] }), 2 * MIN]])
+    expect([alone.state.units.a?.state, alone.state.unverified]).toEqual(["implement", ["a"]])
+    expect((runNow([[impl("a"), 0], [Land.make({ rifts: ["a"] }), MIN], [Landed.make({ rifts: ["a"] }), 2 * MIN], [impl("b"), 3 * MIN], [ready("b"), 4 * MIN], [Land.make({ rifts: ["b"] }), 5 * MIN]])).last).toMatchObject({
+      refused: "VerdictPending",
+    })
+  })
+
+  test("F3: a unit whose next round starts, or which the root drops, while its land runs is recorded as landed and unverified; the next land waits for its verdict", () => {
+    const checked: ReadonlyArray<readonly [Command, number]> = [[impl("b"), 0], [ready("b"), MIN], [Land.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 2 * MIN]]
+    const next: ReadonlyArray<readonly [Command, number]> = [[impl("a"), 5 * MIN], [ready("a"), 6 * MIN], [Land.make({ rifts: ["a"] }), 7 * MIN]]
+    const restarted = runNow([...checked, [impl("b", 2), 3 * MIN], [Landed.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 4 * MIN]])
+    expect([restarted.state.units.b?.state, restarted.state.unverified]).toEqual(["implement", ["b"]])
+    expect((runNow([...checked, [impl("b", 2), 3 * MIN], [Landed.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 4 * MIN], ...next])).last).toMatchObject({ refused: "VerdictPending" })
+    const dropped = runNow([...checked, [Drop.make({ unit: "b" }), 3 * MIN], [Landed.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 4 * MIN]])
+    expect([Object.hasOwn(dropped.state.units, "b"), dropped.state.unverified]).toEqual([false, ["b"]])
+    expect((runNow([...checked, [Drop.make({ unit: "b" }), 3 * MIN], [Landed.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 4 * MIN], ...next])).last).toMatchObject({ refused: "VerdictPending" })
+  })
+
+  test("F1: a verifier started while its batch's land runs stands in for that land; the land's own record still waits for a verdict over what it pushed", () => {
+    const early: ReadonlyArray<readonly [Command, number]> = [[impl("a"), 0], [ready("a"), MIN], [Land.make({ rifts: ["a"] }), 2 * MIN], [verifierOf("batch-1"), 3 * MIN], [Landed.make({ rifts: ["a"] }), 4 * MIN]]
+    const landed = runNow(early)
+    expect([landed.state.units.a?.state, landed.state.unverified]).toEqual(["verify", ["a"]])
+    const verdict = runNow([...early, [HandBack.make({ role: "verifier", name: "batch-1", verdict: "accepted" }), 5 * MIN], [impl("c"), 6 * MIN], [ready("c"), 7 * MIN], [Land.make({ rifts: ["c"] }), 8 * MIN]])
+    expect(verdict.last).toMatchObject({ refused: "VerdictPending" })
   })
 
   test("the pipeline: the next batch fans out while a verifier runs; the verdict folds into a running implementor and a new fix unit; the next batch lands and its verifier checks the folds", async () => {

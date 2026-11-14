@@ -1947,6 +1947,21 @@ describe("the batch machine", () => {
       }),
     ))
 
+  test("F2: a rift land naming { path, unit } of a unit the machine does not hold is refused before the machine decides it; a Rift by its path alone is the root's own", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        const unheld = yield* plugin.call("rift", "root", { action: "land", rifts: [{ path: "/r/zeta", unit: "zeta" }] })
+        expect(unheld.refused?.message).toContain("the machine holds no unit zeta")
+        const departing = yield* plugin.call("rift", "root", { action: "land", rifts: [{ path: "/r/zeta", unit: "zeta" }], departs: "the owner asked" })
+        expect(departing.refused?.message).toContain("the machine holds no unit zeta")
+        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "Departed" }))
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["/r/zeta"] })).refused).toBeUndefined()
+      }),
+    ))
+
   test("a dead implementor and a dead verifier hold nothing: each is handed back as none before the next decision", () =>
     scenario(
       Effect.gen(function* () {
