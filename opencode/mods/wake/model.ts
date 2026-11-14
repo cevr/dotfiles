@@ -18,9 +18,26 @@
 // here looks every JOB_POLL_MS for its end and its progress. Its end fires a
 // letter as a monitor's match does; `wait` and `kill` take the entry instead,
 // since their answer already says how it ended.
-import { Clock, Context, Duration, Effect, FiberMap, FiberSet, Layer, Random, Semaphore } from "effect"
+import { Clock, Context, Duration, Effect, FiberMap, FiberSet, Layer, Option, Random, Semaphore } from "effect"
 import { idOfTitle, minuteOf, type Schedule, scheduleOf, titleOf } from "./backstop.ts"
-import { DRIP_MS, JOB_POLL_MS, KILL_WAIT_MS, lastLines, type Launched, LOG_TAIL, over, type Run, settledRun, WAIT_POLL_MS } from "./job.ts"
+import {
+  BOARD_TAIL,
+  DRIP_MS,
+  ENDED_SHOWN,
+  ENDED_SHOWN_MS,
+  endWords,
+  JOB_POLL_MS,
+  jobShownOf,
+  type JobShown,
+  KILL_WAIT_MS,
+  lastLines,
+  type Launched,
+  LOG_TAIL,
+  over,
+  type Run,
+  settledRun,
+  WAIT_POLL_MS,
+} from "./job.ts"
 import { type Latch, type LatchAsk, type Mark, markOf } from "./latch.ts"
 import {
   alarmLetter,
@@ -40,6 +57,7 @@ import {
   type Alarm,
   type AlarmAsk,
   alarmOf,
+  type Board,
   type Check,
   type Due,
   type Entry,
@@ -123,6 +141,10 @@ export class WakesModel extends Context.Service<
     readonly job: (sessionID: string, ask: JobAsk) => Effect.Effect<{ readonly job: Job; readonly launched: Launched }, WakeRejected>
     /** The session's jobs still kept (running, or not yet reported), and how each stands. */
     readonly jobs: (sessionID: string) => Effect.Effect<{ readonly now: number; readonly jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run }> }>
+    /** What the TUI's dock and Jobs tab show of the session's jobs: each kept, and each this server saw end within ENDED_SHOWN_MS (at most ENDED_SHOWN), running first. */
+    readonly board: (sessionID: string) => Effect.Effect<Board>
+    /** The owner stops one of the session's running jobs (the TUI's kill); unlike `kill` it leaves the entry, so the end letter still wakes the session. */
+    readonly stop: (sessionID: string, id: string) => Effect.Effect<void, WakeRejected>
     /** How a job stands now, with its last progress lines and its log's tail. */
     readonly check: (id: string) => Effect.Effect<Viewed, WakeRejected>
     /** Wait up to `ms` for the job to end; an end it sees takes the entry, so no letter follows. */
@@ -206,6 +228,8 @@ export const layer = (config: Config) =>
       const settleMs = config.settleMs ?? 5000
       /** Each running monitor's newest check, for the tray; it goes with the monitor's timer. */
       const lastChecks = new Map<string, LastCheck>()
+      /** The jobs this server has seen, by id, with their session: the board shows one for a while after its entry went. */
+      const seenJobs = new Map<string, string>()
 
       const sleepUntil = (at: number) =>
         Effect.gen(function* () {
@@ -775,9 +799,62 @@ export const layer = (config: Config) =>
                 ),
               ),
             )
+            seenJobs.set(job.id, sessionID)
             yield* changes.changed(sessionID)
             yield* arm(job)
             return { job, launched }
+          }),
+        board: (sessionID) =>
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis
+            const kept = new Map(
+              ofSessions(yield* store.entries, [sessionID])
+                .filter((entry): entry is Job => entry.kind === "job")
+                .map((job) => [job.id, job] as const),
+            )
+            for (const id of kept.keys()) seenJobs.set(id, sessionID)
+            const ids = [...seenJobs].flatMap(([id, owner]) => [id].filter(() => owner === sessionID))
+            const read = yield* Effect.forEach(ids, (id) =>
+              Effect.gen(function* () {
+                const record = Option.fromNullishOr(yield* runner.read(id))
+                const job = Option.fromNullishOr(kept.get(id))
+                // A kept job the runner has no record of yet reads from its entry.
+                const spec = record.pipe(
+                  Option.map((each) => each.spec),
+                  Option.orElse(() => Option.map(job, specOf)),
+                )
+                const tail = yield* runner.tail(id, BOARD_TAIL)
+                return Option.toArray(spec).map((each) => ({
+                  shown: jobShownOf(each, settledRun(Option.getOrUndefined(Option.map(record, (found) => found.run)), each.setAt, now), tail),
+                  kept: Option.isSome(job),
+                }))
+              }),
+            )
+            const live = (shown: JobShown) => shown.state === "starting" || shown.state === "running"
+            const endedAt = (shown: JobShown) => shown.endedAt ?? shown.startedAt ?? shown.setAt
+            const newest = (left: JobShown, right: JobShown) => right.setAt - left.setAt
+            const all = read.flat()
+            const running = all.filter((each) => live(each.shown)).map((each) => each.shown)
+            // A kept job (its letter not yet sent) always shows; one whose entry went stays its while.
+            const ended = all
+              .filter((each) => !live(each.shown) && (each.kept || now - endedAt(each.shown) <= ENDED_SHOWN_MS))
+              .map((each) => each.shown)
+              .toSorted(newest)
+              .slice(0, ENDED_SHOWN)
+            const shown = [...running.toSorted(newest), ...ended]
+            // What leaves the board is forgotten.
+            for (const id of ids) if (!shown.some((each) => each.id === id)) seenJobs.delete(id)
+            return { now, jobs: shown }
+          }),
+        stop: (sessionID, id) =>
+          Effect.gen(function* () {
+            const found = Option.filter(Option.fromNullishOr(yield* runner.read(id)), (record) => record.spec.sessionID === sessionID)
+            if (Option.isNone(found)) return yield* new WakeRejected({ reason: `No job ${id} in this session.` })
+            const record = found.value
+            const run = settledRun(record.run, record.spec.setAt, yield* Clock.currentTimeMillis)
+            if (over(run)) return yield* new WakeRejected({ reason: `Job ${id} is not running: ${endWords(jobShownOf(record.spec, run, ""))}.` })
+            yield* runner.kill(id)
+            yield* changes.changed(sessionID)
           }),
         jobs: (sessionID) =>
           Effect.gen(function* () {
@@ -890,6 +967,7 @@ export const layer = (config: Config) =>
         }),
         forget: (sessionID) =>
           Effect.gen(function* () {
+            for (const [id, owner] of seenJobs) if (owner === sessionID) seenJobs.delete(id)
             const gone = yield* locked(
               Effect.gen(function* () {
                 const entries = yield* store.entries

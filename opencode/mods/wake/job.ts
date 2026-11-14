@@ -6,7 +6,7 @@
 // start when it ended while no server ran. This file is what the runner keeps
 // beside a job and what it reads back: the spec it runs, how the process
 // ended, and how a job's run reads at a time. It imports nothing of wake.ts.
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 
 /** What the runner runs and keeps beside the job, so a check reads it after the entry went. */
 export const JobSpec = Schema.Struct({
@@ -111,6 +111,92 @@ export const settledRun = (run: Run | undefined, setAt: number, now: number): Ru
 }
 
 export const over = (run: Run): run is Extract<Run, { readonly state: "ended" | "lost" }> => run.state === "ended" || run.state === "lost"
+
+// ── What the TUI shows ──
+
+/** How long an ended job stays on the TUI's board after its end. */
+export const ENDED_SHOWN_MS = 30 * 60 * 1000
+/** The most ended jobs a session's board keeps; the running ones always show. */
+export const ENDED_SHOWN = 10
+/** How much of each job's log the board carries: the end. */
+export const BOARD_TAIL = 2000
+
+/**
+ * One job as the TUI's dock and Jobs tab read it: what it runs, and how it
+ * stands in a word (`starting`, `running`, `exited` with its code, `killed`,
+ * `timed out`, `lost`), with its times and its log's tail.
+ */
+export const JobShown = Schema.Struct({
+  id: Schema.String,
+  sessionID: Schema.String,
+  note: Schema.String,
+  command: Schema.String,
+  cwd: Schema.String,
+  /** Epoch ms. */
+  setAt: Schema.Number,
+  state: Schema.Literals(["starting", "running", "exited", "killed", "timed out", "lost"]),
+  /** An exited job's code. */
+  exitCode: Schema.optional(Schema.Number),
+  startedAt: Schema.optional(Schema.Number),
+  endedAt: Schema.optional(Schema.Number),
+  logTail: Schema.String,
+})
+export type JobShown = typeof JobShown.Type
+
+type ShownRun = Pick<JobShown, "state" | "exitCode" | "startedAt" | "endedAt">
+
+/** How an ended run reads: timed out, killed (by a kill, or a signal), or exited with its code. */
+const endedRun = (exit: JobExit): ShownRun => {
+  const times = { startedAt: exit.startedAt, endedAt: exit.endedAt }
+  if (exit.timedOut) return { state: "timed out", ...times }
+  return Option.fromNullishOr(exit.exitCode).pipe(
+    Option.filter(() => !exit.killed),
+    Option.match({ onNone: (): ShownRun => ({ state: "killed", ...times }), onSome: (exitCode): ShownRun => ({ state: "exited", exitCode, ...times }) }),
+  )
+}
+
+/** The board's word for a run, with the times it knows. */
+const shownRun = (run: Run): ShownRun => {
+  switch (run.state) {
+    case "starting":
+      return { state: "starting" }
+    case "running":
+      return { state: "running", startedAt: run.startedAt }
+    case "lost":
+      return { state: "lost", startedAt: run.startedAt }
+    case "ended":
+      return endedRun(run.exit)
+  }
+}
+
+/** How a job that runs no more ended, as a clause: `it exited 2`, `it was killed`, `it timed out`, `it was lost`. */
+export const endWords = (shown: Pick<JobShown, "state" | "exitCode">): string => {
+  switch (shown.state) {
+    case "exited":
+      return `it exited ${shown.exitCode}`
+    case "timed out":
+      return "it timed out"
+    case "lost":
+      return "it was lost"
+    case "killed":
+      return "it was killed"
+    case "starting":
+    case "running":
+      return `it is ${shown.state}`
+  }
+}
+
+/** A job as the board shows it: its spec, its run as the wakes read it now, its log's tail. */
+export const jobShownOf = (spec: JobSpec, run: Run, logTail: string): JobShown => ({
+  id: spec.id,
+  sessionID: spec.sessionID,
+  note: spec.note,
+  command: spec.command,
+  cwd: spec.cwd,
+  setAt: spec.setAt,
+  ...shownRun(run),
+  logTail,
+})
 
 /** The last `max` lines of progress text. */
 export const lastLines = (text: string, max = DRIP_LINES): string => {

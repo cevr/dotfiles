@@ -8,7 +8,7 @@
 // session reads it once. Also the wakes' RPC, which the TUI and the OS
 // backstop call.
 import { Schema } from "effect"
-import { DEFAULT_JOB_TIMEOUT_SECONDS, type JobSpec, MAX_JOB_TIMEOUT_SECONDS } from "./job.ts"
+import { DEFAULT_JOB_TIMEOUT_SECONDS, JobShown, type JobSpec, MAX_JOB_TIMEOUT_SECONDS } from "./job.ts"
 import { Latch } from "./latch.ts"
 
 /** `wake`: the fire starts a turn. `notify`: it waits for the session's next turn and shows to the owner meanwhile. */
@@ -425,12 +425,16 @@ const text = { type: "string" } as const
  * - `latch(LatchAsk)`: keep a held subagent start as a latch of the asking session, with its child session made unprompted. `Latched` says its id and child, or why not.
  * - `cancel({ sessionID, id })`: the owner cancels one of the session's entries, as `wake_cancel` does. `Cancelled` says which ids went, or why not.
  * - `set({ sessionID, wake } | { sessionID, monitor })`: set an alarm or a monitor for that session, as its own `wake` or `monitor` call would (scripts/migrate-schedules.ts uses it). `Armed` says its id, or why not.
+ * - `jobs({ sessionID })`: the session's jobs, running and recently ended (`Board`).
+ * - `kill({ sessionID, id })`: the owner stops one of the session's running jobs; its end letter still wakes the session. `Killed` says whether, or why not.
  * - `changed({ sessionID })`: published after every change to a session's wakes.
  */
 export const WAKES = {
   id: "dotfiles-opencode.wake",
   methods: {
     pending: { input: object({ sessionIDs: { type: "array", items: text } }, ["sessionIDs"]), output: { type: "object" } },
+    jobs: { input: object({ sessionID: text }, ["sessionID"]), output: { type: "object" } },
+    kill: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
     due: { input: object({ id: text }, ["id"]), output: { type: "object" } },
     latch: { input: { type: "object" }, output: { type: "object" } },
     cancel: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
@@ -521,6 +525,17 @@ export const Cancelled = Schema.Union([
   Schema.Struct({ outcome: Schema.Literal("refused"), reason: Schema.String }),
 ])
 export type Cancelled = typeof Cancelled.Type
+
+/** What `jobs` answers: the server's clock, and the session's jobs, running first, then ended, newest first within each. */
+export const Board = Schema.Struct({ now: Schema.Number, jobs: Schema.Array(JobShown) })
+export type Board = typeof Board.Type
+
+/** What `kill` answers: the job was asked to stop, or why not. */
+export const Killed = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("killed") }),
+  Schema.Struct({ outcome: Schema.Literal("refused"), reason: Schema.String }),
+])
+export type Killed = typeof Killed.Type
 
 /** What `set` takes: the session, and the alarm or the monitor as its tool would. */
 export const SetAsk = Schema.Union([

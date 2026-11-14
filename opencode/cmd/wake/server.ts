@@ -20,7 +20,8 @@
  *   into the session, through `due` from the runner, the server's poll, or
  *   the next start. `check`, `wait`, `kill` and `list` over the same tool.
  * - `pending({ sessionIDs })` for the tray, `cancel({ sessionID, id })` for its
- *   cancel key, `due({ id })` for the OS jobs;
+ *   cancel key, `jobs({ sessionID })` and `kill({ sessionID, id })` for Prime's
+ *   job dock item and Jobs tab, `due({ id })` for the OS jobs;
  *   every change publishes `changed({ sessionID })`.
  * - `latch(LatchAsk)` for orchestrate: a held subagent start kept as a latch
  *   of its parent, its child made unprompted; at its time the wakes ask
@@ -62,7 +63,7 @@ import {
   WAKE_DESCRIPTION,
   WakeInput,
 } from "@dotfiles/opencode-wake/tools"
-import { type Armed, type Cancelled, type Due, type Pending, SetAsk, WAKES, type WakeRejected } from "@dotfiles/opencode-wake/wake"
+import { type Armed, type Board, type Cancelled, type Due, type Killed, type Pending, SetAsk, WAKES, type WakeRejected } from "@dotfiles/opencode-wake/wake"
 
 /**
  * OpenCode's schedule tools, by their registry ids; the wake tools replace
@@ -174,6 +175,7 @@ const jobTool = (wakes: Context.Service.Shape<typeof Model.WakesModel>, input: J
 const PendingInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
 const DueInput = Schema.Struct({ id: Schema.String })
 const CancelAsk = Schema.Struct({ sessionID: Schema.String, id: Schema.String })
+const SessionAsk = Schema.Struct({ sessionID: Schema.String })
 
 /** The plugin on `externals`: OpenCode's in a server, the memory doubles in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
@@ -274,6 +276,18 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
               Effect.flatMap(({ sessionID, id }) => wakes.cancel(sessionID, id)),
               Effect.map((ids): Cancelled => ({ outcome: "cancelled", ids })),
               Effect.catch((failure) => Effect.succeed<Cancelled>({ outcome: "refused", reason: failure.reason })),
+            ),
+          jobs: (input) =>
+            Schema.decodeUnknownEffect(SessionAsk)(input).pipe(
+              Effect.flatMap(({ sessionID }) => wakes.board(sessionID)),
+              Effect.catch(() => Clock.currentTimeMillis.pipe(Effect.map((now): Board => ({ now, jobs: [] })))),
+            ),
+          kill: (input) =>
+            Schema.decodeUnknownEffect(CancelAsk)(input).pipe(
+              Effect.mapError((error) => ({ reason: `not a kill: ${error.message}` })),
+              Effect.flatMap(({ sessionID, id }) => wakes.stop(sessionID, id)),
+              Effect.map((): Killed => ({ outcome: "killed" })),
+              Effect.catch((failure) => Effect.succeed<Killed>({ outcome: "refused", reason: failure.reason })),
             ),
           set: (input) =>
             Schema.decodeUnknownEffect(SetAsk)(input).pipe(

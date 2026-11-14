@@ -16,7 +16,7 @@ import * as MemoryCourier from "@dotfiles/opencode-wake/memory/courier"
 import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
-import { Armed, Cancelled, Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
+import { Armed, Board, Cancelled, Due, Killed, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
 import { waitUntil } from "../../tests/wait.ts"
 import WakePlugin, { make, SCHEDULE_TOOLS } from "./server.ts"
 
@@ -111,8 +111,10 @@ const start = (
     const latched = (input: unknown) => method("latch", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Latched)), Effect.orDie)
     const cancel = (input: unknown) => method("cancel", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Cancelled)), Effect.orDie)
     const set = (input: unknown) => method("set", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Armed)), Effect.orDie)
+    const jobs = (sessionID: string) => method("jobs", { sessionID }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Board)), Effect.orDie)
+    const kill = (input: { readonly sessionID: string; readonly id?: string }) => method("kill", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Killed)), Effect.orDie)
     const inbox = (sessionID = "ses_root") => doubles.sessions.inboxes.get(sessionID) ?? []
-    return { added, builtin, call, fail, pending, due, latched, cancel, set, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
+    return { added, builtin, call, fail, pending, due, latched, cancel, set, jobs, kill, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
   })
 
 describe("the wake tools", () => {
@@ -189,6 +191,24 @@ describe("the wake tools", () => {
           reason: `No pending wake w000000 in this session. Pending: ${second?.id}.`,
         })
         expect(yield* plugin.cancel({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused" })
+      }),
+    ))
+
+  test("the jobs RPC lists the session's jobs for the TUI, and its kill stops one of them; another session's is refused", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const receipt = yield* plugin.call("job", { command: "sleep 300", note: "Wait it out." })
+        const id = /Job (j[0-9a-z]{6}) started/.exec(receipt)?.[1] ?? ""
+        MemoryRunner.running(plugin.doubles.runner, id, 0)
+        expect((yield* plugin.jobs("ses_child")).jobs).toEqual([])
+        const listed = yield* plugin.jobs("ses_root")
+        expect(listed.jobs.map((job) => [job.id, job.state, job.note, job.command])).toEqual([[id, "running", "Wait it out.", "sleep 300"]])
+        expect(yield* plugin.kill({ sessionID: "ses_child", id })).toEqual({ outcome: "refused", reason: `No job ${id} in this session.` })
+        expect(yield* plugin.kill({ sessionID: "ses_root", id })).toEqual({ outcome: "killed" })
+        expect(plugin.doubles.runner.killed).toEqual([id])
+        expect((yield* plugin.jobs("ses_root")).jobs.map((job) => job.state)).toEqual(["killed"])
+        expect(yield* plugin.kill({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused" })
       }),
     ))
 

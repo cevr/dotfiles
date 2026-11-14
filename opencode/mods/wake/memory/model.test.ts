@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { Context, Effect, Exit, Layer, Logger, Scope } from "effect"
 import { TestClock } from "effect/testing"
 import { oneShot, titleOf } from "../backstop.ts"
+import { ENDED_SHOWN_MS } from "../job.ts"
 import type { LatchAsk } from "../latch.ts"
 import { alarm as alarmFixture, latch as latchFixture } from "../laws.ts"
 import * as Model from "../model.ts"
@@ -826,6 +827,59 @@ describe("a job", () => {
         yield* until(MINUTE)
         expect(texts(w)).toHaveLength(1)
         expect(texts(w)[0]).toContain(`Job ${job.id} was lost: it never started`)
+      }),
+    ))
+
+  test("the board lists the session's jobs, running first, with state, times and log tail; an ended one stays until its time on the board is up", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a", "ses_b")
+        const { model } = yield* server(w)
+        const { job: first } = yield* model.job("ses_a", { command: "make build", note: "Build it." })
+        yield* until(SECOND)
+        const { job: second } = yield* model.job("ses_a", { command: "sleep 300", note: "Wait." })
+        yield* model.job("ses_b", { command: "true", note: "Other session." })
+        MemoryRunner.running(w.runner, first.id, SECOND)
+        MemoryRunner.running(w.runner, second.id, SECOND)
+        w.runner.jobs.forEach((memory, id) => {
+          if (id === first.id) memory.log = "compiling\nlinking\n"
+        })
+        const running = yield* model.board("ses_a")
+        expect(running.jobs).toMatchObject([
+          { id: second.id, state: "running" },
+          { id: first.id, state: "running", note: "Build it.", command: "make build", cwd: DIR, startedAt: SECOND, logTail: "compiling\nlinking\n" },
+        ])
+        MemoryRunner.ended(w.runner, first.id, 2, 20 * SECOND)
+        yield* until(30 * SECOND)
+        // The end letter took the entry; the board still shows how it ended.
+        expect(w.store.entries.has(first.id)).toBe(false)
+        const ended = yield* model.board("ses_a")
+        expect(ended.jobs).toMatchObject([
+          { id: second.id, state: "running" },
+          { id: first.id, state: "exited", exitCode: 2, endedAt: 20 * SECOND },
+        ])
+        yield* until(20 * SECOND + ENDED_SHOWN_MS + SECOND)
+        expect((yield* model.board("ses_a")).jobs.map((job) => job.id)).toEqual([second.id])
+      }),
+    ))
+
+  test("the owner's stop kills a running job of the session and its end letter still wakes it; another session's or an ended job is refused", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a", "ses_b")
+        const { model } = yield* server(w)
+        const { job } = yield* model.job("ses_a", { command: "sleep 300", note: "Wait." })
+        MemoryRunner.running(w.runner, job.id, 0)
+        expect((yield* Effect.flip(model.stop("ses_b", job.id))).reason).toBe(`No job ${job.id} in this session.`)
+        expect(w.runner.killed).toEqual([])
+        yield* model.stop("ses_a", job.id)
+        expect(w.runner.killed).toEqual([job.id])
+        expect(w.changed).toContain("ses_a")
+        yield* until(30 * SECOND)
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain(`Job ${job.id} was killed`)
+        expect((yield* model.board("ses_a")).jobs.map((shown) => shown.state)).toEqual(["killed"])
+        expect((yield* Effect.flip(model.stop("ses_a", job.id))).reason).toBe(`Job ${job.id} is not running: it was killed.`)
       }),
     ))
 
