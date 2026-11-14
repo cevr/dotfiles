@@ -1,8 +1,8 @@
 // The journal of a kernel call: what it records of each tool call a cell
 // makes, what it publishes while the call runs, and its bounds.
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { journal, MAX_INPUT_CHARS, MAX_OPERATIONS, OPERATIONS_KEY, type Operation } from "./operations.ts"
+import { Deferred, Effect, Fiber } from "effect"
+import { CONCURRENCY_KEY, concurrencyOf, journal, MAX_INPUT_CHARS, MAX_OPERATIONS, OPERATIONS_KEY, type Operation } from "./operations.ts"
 
 const recording = () => {
   const published: Array<ReadonlyArray<Operation>> = []
@@ -83,6 +83,38 @@ describe("a kernel call's journal", () => {
     await Effect.runPromise(record.around("shell", { command: "late" }, Effect.succeed({})))
     expect(published).toEqual([])
     expect(record.metadata()[OPERATIONS_KEY]).toHaveLength(1)
+  })
+
+  test("keeps when each call ran, and for two or more calls how many ran at once", async () => {
+    let now = 0
+    const record = journal(() => Effect.void, () => now)
+    const call = (ms: number) => record.around("shell", {}, Effect.sync(() => void (now += ms)).pipe(Effect.as({})))
+    await Effect.runPromise(call(5))
+    expect(record.metadata()[CONCURRENCY_KEY]).toBeUndefined()
+    await Effect.runPromise(call(3))
+    expect(record.spans()).toEqual([{ start: 0, end: 5 }, { start: 5, end: 8 }])
+    expect(record.metadata()[CONCURRENCY_KEY]).toEqual({ calls: 2, maxInFlight: 1 })
+    // Three at once, all waiting on one gate, the third failing: a failed call's span ends too.
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>()
+        const held = (run: Effect.Effect<{}, Error>) => record.around("read", {}, Deferred.await(gate).pipe(Effect.andThen(run)))
+        const fibers = yield* Effect.forkChild(Effect.all([held(Effect.succeed({})), held(Effect.succeed({})), Effect.flip(held(Effect.fail(new Error("no"))))], { concurrency: "unbounded" }))
+        yield* Effect.yieldNow
+        now += 1
+        expect(record.spans().slice(2).map((span) => span.end)).toEqual([undefined, undefined, undefined])
+        yield* Deferred.succeed(gate, undefined)
+        yield* Fiber.join(fibers)
+      }),
+    )
+    expect(record.spans().slice(2)).toEqual([{ start: 8, end: 9 }, { start: 8, end: 9 }, { start: 8, end: 9 }])
+    expect(record.metadata()[CONCURRENCY_KEY]).toEqual({ calls: 5, maxInFlight: 3 })
+  })
+
+  test("counts overlap from spans: a call that ends as another starts does not overlap it, one still running does", () => {
+    expect(concurrencyOf([])).toEqual({ calls: 0, maxInFlight: 0 })
+    expect(concurrencyOf([{ start: 0, end: 5 }, { start: 5, end: 8 }])).toEqual({ calls: 2, maxInFlight: 1 })
+    expect(concurrencyOf([{ start: 0, end: 5 }, { start: 1, end: 2 }, { start: 3, end: 9 }, { start: 4 }])).toEqual({ calls: 4, maxInFlight: 3 })
   })
 
   test("long inputs are cut and calls past the cap are counted, not kept", async () => {

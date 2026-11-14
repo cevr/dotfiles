@@ -3,7 +3,7 @@
 // domain, and the rule that names a unit's Rift. The next call's property runs on the real decider in
 // cmd/orchestrate/orch-tools.sim.test.ts, which has an Effect test runner.
 import { describe, expect, test } from "bun:test"
-import { Option, Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import {
   BatchLanded,
   FindingFolded,
@@ -43,6 +43,7 @@ import {
   STEP_ORDER,
   statusAnswer,
   UNDECIDED,
+  unheldRefusal,
   verifyAnswer,
 } from "./tools.ts"
 
@@ -385,6 +386,25 @@ describe("the lane name rule", () => {
       // A unit alone always resolves to its lane by the name rule.
       const alone = units.slice(0, 1)
       for (const unit of alone) expect(riftOfUnit(unit, lanes.slice(0, 1), implementing(alone, false))).toEqual({ found: { unit, path: laneOf(unit).path } })
+    }
+  })
+
+  test("F2: a land naming { path, unit } of a unit the machine does not hold is refused, by either tool's input; one it holds, or a bare path, is not", () => {
+    for (const seed of SEEDS) {
+      const random = rng(seed)
+      const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 4) }, () => unitName(random)))]
+      const held = units.filter(() => random() < 0.6)
+      const state = implementing(held, random() < 0.5)
+      const rifts = units.map((unit) => ({ rift: laneOf(unit).path, unit }))
+      const refused = unheldRefusal(rifts, state)
+      // Refused at the first unit not held, naming it; with every unit held, not refused.
+      const first = Arr.findFirst(units, (unit) => !held.includes(unit))
+      expect({ seed, refused: Option.isSome(refused), first: Option.isSome(first) }).toEqual({ seed, refused: Option.isSome(first), first: Option.isSome(first) })
+      expect({ seed, names: Option.exists(Option.zipWith(refused, first, (said, unit) => said.includes(`the machine holds no unit ${unit}:`)), (named) => named) }).toEqual({
+        seed,
+        names: Option.isSome(first),
+      })
+      expect({ seed, bare: Option.isNone(unheldRefusal(units.map((unit) => laneOf(unit).path), state)) }).toEqual({ seed, bare: true })
     }
   })
 
