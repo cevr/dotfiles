@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Context, Deferred, Effect, Layer, Predicate, Schema, type Scope } from "effect"
+import { Context, Deferred, Effect, Fiber, Layer, Predicate, Schema, type Scope } from "effect"
 import type { Json, Listing, Omission } from "../frame.ts"
 import { workersLaws } from "../laws.ts"
 import * as Operations from "../operations.ts"
@@ -238,52 +238,68 @@ describe("a worker", () => {
 })
 
 /**
- * An echo tool that holds each call until `hold` are in flight host-side, or
- * until its `total`-th call arrives, then lets the held ones answer: so calls
- * that can run at once do, with no wait on the clock. It counts the most in
- * flight; input `{ fail: true }` fails a call.
+ * An echo tool that holds every call until the test opens it, counting the
+ * calls in flight host-side: it never answers on its own, so what it counts
+ * is only what the worker let through. `full` completes when the `target`-th
+ * call arrives. Input `{ fail: true }` fails a call.
  */
-const gated = (hold: number, total: number) => {
+const held = (target: number) => {
   let now = 0
   let most = 0
   let arrived = 0
-  let gate = Deferred.makeUnsafe<boolean>()
+  const full = Deferred.makeUnsafe<boolean>()
+  const open = Deferred.makeUnsafe<boolean>()
   const call: Cell["call"] = (_name, input) =>
     Effect.gen(function* () {
       arrived++
       now++
       most = Math.max(most, now)
-      const mine = gate
-      if (now === hold || arrived === total) {
-        gate = Deferred.makeUnsafe<boolean>()
-        yield* Deferred.succeed(mine, true)
-      }
-      yield* Deferred.await(mine)
+      if (arrived === target) yield* Deferred.succeed(full, true)
+      yield* Deferred.await(open)
       now--
       if (Predicate.hasProperty(input, "fail")) return yield* Effect.fail(new CallFailed({ message: "it failed" }))
       return input
     })
-  return { call, most: () => most }
+  return { call, full, open, most: () => most }
 }
 
 const parsed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
 const echo: ReadonlyArray<Listing> = [{ id: "echo", description: "echoes" }]
-/** A cell's display, with `tool` answering its calls. */
+/** A cell's display, with `call` answering its calls. */
 const shown = (source: string, call: Cell["call"], tools = echo) =>
   Effect.gen(function* () {
     const workers = yield* Workers
     return (yield* workers.evaluate(first, cell(source, tools, call))).display
   })
 
+/** Event-loop turns given to the host after the expected calls arrived, so any call the worker should have held back would arrive too. */
+const SETTLE_TURNS = 200
+
+/**
+ * Runs `source` against a held tool: waits for `expected` calls to reach the
+ * host, gives any further call the time to arrive, takes the most in flight
+ * (`atOnce`), then opens the tool and lets the cell end. `wrap` sees each call
+ * (the journal does).
+ */
+const peak = (source: string, expected: number, wrap: (call: Cell["call"]) => Cell["call"] = (call) => call, tools = echo) =>
+  Effect.gen(function* () {
+    const tool = held(expected)
+    const fiber = yield* Effect.forkChild(shown(source, wrap(tool.call), tools))
+    yield* Deferred.await(tool.full)
+    yield* Effect.yieldNow.pipe(Effect.repeat({ times: SETTLE_TURNS }))
+    const atOnce = tool.most()
+    yield* Deferred.succeed(tool.open, true)
+    const display = yield* Fiber.join(fiber)
+    return { display, atOnce, most: tool.most() }
+  })
+
 describe("calls in parallel", () => {
-  test("a call past the in-flight limit waits for a free slot: Promise.all over 100 calls resolves, at most 32 in flight", () =>
+  test("a call past the in-flight limit waits for a free slot: Promise.all over 100 calls resolves, 32 in flight and no more", () =>
     scenario(
       Effect.gen(function* () {
         yield* started()
-        const tool = gated(32, 100)
-        const display = yield* shown("const got = await Promise.all(Array.from({ length: 100 }, (_, n) => tools.echo({ n }))); got.map((r) => r.n).join(',')", tool.call)
-        expect(display).toBe(Array.from({ length: 100 }, (_, n) => n).join(","))
-        expect(tool.most()).toBe(32)
+        const run = yield* peak("const got = await Promise.all(Array.from({ length: 100 }, (_, n) => tools.echo({ n }))); got.map((r) => r.n).join(',')", 32)
+        expect(run).toEqual({ display: Array.from({ length: 100 }, (_, n) => n).join(","), atOnce: 32, most: 32 })
       }),
     ))
 
@@ -291,39 +307,36 @@ describe("calls in parallel", () => {
     scenario(
       Effect.gen(function* () {
         yield* started()
-        const listed = gated(3, 3)
-        const array = yield* shown("JSON.stringify(await tools.all([tools.echo({ n: 1 }), tools.echo({ fail: true }), () => tools.echo({ n: 3 }), 4]))", listed.call)
-        expect(parsed(array)).toEqual([
+        const array = yield* peak("JSON.stringify(await tools.all([tools.echo({ n: 1 }), tools.echo({ fail: true }), () => tools.echo({ n: 3 }), 4]))", 3)
+        expect(parsed(array.display)).toEqual([
           { ok: true, value: { n: 1 } },
           { ok: false, error: "Error: it failed" },
           { ok: true, value: { n: 3 } },
           { ok: true, value: 4 },
         ])
-        expect(listed.most()).toBe(3)
-        const record = yield* shown("JSON.stringify(await tools.all({ a: tools.echo({ n: 1 }), b: () => { throw new TypeError('sync') } }))", gated(1, 1).call)
-        expect(parsed(record)).toEqual({ a: { ok: true, value: { n: 1 } }, b: { ok: false, error: "TypeError: sync" } })
+        expect(array.atOnce).toBe(3)
+        const record = yield* peak("JSON.stringify(await tools.all({ a: tools.echo({ n: 1 }), b: () => { throw new TypeError('sync') } }))", 1)
+        expect(parsed(record.display)).toEqual({ a: { ok: true, value: { n: 1 } }, b: { ok: false, error: "TypeError: sync" } })
         expect(yield* shown("await tools.all(5)", none)).toBe("TypeError: tools.all takes an array or a record of calls")
       }),
     ))
 
-  test("tools.map runs a call per item, at most `concurrency` at once, settled in input order", () =>
+  test("tools.map runs a call per item, `concurrency` at once and no more, settled in input order", () =>
     scenario(
       Effect.gen(function* () {
         yield* started()
-        const two = gated(2, 5)
-        const mapped = yield* shown("JSON.stringify(await tools.map([1, 2, 3, 4, 5], (n) => tools.echo(n === 2 ? { fail: true } : { n }), { concurrency: 2 }))", two.call)
-        expect(parsed(mapped)).toEqual([
+        const two = yield* peak("JSON.stringify(await tools.map([1, 2, 3, 4, 5], (n) => tools.echo(n === 2 ? { fail: true } : { n }), { concurrency: 2 }))", 2)
+        expect(parsed(two.display)).toEqual([
           { ok: true, value: { n: 1 } },
           { ok: false, error: "Error: it failed" },
           { ok: true, value: { n: 3 } },
           { ok: true, value: { n: 4 } },
           { ok: true, value: { n: 5 } },
         ])
-        expect(two.most()).toBe(2)
+        expect([two.atOnce, two.most]).toEqual([2, 2])
         // By default as many at once as may be in flight.
-        const forty = gated(32, 40)
-        expect(yield* shown("(await tools.map(Array.from({ length: 40 }, (_, n) => n), (n) => tools.echo({ n }))).every((r) => r.ok)", forty.call)).toBe("true")
-        expect(forty.most()).toBe(32)
+        const forty = yield* peak("(await tools.map(Array.from({ length: 40 }, (_, n) => n), (n) => tools.echo({ n }))).every((r) => r.ok)", 32)
+        expect(forty).toEqual({ display: "true", atOnce: 32, most: 32 })
         expect(yield* shown("await tools.map([1], (n) => n, { concurrency: 0 })", none)).toBe("TypeError: tools.map's concurrency is a whole number of 1 or more")
       }),
     ))
@@ -335,7 +348,7 @@ describe("calls in parallel", () => {
         const tools: ReadonlyArray<Listing> = [...echo, { id: "map", description: "a tool named map" }]
         expect(yield* shown("tools.list().map((t) => t.id).join(',')", none, tools)).toBe("echo,map")
         expect(yield* shown("typeof tools.map", none, tools)).toBe("function")
-        expect(yield* shown("(await tools('map')({ n: 9 })).n", gated(1, 1).call, tools)).toBe("9")
+        expect((yield* peak("(await tools('map')({ n: 9 })).n", 1, (call) => call, tools)).display).toBe("9")
         expect(yield* shown("Object.keys(tools).join(',')", none, tools)).toBe("echo")
       }),
     ))
@@ -345,12 +358,11 @@ describe("calls in parallel", () => {
       Effect.gen(function* () {
         yield* started()
         // A chained call starts after the first resolves, while the cell still runs.
-        const four = gated(3, 4)
-        const bag = yield* shown("({ a: tools.echo({ n: 1 }), b: tools.echo({ fail: true }), c: tools.echo({ n: 2 }).then((r) => tools.echo({ n: r.n + 1 })), d: 4 })", four.call)
-        expect(bag).toBe('{\n  a: {\n    n: 1,\n  },\n  b: "Error: it failed",\n  c: {\n    n: 3,\n  },\n  d: 4,\n}')
-        expect(four.most()).toBe(3)
-        expect(yield* shown("[tools.echo({ n: 5 })]", gated(1, 1).call)).toBe("[\n  {\n    n: 5,\n  }\n]")
-        expect(yield* shown("const kept = { p: tools.echo({ n: 6 }) }; kept", gated(1, 1).call)).toContain("n: 6")
+        const bag = yield* peak("({ a: tools.echo({ n: 1 }), b: tools.echo({ fail: true }), c: tools.echo({ n: 2 }).then((r) => tools.echo({ n: r.n + 1 })), d: 4 })", 3)
+        expect(bag.display).toBe('{\n  a: {\n    n: 1,\n  },\n  b: "Error: it failed",\n  c: {\n    n: 3,\n  },\n  d: 4,\n}')
+        expect(bag.atOnce).toBe(3)
+        expect((yield* peak("[tools.echo({ n: 5 })]", 1)).display).toBe("[\n  {\n    n: 5,\n  }\n]")
+        expect((yield* peak("const kept = { p: tools.echo({ n: 6 }) }; kept", 1)).display).toContain("n: 6")
         expect(yield* shown("kept.p instanceof Promise", none)).toBe("true")
       }),
     ))
@@ -359,20 +371,19 @@ describe("calls in parallel", () => {
     scenario(
       Effect.gen(function* () {
         yield* started()
-        const overlap = (source: string, hold: number, total: number) =>
+        const overlap = (source: string, expected: number) =>
           Effect.gen(function* () {
             const record = Operations.journal(() => Effect.void)
-            const tool = gated(hold, total)
-            const call: Cell["call"] = (name, input) =>
-              record.around(name, input, Effect.map(tool.call(name, input), (value) => ({ content: value, value }))).pipe(Effect.map((outcome) => outcome.value))
-            yield* shown(source, call)
+            const journaled = (call: Cell["call"]): Cell["call"] => (name, input) =>
+              record.around(name, input, Effect.map(call(name, input), (value) => ({ content: value, value }))).pipe(Effect.map((outcome) => outcome.value))
+            yield* peak(source, expected, journaled)
             return record.metadata()[Operations.CONCURRENCY_KEY]
           })
-        expect(yield* overlap("for (const n of [1, 2, 3, 4, 5]) await tools.echo({ n })", 1, 5)).toEqual({ calls: 5, maxInFlight: 1 })
-        expect(yield* overlap("await Promise.all([1, 2, 3].map((n) => tools.echo({ n })))", 3, 3)).toEqual({ calls: 3, maxInFlight: 3 })
-        expect(yield* overlap("await Promise.all(Array.from({ length: 40 }, (_, n) => tools.echo({ n })))", 32, 40)).toEqual({ calls: 40, maxInFlight: 32 })
-        expect(yield* overlap("await tools.map(Array.from({ length: 40 }, (_, n) => n), (n) => tools.echo({ n }))", 32, 40)).toEqual({ calls: 40, maxInFlight: 32 })
-        expect(yield* overlap("({ a: tools.echo({ n: 1 }), b: tools.echo({ n: 2 }), c: tools.echo({ n: 3 }) })", 3, 3)).toEqual({ calls: 3, maxInFlight: 3 })
+        expect(yield* overlap("for (const n of [1, 2, 3, 4, 5]) await tools.echo({ n })", 1)).toEqual({ calls: 5, maxInFlight: 1 })
+        expect(yield* overlap("await Promise.all([1, 2, 3].map((n) => tools.echo({ n })))", 3)).toEqual({ calls: 3, maxInFlight: 3 })
+        expect(yield* overlap("await Promise.all(Array.from({ length: 40 }, (_, n) => tools.echo({ n })))", 32)).toEqual({ calls: 40, maxInFlight: 32 })
+        expect(yield* overlap("await tools.map(Array.from({ length: 40 }, (_, n) => n), (n) => tools.echo({ n }))", 32)).toEqual({ calls: 40, maxInFlight: 32 })
+        expect(yield* overlap("({ a: tools.echo({ n: 1 }), b: tools.echo({ n: 2 }), c: tools.echo({ n: 3 }) })", 3)).toEqual({ calls: 3, maxInFlight: 3 })
       }),
     ))
 })
