@@ -45,6 +45,22 @@ export const parseFeature = (file: string, text: string): Feature => ({
 export const touched = (features: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<Feature> =>
   features.filter((feature) => feature.code.some((prefix) => changed.some((path) => path.startsWith(prefix))))
 
+/** A source file: what a feature's code is, and what a drive can leave undriven. */
+const SOURCE = /\.[cm]?[jt]sx?$/
+
+/**
+ * The changed source files (from opencode/) no feature's `Code` holds: a drive of the change never reaches them, so
+ * `--changed` reports each as unreachable instead of passing them unseen.
+ */
+export const uncovered = (features: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<string> =>
+  changed.filter((path) => SOURCE.test(path) && !features.some((feature) => feature.code.some((prefix) => path.startsWith(prefix))))
+
+/** A drive's unreachable lines: each chosen feature with no world suite, and each changed source file no feature of `map` covers. */
+export const unreachableOf = (map: ReadonlyArray<Feature>, chosen: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<string> => [
+  ...chosen.filter((feature) => feature.world.length === 0).map((feature) => `${feature.id}: no world suite; drive it on real OpenCode (--real, or the feature file's pilotty steps)`),
+  ...uncovered(map, changed).map((file) => `${file}: changed, and no feature's Code covers it; drive it on real OpenCode or add it to a feature`),
+]
+
 /** The prefix every feature claims (the world itself): a suite under it is a world law's, no one feature's drive. */
 export const SHARED = "sim/"
 
