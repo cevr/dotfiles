@@ -131,6 +131,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-prime": "workspace:*",
+        "@dotfiles/opencode-wake": "workspace:*",
       },
     },
     "cmd/questions": {

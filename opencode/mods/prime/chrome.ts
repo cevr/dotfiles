@@ -60,13 +60,20 @@ export function plural(count: number, word: string) {
 }
 
 /**
- * Whether the dock's count line shows: while a subagent works, a shell runs,
- * or a wake or monitor is pending. With all four at zero it is not drawn,
- * not even as a blank row. An unread notice keeps it too, since the dock is
- * where it is counted until the next turn reads it.
+ * Whether the dock's count line shows: while a subagent works, a shell or a
+ * job runs, or a wake or monitor is pending. With all five at zero it is not
+ * drawn, not even as a blank row. An unread notice keeps it too, since the
+ * dock is where it is counted until the next turn reads it.
  */
-export function dockShown(input: { readonly subagents: number; readonly shells: number; readonly wakes: number; readonly monitors: number; readonly notices: number }) {
-  return input.subagents > 0 || input.shells > 0 || input.wakes > 0 || input.monitors > 0 || input.notices > 0
+export function dockShown(input: {
+  readonly subagents: number
+  readonly shells: number
+  readonly jobs: number
+  readonly wakes: number
+  readonly monitors: number
+  readonly notices: number
+}) {
+  return input.subagents > 0 || input.shells > 0 || input.jobs > 0 || input.wakes > 0 || input.monitors > 0 || input.notices > 0
 }
 
 /** The loader's spinner frames, a braille turn. */

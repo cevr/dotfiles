@@ -1,6 +1,6 @@
 # Prime's panel
 
-↓ on an empty prompt opens the host's background-work panel, which Prime draws whole: a tab bar counting what each tab lists (Subagents, Shell, Terminals, then Prime's Wakes and Monitors), one row shape for every tab (the state's diamond, a subagent's role and model, the name, what it last did, its state in a word, a live time, and how long since it was last heard from), and a footer wording the keys as the hint line does. ↑/↓ move the highlight, Enter shows the whole entry, ctrl+d cancels a wake as `wake_cancel` does, ←/→ move between tabs, and Escape puts it away. As the panel narrows its parts drop in a set order.
+↓ on an empty prompt opens the host's background-work panel, which Prime draws whole: a tab bar counting what each tab lists (Subagents, Shell, Terminals, then Prime's Wakes, Monitors and Jobs), one row shape for every tab (the state's diamond, a subagent's role and model, the name, what it last did, its state in a word, a live time, and how long since it was last heard from), and a footer wording the keys as the hint line does. ↑/↓ move the highlight, Enter shows the whole entry, ctrl+d cancels a wake as `wake_cancel` does or kills a running job, ←/→ move between tabs, and Escape puts it away. As the panel narrows its parts drop in a set order. The dock counts the session's running jobs (`1 job`) beside the shells.
 
 ## Sub-features
 
@@ -9,7 +9,8 @@
 - `panel-rows`: every tab's rows share the columns above.
 - `panel-wakes`: the Wakes tab lists pending alarms and latches' notes; Enter shows a whole note; ctrl+d cancels one.
 - `panel-monitors`: the Monitors tab lists monitors with their newest output.
-- `panel-empty`: an empty tab says `No pending wakes` or `No monitors`.
+- `panel-jobs`: the dock counts the running jobs; the Jobs tab lists the session's jobs (id, note, command, state, time) with the highlighted one's log tail, and ctrl+d kills a running one; an ended job reads `exited N` or `killed` and leaves the dock's count.
+- `panel-empty`: an empty tab says `No pending wakes`, `No monitors` or `No jobs`.
 - `panel-narrow`: at 80 columns the parts drop from the last-heard age to the model, the state's word, then what it last did.
 
 ## How to get to it (user POV)
@@ -20,12 +21,12 @@
 ## Driving it with the world
 
 - **Preconditions:** none. These suites run on the simulated TUI (`sim-tui/`): the fork's real TUI in the test's process, with Prime loaded by path, in front of a server double.
-- **States:** the panel's own states are `n/a` here, since no suite opens the panel; the real path drives them.
-- **World suites:** `cmd/prime/prime-runs.sim.test.tsx`, `cmd/prime/prime-sidebar.sim.test.tsx`, `cmd/prime/prime-pin.sim.test.tsx`, `cmd/prime/prime-idle-send.sim.test.tsx`, `cmd/prime/prime-escape.sim.test.tsx`, `cmd/prime/own-tabs.sim.test.tsx`. These are Prime's other surfaces on the simulated TUI: the subagent rows, the sidebar, the pin, a send while idle, Escape, and the window's own session tabs (the window tab scope daily writes: another TUI's tabs never show). A change to Prime's code can break any of them, so its drive runs them all.
+- **States:** `prime-jobs` opens the panel to its Jobs tab (running, exited, killed); the other tabs' states are `n/a` here, and the real path drives them.
+- **World suites:** `cmd/prime/prime-jobs.sim.test.tsx` (the dock's job count and the Jobs tab, the wake RPC a stand-in: a running job, its exit, a ctrl+d kill), `cmd/prime/prime-runs.sim.test.tsx`, `cmd/prime/prime-sidebar.sim.test.tsx`, `cmd/prime/prime-pin.sim.test.tsx`, `cmd/prime/prime-idle-send.sim.test.tsx`, `cmd/prime/prime-escape.sim.test.tsx`, `cmd/prime/own-tabs.sim.test.tsx`. These are Prime's other surfaces on the simulated TUI: the subagent rows, the sidebar, the pin, a send while idle, Escape, and the window's own session tabs (the window tab scope daily writes: another TUI's tabs never show). A change to Prime's code can break any of them, so its drive runs them all.
 - **Code:** `mods/prime/`, `cmd/prime/`
-- **Regression:** `mods/prime/panel.test.ts` (the words and columns).
+- **Regression:** `mods/prime/panel.test.ts` (the words and columns), `mods/prime/jobs.test.ts` and `mods/prime/opencode/jobs.test.ts` (the job words and the reading), `mods/wake/memory/model.test.ts` (the jobs board and the owner's stop).
 
-`bun run verify:drive --feature prime-panel` runs those suites. The panel itself (its tabs, rows and keys) has no world suite yet, so drive it on real OpenCode below, or with `--real` for `scenarios/prime-panel.ts`.
+`bun run verify:drive --feature prime-panel` runs those suites. Beyond the Jobs tab, the panel (its other tabs, rows and keys) has no world suite yet, so drive it on real OpenCode below, or with `--real` for `scenarios/prime-panel.ts`.
 
 ## Driving it with real OpenCode
 
@@ -38,6 +39,7 @@
 5. **Close.** `pilotty key -s verify-$PORT Escape`: the panel goes and the composer is back.
 6. **Narrow.** `pilotty resize -s verify-$PORT 80 30`, then Down again: the row keeps the name and the time, dropping the parts in order.
 7. **Proof.** Snapshot after steps 2, 3, 4 and 6 into `$EVIDENCE/prime-panel/`.
+8. **Jobs.** Type `verify: call job {"command":"sleep 120","note":"verify panel job"}`, Enter, wait for `started`. The dock reads `1 job`. Down, then Right until the Jobs tab: its row reads the job's id, `verify panel job`, `sleep 120`, `running` and a live time. ctrl+d: the row reads `killed` and the dock's `1 job` goes; the end letter wakes the session (`was killed`).
 
 ## Gotchas
 

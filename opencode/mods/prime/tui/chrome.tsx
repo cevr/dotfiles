@@ -24,6 +24,7 @@ import {
 import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
+import { jobItem, jobsOf, runningJobs } from "../jobs.ts"
 import { navigationHint, neighbour, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
 import { sameWakeItem, wakeItem } from "../wakes.ts"
@@ -211,16 +212,21 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const subagents = useOthers(props.host, () => Option.fromNullishOr(props.sessionID))
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))
   const wakes = props.host.wakes(() => props.sessionID)
+  // The session's jobs: counted while they run, as the shells are; an ended one drops from the count.
+  const jobReading = props.host.jobs(() => Option.fromNullishOr(props.sessionID))
+  const jobs = createMemo(() => runningJobs(jobsOf(jobReading())))
   const terminal = useTerminalDimensions()
   const [measured, setMeasured] = createSignal<number>()
   const subagentText = () => `◆ ${plural(subagents(), "subagent")}`
   const shellText = () => plural(shells(), "shell")
+  const jobText = createMemo(() => jobItem(jobs()))
   // The wake item takes what the row has left after the other items. The wakes are read
   // again every 2 seconds; a reading that says the same keeps the item, and draws nothing.
   const wake = keptMemo(() => {
     const reading = wakes()
     if (!reading) return undefined
-    const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText())
+    const job = Option.match(jobText(), { onNone: () => 0, onSome: (text) => DOCK_SEP.length + cellsOf(text) })
+    const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText()) + job
     return wakeItem(reading, (measured() ?? terminal().width - 2) - others)
   }, sameWakeItem)
   // The count opens the host's Subagents picker, as Down on an empty prompt does.
@@ -234,6 +240,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
     return dockShown({
       subagents: subagents(),
       shells: shells(),
+      jobs: jobs(),
       wakes: entries.filter((entry) => entry.kind === "alarm").length,
       monitors: entries.filter((entry) => entry.kind === "monitor").length,
       notices: wakes()?.notices ?? 0,
@@ -306,6 +313,14 @@ export function Dock(props: { host: Host; sessionID?: string }) {
             </span>
           </text>
         </box>
+        <Show when={Option.getOrUndefined(jobText())}>
+          {(text) => (
+            <text wrapMode="none" flexShrink={0}>
+              {sep()}
+              <span style={{ fg: theme().text.feedback.success.base }}>{text()}</span>
+            </text>
+          )}
+        </Show>
         <text wrapMode="none" truncate fg={theme().text.faint}>
           <Show when={wake()}>
             {(item) => (

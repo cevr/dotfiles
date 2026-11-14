@@ -4,9 +4,11 @@
 // so every read stays reactive inside a Solid computation.
 import type { Family } from "@dotfiles/opencode-subagents/family"
 import type { RGBA } from "@opentui/core"
+import type { Option } from "effect"
 import type { Accessor, JSX } from "solid-js"
 import type { CurrentModel, Usage } from "../chrome.ts"
 import type { Goal } from "../goal.ts"
+import type { Jobs } from "../jobs.ts"
 import type { PendingItem, WaitingPrompt } from "../pending.ts"
 import type { UpstreamReading } from "../update.ts"
 import type { ShellEntry } from "../shells.ts"
@@ -91,6 +93,14 @@ export interface Host {
   wakes(sessionID: Accessor<string | undefined>): Accessor<Wakes | undefined>
   /** Cancels one of the session's alarms or monitors, as `wake_cancel` does: why not, or undefined once it went. */
   cancelWake(sessionID: string, id: string): Promise<string | undefined>
+  /**
+   * The jobs (the wake mod's long commands) of the session the accessor
+   * names, running and recently ended, kept current while the calling
+   * component lives; none until the first reading, or with no session.
+   */
+  jobs(sessionID: Accessor<Option.Option<string>>): Accessor<Option.Option<Jobs>>
+  /** Stops one of the session's running jobs; its end letter still wakes the session: why not, or none once asked. */
+  killJob(sessionID: string, id: string): Promise<Option.Option<string>>
   /** Every session of the session's family. */
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */

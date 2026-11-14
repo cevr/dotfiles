@@ -18,6 +18,7 @@ import { duration, fit, glyph, stale, stateTone, type StateTone } from "@dotfile
 import { modelLabel } from "@dotfiles/opencode-subagents/model"
 import { live, visible, type Row as SubagentRow, type Tone as RoleTone } from "@dotfiles/opencode-subagents/subagent-row"
 import { Option } from "effect"
+import { jobElapsed, type JobEntry, jobState, runs } from "./jobs.ts"
 import { keyLabel } from "./pending.ts"
 import { lastLine, shellState, shellTitle, type ShellEntry } from "./shells.ts"
 import { lastOutput, repeat, type WakeEntry } from "./wakes.ts"
@@ -280,6 +281,18 @@ export function monitorLine(entry: WakeEntry, now: number, frame: string): Line 
 export function wakeLine(entry: WakeEntry, now: number, frame: string): Line {
   if (entry.kind === "alarm") return alarmLine(entry, now)
   return monitorLine(entry, now, frame)
+}
+
+/**
+ * A job's row: its id where a subagent's role goes, its note, its command,
+ * its state in the words a shell's row uses (`running`, `exited 2`, `killed`)
+ * and how long it has run, or ran. A running one's diamond turns.
+ */
+export function jobLine(job: JobEntry, now: number, frame: string): Line {
+  const row = { ...blank, role: job.id, roleTone: "general", name: firstLine(job.note), status: firstLine(job.command), state: jobState(job), time: jobElapsed(job, now) } satisfies Partial<Line>
+  if (runs(job)) return { ...row, glyph: frame, tone: "success" }
+  if (job.state === "exited" && Option.exists(job.exitCode, (code) => code === 0)) return { ...row, glyph: glyph("done"), tone: "muted" }
+  return { ...row, glyph: glyph("done"), tone: "error" }
 }
 
 /** A terminal as the host's Terminals tab knows it (its persistent PTY record). */

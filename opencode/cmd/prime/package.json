@@ -8,6 +8,7 @@
     "./tui": "./tui.tsx"
   },
   "dependencies": {
-    "@dotfiles/opencode-prime": "workspace:*"
+    "@dotfiles/opencode-prime": "workspace:*",
+    "@dotfiles/opencode-wake": "workspace:*"
   }
 }

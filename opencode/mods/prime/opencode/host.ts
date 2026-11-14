@@ -11,6 +11,7 @@ import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
+import { killJob, readJobs } from "./jobs.ts"
 import { openPending } from "./pending.ts"
 import { openShells, shellTail } from "./shells.ts"
 import { cancelWake, readWakes } from "./wakes.ts"
@@ -81,6 +82,8 @@ export function host(
     },
     openShells: (sessionID) => void openShells(context, sessionID),
     cancelWake: (sessionID, id) => cancelWake(context, sessionID, id),
+    jobs: (sessionID) => readJobs(context, sessionID),
+    killJob: (sessionID, id) => killJob(context, sessionID, id),
     showDetail: (title, message) => void context.ui.dialog.alert({ title, message }),
     notify: (message, tone) => context.ui.toast.show({ message, variant: tone }),
     // Priority 1, as the host's own tabs bind theirs; the tab mounts only while it is the active one.

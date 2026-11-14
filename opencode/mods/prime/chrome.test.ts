@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { dockShown, usageLabel } from "./chrome.ts"
 
-const none = { subagents: 0, shells: 0, wakes: 0, monitors: 0, notices: 0 }
+const none = { subagents: 0, shells: 0, jobs: 0, wakes: 0, monitors: 0, notices: 0 }
 
 describe("the tray's usage", () => {
   test("adds the latest turn's cache share after the context share", () => {
@@ -16,13 +16,14 @@ describe("the tray's usage", () => {
 })
 
 describe("the dock's count line", () => {
-  test("is not drawn with no subagent, shell, wake, monitor or unread notice", () => {
+  test("is not drawn with no subagent, shell, running job, wake, monitor or unread notice", () => {
     expect(dockShown(none)).toBe(false)
   })
 
   test("shows as soon as any one of them is there", () => {
     expect(dockShown({ ...none, subagents: 1 })).toBe(true)
     expect(dockShown({ ...none, shells: 1 })).toBe(true)
+    expect(dockShown({ ...none, jobs: 1 })).toBe(true)
     expect(dockShown({ ...none, wakes: 1 })).toBe(true)
     expect(dockShown({ ...none, monitors: 1 })).toBe(true)
     expect(dockShown({ ...none, notices: 1 })).toBe(true)

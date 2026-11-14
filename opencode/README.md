@@ -268,9 +268,20 @@ unread, in the success colour while any is pending (the warning colour with
 only notices); its parts drop from the right as the row narrows. It is read
 again on the wake mod's `changed` event and every 2 seconds.
 
+The job item (`1 job`, `2 jobs`, after the shells) counts the session's jobs
+(the wake mod's long commands, [Jobs](#jobs)) while any runs, in the success
+colour, and goes once none runs, as an ended shell leaves the shell count. It
+is read over the wake mod's `jobs` RPC on the same `changed` event and poll.
+
 ↓ on an empty prompt opens the host's background-work panel. After the
-host's Subagents, Shell and Terminals tabs, Prime adds Wakes and Monitors
-(through the fork's `ui.composerTab`; `tui/composer.tsx`). Prime draws the
+host's Subagents, Shell and Terminals tabs, Prime adds Wakes, Monitors and
+Jobs (through the fork's `ui.composerTab`; `tui/composer.tsx`,
+`tui/jobs.tsx`). The Jobs tab lists the session's jobs, running first, then
+those that ended in the last 30 minutes: the id, the note, the command, its
+state (`running`, `exited 2`, `killed`, `timed out`, `lost`) and how long it
+ran, with the highlighted job's last log lines under the rows; Enter shows the
+whole job, ctrl+d kills a running one (its end letter still wakes the
+session). Prime draws the
 whole panel through the fork's `session.composer.panel.tabs`, `.row` and
 `.footer` slots (`tui/panel.tsx`, the words and columns in `panel.ts`); the
 host keeps its keys, scrolling and highlight. The tab bar counts what each tab
@@ -1470,7 +1481,7 @@ into an empty composer. A permission request or a question keeps its own
 Escape, an idle session's Escape is the host's, and a second Escape for the
 prompt being taken back does nothing for 10 s but say
 `Still taking the prompt back`. Escape is layered: an open panel (the
-host's composer panel with its Subagents, Shell, Wakes and Monitors tabs, a
+host's composer panel with its Subagents, Shell, Wakes, Monitors and Jobs tabs, a
 dialog, the autocomplete) owns it and only puts itself away. A subagent's
 view opens on its Subagents picker; the first Escape puts the picker away and
 leaves the view on the subagent, still running, the prompt focused, so a
@@ -2556,7 +2567,8 @@ form, its answer wakes the role, and the orchestrator reads the notice.
 by it. Its plugin is `cmd/wake` (`server.ts`;
 Prime's dock draws the pending wakes, and its composer panel's Wakes and
 Monitors tabs list and cancel them over the `pending` and `cancel` RPCs,
-a monitor's row with its newest check's output). The server takes options: `backstop` (`"cron"`, the default, or
+a monitor's row with its newest check's output; the dock's job count and the
+Jobs tab read the session's jobs over `jobs`, and kill one over `kill`). The server takes options: `backstop` (`"cron"`, the default, or
 `"off"`, which holds the OS jobs in memory, for scenarios and tests), and
 `bun` and `opencode`, those programs by path (default the `bun` on PATH, else
 `~/.bun/bin/bun`, and `~/.local/bin/opencode`).

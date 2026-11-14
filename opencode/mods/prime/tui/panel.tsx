@@ -2,7 +2,8 @@
 // tab bar, each row of the host's Subagents, Shell and Terminals tabs, and
 // its footer, drawn into the fork's `session.composer.panel.*` slots; the
 // host keeps the panel's keys, scrolling and row highlight. The Wakes and
-// Monitors tabs (composer.tsx) draw their rows with `PanelLine` too. The
+// Monitors tabs (composer.tsx) and the Jobs tab (jobs.tsx) draw their rows
+// with `PanelLine` too. The
 // words and the columns are ../panel.ts.
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { spinner } from "@dotfiles/opencode-subagents/line"
@@ -27,6 +28,7 @@ import {
   type Line,
   type Widths,
 } from "../panel.ts"
+import { jobsOf, runningJobs } from "../jobs.ts"
 import { tabEntries } from "../wakes.ts"
 import { useNow } from "./clock.ts"
 import { useOthers } from "./family.ts"
@@ -80,15 +82,17 @@ function useWidth() {
 
 /**
  * The tab bar: each tab's name, the active one in the text colour, with how
- * many it lists beside it (subagents at work, shells running, wakes and
- * monitors pending), between faint dots; `esc` at the right. A click on a
+ * many it lists beside it (subagents at work, shells and jobs running, wakes
+ * and monitors pending), between faint dots; `esc` at the right. A click on a
  * name makes it active, on `esc` puts the panel away.
  */
 export function PanelTabs(props: { readonly host: Host; readonly input: TabsInput }) {
   const theme = () => props.host.theme()
   const others = useOthers(props.host, () => Option.some(props.input.sessionID))
   // Read only while the panel shows: the tab bar stays mounted while it is put away.
-  const wakes = props.host.wakes(() => Option.getOrUndefined(Option.liftPredicate(props.input.sessionID, () => props.input.open)))
+  const shownID = () => Option.liftPredicate(props.input.sessionID, () => props.input.open)
+  const wakes = props.host.wakes(() => Option.getOrUndefined(shownID()))
+  const jobs = props.host.jobs(shownID)
   const counts = createMemo(
     () =>
       new Map([
@@ -96,6 +100,7 @@ export function PanelTabs(props: { readonly host: Host; readonly input: TabsInpu
         ["shell", props.host.shells(props.input.sessionID)],
         ["wakes", tabEntries(wakes(), "alarm").length],
         ["monitors", tabEntries(wakes(), "monitor").length],
+        ["jobs", runningJobs(jobsOf(jobs()))],
       ]),
   )
   const { width, measure } = useWidth()

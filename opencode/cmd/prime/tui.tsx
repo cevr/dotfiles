@@ -17,6 +17,7 @@ import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { inboxOf, isWaiting } from "@dotfiles/opencode-prime/pending"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
+import { hints as jobHints, JobTab } from "@dotfiles/opencode-prime/tui/jobs"
 import { Dock, GoalLine, HintLine, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
@@ -157,6 +158,13 @@ export default Plugin.define({
         hints: () => wakeHints,
         render: (input) => <WakeTab host={h} sessionID={input.sessionID} tab={tab} close={input.close} />,
       })
+    // The Jobs tab: the session's jobs (the wake mod's long commands), running and lately ended, the highlighted one's log tail, kill.
+    context.ui.composerTab?.({
+      id: "jobs",
+      title: "Jobs",
+      hints: () => jobHints,
+      render: (input) => <JobTab host={h} sessionID={input.sessionID} close={input.close} />,
+    })
 
     context.keymap.layer(() => ({
       mode: "global",
