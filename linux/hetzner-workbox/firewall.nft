@@ -1,0 +1,24 @@
+#!/usr/sbin/nft -f
+# The workbox's public interface. exe.dev kept the VM behind its own proxy; a
+# Hetzner server sits on the internet, and the services bind 0.0.0.0 (Sideshow
+# :8228, film-lab :8229, nginx :80/:8000, Syncthing :22000). Everything but
+# Tailscale, the rescue ssh on 22 and ICMP is dropped on the way in.
+# Docker's published ports go through the forward chain, which this leaves to
+# Docker; publish them on 127.0.0.1 only.
+table inet hetzner_workbox
+delete table inet hetzner_workbox
+
+table inet hetzner_workbox {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+        iifname "tailscale0" accept
+        meta l4proto { icmp, ipv6-icmp } accept
+        # Tailscale's direct connections (it still works through DERP without).
+        udp dport 41641 accept
+        # The root ssh for the Rescue-free way back in: keys only (provision.sh).
+        tcp dport 22 accept
+    }
+}

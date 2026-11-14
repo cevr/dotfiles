@@ -1918,7 +1918,7 @@ knows no repository's commands:
 | --- | --- |
 | `rift.gate` | the fast check run before the push; required; with `rift.mergeCheck` set it never runs on a batch |
 | `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
-| `rift.mergeCheck` | set, the land lands by receipts (below): the one quick check of the merged tree (typecheck, lint of the changed files), run in the integration Rift with `RIFT_LAND_BASE` set, in place of `rift.gate` |
+| `rift.mergeCheck` | set, the land lands by receipts (below): the one quick check of the merged tree (typecheck, lint and Effect debt of the changed files), run in the integration Rift with `RIFT_LAND_BASE` set, in place of `rift.gate` |
 | `rift.focus` | with `rift.mergeCheck`, the focused gate a land runs in a Rift holding no current receipt: `{paths}` becomes the files the Rift changed since the default branch (absolute, quoted), `{threads}` a quarter of the host's cores; unset, such a Rift is not landed |
 | `rift.generated` | one value per generated file (repository-relative): its conflict is settled by writing it again, and its rewrite after every batch is committed |
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
@@ -1969,7 +1969,8 @@ made elsewhere. Either writes the receipt into the checkout and into
 `receipts/<head>.<kind>.json` beside the land logs. Here `bun run gate` by
 hand writes one too, and `bun scripts/gate.ts --merge <base>` is the merge
 check (the link, every project's typecheck, oxlint of the `.ts` files changed
-since `<base>`).
+since `<base>`, and `effect-debt.ts --check --since <base>`, the debt ratchet
+held over those files).
 
 A land's own checks hold the host's `land` lock exclusively and the `fork`
 lock shared; they never take the checks or accept lock a full gate, an

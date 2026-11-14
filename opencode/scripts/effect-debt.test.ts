@@ -172,6 +172,9 @@ describe("compare: per exact (file, rule), no credit, no headroom", () => {
     expect(parse(["--chek"])).toBe("Failure")
     expect(parse(["--root"])).toBe("Failure")
     expect(parse(["--timeout-ms", "soon"])).toBe("Failure")
+    expect(parse(["--check", "--since", "main"])).toBe("Success")
+    expect(parse(["--check", "--since"])).toBe("Failure")
+    expect(parse(["--tighten", "--since", "main"])).toBe("Failure")
   })
 })
 
@@ -620,6 +623,44 @@ describe("effect-debt --check over a real workspace", () => {
         ].join("\n")
         return ["--oxlint", fakeLinter(root, body)]
       }, "elsewhere/outside.ts: a diagnostic for a file outside the source list"),
+    TEST_TIMEOUT,
+  )
+
+  test.concurrent(
+    "--since <base> holds only the files changed since base, and those whose budget changed, to their budgets",
+    () =>
+      runScoped(
+        Effect.gen(function* () {
+          const { root, budgets } = yield* budgeted()
+          // The base is already red on a file the change leaves alone.
+          put(root, "mods/demo/old.ts", DEBT_SOURCE)
+          yield* git(root, "add", "-A")
+          yield* git(root, "commit", "-q", "-m", "base")
+          const base = (yield* git(root, "rev-parse", "HEAD")).stdout.trim()
+          expect((yield* cli(root, "--check")).stderr).toContain("over: mods/demo/old.ts")
+          // A change with no new debt passes, though the base's red stays.
+          put(root, "mods/demo/clean.ts", "export const one = 1\n")
+          yield* git(root, "add", "-A")
+          yield* git(root, "commit", "-q", "-m", "clean")
+          const clean = yield* cli(root, "--check", "--since", base)
+          expect({ code: clean.code, stderr: clean.stderr }).toEqual({ code: 0, stderr: "" })
+          expect(clean.stdout).toContain("changed since")
+          // New debt in a changed file, committed or not, and a lowered budget of an unchanged file fail; the base's red does not.
+          put(root, "cmd/demo/server.ts", `${DEBT_SOURCE}export const again = async () => 1\n`)
+          yield* git(root, "commit", "-q", "-am", "debt")
+          put(root, "mods/demo/fresh.ts", DEBT_SOURCE)
+          writePolicy(root, { ...budgets, "decider/demo.ts": { ...budgets["decider/demo.ts"], "effect/noTryCatch": 2 } })
+          const red = yield* cli(root, "--check", "--since", base)
+          expect(red.code).toBe(1)
+          expect(red.stderr).toContain("over: cmd/demo/server.ts effect/noAsyncFunction")
+          expect(red.stderr).toContain("over: mods/demo/fresh.ts effect/noTryCatch")
+          expect(red.stderr).toContain("lower: decider/demo.ts effect/noTryCatch has 1, budget 2")
+          expect(red.stderr).not.toContain("mods/demo/old.ts")
+          // An unknown base fails closed.
+          const unknown = yield* cli(root, "--check", "--since", "no-such-base")
+          expect({ code: unknown.code, said: unknown.stderr.includes("no-such-base") }).toEqual({ code: 1, said: true })
+        }),
+      ),
     TEST_TIMEOUT,
   )
 

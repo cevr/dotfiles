@@ -29,8 +29,8 @@
 // files it started at into the checkout (its Git dir's rift-receipt.json) and the host's receipts folder,
 // green or red; a land takes it instead of running the Rift's checks again (any other proof of a round
 // is written with scripts/receipt.ts). `--merge <base>` is a land's merge check (`rift.mergeCheck`): the link, every
-// project's typecheck and oxlint over the files changed since <base>, no lock and no receipt (the land
-// writes it).
+// project's typecheck, oxlint over the files changed since <base> and the debt ratchet over them
+// (`effect-debt.ts --check --since <base>`), no lock and no receipt (the land writes it).
 //
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
 //        bun scripts/gate.ts --merge <base>
@@ -160,13 +160,17 @@ const changedSince = (base: string): Promise<ReadonlyArray<string>> =>
     .text()
     .then((out) => out.split("\n").filter((file) => /\.tsx?$/.test(file) && existsSync(path.join(ROOT, file))))
 
-/** A land's merge check of the merged tree: the link, every project's typecheck, oxlint over the files changed since `base`. */
+/**
+ * A land's merge check of the merged tree: the link, every project's typecheck, oxlint over the files changed since
+ * `base`, and the Effect debt ratchet held over those files (`effect-debt.ts --check --since`), so new debt fails here.
+ */
 const mergeCheck = (base: string) =>
   linked("merge check", () => [
     changedSince(base).then((files) =>
       // oxlint given no file lints the whole folder; with none changed there is nothing to lint.
       run("lint", Arr.match(files, { onEmpty: () => ["true"], onNonEmpty: (some) => [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet", ...some] }), ENV, `${files.length} changed files`),
     ),
+    run("debt", [process.execPath, "scripts/effect-debt.ts", "--check", "--since", base], ENV, "changed files"),
     types(),
   ])
 

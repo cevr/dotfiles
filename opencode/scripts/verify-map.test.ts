@@ -2,7 +2,7 @@
 // path from the repository's root, and the head's fresh seeds.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { listed, parseFeature, swarmFrom, touched, underOpencode, undriven } from "./verify-map.ts"
+import { listed, parseFeature, swarmFrom, touched, uncovered, underOpencode, undriven, unreachableOf } from "./verify-map.ts"
 
 const FILE = [
   "# Queue",
@@ -41,6 +41,21 @@ describe("the feature map", () => {
     expect(touched([queue, guard], ["mods/queue/item.ts"]).map((feature) => feature.id)).toEqual(["queue"])
     expect(touched([queue, guard], ["sim/host.ts", "cmd/queue/server.ts"]).map((feature) => feature.id)).toEqual(["queue", "guard"])
     expect(touched([queue, guard], ["README.md"])).toEqual([])
+  })
+
+  test("a changed source file no feature's code covers is uncovered; a covered one, or one that is not source, is not", () => {
+    const queue = parseFeature("queue.md", FILE)
+    const changed = ["mods/queue/item.ts", "mods/kernel/worker/workers.ts", "mods/kernel/README.md", "cmd/queue/view.tsx", "scripts/verify.ts", "README.md"]
+    expect(uncovered([queue], changed)).toEqual(["mods/kernel/worker/workers.ts", "scripts/verify.ts"])
+    expect(uncovered([queue], ["mods/queue/item.ts"])).toEqual([])
+  })
+
+  test("a drive's unreachable lines name a chosen feature with no world suite and each uncovered changed file", () => {
+    const queue = parseFeature("queue.md", FILE)
+    const prime = parseFeature("prime.md", "# Prime\n- **Code:** `mods/prime/`")
+    const lines = unreachableOf([queue, prime], [queue, prime], ["mods/prime/panel.tsx", "mods/kernel/worker/workers.ts"])
+    expect(lines.map((line) => line.split(":")[0])).toEqual(["prime", "mods/kernel/worker/workers.ts"])
+    expect(unreachableOf([queue, prime], [queue], ["mods/queue/item.ts"])).toEqual([])
   })
 
   test("a world suite under a feature's own code that its drive skips is undriven; one under sim/ or listed is not", () => {

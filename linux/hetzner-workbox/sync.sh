@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# Copies the exe workbox to the Hetzner box over Tailscale. Run on the exe box,
+# as root (sudo), from a terminal that outlives your ssh session (hc, tmux).
+#
+#   sync.sh [--dry-run] pass N    btrfs send of every subvolume under
+#                                 HB_SYNC_SUBVOLS: pass 1 while everything runs,
+#                                 pass 2 during the pause (only what changed
+#                                 since pass 1), 3 and on if needed
+#   sync.sh [--dry-run] rest      rsync -aHAX of HB_RSYNC_PATHS (outside the
+#                                 subvolumes: MongoDB, Redis, /usr/local, the
+#                                 crontab, the Tailscale sshd host key)
+#   sync.sh activate N            on the target: puts pass N in place as @home
+#                                 and @workspaces (the old ones are kept aside);
+#                                 the target then reboots
+#   sync.sh remote ...            the target's side; sync.sh ships itself there
+#
+# --dry-run prints the GB each step would move (exe bills TX over 200 GB a
+# month at $0.05/GB) and changes nothing on either side.
+#
+# Each subvolume (the home, /workspaces, every warm source and Rift inside it)
+# is sent on its own: btrfs send does not descend into nested subvolumes. A
+# Rift is sent with its warm source as the parent (-p), so the target gets a
+# snapshot of the source plus the Rift's own changes and the two share their
+# extents as they do here. Pass N > 1 sends each subvolume against its pass
+# N-1 snapshot. The read-only snapshots live in HB_SNAPDIR, a root-only
+# directory on the same btrfs, and in .hetzner-sync on the target's top level,
+# which is mounted only while sync.sh runs there.
+#
+# Env:
+#   HB_TO            ssh destination (exedev@<new box's Tailscale IP>); "local"
+#                    runs the target side on this host (test.sh)
+#   HB_SSH_PORT      2222       HB_SSH_KEY  /home/exedev/.ssh/hetzner-sync
+#   HB_SYNC_SUBVOLS  "@home:/home/exedev @workspaces:/workspaces" (name:mount
+#                    point; /tmp is emptied at boot, so @tmp is not copied)
+#   HB_SNAPDIR       /tmp/.hetzner-sync (must be on the same btrfs)
+#   HB_RSYNC_PATHS   see below
+#   HB_TARGET_ANCHOR a path on the target's btrfs (default /workspaces)
+#   HB_TARGET_PREFIX prefix of the rsync destination (test.sh only)
+set -euo pipefail
+
+self=$(readlink -f "$0")
+remote_dir=/var/lib/hetzner-sync
+HB_TO=${HB_TO:-}
+HB_SSH_PORT=${HB_SSH_PORT:-2222}
+HB_SSH_KEY=${HB_SSH_KEY:-/home/exedev/.ssh/hetzner-sync}
+HB_SYNC_SUBVOLS=${HB_SYNC_SUBVOLS:-"@home:/home/exedev @workspaces:/workspaces"}
+HB_SNAPDIR=${HB_SNAPDIR:-/tmp/.hetzner-sync}
+HB_RSYNC_PATHS=${HB_RSYNC_PATHS:-"/var/lib/mongodb /var/lib/redis /usr/local /var/spool/cron/crontabs/exedev \
+/etc/ssh/bite-workbox-ssh-host-ed25519-key /etc/ssh/bite-workbox-ssh-host-ed25519-key.pub"}
+HB_TARGET_ANCHOR=${HB_TARGET_ANCHOR:-/workspaces}
+HB_TARGET_PREFIX=${HB_TARGET_PREFIX:-}
+# Dollars per GB of exe's TX past its 200 GB.
+tx_price=0.05
+
+say() { printf '==> %s\n' "$*" >&2; }
+die() { printf 'sync.sh: %s\n' "$*" >&2; exit 1; }
+gb() { awk -v b="$1" 'BEGIN { printf "%.2f GB", b / 1e9 }'; }
+safe() { local a; for a; do [[ $a =~ ^[A-Za-z0-9@._/:+-]+$ ]] || die "unsafe argument: $a"; done; }
+mount_source() { findmnt -n -o SOURCE -T "$1" | sed 's/\[.*//'; }
+fsroot() { findmnt -n -o FSROOT --mountpoint "$1"; }
+fs_uuid() { findmnt -n -o UUID -T "$1"; }
+# A complete received subvolume has a Received UUID.
+received() { [[ -d $1 ]] && btrfs subvolume show "$1" 2>/dev/null | awk '/Received UUID:/ { r = $3 } END { exit !(r != "" && r != "-") }'; }
+
+[[ $(id -u) == 0 ]] || die "run as root"
+
+# ---------------------------------------------------------------- target side
+remote_top=$remote_dir/top
+remote_main() {
+    local anchor=$1 action=$2
+    shift 2
+    safe "$anchor" "$action" "$@"
+    local dev
+    dev=$(mount_source "$anchor")
+    [[ $(findmnt -n -o FSTYPE -T "$anchor") == btrfs ]] || die "target $anchor is not btrfs"
+    install -d -m 700 "$remote_dir" "$remote_top"
+    # The top level, for root, while this runs.
+    mountpoint -q "$remote_top" || mount -o subvolid=5,noatime "$dev" "$remote_top"
+    local base=$remote_top/.hetzner-sync
+    [[ -d $base ]] || btrfs subvolume create "$base" >/dev/null
+    case $action in
+    have) # N: the completed subvolumes of pass N
+        local d
+        for d in "$base/$1"/*; do received "$d" && basename "$d"; done
+        true ;;
+    recv) # N uuid, stream on stdin
+        install -d "$base/$1"
+        if [[ -d $base/$1/$2 ]] && ! received "$base/$1/$2"; then
+            btrfs property set "$base/$1/$2" ro false
+            btrfs subvolume delete "$base/$1/$2" >/dev/null
+        fi
+        btrfs receive -q "$base/$1" ;;
+    manifest) # N, the manifest on stdin
+        install -d "$base/$1"
+        cat > "$base/$1.manifest" ;;
+    activate) remote_activate "$base" "$1" ;;
+    umount) umount "$remote_top" ;;
+    *) die "unknown remote action: $action" ;;
+    esac
+}
+
+remote_activate() {
+    local base=$1 n=$2 manifest=$1/$2.manifest uuid rel ro name rest dest stamp
+    [[ -f $manifest ]] || die "no manifest for pass $n: run pass $n first"
+    # Every listed subvolume must have arrived.
+    while IFS=$'\t' read -r uuid rel ro; do
+        received "$base/$n/$uuid" || die "pass $n is incomplete: $rel ($uuid) did not arrive; rerun pass $n"
+    done < "$manifest"
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    install -d "$base/old-$stamp"
+    # Anchors first, then nested subvolumes by depth: a parent's snapshot holds
+    # an empty directory where each child goes.
+    awk -F'\t' '{ s = $2; print gsub("/", "/", s) "\t" $0 }' "$manifest" | sort -n -k1,1 | cut -f2- |
+    while IFS=$'\t' read -r uuid rel ro; do
+        name=${rel%%/*}
+        rest=${rel#"$name"}
+        dest=$remote_top/$name.hetzner-new$rest
+        if [[ -z $rest ]]; then
+            [[ ! -e $dest ]] || mv "$dest" "$base/old-$stamp/$name.hetzner-new"
+        else
+            if [[ -d $dest ]]; then rmdir "$dest" 2>/dev/null || true; fi
+            [[ ! -e $dest ]] || die "$dest is in the way (not an empty directory)"
+            install -d "$(dirname "$dest")"
+        fi
+        btrfs subvolume snapshot "$base/$n/$uuid" "$dest" >/dev/null
+        [[ $ro == 1 ]] && btrfs property set "$dest" ro true
+        printf '%s\n' "$rel"
+    done > "$base/$n.activated"
+    while IFS=$'\t' read -r uuid rel ro; do
+        [[ $rel == */* ]] && continue
+        [[ ! -e $remote_top/$rel ]] || mv "$remote_top/$rel" "$base/old-$stamp/$rel"
+        mv "$remote_top/$rel.hetzner-new" "$remote_top/$rel"
+        say "activated $rel from pass $n (the old one is in .hetzner-sync/old-$stamp)"
+    done < "$manifest"
+    say "$(wc -l < "$base/$n.activated") subvolumes in place; reboot (or remount them) to use them"
+}
+
+if [[ ${1:-} == remote ]]; then
+    shift
+    remote_main "$@"
+    exit
+fi
+
+# ---------------------------------------------------------------- source side
+dry=0
+if [[ ${1:-} == --dry-run ]]; then dry=1; shift; fi
+cmd=${1:-}
+[[ -n $cmd ]] || die "usage: sync.sh [--dry-run] pass N | rest | activate N"
+
+ssh_cmd=(ssh -p "$HB_SSH_PORT" -o BatchMode=yes -o ServerAliveInterval=30
+    -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/hetzner-sync-known_hosts)
+[[ -f $HB_SSH_KEY ]] && ssh_cmd+=(-i "$HB_SSH_KEY" -o IdentitiesOnly=yes)
+remote_script=$remote_dir/sync.sh
+remote() {
+    safe "$@"
+    if [[ $HB_TO == local ]]; then
+        bash "$self" remote "$HB_TARGET_ANCHOR" "$@"
+    else
+        "${ssh_cmd[@]}" "$HB_TO" sudo -n bash "$remote_script" remote "$HB_TARGET_ANCHOR" "$@"
+    fi
+}
+ship() {
+    [[ $HB_TO == local ]] && return
+    "${ssh_cmd[@]}" "$HB_TO" "sudo -n install -d -m 700 $remote_dir && sudo -n tee $remote_script >/dev/null" < "$self"
+}
+
+# Prints "uuid<TAB>parent uuid<TAB>path from the top level<TAB>ro" for every
+# subvolume to copy, the anchors first.
+list_subvols() {
+    local pair name mp fsr ro_ids
+    local snap_rel
+    snap_rel=$(fsroot "$(findmnt -n -o TARGET -T "$HB_SNAPDIR")")${HB_SNAPDIR#"$(findmnt -n -o TARGET -T "$HB_SNAPDIR")"}
+    snap_rel=${snap_rel#/}
+    for pair in $HB_SYNC_SUBVOLS; do
+        name=${pair%%:*}
+        mp=${pair#*:}
+        fsr=$(fsroot "$mp")
+        [[ $fsr == "/$name" ]] || die "$mp is not the subvolume $name (it mounts ${fsr:-nothing})"
+        ro_ids=" $(btrfs subvolume list -a -r "$mp" | awk '{ printf "%s ", $2 }')"
+        btrfs subvolume list -a -u -q "$mp" | awk -v name="$name" -v ro="$ro_ids" -v snap="$snap_rel" '
+            {
+                for (i = 1; i < NF; i++) {
+                    if ($i == "parent_uuid") pu = $(i + 1)
+                    if ($i == "uuid") u = $(i + 1)
+                    if ($i == "path") { p = $(i + 1); for (j = i + 2; j <= NF; j++) p = p " " $j }
+                }
+                sub(/^<FS_TREE>\//, "", p)
+                if (p != name && index(p, name "/") != 1) next
+                if (snap != "" && (p == snap || index(p, snap "/") == 1)) next
+                if (p ~ /[ \t]/) { print "skipping a subvolume with a space in its path: " p > "/dev/stderr"; next }
+                print u "\t" pu "\t" p "\t" (index(ro, " " $2 " ") ? 1 : 0)
+            }' | sort -t $'\t' -k3,3
+    done
+}
+live_path() { # path from the top level -> path here
+    local rel=$1 pair name
+    for pair in $HB_SYNC_SUBVOLS; do
+        name=${pair%%:*}
+        [[ $rel == "$name" || $rel == "$name"/* ]] && { echo "${pair#*:}${rel#"$name"}"; return; }
+    done
+    die "no mount for $rel"
+}
+
+send_opts=()
+if btrfs send --help 2>&1 | grep -q -- --compressed-data; then send_opts=(--proto 2 --compressed-data); fi
+
+do_pass() {
+    local n=$1 prev=$(($1 - 1)) dir list total=0 uuid pu rel ro snap parent bytes kind
+    [[ $n =~ ^[1-9][0-9]*$ ]] || die "pass needs a number"
+    install -d -m 700 "$HB_SNAPDIR"
+    [[ $(findmnt -n -o FSTYPE -T "$HB_SNAPDIR") == btrfs ]] || die "$HB_SNAPDIR is not on btrfs"
+    local first_mp=${HB_SYNC_SUBVOLS%% *}
+    first_mp=${first_mp#*:}
+    [[ $(fs_uuid "$HB_SNAPDIR") == "$(fs_uuid "$first_mp")" ]] || die "$HB_SNAPDIR is on another btrfs than $first_mp"
+    dir=$HB_SNAPDIR/$n
+    ((dry)) && dir=$HB_SNAPDIR/$n.dry
+    install -d -m 700 "$dir"
+    list=$(list_subvols)
+    [[ -n $list ]] || die "nothing to copy"
+    printf '%s\n' "$list" | cut -f1,3,4 > "$dir.manifest"
+    # What the target already holds, by pass.
+    declare -A on_target=()
+    if ((dry)); then
+        # A dry run stays on this host: it takes the target to hold every
+        # earlier pass this host holds.
+        for uuid in $(printf '%s\n' "$list" | cut -f1); do
+            if [[ -d $HB_SNAPDIR/$prev/$uuid ]]; then on_target[$prev/$uuid]=1; fi
+        done
+    elif [[ -n $HB_TO ]]; then
+        ship
+        for p in "$prev" "$n"; do
+            ((p >= 1)) || continue
+            while read -r uuid; do on_target[$p/$uuid]=1; done < <(remote have "$p")
+        done
+    else
+        die "set HB_TO (exedev@<the new box's Tailscale IP>)"
+    fi
+    # Read-only snapshots of everything first, so one pass is one moment per subvolume.
+    while IFS=$'\t' read -r uuid pu rel ro; do
+        [[ -d $dir/$uuid ]] || btrfs subvolume snapshot -r "$(live_path "$rel")" "$dir/$uuid" >/dev/null
+    done <<<"$list"
+    # Parents before children, so a Rift can be sent against its warm source.
+    declare -A in_list=() done_=()
+    while IFS=$'\t' read -r uuid pu rel ro; do in_list[$uuid]=1; done <<<"$list"
+    local left=1 progress
+    while ((left)); do
+        left=0 progress=0
+        while IFS=$'\t' read -r uuid pu rel ro; do
+            [[ -n ${done_[$uuid]:-} ]] && continue
+            if [[ $pu != - && -n ${in_list[$pu]:-} && -z ${done_[$pu]:-} ]]; then left=1; continue; fi
+            snap=$dir/$uuid
+            parent='' kind=full
+            if [[ -n ${on_target[$prev/$uuid]:-} && -d $HB_SNAPDIR/$prev/$uuid ]]; then
+                parent=$HB_SNAPDIR/$prev/$uuid kind="since pass $prev"
+            elif [[ $pu != - && -n ${in_list[$pu]:-} ]] && { ((dry)) || [[ -n ${on_target[$n/$pu]:-} ]]; }; then
+                parent=$dir/$pu kind="from its origin"
+            elif [[ $pu != - && -n ${on_target[$prev/$pu]:-} && -d $HB_SNAPDIR/$prev/$pu ]]; then
+                parent=$HB_SNAPDIR/$prev/$pu kind="from its origin's pass $prev"
+            fi
+            if ((dry)); then
+                bytes=$(btrfs send -q --no-data ${parent:+-p "$parent"} "$snap" | btrfs receive --dump |
+                    awk '$1 == "update_extent" { for (i = 2; i <= NF; i++) if ($i ~ /^len=/) s += substr($i, 5) } END { printf "%d", s }')
+                total=$((total + bytes))
+                printf '%-60s %-28s %s\n' "$rel" "$kind" "$(gb "$bytes")"
+            elif [[ -n ${on_target[$n/$uuid]:-} ]]; then
+                say "ok: $rel is there"
+            else
+                say "send $rel ($kind)"
+                btrfs send -q "${send_opts[@]}" ${parent:+-p "$parent"} "$snap" | remote recv "$n" "$uuid"
+                on_target[$n/$uuid]=1
+            fi
+            done_[$uuid]=1
+            progress=1
+        done <<<"$list"
+        ((progress)) || die "parent loop among the subvolumes"
+    done
+    if ((dry)); then
+        printf '%-60s %-28s %s\n' "btrfs total (data before compression)" "" "$(gb "$total")"
+        printf 'At $%s/GB past exe'"'"'s 200 GB: $%s at most\n' "$tx_price" "$(awk -v b="$total" -v p="$tx_price" 'BEGIN { printf "%.2f", b / 1e9 * p }')"
+        # The dry snapshots go; a real pass takes its own.
+        while IFS=$'\t' read -r uuid pu rel ro; do btrfs subvolume delete "$dir/$uuid" >/dev/null; done <<<"$list"
+        rmdir "$dir"
+        rm -f "$dir.manifest"
+        return
+    fi
+    remote manifest "$n" < "$dir.manifest"
+    remote umount
+    say "pass $n done: $(wc -l < "$dir.manifest") subvolumes"
+}
+
+do_rest() {
+    local p dest=${HB_TO:-}
+    local args=(-aHAX --relative --delete --info=stats1)
+    local paths=()
+    for p in $HB_RSYNC_PATHS; do
+        if [[ -e $p ]]; then paths+=("$p"); else say "skip $p (absent here)"; fi
+    done
+    ((${#paths[@]})) || return 0
+    if [[ $dest == local ]]; then
+        [[ -n $HB_TARGET_PREFIX ]] || die "HB_TO=local needs HB_TARGET_PREFIX"
+        install -d "$HB_TARGET_PREFIX"
+        dest=$HB_TARGET_PREFIX/
+    elif [[ -n $dest ]]; then
+        args+=(-e "${ssh_cmd[*]}" --rsync-path="sudo -n rsync")
+        dest=$dest:$HB_TARGET_PREFIX/
+    elif ((dry)); then
+        local b
+        b=$(du -scb "${paths[@]}" | tail -n 1 | cut -f1)
+        printf '%-60s %-28s %s\n' "rest (${#paths[@]} paths)" "full, no target yet" "$(gb "$b")"
+        return
+    else
+        die "set HB_TO"
+    fi
+    ((dry)) && args+=(--dry-run)
+    say "rsync ${paths[*]}"
+    rsync "${args[@]}" "${paths[@]}" "$dest" | awk '/^Total transferred file size/ { print "rest: " $0 } /^Total bytes sent/ { print "rest: " $0 }'
+}
+
+case $cmd in
+pass) do_pass "${2:-}" ;;
+rest) do_rest ;;
+activate)
+    ((dry)) && die "activate has no dry run"
+    [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "activate needs a pass number"
+    [[ -n $HB_TO ]] || die "set HB_TO"
+    ship
+    remote activate "$2"
+    remote umount ;;
+*) die "unknown command: $cmd" ;;
+esac
