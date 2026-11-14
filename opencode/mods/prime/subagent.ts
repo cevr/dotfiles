@@ -3,6 +3,7 @@
 // how to get around, and which subagents work now.
 import type { Family } from "@dotfiles/opencode-subagents/family"
 import { worksNow } from "@dotfiles/opencode-subagents/works"
+import { Option } from "effect"
 import type { ToolPart } from "./session.ts"
 
 /** A session as navigation reads it: its id, its parent, its title, when it was made. */
@@ -83,6 +84,19 @@ export function neighbour(
 export function navigationHint(input: { readonly child: boolean; readonly others: number }): string {
   if (input.child) return input.others > 0 ? "↑ back to parent · ←/→ other subagents" : "↑ back to parent"
   return input.others > 0 ? "↓ subagents" : ""
+}
+
+/**
+ * Whether an arrow pressed in a subagent's view moves among its family (↑ to
+ * the parent, as Escape does there; ←/→ to the other running subagents)
+ * instead of reaching the prompt: only while the prompt is empty (`draft`,
+ * none with no editor focused), where the prompt's own ↑ would walk the
+ * history and ←/→ move nothing. ↑ also stands aside while prompts wait in the
+ * subagent's inbox, which ↑ takes back (cmd/escape).
+ */
+export function arrowMoves(key: "up" | "left" | "right", input: { readonly draft: Option.Option<string>; readonly waiting: number }): boolean {
+  if (Option.exists(input.draft, (text) => text !== "")) return false
+  return key !== "up" || input.waiting === 0
 }
 
 /** The top bar's title: a subagent's own title behind its parent's (`three workers › Fix CSV quoting`), so it reads where it sits. */

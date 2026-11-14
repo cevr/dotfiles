@@ -1,8 +1,9 @@
 // tests/escape-subagent.test.ts's names on the simulated TUI (sim-tui/), each
 // at its first SEEDS seeds: the fork's real TUI in this process with Prime and
 // the escape plugin loaded by path, in front of the server double, on a
-// virtual clock. Escape in a subagent's view closes its picker first, then
-// goes back to the parent, never interrupting. scenarios/escape-subagent.ts
+// virtual clock. A subagent's view opens on its prompt, its picker closed
+// (Prime's layout), and Escape there goes back to the parent, never
+// interrupting. scenarios/escape-subagent.ts
 // step for step: the parent starts one background worker, whose answers stall
 // 20 s after their first words (the double holds them; the test ends each
 // stall 20 s of virtual time after it began, as the real model's pause does).
@@ -31,7 +32,7 @@ const NOW = "Stop and ship the fix now."
 const SHIPPED = "Shipped the fix."
 /** How long each stalled answer stalls after its first words: past every press made while it stalls. */
 const STALL = 20_000
-const NAMES = ["picker", "dismissed", "typed", "steered", "parent", "parent-steered", "back", "drafted", "sent", "answered"] as const
+const NAMES = ["entered", "typed", "steered", "parent", "parent-steered", "back", "drafted", "sent", "answered"] as const
 type Name = (typeof NAMES)[number]
 
 /** The picker's header row: the host's composer panel, its Subagents tab first. */
@@ -82,11 +83,9 @@ const play = (seed: number) => {
       yield* tui.press({ name: "down" })
       yield* tui.until("root-picker", listed)
       yield* tui.press({ name: "enter" })
-      yield* tui.until("picker", (frame) => has(WORKING)(frame) && has("Subagents")(frame))
-      yield* save("picker")
-      yield* tui.press({ name: "escape" })
+      yield* tui.until("entered", (frame) => has(WORKING)(frame) && has("back to parent")(frame))
       yield* tui.advance(1_500)
-      yield* save("dismissed")
+      yield* save("entered")
       yield* tui.type(STEER)
       yield* tui.until("typed", has(STEER))
       yield* save("typed")
@@ -108,11 +107,7 @@ const play = (seed: number) => {
       yield* tui.press({ name: "down" })
       yield* tui.until("back-picker", listed)
       yield* tui.press({ name: "enter" })
-      yield* tui.until("back", (frame) => has(STEERED)(frame) && !has(ASK)(frame))
-      if (isPicker(tui.text())) {
-        yield* tui.press({ name: "escape" })
-        yield* tui.until("back-dismissed", (frame) => !isPicker(frame))
-      }
+      yield* tui.until("back", (frame) => has(STEERED)(frame) && !has(ASK)(frame) && !isPicker(frame))
       yield* save("back")
       yield* tui.type(NOW)
       yield* tui.until("drafted", has(NOW))
@@ -125,8 +120,7 @@ const play = (seed: number) => {
       yield* save("answered")
       const shown = (name: Name) => frames.get(name) ?? []
       const all: Record<Name, ReadonlyArray<string>> = {
-        picker: shown("picker"),
-        dismissed: shown("dismissed"),
+        entered: shown("entered"),
         typed: shown("typed"),
         steered: shown("steered"),
         parent: shown("parent"),
@@ -154,21 +148,13 @@ const scenario = (seed: number) =>
 const composer = (frame: ReadonlyArray<string>) => frame[composerRow(frame)] ?? ""
 const joined = (frame: ReadonlyArray<string>) => frame.join("\n")
 
-seeded("the subagent's view opens on its picker", ({ seed, expect }) =>
+seeded("the subagent's view opens on its prompt, its picker closed, the subagent running, and the prompt takes what is typed", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { frames, golden } = yield* scenario(seed)
     expect(golden).toEqual([])
-    expect(isPicker(frames.picker)).toBe(true)
-    expect(joined(frames.picker)).toContain("Reading the parser")
-  }),
-)
-
-seeded("the first Escape puts the picker away, the subagent still running, and the prompt takes what is typed", ({ seed, expect }) =>
-  Effect.gen(function* () {
-    const { frames } = yield* scenario(seed)
-    expect(isPicker(frames.dismissed)).toBe(false)
-    expect(joined(frames.dismissed)).toContain("Reading the parser")
-    expect(joined(frames.dismissed)).not.toContain("Interrupted")
+    expect(isPicker(frames.entered)).toBe(false)
+    expect(joined(frames.entered)).toContain("Reading the parser")
+    expect(joined(frames.entered)).not.toContain("Interrupted")
     expect(composer(frames.typed)).toContain("Check the cents rounding too.")
   }),
 )
@@ -181,7 +167,7 @@ seeded("a message sent from the subagent's prompt waits for it, the subagent sti
   }),
 )
 
-seeded("the next Escape, nothing open, shows the parent's view, the subagent still running", ({ seed, expect }) =>
+seeded("Escape, nothing open, shows the parent's view, the subagent still running", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { frames } = yield* scenario(seed)
     expect(joined(frames.parent)).toContain(ASK)

@@ -1,9 +1,9 @@
 // accept: deep (66.9 s alone on a quiet host: 1-minute load 5.3–7.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long; the gate runs its names simulated, cmd/escape/escape-subagent.sim.test.tsx)
 // Runs scenarios/escape-subagent.ts with the Prime look and the escape plugin
-// against an OpenCode checkout, and asserts that Escape is layered in a running
-// subagent's view: the first press only puts its Subagents picker away (the
-// subagent keeps running, the prompt has the keyboard), a message sent from
-// that prompt is the subagent's, and the next press, nothing open, goes back
+// against an OpenCode checkout, and asserts that a running subagent's view
+// opens on its prompt, its Subagents picker closed (the subagent keeps running,
+// the prompt has the keyboard), a message sent from that prompt is the
+// subagent's, and Escape, nothing open, goes back
 // to the parent's view and never interrupts the subagent: its turn runs to its
 // end and the message reaches it then, the parent on screen. Ctrl+Enter in the
 // subagent's view is what interrupts it, and sends at once. Needs OPENCODE_DEV,
@@ -33,7 +33,7 @@ const requests = () => frame("requests").trim().split("\n")
 /** The parent's own prompt, which only its view shows. */
 const ASK = "Fix the money parsing in a worker."
 
-describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, then goes back to the parent, never interrupting (OPENCODE_DEV)", () => {
+describe.skipIf(!fork)("a subagent's view opens on its prompt, and Escape there goes back to the parent, never interrupting (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "escape-subagent-")
   beforeAll(...kept.setup(async () => {
     const out = kept.dir("escape-subagent-")
@@ -48,15 +48,10 @@ describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, the
     for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
   }, 300_000))
 
-  test("the subagent's view opens on its picker", kept.test(() => {
-    expect(picker("picker")).toBe(true)
-    expect(frame("picker")).toContain("Reading the parser")
-  }))
-
-  test("the first Escape puts the picker away, the subagent still running, and the prompt takes what is typed", kept.test(() => {
-    expect(picker("dismissed")).toBe(false)
-    expect(frame("dismissed")).toContain("Reading the parser")
-    expect(frame("dismissed")).not.toContain("Interrupted")
+  test("the subagent's view opens on its prompt, its picker closed, the subagent running, and the prompt takes what is typed", kept.test(() => {
+    expect(picker("entered")).toBe(false)
+    expect(frame("entered")).toContain("Reading the parser")
+    expect(frame("entered")).not.toContain("Interrupted")
     expect(composer("typed")).toContain("Check the cents rounding too.")
   }))
 
@@ -65,7 +60,7 @@ describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, the
     expect(composer("steered")).not.toContain("Check the cents rounding too.")
   }))
 
-  test("the next Escape, nothing open, shows the parent's view, the subagent still running", kept.test(() => {
+  test("Escape, nothing open, shows the parent's view, the subagent still running", kept.test(() => {
     expect(frame("parent")).toContain(ASK)
     expect(frame("parent")).toContain("The worker is on it.")
     // A subagent's view says ↑ goes back to its parent; the parent's does not.
