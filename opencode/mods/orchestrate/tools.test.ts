@@ -43,6 +43,7 @@ import {
   STEP_ORDER,
   statusAnswer,
   UNDECIDED,
+  unheldRefusal,
   verifyAnswer,
 } from "./tools.ts"
 
@@ -385,6 +386,23 @@ describe("the lane name rule", () => {
       // A unit alone always resolves to its lane by the name rule.
       const alone = units.slice(0, 1)
       for (const unit of alone) expect(riftOfUnit(unit, lanes.slice(0, 1), implementing(alone, false))).toEqual({ found: { unit, path: laneOf(unit).path } })
+    }
+  })
+
+  test("F2: a land naming { path, unit } of a unit the machine does not hold is refused, by either tool's input; one it holds, or a bare path, is not", () => {
+    for (const seed of SEEDS) {
+      const random = rng(seed)
+      const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 4) }, () => unitName(random)))]
+      const held = units.filter(() => random() < 0.6)
+      const state = implementing(held, random() < 0.5)
+      const rifts = units.map((unit) => ({ rift: laneOf(unit).path, unit }))
+      const refused = unheldRefusal(rifts, state)
+      const first = units.find((unit) => !held.includes(unit))
+      expect({ seed, refused: Option.getOrUndefined(refused) }).toEqual({
+        seed,
+        refused: first === undefined ? undefined : expect.stringContaining(`the machine holds no unit ${first}:`),
+      })
+      expect({ seed, bare: Option.isNone(unheldRefusal(units.map((unit) => laneOf(unit).path), state)) }).toEqual({ seed, bare: true })
     }
   })
 

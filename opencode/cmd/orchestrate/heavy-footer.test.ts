@@ -81,9 +81,10 @@ interface EditedTool {
   output?: object
 }
 
-/** What a tool transform is handed: the editor's `update`. */
+/** What a tool transform is handed: the editor's `update`, and its `add` (the `orchestrate` tool's registration). */
 interface ToolEditor {
   readonly update: (id: string, edit: (tool: EditedTool) => void) => void
+  readonly add: (tool: unknown) => void
 }
 
 /** The outside systems' state for one test. */
@@ -186,6 +187,7 @@ const start = (world: World) =>
         update: (id, edit) => {
           if (id === "subagent") edit(subagent)
         },
+        add: () => {},
       })
 
     const run = (name: string, event: HookEvent) => Effect.forEach(hooks.get(name) || [], (hook) => hook(event), { discard: true })

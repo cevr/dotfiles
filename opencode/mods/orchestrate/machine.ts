@@ -29,6 +29,15 @@
 // state, unless landed, and releases the findings folded into it and its own
 // folded nowhere else: none of them holds a land since.
 //
+// A land that names any unit the machine holds is checked, whatever that
+// unit's state: one landed already, or covered by a verifier, waits for its
+// verdict like the rest. Its record names every unit the land took that is on
+// main now: a ready or ended one is `landed`; one whose next round started
+// while it landed, or that a verifier started before it landed covers, or
+// that the root dropped meanwhile, or that a `{ path, unit }` entry names and
+// the machine no longer holds, joins `unverified`, so the next land still
+// waits for a verdict over what it pushed.
+//
 // The rules, in the order they are checked:
 //
 //   VerifierPerUnit  a verifier whose name is not `batch-<k>`, while the root has any unit;
@@ -464,6 +473,29 @@ const named = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyA
   return unitsIn(state, "ready", "ended").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all, recorded) === unit))
 }
 
+/** Every unit the machine holds that a land's `rifts` name, in any state: a land naming one is the machine's to check. */
+const heldOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
+  const all = Object.keys(state.units)
+  const recorded = riftsIn(state)
+  return all.filter((unit) => rifts.some((rift) => unitOfEntry(rift, all, recorded) === unit))
+}
+
+/**
+ * The units a pushed land's record names: those it lands (`named`), and each that is on main now with no verdict
+ * over what it pushed, whatever the ledger holds of it since the check: one whose next round started while it landed
+ * (`implement`), one a verifier started over before it landed (`verify`: its start stood in for a land by hand), and
+ * one a `{ path, unit }` entry names that the machine no longer holds (dropped, or its stand-in verdict came, while
+ * it landed). One `landed` already is recorded once.
+ */
+const recordedOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
+  const restarted = heldOf(state, rifts).filter((unit) => state.units[unit]?.state === "implement" || state.units[unit]?.state === "verify")
+  const gone = rifts.flatMap((rift) => {
+    const unit = entryOf(rift).unit
+    return unit === undefined || state.units[unit] !== undefined ? [] : [unit]
+  })
+  return [...new Set([...named(state, rifts), ...restarted, ...gone])]
+}
+
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
 export const dueOf = (state: MachineState, now: number, cadence: Cadence): string | undefined => {
   const ready = unitsIn(state, "ready")
@@ -630,8 +662,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           return state.unresolved?.[command.batch] === undefined ? [] : [ReportResolved.make({ batch: command.batch, findings: command.findings, at: now })]
         case "Land": {
           const lands = named(state, command.rifts)
-          // A land of nothing the machine holds is none of its business.
-          if (lands.length === 0) return []
+          // A land of nothing the machine holds is none of its business; one naming a unit it holds is, whatever
+          // that unit's state (one landed already lands again only past its verdict).
+          if (heldOf(state, command.rifts).length === 0) return []
           const rules: Array<Rule> = []
           if (verdictPending(state)) rules.push("VerdictPending")
           if (unfoldedOf(state, lands).length > 0 || unresolvedOf(state).length > 0) rules.push("FindingUnfolded")
@@ -640,7 +673,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           return yield* guard(rules, command.departs)
         }
         case "Landed": {
-          const units = named(state, command.rifts)
+          const units = recordedOf(state, command.rifts)
           return units.length === 0 ? [] : [BatchLanded.make({ units, at: now })]
         }
         case "Spawned": {
@@ -685,7 +718,12 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         const unverified = new Set(state.unverified ?? [])
         for (const name of event.units) {
           const unit = units[name]
-          if (unit === undefined) continue
+          // Dropped, on its next round, or under a verifier started before it landed, while it landed: its slot stays as
+          // it is, and the land waits for a verdict over what it pushed.
+          if (unit === undefined || unit.state === "implement" || unit.state === "verify") {
+            if (unit?.direct !== true) unverified.add(name)
+            continue
+          }
           if (unit.direct) delete units[name]
           else {
             const { said: _, ...rest } = unit

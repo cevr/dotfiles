@@ -115,6 +115,16 @@ module machine {
   /** machine.ts `named`: the units a land's Rifts name that it lands (ready or ended). */
   pure def named(s: Machine, rifts: Set[str]): Set[str] = rifts.intersect(unitsIn(s, Set("ready", "ended")))
 
+  /** machine.ts `heldOf`: every unit the machine holds that a land's Rifts name, in any state. */
+  pure def heldOf(s: Machine, rifts: Set[str]): Set[str] = rifts.intersect(s.units.keys())
+
+  /**
+   * machine.ts `recordedOf`: what a pushed land's record names, the units it lands and those on main with no
+   * verdict whose next round started (`implement`), or that the machine no longer holds, while it landed.
+   */
+  pure def recordedOf(s: Machine, rifts: Set[str]): Set[str] =
+    named(s, rifts).union(rifts.filter(u => not(s.units.keys().contains(u)) or Set("implement", "verify").contains(stateOf(s, u))))
+
   /** machine.ts `holdsNoLand` (`riding` or `endedWith`; `settled` never holds: every ended unit here said why). */
   pure def holdsNoLand(s: Machine, f: Finding): bool = f.into != "" and Set("implement", "ended").contains(stateOf(s, f.into)) // mutant: holds-no-land
 
@@ -132,7 +142,7 @@ module machine {
   /** machine.ts `decide` for `Land`: the first rule it breaks, "" when it passes. */
   pure def landRule(s: Machine, rifts: Set[str]): str = {
     val lands = named(s, rifts)
-    if (lands == Set()) ""
+    if (heldOf(s, rifts) == Set()) ""
     else if (verdictPending(s)) "VerdictPending" // mutant: verdict-pending
     else if (unfoldedOf(s, lands) != Set() or s.unresolved != Set()) "FindingUnfolded" // mutant: finding-unfolded
     else if (unitsIn(s, Set("ready")).exists(u => not(lands.contains(u)))) "LandPartial"
@@ -245,17 +255,21 @@ module machine {
     }
   }
 
-  /** `Landed`: `BatchLanded` of the named units, carrying the findings folded into them. */
+  /**
+   * `Landed`: `BatchLanded` of the recorded units, carrying the findings folded into them; the named ones are
+   * `landed`, the rest keep their slot (or have none) and wait in `unverified`.
+   */
   pure def landed(s: Machine, rifts: Set[str]): Machine = {
     val lands = named(s, rifts)
-    if (lands == Set()) s
+    val recorded = recordedOf(s, rifts)
+    if (recorded == Set()) s
     else {
-      val carry = s.findings.keys().filter(k => lands.contains(s.findings.get(k).into))
+      val carry = s.findings.keys().filter(k => recorded.contains(s.findings.get(k).into))
       val gone = s.findings.keys().filter(k => s.findings.get(k).into == "")
       {
         ...s,
         units: s.units.keys().mapBy(u => if (lands.contains(u)) { state: "landed", said: "" } else s.units.get(u)),
-        unverified: s.unverified.union(lands),
+        unverified: s.unverified.union(recorded),
         findings: without(s.findings, carry.union(gone)),
         carried: carry.fold(s.carried, (acc, k) => acc.put(k, s.findings.get(k))),
         unresolved: Set(),
@@ -449,9 +463,9 @@ module machine {
    * the tool. Unless `free`, the root lands only units whose implementor handed back (`ready`, or stopped: the
    * land is the root's word that it is ready). A free root also lands a Rift no implementor of the run worked
    * in, a unit still implementing, one landed already, or one it dropped: finding F2 (`stepLandAny`).
-   * With `tool`, the land is the `orchestrate` tool's by unit names: before the machine decides it, the tool
-   * refuses a unit the machine does not hold (mods/orchestrate/tools.ts `riftOfUnit`); the `rift` tool's land,
-   * still an alias, and a land naming `{ path, unit }` skip that refusal.
+   * With `tool`, the land is checked by the plugin before the machine decides it: a `{ path, unit }` of a unit the
+   * machine does not hold is refused (mods/orchestrate/tools.ts `unheldRefusal`, in the land's execute.before hook,
+   * for the `orchestrate` tool and the `rift` tool alike).
    */
   action landCalled(free: bool, tool: bool): bool = {
     nondet rifts = UNITS.powerset().exclude(Set(Set())).oneOf()
