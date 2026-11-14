@@ -12,7 +12,9 @@
  *
  * Modes: no flag prints counts per rule and area; `--check` enforces; `--counts` prints the
  * per-file counts as JSON; `--measure` prints the unmodified preset's counts (no test
- * classification, no host exemptions); `--tighten` lowers budgets to the current counts and
+ * classification, no host exemptions); `--check --since <base>` scans everything but holds only the files changed since
+ * `base` (and those whose budget changed) to their budgets, so a merge check fails on the debt its change brings and
+ * not on a base already red; `--tighten` lowers budgets to the current counts and
  * never raises one; `--bootstrap` writes the first policy, only when none exists, with
  * budgets for files tracked at HEAD. `--root`, `--oxlint` and `--timeout-ms` point it at
  * another workspace, linter or deadline. `--merge <base> <ours> <theirs> <path>` is git's
@@ -505,11 +507,13 @@ export interface Options {
   readonly root: string
   readonly oxlint: string
   readonly timeoutMs: number
+  /** `--check --since <base>`: hold only the files changed since `base`, and those whose budget changed, to their budgets. */
+  readonly since: Option.Option<string>
 }
 
 const MODES = ["check", "counts", "measure", "tighten", "bootstrap"] as const
-const VALUED = ["--root", "--oxlint", "--timeout-ms"]
-const USAGE = "usage: bun scripts/effect-debt.ts [--check|--counts|--measure|--tighten|--bootstrap] [--root dir] [--oxlint bin] [--timeout-ms n]"
+const VALUED = ["--root", "--oxlint", "--timeout-ms", "--since"]
+const USAGE = "usage: bun scripts/effect-debt.ts [--check [--since base]|--counts|--measure|--tighten|--bootstrap] [--root dir] [--oxlint bin] [--timeout-ms n]"
 
 const valueOf = (argv: ReadonlyArray<string>, flag: string) => {
   const index = argv.indexOf(flag)
@@ -525,13 +529,16 @@ export const parseOptions = (argv: ReadonlyArray<string>, cwd: string): Effect.E
   const unknown = Arr.filter(argv, (arg) => !known.has(arg) && !values.has(arg))
   const missing = Arr.filter(VALUED, (flag) => argv.includes(flag) && Option.isNone(valueOf(argv, flag)))
   const timeoutMs = Number(Option.getOrElse(valueOf(argv, "--timeout-ms"), () => "120000"))
-  if (unknown.length + missing.length > 0 || modes.length > 1 || !(timeoutMs > 0)) return fail(`${USAGE}; got ${argv.join(" ")}`)
+  const since = valueOf(argv, "--since")
+  const mode = Option.getOrElse(Arr.head(modes), () => "report" as const)
+  if (unknown.length + missing.length > 0 || modes.length > 1 || !(timeoutMs > 0) || (Option.isSome(since) && mode !== "check")) return fail(`${USAGE}; got ${argv.join(" ")}`)
   const root = path.resolve(cwd, Option.getOrElse(valueOf(argv, "--root"), () => "."))
   const options: Options = {
-    mode: Option.getOrElse(Arr.head(modes), () => "report" as const),
+    mode,
     root,
     oxlint: Option.getOrElse(valueOf(argv, "--oxlint"), () => path.join(root, "node_modules/.bin/oxlint")),
     timeoutMs,
+    since,
   }
   return Effect.succeed(options)
 }
@@ -612,11 +619,51 @@ const verdictProblems = (verdict: Verdict) => [
   ...Arr.map(verdict.breaches, describeBreach),
 ]
 
+const lines = (text: string) => Arr.filter(text.split("\n"), (line) => line.length > 0)
+
+/** The files whose budget entry differs between two policies, either side's absence included. */
+export const budgetChanges = (before: Policy["budgets"], after: Policy["budgets"]) => {
+  const entry = (budgets: Policy["budgets"], file: string) => JSON.stringify(Arr.sort(Object.entries(budgets[file] ?? {}), Order.mapInput(Order.String, ([rule]: readonly [string, number]) => rule)))
+  return Arr.filter(Arr.dedupe([...Object.keys(before), ...Object.keys(after)]), (file) => entry(before, file) !== entry(after, file))
+}
+
+/**
+ * What `--since <base>` holds to its budgets: each file changed between `base` and the working tree (deleted ones too),
+ * each untracked file, and each file whose budget the policy changed since `base` (every budgeted file when `base` has no
+ * readable policy). An unknown base fails.
+ */
+const scopeSince = Effect.fn("EffectDebt.scopeSince")(function* (root: string, base: string, policy: Policy, timeoutMs: number) {
+  const diff = yield* spawn(["git", "diff", "--name-only", "--relative", base, "--"], root, timeoutMs)
+  if (diff.code !== 0) return yield* fail(`git diff against ${base} failed in ${root}: ${diff.stderr.trim()}`)
+  const untracked = yield* spawn(["git", "ls-files", "--others", "--exclude-standard"], root, timeoutMs)
+  if (untracked.code !== 0) return yield* fail(`git ls-files failed in ${root}: ${untracked.stderr.trim()}`)
+  const shown = yield* spawn(["git", "show", `${base}:./${POLICY}`], root, timeoutMs)
+  const before = yield* Effect.match(decode(Policy, `${POLICY} at ${base}`, "ignore")(shown.stdout), {
+    onFailure: () => Option.none<Policy["budgets"]>(),
+    onSuccess: (decoded) => Option.some(decoded.budgets),
+  })
+  const budgeted = Option.match(Option.filter(before, () => shown.code === 0), {
+    onNone: () => Object.keys(policy.budgets),
+    onSome: (budgets) => budgetChanges(budgets, policy.budgets),
+  })
+  return new Set([...lines(diff.stdout), ...lines(untracked.stdout), ...budgeted])
+})
+
 const check = Effect.fn("EffectDebt.check")(function* (options: Options) {
   const { policy, files, counts } = yield* inventory(options)
-  const problems = verdictProblems(compare(budgetsOf(policy), counts, knownRules(policy)))
+  const scope = yield* Option.match(options.since, {
+    onNone: () => Effect.succeed(Option.none<ReadonlySet<string>>()),
+    onSome: (base) => Effect.map(scopeSince(options.root, base, policy, options.timeoutMs), Option.some),
+  })
+  const verdict = compare(budgetsOf(policy), counts, knownRules(policy))
+  const breaches = Option.match(scope, { onNone: () => verdict.breaches, onSome: (held) => Arr.filter(verdict.breaches, (breach) => held.has(breach.file)) })
+  const problems = verdictProblems({ ...verdict, breaches })
   if (problems.length > 0) return yield* fail(...problems, `${problems.length} problems against ${POLICY}`)
-  yield* Console.log(`effect-debt: ${total(counts)} diagnostics in ${files.length} source files, each (file, rule) at its budget in ${POLICY}`)
+  const held = Option.match(Option.product(scope, options.since), {
+    onNone: () => "",
+    onSome: ([files, base]) => ` (the ${files.size} files changed since ${base})`,
+  })
+  yield* Console.log(`effect-debt: ${total(counts)} diagnostics in ${files.length} source files, each (file, rule)${held} at its budget in ${POLICY}`)
 })
 
 const report = Effect.fn("EffectDebt.report")(function* (options: Options) {
