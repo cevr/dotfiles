@@ -61,6 +61,19 @@ describe("the description", () => {
     }
   })
 
+  test("in either mode, says to start independent calls together, with an example, and that kernel calls run one at a time", () => {
+    const limits = { timeoutMs: 30_000, viewChars: 8_000 }
+    for (const text of [description(limits), description(limits, [])]) {
+      expect(text).toContain("start every call that doesn't need another's result, then await them together")
+      expect(text).toContain("`tools.all([...])`")
+      expect(text).toContain("`tools.map(items, fn, { concurrency? })` settle each as `{ ok, value | error }`")
+      expect(text).toContain("Past 32 in flight a call waits its turn. Example, one cell:\nconst [status, log] = await Promise.all([")
+      expect(text).toContain("Kernel calls in one session run one at a time")
+      expect(text).not.toContain("chain")
+    }
+    expect(description(limits)).toContain("to run several tool calls in one step, in parallel where they don't depend on each other")
+  })
+
   test("in either mode, says attach shows images and what a tool's image is to the code", () => {
     const limits = { timeoutMs: 30_000, viewChars: 8_000 }
     for (const text of [description(limits), description(limits, [])]) {
