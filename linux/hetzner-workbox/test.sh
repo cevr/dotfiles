@@ -233,8 +233,18 @@ grep -q 'At \$0.05/GB' "$work/dry-1.log" || fail "dry run prints no cost line"
 [[ ! -e $S/tmp/.hetzner-sync/1.dry && ! -e $S/tmp/.hetzner-sync/1 ]] || fail "dry run left snapshots"
 pass "dry run: $total GB for pass 1, the Rift as a delta of its source, nothing left behind"
 
+# What a real pass stores on the target is what it sent: a Rift sent in full
+# instead of against its origin adds its 48 MiB again, a pass 2 sent in full
+# adds everything again. Data use is logical (raid1 not doubled), committed first.
+data_used() { btrfs filesystem sync "$T/workspaces"; btrfs filesystem df -b "$T/workspaces" | awk -F'used=' '/^Data/ { print $2 + 0 }'; }
+mib() { echo $(($1 >> 20)); }
+used0=$(data_used)
 bash "$here/sync.sh" pass 1 > "$work/pass-1.log" 2>&1 || { cat "$work/pass-1.log"; fail "pass 1"; }
-pass "pass 1"
+grep -E '^==> send .*feat \(from its origin\)' "$work/pass-1.log" >/dev/null || { cat "$work/pass-1.log"; fail "pass 1 did not send the Rift against its origin"; }
+grown1=$(($(data_used) - used0))
+# Two 48 MiB files of random data (the home's reflink and the Rifts share them) and a few small ones.
+((grown1 > 90 << 20 && grown1 < 110 << 20)) || { cat "$work/pass-1.log"; fail "pass 1 stored $(mib "$grown1") MiB on the target, want about 96 (each 48 MiB file once)"; }
+pass "pass 1: $(mib "$grown1") MiB stored, each 48 MiB file once"
 # Changes between the passes: an edit, a deletion, a new Rift, a new file.
 echo 'export const a = 3' > "$S/workspaces/.rifts/bite/feat/index.ts"
 rm "$S/workspaces/bite/index.ts"
@@ -246,10 +256,15 @@ total2=$(awk '/^btrfs total/ { print $(NF - 1) }' "$work/dry-2.log")
 awk -v t="$total2" 'BEGIN { exit !(t < 0.005) }' || { cat "$work/dry-2.log"; fail "dry run pass 2 counts $total2 GB, want only the changes"; }
 grep -E 'since pass 1' "$work/dry-2.log" >/dev/null || fail "pass 2 is not incremental"
 pass "dry run pass 2: $total2 GB, incremental"
+used1=$(data_used)
 bash "$here/sync.sh" pass 2 > "$work/pass-2.log" 2>&1 || { cat "$work/pass-2.log"; fail "pass 2"; }
+grep '^==> send' "$work/pass-2.log" | grep -v -E '\((since pass 1|from its origin.*)\)$' && { cat "$work/pass-2.log"; fail "pass 2 sent a subvolume in full"; }
+grown2=$(($(data_used) - used1))
+# The 1 MiB new file and small edits; a full resend would add about 96 MiB again.
+((grown2 < 8 << 20)) || { cat "$work/pass-2.log"; fail "pass 2 stored $(mib "$grown2") MiB on the target, want only the changes (about 1)"; }
 bash "$here/sync.sh" pass 2 > "$work/pass-2b.log" 2>&1 || { cat "$work/pass-2b.log"; fail "pass 2 rerun"; }
 grep -q '^==> send' "$work/pass-2b.log" && fail "pass 2's rerun sent again"
-pass "pass 2, and its rerun sends nothing"
+pass "pass 2: $(mib "$grown2") MiB stored, every subvolume incremental, and its rerun sends nothing"
 bash "$here/sync.sh" rest > "$work/rest.log" 2>&1 || { cat "$work/rest.log"; fail "rest"; }
 [[ $(cat "$work/rest-target$S/var/lib/mongodb/WiredTiger") == wired && -f $work/rest-target$S/usr/local/bin/go ]] || fail "rest did not copy"
 pass "rest: rsync of the paths outside the subvolumes"
@@ -276,11 +291,22 @@ done
 [[ $(btrfs property get -ts "$T/workspaces/.rifts/bite/base-ro" ro) == ro=true ]] || fail "read-only snapshot came back writable"
 [[ $(btrfs property get -ts "$T/workspaces/.rifts/bite/feat" ro) == ro=false ]] || fail "a Rift came back read-only"
 pass "nested subvolumes are subvolumes again; read-only stays read-only, Rifts stay writable"
-shared=$(btrfs filesystem du -s --raw "$T/workspaces/bite" "$T/workspaces/.rifts/bite/feat" | awk 'NR > 1 { s += $3 } END { print s + 0 }')
-((shared > 40 << 20)) || fail "the Rift shares $shared bytes with its source, want the 48 MiB file"
-shared_home=$(btrfs filesystem du -s --raw "$h/.bun/install/cache/big" "$h/Developer/personal/app/big" | awk 'NR > 1 { s += $3 } END { print s + 0 }')
-((shared_home > 40 << 20)) || fail "the reflinked pair shares $shared_home bytes"
-pass "Rifts share extents with their source, reflinks stay reflinks"
+# Sharing with the source itself, not with any copy: the same physical extents.
+# (btrfs filesystem du counts data shared with anything, and the received pass
+# snapshots share with the activated copies whatever the send did.)
+extents() { filefrag -v "$1" | awk '$1 ~ /^[0-9]+:$/ { print $4 }'; }
+same_extents() { # a b -> both files on the same, nonempty list of physical extents
+    local x y
+    x=$(extents "$1") y=$(extents "$2")
+    [[ -n $x && $x == "$y" ]]
+}
+w=$T/workspaces
+for r in .rifts/bite/feat .rifts/bite/feat2 .rifts/bite/base-ro; do
+    same_extents "$w/bite/node_modules.bin" "$w/$r/node_modules.bin" ||
+        { filefrag -v "$w/bite/node_modules.bin" "$w/$r/node_modules.bin"; fail "$r holds its own copy of its source's data"; }
+done
+same_extents "$h/.bun/install/cache/big" "$h/Developer/personal/app/big" || fail "the reflinked pair came apart"
+pass "Rifts share their source's extents, reflinks stay reflinks"
 
 # ------------------------------------------------------------------ 5
 step "backup.sh"
