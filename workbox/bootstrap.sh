@@ -207,18 +207,22 @@ if [ ! -f /etc/ssh/bite-workbox-ssh-host-ed25519-key ]; then
   sudo ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/bite-workbox-ssh-host-ed25519-key
 fi
 
-if [ ! -f /swapfile ]; then
-  sudo fallocate -l 4G /swapfile
-  sudo chmod 600 /swapfile
-  sudo mkswap /swapfile
-fi
+# A swap partition (the Hetzner workbox's mdraid1 swap) does the job; btrfs
+# refuses a swapfile on a raid1 file system, so make one only when no swap runs.
+if [ -f /swapfile ] || ! swapon --show --noheadings | grep -q .; then
+  if [ ! -f /swapfile ]; then
+    sudo fallocate -l 4G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+  fi
 
-if ! swapon --show --noheadings | awk '{print $1}' | grep -qx /swapfile; then
-  sudo swapon /swapfile
-fi
+  if ! swapon --show --noheadings | awk '{print $1}' | grep -qx /swapfile; then
+    sudo swapon /swapfile
+  fi
 
-if ! grep -q '^/swapfile none swap sw 0 0$' /etc/fstab; then
-  printf '/swapfile none swap sw 0 0\n' | sudo tee -a /etc/fstab >/dev/null
+  if ! grep -q '^/swapfile none swap sw 0 0$' /etc/fstab; then
+    printf '/swapfile none swap sw 0 0\n' | sudo tee -a /etc/fstab >/dev/null
+  fi
 fi
 
 sudo systemctl daemon-reload

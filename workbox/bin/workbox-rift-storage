@@ -14,14 +14,24 @@ usage() {
   printf 'Create or check the dedicated Btrfs Rift workspace file system.\n'
 }
 
+# A box whose disks are btrfs (the Hetzner workbox, linux/hetzner-workbox)
+# mounts the subvolume @workspaces of its own file system here, by UUID, with
+# no image.
+native_line() {
+  grep -Eq "^UUID=[^ ]+ $mount_path btrfs ([^ ]*,)?subvol=@workspaces(,[^ ]*)? " "$fstab"
+}
+
 check_state() {
-  test -f "$image_path"
   test "$(findmnt -n -o FSTYPE --target "$mount_path")" = btrfs
   findmnt -n -o OPTIONS --target "$mount_path" | grep -q 'compress=zstd:3'
   test -d "$mount_path/bite"
   test -d "$mount_path/.rifts"
   test -d "$mount_path/.cache/turbo"
   test -w "$mount_path"
+  if native_line; then
+    return 0
+  fi
+  test -f "$image_path"
   # linux/workbox-btrfs/migrate.sh workspaces mounts the subvolume @workspaces
   # here instead of the top level, which then shows @home and @tmp.
   grep -Fqx -e "$image_path $mount_path btrfs $fstab_options 0 0" \
