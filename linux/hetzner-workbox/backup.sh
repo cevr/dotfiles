@@ -112,6 +112,10 @@ do_run() {
     install -d "$dir"
     conf=$(mktemp)
     render "$dir" > "$conf"
+    # snapshot_create onchange compares generations, which move only when a
+    # transaction commits: commit now, so the last seconds' writes count.
+    local r
+    for r in $HB_BACKUP_SUBVOLS; do btrfs filesystem sync "$r"; done
     btrbk -c "$conf" -q run
     # Snapshots of subvolumes that are gone (a removed Rift), past the 14 days.
     names=$(awk '/^ *snapshot_name /{ print $2 }' "$conf")

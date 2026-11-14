@@ -49,7 +49,11 @@ else
 fi
 boot_src=$(mount_source "$(at /boot)")
 if [[ $(readlink -f "$boot_src") == /dev/md* ]]; then ok "/boot on $boot_src"; else bad "/boot is on ${boot_src:-nothing}, not mdraid1"; fi
-swap_md=$(awk 'NR > 1 { print $1 }' /proc/swaps | while read -r s; do [[ $(readlink -f "$s") == /dev/md* ]] && echo "$s"; done)
+swap_md=
+for s in $(awk 'NR > 1 { print $1 }' /proc/swaps); do
+    if [[ $(readlink -f "$s") == /dev/md* ]]; then swap_md="$swap_md $s"; fi
+done
+swap_md=${swap_md# }
 [[ -n $swap_md ]] && ok "swap on $swap_md" || bad "no swap on mdraid1"
 for md in $(readlink -f "$boot_src") $swap_md; do
     [[ $(readlink -f "$md") == /dev/md* ]] || continue

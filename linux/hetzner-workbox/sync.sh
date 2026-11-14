@@ -58,7 +58,7 @@ gb() { awk -v b="$1" 'BEGIN { printf "%.2f GB", b / 1e9 }'; }
 safe() { local a; for a; do [[ $a =~ ^[A-Za-z0-9@._/:+-]+$ ]] || die "unsafe argument: $a"; done; }
 mount_source() { findmnt -n -o SOURCE -T "$1" | sed 's/\[.*//'; }
 fsroot() { findmnt -n -o FSROOT --mountpoint "$1"; }
-fs_uuid() { btrfs filesystem show "$1" | awk '/uuid:/ { print $NF; exit }'; }
+fs_uuid() { findmnt -n -o UUID -T "$1"; }
 # A complete received subvolume has a Received UUID.
 received() { [[ -d $1 ]] && btrfs subvolume show "$1" 2>/dev/null | awk '/Received UUID:/ { r = $3 } END { exit !(r != "" && r != "-") }'; }
 
@@ -110,7 +110,7 @@ remote_activate() {
     install -d "$base/old-$stamp"
     # Anchors first, then nested subvolumes by depth: a parent's snapshot holds
     # an empty directory where each child goes.
-    awk -F'\t' '{ print gsub("/", "/", $2) "\t" $0 }' "$manifest" | sort -n -k1,1 | cut -f2- |
+    awk -F'\t' '{ s = $2; print gsub("/", "/", s) "\t" $0 }' "$manifest" | sort -n -k1,1 | cut -f2- |
     while IFS=$'\t' read -r uuid rel ro; do
         name=${rel%%/*}
         rest=${rel#"$name"}

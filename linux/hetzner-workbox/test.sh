@@ -26,6 +26,8 @@ installimage_src=${1:?usage: test.sh <installimage checkout>}
 [[ $(uname -s) == Linux && $(id -u) == 0 ]] || { echo 'test.sh: Linux and root' >&2; exit 2; }
 
 work=$(mktemp -d /var/tmp/hetzner-workbox-test.XXXXXX)
+# The test user's home is under it, and sshd reads authorized_keys as that user.
+chmod 755 "$work"
 T=$work/target S=$work/source
 user=hbtest uid=1990
 loops=()
@@ -40,12 +42,22 @@ cleanup() {
         /etc/ssh/bite-workbox-sshd_config /etc/ssh/bite-workbox-ssh-host-ed25519-key \
         /etc/ssh/bite-workbox-ssh-host-ed25519-key.pub "/etc/sudoers.d/90-$user"
     systemctl daemon-reload
+    systemctl stop bite.slice >/dev/null 2>&1
     for s in $(awk 'NR > 1 { print $1 }' /proc/swaps); do
         case $(readlink -f "$s") in /dev/md* | /dev/loop*) swapoff "$s" ;; esac
     done
     for m in $(findmnt -rn -o TARGET | grep -E "^($work|/var/lib/hetzner-sync/top)" | sort -r); do umount "$m" || umount -l "$m"; done
     for md in /dev/md/hbt-*; do [[ -e $md ]] && mdadm --stop "$md" >/dev/null 2>&1; done
-    for l in "${loops[@]}"; do losetup -d "$l"; done
+    udevadm settle
+    # A stopped array's members can stay busy for a moment; udev may also
+    # assemble them again, so stop whatever holds a loop partition.
+    for l in "${loops[@]}"; do
+        for h in /sys/block/"${l##*/}"/"${l##*/}"p*/holders/md*; do
+            [[ -e $h ]] && mdadm --stop "/dev/${h##*/}" >/dev/null 2>&1
+        done
+        for _ in 1 2 3 4 5; do losetup -d "$l" 2>/dev/null && break; sleep 1; done
+    done
+    btrfs device scan --forget >/dev/null 2>&1
     if id "$user" >/dev/null 2>&1; then
         loginctl disable-linger "$user"
         systemctl stop "user@$uid.service" 2>/dev/null
@@ -55,12 +67,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-new_loop() { # size file -> loop device with partitions
+new_loop() { # size file -> sets loop to a loop device with partitions (not in a subshell, so cleanup sees it)
     truncate -s "$1" "$2"
-    local l
-    l=$(losetup --find --show --partscan "$2")
-    loops+=("$l")
-    echo "$l"
+    loop=$(losetup --find --show --partscan "$2")
+    loops+=("$loop")
 }
 as_user() { runuser -u "$user" -- "$@"; }
 
@@ -80,8 +90,8 @@ pass "the validator refuses a broken config"
 
 # ------------------------------------------------------------------ 2
 step "installimage's layout on drive 1, then layout.sh"
-d1=$(new_loop 3G "$work/nvme0")
-d2=$(new_loop 3G "$work/nvme1")
+new_loop 3G "$work/nvme0"; d1=$loop
+new_loop 3G "$work/nvme1"; d2=$loop
 printf 'label: gpt\n,64M,U\n,128M,L\n,64M,S\n,,L\n' | sfdisk -q "$d1"
 udevadm settle
 mkfs.vfat -F 32 -n EFI "${d1}p1" >/dev/null
@@ -143,7 +153,8 @@ mount "${d2}p1" "$work/esp2"
 [[ -f $work/esp2/EFI/ubuntu/grubx64.efi ]] || fail "the second ESP lacks the copy"
 umount "$work/esp2"
 pass "second ESP holds the copy"
-[[ $(grep -c '^ARRAY' "$T/etc/mdadm/mdadm.conf") == 2 ]] || fail "mdadm.conf lacks the arrays"
+[[ $(grep -c '^ARRAY' "$T/etc/mdadm/mdadm.conf") == 2 ]] ||
+    { cat "$T/etc/mdadm/mdadm.conf"; ls -l /dev/md/; fail "mdadm.conf lacks the arrays"; }
 [[ $(stat -c %a "$T/tmp") == 1777 ]] || fail "/tmp mode"
 pass "mdadm.conf, /tmp 1777"
 
@@ -161,7 +172,8 @@ pass "provision.sh rerun changes nothing; authorized_keys holds the Mac, herdr-m
 [[ $(id -u "$user") == "$uid" && $(stat -c %U "$T/home/$user") == "$user" && $(stat -c %U "$T/workspaces") == "$user" ]] || fail "user, home, /workspaces"
 loginctl show-user "$user" -p Linger | grep -q yes || fail "linger"
 out=$(ssh -p 2299 -i "$work/id_test" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null "$user@127.0.0.1" 'id -u; sudo -n true && echo sudo-ok' 2>/dev/null) || fail "ssh into the test sshd"
+    -o UserKnownHostsFile=/dev/null "$user@127.0.0.1" 'id -u; sudo -n true && echo sudo-ok' 2>"$work/ssh.err") ||
+    { cat "$work/ssh.err"; journalctl -u bite-workbox-sshd -n 20 --no-pager; fail "ssh into the test sshd"; }
 [[ $out == "$uid"$'\n'sudo-ok ]] || fail "ssh session: $out"
 pass "sshd on 127.0.0.1:2299 lets $user in by key; sudo without a password"
 ss -ltn 'sport = :2299' | grep -q '127.0.0.1:2299' && ! ss -ltn 'sport = :2299' | grep -q '0.0.0.0:2299' || fail "sshd listens beyond its address"
@@ -174,7 +186,7 @@ pass "bootstrap phase waits for the synced home"
 
 # ------------------------------------------------------------------ 4
 step "sync.sh from a scratch exe box"
-src_disk=$(new_loop 2G "$work/exe.img")
+new_loop 2G "$work/exe.img"; src_disk=$loop
 mkfs.btrfs -q -f "$src_disk"
 mount "$src_disk" "$work/top"
 for sv in @home @workspaces @tmp; do btrfs subvolume create "$work/top/$sv" >/dev/null; done
@@ -196,11 +208,12 @@ btrfs subvolume create "$S/workspaces/bite" >/dev/null
 head -c $((48 << 20)) /dev/urandom > "$S/workspaces/bite/node_modules.bin"
 echo 'export const a = 1' > "$S/workspaces/bite/index.ts"
 mkdir -p "$S/workspaces/.rifts/bite" "$S/workspaces/.cache/turbo"
+echo turbo > "$S/workspaces/.cache/turbo/entry"
+# Owned by the user before the snapshots, as on the exe box (a read-only one cannot change).
+chown -R "$uid:$uid" "$S/home" "$S/workspaces"
 btrfs subvolume snapshot "$S/workspaces/bite" "$S/workspaces/.rifts/bite/feat" >/dev/null
 echo 'export const a = 2' > "$S/workspaces/.rifts/bite/feat/index.ts"
 btrfs subvolume snapshot -r "$S/workspaces/bite" "$S/workspaces/.rifts/bite/base-ro" >/dev/null
-echo turbo > "$S/workspaces/.cache/turbo/entry"
-chown -R "$uid:$uid" "$S/home" "$S/workspaces"
 # The paths outside the subvolumes.
 mkdir -p "$S/var/lib/mongodb" "$S/usr/local/bin"
 echo wired > "$S/var/lib/mongodb/WiredTiger"
@@ -277,6 +290,7 @@ export HB_BACKUP_DIR=$work/storagebox HB_BACKUP_KEY=$work/backup.key HB_SNAPSHOT
     HB_BACKUP_SUBVOLS="$T/home/$user $T/workspaces"
 bash "$here/backup.sh" run > "$work/backup-1.log" 2>&1 || { cat "$work/backup-1.log"; fail "backup run"; }
 echo 'export const a = 4' > "$T/workspaces/.rifts/bite/feat/index.ts"
+sleep 1 # snapshot names carry the second
 bash "$here/backup.sh" run > "$work/backup-2.log" 2>&1 || { cat "$work/backup-2.log"; fail "backup run 2"; }
 month=$(date -u +%Y-%m)
 dir=$work/storagebox/bite-cristian/$month
@@ -284,12 +298,15 @@ info=$(find "$dir" -maxdepth 1 -name '*.info' | wc -l)
 ((info >= 6)) || fail "backup wrote $info .info files, want one per subvolume and night"
 feat_name=$(ls "$dir" | sed -n 's/\(.*_rifts\.bite\.feat\)\..*\.info$/\1/p' | sort -u)
 [[ -n $feat_name ]] || fail "no backup of the Rift feat"
-grep -l RECEIVED_PARENT_UUID "$dir/$feat_name".*.info >/dev/null || fail "the second backup is not incremental"
+grep -lE '^RECEIVED_PARENT_UUID=[0-9a-f]{8}-' "$dir/$feat_name".*.info >/dev/null || fail "the second backup is not incremental"
+[[ $(ls "$dir/$feat_name".*.info | wc -l) == 2 ]] ||
+    { ls "$dir" "$T/var/lib/btrbk/snapshots"; cat "$work/backup-2.log"; fail "want two backups of the Rift feat"; }
 grep -q '^encrypt=openssl_enc' "$(ls "$dir/$feat_name".*.info | head -n 1)" || fail "the backup is not encrypted"
 mkdir -p "$T/restore"
 bash "$here/backup.sh" restore "$feat_name" "$T/restore" > "$work/restore.log" 2>&1 || { cat "$work/restore.log"; fail "restore"; }
 last=$(ls -d "$T/restore/$feat_name".* | sort | tail -n 1)
-[[ $(cat "$last/index.ts") == 'export const a = 4' ]] || fail "restored Rift is not the last state"
+[[ $(cat "$last/index.ts") == 'export const a = 4' ]] ||
+    { ls -l "$dir" "$T/restore"; cat "$work/restore.log" "$work/backup-2.log"; fail "restored Rift is not the last state"; }
 pass "backup: encrypted raw files on the Storage Box dir, the second night incremental, restore gives the last state"
 
 # ------------------------------------------------------------------ 6

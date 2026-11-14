@@ -189,19 +189,24 @@ phase_sshd() {
     cfg=$(mktemp)
     sed -e "s/__TAILSCALE_IPV4__/$listen/" -e "s/^Port .*/Port $HB_SSH_PORT/" -e "s/^AllowUsers .*/AllowUsers $HB_USER/" \
         "$system_dir/bite-workbox-sshd_config" > "$cfg"
-    put 0600 "$cfg" "$etc/ssh/bite-workbox-sshd_config" || true
+    local changed=0
+    put 0600 "$cfg" "$etc/ssh/bite-workbox-sshd_config" && changed=1
     rm -f "$cfg"
     # sync.sh brings the exe box's host key at the cutover, so the Mac's
     # known_hosts entry for bite-workbox stays valid; until then a new one.
-    [[ -f $etc/ssh/bite-workbox-ssh-host-ed25519-key ]] ||
+    if [[ ! -f $etc/ssh/bite-workbox-ssh-host-ed25519-key ]]; then
         ssh-keygen -q -t ed25519 -N '' -f "$etc/ssh/bite-workbox-ssh-host-ed25519-key"
-    put 0644 "$system_dir/bite.slice" "$etc/systemd/system/bite.slice" || true
-    put 0644 "$system_dir/bite-workbox-sshd.service" "$etc/systemd/system/bite-workbox-sshd.service" || true
+        changed=1
+    fi
+    put 0644 "$system_dir/bite.slice" "$etc/systemd/system/bite.slice" && changed=1
+    put 0644 "$system_dir/bite-workbox-sshd.service" "$etc/systemd/system/bite-workbox-sshd.service" && changed=1
     /usr/sbin/sshd -t -f "$etc/ssh/bite-workbox-sshd_config" || die "bite-workbox-sshd_config does not parse"
     systemctl daemon-reload
     systemctl enable bite.slice bite-workbox-sshd.service >/dev/null 2>&1
     systemctl start bite.slice
-    systemctl restart bite-workbox-sshd.service
+    if ((changed)) || ! systemctl is-active --quiet bite-workbox-sshd.service; then
+        systemctl restart bite-workbox-sshd.service
+    fi
     say "ok: sshd on $listen:$HB_SSH_PORT for $HB_USER"
 }
 

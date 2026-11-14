@@ -95,7 +95,10 @@ fi
 
 # --- 2. btrfs raid1.
 is_btrfs "$root" || die "$root is not btrfs"
-fs_dev=$(btrfs filesystem show "$root" | awk '/ path /{ print $NF }' | while read -r d; do on_disk1 "$d" && echo "$d"; done | head -n 1)
+fs_dev=
+for d in $(btrfs filesystem show "$root" | awk '/ path /{ print $NF }'); do
+    if on_disk1 "$d"; then fs_dev=$d; break; fi
+done
 [[ -n $fs_dev ]] || die "no btrfs device of $root on $HB_DISK1"
 fs_twin=$(twin "$fs_dev")
 if btrfs filesystem show "$root" | awk '/ path /{ print $NF }' | grep -qx "$fs_twin"; then
@@ -185,7 +188,8 @@ if [[ -n $efi_src ]] && on_disk1 "$efi_src"; then
     if ((!dry)); then
         stage=$(mktemp -d)
         mount "$e2" "$stage"
-        cp -a "$efi/." "$stage/"
+        # vfat keeps no owners; copy the files and their times.
+        cp -r --preserve=timestamps "$efi/." "$stage/"
         umount "$stage"
         rmdir "$stage"
     fi
@@ -215,7 +219,8 @@ if ((!dry)); then
     mkdir -p "$(dirname "$HB_MDADM_CONF")"
     touch "$HB_MDADM_CONF"
     tmp=$(mktemp)
-    grep -v -E "^ARRAY .*name=[^ ]*:?($HB_MD_PREFIX)(boot|swap)( |$)" "$HB_MDADM_CONF" > "$tmp" || true
+    # Our arrays' lines, by device or by name, go; mdadm writes them again.
+    grep -v -E "^ARRAY (/dev/md/($HB_MD_PREFIX)(boot|swap) |.*name=([^ ]*:)?($HB_MD_PREFIX)(boot|swap)( |$))" "$HB_MDADM_CONF" > "$tmp" || true
     for n in boot swap; do
         [[ -e $(md_dev "$n") ]] && mdadm --detail --brief "$(md_dev "$n")" >> "$tmp"
     done
