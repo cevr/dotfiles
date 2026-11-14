@@ -84,7 +84,7 @@ interface EditedTool {
 /** What a tool transform is handed: the editor's `update`, and its `add` (the `orchestrate` tool's registration). */
 interface ToolEditor {
   readonly update: (id: string, edit: (tool: EditedTool) => void) => void
-  readonly add: (tool: unknown) => void
+  readonly add: () => void
 }
 
 /** The outside systems' state for one test. */

@@ -71,7 +71,7 @@
 //
 // Pure: no file, no clock. The ledger (service.ts `Ledger`) keeps each root's
 // events and refusals; the plugin feeds it (model.ts).
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { type Cadence, DEFAULT_CADENCE } from "./idle.ts"
 import { described, STEPS } from "./described.ts"
@@ -488,13 +488,14 @@ const heldOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): Readonly
  * it landed). One `landed` already is recorded once.
  */
 const recordedOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
-  const restarted = heldOf(state, rifts).filter((unit) => state.units[unit]?.state === "implement" || state.units[unit]?.state === "verify")
-  const gone = rifts.flatMap((rift) => {
-    const unit = entryOf(rift).unit
-    return unit === undefined || state.units[unit] !== undefined ? [] : [unit]
-  })
+  const restarted = heldOf(state, rifts).filter((unit) => !landsNow(state, unit))
+  const gone = rifts.flatMap((rift) => Option.toArray(Option.filter(Option.fromUndefinedOr(entryOf(rift).unit), (unit) => !Object.hasOwn(state.units, unit))))
   return [...new Set([...named(state, rifts), ...restarted, ...gone])]
 }
+
+/** Whether a land's record moves `unit` to `landed`: held, and neither on its next round nor under a verifier. */
+const landsNow = (state: MachineState, unit: string): boolean =>
+  Option.exists(Option.fromUndefinedOr(state.units[unit]), (held) => held.state !== "implement" && held.state !== "verify")
 
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
 export const dueOf = (state: MachineState, now: number, cadence: Cadence): string | undefined => {
@@ -717,13 +718,14 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
       case "BatchLanded": {
         const unverified = new Set(state.unverified ?? [])
         for (const name of event.units) {
-          const unit = units[name]
           // Dropped, on its next round, or under a verifier started before it landed, while it landed: its slot stays as
-          // it is, and the land waits for a verdict over what it pushed.
-          if (unit === undefined || unit.state === "implement" || unit.state === "verify") {
-            if (unit?.direct !== true) unverified.add(name)
+          // it is, and the land waits for a verdict over what it pushed (a direct unit's closes with no verdict).
+          if (!landsNow(state, name)) {
+            if (!Option.exists(Option.fromUndefinedOr(units[name]), (held) => held.direct)) unverified.add(name)
             continue
           }
+          const unit = units[name]
+          if (unit === undefined) continue
           if (unit.direct) delete units[name]
           else {
             const { said: _, ...rest } = unit

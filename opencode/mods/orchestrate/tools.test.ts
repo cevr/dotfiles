@@ -3,7 +3,7 @@
 // domain, and the rule that names a unit's Rift. The next call's property runs on the real decider in
 // cmd/orchestrate/orch-tools.sim.test.ts, which has an Effect test runner.
 import { describe, expect, test } from "bun:test"
-import { Option, Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import {
   BatchLanded,
   FindingFolded,
@@ -397,10 +397,12 @@ describe("the lane name rule", () => {
       const state = implementing(held, random() < 0.5)
       const rifts = units.map((unit) => ({ rift: laneOf(unit).path, unit }))
       const refused = unheldRefusal(rifts, state)
-      const first = units.find((unit) => !held.includes(unit))
-      expect({ seed, refused: Option.getOrUndefined(refused) }).toEqual({
+      // Refused at the first unit not held, naming it; with every unit held, not refused.
+      const first = Arr.findFirst(units, (unit) => !held.includes(unit))
+      expect({ seed, refused: Option.isSome(refused), first: Option.isSome(first) }).toEqual({ seed, refused: Option.isSome(first), first: Option.isSome(first) })
+      expect({ seed, names: Option.exists(Option.zipWith(refused, first, (said, unit) => said.includes(`the machine holds no unit ${unit}:`)), (named) => named) }).toEqual({
         seed,
-        refused: first === undefined ? undefined : expect.stringContaining(`the machine holds no unit ${first}:`),
+        names: Option.isSome(first),
       })
       expect({ seed, bare: Option.isNone(unheldRefusal(units.map((unit) => laneOf(unit).path), state)) }).toEqual({ seed, bare: true })
     }
