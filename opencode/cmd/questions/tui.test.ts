@@ -4,7 +4,9 @@
 // shift+← bound in the base mode above the composer's own layer, opening it
 // when the composer is empty and handing the key on (run returns false, so
 // the composer selects) when the composer has text, no question is open or no
-// session shows; and the tray drawn in `session.composer.top`.
+// session shows; the tray drawn in `session.composer.top`, and a click on it
+// opening the form when a question is open (questions-tap.sim.test.tsx clicks
+// it in the real TUI).
 // tests/questions.test.ts runs it in OpenCode.
 import { expect, test } from "bun:test"
 import type { FormInput } from "@dotfiles/opencode-questions/form"
@@ -47,10 +49,12 @@ const start = (route: { readonly type: string; readonly sessionID?: string }, co
     },
   }
   const drawn: Array<string> = []
+  const taps = new Map<string, () => void>()
   const questions = setup(
     ctx as unknown as Host,
     (input) => {
       drawn.push(input.sessionID)
+      taps.set(input.sessionID, input.open)
       return "dock"
     },
     { pending: () => [], create: (sessionID, input) => Promise.resolve(void forms.push([sessionID, input])), asker: (sessionID) => sessionID },
@@ -61,7 +65,9 @@ const start = (route: { readonly type: string; readonly sessionID?: string }, co
     await Bun.sleep(0)
     return forms.map(([sessionID, input]) => [sessionID, input.fields.map((field) => field.key)])
   }
-  return { questions, layerOf, command, slots, drawn, toasts, composer, opened }
+  /** A click on the tray the slot drew for `sessionID`. */
+  const tap = (sessionID: string) => taps.get(sessionID)?.()
+  return { questions, layerOf, command, slots, drawn, toasts, composer, opened, tap }
 }
 
 test("shift+← is bound in the base mode, above the composer's own layer", () => {
@@ -109,4 +115,22 @@ test("the tray draws above the composer for the session the slot names", () => {
   expect(plugin.slots.map((slot) => slot.append)).toEqual(["session.composer.top"])
   expect(plugin.slots[0]?.render({ sessionID: "ses_root" })).toBe("dock")
   expect(plugin.drawn).toEqual(["ses_root"])
+})
+
+/** The plugin with the tray drawn for the session on screen, a draft in the composer, and `open` questions; then a click on the tray. */
+const tapped = (open: ReadonlyArray<Question>) => {
+  const plugin = start({ type: "session", sessionID: "ses_root" }, { plainText: "draft" })
+  plugin.slots[0]?.render({ sessionID: "ses_root" })
+  plugin.questions.setOpen("ses_root", open)
+  plugin.tap("ses_root")
+  return plugin
+}
+
+test("a click on the tray opens the form for its session's questions, even with a draft in the composer", () =>
+  expect(tapped([asked]).opened()).resolves.toEqual([["ses_root", ["ask_user_async:q1"]]]))
+
+test("with no open question a click on the tray does nothing, and says nothing", () => {
+  const plugin = tapped([])
+  expect(plugin.toasts).toEqual([])
+  return expect(plugin.opened()).resolves.toEqual([])
 })

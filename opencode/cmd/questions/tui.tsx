@@ -13,6 +13,6 @@ import { setup } from "./setup.ts"
 export default Plugin.define({
   id: QUESTIONS.id,
   setup(ctx) {
-    setup(ctx, (input) => <Dock ctx={ctx} sessionID={input.sessionID} questions={input.questions} />)
+    setup(ctx, (input) => <Dock ctx={ctx} sessionID={input.sessionID} questions={input.questions} open={input.open} />)
   },
 })

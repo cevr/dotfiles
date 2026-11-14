@@ -131,6 +131,9 @@ const ShellList = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.
 const toJsonText = Schema.encodeSync(Json)
 const Unavailable = Schema.Struct({ _tag: Schema.Literal("RpcError"), type: Schema.Literal("rpc.unavailable") })
 const Goal = Schema.Struct({ output: Schema.Null })
+const FormMade = Schema.Struct({ data: Schema.Struct({ id: Schema.String, sessionID: Schema.String }) })
+const FormCreated = Schema.Struct({ type: Schema.Literal("form.created"), data: Schema.Struct({ form: Schema.Struct({ id: Schema.String, sessionID: Schema.String }) }) })
+const FamilyForms = Schema.Struct({ data: Schema.Struct({ forms: Schema.Array(Schema.Struct({ id: Schema.String })) }) })
 
 /** The ids of the session's messages of `type`. */
 const messagesOf = (server: LawServer, sessionID: string, type: string) =>
@@ -393,6 +396,25 @@ export const LAWS: ReadonlyArray<Law> = [
       Effect.forEach(["/api/agent", "/api/model", "/api/provider", "/api/info"], (path) => Effect.map(server.call(get(path)), (answer) => expectStatus(path, answer, 200))).pipe(
         Effect.map((each) => each.flat()),
       ),
+  },
+  {
+    name: "a form made in a session is answered with its id, announced form.created, and listed with the session's family requests",
+    routes: ["session.form.create"],
+    kinds: ["form.created"],
+    run: (server) =>
+      Effect.gen(function* () {
+        const sessionID = yield* server.session
+        const made = yield* server.call(post(`/api/session/${sessionID}/form`, { title: "Which port?", fields: [{ key: "port", type: "string", title: "Which port?" }] }))
+        yield* server.settle
+        const failures = [...expectStatus("form create", made, 200)]
+        const formID = Option.match(read(FormMade, made), { onNone: () => "", onSome: (found) => found.data.id })
+        if (!formID.startsWith("frm_") || !Option.exists(read(FormMade, made), (found) => found.data.sessionID === sessionID)) failures.push(`form create answered ${shown(made)}`)
+        const announced = (yield* server.sent).flatMap((event) => Option.toArray(Schema.decodeUnknownOption(FormCreated)(event))).filter((event) => event.data.form.id === formID)
+        if (announced.length !== 1 || announced[0]?.data.form.sessionID !== sessionID) failures.push(`${announced.length} form.created for ${formID}`)
+        const requests = yield* server.call(get(`/api/session/${sessionID}/family/request`))
+        if (!Option.exists(read(FamilyForms, requests), (found) => found.data.forms.some((form) => form.id === formID))) failures.push(`family requests: ${shown(requests)}`)
+        return failures
+      }),
   },
   {
     name: "an RPC to a plugin the server has not loaded fails 400 rpc.unavailable; the goal RPC answers no goal",

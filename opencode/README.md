@@ -45,8 +45,9 @@ service; the version change restarts that service as ours. It merges into
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
-(`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
-Prime theme. Every other key and plugin there is kept. Rerun it after a fork
+(`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions, the
+Prime theme and the `window` tab scope (a TUI window's tabs are the sessions
+opened in it, not every TUI's on the machine). Every other key and plugin there is kept. Rerun it after a fork
 change. At its end it writes what the host now runs to
 `~/.local/state/opencode/installed.json`, OpenCode's own record of the
 installed build (the version, the binary, the builds it superseded), with the
@@ -2383,7 +2384,9 @@ one line while the session or any of its subagents has questions open:
 
 With one question it reads `? 1 open question · <header> · assuming <assume> · shift+← /answer`;
 parts drop from the right as the width shrinks, the hotkey last but one. `/answer`,
-or shift+← on an empty composer, opens OpenCode's own question form (the one
+shift+← on an empty composer, or a click on the line (where the terminal
+reports the mouse: the Mac terminal, Herdr.app; `/answer` is underlined and the
+line brightens under the pointer to say so) opens OpenCode's own question form (the one
 its built-in `question` tool shows) in the composer's place: one form, in the
 session on screen, holding every question it has open, from all its asks,
 oldest first, then its subagents' (at any depth), each of which names who
@@ -2393,7 +2396,8 @@ name it, `asker.ts`). So the owner answers an orchestrate role's question in
 the orchestrator's session, as they answer its own. shift+← is also the composer's
 select-left: with text in the composer the key stays the composer's and
 selects (the hotkey's layer sits above the textarea's and hands the key on);
-with no question open it does nothing. A session that already has its form
+with no question open it does nothing, as a click does. A click takes no key
+from the composer, so it opens the form whatever the composer holds. A session that already has its form
 pending gets no second.
 
 ```
