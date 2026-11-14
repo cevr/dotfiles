@@ -186,8 +186,10 @@ alias bd='bun dev'
 alias bx='bunx'
 
 # Bite workbox
+# Sideshow over Tailscale, at the address the ssh alias bite-workbox names, so
+# it follows the workbox from exe.dev to Hetzner.
 workbox-sideshow() {
-  open https://bite-cristian.exe.xyz:8228/
+  open "http://$(ssh -G bite-workbox | awk '$1 == "hostname" { print $2 }'):8228/"
 }
 
 workbox() {

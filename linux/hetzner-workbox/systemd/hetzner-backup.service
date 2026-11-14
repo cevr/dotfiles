@@ -1,0 +1,10 @@
+[Unit]
+Description=Workbox backup to the Hetzner Storage Box (linux/hetzner-workbox/backup.sh)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/home/exedev/Developer/personal/dotfiles/linux/hetzner-workbox/backup.sh run
