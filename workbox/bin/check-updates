@@ -9,23 +9,17 @@ printf 'Ubuntu updates:\n'
 apt list --upgradable 2>/dev/null | sed '1d' || true
 
 printf '\nBun tool updates:\n'
-while IFS= read -r package; do
-  [ -n "$package" ] || continue
-
-  package_name=${package%@*}
-  case "$package" in
-    @*)
-      package_name=$(printf '%s' "$package" | sed 's/@[^@]*$//')
-      ;;
-  esac
-  installed_version=${package##*@}
+for manifest in "$workbox_config_dir"/bun-tools/*/package.json; do
+  [ -f "$manifest" ] || continue
+  package_name=$(jq -er '.dependencies | keys[0]' "$manifest")
+  installed_version=$(jq -er --arg name "$package_name" '.dependencies[$name]' "$manifest")
   latest_version=$(npm view "$package_name" version)
 
   if [ "$installed_version" != "$latest_version" ]; then
     printf '%s %s -> %s\n' "$package_name" "$installed_version" "$latest_version"
     updates_found=1
   fi
-done < "$workbox_config_dir/bun-tools.txt"
+done
 
 printf '\n'
 skills_status=0

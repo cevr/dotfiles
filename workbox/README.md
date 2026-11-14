@@ -101,7 +101,16 @@ noncurrent snapshot objects after 14 days.
 - `check-updates` reports Ubuntu, Bun tool, and skill updates.
 - `check-skills` lists skills okra would update and skill folders nothing tracks.
   Your own skills go in `skills/.own-skills`.
-- `install-bun-tools` restores the pinned Bun CLI versions.
+- `install-bun-tools` restores the pinned Bun CLIs. Each tool is a project of
+  its own in `bun-tools/<tool>/` (a `package.json` and its `bun.lock`),
+  installed with `bun install --frozen-lockfile` into
+  `~/.local/share/bite-workbox/bun-tools/<tool>` and linked into `~/.bun/bin`.
+  A shared `bun add --global` tree hoisted one `effect` for tools pinned to
+  different Effect releases and broke their builds. An overrides entry keeps
+  `@effect/platform-node-shared` on the tool's own Effect release, since
+  `@effect/platform-bun` asks for it with a caret range. A command in
+  `~/.bun/bin` linked to a local checkout is kept. To bump a tool, edit its
+  version in `package.json` and run `bun install --lockfile-only` in its folder.
 - `install-node` installs the exact Node version from `package.json`.
 - `migrate-herdr-to-systemd` moves a live Herdr session under its user service
   (rollback only, until `herdr-retire`).

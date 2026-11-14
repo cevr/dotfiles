@@ -140,7 +140,14 @@ sudo chsh -s /usr/bin/zsh "$USER"
 for script in "$workbox_dir"/bin/*; do
   install -m 755 "$script" "$local_bin_dir/$(basename "$script")"
 done
-install -m 644 "$workbox_dir/bun-tools.txt" "$HOME/.config/bite-workbox/bun-tools.txt"
+rm -rf "$HOME/.config/bite-workbox/bun-tools"
+for tool in "$workbox_dir"/bun-tools/*/; do
+  tool=${tool%/}
+  install -d -m 755 "$HOME/.config/bite-workbox/bun-tools/$(basename "$tool")"
+  install -m 644 "$tool/package.json" "$tool/bun.lock" \
+    "$HOME/.config/bite-workbox/bun-tools/$(basename "$tool")/"
+done
+rm -f "$HOME/.config/bite-workbox/bun-tools.txt"
 install -m 644 "$workbox_dir/hunk-config.toml" "$HOME/.config/hunk/config.toml"
 install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 

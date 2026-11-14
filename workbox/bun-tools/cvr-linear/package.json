@@ -1,0 +1,11 @@
+{
+  "name": "workbox-tool-cvr-linear",
+  "private": true,
+  "dependencies": {
+    "@cvr/linear": "0.6.0"
+  },
+  "trustedDependencies": ["@cvr/linear"],
+  "overrides": {
+    "@effect/platform-node-shared": "4.1.2"
+  }
+}

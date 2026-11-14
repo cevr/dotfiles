@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "workbox-tool-sentry",
+      "dependencies": {
+        "sentry": "0.47.0",
+      },
+    },
+  },
+  "packages": {
+    "sentry": ["sentry@0.47.0", "", { "bin": { "sentry": "dist/bin.cjs" } }, "sha512-BDhgsAJYm99Xbx+YTREec7lME0FN8Z66YzrQ+eEWDqwigcLqs90cEx5nrhVlneL9bbDCVyt5O/7Z3RqKpHNh2A=="],
+  }
+}

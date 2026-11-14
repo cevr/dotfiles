@@ -1,0 +1,10 @@
+{
+  "name": "workbox-tool-cvr-okra",
+  "private": true,
+  "dependencies": {
+    "@cvr/okra": "0.12.1"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0"
+  }
+}
