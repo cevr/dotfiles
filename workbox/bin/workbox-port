@@ -25,7 +25,7 @@ case "$port" in
 esac
 
 if [ "$port" -lt 3000 ] || [ "$port" -gt 9999 ]; then
-  printf 'workbox-port: exe.dev forwards ports from 3000 through 9999\n' >&2
+  printf 'workbox-port: the workbox shares ports from 3000 through 9999\n' >&2
   exit 2
 fi
 
@@ -35,7 +35,24 @@ if ! curl --fail --silent --max-time 2 "http://127.0.0.1:$port/" >/dev/null; the
 fi
 
 hostname=$(hostname -f)
-url="https://$hostname:$port/"
+case "$hostname" in
+  *.exe.xyz)
+    # exe.dev's HTTPS proxy forwards the port, private to the owner.
+    url="https://$hostname:$port/"
+    ;;
+  *)
+    # Elsewhere (the Hetzner workbox) Tailscale serves it over HTTPS on the
+    # tailnet, at the machine's ts.net name. Without HTTPS certificates on the
+    # tailnet serve waits for an admin to enable them, so it gets 10 s; the
+    # plain address over Tailscale works either way.
+    dns_name=$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')
+    if timeout 10 tailscale serve --bg "--https=$port" "http://127.0.0.1:$port" </dev/null >/dev/null 2>&1; then
+      url="https://$dns_name:$port/"
+    else
+      url="http://$(tailscale ip -4 | head -n 1):$port/"
+    fi
+    ;;
+esac
 
 if [ "$format" = json ]; then
   printf '{"port":%s,"url":"%s"}\n' "$port" "$url"

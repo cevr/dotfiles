@@ -21,7 +21,7 @@ import { Array as Arr, Clock, Config, Console, Data, Duration, Effect, FileSyste
 import { Argument, Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { cliConfig, DEFAULT_FORK, forkLaunch, pluginPaths, runEnv, runPaths, SIM_PROVIDER, simProvider } from "../testbeds/gamut/gamut.ts"
-import { type Feature, FEATURES_DIR, parseFeature, swarmFrom, touched, underOpencode } from "./verify-map.ts"
+import { type Feature, FEATURES_DIR, parseFeature, swarmFrom, touched, underOpencode, unreachableOf } from "./verify-map.ts"
 import { chatResponse } from "../sim/verify-model.ts"
 
 /** opencode/: every path the helpers name is from here. */
@@ -487,16 +487,19 @@ const readMap = Effect.fn("verify.readMap")(function* () {
   )
 })
 
-/** The features the change since `base` touches. */
-const changedSince = (map: ReadonlyArray<Feature>, base: string) =>
-  output("changed", "git", ["-C", OPENCODE, "diff", "--name-only", `${base}...HEAD`]).pipe(Effect.map((text) => touched(map, Arr.getSomes(text.split("\n").map(underOpencode)))))
+/** The paths (from opencode/) the change since `base` touches; none without a base. */
+const changedSince = (base: Option.Option<string>) =>
+  Option.match(base, {
+    onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
+    onSome: (commit) => output("changed", "git", ["-C", OPENCODE, "diff", "--name-only", `${commit}...HEAD`]).pipe(Effect.map((text) => Arr.getSomes(text.split("\n").map(underOpencode)))),
+  })
 
-/** The features a drive takes: named, touched since `changed`, or every one. */
-const chosen = Effect.fn("verify.chosen")(function* (map: ReadonlyArray<Feature>, named: ReadonlyArray<string>, changed: Option.Option<string>, all: boolean) {
+/** The features a drive takes: named, touched by the `changed` paths, or every one. */
+const chosen = Effect.fn("verify.chosen")(function* (map: ReadonlyArray<Feature>, named: ReadonlyArray<string>, changed: ReadonlyArray<string>, all: boolean) {
   const unknown = named.filter((id) => !map.some((feature) => feature.id === id))
   if (unknown.length > 0) return yield* new VerifyFailed({ step: "features", message: `no feature ${unknown.join(", ")}; the map has ${map.map((feature) => feature.id).join(", ")}` })
   if (all) return map
-  const byChange = yield* Option.match(changed, { onNone: () => Effect.succeed<ReadonlyArray<Feature>>([]), onSome: (base) => changedSince(map, base) })
+  const byChange = touched(map, changed)
   return map.filter((feature) => named.includes(feature.id) || byChange.includes(feature))
 })
 
@@ -570,8 +573,11 @@ const drive = Command.make(
   Effect.fn("verify.drive")(function* (input) {
     const fs = yield* FileSystem.FileSystem
     const map = yield* readMap()
-    const features = yield* chosen(map, input.feature, input.changed, input.all)
-    if (features.length === 0 && input.scenario.length === 0) return yield* new VerifyFailed({ step: "features", message: "nothing to drive: name --feature, --changed <base>, --all or --scenario" })
+    const changed = yield* changedSince(input.changed)
+    const features = yield* chosen(map, input.feature, changed, input.all)
+    const unreachable = unreachableOf(map, features, changed)
+    if (features.length === 0 && input.scenario.length === 0)
+      return yield* new VerifyFailed({ step: "features", message: ["nothing to drive: name --feature, --changed <base>, --all or --scenario", ...unreachable].join("; ") })
     const head = yield* headOf(OPENCODE)
     const evidence = resolve(Option.getOrElse(input.evidence, () => join(OPENCODE, "out/verify", head.slice(0, 12))))
     yield* fs.makeDirectory(evidence, { recursive: true })
@@ -581,7 +587,7 @@ const drive = Command.make(
       ok: red.length === 0,
       head,
       features: features.map((feature) => feature.id),
-      unreachable: features.filter((feature) => feature.world.length === 0).map((feature) => `${feature.id}: no world suite; drive it on real OpenCode (--real, or the feature file's pilotty steps)`),
+      unreachable,
       evidence,
       runs,
       red: red.map((run) => `${run.kind} ${run.file}: exit ${run.exit}, ${run.log}`),

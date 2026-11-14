@@ -15,7 +15,7 @@
 // It also keeps when each call started and ended (`spans`), so a cell's
 // overlap can be measured: a cell of two or more calls carries how many it
 // made and the most that ran at once (`concurrency`).
-import { Effect } from "effect"
+import { Clock, Effect, Option } from "effect"
 
 /** The metadata key the record is kept under. */
 export const OPERATIONS_KEY = "operations"
@@ -110,11 +110,17 @@ const messageOf = (error: unknown): string => {
 /** The metadata key of how the cell's calls overlapped, kept when it made two or more. */
 export const CONCURRENCY_KEY = "concurrency"
 
-/** When one call ran, in ms since its journal began; `end` is absent while it runs. */
+/** When one call ran, in epoch ms (to the nanosecond) by the Effect clock; no `end` while it runs. */
 export interface Span {
   readonly start: number
-  readonly end?: number
+  readonly end: Option.Option<number>
 }
+
+/** Now, in epoch ms to the nanosecond, so calls made one after another rarely share an instant. */
+const clockMs = Effect.map(Clock.currentTimeNanos, (nanos) => Number(nanos) / 1_000_000)
+
+/** A kernel call's metadata: its operations, how many were dropped, and for two or more calls how they overlapped; empty when the cell called no tool. */
+export type Metadata = { [OPERATIONS_KEY]?: ReadonlyArray<Operation>; dropped?: number; [CONCURRENCY_KEY]?: Concurrency }
 
 /** How a cell's calls overlapped: how many it made, and the most that ran at once. */
 export interface Concurrency {
@@ -122,13 +128,20 @@ export interface Concurrency {
   readonly maxInFlight: number
 }
 
-/** The most spans open at one instant; a span that ends as another starts does not overlap it. */
+/**
+ * The most spans open at one instant. A span that ends as another starts does
+ * not overlap it; a span that ends as it starts still counts for itself.
+ */
 export const concurrencyOf = (spans: ReadonlyArray<Span>): Concurrency => {
-  const edges = spans.flatMap((span) => [
-    { at: span.start, step: 1 },
-    { at: span.end ?? Number.POSITIVE_INFINITY, step: -1 },
-  ])
-  edges.sort((left, right) => left.at - right.at || left.step - right.step)
+  const edges = spans.flatMap((span) => {
+    const end = Option.getOrElse(span.end, () => Number.POSITIVE_INFINITY)
+    // At one instant ends come first, starts next, then the ends of spans that took no time.
+    return [
+      { at: span.start, step: 1, order: 1 },
+      { at: end, step: -1, order: 2 * Number(end === span.start) },
+    ]
+  })
+  edges.sort((left, right) => left.at - right.at || left.order - right.order)
   let now = 0
   let most = 0
   for (const edge of edges) {
@@ -143,7 +156,7 @@ export interface Journal {
   /** Runs `run` as the tool call `tool(input)`, recording its start and how it ended. */
   readonly around: <A extends Outcome, E, R>(tool: string, input: unknown, run: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   /** The record as the call's metadata; empty when the cell called no tool. */
-  readonly metadata: () => Record<string, unknown>
+  readonly metadata: () => Metadata
   /** When each call ran, in the order they started: every call, past `MAX_OPERATIONS` too. */
   readonly spans: () => ReadonlyArray<Span>
   /** Ends publishing: the call is about to settle. */
@@ -163,20 +176,18 @@ export const silent: Journal = {
  * change, while it is open. A publish that fails is ignored: the record is a
  * view, never a reason to fail a tool call.
  */
-export const journal = (publish: (metadata: Record<string, unknown>) => Effect.Effect<void>, clock: () => number = () => performance.now()): Journal => {
+export const journal = (publish: (metadata: Record<string, unknown>) => Effect.Effect<void>): Journal => {
   const operations: Array<Operation> = []
   const spans: Array<Span> = []
-  const began = clock()
   let dropped = 0
   let open = true
-  const metadata = (): Record<string, unknown> =>
-    operations.length === 0 && dropped === 0
-      ? {}
-      : {
-          [OPERATIONS_KEY]: [...operations],
-          ...(dropped > 0 ? { dropped } : {}),
-          ...(spans.length > 1 ? { [CONCURRENCY_KEY]: concurrencyOf(spans) } : {}),
-        }
+  const metadata = (): Metadata => {
+    if (operations.length === 0 && dropped === 0) return {}
+    const kept: Metadata = { [OPERATIONS_KEY]: [...operations] }
+    if (dropped > 0) kept.dropped = dropped
+    if (spans.length > 1) kept[CONCURRENCY_KEY] = concurrencyOf(spans)
+    return kept
+  }
   const published = Effect.suspend(() => (open ? publish(metadata()).pipe(Effect.ignoreCause) : Effect.void))
   const settle = (index: number, operation: Operation) =>
     Effect.suspend(() => {
@@ -185,13 +196,13 @@ export const journal = (publish: (metadata: Record<string, unknown>) => Effect.E
     })
   return {
     around: (tool, input, run) =>
-      Effect.suspend(() => {
+      Effect.flatMap(clockMs, (start) => {
         const started: Operation = { tool, status: "running", input: briefInput(input) }
         const index = operations.length < MAX_OPERATIONS ? operations.push(started) - 1 : -1
         if (index < 0) dropped++
-        const span = spans.push({ start: clock() - began }) - 1
-        const ended = Effect.sync(() => {
-          spans[span] = { start: spans[span]!.start, end: clock() - began }
+        const span = spans.push({ start, end: Option.none() }) - 1
+        const ended = Effect.map(clockMs, (end) => {
+          spans[span] = { start, end: Option.some(end) }
         })
         return published.pipe(
           Effect.andThen(Effect.ensuring(run, ended)),
