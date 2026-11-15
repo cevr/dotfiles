@@ -70,7 +70,7 @@ describe('the kept rules', () => {
     ['the focused round gate, each leg under a minute', /focused[^.\n]*each leg under a minute/i],
     ['a receipt', /\breceipt\b/i],
     ['one full gate per host at a time', /one full gate per host at a time/i],
-    ['a Rift per unit', /one Rift per unit/i],
+    ['a workspace per unit', /one workspace per unit/i],
     ['Codex never implements', /Codex[^.\n]*never implements/],
     ['deploy is reserved', /reserved[^\n]*\bdeploy\b/i],
     ['publish is reserved', /reserved[^\n]*\bpublish\b/i],

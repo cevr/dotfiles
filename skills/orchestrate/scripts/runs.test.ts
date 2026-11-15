@@ -49,7 +49,7 @@ test('runs lists each run dir whose unit logs hold transitions and changed since
   expect(out).toEqual([join(dev, 'repo/tmp/orchestrate/web'), join(cache, 'verify')].sort());
 });
 
-test('runs skips a test fixture right under a temp root and a removed Rift, and lists a run reached twice once', () => {
+test('runs skips a test fixture right under a temp root and a removed workspace, and lists a run reached twice once', () => {
   const temp = mkdtempSync(join(tmpdir(), 'runs-temp-'));
   const dev = mkdtempSync(join(tmpdir(), 'runs-dev-'));
   const line = '2026-10-20T10:00Z plan → implement r1 spec.md\n';

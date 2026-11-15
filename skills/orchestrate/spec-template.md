@@ -12,7 +12,7 @@ Mode: <single fix | lane | batch | deep | long run>: <why; for deep, why a defec
 <The result, in the user's words where they gave any; what is done, what other units do.>
 
 ## Workspace
-<Rift path>, branch `<branch>`, base `<main hash>`. Project rules: <AGENTS.md, NORTH_STAR.md paths>.
+<workspace path>, branch `<branch>`, base `<main hash>`. Project rules: <AGENTS.md, NORTH_STAR.md paths>.
 
 ## Owns
 <The files this unit may change; a fix needed elsewhere is a follow-up in state.md.>

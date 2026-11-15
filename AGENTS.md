@@ -30,16 +30,16 @@
 
 ## Isolated workspaces
 
-- Work happens in a Rift made from the repository's warm source, never in a Git worktree: a worktree is a full copy, a Rift a copy-on-write one. The folder you start in does not decide this: a checkout on a file system Rift cannot clone (the workbox's ext4 `~/Developer`) still has its warm source on one that can (`/workspaces`). The guard refuses `git worktree add` wherever Rift serves the checkout; `git worktree list`, `remove` and `prune` still run, to clean up old worktrees.
-- In OpenCode, use the `rift` tool (`create`, `list`, `remove`, `land`, and on the workbox its `workrift` actions): it runs the commands below for you, `remove` refuses a Rift with unsaved work, and `land` merges the Rifts it is given onto the default branch by their receipts and one merge check (`rift.mergeCheck`; else the repo's `rift.gate`), pushes and removes them. A run's root uses the `orchestrate` tool's `lane` and `land` instead of `rift create` and `rift land`.
-- Keep one clean warm source for each repository.
-- Do not make feature changes in a warm source.
-- Create a Rift from the warm source with `rift create --name <name> --copy-all .` to keep installed packages and generated output. The positional argument is the source path, not a branch name. Create the branch inside the Rift afterwards.
+- Work happens in a workspace made from the repository's base, never in a Git worktree: a worktree is a full copy, a workspace a copy-on-write one (Ergo's `work`). The folder you start in does not decide this: a checkout on a file system that cannot clone (the workbox's ext4 `~/Developer`) still has its base on one that can (`/workspaces`). The guard refuses `git worktree add` wherever a base serves the checkout; `git worktree list`, `remove` and `prune` still run, to clean up old worktrees.
+- In OpenCode, use the `work` tool (`create`, `list`, `remove`, `land`, and on the workbox its `workrift` actions): it runs the commands below for you, `remove` refuses a workspace with unsaved work, and `land` merges the workspaces it is given onto the default branch by their receipts and one merge check (`rift.mergeCheck`; else the repo's `rift.gate`), pushes and removes them. A run's root uses the `orchestrate` tool's `lane` and `land` instead of `work`'s `create` and `land`. The tool still answers to `rift` as an alias until 2026-12-06, when the alias and `workrift`'s name are due to change.
+- Keep one clean base for each repository.
+- Do not make feature changes in a base.
+- On the Mac outside OpenCode, run `work new <name>` in the base (`-branch <branch>` names another branch than `<name>`): it keeps installed packages and generated output. Remove it with `work rm <name>` when its isolated work is complete.
+- Workspaces live in `.work/<repo>/` beside the base; older ones, made by Rift, sit under `.rifts/<repo>/` until they land.
 - Run the package install only when the lock file changes.
-- Remove a Rift when its isolated work is complete.
-- On the workbox, use `workrift create <branch>` and `workrift remove`. Run them inside the repository; `workrift` finds its warm source.
+- On the workbox, use `workrift create <branch>` and `workrift remove`. Run them inside the repository; `workrift` finds its base.
 - Run `workrift create` from the old checkout to import its `gh stack` metadata.
-- `workrift create` fast-forwards and warms the warm source before it snapshots it. Refresh a warm source by hand with `workrift refresh`.
+- `workrift create` fast-forwards and warms the base before it snapshots it. Refresh a base by hand with `workrift refresh`.
 
 ## Visual progress
 

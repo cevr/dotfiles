@@ -55,7 +55,7 @@ A round is one request and its verdict, numbered 1, 2, 3, … for the life of th
 
 ## Implementor
 
-You are the sole writer, in the spec's Rift on the unit's branch, changing only the files the spec gives your unit. Read first the spec, the run's `common.md` if any (project facts; this protocol wins where they differ: name the line in your request) and `NORTH_STAR.md` → Owner rules. A later round names the findings: start it from main's head once your unit is on main (in a PR repo, on your branch). A fresh implementor (round 3 on) reads the spec, every `round-*-findings.md`, `state.md` and the branch before any edit. Another unit's finding added to your round is fixed and reported like your own.
+You are the sole writer, in the spec's workspace on the unit's branch, changing only the files the spec gives your unit. Read first the spec, the run's `common.md` if any (project facts; this protocol wins where they differ: name the line in your request) and `NORTH_STAR.md` → Owner rules. A later round names the findings: start it from main's head once your unit is on main (in a PR repo, on your branch). A fresh implementor (round 3 on) reads the spec, every `round-*-findings.md`, `state.md` and the branch before any edit. Another unit's finding added to your round is fixed and reported like your own.
 
 1. **State.** Keep `<unit dir>/state.md` current after each commit: branch, commits, done, next, open questions.
 2. **Build** the whole unit in Conventional Commits, one logical unit each, staged by exact path; a behavior change the repo's `verify-<app>` feature map describes edits that file too. **Decide** an open choice by the simpler, reversible option, in `state.md` as "decided by <principle>" (`~/Developer/personal/dotfiles/principles/`).
