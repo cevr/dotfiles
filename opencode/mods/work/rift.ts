@@ -26,7 +26,7 @@ export const RiftInput = toolInput(Schema.Struct({
     description: "create: the branch to check out: the local branch, else the remote one, else a new branch from the source's HEAD. Default: the name.",
   }),
   source: Schema.optional(Schema.String).annotate({
-    description: "create, list, refresh and check: a directory of the repository whose warm source to use. Default: this session's directory.",
+    description: "create, list, refresh and check: a directory of the repository whose base to use. Default: this session's directory.",
   }),
   path: Schema.optional(Schema.String).annotate({
     description: "remove and deps: the workspace's directory, in place of its name. init: where to clone (default: /workspaces/<repository>).",
@@ -41,7 +41,7 @@ export const RiftInput = toolInput(Schema.Struct({
   departs: Schema.optional(Schema.String).annotate({
     description: "land: why this land goes against the orchestrate skill's batch rules; the orchestrate plugin records it as the reason. The land does nothing else with it.",
   }),
-  repository: Schema.optional(Schema.String).annotate({ description: "init: the repository to clone as a new warm source (a Git URL)." }),
+  repository: Schema.optional(Schema.String).annotate({ description: "init: the repository to clone as a new base (a Git URL)." }),
   force: Schema.optional(Schema.Boolean).annotate({
     description: "remove: remove it although it holds uncommitted changes, stashes or commits found nowhere else. Only when the user said to drop that work.",
   }),
@@ -128,7 +128,7 @@ export const created = (workspace: Workspace, source: string): string =>
 /** The answer to a list. */
 export const listed = (source: string, workspaces: ReadonlyArray<Workspace>): string =>
   workspaces.length === 0
-    ? `The warm source ${source} has no workspaces.`
+    ? `The base ${source} has no workspaces.`
     : [`Workspaces of ${source}:`, ...workspaces.map((workspace) => `- ${workspace.path} · ${at(workspace)} · ${stateOf(workspace)}`)].join("\n")
 
 /** The answer to a remove. */
@@ -160,8 +160,8 @@ export const explainInput = (refusal: InputRefused): string => {
       return 'init needs the repository to clone: { action: "init", repository: "git@github.com:owner/repo.git", path? }.'
     case "NoSuchRift":
       return refusal.rifts.length === 0
-        ? `The warm source ${refusal.source} has no workspace named ${refusal.name}; it has no workspaces.`
-        : `The warm source ${refusal.source} has no workspace named ${refusal.name}. Its workspaces:\n${refusal.rifts.map((path) => `  ${path}`).join("\n")}`
+        ? `The base ${refusal.source} has no workspace named ${refusal.name}; it has no workspaces.`
+        : `The base ${refusal.source} has no workspace named ${refusal.name}. Its workspaces:\n${refusal.rifts.map((path) => `  ${path}`).join("\n")}`
     case "AmbiguousRift":
       return `${refusal.name} names more than one workspace of ${refusal.source}; name one by its path:\n${refusal.matches.map((match) => `  ${match}`).join("\n")}`
   }

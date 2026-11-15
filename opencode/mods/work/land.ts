@@ -360,7 +360,7 @@ export const checkAcceptedText = (main: string, ran: ReadonlyArray<Unit>, accept
 export const explainLand = (failure: GateMissing | LandRefused | LandStopped): string => {
   switch (failure._tag) {
     case "GateMissing":
-      return `The repository of ${failure.source} names no gate, so land will not push. Set it in the warm source's Git config: git -C ${failure.source} config rift.gate '<fast check>' (and rift.accept '<slow check, given $RIFT_LAND_BASE>' for the background check).`
+      return `The repository of ${failure.source} names no gate, so land will not push. Set it in the base's Git config: git -C ${failure.source} config rift.gate '<fast check>' (and rift.accept '<slow check, given $RIFT_LAND_BASE>' for the background check).`
     case "LandRefused":
       return `Did not land anything: ${failure.path} ${failure.reason}`
     case "LandStopped":

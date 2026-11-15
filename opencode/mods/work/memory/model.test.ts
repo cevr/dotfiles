@@ -90,7 +90,7 @@ describe("the rift tool", () => {
     expect(await call(state, { action: "list" })).toBe(
       [`Workspaces of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`, "- /code/.rifts/app/old · detached at abc1234 · 1 unpushed, 2 stashed"].join("\n"),
     )
-    expect(await call(MemoryRifts.world([SOURCE]), { action: "list" })).toBe(`The warm source ${SOURCE} has no workspaces.`)
+    expect(await call(MemoryRifts.world([SOURCE]), { action: "list" })).toBe(`The base ${SOURCE} has no workspaces.`)
     expect(await call(MemoryRifts.world(["/other"]), { action: "list" })).toBe("failed: rift ancestors failed: /code/app/src is in no Rift source")
   })
 
@@ -107,8 +107,8 @@ describe("the rift tool", () => {
   test("remove names what it cannot find, and never takes the source or the session's own Rift", async () => {
     const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x")])
     expect(await call(state, { action: "remove" })).toStartWith("refused: remove needs the workspace")
-    expect(await call(state, { action: "remove", name: "nope" })).toBe(`refused: The warm source ${SOURCE} has no workspace named nope. Its workspaces:\n  ${FEAT}`)
-    expect(await call(state, { action: "remove", path: SOURCE, force: true })).toBe(`refused: ${SOURCE} is a warm source, not a workspace made from one; this tool never removes a source.`)
+    expect(await call(state, { action: "remove", name: "nope" })).toBe(`refused: The base ${SOURCE} has no workspace named nope. Its workspaces:\n  ${FEAT}`)
+    expect(await call(state, { action: "remove", path: SOURCE, force: true })).toBe(`refused: ${SOURCE} is a base, not a workspace made from one; this tool never removes a base.`)
     expect(await call(state, { action: "remove", name: "feat-x", force: true }, "ses_in")).toStartWith(`refused: This session runs in ${FEAT}/src, inside ${FEAT}.`)
     expect(state.rifts.has(FEAT)).toBe(true)
   })
@@ -588,15 +588,15 @@ describe("land", () => {
   test("refuses before touching a Rift: no Rifts named, an unknown one, its own uncommitted changes, a detached HEAD, the integration Rift, no gate configured", async () => {
     const made = two()
     expect(await call(made, { action: "land" })).toBe('refused: land needs the workspaces to land, in order: { action: "land", workspaces: ["feat-x"] }.')
-    expect(await call(made, { action: "land", rifts: ["feat-x", "nope"] })).toStartWith(`refused: The warm source ${SOURCE} has no workspace named nope.`)
+    expect(await call(made, { action: "land", rifts: ["feat-x", "nope"] })).toStartWith(`refused: The base ${SOURCE} has no workspace named nope.`)
     made.landing.own.set(FEAT, [" M src/a.ts"])
     expect(await call(made, { action: "land", rifts: ["feat-y", "feat-x"] })).toBe(`refused: Did not land anything: ${FEAT} holds uncommitted changes; commit them first:\n   M src/a.ts`)
     made.rifts.rifts.set(INTEGRATE, MemoryRifts.clean(INTEGRATE, "integrate"))
     expect(await call(made, { action: "land", rifts: ["integrate"] })).toStartWith(`refused: Did not land anything: ${INTEGRATE} is the integration workspace`)
     const bare = bench(MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, undefined)]))
-    expect(await call(bare, { action: "land", rifts: ["feat-x"] })).toStartWith(`refused: The repository of ${SOURCE} names no gate, so land will not push. Set it in the warm source's Git config: git -C ${SOURCE} config rift.gate`)
+    expect(await call(bare, { action: "land", rifts: ["feat-x"] })).toStartWith(`refused: The repository of ${SOURCE} names no gate, so land will not push. Set it in the base's Git config: git -C ${SOURCE} config rift.gate`)
     expect(await call(bare, { action: "land", rifts: ["feat-y"] })).toBe(`refused: Did not land anything: ${OTHER} is not on a Git branch.`)
-    expect(await call(bare, { action: "land", rifts: [SOURCE] })).toBe(`refused: Did not land anything: ${SOURCE} is a warm source; land a workspace made from one.`)
+    expect(await call(bare, { action: "land", rifts: [SOURCE] })).toBe(`refused: Did not land anything: ${SOURCE} is a base; land a workspace made from one.`)
     expect([...made.landing.steps, ...bare.landing.steps]).toEqual([])
     expect(bare.rifts.rifts.has(INTEGRATE)).toBe(false)
   })

@@ -136,7 +136,7 @@ if (runnable)
           const [list, ...rest] = result.calls
           expect(rest).toEqual([])
           expect([list?.name, list?.status]).toEqual(["rift", "completed"])
-          expect(list?.said).toBe(`The warm source ${result.source} has no workspaces.`)
+          expect(list?.said).toBe(`The base ${result.source} has no workspaces.`)
           expect(result.transcript).toContain(DONE)
         }),
       RUN_MS,

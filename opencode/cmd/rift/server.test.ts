@@ -110,7 +110,7 @@ describe("the rift plugin", () => {
         expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).")
         yield* Effect.sleep("20 millis")
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
-        expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The warm source /code/app has no workspace named nope.")
+        expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The base /code/app has no workspace named nope.")
         // An orchestrate run names each Rift with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
         const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
         state.rifts.set(named.path, named)

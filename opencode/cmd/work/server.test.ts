@@ -324,7 +324,7 @@ describe("the work plugin", () => {
         )
         yield* settle
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
-        expect(yield* call({ action: "land", workspaces: ["nope"] })).toStartWith("error: The warm source /code/app has no workspace named nope.")
+        expect(yield* call({ action: "land", workspaces: ["nope"] })).toStartWith("error: The base /code/app has no workspace named nope.")
         // An orchestrate run names each workspace with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
         const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
         world.rifts.rifts.set(named.path, named)

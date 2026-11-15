@@ -109,7 +109,7 @@ const some = (lines: ReadonlyArray<string>, limit = 10): string =>
 export const explainRefusal = (refusal: RemoveRefused): string => {
   switch (refusal._tag) {
     case "SourceKept":
-      return `${refusal.path} is a warm source, not a workspace made from one; this tool never removes a source.`
+      return `${refusal.path} is a base, not a workspace made from one; this tool never removes a base.`
     case "SessionInside":
       return `This session runs in ${refusal.directory}, inside ${refusal.path}. Move the session out first (session_move to the source), then remove it.`
     case "ChildrenKept":

@@ -462,7 +462,7 @@ export const layer = Layer.effect(
     /** The Rift at `path` as a unit of the batch, or why it cannot be one. */
     const unitOf = Effect.fn("RiftTool.unitOf")(function* (path: string, source: string) {
       const workspace = yield* rifts.inspect(path)
-      if (workspace.source) return yield* new LandRefused({ path, reason: "is a warm source; land a workspace made from one." })
+      if (workspace.source) return yield* new LandRefused({ path, reason: "is a base; land a workspace made from one." })
       if (keptAs(path, INTEGRATION)) return yield* new LandRefused({ path, reason: "is the integration workspace land merges in; land the workspaces it merged." })
       if (keptAs(path, POST_LAND)) return yield* new LandRefused({ path, reason: "is the workspace the post-land step runs in; it holds no work to land." })
       if (keptAs(path, ACCEPT)) return yield* new LandRefused({ path, reason: "is the workspace a land's accept check runs in; it holds no work to land." })
