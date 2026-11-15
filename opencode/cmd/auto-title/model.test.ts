@@ -4,13 +4,14 @@
 // owner's pin and its release, an agent's rename, a subagent, a busy session,
 // another location's copy, a failed request, and one request at a time for
 // copies that share the host's lock.
-import { describe, expect, test } from "bun:test"
+import { describe, expect } from "bun:test"
 import { Context, Deferred, Effect, Layer, Option, Scope, Semaphore } from "effect"
 import { TestClock } from "effect/testing"
-import { tracksLaws } from "./laws.ts"
-import { AutoTitle, layer } from "./model.ts"
-import type { Policy, Track } from "./retitle.ts"
-import { type Seat, Sessions, TitleFailed, Tracks } from "./service.ts"
+import { tracksLaws } from "@dotfiles/opencode-auto-title/laws"
+import { AutoTitle, layer } from "@dotfiles/opencode-auto-title/model"
+import type { Policy, Track } from "@dotfiles/opencode-auto-title/retitle"
+import { type Seat, Sessions, TitleFailed, Tracks } from "@dotfiles/opencode-auto-title/service"
+import { effectTest } from "../../sim-tui/effect-test.ts"
 
 /** The tracks in a map the test reads. */
 const memoryTracks = (entries: Map<string, Track> = new Map()) =>
@@ -23,9 +24,11 @@ const memoryTracks = (entries: Map<string, Track> = new Map()) =>
     }),
   )
 
-tracksLaws("the test's tracks", () => memoryTracks())
+tracksLaws("the test's tracks", () => memoryTracks(), effectTest)
 
 const MINUTE = 60_000
+/** Each case's time limit, ms. */
+const LIMIT = 5_000
 const POLICY: Policy = { afterMs: 30 * MINUTE, afterTurns: 6 }
 
 /** A root session of this copy's location, idle: the seat of every session the test does not set. */
@@ -67,8 +70,9 @@ const copy = (world: Host, lock: Semaphore.Semaphore, tracks: Map<string, Track>
 /** Lets the forked title requests run. */
 const settle = Effect.forEach(Array.from({ length: 50 }), () => Effect.yieldNow, { discard: true })
 
-const scenario = <A>(body: (input: { readonly world: Host; readonly title: AutoTitle["Service"]; readonly tracks: Map<string, Track> }) => Effect.Effect<A, unknown, Scope.Scope>) =>
-  Effect.runPromise(
+const scenario = <A>(name: string, body: (input: { readonly world: Host; readonly title: AutoTitle["Service"]; readonly tracks: Map<string, Track> }) => Effect.Effect<A, unknown, Scope.Scope>) =>
+  effectTest(
+    name,
     Effect.scoped(
       Effect.gen(function* () {
         const world = host()
@@ -76,7 +80,8 @@ const scenario = <A>(body: (input: { readonly world: Host; readonly title: AutoT
         const title = yield* copy(world, Semaphore.makeUnsafe(1), tracks)
         return yield* body({ world, title, tracks })
       }),
-    ).pipe(Effect.provide(TestClock.layer())),
+    ).pipe(Effect.provide(TestClock.layer()), Effect.orDie),
+    LIMIT,
   )
 
 /** `n` turns of the session, each ending idle. */
@@ -88,8 +93,7 @@ const generated = (title: AutoTitle["Service"], sessionID: string) =>
   title.generating(sessionID).pipe(Effect.andThen(title.renamed(sessionID, "Generated")), Effect.andThen(settle))
 
 describe("auto-title, on the test clock", () => {
-  test("an idle root session is retitled once 30 minutes and 6 turns have passed since its last title, and not before", () =>
-    scenario(({ world, title }) =>
+  scenario("an idle root session is retitled once 30 minutes and 6 turns have passed since its last title, and not before", ({ world, title }) =>
       Effect.gen(function* () {
         yield* generated(title, "ses_root")
         yield* turns(title, "ses_root", 6)
@@ -107,20 +111,18 @@ describe("auto-title, on the test clock", () => {
         yield* turns(title, "ses_root", 1)
         expect(world.asked).toEqual(["ses_root", "ses_root"])
       }),
-    ))
+  )
 
-  test("hours with fewer than 6 turns keep the title", () =>
-    scenario(({ world, title }) =>
+  scenario("hours with fewer than 6 turns keep the title", ({ world, title }) =>
       Effect.gen(function* () {
         yield* generated(title, "ses_root")
         yield* TestClock.adjust(5 * 60 * MINUTE)
         yield* turns(title, "ses_root", 5)
         expect(world.asked).toEqual([])
       }),
-    ))
+  )
 
-  test("a compaction retitles at once when a turn ended since the last title, and not with none", () =>
-    scenario(({ world, title }) =>
+  scenario("a compaction retitles at once when a turn ended since the last title, and not with none", ({ world, title }) =>
       Effect.gen(function* () {
         yield* generated(title, "ses_root")
         yield* title.compacted("ses_root").pipe(Effect.andThen(settle))
@@ -129,10 +131,9 @@ describe("auto-title, on the test clock", () => {
         yield* title.compacted("ses_root").pipe(Effect.andThen(settle))
         expect(world.asked).toEqual(["ses_root"])
       }),
-    ))
+  )
 
-  test("a compaction during a turn retitles when the session goes idle", () =>
-    scenario(({ world, title }) =>
+  scenario("a compaction during a turn retitles when the session goes idle", ({ world, title }) =>
       Effect.gen(function* () {
         yield* generated(title, "ses_root")
         yield* turns(title, "ses_root", 1)
@@ -143,10 +144,9 @@ describe("auto-title, on the test clock", () => {
         yield* turns(title, "ses_root", 1)
         expect(world.asked).toEqual(["ses_root"])
       }),
-    ))
+  )
 
-  test("a title the owner set pins the session until the owner asks for a generated one", () =>
-    scenario(({ world, title, tracks }) =>
+  scenario("a title the owner set pins the session until the owner asks for a generated one", ({ world, title, tracks }) =>
       Effect.gen(function* () {
         yield* title.renamed("ses_root", "My own name")
         expect(pinned(tracks, "ses_root")).toEqual(Option.some(true))
@@ -163,10 +163,9 @@ describe("auto-title, on the test clock", () => {
         yield* turns(title, "ses_root", 6)
         expect(world.asked).toEqual(["ses_root"])
       }),
-    ))
+  )
 
-  test("an agent's rename does not pin, and counts as the last title", () =>
-    scenario(({ world, title, tracks }) =>
+  scenario("an agent's rename does not pin, and counts as the last title", ({ world, title, tracks }) =>
       Effect.gen(function* () {
         yield* generated(title, "ses_root")
         yield* TestClock.adjust(40 * MINUTE)
@@ -180,10 +179,9 @@ describe("auto-title, on the test clock", () => {
         yield* turns(title, "ses_root", 1)
         expect(world.asked).toEqual(["ses_root"])
       }),
-    ))
+  )
 
-  test("an agent's mark does not cover another title, nor one long after", () =>
-    scenario(({ title, tracks }) =>
+  scenario("an agent's mark does not cover another title, nor one long after", ({ title, tracks }) =>
       Effect.gen(function* () {
         yield* title.agentRenaming("ses_a", "The agent's")
         yield* title.renamed("ses_a", "The owner's")
@@ -193,10 +191,9 @@ describe("auto-title, on the test clock", () => {
         yield* title.renamed("ses_b", "The agent's")
         expect(pinned(tracks, "ses_b")).toEqual(Option.some(true))
       }),
-    ))
+  )
 
-  test("a subagent's session is never retitled, nor kept", () =>
-    scenario(({ world, title, tracks }) =>
+  scenario("a subagent's session is never retitled, nor kept", ({ world, title, tracks }) =>
       Effect.gen(function* () {
         world.seats.set("ses_child", { serves: true, child: true, running: false })
         yield* title.renamed("ses_child", "implementor auto-title r1")
@@ -206,10 +203,9 @@ describe("auto-title, on the test clock", () => {
         expect(world.asked).toEqual([])
         expect(tracks.has("ses_child")).toBe(false)
       }),
-    ))
+  )
 
-  test("a busy session is not retitled until it is idle again", () =>
-    scenario(({ world, title }) =>
+  scenario("a busy session is not retitled until it is idle again", ({ world, title }) =>
       Effect.gen(function* () {
         yield* generated(title, "ses_root")
         yield* TestClock.adjust(30 * MINUTE)
@@ -220,10 +216,9 @@ describe("auto-title, on the test clock", () => {
         yield* title.stopped("ses_root").pipe(Effect.andThen(settle))
         expect(world.asked).toEqual(["ses_root"])
       }),
-    ))
+  )
 
-  test("another location's copy leaves the session alone", () =>
-    scenario(({ world, title, tracks }) =>
+  scenario("another location's copy leaves the session alone", ({ world, title, tracks }) =>
       Effect.gen(function* () {
         world.seats.set("ses_far", { serves: false, child: false, running: false })
         yield* title.renamed("ses_far", "Elsewhere")
@@ -232,10 +227,9 @@ describe("auto-title, on the test clock", () => {
         expect(world.asked).toEqual([])
         expect(tracks.has("ses_far")).toBe(false)
       }),
-    ))
+  )
 
-  test("a failed request is silent, and is not asked again before the next window", () =>
-    scenario(({ world, title }) =>
+  scenario("a failed request is silent, and is not asked again before the next window", ({ world, title }) =>
       Effect.gen(function* () {
         world.failing.add("ses_root")
         yield* generated(title, "ses_root")
@@ -245,10 +239,10 @@ describe("auto-title, on the test clock", () => {
         yield* turns(title, "ses_root", 3)
         expect(world.asked).toEqual(["ses_root"])
       }),
-    ))
+  )
 
-  test("copies sharing the host's lock make one title request at a time", () =>
-    Effect.runPromise(
+  effectTest(
+    "copies sharing the host's lock make one title request at a time",
       Effect.scoped(
         Effect.gen(function* () {
           const world = host()
@@ -273,5 +267,6 @@ describe("auto-title, on the test clock", () => {
           expect(pinned(tracks, "ses_b")).toEqual(Option.some(false))
         }),
       ).pipe(Effect.provide(TestClock.layer())),
-    ))
+    LIMIT,
+  )
 })

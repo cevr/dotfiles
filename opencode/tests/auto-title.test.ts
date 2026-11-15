@@ -6,7 +6,7 @@
 // many turns; the owner's `/rename` with no argument unpins it. It needs
 // OPENCODE_DEV (the fork, with the plugin `session.update` generating a title
 // for an empty one: `feat/plugin-title-regenerate`). The trigger rule is tested
-// on the test clock beside its code (mods/auto-title/model.test.ts).
+// on the test clock in cmd/auto-title/model.test.ts.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Config, Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"

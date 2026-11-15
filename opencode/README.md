@@ -2202,7 +2202,7 @@ argument; an agent's `opencode_session_rename` does not pin. Subagents keep thei
 next idle; one title request runs at a time on the host and a failed one leaves the old title. The rule is `due` in
 `mods/auto-title/retitle.ts`, the handlers in `model.ts`, the pins and counts in the plugin's storage
 (`opencode/tracks.ts`); it needs the fork's plugin `session.update` with an empty title generating one.
-`mods/auto-title/model.test.ts` tests the rule on the test clock, `tests/auto-title.test.ts` in real OpenCode.
+`cmd/auto-title/model.test.ts` tests the rule on the test clock, `tests/auto-title.test.ts` in real OpenCode.
 
 ## Session mail
 
