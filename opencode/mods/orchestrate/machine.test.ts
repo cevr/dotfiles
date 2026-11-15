@@ -33,8 +33,9 @@
 // rule's words are the skill's own is git/machine-words.test.ts (this
 // folder's root files read no file).
 import { describe, expect, test } from "bun:test"
-import { Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Predicate, Schema } from "effect"
 import { lineOfCheckpoint } from "./ledger.ts"
+import { OrchestrateInput } from "./tools.ts"
 import { checkpointOf } from "./line.ts"
 import {
   briefOf,
@@ -58,9 +59,11 @@ import {
   Spawned,
   Start,
   startOf,
+  UnitAdopted,
   UnitDropped,
   unitOfEntry,
   unitOfName,
+  VerifierEnded,
   verifierPromptOf,
 } from "./machine.ts"
 
@@ -157,8 +160,26 @@ const unfolded = (shadow: Shadow, lands: ReadonlyArray<string>) =>
   [...shadow.findings]
     .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && shadow.units.get(finding.into)?.state !== "implement" && !intoEnded(shadow, finding)))
     .map(([key]) => key)
-/** The rules `command` breaks on `shadow`, in the order they are checked. */
-const broken = (shadow: Shadow, command: Command, now: number): ReadonlyArray<Rule> => {
+/** The shadow with each `{ path, unit }` a land names of a unit it does not hold adopted: ready, on that Rift. */
+const adopting = (shadow: Shadow, rifts: ReadonlyArray<LandTarget>, now: number): Shadow => {
+  const units = new Map(shadow.units)
+  for (const rift of rifts) {
+    const entry = entryOf(rift)
+    for (const unit of Option.toArray(Option.fromUndefinedOr(entry.unit))) {
+      if (!units.has(unit)) units.set(unit, { state: "ready", since: now, direct: false, rifts: [entry.rift] })
+    }
+  }
+  return { ...shadow, units }
+}
+/** The shadow a command's rules read: a land's adoptions made, else `shadow` as it is. */
+const seenBy = (shadow: Shadow, command: Command, now: number): Shadow =>
+  Match.value(command).pipe(
+    Match.tag("Land", (land) => adopting(shadow, land.rifts, now)),
+    Match.orElse(() => shadow),
+  )
+/** The rules `command` breaks on `shadow`, in the order they are checked; a land's on the shadow its adoptions make. */
+const broken = (before: Shadow, command: Command, now: number): ReadonlyArray<Rule> => {
+  const shadow = seenBy(before, command, now)
   if (command._tag === "Start" && command.role === "verifier") {
     const rules: Array<Rule> = []
     if (!BATCH.test(command.name) && shadow.units.size > 0) rules.push("VerifierPerUnit")
@@ -238,6 +259,8 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       shadow.carried.clear()
       // A finding folded into a unit the verdict took out was checked already; one folded into a unit that ended is settled.
       for (const [key, finding] of shadow.findings) if (finding.into !== undefined && !shadow.units.has(finding.into)) shadow.findings.delete(key)
+      // Those its report marks closed by another batch leave.
+      for (const key of command.closed ?? []) shadow.findings.delete(key)
       // A `changes` whose findings did not read is unresolved, never an empty set.
       if (command.verdict === "changes" && command.findings === undefined) shadow.unresolved.add(command.name)
       if (command.verdict === "changes") for (const key of command.findings ?? []) shadow.findings.set(key, { batch: command.name, into: undefined })
@@ -248,6 +271,8 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       for (const key of command.findings) shadow.findings.set(key, { batch: command.batch, into: undefined })
       return
     case "Land":
+      // A land that passed adopted each unit it named with its Rift that the shadow did not hold.
+      for (const [name, unit] of adopting(shadow, command.rifts, now).units) if (!shadow.units.has(name)) shadow.units.set(name, unit)
       return
     case "Drop": {
       // A dropped unit ends, unless its batch holds it (landed or verifying); the findings folded into it, and its
@@ -340,7 +365,10 @@ const command = (random: () => number, shadow: Shadow): Command => {
     // A `changes` whose report did not read carries no findings (now and then saying why): unresolved, not empty.
     const read = random() < 0.75
     const unread = !read && random() < 0.5 ? { unread: { report: "/nonexistent/loop-probe-x/findings.md", why: "it is missing" } } : {}
-    return HandBack.make({ role: "verifier", name: shadow.verifier ?? "batch-1", verdict, ...(verdict === "changes" && read ? { findings } : unread) })
+    // Now and then its report marks findings closed by another batch: open ones, and one that is no open finding's.
+    const stray = Arr.filter([`${pick(UNITS)}/M7`], () => random() < 0.3)
+    const closed = Option.getOrElse(Arr.head(Arr.filter([{ closed: [...[...shadow.findings.keys()].filter(() => random() < 0.5), ...stray] }], () => random() < 0.2)), () => ({}))
+    return HandBack.make({ role: "verifier", name: shadow.verifier ?? "batch-1", verdict, ...(verdict === "changes" && read ? { findings } : unread), ...closed })
   }
   if (roll < 0.8) return ReportRead.make({ batch: pick([...shadow.unresolved, "batch-1"]), findings: random() < 0.5 ? [] : [`${pick(UNITS)}/M3`] })
   const ready = inState(shadow, "ready")
@@ -431,10 +459,12 @@ describe("the machine against its reference model", () => {
         const departed = outcome.events.filter((event) => event._tag === "Departed").map((event) => (event as { rule: Rule }).rule)
         expect([where, departed]).toEqual([where, departs ? [...rules] : []])
 
-        const readyBefore = inState(shadow, "ready")
+        // A land's rules read the shadow its adoptions make.
+        const seen = seenBy(shadow, next, now)
+        const readyBefore = inState(seen, "ready")
         const pendingBefore = verdictDue(shadow)
         const coverBefore = coverOf(shadow)
-        const unfoldedBefore = next._tag === "Land" ? [...unfolded(shadow, matched(shadow, next.rifts)), ...shadow.unresolved] : []
+        const unfoldedBefore = next._tag === "Land" ? [...unfolded(seen, matched(seen, next.rifts)), ...shadow.unresolved] : []
         const findingsBefore = findingsOf(state)
         const foldedBefore = Object.entries(findingsBefore).filter(([, finding]) => !finding.endsWith(":-")).map(([key]) => key)
         apply(shadow, next, now)
@@ -579,6 +609,81 @@ describe("the machine's stories", () => {
     const dropped = runNow([...checked, [Drop.make({ unit: "b" }), 3 * MIN], [Landed.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 4 * MIN]])
     expect([Object.hasOwn(dropped.state.units, "b"), dropped.state.unverified]).toEqual([false, ["b"]])
     expect((runNow([...checked, [Drop.make({ unit: "b" }), 3 * MIN], [Landed.make({ rifts: [{ rift: "/r/b", unit: "b" }] }), 4 * MIN], ...next])).last).toMatchObject({ refused: "VerdictPending" })
+  })
+
+  /** The `orchestrate` land a refusal names, as the machine's Land: each name as itself, each `{ unit, path }` as its entry. */
+  const suggestedLand = (message: string, pattern: RegExp): Land => {
+    const call = Option.getOrThrow(Option.flatMap(Option.fromNullOr(pattern.exec(message)), (found) => Arr.get(found, 1))).replace(/^orchestrate\((.*)\)$/, "$1")
+    const input = decodeInput(call.replace(/(\w+): /g, '"$1": '))
+    const rifts = Arr.map(input.units ?? [], (unit): LandTarget =>
+      Match.value(unit).pipe(
+        Match.when(Predicate.isString, (name) => name),
+        Match.orElse((entry) => ({ rift: entry.path, unit: entry.unit })),
+      ),
+    )
+    return Land.make(Option.match(Option.fromUndefinedOr(input.departs), { onNone: () => ({ rifts }), onSome: (departs) => ({ rifts, departs }) }))
+  }
+  const decodeInput = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrateInput))
+  /** A refusal's words; none for an outcome that is no refusal. */
+  const wordsOf = (last: Outcome): string => Match.value(last).pipe(Match.when((out): out is Extract<Outcome, { refused: unknown }> => "refused" in out, (out) => out.message), Match.orElse(() => ""))
+
+  test("land-adopt: a land's { path, unit } of a unit the machine does not hold adopts it, ready on that Rift, and its record lands it for the verifier", () => {
+    const named = [{ rift: "/r/z", unit: "z" }, "b"] as const
+    const checked = runNow([[impl("b"), 0], [ready("b"), MIN], [Land.make({ rifts: named }), 2 * MIN]])
+    expect(checked.last).toEqual({ events: [UnitAdopted.make({ unit: "z", rift: "/r/z", at: T0 + 2 * MIN })] })
+    expect(checked.state.units.z).toEqual({ state: "ready", round: 1, since: T0 + 2 * MIN, direct: false, rifts: ["/r/z"] })
+    const landed = runNow([[Landed.make({ rifts: named }), 3 * MIN]], checked.state)
+    expect([landed.state.units.z?.state, landed.state.units.b?.state, [...(landed.state.unverified ?? [])].sort()]).toEqual(["landed", "landed", ["b", "z"]])
+    // Only that form adopts: a bare name the machine does not hold names nothing of its.
+    expect(runNow([[Land.make({ rifts: ["z"] }), 0]])).toEqual({ state: M.initial, last: { events: [] } })
+  })
+
+  test("land-adopt: a refused land adopts nothing, and the call its refusal names, made literally, passes", () => {
+    // VerdictPending: the departing call names the unit with its Rift, and adopts it when made.
+    const pending = runNow([...landedOnce, [Land.make({ rifts: [{ rift: "/r/z", unit: "z" }] }), 4 * MIN]])
+    expect(pending.last).toMatchObject({ refused: "VerdictPending" })
+    expect(Object.hasOwn(pending.state.units, "z")).toBe(false)
+    const message = wordsOf(pending.last)
+    expect(message).toContain('orchestrate({ action: "land", units: [{ unit: "z", path: "/r/z" }], departs: "<why>" })')
+    const departing = runNow([[suggestedLand(message, /make the same call again and add departs: "<why>" to the land's input: (orchestrate\(.*\))\. It then/), 5 * MIN]], pending.state)
+    expect("events" in departing.last).toBe(true)
+    expect(departing.state.units.z?.state).toBe("ready")
+    // LandPartial: the call it names takes every ready unit and keeps the adoptee's { unit, path }.
+    const partial = runNow([[impl("b"), 0], [ready("b"), MIN], [Land.make({ rifts: [{ rift: "/r/z", unit: "z" }] }), 2 * MIN]])
+    expect(partial.last).toMatchObject({ refused: "LandPartial" })
+    const words = wordsOf(partial.last)
+    expect(words).toContain('Land every ready unit in one call: orchestrate({ action: "land", units: ["b", { unit: "z", path: "/r/z" }] })')
+    const whole = runNow([[suggestedLand(words, /Land every ready unit in one call: (orchestrate\(.*?\)) lands/), 3 * MIN]], partial.state)
+    expect(whole.last).toEqual({ events: [UnitAdopted.make({ unit: "z", rift: "/r/z", at: T0 + 3 * MIN })] })
+  })
+
+  test("land-adopt: a verdict's report that marks findings closed by another batch closes them: the next land no longer counts them", () => {
+    const opened = runNow([
+      ...landedOnce,
+      [verifierOf("batch-1"), 4 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["a/M1", "a/M2"] }), 5 * MIN],
+      [impl("b"), 6 * MIN],
+      [ready("b"), 7 * MIN],
+    ])
+    expect(runNow([[Land.make({ rifts: ["b"] }), 8 * MIN]], opened.state).last).toMatchObject({ refused: "FindingUnfolded" })
+    // batch-2's verifier (over b, landed by hand: its start stands in for the land) reads them fixed by a PR and
+    // accepted in another batch: its report marks them closed, and one that is no open finding's closes nothing.
+    const closing = runNow(
+      [
+        [verifierOf("batch-2"), 8 * MIN],
+        [HandBack.make({ role: "verifier", name: "batch-2", verdict: "accepted", closed: ["a/M1", "a/M2", "x/M9"] }), 9 * MIN],
+        [impl("c"), 10 * MIN],
+        [ready("c"), 11 * MIN],
+      ],
+      opened.state,
+    )
+    expect(closing.state.findings).toBeUndefined()
+    expect(runNow([[Land.make({ rifts: ["c"] }), 12 * MIN]], closing.state).last).toEqual({ events: [] })
+    const ended = runNow([[verifierOf("batch-2"), 8 * MIN], [HandBack.make({ role: "verifier", name: "batch-2", verdict: "accepted", closed: ["a/M1", "a/M2", "x/M9"] }), 9 * MIN]], opened.state)
+    expect(ended.last).toEqual({ events: [VerifierEnded.make({ batch: "batch-2", verdict: "accepted", closed: ["a/M1", "a/M2"], at: T0 + 9 * MIN })] })
+    // A verifier with no verdict closes nothing.
+    const silent = runNow([[verifierOf("batch-2"), 8 * MIN], [HandBack.make({ role: "verifier", name: "batch-2", verdict: "none", closed: ["a/M1"] }), 9 * MIN]], opened.state)
+    expect(Object.keys(silent.state.findings ?? {})).toEqual(["a/M1", "a/M2"])
   })
 
   test("F1: a verifier started while its batch's land runs stands in for that land; the land's own record still waits for a verdict over what it pushed", () => {
@@ -1134,8 +1239,12 @@ describe("the machine's stories", () => {
     // By names alone: `lu-second-try` is no unit's, never reset-use's or another's, so the land leaves land-upstream out.
     const partial = await run([...steps, [Land.make({ rifts: ["reset-use-3", "lu-second-try"], departs: "probe" }), 51 * MIN]])
     expect(partial.last).toEqual({ events: ["FindingUnfolded", "LandPartial"].map((rule) => expect.objectContaining({ _tag: "Departed", rule })) })
+    // `{ path, unit }` of a unit it does not hold adopts it (land-adopt): the departing call names it as given.
     const refused = await run([...steps, [Land.make({ rifts: ["reset-use-3", { rift: "/u/.rifts/dotfiles/lu", unit: "nope" }] }), 51 * MIN]])
-    expect("refused" in refused.last && refused.last.message).toContain('orchestrate({ action: "land", units: ["reset-use", { unit: "<unit>", path: "/u/.rifts/dotfiles/lu" }], departs: "<why>" })')
+    expect("refused" in refused.last && refused.last.message).toContain('orchestrate({ action: "land", units: ["reset-use", { unit: "nope", path: "/u/.rifts/dotfiles/lu" }], departs: "<why>" })')
+    // A Rift the land places as no unit's is still `<unit>`.
+    const placeless = runNow([...steps, [Land.make({ rifts: ["reset-use-3", "lu-second-try"] }), 51 * MIN]])
+    expect("refused" in placeless.last && placeless.last.message).toContain('orchestrate({ action: "land", units: ["reset-use", { unit: "<unit>", path: "lu-second-try" }], departs: "<why>" })')
   })
 
   test("property: over arbitrary unit names, colliding ones included (db and db-2, a and feat-a), and numbered rounds, a land's entry is its own unit's or none; by the Rift its start named or { path, unit }, always its own", async () => {

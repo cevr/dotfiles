@@ -527,7 +527,7 @@
     "mods/orchestrate/filestore/call-log.ts": {"effect/noGlobals":1,"effect/noNodeBuiltinImport":2,"effect/preferServiceOf":1},
     "mods/orchestrate/filestore/drift.test.ts": {"effect/noAs":1,"effect/noAsyncFunction":2,"effect/noEffectRunInTests":1,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noTestLifecycleHooks":1},
     "mods/orchestrate/filestore/findings.test.ts": {"effect/noKnownValueWidening":1,"effect/preferTaggedConstructors":5},
-    "mods/orchestrate/filestore/findings.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":7,"effect/noTernary":7,"effect/noTryCatch":1,"effect/preferServiceOf":1,"effect/preferTaggedConstructors":5},
+    "mods/orchestrate/filestore/findings.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":7,"effect/noTernary":7,"effect/noTryCatch":1,"effect/preferTaggedConstructors":5},
     "mods/orchestrate/filestore/ledger.test.ts": {"effect/noAs":1,"effect/noNodeBuiltinImport":2,"effect/noTernary":1,"effect/noTestLifecycleHooks":1,"effect/noUnsafeDictionaryType":1},
     "mods/orchestrate/filestore/ledger.ts": {"effect/noAs":1,"effect/noGlobals":3,"effect/noNodeBuiltinImport":2,"effect/noTernary":1,"effect/noTryCatch":6},
     "mods/orchestrate/filestore/run-records.test.ts": {"effect/noAsyncFunction":16,"effect/noEffectRunInTests":2,"effect/noNodeBuiltinImport":2,"effect/noTestLifecycleHooks":1},

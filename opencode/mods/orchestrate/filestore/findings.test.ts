@@ -1,6 +1,7 @@
 // A verifier's findings, read from its report: the batch file names each unit's findings file.
 import { expect, test } from "bun:test"
-import { findingsIn, unitFindings } from "./findings.ts"
+import { Option } from "effect"
+import { closedIn, findingsIn, unitFindings } from "./findings.ts"
 
 const files: Record<string, string> = {
   "/run/batch-2-findings.md": [
@@ -45,4 +46,26 @@ test("a missing report, a missing unit findings file it names, and a batch file 
   expect(findingsIn("/run/missing.md", read)).toEqual({ _tag: "Unread", why: "the report /run/missing.md does not read" })
   expect(findingsIn("/run/batch-3-findings.md", read)).toEqual({ _tag: "Unread", why: "the unit findings file /run/gone/round-1-findings.md of /run/batch-3-findings.md does not read" })
   expect(findingsIn("/run/batch-4-findings.md", read)).toEqual({ _tag: "Unread", why: "the report /run/batch-4-findings.md names no unit's round-N-findings.md" })
+})
+
+// land-adopt: the Bite run's batch-287-findings.md, line 40, and the `closed by batch-<k>` mark.
+test("a verdict file's closing lines mark findings closed: each <unit>/<id> and each bare id after one; a line that says not, or no closing words, closes none", () => {
+  const batch = [
+    "accepted",
+    "- cancelled-close-split r1: its #21526 revert (1a1d0aeedc7) was undone by the owner; #21788 is CLOSED. Nothing of this unit is left; no finding.",
+    "- batch-283 approved-heads/M1, M2 -> fixed in bullmq-producer-failfast r2, on master with #21639 (50d2f6862c9), accepted in batch-286: folded and closed.",
+    "- pr-21583/B2 closed by batch-12.",
+    "- auth/M4 is not folded and closed: its fix is red.",
+    "- search/M1 -> folded into search-fix1.",
+    "| billing | 2 | accepted | billing/round-2-findings.md |",
+  ].join("\n")
+  const unit = "Verdict: ACCEPTED\n## Major\nNone.\nbilling/M3, billing/B1 closed by batch-9 (its PR).\n"
+  const marks = new Map([
+    ["/run/batch-287-findings.md", batch],
+    ["/run/billing/round-2-findings.md", unit],
+  ])
+  const marked = (path: string) => Option.fromUndefinedOr(marks.get(path))
+  expect(closedIn("/run/batch-287-findings.md", marked)).toEqual(["approved-heads/M1", "approved-heads/M2", "pr-21583/B2", "billing/M3", "billing/B1"])
+  expect(closedIn("/run/missing.md", marked)).toEqual([])
+  expect(closedIn("/run/batch-2-findings.md", (path) => Option.fromUndefinedOr(read(path)))).toEqual([])
 })

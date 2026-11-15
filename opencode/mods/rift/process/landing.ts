@@ -33,14 +33,38 @@ export interface Options {
   readonly probe?: ReadonlyArray<string>
 }
 
+/** Where a check's wrapper reads its own cgroup (Linux): `/proc/self/cgroup`, and the cgroup2 mount it names a path under. */
+export interface Cgroups {
+  readonly self: string
+  readonly root: string
+}
+
+export const CGROUPS: Cgroups = { self: "/proc/self/cgroup", root: "/sys/fs/cgroup" }
+
+/**
+ * The wrapper a check runs in, inside its scope: the command with both streams into the log (`$2`); then, when the
+ * scope's `memory.events` counts an `oom_kill` (the kernel killed a process at the scope's MemoryMax, and systemd's
+ * OOMPolicy then stops the scope with SIGTERM, the gate's exit 143), the line `oomLine` reads, appended to the log.
+ * SIGTERM is trapped, not ignored, so the command still dies of it and the wrapper lives to read the count.
+ */
+export const CHECK_WRAPPER = [
+  "termed=; trap 'termed=1' TERM",
+  'sh -c "$1" >"$2" 2>&1; code=$?',
+  '[ -n "$termed" ] && code=143',
+  'cg=$(sed -n "s/^0:://p" "$3" 2>/dev/null)',
+  'if [ -n "$cg" ] && [ "$cg" != / ]; then kills=$(sed -n "s/^oom_kill //p" "$4$cg/memory.events" 2>/dev/null); fi',
+  `case "\${kills:-0}" in 0|*[!0-9]*) ;; *) echo "rift-land: out of memory: oom_kill $kills at MemoryMax=${DEFAULT_LIMITS.memoryMax}" >>"$2";; esac`,
+  'exit $code',
+].join("\n")
+
 /**
  * The argv a gate or acceptance run runs as: always heavy, through the
  * guard's launcher (`nice`, `ionice -c3` where the host has it, and on a
  * systemd host a user scope under its memory cap), both streams into `log`
- * in the order they were written.
+ * in the order they were written, with the scope's out-of-memory kill said at its end (`CHECK_WRAPPER`).
  */
-export const checkArgv = (command: string, log: string, host: Host): ReadonlyArray<string> =>
-  heavyArgv(["sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", command, log], DEFAULT_LIMITS, host)
+export const checkArgv = (command: string, log: string, host: Host, cgroups: Cgroups = CGROUPS): ReadonlyArray<string> =>
+  heavyArgv(["sh", "-c", CHECK_WRAPPER, "rift-land", command, log, cgroups.self, cgroups.root], DEFAULT_LIMITS, host)
 
 /**
  * The lock files a land's checks hold, under `logs`, one set per host. `checks`: every gate and accept check

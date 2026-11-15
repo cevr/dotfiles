@@ -41,7 +41,7 @@ import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
-import { findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
+import { closedIn, findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
 import { Branches, Findings, StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
 import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
 import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
@@ -191,7 +191,13 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
       MemoryLedger.layer(options.cadence, doubles.ledger ?? []),
       // A report reads from the files the test holds, by the plugin's own reader; no Rift has a branch, no unit's log.md
       // is found: the world runs no git or log.ts.
-      Layer.succeed(Findings, Findings.of({ read: (report) => Effect.sync(() => findingsIn(report, (path) => (doubles.files ?? NO_FILES).get(path))) })),
+      Layer.succeed(
+        Findings,
+        Findings.of({
+          read: (report) => Effect.sync(() => findingsIn(report, (path) => (doubles.files ?? NO_FILES).get(path))),
+          closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr((doubles.files ?? NO_FILES).get(path)))),
+        }),
+      ),
       Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
       Layer.succeed(UnitLogs, UnitLogs.of({ find: () => Effect.succeed(void 0), append: () => Effect.void, drops: () => Effect.succeed([]) })),
       CallLogTest.layer(lines),

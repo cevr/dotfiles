@@ -66,12 +66,13 @@
 // nothing landed, what is ready (a land by hand, which the plugin does not
 // see, so the verifier's start stands for it, and the findings folded into
 // those units go to the verifier as folded, as a land's would). A verdict
-// closes the findings folded into a unit it took out of the state. A root that runs no unit is
-// left alone.
+// closes the findings folded into a unit it took out of the state, and those its report marks closed by
+// another batch. A land naming `{ path, unit }` of a unit the machine does not hold adopts it, ready on that
+// Rift, before its rules are read. A root that runs no unit is left alone.
 //
 // Pure: no file, no clock. The ledger (service.ts `Ledger`) keeps each root's
 // events and refusals; the plugin feeds it (model.ts).
-import { Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { type Cadence, DEFAULT_CADENCE } from "./idle.ts"
 import { described, STEPS } from "./described.ts"
@@ -145,7 +146,8 @@ export interface Unresolved extends Schema.Schema.Type<typeof Unresolved> {}
 /**
  * A hand-back. A verifier's `changes` carries its findings (`<unit>/<id>`) as
  * the plugin read them from its report, or `unread` when it could not: a
- * `changes` with neither is unresolved too (its report was never read).
+ * `changes` with neither is unresolved too (its report was never read). A verdict's report may mark findings of
+ * an earlier verdict closed by another batch (`closed`: a fix that landed outside the machine, verified there).
  */
 export const HandBack = Schema.TaggedStruct("HandBack", {
   role: Role,
@@ -153,6 +155,7 @@ export const HandBack = Schema.TaggedStruct("HandBack", {
   verdict: Verdict,
   findings: Schema.optionalKey(Schema.Array(Schema.String)),
   unread: Schema.optionalKey(Unresolved),
+  closed: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export interface HandBack extends Schema.Schema.Type<typeof HandBack> {}
 
@@ -229,6 +232,8 @@ export const VerifierEnded = Schema.TaggedStruct("VerifierEnded", {
   verdict: Verdict,
   findings: Schema.optionalKey(Schema.Array(Schema.String)),
   unresolved: Schema.optionalKey(Unresolved),
+  /** The open findings its report marks closed by another batch (`closed by batch-<k>`): they leave the state. */
+  closed: Schema.optionalKey(Schema.Array(Schema.String)),
   at: Schema.Number,
 })
 export interface VerifierEnded extends Schema.Schema.Type<typeof VerifierEnded> {}
@@ -253,8 +258,16 @@ export interface StepSpawned extends Schema.Schema.Type<typeof StepSpawned> {}
 export const UnitDropped = Schema.TaggedStruct("UnitDropped", { unit: Schema.String, released: Schema.Array(Schema.String), at: Schema.Number })
 export interface UnitDropped extends Schema.Schema.Type<typeof UnitDropped> {}
 
-export const Event = Schema.Union([UnitStarted, UnitHandedBack, BatchLanded, VerifierStarted, VerifierEnded, ReportResolved, FindingFolded, Departed, StepSpawned, UnitDropped])
-export type Event = UnitStarted | UnitHandedBack | BatchLanded | VerifierStarted | VerifierEnded | ReportResolved | FindingFolded | Departed | StepSpawned | UnitDropped
+/**
+ * A unit the machine did not hold, taken in by a land that named it with its Rift (`{ path, unit }`): ready, on
+ * that Rift, as if its implementor had handed back. The land is then checked as any land of a ready unit, and its
+ * record lands it for the next verifier.
+ */
+export const UnitAdopted = Schema.TaggedStruct("UnitAdopted", { unit: Schema.String, rift: Schema.String, at: Schema.Number })
+export interface UnitAdopted extends Schema.Schema.Type<typeof UnitAdopted> {}
+
+export const Event = Schema.Union([UnitStarted, UnitHandedBack, BatchLanded, VerifierStarted, VerifierEnded, ReportResolved, FindingFolded, Departed, StepSpawned, UnitDropped, UnitAdopted])
+export type Event = UnitStarted | UnitHandedBack | BatchLanded | VerifierStarted | VerifierEnded | ReportResolved | FindingFolded | Departed | StepSpawned | UnitDropped | UnitAdopted
 
 /** The call went against `rule`; `message` quotes the rule and says what to do instead. */
 export class Refused extends Schema.TaggedError<Refused>()("Refused", { rule: Rule, message: Schema.String }) {}
@@ -493,6 +506,30 @@ const recordedOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): Read
   return [...new Set([...named(state, rifts), ...restarted, ...gone])]
 }
 
+/**
+ * The units a land adopts: each `{ path, unit }` entry naming a unit the machine does not hold (none started since
+ * a restart, dropped, or verified already), with that Rift, the first entry of a unit named twice. Only that form
+ * adopts: a bare name or path names what the machine holds, or nothing of its.
+ */
+export const adopteesOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<{ readonly unit: string; readonly rift: string }> =>
+  Arr.dedupeWith(
+    rifts.flatMap((rift) =>
+      Option.toArray(
+        Option.map(
+          Option.filter(Option.fromUndefinedOr(entryOf(rift).unit), (unit) => !Object.hasOwn(state.units, unit)),
+          (unit) => ({ unit, rift: entryOf(rift).rift }),
+        ),
+      ),
+    ),
+    (a, b) => a.unit === b.unit,
+  )
+
+/** `state` with `unit` adopted on `rift` at `at`: ready, as if its implementor had handed back. */
+const adoptedState = (state: MachineState, unit: string, rift: string, at: number): MachineState => ({
+  ...state,
+  units: { ...state.units, [unit]: { state: "ready", round: 1, since: at, direct: false, rifts: [rift] } },
+})
+
 /** Whether a land's record moves `unit` to `landed`: held, and neither on its next round nor under a verifier. */
 const landsNow = (state: MachineState, unit: string): boolean =>
   Option.exists(Option.fromUndefinedOr(state.units[unit]), (held) => held.state !== "implement" && held.state !== "verify")
@@ -583,8 +620,14 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
             ]),
       ].join(" ")
     }
-    case "LandPartial":
-      return `Land every ready unit in one call: ${landCallOf([])} lands ${list(ready)}.`
+    case "LandPartial": {
+      // A unit the call names with its Rift keeps that form: it may be one this land adopts, which no bare name finds.
+      const given = Arr.filter([call], (named): named is Land => named._tag === "Land")
+        .flatMap((land) => land.rifts)
+        .flatMap((rift) => Option.toArray(Option.map(Option.fromUndefinedOr(entryOf(rift).unit), (unit) => ({ unit, path: entryOf(rift).rift }))))
+      const units = ready.map((unit) => Option.getOrElse(Arr.findFirst(given, (entry) => entry.unit === unit), (): string | { unit: string; path: string } => unit))
+      return `Land every ready unit in one call: ${landCallOf(Arr.match(given, { onEmpty: () => [], onNonEmpty: () => units }))} lands ${list(ready)}.`
+    }
   }
 }
 
@@ -613,9 +656,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
   decide: (state, command, now) =>
     Effect.gen(function* () {
       /** Refuse by the first rule broken, unless the call departs: then one Departed per rule. */
-      const guard = (rules: ReadonlyArray<Rule>, departs: string | undefined): Effect.Effect<ReadonlyArray<Event>, Refused> => {
+      const guard = (rules: ReadonlyArray<Rule>, departs: string | undefined, seen: MachineState = state): Effect.Effect<ReadonlyArray<Event>, Refused> => {
         const first = rules[0]
-        if (first !== undefined && departs === undefined) return Effect.fail(new Refused({ rule: first, message: refusalOf(state, first, command, now, cadence) }))
+        if (first !== undefined && departs === undefined) return Effect.fail(new Refused({ rule: first, message: refusalOf(seen, first, command, now, cadence) }))
         return Effect.succeed(rules.map((rule) => Departed.make({ rule, why: departs ?? "", at: now })))
       }
       switch (command._tag) {
@@ -648,30 +691,39 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
             return was === "ended" && command.verdict === "ready" ? [UnitHandedBack.make({ unit: command.name, ready: true, said: command.verdict, at: now })] : []
           }
           if (command.role === "verifier" && state.verifier?.batch === command.name) {
-            if (command.verdict !== "changes") return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, at: now })]
+            // The open findings its report marks closed by another batch; a verifier with no verdict closes none.
+            const silent = command.verdict === "none" || command.verdict === "stopped"
+            const open = { ...state.findings }
+            const marked = Option.getOrElse(Option.fromUndefinedOr(command.closed), () => []).filter((key) => !silent && Object.hasOwn(open, key))
+            const closed = Arr.match(marked, { onEmpty: () => ({}), onNonEmpty: (keys) => ({ closed: keys }) })
+            if (command.verdict !== "changes") return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, ...closed, at: now })]
             // A `changes` whose findings were not read is unresolved, never an empty set.
             if (command.findings === undefined) {
               const unresolved = command.unread ?? { why: "the plugin read no findings report for it" }
-              return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, unresolved, at: now })]
+              return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, unresolved, ...closed, at: now })]
             }
             const findings = command.findings
-            return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, ...(findings.length === 0 ? {} : { findings }), at: now })]
+            return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, ...(findings.length === 0 ? {} : { findings }), ...closed, at: now })]
           }
           return []
         }
         case "ReportRead":
           return state.unresolved?.[command.batch] === undefined ? [] : [ReportResolved.make({ batch: command.batch, findings: command.findings, at: now })]
         case "Land": {
-          const lands = named(state, command.rifts)
+          // A `{ path, unit }` of a unit the machine does not hold adopts it first, ready on that Rift: the land is
+          // then checked as a land of a ready unit. A refused land adopts nothing.
+          const adopted = adopteesOf(state, command.rifts).map(({ unit, rift }) => UnitAdopted.make({ unit, rift, at: now }))
+          const seen = adopted.reduce((on, event) => adoptedState(on, event.unit, event.rift, event.at), state)
+          const lands = named(seen, command.rifts)
           // A land of nothing the machine holds is none of its business; one naming a unit it holds is, whatever
           // that unit's state (one landed already lands again only past its verdict).
-          if (heldOf(state, command.rifts).length === 0) return []
+          if (heldOf(seen, command.rifts).length === 0) return []
           const rules: Array<Rule> = []
-          if (verdictPending(state)) rules.push("VerdictPending")
-          if (unfoldedOf(state, lands).length > 0 || unresolvedOf(state).length > 0) rules.push("FindingUnfolded")
-          if (unitsIn(state, "ready").some((unit) => !lands.includes(unit))) rules.push("LandPartial")
-          if (waiting(state, now, cadence)) rules.push("BatchNotDue")
-          return yield* guard(rules, command.departs)
+          if (verdictPending(seen)) rules.push("VerdictPending")
+          if (unfoldedOf(seen, lands).length > 0 || unresolvedOf(seen).length > 0) rules.push("FindingUnfolded")
+          if (unitsIn(seen, "ready").some((unit) => !lands.includes(unit))) rules.push("LandPartial")
+          if (waiting(seen, now, cadence)) rules.push("BatchNotDue")
+          return [...adopted, ...(yield* guard(rules, command.departs, seen))]
         }
         case "Landed": {
           const units = recordedOf(state, command.rifts)
@@ -780,6 +832,8 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         // A finding folded into a unit no longer in the state was checked by a verdict already: a ledger written
         // before a verifier's start stood in for a land by hand kept it open (`standInFindings`), so it goes too.
         for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && (units[finding.into] === undefined || settled(state, finding))) delete findings[key]
+        // Those its report marks closed by another batch were fixed and verified outside the machine: they hold no land.
+        for (const key of event.closed ?? []) delete findings[key]
         for (const key of event.findings ?? []) findings[key] = { batch: event.batch }
         const unresolved = { ...state.unresolved, ...(event.unresolved === undefined ? {} : { [event.batch]: event.unresolved }) }
         return tidy({ ...rest, units, findings, carried: {}, unresolved })
@@ -809,6 +863,8 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         for (const key of event.released) delete findings[key]
         return tidy({ ...state, units, findings })
       }
+      case "UnitAdopted":
+        return Option.getOrElse(Option.liftPredicate(state, (held) => Object.hasOwn(held.units, event.unit)), () => adoptedState(state, event.unit, event.rift, event.at))
     }
   },
 })

@@ -14,7 +14,7 @@ import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer, Option, Predicate, Queue, Stream } from "effect"
 import { type Latch, type LatchAsk, OPENER } from "@dotfiles/opencode-wake/latch"
 import { working } from "@dotfiles/opencode-orchestrate/filestore/heavy-agents"
-import { findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
+import { closedIn, findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import { FOOTER_MARK, footerOf, shareOf, withFooter } from "@dotfiles/opencode-orchestrate/heavy"
 import { NO_HOLDS } from "@dotfiles/opencode-orchestrate/idle"
@@ -148,7 +148,13 @@ const start = (world: World) =>
     const externals = (latchStart: OpenCodeLatches.Start, background: Background) =>
       Layer.mergeAll(
         MemoryLedger.layer(DEFAULT_CADENCE),
-        Layer.succeed(Findings, Findings.of({ read: (report) => Effect.sync(() => findingsIn(report, (path) => files.get(path))) })),
+        Layer.succeed(
+          Findings,
+          Findings.of({
+            read: (report) => Effect.sync(() => findingsIn(report, (path) => files.get(path))),
+            closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr(files.get(path)))),
+          }),
+        ),
         Layer.succeed(Liveness, Liveness.of({ alive: (sessionID) => Effect.succeed(background(sessionID) > 0) })),
         Layer.succeed(Branches, Branches.of({ of: (path) => Effect.sync(() => new Map<string, string>().get(path)) })),
         Layer.succeed(Remind, Remind.of({ remind: () => Effect.void })),

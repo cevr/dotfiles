@@ -8,6 +8,7 @@ import { basename, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
+import { exitWords } from "../land.ts"
 import { Landing } from "../service.ts"
 import { exclusively, exclusivelySync, gateTurn, hold, type LockMode } from "./flock.ts"
 import * as ProcessLanding from "./landing.ts"
@@ -25,8 +26,10 @@ afterEach(() => {
   for (const scratch of scratches.splice(0)) rmSync(scratch, { recursive: true, force: true })
 })
 
+const spawned = (cwd: string, argv: ReadonlyArray<string>) => Bun.spawnSync([...argv], { cwd, env: { ...process.env, ...ENV }, stdout: "pipe", stderr: "pipe" })
+
 const sh = (cwd: string, ...argv: ReadonlyArray<string>): string => {
-  const ran = Bun.spawnSync([...argv], { cwd, env: { ...process.env, ...ENV }, stdout: "pipe", stderr: "pipe" })
+  const ran = spawned(cwd, argv)
   if (ran.exitCode !== 0) throw new Error(`${argv.join(" ")} failed: ${ran.stderr.toString()}`)
   return ran.stdout.toString().trim()
 }
@@ -540,13 +543,37 @@ describe("process Landing", () => {
   })
 
   test("the gate and acceptance run always go through the guard's launcher: niced, and in the idle I/O class and a scope under MemoryMax=12G on systemd", () => {
-    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: false, ionice: false })).toEqual(["nice", "-n", "10", "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log"])
+    const wrapped = ["sh", "-c", ProcessLanding.CHECK_WRAPPER, "rift-land", "bun run gate", "/l/gate.log", "/proc/self/cgroup", "/sys/fs/cgroup"]
+    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: false, ionice: false })).toEqual(["nice", "-n", "10", ...wrapped])
     expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: true, ionice: true })).toEqual([
       "nice", "-n", "10",
       "ionice", "-c3",
       "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
-      "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log",
+      ...wrapped,
     ])
+  })
+
+  /** A check's wrapper run on `command`, with its scope's cgroup at `/run-x.scope` under a scratch root counting `kills`. */
+  const wrapperRun = (command: string, kills: number) => {
+    const scratch = mkdtempSync(join(tmpdir(), "rift-oom-"))
+    scratches.push(scratch)
+    write(scratch, "self", "0::/user.slice/run-x.scope\n")
+    write(scratch, "fs/user.slice/run-x.scope/memory.events", `low 0\nhigh 0\nmax 9\noom 1\noom_kill ${kills}\noom_group_kill 0\n`)
+    const log = join(scratch, "gate.log")
+    const argv = ProcessLanding.checkArgv(command, log, { scope: false, ionice: false }, { self: join(scratch, "self"), root: join(scratch, "fs") })
+    const ran = spawned(scratch, argv)
+    return { code: ran.exitCode, output: readFileSync(log, "utf8") }
+  }
+
+  test("land-adopt: a check its scope stopped for memory (SIGTERM after the kernel's oom_kill) ends 143 with the count in its log, which the answer says as out of memory at MemoryMax", () => {
+    // systemd's OOMPolicy=stop sends SIGTERM to every process of the scope: the command and its wrapper.
+    const stopped = wrapperRun('echo testing; kill -TERM "$PPID"; kill -TERM $$', 2)
+    expect(stopped).toEqual({ code: 143, output: "testing\nrift-land: out of memory: oom_kill 2 at MemoryMax=12G\n" })
+    expect(exitWords(stopped)).toBe("exit 143: out of memory, killed at the scope's limit MemoryMax=12G (memory.events oom_kill 2)")
+    // A red check with no kill in its scope says its exit alone; a green one says nothing more.
+    const red = wrapperRun("echo red; exit 3", 0)
+    expect([red, exitWords(red)]).toEqual([{ code: 3, output: "red\n" }, "exit 3"])
+    expect(wrapperRun("echo fine", 0)).toEqual({ code: 0, output: "fine\n" })
   })
 
   /** One check of `command` in a bare scratch directory, under the layer's `options`. */
@@ -573,7 +600,9 @@ describe("process Landing", () => {
 
     const scoped = checkIn({ platform: "linux", probe: ["true"], env }, "echo ran")
     expect((await scoped.ran).output).toBe("ran\n")
-    expect(readFileSync(join(bin, "asked"), "utf8")).toBe(`--user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- sh -c sh -c "$1" >"$2" 2>&1 rift-land echo ran ${join(scoped.scratch, "logs", `${basename(scoped.scratch)}.gate.log`)}\n`)
+    expect(readFileSync(join(bin, "asked"), "utf8")).toBe(
+      `--user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- sh -c ${ProcessLanding.CHECK_WRAPPER} rift-land echo ran ${join(scoped.scratch, "logs", `${basename(scoped.scratch)}.gate.log`)} /proc/self/cgroup /sys/fs/cgroup\n`,
+    )
 
     rmSync(join(bin, "asked"))
     const refused = checkIn({ platform: "linux", probe: ["false"], env }, "echo ran")

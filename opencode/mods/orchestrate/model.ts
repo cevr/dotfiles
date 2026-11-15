@@ -32,7 +32,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -955,13 +955,24 @@ export const machineLayer = (config: MachineConfig) =>
           return read._tag === "Read" ? { findings: read.findings } : { unread: { report, why: read.why } }
         })
 
-      /** The hand-back a step's session's last words say, as the machine takes it: a verifier's `changes` with its report read. */
+      /** The findings a verdict's report marks closed by another batch; none when it names no report. */
+      const closedBy = (report: Option.Option<string>) =>
+        Effect.map(Effect.forEach(Option.toArray(report), findings.closed), (read) =>
+          Arr.match(read.flat(), { onEmpty: () => ({}), onNonEmpty: (closed) => ({ closed }) }),
+        )
+
+      /**
+       * The hand-back a step's session's last words say, as the machine takes it: a verifier's verdict with the
+       * findings its report marks closed, and a `changes` with its report read.
+       */
       const saidBy = (agent: string, sessionID: string) =>
         Effect.gen(function* () {
           const words = yield* sessions.lastWordsOf(sessionID)
           const back = Option.fromNullishOr(stepHandBackOf(agent, words))
-          if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict !== "changes") return back
-          return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))) }))
+          if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict === "none" || back.value.verdict === "stopped") return back
+          const closed = yield* closedBy(Option.fromUndefinedOr(reportOf(words)))
+          if (back.value.verdict !== "changes") return Option.some(HandBack.make({ ...back.value, ...closed }))
+          return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))), ...closed }))
         })
 
       /** A verifier whose verdict a reconcile read from its last words, before its idle was seen: its batch, session and verdict. */

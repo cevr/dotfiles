@@ -46,7 +46,8 @@ export const OrchestrateInput = toolInput(
     branch: Schema.optional(Schema.String).annotate({ description: "lane: the branch, in place of `<run>/<unit>` or `feat/<unit>`." }),
     source: Schema.optional(Schema.String).annotate({ description: "lane: a directory of the repository whose warm source to use. Default: this session's directory." }),
     units: Schema.optional(Schema.Array(LandUnit)).annotate({
-      description: "land: the units to land, by name, or { unit, path } for one whose Rift the plugin cannot name. Default: every ready unit.",
+      description:
+        "land: the units to land, by name, or { unit, path } for one whose Rift the plugin cannot name or the machine does not hold (it adopts it as ready). Default: every ready unit.",
     }),
     departs: Schema.optional(Schema.String).annotate({ description: "land: why this land goes against the machine's rule; the machine records it." }),
     batch: Schema.optional(Schema.String).annotate({ description: "verify: the batch, `batch-<k>`." }),
@@ -97,16 +98,20 @@ export const landCallOf = (units: ReadonlyArray<LandUnit>, departs: Option.Optio
 
 /**
  * A land's Rifts as the `orchestrate` land that departs on purpose names them (a refusal's way to go against its
- * rule): each Rift's unit by name, or `{ unit, path }` for one the input gave a path for; a Rift of no unit as
- * `{ unit: "<unit>", path }`.
+ * rule): `{ unit, path }` as the input gave it (held or adopted, the land names the same unit), else each Rift's
+ * unit by name; a Rift of no unit as `{ unit: "<unit>", path }`.
  */
 export const departingLandCallOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): string =>
   landCallOf(
-    rifts.map((target) => {
+    rifts.map((target): LandUnit => {
       const entry = entryOf(target)
-      return Option.match(Option.fromUndefinedOr(unitOfEntry(target, Object.keys(state.units), ownedOf(state))), {
-        onNone: (): LandUnit => ({ unit: "<unit>", path: entry.rift }),
-        onSome: (unit): LandUnit => Option.match(Option.fromUndefinedOr(entry.unit), { onNone: () => unit, onSome: () => ({ unit, path: entry.rift }) }),
+      return Option.match(Option.fromUndefinedOr(entry.unit), {
+        onSome: (unit): LandUnit => ({ unit, path: entry.rift }),
+        onNone: () =>
+          Option.match(Option.fromUndefinedOr(unitOfEntry(target, Object.keys(state.units), ownedOf(state))), {
+            onNone: (): LandUnit => ({ unit: "<unit>", path: entry.rift }),
+            onSome: (unit): LandUnit => unit,
+          }),
       })
     }),
     Option.some("<why>"),
@@ -138,7 +143,7 @@ export const ORCHESTRATE_DESCRIPTION = [
   `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")]])} makes the unit's Rift (an isolated workspace from the warm source), named for the unit, on branch \`branch\`, else \`<run>/<unit>\`, else \`feat/<unit>\`. A lane that exists is answered, never made again by hand. Make every lane of a batch in one step; each answer ends with the \`(rift: <path>)\` its implementor's description takes.`,
   'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)", prompt, background: true }). The `(rift: <path>)` tells the machine the unit\'s Rift, so land finds it.',
   "ready: the implementor's hand-back, `implementor <unit> r<N>: ready <request path>`, which the machine reads when the implementor goes idle. Keep the next units implementing while a batch lands and verifies.",
-  `land: ${landCallOf([])} lands the batch: the units' Rifts merged onto the default branch as one push, by their receipts, with one merge check. A land with no units lands every ready unit in one call. Name units only for a subset the machine allows, or as { unit, path } for a unit whose Rift the plugin cannot name. A land does not wait for the deep run or the post-land step: they run in the background and wake you. A refused land says why, in the skill's words, and the call to make instead; add departs only when the owner or the run's rules depart from the rule.`,
+  `land: ${landCallOf([])} lands the batch: the units' Rifts merged onto the default branch as one push, by their receipts, with one merge check. A land with no units lands every ready unit in one call. Name units only for a subset the machine allows, or as { unit, path } for a unit whose Rift the plugin cannot name or the machine does not hold (it adopts it as ready). A land does not wait for the deep run or the post-land step: they run in the background and wake you. A refused land says why, in the skill's words, and the call to make instead; add departs only when the owner or the run's rules depart from the rule.`,
   `verify: ${verifyCallOf("batch-7")} makes the batch verifier's clean checkout, the Rift verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier batch-<k> r1", prompt, background: true }). One verifier per batch, and one at a time.`,
   "fold: a verifier's changes verdict opens its findings. Fold each into a unit of the next batch by its implementor's start in that unit's lane, description `implementor <unit> r<N> (folds: <unit>/<id>)`. The next batch lands once the verdict is in and every finding is folded.",
   `status: ${STATUS_CALL} answers the run from the ledger: each unit's state, its lane with its unsaved work, and one next: line naming the call to make. Call it after a compaction, or whenever the next step is unclear.`,
@@ -297,20 +302,34 @@ export const lanesRefusal = (unit: string, lanes: ReadonlyArray<Lane>): string =
 /** Where a land finds a unit's Rift: given, its implementor's (the ledger), or the one of the warm source's that reads as it. */
 export type Found = { readonly found: UnitRift } | { readonly refused: string }
 
-/** A land of a unit the machine does not hold, refused: it has no round to land. */
-const unheldWords = (unit: string, state: MachineState) =>
-  `orchestrate: the machine holds no unit ${unit}: a unit is the machine's once its implementor starts. ${nowOf(state)}`
+/**
+ * A land naming by name alone a unit the machine does not hold, refused: a name alone is no word that the unit is
+ * ready. Its `{ unit, path }` adopts it (machine.ts `UnitAdopted`): the call names the one Rift that reads as the
+ * unit, else `<its Rift>`.
+ */
+const unheldWords = (unit: string, land: ReadonlyArray<LandUnit>, lanes: ReadonlyArray<Lane>, state: MachineState) => {
+  const path = Arr.match(lanesOf(unit, lanes, state), {
+    onEmpty: () => "<its Rift>",
+    onNonEmpty: (found) => Arr.match(Arr.drop(found, 1), { onEmpty: () => Arr.headNonEmpty(found).path, onNonEmpty: () => "<its Rift>" }),
+  })
+  // The land as asked, the unit named with its Rift, and every ready unit it left out: the call the machine passes.
+  const named = land.map((each): LandUnit => Option.getOrElse(Option.as(Option.liftPredicate(each, (asked) => asked === unit), { unit, path }), () => each))
+  const nameOf = (each: LandUnit) => Match.value(each).pipe(Match.when(Predicate.isString, (name) => name), Match.orElse((entry) => entry.unit))
+  const left = unitsIn(state, "ready").filter((ready) => !land.some((each) => nameOf(each) === ready))
+  return `orchestrate: the machine holds no unit ${unit}: a unit is the machine's once its implementor starts, or once a land names it with its Rift, which adopts it as ready. ${nowOf(state)} Adopt it and land it: ${landCallOf([...named, ...left])}.`
+}
 
 /**
- * A unit's Rift for a land, in order: the path the input gives, the Rift its implementor was started on (the
- * ledger's `rifts`, its last, when no other unit's start names it), else the one Rift of `lanes` that reads as the
- * unit. None, or two: refused, naming the unit, the Rifts and the `{ unit, path }` form.
+ * A unit's Rift for a land, in order: the path the input gives (for a unit the machine does not hold, the land
+ * adopts it), the Rift its implementor was started on (the ledger's `rifts`, its last, when no other unit's start
+ * names it), else the one Rift of `lanes` that reads as the unit. None, or two: refused, naming the unit, the Rifts
+ * and the `{ unit, path }` form.
  */
-export const riftOfUnit = (asked: LandUnit, lanes: ReadonlyArray<Lane>, state: MachineState): Found => {
+export const riftOfUnit = (asked: LandUnit, lanes: ReadonlyArray<Lane>, state: MachineState, land: ReadonlyArray<LandUnit> = [asked]): Found => {
   if (!Predicate.isString(asked)) return { found: asked }
   const unit = asked
-  // A unit the machine does not hold has no round to land: its land would pass by the machine, deciding nothing.
-  if (Predicate.isUndefined(state.units[unit])) return { refused: unheldWords(unit, state) }
+  // A name alone of a unit the machine does not hold: adoption is the `{ unit, path }` form's alone (orch-tools F2).
+  if (Predicate.isUndefined(state.units[unit])) return { refused: unheldWords(unit, land, lanes, state) }
   const owned = ownedOf(state)
   const started = Option.filter(Option.fromUndefinedOr(state.units[unit]?.rifts?.at(-1)), (path) =>
     Object.entries(owned).every(([other, rifts]) => other === unit || !rifts.includes(path)),
@@ -343,7 +362,7 @@ export const resolveLand = (
   if (units.length === 0) return { refused: `orchestrate: no unit is ready to land. ${nowOf(state)} ${nextLine(next)}` }
   const rifts: Array<UnitRift> = []
   for (const unit of units) {
-    const found = riftOfUnit(unit, lanes, state)
+    const found = riftOfUnit(unit, lanes, state, units)
     if ("refused" in found) return found
     rifts.push(found.found)
   }
@@ -457,19 +476,6 @@ export const statusAnswer = (brief: string, lanes: ReadonlyArray<readonly [strin
 
 /** Whether a root runs units: its machine holds a unit, a landed batch or a verifier. */
 export const runsUnits = (state: MachineState): boolean => Object.keys(state.units).length > 0 || verdictPending(state)
-
-/**
- * A land, by either tool, naming as `{ path, unit }` a unit the machine does not hold: refused before the machine
- * decides it, which would pass it deciding nothing (a unit dropped, verified already, or never started; one a
- * verifier's start stood in the land for, whose verdict closed its findings). The form is a run's alone (`RiftInput`),
- * and the `orchestrate` tool's units resolve to it, so both tools' lands meet it here. A Rift named by its path
- * alone is the root's own business, as before.
- */
-export const unheldRefusal = (rifts: ReadonlyArray<LandTarget>, state: MachineState): Option.Option<string> =>
-  Option.map(
-    Arr.findFirst(rifts, (rift) => Predicate.isNotUndefined(entryOf(rift).unit) && Predicate.isUndefined(state.units[entryOf(rift).unit ?? ""])),
-    (rift) => unheldWords(entryOf(rift).unit ?? "", state),
-  )
 
 /** The line a `rift` create or land in a root that runs units starts with: the `orchestrate` call to use. */
 export const aliasLine = (action: "create" | "land"): string =>

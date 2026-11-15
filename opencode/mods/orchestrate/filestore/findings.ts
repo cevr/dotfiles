@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
-import { Effect, Layer } from "effect"
+import { Array as Arr, Effect, Layer, Option } from "effect"
 import { Findings, type FindingsRead } from "../service.ts"
 
 const UNIT_FILE = /^round-\d+-findings\.md$/
@@ -65,6 +65,42 @@ export const findingsIn = (report: string, read: (path: string) => string | unde
   return missing.length === 0 ? { _tag: "Read", findings } : { _tag: "Unread", why: `the unit findings ${missing.length === 1 ? "file" : "files"} ${missing.join(", ")} of ${path} ${missing.length === 1 ? "does" : "do"} not read` }
 }
 
+/** A line that closes findings: `closed by batch-<k>`, or the verifiers' `folded and closed`; never one that says `not`. */
+const CLOSES = /closed by batch-[\w.-]+|folded and closed/i
+const KEY = /(?:\b([a-z0-9][a-z0-9._-]*)\/)?\b([BM]\d+)\b/g
+
+/**
+ * The findings a verdict file's lines mark closed by another batch (a fix landed and verified outside the
+ * machine): each `<unit>/<id>` on a closing line, and each bare id after one (`approved-heads/M1, M2 -> …
+ * accepted in batch-286: folded and closed`), as `<unit>/<id>`. A line that says `not` closes nothing.
+ */
+export const closedFindings = (text: string): ReadonlyArray<string> =>
+  Arr.dedupe(
+    text
+      .split("\n")
+      .filter((line) => CLOSES.test(line) && !/\bnot\b/i.test(line))
+      .flatMap((line) =>
+        // Each id takes the unit named last on its line: a bare id before any unit closes nothing.
+        Arr.reduce([...line.matchAll(KEY)], { unit: Option.none<string>(), keys: Arr.empty<string>() }, (acc, match) => {
+          const unit = Option.orElse(Option.fromUndefinedOr(match[1]), () => acc.unit)
+          return { unit, keys: [...acc.keys, ...Option.toArray(Option.map(unit, (named) => `${named}/${match[2]}`))] }
+        }).keys,
+      ),
+  )
+
+/** The findings `report` and each unit findings file it names that reads mark closed (`closedFindings`); none when it does not read. */
+export const closedIn = (report: string, read: (path: string) => Option.Option<string>): ReadonlyArray<string> => {
+  const path = expand(report, process.cwd())
+  return Option.match(read(path), {
+    onNone: () => [],
+    onSome: (text) => {
+      const named = Arr.filter([text], () => !UNIT_FILE.test(basename(path))).flatMap((batch) => [...batch.matchAll(UNIT_PATH)].map((found) => expand(found[0], dirname(path))))
+      const units = Arr.dedupe(named).flatMap((unit) => Option.toArray(read(unit)))
+      return Arr.dedupe([text, ...units].flatMap(closedFindings))
+    },
+  })
+}
+
 const readText = (path: string) => {
   try {
     return readFileSync(path, "utf8")
@@ -73,4 +109,10 @@ const readText = (path: string) => {
   }
 }
 
-export const layer = Layer.succeed(Findings, { read: (report) => Effect.sync(() => findingsIn(report, readText)) })
+export const layer = Layer.succeed(
+  Findings,
+  Findings.of({
+    read: (report) => Effect.sync(() => findingsIn(report, readText)),
+    closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr(readText(path)))),
+  }),
+)

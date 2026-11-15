@@ -184,6 +184,19 @@ export const digest = (output: string, limit = 12): string => {
 
 const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
 
+/** The line a check's wrapper appends when the kernel killed in its scope at MemoryMax (process/landing.ts `CHECK_WRAPPER`). */
+const OUT_OF_MEMORY = /^rift-land: out of memory: oom_kill (\d+) at MemoryMax=(\S+)$/m
+
+/**
+ * How a check ended, as an answer says it: `exit <code>`, and for a red one whose scope the kernel killed in at its
+ * memory cap (systemd then stops the scope: exit 143, or 137 for the one killed), that it ran out of memory there.
+ */
+export const exitWords = (ran: Pick<Ran, "code" | "output">): string =>
+  Option.match(Option.filter(Option.fromNullOr(OUT_OF_MEMORY.exec(ran.output)), () => ran.code !== 0), {
+    onNone: () => `exit ${ran.code}`,
+    onSome: (oom) => `exit ${ran.code}: out of memory, killed at the scope's limit MemoryMax=${oom[2]} (memory.events oom_kill ${oom[1]})`,
+  })
+
 /** The answer to a land that pushed. */
 export const landedText = (landed: Landed, integration: string, accepting: boolean, postLand = false): string => {
   const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
@@ -238,7 +251,7 @@ export const receiptLines = (covered: ReadonlyArray<Covered>, merge: Option.Opti
     onNone: () => "No merge check: the land fast-forwarded to the one Rift's own checked head.",
     onSome: (ran) => Match.value(ran.code).pipe(
       Match.when(0, () => `The merge check passed in ${ran.seconds}s; log: ${ran.log}`),
-      Match.orElse(() => `The merge check FAILED (exit ${ran.code}) in ${ran.seconds}s; log: ${ran.log}`),
+      Match.orElse(() => `The merge check FAILED (${exitWords(ran)}) in ${ran.seconds}s; log: ${ran.log}`),
     ),
   }),
   `Receipts recorded: ${record}`,
@@ -269,7 +282,7 @@ export const postLandedText = (units: ReadonlyArray<Unit>, ran: PostLanded): str
   [
     ran.code === 0
       ? `rift land: the post-land step after ${branches(units)} ran in ${ran.seconds}s. Log: ${ran.log}`
-      : `rift land: the post-land step after ${branches(units)} FAILED (exit ${ran.code}) in ${ran.seconds}s. The batch is already pushed. Log: ${ran.log}`,
+      : `rift land: the post-land step after ${branches(units)} FAILED (${exitWords(ran)}) in ${ran.seconds}s. The batch is already pushed. Log: ${ran.log}`,
     ran.report !== undefined && ran.report.trim() !== "" ? ran.report.trimEnd() : digest(ran.output, 20),
   ].join("\n")
 
@@ -278,7 +291,7 @@ export const acceptedText = (units: ReadonlyArray<Unit>, accept: Ran): string =>
   accept.code === 0
     ? `rift land: the accept check for ${branches(units)} passed in ${accept.seconds}s.`
     : [
-        `rift land: the accept check for ${branches(units)} FAILED (exit ${accept.code}) in ${accept.seconds}s. The batch is already pushed: fix forward. Log: ${accept.log}`,
+        `rift land: the accept check for ${branches(units)} FAILED (${exitWords(accept)}) in ${accept.seconds}s. The batch is already pushed: fix forward. Log: ${accept.log}`,
         digest(accept.output, 20),
       ].join("\n")
 
@@ -319,7 +332,7 @@ export const checkedText = (checked: Checked): string => {
       : gate.code === 0
         ? `The gate passed in ${gate.seconds}s.`
         : [
-            `The gate FAILED (exit ${gate.code}) in ${gate.seconds}s; log: ${gate.log}. Route each failure to the Rift whose diff it touches.`,
+            `The gate FAILED (${exitWords(gate)}) in ${gate.seconds}s; log: ${gate.log}. Route each failure to the Rift whose diff it touches.`,
             digest(gate.output),
           ].join("\n"),
     ...outcomeLines(checked.outcomes),
@@ -337,7 +350,7 @@ export const checkAcceptedText = (main: string, ran: ReadonlyArray<Unit>, accept
     accept.code === 0
       ? `rift land: the accept check for ${branches(ran)} passed in ${accept.seconds}s; ${main} was not pushed.`
       : [
-          `rift land: the accept check for ${branches(ran)} FAILED (exit ${accept.code}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the Rift whose diff it touches. Log: ${accept.log}`,
+          `rift land: the accept check for ${branches(ran)} FAILED (${exitWords(accept)}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the Rift whose diff it touches. Log: ${accept.log}`,
           digest(accept.output, 20),
         ].join("\n"),
     ...outcomeLines(outcomes),

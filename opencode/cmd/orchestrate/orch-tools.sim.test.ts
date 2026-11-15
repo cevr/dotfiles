@@ -25,7 +25,7 @@ import {
 } from "@dotfiles/opencode-orchestrate/tools"
 import { RIFT_DESCRIPTION } from "@dotfiles/opencode-rift/rift"
 import { workriftName } from "@dotfiles/opencode-rift/rpc"
-import { Array as Arr, Cause, Effect, Exit, Option, Predicate } from "effect"
+import { Array as Arr, Cause, Effect, Exit, Option, Predicate, Schema } from "effect"
 import { nearest } from "../../mods/tool-names/near-miss.ts"
 import * as Seed from "../../sim/seed.ts"
 import { boot, HAND_BACK, type Input, ORIGIN, PLAIN, type Run, WORK } from "./orch-tools-world.ts"
@@ -115,6 +115,42 @@ seeded("a whole batch through the new actions: three lanes, one land of the thre
     // The last status names no pending verdict.
     expect(last.text).not.toContain("landed and not verified:")
     expect(last.text).not.toContain('orchestrate({ action: "verify"')
+  }),
+)
+
+/** The `orchestrate` call a refusal names after `lead`, as the input the tool takes. */
+const suggested = (text: string, lead: string): Input => {
+  const at = text.indexOf(`${lead} orchestrate(`)
+  const from = text.indexOf("{", at)
+  const call = text.slice(from, text.indexOf(" })", from) + 2)
+  return decodeInput(call.replace(/(\w+): /g, '"$1": '))
+}
+const decodeInput = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))
+
+seeded("land-adopt: a unit whose implementor started before a restart lands by { unit, path }: a bare name is refused with the call to make, which lands it; the rift land of it too", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true)
+    const root = yield* run.world.session(WORK)
+    const at = rootOf(run, root)
+    const [alpha, beta, gamma] = yield* Effect.forEach(UNITS, (unit) => Effect.map(at.orchestrate({ action: "lane", unit }), (lane) => suffixOf(lane.text)))
+    // beta's implementor starts after the restart: the root runs units. alpha's and gamma's started before it, so the ledger holds neither.
+    yield* at.implement("beta", 1, `implementor beta r1 (rift: ${beta})`, "ready")
+    const bare = yield* at.orchestrate({ action: "land", units: ["alpha"] })
+    expect([bare.error, bare.text]).toEqual([true, expect.stringContaining("the machine holds no unit alpha")])
+    expect(run.lines(root).map((line) => line.kind)).not.toContain("UnitAdopted")
+    // The call it names, made literally: alpha adopted with its lane, landed with beta.
+    const asked = suggested(bare.text, "Adopt it and land it:")
+    expect(asked).toEqual({ action: "land", units: [{ unit: "alpha", path: alpha }, "beta"] })
+    const landed = yield* at.orchestrate(asked)
+    expect([landed.error, landed.text.endsWith(LAND_NEXT)]).toEqual([false, true])
+    expect(run.lines(root).filter((line) => line.kind === "BatchLanded").map((line) => [...(line.units ?? [])].sort())).toEqual([["alpha", "beta"]])
+    // The batch's verdict, then gamma by the root's rift land: the same adoption, checked and recorded alike.
+    yield* run.probe(root, "subagent", { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: accepted ${FINDINGS}`, background: true })
+    yield* run.has(root, (line) => line.kind === "VerifierEnded")
+    const viaRift = yield* run.probe(root, "rift", { action: "land", rifts: [{ path: gamma, unit: "gamma" }] })
+    expect([viaRift.error, viaRift.text.startsWith(aliasLine("land"))]).toEqual([false, true])
+    expect(run.lines(root).filter((line) => line.kind === "UnitAdopted").map((line) => line.unit)).toEqual(["alpha", "gamma"])
+    expect(run.lines(root).filter((line) => line.kind === "BatchLanded").map((line) => [...(line.units ?? [])].sort())).toEqual([["alpha", "beta"], ["gamma"]])
   }),
 )
 

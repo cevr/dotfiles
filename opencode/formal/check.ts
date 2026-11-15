@@ -67,14 +67,14 @@ export const MUTANTS: ReadonlyArray<Mutant> = [
   {
     name: "verdict-pending",
     why: "a land no longer waits for the last batch's verdict",
-    code: ['if (verdictPending(state)) rules.push("VerdictPending")', 'if (false) rules.push("VerdictPending")'],
+    code: ['if (verdictPending(seen)) rules.push("VerdictPending")', 'if (false) rules.push("VerdictPending")'],
     model: ['else if (verdictPending(s)) "VerdictPending" // mutant: verdict-pending', 'else if (false) "VerdictPending"'],
   },
   {
     name: "finding-unfolded",
     why: "a land no longer waits for the last verdict's findings to be folded",
     code: [
-      'if (unfoldedOf(state, lands).length > 0 || unresolvedOf(state).length > 0) rules.push("FindingUnfolded")',
+      'if (unfoldedOf(seen, lands).length > 0 || unresolvedOf(seen).length > 0) rules.push("FindingUnfolded")',
       'if (false) rules.push("FindingUnfolded")',
     ],
     model: ['else if (unfoldedOf(s, lands) != Set() or s.unresolved != Set()) "FindingUnfolded" // mutant: finding-unfolded', 'else if (false) "FindingUnfolded"'],
