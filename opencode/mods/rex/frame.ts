@@ -44,6 +44,7 @@ const failed = (shown: Shown, reason: string, cols: number) =>
   Shown.match(shown, {
     Url: () => `${RED}${cut(`✗ ${reason}`, cols)}${RESET}`,
     Feed: () => `${RED}${cut(`✗ ${reason}`, cols)}${RESET}`,
+    Sim: () => `${RED}${cut(`✗ ${reason}`, cols)}${RESET}`,
     Picture: () => `${DIM}${cut(reason, cols)}${RESET}`,
     Page: () => `${DIM}${cut(reason, cols)}${RESET}`,
   })
@@ -57,6 +58,7 @@ const body = (shown: Shown, content: Content, room: Cells, cell: CellPixels): st
         Picture: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
         Url: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
         Feed: () => page(text, room),
+        Sim: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
       }),
     Bytes: ({ bytes }) =>
       Shown.match(shown, {
@@ -64,6 +66,7 @@ const body = (shown: Shown, content: Content, room: Cells, cell: CellPixels): st
         Picture: () => picture(shown.name, bytes, room, cell),
         Url: () => picture(shown.name, bytes, room, cell),
         Feed: () => picture(shown.name, bytes, room, cell),
+        Sim: () => picture(shown.name, bytes, room, cell),
       }),
   })
 
@@ -81,7 +84,7 @@ export const frame = (spooled: Spooled, content: Option.Option<Content>, size: C
   const header = [`${DIM}${cut(name, size.cols)}${RESET}`, ...Option.toArray(Option.map(tally, (item) => tallyLine(item, size.cols)))]
   const room = roomOf(spooled, size)
   const drawn = Option.match(Option.all({ shown, content }), {
-    onNone: () => `${DIM}Nothing shown yet: rex-show image FILE, rex-show md FILE, rex-show url URL, rex-show sideshow${RESET}`,
+    onNone: () => `${DIM}Nothing shown yet: rex-show image FILE, rex-show md FILE, rex-show url URL, rex-show sideshow, rex-show sim${RESET}`,
     onSome: (both) => body(both.shown, both.content, room, cell),
   })
   const status = Option.match(tally, { onNone: () => clearReport, onSome: report })

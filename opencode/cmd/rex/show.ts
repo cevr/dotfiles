@@ -20,6 +20,12 @@
  *                                       asked for every S seconds (3), the
  *                                       session's title in the header and the
  *                                       post count as the tally
+ *   rex-show sim [DEVICE] [--every S]   mirror a booted iOS simulator (DEVICE
+ *                                       by name or udid, else the one used
+ *                                       last), screenshot every S seconds (1)
+ *                                       and redrawn when the screen changes;
+ *                                       read only. Off the Mac, through
+ *                                       `ssh $REX_SHOW_SIM_HOST`
  *   rex-show tally TEXT [--progress N] [--state working|done|blocked|error|idle]
  *                                       a line in the pane and in Rex's tab
  *                                       header (OSC 7501, record `tally`)
@@ -49,9 +55,11 @@ import { type Pane, paneOf } from "@dotfiles/opencode-rex/pane"
 import * as ProcessBrowser from "@dotfiles/opencode-rex/process/browser"
 import * as ProcessRex from "@dotfiles/opencode-rex/process/rex"
 import * as ProcessSideshow from "@dotfiles/opencode-rex/process/sideshow"
-import { Browser, type Post, Sideshow, Spool } from "@dotfiles/opencode-rex/service"
+import * as ProcessSimulators from "@dotfiles/opencode-rex/process/simulators"
+import { Browser, type Post, Sideshow, SimFailed, Simulators, Spool } from "@dotfiles/opencode-rex/service"
+import { Choice, choose, SIM_EVERY, whyNone } from "@dotfiles/opencode-rex/sim"
 import { DEFAULT_EVERY, DEFAULT_WIDTH, due, fingerprint, nameOf, type Taken, viewport } from "@dotfiles/opencode-rex/shots"
-import { empty, Feed, Page, Picture, Shown, type Spooled, Url } from "@dotfiles/opencode-rex/spool"
+import { empty, Feed, Page, Picture, Shown, Sim, type Spooled, Url } from "@dotfiles/opencode-rex/spool"
 import { TallyState } from "@dotfiles/opencode-rex/status"
 import { answered, CELL_QUERIES, cellOf } from "@dotfiles/opencode-rex/terminal"
 import { Array as Arr, Clock, Config, Console, Data, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
@@ -64,6 +72,7 @@ export const USAGE = [
   "       rex-show md FILE",
   "       rex-show url URL [--every SECONDS] [--width PX]",
   "       rex-show sideshow [SESSION] [--every SECONDS]",
+  "       rex-show sim [DEVICE] [--every SECONDS]",
   "       rex-show tally TEXT [--progress N] [--state working|done|blocked|error|idle]",
 ].join("\n")
 
@@ -80,6 +89,7 @@ export type Request = Data.TaggedEnum<{
   Show: { readonly shown: Picture | Page }
   Visit: { readonly page: Url }
   Follow: { readonly session: Option.Option<string>; readonly every: number }
+  Mirror: { readonly device: Option.Option<string>; readonly every: number }
   Tally: { readonly msg: string; readonly progress: Option.Option<number>; readonly state: TallyState }
   View: { readonly session: string; readonly spool: Option.Option<string> }
 }>
@@ -149,6 +159,13 @@ const follow = Effect.fn("RexShow.followRequest")(function* (rest: ReadonlyArray
   return Request.Follow({ session: Arr.head(named), every: Option.getOrElse(every, () => FEED_EVERY) })
 })
 
+const mirror = Effect.fn("RexShow.mirrorRequest")(function* (rest: ReadonlyArray<string>) {
+  const named = positional(rest, ["--every"])
+  if (named.length > 1) return yield* usage("sim takes at most one DEVICE")
+  const every = yield* decoded(rest, "--every", (value) => decodeEvery(Number(value)), "takes seconds from 1 to 3600")
+  return Request.Mirror({ device: Arr.head(named), every: Option.getOrElse(every, () => SIM_EVERY) })
+})
+
 const view = Effect.fn("RexShow.viewRequest")(function* (rest: ReadonlyArray<string>) {
   const session = yield* Option.match(flag(rest, "--session"), { onNone: () => Effect.fail(usage("view takes --session ID")), onSome: Effect.succeed })
   return Request.View({ session, spool: flag(rest, "--spool") })
@@ -160,6 +177,7 @@ export const parse = Effect.fn("RexShow.parse")(function* (args: ReadonlyArray<s
   if (command === "image" || command === "md") return yield* show(command, rest)
   if (command === "url") return yield* visit(rest)
   if (command === "sideshow") return yield* follow(rest)
+  if (command === "sim") return yield* mirror(rest)
   if (command === "tally") return yield* tally(rest)
   if (command === "view") return yield* view(rest)
   return yield* usage(Option.match(Arr.head(args), { onNone: () => "no command", onSome: (name) => `unknown command ${name}` }))
@@ -227,12 +245,14 @@ const asFollowed = (spooled: Spooled, feed: Feed, followed: Followed): Spooled =
  * or the pane's size changes; a web page it shoots again when due, and
  * draws again only when the shot differs from the last; a Sideshow session
  * it asks for posts when due, and draws again only when its latest post,
- * the post count or the session's title changed.
+ * the post count or the session's title changed; a simulator it screenshots
+ * when due, and draws again only when the screen changed.
  */
 export const viewer = Effect.fn("RexShow.view")(function* (session: string, screen: Screen) {
   const spool = yield* Spool
   const browser = yield* Browser
   const sideshow = yield* Sideshow
+  const simulators = yield* Simulators
   const drawn = {
     key: "",
     sized: "",
@@ -242,6 +262,7 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
     followed: { title: Option.none<string>(), count: 0, post: Option.none<Post>() } satisfies Followed,
     titled: -1,
     post: "",
+    device: Option.none<string>(),
   }
   /** What `post` draws as, at `room` cells: its picture, Markdown or a shot of its page; why not when Sideshow or the browser fails. */
   const postContent = (feed: Feed, post: Post, room: Cells) => {
@@ -296,6 +317,30 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
     }
     drawn.taken = Option.some({ seq, sized: drawn.sized, at: now, print: fingerprint(new TextEncoder().encode(drawn.post)) })
   })
+  /** The simulator screenshot again when due (the booted ones listed again each time), its screen kept, and its name and OS for the header. */
+  const look_sim = Effect.fn("RexShow.mirror")(function* (sim: Sim, seq: number) {
+    const now = yield* Clock.currentTimeMillis
+    if (!due(drawn.taken, seq, drawn.sized, now, sim.every * 1000)) return
+    const host = simulators.at(sim.host)
+    const wanted = Option.liftPredicate(sim.device, (name) => name !== "")
+    // The header names the device only while one is mirrored.
+    drawn.device = Option.none()
+    const screen = yield* Effect.exit(
+      Effect.gen(function* () {
+        const choice = choose(yield* host.booted, wanted)
+        const device = yield* Choice.$match(choice, {
+          Chosen: ({ device }) => Effect.succeed(device),
+          NoneBooted: () => Effect.fail(new SimFailed({ message: Option.getOrElse(whyNone(choice), () => "") })),
+          NotBooted: () => Effect.fail(new SimFailed({ message: Option.getOrElse(whyNone(choice), () => "") })),
+        })
+        drawn.device = Option.some(`${device.name} · ${device.os}`)
+        return yield* host.screenshot(device.udid)
+      }),
+    )
+    const taken = shotOf(screen)
+    drawn.taken = Option.some({ seq, sized: drawn.sized, at: now, print: taken.print })
+    drawn.shot = Option.some(taken.content)
+  })
   /** The page shot again when it is due, its content and fingerprint kept. */
   const shoot = Effect.fn("RexShow.shoot")(function* (page: Url, seq: number, room: Cells) {
     const now = yield* Clock.currentTimeMillis
@@ -316,9 +361,11 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
     const shown = Option.fromUndefinedOr(spooled.shown)
     const page = Option.filter(shown, Shown.guards.Url)
     const feed = Option.filter(shown, Shown.guards.Feed)
+    const sim = Option.filter(shown, Shown.guards.Sim)
+    yield* Option.match(sim, { onNone: () => Effect.void, onSome: (mirrored) => look_sim(mirrored, spooled.seq) })
     yield* Option.match(page, { onNone: () => Effect.void, onSome: (url) => shoot(url, spooled.seq, roomOf(spooled, size)) })
     yield* Option.match(feed, { onNone: () => Effect.void, onSome: (followed) => look_feed(followed, spooled.seq, roomOf(asFollowed(spooled, followed, drawn.followed), size)) })
-    const live = Option.isSome(page) || Option.isSome(feed)
+    const live = Option.isSome(page) || Option.isSome(feed) || Option.isSome(sim)
     const print = Option.match(Option.filter(drawn.taken, () => live), { onNone: () => "", onSome: (taken) => `:${taken.print}` })
     const key = `${spooled.seq}:${sized}${print}`
     if (key === drawn.key) return
@@ -329,11 +376,16 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
         Shown.match(item, {
           Url: () => Effect.succeed(drawn.shot),
           Feed: () => Effect.succeed(drawn.shot),
+          Sim: () => Effect.succeed(drawn.shot),
           Picture: (picture) => Effect.map(contentOf(picture), Option.some),
           Page: (text) => Effect.map(contentOf(text), Option.some),
         }),
     })
-    const shownAs = Option.match(feed, { onNone: () => spooled, onSome: (followed) => asFollowed(spooled, followed, drawn.followed) })
+    const named = Option.match(sim, {
+      onNone: () => spooled,
+      onSome: (mirrored) => ({ ...spooled, shown: Sim.make({ ...mirrored, name: Option.getOrElse(drawn.device, () => mirrored.name) }) }),
+    })
+    const shownAs = Option.match(feed, { onNone: () => named, onSome: (followed) => asFollowed(spooled, followed, drawn.followed) })
     yield* screen.display(frame(shownAs, content, size, drawn.cell))
   })
   return yield* Effect.forever(Effect.andThen(look, Effect.sleep(LOOK_EVERY)))
@@ -353,6 +405,7 @@ export const spoolOf = (request: Request, settings: Settings): string =>
     Show: () => settings.spool,
     Visit: () => settings.spool,
     Follow: () => settings.spool,
+    Mirror: () => settings.spool,
     Tally: () => settings.spool,
   })
 
@@ -371,6 +424,7 @@ export const run = Effect.fn("RexShow.run")(
     if (request._tag === "Show") return yield* showFile(pane, request.shown, program)
     if (request._tag === "Visit") return yield* showLive(pane, request.page, program)
     if (request._tag === "Follow") return yield* showLive(pane, yield* feedOf(request), program)
+    if (request._tag === "Mirror") return yield* showLive(pane, yield* simOf(request), program)
     return yield* setTally(pane, { msg: request.msg, state: request.state, progress: Option.getOrUndefined(request.progress) }, program)
   },
   Effect.catchTags({
@@ -379,6 +433,13 @@ export const run = Effect.fn("RexShow.run")(
     SideshowFailed: (error) => Effect.fail(failed(error)),
   }),
 )
+
+/** The simulator a mirror request names, on the Mac `$REX_SHOW_SIM_HOST` names (this host when unset); whether it is booted is the viewer's to say, in the pane. */
+const simOf = Effect.fn("RexShow.simOf")(function* (request: { readonly device: Option.Option<string>; readonly every: number }) {
+  const host = Option.getOrElse(yield* optional("REX_SHOW_SIM_HOST"), () => "")
+  const device = Option.getOrElse(request.device, () => "")
+  return Sim.make({ device, host, name: Option.getOrElse(request.device, () => "simulator"), every: request.every })
+})
 
 /** The Sideshow session a follow request names, else the caller's own; refused (exit 1) when it names none and the caller has none. */
 const feedOf = Effect.fn("RexShow.feedOf")(function* (request: { readonly session: Option.Option<string>; readonly every: number }) {
@@ -445,7 +506,7 @@ export const live = (args: ReadonlyArray<string>) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const settings = yield* settingsFor(args)
-      return Layer.mergeAll(ProcessRex.layer(settings.rex), FileSpool.layer(settings.spool), ProcessBrowser.layer(yield* placesOf), ProcessSideshow.layer(yield* sideshowOf))
+      return Layer.mergeAll(ProcessRex.layer(settings.rex), FileSpool.layer(settings.spool), ProcessBrowser.layer(yield* placesOf), ProcessSideshow.layer(yield* sideshowOf), ProcessSimulators.layer({ platform: process.platform }))
     }),
   )
 

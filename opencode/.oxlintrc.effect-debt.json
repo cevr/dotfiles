@@ -313,11 +313,20 @@
         "mods/rex/process/browser.ts",
         "mods/rex/process/browser.test.ts",
         "mods/rex/process/sideshow.ts",
-        "mods/rex/process/sideshow.test.ts"
+        "mods/rex/process/sideshow.test.ts",
+        "mods/rex/process/simulators.ts"
       ],
       "rules": {
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/process/group.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
       }
     },
     {

@@ -8,6 +8,7 @@ import { describe, expect } from "bun:test"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
+import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
 import * as MemorySpool from "@dotfiles/opencode-rex/memory/spool"
 import type { Post, Shot } from "@dotfiles/opencode-rex/service"
 import { Feed, type Spooled } from "@dotfiles/opencode-rex/spool"
@@ -57,6 +58,7 @@ describe("the caller of rex-show sideshow", () => {
       MemorySpool.layer(spools),
       MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())),
       MemorySideshow.layer(Ref.makeUnsafe({ ...MemorySideshow.empty, mine })),
+      MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
       ConfigProvider.layer(ConfigProvider.fromEnvRecord({ REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) })),
     )
   const showcases = (rex: Ref.Ref<MemoryRex.World>) => Effect.map(Ref.get(rex), (world) => world.blocks.filter((held) => held.label === "showcase").length)
@@ -98,7 +100,7 @@ const viewed = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map([["session:a
 const queues = Layer.mergeAll(Layer.effect(Asks)(Queue.unbounded<string>()), Layer.effect(Shots)(Queue.unbounded<Shot>()), Layer.effect(Frames)(Queue.unbounded<string>()))
 const sideshow = Layer.unwrap(Asks.use((asks) => Effect.succeed(MemorySideshow.layer(world, (session) => Queue.offer(asks, session)))))
 const browser = Layer.unwrap(Shots.use((shots) => Effect.succeed(MemoryBrowser.layer(pages, (shot) => Queue.offer(shots, shot)))))
-const following = Layer.mergeAll(sideshow, browser, MemorySpool.layer(viewed)).pipe(Layer.provideMerge(queues))
+const following = Layer.mergeAll(sideshow, browser, MemorySpool.layer(viewed), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty))).pipe(Layer.provideMerge(queues))
 
 /** A pane of 82 × 35 cells of Rex's 12 × 38 px, its frames to `frames`. */
 const pane = (frames: Queue.Queue<string>): Screen => ({
