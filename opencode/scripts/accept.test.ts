@@ -14,7 +14,7 @@ import { waitUntil } from "../tests/wait.ts"
 import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, timingSigns } from "./accept-plan.ts"
 import { parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
-import { acceptanceTests, acceptReach, load, packageOf, reach } from "./reach.ts"
+import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
 
 const ROOT = process.cwd()
 
@@ -744,6 +744,19 @@ describe("the swarm's plan", () => {
       git: reached("mods/git/branch.ts"),
       itself: reachedSuites(suites, () => new Set(), ["cmd/wake/wake.sim.test.ts"]),
     }).toEqual({ escape: true, escapeServer: [], harness: tui, world: [], worldServer: true, git: [], itself: ["cmd/wake/wake.sim.test.ts"] })
+  })
+
+  test("a file reaches what its code names, never what its comments name, and a package's tests only by importing them", async () => {
+    const source = '// starts `scripts/verify.ts` and cmd/git\n/* "mods" */\nconst plugin = "cmd/wake"\nconst file = `testbeds/gamut/gamut.ts`\n'
+    const code = codeOf("sim/example.ts", source)
+    const workspace = await load()
+    const model = reach(workspace, ["sim/verify-model.ts"])
+    expect({
+      kept: ["cmd/wake", "testbeds/gamut/gamut.ts"].every((name) => code.includes(name)),
+      dropped: ["scripts/verify.ts", "cmd/git", '"mods"'].filter((name) => code.includes(name)),
+      model: ["scripts/verify.ts", "testbeds/gamut/gamut.ts"].filter((file) => model.has(file)),
+      tests: [...reach(workspace, ["sim/world.ts"])].filter((file) => /\.test\.tsx?$/.test(file)),
+    }).toEqual({ kept: true, dropped: [], model: [], tests: [] })
   })
 
   test("reads a suite's swarm output: the seeds it passed, and each failing seed of that suite alone", () => {
