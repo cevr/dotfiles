@@ -193,6 +193,8 @@ All scripts support `--help` for detailed options and `--json` for machine-reada
 5. Verify: `python scripts/accessibility_audit.py`
 6. Debug if needed: `python scripts/app_state_capture.py --app-bundle-id com.example.app`
 
+**Show the simulator beside you in Rex.** When your shell runs in a Rex pane (`REX_BLOCK` is set) and you drive a simulator for a while, run `rex-show sim` once (or `rex-show sim "iPhone 16 Pro"`, by name or udid): your session's showcase pane mirrors the booted simulator (the one used last when you name none), screenshot every second (`--every S`) and redrawn only when the screen changes, the device and iOS version in its header. It only reads: it never boots, shuts down, installs or erases a simulator, so boot one first; with none booted the pane says so. The simulator runs on the Mac: from the workbox set `REX_SHOW_SIM_HOST=user@mac` (Remote Login on and the workbox's key accepted; the pane says how when it is not) and it screenshots over ssh. Use the simulator scripts above, not the pane, to read the screen or act on it.
+
 ## Requirements
 
 - macOS 12+
