@@ -231,6 +231,33 @@ describe("the advance step over real git and bun", () => {
         ),
       60_000,
     )
+
+    test(
+      `U2 (${mode}): an untracked copy at a non-ASCII path, which git quotes without -z, is read as it is on disk: the target's own goes and the move goes through`,
+      () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const { root, a } = yield* scratch
+            const PATH = "docs/research/café — 説明.md"
+            const NOTE = "# The note the target adds\n"
+            yield* files(root, [
+              ["opencode/package.json", EMPTY_PACKAGE],
+              [PATH, NOTE],
+            ])
+            sh(root, ["git", "add", "-A"])
+            sh(root, ["git", "commit", "-qm", "C"])
+            const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+            sh(root, ["git", "reset", "-q", "--hard", a])
+            yield* files(root, [[PATH, NOTE]])
+            expect(Exit.isSuccess(yield* advance(root, mode, c))).toBe(true)
+            expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(c)
+            expect(sh(root, ["git", "status", "--porcelain"]).out).toBe("")
+            expect(yield* Effect.promise(() => file(`${root}/${PATH}`).text())).toBe(NOTE)
+            spawnSync(["rm", "-rf", root])
+          }),
+        ),
+      60_000,
+    )
   }
 
   test("M1: each host runs its own commands script: the workbox's on Linux, the Mac's on macOS, none elsewhere", () => {

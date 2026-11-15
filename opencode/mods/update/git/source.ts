@@ -70,7 +70,8 @@ export const layer = (checkout: Checkout) => {
   const here: Place = { cwd: checkout.root, env: checkout.env }
   const opencode: Place = { cwd: `${checkout.root}/opencode`, env: { ...checkout.env, OPENCODE_DEV: checkout.fork } }
   const git = (step: string, ...args: ReadonlyArray<string>) => run(step, ["git", ...args], here)
-  const lines = (text: string) => text.split("\n").filter((line) => line !== "")
+  /** The paths a git command listed with `-z`: NUL-separated and never quoted, so a path in any script reads as it is on disk. */
+  const paths = (text: string) => text.split("\0").filter((path) => path !== "")
   /** Deletes a file of the checkout; one already gone is no failure. */
   const remove = (step: string, path: string) => {
     const each = file(`${checkout.root}/${path}`)
@@ -96,15 +97,15 @@ export const layer = (checkout: Checkout) => {
     if (checkout.mode === "ff") return yield* git("fast-forward the checkout", "merge", "--quiet", "--ff-only", commit)
     const left = yield* head
     yield* git("move the checkout", "reset", "--quiet", commit)
-    const differing = lines(yield* git("list the files that differ", "diff", "--name-only")).filter((path) => !kept(path))
+    const differing = paths(yield* git("list the files that differ", "diff", "--name-only", "-z")).filter((path) => !kept(path))
     if (differing.length > 0) yield* git("take the commit's files", "checkout", "--quiet", "--", ...differing)
     // A mixed reset leaves on disk, untracked, each file the commit left tracks and this one does
     // not. Moving back past a commit that added a workspace package (cmd/stall, 2026-11-12) left
     // its package.json, so bun's workspaces found a package the lockfile lacks and the frozen
     // install of the rollback failed. Those files go, as a fast-forward's `reset --keep` drops them.
-    const dropped = lines(yield* git("list the files the commit does not have", "diff", "--name-only", "--no-renames", "--diff-filter=D", left, commit)).filter((path) => !kept(path))
+    const dropped = paths(yield* git("list the files the commit does not have", "diff", "--name-only", "-z", "--no-renames", "--diff-filter=D", left, commit)).filter((path) => !kept(path))
     yield* Effect.forEach(dropped, (path) => remove("drop the files the commit does not have", path), { discard: true })
-    const conflicts = lines(yield* git("list Syncthing's conflict copies", "ls-files", "--others", "--exclude-standard")).filter((path) => path.includes(".sync-conflict-"))
+    const conflicts = paths(yield* git("list Syncthing's conflict copies", "ls-files", "-z", "--others", "--exclude-standard")).filter((path) => path.includes(".sync-conflict-"))
     yield* Effect.forEach(conflicts, (path) => remove("delete Syncthing's conflict copies", path), { discard: true })
     return ""
   })
@@ -131,9 +132,9 @@ export const layer = (checkout: Checkout) => {
    */
   const untrackedAhead = (commit: string) =>
     Effect.gen(function* () {
-      const untracked = lines(yield* git("list the untracked files", "ls-files", "--others", "--exclude-standard")).filter((path) => !kept(path))
+      const untracked = paths(yield* git("list the untracked files", "ls-files", "-z", "--others", "--exclude-standard")).filter((path) => !kept(path))
       if (untracked.length === 0) return []
-      const tracked = new Set(lines(yield* git("list the commit's files", "ls-tree", "-r", "--name-only", commit)))
+      const tracked = new Set(paths(yield* git("list the commit's files", "ls-tree", "-r", "-z", "--name-only", commit)))
       const ahead = untracked.filter((path) => tracked.has(path))
       const same = yield* Effect.filter(ahead, (path) =>
         Effect.all([git("hash an untracked file", "hash-object", "--", path), git("read the commit's file", "rev-parse", `${commit}:${path}`)]).pipe(
