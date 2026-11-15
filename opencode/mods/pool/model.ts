@@ -26,6 +26,7 @@ import {
   PoolId,
 } from "./account-pool.ts"
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
+import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
@@ -513,27 +514,44 @@ export const layer = (config: Config) =>
        */
       const askers = new Map<string, { readonly at: number; readonly sessionID: string }>()
 
-      /** Every pool whose resets are worked, as the review reads it: its accounts now, each with its label. */
+      /**
+       * Each account's readings of the last BURN_MS, oldest first, by pool and
+       * credential: what its burn is measured over (burn.ts). Kept in memory:
+       * a restart forgets them, and the burn is the period's average until
+       * two readings far enough apart are in hand again.
+       */
+      const samples = new Map<string, ReadonlyArray<Burn.Sample>>()
+
+      /** Every pool whose resets are worked, as the review reads it: its accounts now, each with its label and burn, and the agents running on it. */
       const resetViews = Effect.gen(function* () {
         const views: Array<ResetsModel.PoolView> = []
         const now = yield* Clock.currentTimeMillis
         const tally = limits === undefined ? undefined : yield* limits.tally
         const fleet = yield* fleetStore.read
-        const inflight = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
+        const running = FleetModel.running(fleet, now)
         for (const [id, provider] of Object.entries(config.resets ?? {})) {
           const where = poolOf(PoolId.make(id))
           if (where === undefined) continue
           const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
           const labels: Record<string, string> = {}
-          for (const account of accounts) labels[account.credentialID] = yield* logins.label(where.id, account.credentialID)
+          const burns: Record<string, Readonly<Record<string, number>>> = {}
+          for (const account of accounts) {
+            labels[account.credentialID] = yield* logins.label(where.id, account.credentialID)
+            const key = `${id}/${account.credentialID}`
+            const kept = Burn.remember(samples.get(key) ?? [], Option.fromUndefinedOr(account.reading), now)
+            samples.set(key, kept)
+            burns[account.credentialID] = Burn.burnsOf(kept, now)
+          }
           views.push({
             id,
             provider,
             accounts,
             labels,
             ...(tally === undefined ? {} : { ratios: weeklyRatios(tally, id) }),
-            // The fleet's demand on the pool: every start of a provider it paces not settled yet, on any host.
-            inflight: inflight.filter((start) => measuredBy(config, start.providerID) === id).length,
+            burns,
+            // The fleet's agents on the pool: every start of a provider it paces in the last hour, on any host.
+            running: running.starts.filter((start) => measuredBy(config, start.providerID) === id).length,
+            hosts: running.hosts,
           })
         }
         return views
@@ -1046,7 +1064,7 @@ export const layer = (config: Config) =>
             if (reading !== undefined) readings.push({ pool: id, credentialID, reading })
           }
         }
-        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, yield* Clock.currentTimeMillis, fleetConfig.settleMs, readings)
+        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, yield* Clock.currentTimeMillis, readings)
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))

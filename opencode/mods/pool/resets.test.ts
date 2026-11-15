@@ -1,9 +1,10 @@
 // The Resets aggregate under the standing allowance: the pool claims resets
-// on its own, Claude's and Codex's alike, and never asks. A reset goes for
-// held work no fresh account can take when the work would spend it, one
-// about to expire goes so it is not lost, a window period takes one claim,
-// and a claim that did not go through goes again as the same claim. After a
-// claim the owner is told once.
+// on its own, Claude's and Codex's alike, and never asks. A reset goes when
+// the forecast of the work on the pool (its burn, the agents running, any
+// start held) runs it out before its first natural reset and the work would
+// spend it; one about to expire goes so it is not lost; a window period takes
+// one claim; and a claim that did not go through goes again as the same
+// claim. After a claim the owner is told once.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { fold } from "@dotfiles/decider/decider"
@@ -85,7 +86,7 @@ const codex = (accounts: ReadonlyArray<AccountStatus>, inflight = BUSY): PoolVie
   provider: "codex",
   accounts,
   labels: Object.fromEntries(accounts.map((item) => [item.credentialID, `codex ${item.credentialID}`])),
-  inflight,
+  running: inflight,
 })
 
 const claude = (accounts: ReadonlyArray<AccountStatus>, inflight = BUSY): PoolView => ({
@@ -93,7 +94,7 @@ const claude = (accounts: ReadonlyArray<AccountStatus>, inflight = BUSY): PoolVi
   provider: "claude",
   accounts,
   labels: Object.fromEntries(accounts.map((item) => [item.credentialID, item.credentialID.replace("cred-", "")])),
-  inflight,
+  running: inflight,
 })
 
 /** Decide `commands` in order at `now`, from `state`: every event recorded, and the state they fold into. */
@@ -141,29 +142,36 @@ describe("Codex", () => {
       credentialID: "codex-a",
       creditID: "soon",
       requestID: claimRequestID("codex", spentCodex(credits)[0]!, credits[1]!, T0 + MINUTE),
-      why: "held",
+      why: "forecast",
       stage: "claiming",
       label: "codex codex-a",
       left: 1,
       nextExpires: T0 + 22 * DAY,
     })
-    expect(due.reset.reason).toStartWith("held work no fresh account can take: 1 start held, 3 running")
+    expect(due.reset.reason).toStartWith("the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h")
     expect(due.reset.requestID).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
   })
 
-  test("an account with room takes the work; no start waiting, or one gone stale, claims nothing", () => {
+  test("an account whose room outlasts the burn to the first natural reset takes the work; no agent running and no start waiting, or one gone stale, claims nothing", () => {
     const credits = [codexCredit("soon", 21 * DAY), codexCredit("late", 22 * DAY)]
     const room = run([
       [T0, NoteWait.make({ pool: "openai" })],
-      [T0, Review.make({ pools: [codex([account("codex-a", { fiveHour: 1, credits }), account("codex-b")])] })],
+      [T0, Review.make({ pools: [codex([account("codex-a", { fiveHour: 1, credits }), account("codex-b", { fiveHour: 0 })])] })],
     ])
     expect(tags(room.events)).toEqual(["WaitNoted"])
-    expect(weighed(room.events)).toEqual([{ _tag: "ClaimWeighed", pool: "openai", step: "fresh", reasons: ["an account can take the work: it goes there first"] }])
-    const idle = run([[T0, Review.make({ pools: [codex(spentCodex(credits))] })]])
+    expect(weighed(room.events)).toMatchObject([{ _tag: "ClaimWeighed", pool: "openai", step: "fresh" }])
+    expect(weighed(room.events)[0]?.reasons.join("; ")).toContain("5h 100% used, forecast 100% in 2 h, reset in 2 h; the pool keeps room until its first reset")
+    // The same pool with codex-b nearly spent and burning fast: it runs out before the reset, and a reset goes.
+    const tight = run([
+      [T0, NoteWait.make({ pool: "openai" })],
+      [T0, Review.make({ pools: [codex([account("codex-a", { fiveHour: 1, credits }), account("codex-b", { fiveHour: 0.9 })])] })],
+    ])
+    expect(tags(tight.events)).toEqual(["WaitNoted", "ClaimDue"])
+    const idle = run([[T0, Review.make({ pools: [codex(spentCodex(credits), 0)] })]])
     expect(idle.events).toEqual([])
     const stale = run([
       [T0, NoteWait.make({ pool: "openai" })],
-      [T0 + WAIT_MS, Review.make({ pools: [codex(spentCodex(credits))] })],
+      [T0 + WAIT_MS, Review.make({ pools: [codex(spentCodex(credits), 0)] })],
     ])
     expect(tags(stale.events)).toEqual(["WaitNoted"])
   })
@@ -288,36 +296,39 @@ describe("Claude", () => {
     ])
     expect(tags(events)).toEqual(["WaitNoted", "ClaimDue"])
     expect(events.find((event) => event._tag === "ClaimDue")).toMatchObject({
-      reset: { credentialID: "cred-4", creditID: "grant-4", why: "held", stage: "claiming", label: "4", buys: "5h 100% used of 100% → 0% used" },
+      reset: { credentialID: "cred-4", creditID: "grant-4", why: "forecast", stage: "claiming", label: "4", buys: "5h 100% used of 100% → 0% used" },
     })
   })
 
-  test("a single held start with nothing running is not enough work: the reason is given, nothing claimed", () => {
+  test("no agent running and no start held: nothing is claimed however spent the pool, and nothing is logged", () => {
+    expect(run([[T0, Review.make({ pools: [claude(held, 0)] })]]).events).toEqual([])
+  })
+
+  test("a single held start with nothing running still counts: every account spent, a reset goes", () => {
     const { events } = run([
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [claude(held, 0)] })],
     ])
-    expect(tags(events)).toEqual(["WaitNoted"])
-    expect(weighed(events)[0]?.reasons.join("; ")).toContain("4: 1 start held, 0 running, ~22% of the 5h window would be used before its reset in 2 h, under 50% of the 100% it gives back")
+    expect(tags(events)).toEqual(["WaitNoted", "ClaimDue"])
+    expect(events[1]).toMatchObject({ reset: { credentialID: "cred-4", why: "forecast" } })
   })
 
-  test("the last reset in hand is kept while more than a day of the week remains", () => {
+  test("the last reset in hand goes too, when the pool runs out", () => {
     const one = [account("cred-4", { fiveHour: 1, credits: [claudeGrant("grant-4", { count: 1 })] })]
     const { events } = run([
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [claude(one)] })],
     ])
-    expect(tags(events)).toEqual(["WaitNoted"])
-    expect(weighed(events)[0]?.reasons).toEqual(["4: the last reset in hand, kept while more than a day of the week remains"])
+    expect(tags(events)).toEqual(["WaitNoted", "ClaimDue"])
   })
 
-  test("a spent week the grant does not clear: it would not free the held work", () => {
+  test("a spent week the grant does not clear: it would not free the account, nothing claimed", () => {
     const { events } = run([
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [claude([account("cred-6", { sevenDay: 1, credits: [claudeGrant("grant-6")] })])] })],
     ])
     expect(tags(events)).toEqual(["WaitNoted"])
-    expect(weighed(events)[0]?.reasons).toEqual(["6: it would not free the held work"])
+    expect(weighed(events)[0]?.reasons).toEqual(["6: it would not free the account, another spent window still holds it"])
   })
 
   test("an ineligible account (no grants), or an account with room: nothing is claimed, and nothing asked", () => {
@@ -328,7 +339,7 @@ describe("Claude", () => {
     expect(tags(ineligible.events)).toEqual(["WaitNoted"])
     const room = run([
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [T0, Review.make({ pools: [claude([held[0]!, account("cred-7")])] })],
+      [T0, Review.make({ pools: [claude([held[0]!, account("cred-7", { fiveHour: 0 })])] })],
     ])
     expect(tags(room.events)).toEqual(["WaitNoted"])
   })
@@ -355,7 +366,7 @@ describe("Claude", () => {
     const told = events.find((event) => event._tag === "OwnerTold")
     expect(told).toMatchObject({ key, sessionID: "ses_root" })
     if (told?._tag !== "OwnerTold") throw new Error("not told")
-    expect(told.text).toStartWith("Claimed the full reset on 4: 5h 100% used of 100% → 0% used (held work no fresh account can take: 1 start held, 3 running, ~89% of the 5h window")
+    expect(told.text).toStartWith("Claimed the full reset on 4: 5h 100% used of 100% → 0% used (the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h).")
     expect(told.text).toEndWith("1 reset left this week; next expires 2027-03-09 00:00Z.")
   })
 })

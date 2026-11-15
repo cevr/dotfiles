@@ -204,8 +204,9 @@ export type SharedReading = typeof SharedReading.Type
 
 /**
  * The report method's answer, what a peer host reads of this one: the agents
- * it admitted in the last few minutes (their spend may not show in a reading
- * yet) and its newest readings, at `at` on `host`. Never a token.
+ * it admitted in the last hour (the newest of them may not show in a reading
+ * yet; all of them are the agents running) and its newest readings, at `at`
+ * on `host`. Never a token.
  */
 export const Report = Schema.Struct({
   host: Schema.String,

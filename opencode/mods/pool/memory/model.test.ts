@@ -172,7 +172,7 @@ describe("Claude resets", () => {
         yield* pool.reviewResets
         expect(claude.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "grant-1"]])
         expect(claude.owner.asked.map((question) => [question.sessionID, question.options.map((option) => option.label)])).toEqual([["ses_root", [SEEN]]])
-        expect(claude.owner.asked[0]!.question).toMatch(/^Claimed the 5h reset on Claude A: 5h 100% used of 100% → 0% used \(held work no fresh account can take: .*\)\. 1 reset left this week; next expires .*\.$/)
+        expect(claude.owner.asked[0]!.question).toMatch(/^Claimed the 5h reset on Claude A: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h\)\. 1 reset left this week; next expires .*\.$/)
         const status = yield* pool.resets
         expect(status.claims.map((claim) => [claim.provider, claim.outcome, claim.weekly])).toEqual([["claude", "reset", "kept"]])
         // Read, the notice leaves the tray.
@@ -182,18 +182,21 @@ describe("Claude resets", () => {
       }),
     ))
 
-  test("a held start with nothing else running is too little work: nothing claimed, nothing asked", () =>
+  test("no agent running and no start held: nothing claimed, nothing asked, however spent the pool; agents running across the fleet with no start held: the forecast runs it out before its reset, and a grant is claimed", () =>
     scoped(
       Effect.gen(function* () {
         const now = Date.now()
         const claude = world(config, logins)
         held(claude, now)
         const pool = yield* claude.pool
-        yield* pool.pace("anthropic", undefined, "ses_root")
-        yield* settle
-        yield* pool.reviewResets
+        yield* pool.sweep
         expect(claude.claims).toEqual([])
         expect(claude.owner.asked).toEqual([])
+        yield* busy(pool, "anthropic")
+        yield* pool.sweep
+        expect(claude.claims.map((claim) => claim.creditID)).toEqual(["grant-1"])
+        const status = yield* pool.resets
+        expect(status.resets.map((reset) => reset.why)).toEqual(["forecast"])
       }),
     ))
 

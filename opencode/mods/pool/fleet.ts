@@ -168,14 +168,30 @@ export const inflight = (state: FleetState, now: number, settleMs: number): Read
   ...Object.values(state.peers).flatMap((peer) => (peer.report?.starts ?? []).filter((start) => unsettled(start, now, settleMs))),
 ]
 
-/** What this host answers a peer: its own starts that still count and its readings. */
-export const report = (
-  state: FleetState,
-  host: string,
-  now: number,
-  settleMs: number,
-  readings: ReadonlyArray<SharedReading>,
-): Report => ({ host, at: now, starts: ownStarts(state, now, settleMs), readings })
+/** Whether `start` is likely still running at `now`: admitted within KEEP_MS, and not from a clock too far ahead. */
+const recent = (start: Start, now: number) => unsettled(start, now, KEEP_MS)
+
+/**
+ * What this host answers a peer: its own starts of the last KEEP_MS and its
+ * readings. The peer's pace counts only those within its settle time; the
+ * reset rule counts them all as agents running (`running`).
+ */
+export const report = (state: FleetState, host: string, now: number, readings: ReadonlyArray<SharedReading>): Report => ({
+  host,
+  at: now,
+  starts: state.starts.filter((start) => recent(start, now)),
+  readings,
+})
+
+/**
+ * The agents likely running across the fleet: every start admitted within
+ * KEEP_MS on this host and in each peer's last report, and the hosts they run
+ * on (this one always counts).
+ */
+export const running = (state: FleetState, now: number) => {
+  const peers = Object.values(state.peers).map((peer) => (peer.report?.starts ?? []).filter((start) => recent(start, now)))
+  return { starts: [...state.starts.filter((start) => recent(start, now)), ...peers.flat()], hosts: 1 + peers.filter((starts) => starts.length > 0).length }
+}
 
 /** Each peer as the pane draws it, in the order `names` lists them. */
 export const peers = (state: FleetState, names: ReadonlyArray<string>, now: number, settleMs: number): ReadonlyArray<PeerStatus> =>

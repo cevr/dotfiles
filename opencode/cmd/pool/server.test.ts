@@ -1484,7 +1484,7 @@ describe("resets on the live adapters", () => {
         const told = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
         expect(state.owner.asked).toHaveLength(1)
         expect(told).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Pool reset claimed", options: [{ label: "OK" }] })
-        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (held work no fresh account can take: ")
+        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (the pool runs out before its reset: 1 start held, 3 agents running on 1 host, ")
         expect(told.question).toContain("1 reset left this week")
         const resets = yield* plugin.resets
         expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
@@ -1493,7 +1493,7 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
-  test("a held start with nothing else running is too little work: nothing claimed, nothing asked", () =>
+  test("a held start with nothing else running still counts: its only account spent, the grant is claimed for the forecast, and nothing asked", () =>
     scenario(
       Effect.gen(function* () {
         const now = Date.now()
@@ -1502,12 +1502,10 @@ describe("resets on the live adapters", () => {
         state.readings.set("cred-a", spentClaude(now))
         const plugin = yield* start({ sweepMinutes: 0 }, state, live)
         expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
-        yield* settle
-        yield* plugin.pace("anthropic", "ses_root")
-        yield* settle
-        expect(plugin.claims).toEqual([])
-        expect(state.owner.asked).toEqual([])
-        expect((yield* plugin.resets).resets).toEqual([])
+        yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
+        expect(plugin.claims.map(({ creditID }) => creditID)).toEqual(["grant-1"])
+        expect((yield* plugin.resets).resets.map((reset) => reset.why)).toEqual(["forecast"])
+        expect(state.owner.asked.every((question) => question.header === "Pool reset claimed")).toBe(true)
       }),
     ))
 

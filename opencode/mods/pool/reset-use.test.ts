@@ -3,21 +3,22 @@
 // review it. Nothing here is ever asked of the owner.
 //
 // - Use it or lose it: a reset that expires within a day is claimed on its
-//   own, once: at once on a spent window, else at its last call, on the window
-//   it gives back most of; never while that window resets by itself within 30
-//   minutes. One expiring later is left without work to use it on. The owner
-//   is told after.
-// - Demand: a start held by a window the reset frees, with no fresh account
-//   to take it, has a reset claimed when the work would spend at least half
-//   of what it gives back before the window resets by itself: early in the
-//   week, not late, and not with too little work.
+//   own, once, whatever it gives back: at once on a spent window, else at its
+//   last call, on the window it gives back most of; never while that window
+//   resets by itself within 30 minutes. One expiring later is left without
+//   work to use it on. The owner is told after.
+// - Demand is a forecast: the pool's burn, scaled by any start held, runs its
+//   room out before the window resets by itself; a reset goes on the account
+//   near its limit when it frees the account and the work would spend at
+//   least half of what it gives back before then: early in the week, not
+//   late, and not with too little work.
 // - A Fable reset empties Fable's own week and takes Fable's part of the
 //   weekly use off the weekly window, whose reset stays.
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Array as Arr, Effect } from "effect"
 import { fold } from "@dotfiles/decider/decider"
-import { BURN_AGENTS, LAST_CALL_MS, NATURAL_MS, NOT_WORTH_MS, WORTH_SHARE } from "./claim-rule.ts"
-import { lineOf, TARGET } from "./pace.ts"
+import { BURN_AGENTS, LAST_CALL_MS, NATURAL_MS, NEAR_MS, NEAR_USED, NOT_WORTH_MS, WORTH_SHARE } from "./claim-rule.ts"
+import { lineOf } from "./pace.ts"
 import type { QuotaWindow, ResetCredit } from "./quota.ts"
 import {
   type Command,
@@ -25,7 +26,6 @@ import {
   type Event,
   EXPIRING_MS,
   expiringKey,
-  MIN_RESTORE,
   NoteWait,
   pacePlans,
   type PoolView,
@@ -91,40 +91,42 @@ const pool = (provider: "claude" | "codex", accounts: ReadonlyArray<AccountStatu
   accounts,
   labels: Object.fromEntries(accounts.map((item) => [item.credentialID, item.credentialID])),
   ratios,
-  inflight,
+  running: inflight,
 })
 
 /** A fresh second account: work goes there, so only an expiring reset is claimed. */
 const roomy = account("room", [window("5h", 0.1, T0 + 3 * HOUR), window("7d", 0.1, T0 + 5 * DAY)])
 
 describe("use it or lose it", () => {
-  test("over a grid of use, expiry and natural reset: claimed iff it expires within a day, gives some back, and the window is spent or it is the last call; never inside 30 minutes of the window's own reset", () => {
+  test("over a grid of use, expiry and natural reset: claimed iff it expires within a day and the window it gives back most of is spent or it is the last call, on anything it gives back; never inside 30 minutes of that window's own reset", () => {
     for (const used of [0, 0.05, 0.3, 0.5, 0.9, 1])
       for (const expiresIn of [2 * HOUR, 20 * HOUR, 2 * DAY])
         for (const resetsIn of [20 * MINUTE, HOUR, 3 * DAY]) {
           const view = pool("claude", [account("a", [window("5h", 0.02, T0 + 4 * HOUR), window("7d", used, T0 + resetsIn)], [grant("g", T0 + expiresIn, WEEKLY)]), roomy])
           const { events } = run([[T0, Review.make({ pools: [view] })]])
-          const due = expiresIn <= EXPIRING_MS && used >= MIN_RESTORE && (used >= 1 || expiresIn <= LAST_CALL_MS) && resetsIn > NATURAL_MS
+          const due = expiresIn <= EXPIRING_MS && used > 0 && (used >= 1 || expiresIn <= LAST_CALL_MS) && resetsIn > NATURAL_MS
           const label = `used ${used}, expires in ${expiresIn / HOUR} h, week resets in ${resetsIn / HOUR} h`
           expect(tags(events), label).toEqual(due ? ["ClaimDue"] : [])
           if (due) expect(events[0], label).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("claude", "a", "7d", T0 + resetsIn), why: "expiring", kind: "weekly", stage: "claiming" } })
         }
   })
 
-  test("reviewed every ten minutes to its expiry, a useful reset is claimed once, at its last call; one that gives back too little never", () => {
+  test("reviewed every ten minutes to its expiry, a reset is claimed once, at its last call, however little it gives back", () => {
     const expiresAt = T0 + 30 * HOUR
     // Its week 60% used: claimed at the last call, on the window it gives back most of.
-    const useful = (now: number) => pool("claude", [account("a", [window("7d", 0.6, T0 + 3 * DAY)], [grant("g", expiresAt, WEEKLY)], now), roomy])
-    // A 5-hour reset on a window that never holds more than 5%: nothing worth sending.
-    const useless = (now: number) => pool("claude", [account("a", [window("5h", 0.05, now + 3 * HOUR), window("7d", 0.3, T0 + 3 * DAY)], [grant("g", expiresAt, SESSION)], now), roomy])
+    // Once claimed the reset is no longer listed.
+    const useful = (now: number, claimed: boolean) => pool("claude", [account("a", [window("7d", 0.6, T0 + 3 * DAY)], Arr.filter([grant("g", expiresAt, WEEKLY)], () => !claimed), now), roomy])
+    // A 5-hour reset on a window that never holds more than 5%: lost otherwise, so it goes too.
+    const useless = (now: number, claimed: boolean) =>
+      pool("claude", [account("a", [window("5h", 0.05, now + 3 * HOUR), window("7d", 0.3, T0 + 3 * DAY)], Arr.filter([grant("g", expiresAt, SESSION)], () => !claimed), now), roomy])
     for (const [view, wanted] of [
       [useful, [expiresAt - LAST_CALL_MS]],
-      [useless, []],
+      [useless, [expiresAt - LAST_CALL_MS]],
     ] as const) {
       let state = Resets.initial
       const claimedAt: Array<number> = []
       for (let now = T0; now < expiresAt; now += 10 * MINUTE) {
-        const step = run([[now, Review.make({ pools: [view(now)] })]], state)
+        const step = run([[now, Review.make({ pools: [view(now, claimedAt.length > 0)] })]], state)
         state = step.state
         // The model settles each claim it sends (a claim never settled would go again, as the same claim).
         for (const event of step.events)
@@ -167,27 +169,42 @@ describe("use it or lose it", () => {
   })
 })
 
+/**
+ * Whether the rule claims for one account's week `used` with `left` of it to
+ * run, `running` agents and `held` starts: the week's burn (its use over the
+ * time it ran, five minutes at least), scaled by the held starts (over at
+ * least BURN_AGENTS running), runs the room out before the reset, more than
+ * a day off, on an account near its limit, and the work would spend half of
+ * what the claim gives back before then.
+ */
+const WAITED: ReadonlyArray<"WaitNoted"> = ["WaitNoted"]
+const DUE: ReadonlyArray<"ClaimDue"> = ["ClaimDue"]
+
+const forecastClaims = (left: number, used: number, running: number, held: number) => {
+  const burn = (used / Math.max(WEEK - left, HOUR / 12)) * HOUR * (1 + held / Math.max(running, BURN_AGENTS))
+  const runsOut = (running > 0 || held > 0) && (used >= 1 || ((1 - used) / burn) * HOUR < left)
+  const near = used >= NEAR_USED || ((1 - used) / burn) * HOUR <= NEAR_MS
+  const pays = Math.min(used, (burn * left) / HOUR) >= WORTH_SHARE * used
+  return runsOut && left > NOT_WORTH_MS && near && pays
+}
+
 describe("claimed on demand", () => {
   /** The pool's one account, its week `used` with `left` of it to run, two weekly resets in hand, `inflight` agents running. */
   const heldView = (left: number, used: number, inflight: number) =>
     pool("claude", [account("a", [window("5h", 0.2, T0 + 3 * HOUR), window("7d", used, T0 + left)], [grant("g", T0 + 60 * DAY, { ...WEEKLY, count: 2 })])], {}, inflight)
 
-  test("over day of the week × work × use: claimed iff the week holds the start, it resets more than a day off, and the work would spend half of it back before then", () => {
+  test("over day of the week × work × use: claimed iff the forecast runs the week out before it resets, more than a day off, on an account near its limit, and the work would spend half of it back before then", () => {
     for (const leftDays of [0.5, 1, 2, 3, 5, 6.5])
       for (const inflight of [0, 1, 3, 6])
-        for (const used of [0.5, 0.95, 1]) {
-          const left = leftDays * DAY
-          const { events } = run([
-            [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true })],
-            [T0, Review.make({ pools: [heldView(left, used, inflight)] })],
-          ])
-          // The week's burn (its use over the time it ran), scaled to the work there (the held start and those running, over at least BURN_AGENTS), times the time left.
-          const projected = Math.min(used, (used / (WEEK - left)) * ((1 + inflight) / Math.max(inflight, BURN_AGENTS)) * left)
-          const claimed = used >= TARGET && left > NOT_WORTH_MS && projected >= WORTH_SHARE * used
-          const label = `${leftDays} days left, ${inflight} running, used ${used}`
-          expect(tags(events), label).toEqual(claimed ? ["WaitNoted", "ClaimDue"] : ["WaitNoted"])
-          expect(events.some((event) => event._tag === "ClaimWeighed"), label).toBe(!claimed)
-        }
+        for (const used of [0.3, 0.5, 0.9, 0.95, 1])
+          for (const held of [false, true]) {
+            const left = leftDays * DAY
+            const waits = Arr.filter([[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true })] as const], () => held)
+            const { events } = run([...waits, [T0, Review.make({ pools: [heldView(left, used, inflight)] })]])
+            const claimed = forecastClaims(left, used, inflight, Number(held))
+            const label = `${leftDays} days left, ${inflight} running, used ${used}, held ${held}`
+            expect(tags(events), label).toEqual([...Arr.filter(WAITED, () => held), ...Arr.filter(DUE, () => claimed)])
+          }
   })
 
   test("a reset just claimed is claimed by no rule while the account's reading predates the claim", () => {
@@ -208,13 +225,13 @@ describe("claimed on demand", () => {
     expect(tags(again.events)).toEqual(["WaitNoted"])
   })
 
-  test("no claim when a spent window it does not clear would still hold the start", () => {
+  test("no claim when a spent window it does not clear would still hold the account", () => {
     const fiveSpent = pool("claude", [account("a", [window("5h", 1, T0 + 3 * HOUR), window("7d", 1, T0 + 6 * DAY)], [grant("g", T0 + 60 * DAY, { ...WEEKLY, count: 2 })])], {}, 6)
     const weekSpent = pool("claude", [account("a", [window("5h", 1, T0 + 3 * HOUR), window("7d", 1, T0 + 6 * DAY)], [grant("g", T0 + 60 * DAY, { ...SESSION, count: 2 })])], {}, 6)
     for (const view of [fiveSpent, weekSpent]) {
       const { events } = run([[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })], [T0, Review.make({ pools: [view] })]])
       expect(tags(events)).toEqual(["WaitNoted"])
-      expect(events.find((event) => event._tag === "ClaimWeighed")).toMatchObject({ step: "reset", reasons: ["a: it would not free the held work"] })
+      expect(events.find((event) => event._tag === "ClaimWeighed")).toMatchObject({ step: "reset", reasons: ["a: it would not free the account, another spent window still holds it"] })
     }
   })
 })
@@ -274,20 +291,12 @@ describe("a Fable reset", () => {
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true, model: "claude-fable-5-2" })],
       [T0, Review.make({ pools: [view] })],
     ])
-    expect(events[1]).toMatchObject({ _tag: "ClaimDue", reset: { kind: "fable", why: "held", key: expiringKey("claude", "a", "7d:Fable", fableWeek) } })
+    expect(events[1]).toMatchObject({ _tag: "ClaimDue", reset: { kind: "fable", why: "forecast", key: expiringKey("claude", "a", "7d:Fable", fableWeek) } })
     const due = events[1]
     if (due?._tag !== "ClaimDue") throw new Error("not claimed")
     expect(due.reset.buys).toContain("Fable week 100% used of 100% → 0% used, next reset 2026-11-15 12:00Z, weekly 60% used of 100% → ~10% used, next reset 2026-11-15 12:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)")
   })
 
-  test("a start of another model, which Fable's week does not hold, takes the account: nothing claimed", () => {
-    const view = pool("claude", [fable(0.6, 1)], { "7d:Fable": ratio }, 3)
-    const { events } = run([
-      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true, model: "claude-opus-5-5" })],
-      [T0, Review.make({ pools: [view] })],
-    ])
-    expect(tags(events)).toEqual(["WaitNoted"])
-  })
 })
 
 describe("the pace's line", () => {

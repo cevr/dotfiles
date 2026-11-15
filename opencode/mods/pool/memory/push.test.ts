@@ -114,6 +114,8 @@ const world = (config: Partial<Model.Config> = {}, fleet: Fleet = { host: "workb
     resets: { anthropic: "claude" },
     // Each start counts 40% of a week until it settles: three of them put the pool over its spend-evenly line.
     fleet: { ...Model.DEFAULT_FLEET, host: fleet.host, startCost: 0.4 },
+    // The push's claims alone: the standing allowance claims on its own forecast too (memory/model.test.ts, resets.test.ts), and is off here.
+    autoClaims: false,
     ...config,
   }
   const pool = Effect.gen(function* () {

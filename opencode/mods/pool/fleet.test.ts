@@ -10,6 +10,7 @@ import {
   ClaimPoll,
   Fleet,
   inflight,
+  running,
   KEEP_MS,
   MissPeer,
   ownStarts,
@@ -139,13 +140,40 @@ describe("the fleet's starts", () => {
     expect(ownStarts(state, T0, SETTLE)).toEqual([{ providerID: "anthropic", at: T0 - 2 * MINUTE }])
   })
 
-  test("a report carries only this host's own starts, never a peer's, so no start counts twice", () => {
-    expect(report(state, "mac", T0, SETTLE, [])).toEqual({
+  test("a report carries only this host's own starts of the last hour, never a peer's, so no start counts twice", () => {
+    expect(report(state, "mac", T0, [])).toEqual({
       host: "mac",
       at: T0,
-      starts: [{ providerID: "anthropic", at: T0 - 2 * MINUTE }],
+      starts: [
+        { providerID: "anthropic", at: T0 - 12 * MINUTE },
+        { providerID: "anthropic", at: T0 - 2 * MINUTE },
+      ],
       readings: [],
     })
+    expect(report(state, "mac", T0 + 50 * MINUTE, []).starts).toEqual([{ providerID: "anthropic", at: T0 - 2 * MINUTE }])
+  })
+
+  test("the agents running are every start of the last hour on this host and its peers, on the hosts that run any", () => {
+    expect(running(state, T0)).toEqual({
+      starts: [
+        { providerID: "anthropic", at: T0 - 12 * MINUTE },
+        { providerID: "anthropic", at: T0 - 2 * MINUTE },
+        { providerID: "openai", at: T0 - 3 * MINUTE },
+        { providerID: "anthropic", at: T0 - 11 * MINUTE },
+      ],
+      hosts: 2,
+    })
+    // Later the oldest age out, and the start stamped ahead of this clock counts once its time has come.
+    expect(running(state, T0 + 50 * MINUTE)).toEqual({
+      starts: [
+        { providerID: "anthropic", at: T0 - 2 * MINUTE },
+        { providerID: "openai", at: T0 - 3 * MINUTE },
+        { providerID: "anthropic", at: T0 + 5 * MINUTE },
+      ],
+      hosts: 2,
+    })
+    expect(running(state, T0 + 64 * MINUTE)).toEqual({ starts: [{ providerID: "anthropic", at: T0 + 5 * MINUTE }], hosts: 2 })
+    expect(running(state, T0 + 66 * MINUTE)).toEqual({ starts: [], hosts: 1 })
   })
 
   test("the pane's rows name each peer's host, its starts that count and since when it is missed", () => {
