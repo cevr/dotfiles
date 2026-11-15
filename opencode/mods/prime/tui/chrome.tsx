@@ -25,10 +25,10 @@ import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } fr
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { jobItem, jobsOf, runningJobs } from "../jobs.ts"
-import { navigationHint, neighbour, subagentOrder, topTitle } from "../subagent.ts"
+import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
 import { sameWakeItem, wakeItem } from "../wakes.ts"
-import { useOthers, working } from "./family.ts"
+import { useWorking, working } from "./family.ts"
 import type { Host } from "./host.ts"
 import { SubagentRows } from "./live.tsx"
 import { toneColor } from "./tone.ts"
@@ -114,17 +114,14 @@ export function Splash(props: { host: Host; sessionID: string }) {
 }
 
 /**
- * The line above the composer: inside a subagent, how to move among
- * subagents (the picker takes the dock's place there), and, while a turn runs
- * with a prompt waiting, the key that interrupts it and sends (pending.ts
- * `sendHint`) on the left; the update notice on the right. In the main
- * session the way down to its subagents sits under the composer, on the
- * dock's first line (`Dock`). It keeps its row while both are empty, so the
- * composer never jumps.
+ * The line above the composer: while a turn runs with a prompt waiting, the
+ * key that interrupts it and sends (pending.ts `sendHint`) on the left; the
+ * update notice on the right. The way to move among a family's sessions sits
+ * under the composer, on the dock's first line (`Dock`), in a session and in
+ * a subagent alike. It keeps its row while both are empty, so the composer
+ * never jumps.
  */
 export function HintLine(props: { host: Host; sessionID: string }) {
-  const family = useFamily(props.host, () => props.sessionID)
-  const others = useOthers(props.host, () => Option.some(props.sessionID))
   const send = createMemo(() =>
     sendHint({
       shortcut: props.host.shortcut(SEND_COMMAND),
@@ -132,13 +129,10 @@ export function HintLine(props: { host: Host; sessionID: string }) {
       waiting: waitingPrompts(inboxOf(props.host, props.sessionID)).length,
     }),
   )
-  const navigation = createMemo(() =>
-    [family.child() && navigationHint({ child: true, others: others() }), send()].filter(Boolean).join(" · "),
-  )
   return (
     <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
       <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
-        {navigation()}
+        {send()}
       </text>
       <UpdateNotice host={props.host} />
     </box>
@@ -209,8 +203,15 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const usage = createMemo(() => (props.sessionID ? usageLabel(props.host.usage(props.sessionID)) : undefined))
   const model = createMemo(() => trayModel(props.host.model()))
   // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
-  const subagents = useOthers(props.host, () => Option.fromNullishOr(props.sessionID))
+  const busy = useWorking(props.host, () => Option.fromNullishOr(props.sessionID))
+  // The count is the family's, in a session and in each of its subagents alike, as the rows under it are: the dock
+  // keeps its height as the view moves between them, so the composer above it stays put.
+  const subagents = createMemo(() => busy().length)
+  // The ones ←/→ reach from here: in a session all of them, in a subagent the others.
+  const others = createMemo(() => othersWorking(busy(), props.sessionID ?? "", () => true))
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))
+  // A subagent's view keeps the session's layout: its way back and across, and its family's rows, sit where a session's way down and rows do.
+  const child = createMemo(() => Boolean(props.sessionID && props.host.session(props.sessionID)?.parentID))
   const wakes = props.host.wakes(() => props.sessionID)
   // The session's jobs: counted while they run, as the shells are; an ended one drops from the count.
   const jobReading = props.host.jobs(() => Option.fromNullishOr(props.sessionID))
@@ -248,10 +249,10 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   })
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
-      {/* Right under the composer: the way down to the session's subagents (Down on an empty prompt), then the model and usage at the right. */}
+      {/* Right under the composer: the way to move (in a session down to its subagents, in a subagent back to its parent and across), then the model and usage at the right. */}
       <box flexDirection="row" height={1} gap={2}>
         <text wrapMode="none" truncate fg={theme().text.faint} flexShrink={1}>
-          {navigationHint({ child: false, others: subagents() })}
+          {navigationHint({ child: child(), others: others() })}
         </text>
         <box flexGrow={1} />
         <text wrapMode="none" truncate fg={theme().text.faint}>
@@ -333,9 +334,9 @@ export function Dock(props: { host: Host; sessionID?: string }) {
         </text>
       </box>
       </Show>
-      {/* A row per subagent under the count, sidebar open or closed; inside a subagent they sit above its picker (cmd/prime/tui.tsx). */}
-      <Show when={props.sessionID && !props.host.session(props.sessionID)?.parentID ? props.sessionID : undefined}>
-        {(id) => <SubagentRows host={props.host} sessionID={id()} child={false} />}
+      {/* A row per subagent of the family under the count, sidebar open or closed; inside a subagent the one shown is marked. */}
+      <Show when={props.sessionID}>
+        {(id) => <SubagentRows host={props.host} sessionID={id()} child={child()} />}
       </Show>
     </box>
   )

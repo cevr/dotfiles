@@ -120,6 +120,31 @@ seeded("entering a subagent from the parent's open panel closes the panel: the s
   }),
 )
 
+/** The rows of a frame that hold `shown`. */
+const rowsOf = (frame: ReadonlyArray<string>, shown: string) => frame.flatMap((line, y) => (line.includes(shown) ? [y] : []))
+
+seeded("the subagent's view keeps the parent's layout: the composer on the same row, the way back and the family's rows under it", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const frames = yield* scenario(seed)
+    const parent = composerRow(frames.parent)
+    const child = composerRow(frames.entered)
+    expect(parent).toBeGreaterThan(0)
+    expect(child).toBe(parent)
+    // The way back is the dock's first line, right under the composer, where the parent's way down is.
+    const back = rowsOf(frames.entered, "↑ back to parent")
+    const down = rowsOf(frames.parent, "↓ subagents")
+    expect(back).toHaveLength(1)
+    expect(down).toHaveLength(1)
+    expect(back[0]).toBe(down[0])
+    expect(back[0]!).toBeGreaterThan(child)
+    // The family's row (the worker's, marked in its own view) is under the composer in both views, on the same row.
+    const row = (frame: ReadonlyArray<string>) => rowsOf(frame, "Fix money parsing").filter((y) => y > composerRow(frame))
+    expect(row(frames.entered)).toHaveLength(1)
+    expect(row(frames.entered)).toEqual(row(frames.parent))
+    expect(frames.entered[row(frames.entered)[0]!]).toMatch(/^\s*›/)
+  }),
+)
+
 seeded("↑ on a draft in the subagent's view stays there, the draft kept", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)

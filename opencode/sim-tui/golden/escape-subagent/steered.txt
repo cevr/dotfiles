@@ -10,8 +10,7 @@
 
   Reading the parser
 
-  ⠋ Executing · 3s
-
+  ⠏ Executing · 3s
 
 
 
@@ -31,10 +30,11 @@
 
   ◌ queued · Check the cents rounding too.
 
- ↑ back to parent · Ctrl+Enter interrupt and send
- › ◇ general gpt  Fix money parsing  Reading the parser · 2s
+ Ctrl+Enter interrupt and send
  ┃
-                                                                                            gpt-sim-model
+ ↑ back to parent                                                                           gpt-sim-model
  ────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 1 subagent  ·  0 shells
+ › ◇ general gpt  Fix money parsing  Reading the parser · 2s
 
- ✓ Server  ● UI  Theme  Tools  Experiments
+ ✓ Server  ○ UI  Theme  Tools  Experiments

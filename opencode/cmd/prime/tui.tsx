@@ -20,13 +20,12 @@ import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { hints as jobHints, JobTab } from "@dotfiles/opencode-prime/tui/jobs"
 import { Dock, GoalLine, HintLine, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
-import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
 import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
 import { Option } from "effect"
-import { createSignal, Show } from "solid-js"
+import { createSignal } from "solid-js"
 
 export default Plugin.define({
   id: "dotfiles-opencode.prime",
@@ -45,7 +44,7 @@ export default Plugin.define({
       inset: 1,
       // The host's own rows (a program's notice, a `+ N commands` summary, an error) start where Prime's do (the fork's layout `gutter`).
       gutter: GUTTER,
-      // A subagent's view opens on its prompt, as a session's does: the family's rows above it already list what the
+      // A subagent's view opens on its prompt, as a session's does: the family's rows under it already list what the
       // Subagents picker would (the fork's layout `composer.subagentPicker`; Down still opens the panel).
       composer: { chrome: "rail", subagentPicker: "closed" },
       rowGap: (row) => (hidden(row.messageID) ? 0 : rowGap(detail(), row)),
@@ -112,16 +111,6 @@ export default Plugin.define({
     context.ui.slot({
       append: "session.composer.top",
       render: (input) => <GoalLine host={h} sessionID={input.sessionID} />,
-    })
-    // Inside a subagent the host's picker takes the prompt's place, and the
-    // dock with it: the family's rows sit above the picker instead.
-    context.ui.slot({
-      append: "session.composer.top",
-      render: (input) => (
-        <Show when={h.session(input.sessionID)?.parentID}>
-          <SubagentRows host={h} sessionID={input.sessionID} child={true} />
-        </Show>
-      ),
     })
     // Prime's loader is the transcript's last row, straight under the newest output.
     context.ui.slot({
