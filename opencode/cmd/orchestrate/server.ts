@@ -153,7 +153,7 @@ import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
-import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-rift/rpc"
+import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
@@ -589,7 +589,9 @@ export const make = (
               : Effect.logDebug("orchestrate: no nudge").pipe(Effect.annotateLogs({ sessionID, why: outcome.why, detail: outcome.detail }))
       const background = (sessionID: string, work: Effect.Effect<Model.IdleOutcome | undefined>) =>
         work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid)
-      yield* ctx.session.hook("experimental.idle", (event) => background(event.sessionID, idleRoots.idle(event.sessionID, event.background.length)))
+      yield* ctx.session.hook("experimental.idle", (event) =>
+        idleRoots.idle(event.sessionID, event.background.length).pipe(Effect.flatMap((decide) => background(event.sessionID, decide))),
+      )
 
       // A root whose run saw an older skill is told once what changed, and to reconcile the run's rules files.
       const drifts = Context.get(services, Model.SkillDrifts)
@@ -604,7 +606,7 @@ export const make = (
       )
       // The `orchestrate` tool's reads (mods/orchestrate/tools.ts), at each call: the run tables (the status plugin's
       // RPC, through `Runs`) and the warm source's Rifts (the rift plugin's RPC). Its lanes, its verify checkout and
-      // its land go to this location's rift plugin over the rift RPC (`@dotfiles/opencode-rift/rpc`). Nothing of a
+      // its land go to this location's rift plugin over the rift RPC (`@dotfiles/opencode-work/rpc`). Nothing of a
       // run is kept between calls.
       const riftRpc = () => ctx.rpc(RIFT_RPC)
       const sessions = Context.get(services, Sessions)
@@ -730,17 +732,18 @@ export const make = (
         )
       }
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.deleted", "session.compaction.ended"] }).pipe(
+        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.inbox.delivered", "session.deleted", "session.compaction.ended"] }).pipe(
           Stream.runForEach((event) => {
             if (event.type === "session.compaction.ended") return compacted(event.id, event.data.sessionID)
             if (event.type === "session.deleted")
               return Effect.sync(() => void backgrounds.delete(event.data.sessionID)).pipe(Effect.andThen(idleRoots.forget(event.data.sessionID)))
+            if (event.type === "session.inbox.delivered") return idleRoots.delivered(event.data.sessionID, event.data.inboxID)
             const item = event.data.item
             // New input: the owner's prompt or another plugin's message; never the nudge or the brief.
             const heard =
               item.type === "user" ||
               (item.type === "synthetic" && item.payload.metadata?.[MARK] === undefined && item.payload.metadata?.[SteerLive.BRIEF_MARK] === undefined)
-            return heard ? idleRoots.heard(event.data.sessionID) : Effect.void
+            return heard ? idleRoots.heard(event.data.sessionID, event.data.inboxID) : Effect.void
           }),
           Effect.ignoreCause,
         ),

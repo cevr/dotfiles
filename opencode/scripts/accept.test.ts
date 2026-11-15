@@ -171,7 +171,7 @@ const scratchEnv = (dir: string, extra: Record<string, string> = {}) => ({
 /** Waits until `what` holds (tests/wait.ts), for `ms` at most; a wait in vain fails the test, naming it. */
 const until = (what: string, ready: () => boolean, ms = 30_000) => waitUntil(what, ready, ms)
 
-/** A child this test starts that holds the scratch accept lock (through mods/rift/process/flock.ts) until the test disposes of it. */
+/** A child this test starts that holds the scratch accept lock (through mods/work/process/flock.ts) until the test disposes of it. */
 const holdLock = (dir: string) => {
   const script = join(dir, "hold.ts")
   const ready = join(dir, "held")
@@ -179,7 +179,7 @@ const holdLock = (dir: string) => {
     script,
     [
       `import { writeFileSync } from "node:fs"`,
-      `import { exclusively } from ${JSON.stringify(join(ROOT, "mods/rift/process/flock.ts"))}`,
+      `import { exclusively } from ${JSON.stringify(join(ROOT, "mods/work/process/flock.ts"))}`,
       `await exclusively(process.argv[2] ?? "")(() => {`,
       `  writeFileSync(process.argv[3] ?? "", "held")`,
       `  return new Promise(() => {})`,

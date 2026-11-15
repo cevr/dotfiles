@@ -8,7 +8,7 @@ import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
-import { hostLocks } from "../mods/rift/process/landing.ts"
+import { hostLocks } from "../mods/work/process/landing.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 

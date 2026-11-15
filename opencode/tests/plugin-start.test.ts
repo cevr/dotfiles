@@ -18,7 +18,7 @@
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "bun"
 import { Deferred, Effect } from "effect"
-import { exclusively } from "../mods/rift/process/flock.ts"
+import { exclusively } from "../mods/work/process/flock.ts"
 import { buildsLock } from "../mods/update/settings.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { type Measure, measure, rows } from "../scripts/perf/plugin-start.ts"

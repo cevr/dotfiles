@@ -6,12 +6,12 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer, Schema, Scope } from "effect"
 import { TestClock } from "effect/testing"
-import * as MemoryDebts from "@dotfiles/opencode-rift/memory/debts"
-import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
-import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
-import * as MemoryRifts from "@dotfiles/opencode-rift/memory/rifts"
-import * as MemorySessionDirectories from "@dotfiles/opencode-rift/memory/session-directories"
-import * as MemoryWorkbox from "@dotfiles/opencode-rift/memory/workbox"
+import * as MemoryDebts from "@dotfiles/opencode-work/memory/debts"
+import * as MemoryLanding from "@dotfiles/opencode-work/memory/landing"
+import * as MemoryNotices from "@dotfiles/opencode-work/memory/notices"
+import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
+import * as MemorySessionDirectories from "@dotfiles/opencode-work/memory/session-directories"
+import * as MemoryWorkbox from "@dotfiles/opencode-work/memory/workbox"
 import Rift, { make, WORKTREE_TOOLS } from "./server.ts"
 
 type Host = Parameters<(typeof Rift)["effect"]>[0]

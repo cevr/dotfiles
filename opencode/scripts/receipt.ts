@@ -1,4 +1,4 @@
-// `bun <dotfiles>/opencode/scripts/receipt.ts`: writes the receipt (mods/rift/receipt.ts) of a round's proof
+// `bun <dotfiles>/opencode/scripts/receipt.ts`: writes the receipt (mods/work/receipt.ts) of a round's proof
 // for the checkout it runs in, in any repository a `rift` land lands by receipts (`rift.mergeCheck`): the
 // dotfiles, Ergo, any other. A land takes the receipt while it names the Rift's head and tracked files, and
 // runs nothing of the Rift's own again.
@@ -15,7 +15,7 @@
 // exits 1 when a command failed (the receipt is red, and a land runs the Rift's focused gate or stops), 2 on
 // a usage error, else 0.
 import { Array as Arr, Match, Option } from "effect"
-import { landLogs, scriptReceipts } from "../mods/rift/process/landing.ts"
+import { landLogs, scriptReceipts } from "../mods/work/process/landing.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)

@@ -687,13 +687,22 @@ export type IdleOutcome =
   | { readonly _tag: "NotNudged"; readonly why: string; readonly detail: string }
   | { readonly _tag: "Refused"; readonly message: string }
 
+/** A decision's reason not to nudge, as its outcome. */
+const notNudged = (reason: { readonly why: string; readonly detail: string }): IdleOutcome => ({ _tag: "NotNudged", why: reason.why, detail: reason.detail })
+
 export class IdleRoots extends Context.Service<
   IdleRoots,
   {
-    /** The session ended its turn with nothing pending; `background` still runs for it. A root's idle period is decided now. */
-    readonly idle: (sessionID: string, background: number) => Effect.Effect<IdleOutcome | undefined>
-    /** New input reached the session (not the nudge): its idle period, if any, ends. */
-    readonly heard: (sessionID: string) => Effect.Effect<void>
+    /**
+     * The session ended its turn; `background` still runs for it. Run in the host's idle hook, it reads at once whether
+     * input it heard waits in its inbox, and answers the decision of a root's idle period, to run in the background:
+     * none while input waits (the session goes on with it, and that turn's idle decides).
+     */
+    readonly idle: (sessionID: string, background: number) => Effect.Effect<Effect.Effect<IdleOutcome | undefined>>
+    /** New input (inbox item `inboxID`, not the nudge) reached the session: its idle period, if any, ends. */
+    readonly heard: (sessionID: string, inboxID: string) => Effect.Effect<void>
+    /** A turn of the session took inbox item `inboxID`. */
+    readonly delivered: (sessionID: string, inboxID: string) => Effect.Effect<void>
     /**
      * An owner's TUI says whether its composer holds a draft to the session.
      * A draft that ends while the root is idle decides it again `RECHECK_MS` later.
@@ -734,27 +743,38 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
           const state = roots.get(sessionID) ?? IdleRoot.initial
           // Nothing is gathered while its own state already holds it back.
           const held = heldBack(state, yield* Clock.currentTimeMillis)
-          if (held !== undefined) return { _tag: "NotNudged", why: held.why, detail: held.detail } as const
+          if (held !== undefined) return notNudged(held)
           const resting = resumesAt(yield* sabbathNow, config.place) !== undefined
           const units = resting ? { moving: [], ready: [] } : unitsOf(yield* runs.list, yield* steps.units(sessionID))
           const gathered = units.moving.length === 0 && units.ready.length === 0 ? NO_HOLDS : yield* holds.of(sessionID)
           const decided = yield* apply(sessionID, Nudge.make({ ...units, holds: gathered, resting })).pipe(Effect.result)
-          if (decided._tag === "Failure") return { _tag: "NotNudged", why: decided.failure.why, detail: decided.failure.detail } as const
+          if (decided._tag === "Failure") return notNudged(decided.failure)
           const nudged = decided.success.events.find((event) => event._tag === "Nudged")
-          if (nudged === undefined) return { _tag: "NotNudged", why: "nudged", detail: "nothing to record" } as const
+          if (nudged === undefined) return notNudged({ why: "nudged", detail: "nothing to record" })
           return yield* steer.nudge(sessionID, nudged.line).pipe(
             Effect.as<IdleOutcome>({ _tag: "Nudged", line: nudged.line }),
             Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<IdleOutcome>({ _tag: "Refused", message: refused.message })),
           )
         }).pipe(one.withPermits(1))
 
-      const idle = Effect.fn("IdleRoots.idle")(function* (sessionID: string, background: number) {
+      // Each session's heard input its turns have not taken yet: the inbox items enqueued and not delivered.
+      const waiting = new Map<string, ReadonlySet<string>>()
+      const waitingOf = (sessionID: string) => waiting.get(sessionID) ?? new Set<string>()
+
+      const decide = Effect.fn("IdleRoots.idle")(function* (sessionID: string, background: number, waits: boolean) {
         if ((yield* sessions.parentOf(sessionID)) !== undefined) return undefined
+        // Input that came during the turn waits in its inbox: the session goes on with it, and that turn's idle,
+        // with its own background, is the one that counts. This one opens no idle period.
+        if (waits) return notNudged({ why: "working", detail: "new input waits in its inbox" })
         yield* apply(sessionID, GoIdle.make({ background })).pipe(Effect.orDie)
         return yield* consider(sessionID)
       })
 
-      const heard = Effect.fn("IdleRoots.heard")(function* (sessionID: string) {
+      // Read in the hook, before the host goes on: the execution takes its inbox right after, and the decision runs later.
+      const idle = (sessionID: string, background: number) => Effect.sync(() => decide(sessionID, background, waitingOf(sessionID).size > 0))
+
+      const heard = Effect.fn("IdleRoots.heard")(function* (sessionID: string, inboxID: string) {
+        waiting.set(sessionID, new Set([...waitingOf(sessionID), inboxID]))
         if (!roots.has(sessionID)) return
         yield* apply(sessionID, Hear.make({})).pipe(Effect.orDie)
       })
@@ -767,9 +787,20 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
         return yield* consider(input.sessionID)
       })
 
-      const forget = (sessionID: string) => Effect.sync(() => void roots.delete(sessionID)).pipe(Effect.withSpan("IdleRoots.forget"))
+      const delivered = (sessionID: string, inboxID: string) =>
+        Effect.sync(() => {
+          const left = [...waitingOf(sessionID)].filter((id) => id !== inboxID)
+          if (left.length === 0) waiting.delete(sessionID)
+          else waiting.set(sessionID, new Set(left))
+        }).pipe(Effect.withSpan("IdleRoots.delivered"))
 
-      return { idle, heard, draft, forget }
+      const forget = (sessionID: string) =>
+        Effect.sync(() => {
+          roots.delete(sessionID)
+          waiting.delete(sessionID)
+        }).pipe(Effect.withSpan("IdleRoots.forget"))
+
+      return { idle, heard, delivered, draft, forget }
     }),
   )
 
