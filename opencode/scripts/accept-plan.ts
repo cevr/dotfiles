@@ -118,6 +118,35 @@ export const swarmRead = (output: string, file: string) => {
   return { passed, failing }
 }
 
+/** Where the line under way at `at` ends in `text` (past its newline): `at` itself at a line's start, the text's end when the line has none. */
+const lineEnd = (text: string, at: number) => {
+  if (at <= 0 || text[at - 1] === "\n") return Math.max(0, at)
+  const newline = text.indexOf("\n", at)
+  return (newline < 0 && text.length) || newline + 1
+}
+
+/** One stream a suite's swarm printed to: all it printed, and how much of it had arrived when the runner decided to stop it. */
+export interface Heard {
+  readonly text: string
+  readonly atStop: number
+}
+
+/**
+ * What the swarm of a suite the runner stopped (its box, a signal, a yield) printed to its streams: the seeds it
+ * passed, the seeds that failed before the stop (a line under way at the stop counts as before it), and apart, as
+ * `stopped`, the seeds that failed only while it was stopped: the stop's own (a TUI torn down under the test that
+ * ran), never a failing seed.
+ */
+export const swarmCut = (streams: ReadonlyArray<Heard>, file: string) => {
+  const split = streams.map(({ text, atStop }) => {
+    const at = lineEnd(text, atStop)
+    return { before: text.slice(0, at), after: text.slice(at) }
+  })
+  const failing = swarmRead(split.map((each) => each.before).join("\n"), file).failing
+  const after = swarmRead(split.map((each) => each.after).join("\n"), file).failing
+  return { passed: swarmRead(streams.map((each) => each.text).join("\n"), file).passed, failing, stopped: after.filter((seed) => !failing.includes(seed)) }
+}
+
 /** The line that replays a failing seed. */
 export const replayLine = (file: string, seed: number) => `SIM_SEED=${seed} bun test ${file}`
 

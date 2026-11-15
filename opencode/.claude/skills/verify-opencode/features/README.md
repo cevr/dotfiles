@@ -31,6 +31,16 @@ Each feature file has an H1, one paragraph of user-visible behavior, then exactl
 
 Name user paths, tool calls, keys, commands and observable words. Keep source seams out.
 
+## Needs no drive
+
+`verify:drive --changed` reports each changed source file no feature's `Code` covers as unreachable. These need no drive, and it sets them aside:
+
+- **No drive:** `scripts/`, `formal/`, `lint/`
+
+- `scripts/`: the repository's own tooling (the gate, the acceptance runner, this drive, receipts, the fork's link, the daily build). No user or agent meets it in a session; the gate runs its tests. A script that makes what a mod serves is in that feature's `Code` instead (`scripts/agents.ts`, the role agents, in orchestrate's).
+- `formal/`: the formal models and their trace replays, checked by their own tests in the gate. They model a mod; the mod's code is in its feature's `Code`.
+- `lint/`: the oxlint rules the gate runs over the tree. No session reaches them.
+
 ## Features
 
 - [Orchestrate's machine and the land](orchestrate.md): role starts, the batch machine's refusals, the land of a batch.
