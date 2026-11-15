@@ -94,6 +94,30 @@ describe("a kernel call's journal", () => {
     expect(concurrencyOf(running)).toEqual({ calls: 4, maxInFlight: 3 })
   })
 
+  test("a call that takes no time counts for itself: alone, beside one at the same instant, touching one, and inside one", () => {
+    const span = (start: number, end: number) => ({ start, end: Option.some(end) })
+    expect(concurrencyOf([span(3, 3)])).toEqual({ calls: 1, maxInFlight: 1 })
+    expect(concurrencyOf([span(3, 3), span(3, 3)])).toEqual({ calls: 2, maxInFlight: 2 })
+    expect(concurrencyOf([span(0, 3), span(3, 3)])).toEqual({ calls: 2, maxInFlight: 1 })
+    expect(concurrencyOf([span(0, 5), span(3, 3)])).toEqual({ calls: 2, maxInFlight: 2 })
+  })
+
+  test("agrees with a brute-force count over every set of up to three spans on four instants", () => {
+    // A span holds [start, end); one that takes no time holds its own instant; one still running holds every later one.
+    const ends = (start: number) => [...Array.from({ length: 4 - start }, (_, at) => Option.some(start + at)), Option.none<number>()]
+    const spans = Array.from({ length: 4 }, (_, start) => ends(start).map((end) => ({ start, end }))).flat()
+    const holds = (span: (typeof spans)[number], at: number) =>
+      Option.match(span.end, {
+        onNone: () => span.start <= at,
+        onSome: (end) => (end === span.start && at === span.start) || (span.start <= at && at < end),
+      })
+    const oracle = (set: ReadonlyArray<(typeof spans)[number]>) => Math.max(0, ...set.map((one) => set.filter((other) => holds(other, one.start)).length))
+    const sets = [[], ...spans.map((a) => [a]), ...spans.flatMap((a) => spans.map((b) => [a, b])), ...spans.flatMap((a) => spans.flatMap((b) => spans.map((c) => [a, b, c])))]
+    const wrong = sets.filter((set) => concurrencyOf(set).maxInFlight !== oracle(set))
+    expect(sets.length).toBe(1 + 14 + 14 ** 2 + 14 ** 3)
+    expect(wrong).toEqual([])
+  })
+
   test("long inputs are cut and calls past the cap are counted, not kept", async () => {
     const { record } = recording()
     for (let index = 0; index < MAX_OPERATIONS + 3; index++)

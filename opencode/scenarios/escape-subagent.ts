@@ -2,9 +2,9 @@
 // beside Prime, against OpenCode with a scripted model. The parent starts one
 // background worker, whose answer stalls after its first words. Down on the
 // empty prompt opens the Subagents picker and Enter goes into the worker,
-// whose view opens on that picker. One Escape puts the picker away and leaves
-// the worker running, the prompt focused; a message typed there and sent is a
-// steer to the worker. A second Escape, nothing open now, goes back to the
+// whose view opens on its prompt, the picker closed (Prime's layout), the
+// worker running; a message typed there and sent is a steer to the worker.
+// Escape, nothing open, goes back to the
 // parent's view and leaves the worker running: its stalled answer runs to its
 // end, and the steer reaches it then, while the parent is on screen. Back in
 // the worker's view (its answer to the steer stalls in turn), Ctrl+Enter with
@@ -12,11 +12,10 @@
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/escape-subagent.ts
 //
 // It writes, under SCENARIO_OUT, a `.txt` of each frame's text:
-// - `picker`: in the worker's view, on its picker;
-// - `dismissed`: 1.5 s after the first Escape;
+// - `entered`: in the worker's view, 1.5 s after it drew, its picker closed;
 // - `typed`: the steer typed into the prompt, not yet sent;
 // - `steered`: 1.5 s after Enter sent it;
-// - `parent`: 1.5 s after the second Escape, on the parent's view;
+// - `parent`: 1.5 s after Escape, on the parent's view;
 // - `parent-steered`: once the worker's model got the steer, still on the parent's view;
 // - `back`: in the worker's view again, its answer to the steer showing;
 // - `drafted`: the second message typed into the worker's prompt, not yet sent;
@@ -111,12 +110,9 @@ export default OpenCodeDriver.use(
       yield* ui.arrow("down")
       yield* until("root-picker", listed)
       yield* ui.enter()
-      yield* until("picker", (frame) => frame.includes(WORKING) && frame.includes("Subagents"))
-      yield* save("picker")
-
-      yield* ui.press("escape")
+      yield* until("entered", (frame) => frame.includes(WORKING) && frame.includes("back to parent"))
       yield* Effect.sleep("1500 millis")
-      yield* save("dismissed")
+      yield* save("entered")
 
       yield* ui.type(STEER)
       yield* until("typed", (frame) => frame.includes(STEER))
@@ -138,11 +134,7 @@ export default OpenCodeDriver.use(
       yield* ui.arrow("down")
       yield* until("back-picker", listed)
       yield* ui.enter()
-      yield* until("back", (frame) => frame.includes(STEERED) && !frame.includes(ASK))
-      if (picker(text(yield* ui.capture()))) {
-        yield* ui.press("escape")
-        yield* until("back-dismissed", (frame) => !picker(frame))
-      }
+      yield* until("back", (frame) => frame.includes(STEERED) && !frame.includes(ASK) && !picker(frame))
       yield* save("back")
 
       yield* ui.type(NOW)

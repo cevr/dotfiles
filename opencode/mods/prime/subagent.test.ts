@@ -1,8 +1,9 @@
 // Moving between a session and its subagents: the child a call opens, the
 // order ←/→ walks, and the hints.
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import type { ToolPart, ToolState } from "./session.ts"
-import { navigationHint, neighbour, subagentOrder, subagentSession, topTitle, type SessionNode } from "./subagent.ts"
+import { arrowMoves, navigationHint, neighbour, subagentOrder, subagentSession, topTitle, type SessionNode } from "./subagent.ts"
 
 const part = (state: ToolState): ToolPart => ({ type: "tool", id: "call_1", name: "subagent", time: { created: 0 }, state })
 
@@ -76,6 +77,18 @@ describe("the hints", () => {
   test("a subagent points back up, and across while another runs", () => {
     expect(navigationHint({ child: true, others: 2 })).toBe("↑ back to parent · ←/→ other subagents")
     expect(navigationHint({ child: true, others: 0 })).toBe("↑ back to parent")
+  })
+
+  test("the arrows in a subagent's view move while its prompt is empty; a draft keeps them, and waiting prompts keep ↑", () => {
+    const empty = Option.some("")
+    const draft = Option.some("steer it")
+    expect(arrowMoves("up", { draft: empty, waiting: 0 })).toBe(true)
+    expect(arrowMoves("up", { draft: Option.none(), waiting: 0 })).toBe(true)
+    expect(arrowMoves("right", { draft: empty, waiting: 0 })).toBe(true)
+    expect(arrowMoves("up", { draft, waiting: 0 })).toBe(false)
+    expect(arrowMoves("left", { draft, waiting: 0 })).toBe(false)
+    expect(arrowMoves("up", { draft: empty, waiting: 1 })).toBe(false)
+    expect(arrowMoves("left", { draft: empty, waiting: 1 })).toBe(true)
   })
 
   test("a subagent's title reads behind its parent's", () => {

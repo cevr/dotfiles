@@ -14,7 +14,8 @@ import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { readUpstream } from "@dotfiles/opencode-prime/filestore/upstream"
 import { builds } from "@dotfiles/opencode-prime/opencode/build"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
-import { inboxOf, isWaiting } from "@dotfiles/opencode-prime/pending"
+import { inboxOf, isWaiting, waitingPrompts } from "@dotfiles/opencode-prime/pending"
+import { arrowMoves } from "@dotfiles/opencode-prime/subagent"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { hints as jobHints, JobTab } from "@dotfiles/opencode-prime/tui/jobs"
@@ -24,6 +25,7 @@ import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/p
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
 import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
+import { Option } from "effect"
 import { createSignal, Show } from "solid-js"
 
 export default Plugin.define({
@@ -43,7 +45,9 @@ export default Plugin.define({
       inset: 1,
       // The host's own rows (a program's notice, a `+ N commands` summary, an error) start where Prime's do (the fork's layout `gutter`).
       gutter: GUTTER,
-      composer: { chrome: "rail" },
+      // A subagent's view opens on its prompt, as a session's does: the family's rows above it already list what the
+      // Subagents picker would (the fork's layout `composer.subagentPicker`; Down still opens the panel).
+      composer: { chrome: "rail", subagentPicker: "closed" },
       rowGap: (row) => (hidden(row.messageID) ? 0 : rowGap(detail(), row)),
       // Prime shows every tool call and thought on its own row.
       transcript: { grouping: "none", thinking: "show" },
@@ -182,15 +186,51 @@ export default Plugin.define({
       ],
     }))
 
-    // In a subagent the host keeps its Subagents picker open in place of the
-    // prompt, and the picker's ←/→ switch its tabs. Above it, ↑ goes back to
-    // the parent and ←/→ move to the other running subagents; with none
-    // running, ←/→ fall through to the tabs.
+    // In a subagent's view ↑ goes back to the parent (as Escape does there) and
+    // ←/→ move to the other running subagents; with none running, ←/→ fall
+    // through. With the composer panel open (Down), above its tabs, whose
+    // ←/→ switch tabs then.
     const family = useFamily(h, h.route)
     const go = (sessionID: string | undefined) => {
       if (!sessionID) return false
       h.open(sessionID)
     }
+    // On the prompt, above its own history layer (priority 1): only while it is empty and, for ↑, no prompt waits to
+    // be taken back (subagent.ts `arrowMoves`); a draft keeps the arrows, and ↑ walks its history.
+    const moves = (key: "up" | "left" | "right") =>
+      Option.exists(Option.fromNullishOr(h.route()), (sessionID) =>
+        arrowMoves(key, {
+          draft: Option.map(Option.fromNullishOr(context.renderer.currentFocusedEditor), (editor) => editor.plainText),
+          waiting: waitingPrompts(inboxOf(h, sessionID)).length,
+        }),
+      )
+    context.keymap.layer(() => ({
+      priority: 2,
+      enabled: family.child,
+      commands: [
+        {
+          id: "prime.subagent.prompt.parent",
+          title: "Go to parent session",
+          group: "Session",
+          bind: "up",
+          run: () => moves("up") && go(family.parentID()),
+        },
+        {
+          id: "prime.subagent.prompt.next",
+          title: "Go to next subagent",
+          group: "Session",
+          bind: "right",
+          run: () => moves("right") && go(family.step(1)),
+        },
+        {
+          id: "prime.subagent.prompt.previous",
+          title: "Go to previous subagent",
+          group: "Session",
+          bind: "left",
+          run: () => moves("left") && go(family.step(-1)),
+        },
+      ],
+    }))
     context.keymap.layer(() => ({
       mode: "composer",
       priority: 2,

@@ -40,3 +40,4 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Guard](guard.md): refused destructive commands, a subagent's long sleep, heavy commands niced.
 - [Queue](queue.md): the agent's live queue, the tool, the RPC, the sidebar.
 - [Prime's panel](prime-panel.md): the background-work panel and its tabs.
+- [Kernel](kernel.md): the persistent TypeScript kernel, its tool calls, calls in parallel.

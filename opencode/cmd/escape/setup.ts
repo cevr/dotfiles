@@ -13,7 +13,7 @@
  * the press, is a toast, so a press the server never answers is never
  * silent; the next turn a resume or a sent prompt starts is not the stopped
  * one. It adds nothing in the composer mode: an open panel (the Subagents
- * picker a subagent's view opens on, a plugin tab) owns Escape and only puts
+ * picker, a plugin tab) owns Escape and only puts
  * itself away, so the prompt under it can message the subagent; the next
  * Escape, with nothing open, goes back to the parent (the host's
  * `session.parent`) and never interrupts the subagent. Anything Escape means
