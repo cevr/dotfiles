@@ -43,13 +43,22 @@ const windowTabs = () =>
  */
 const strip = (frame: ReadonlyArray<string>) => Option.liftPredicate(frame[0] ?? "", (line) => /\s\+$/.test(line))
 
+/**
+ * The session the body shows: its header line, the title beside its cost (`… single first work  $0.00`), which the
+ * tab strip never draws. A title in the strip alone is not the session shown: while the client reconnects (its event
+ * stream's 45 s idle watchdog fires about every 13th seed of a process, the double sending no keepalive), the strip
+ * still names the tabs and the body is blank.
+ */
+const shows = (title: string) => (frame: ReadonlyArray<string>) =>
+  frame.some((line, y) => !(y === 0 && Option.isSome(strip(frame))) && line.includes(title) && /\$\d+\.\d\d/.test(line))
+
 const play = (seed: number) =>
   App.seed(BOOT, { key: "single-tab", seed, model }, (tui) =>
     Effect.gen(function* () {
       const tabs = yield* windowTabs()
       const first = tui.server.session({ title: FIRST })
       yield* tui.navigate(first)
-      yield* tui.until("the first session", (frame) => frame.join("\n").includes(FIRST))
+      yield* tui.until("the first session's body", shows(FIRST))
       // The window keeps only the session it shows: the lobby's and the earlier seeds' tabs closed.
       for (const sessionID of tabs.list()) if (sessionID !== first) tabs.close(sessionID)
       yield* tui.settle
@@ -57,15 +66,15 @@ const play = (seed: number) =>
       const alone = { text: tui.text(), tabs: tabs.list() }
       const second = tui.server.session({ title: SECOND })
       yield* tui.navigate(second)
-      yield* tui.until("the second session's row", (frame) => Option.exists(strip(frame), (row) => row.includes(SECOND)))
+      yield* tui.until("the second session's body and row", (frame) => shows(SECOND)(frame) && Option.exists(strip(frame), (row) => row.includes(SECOND)))
       const both = { text: tui.text(), tabs: tabs.list() }
       const child = tui.server.session({ title: CHILD, parentID: second })
       yield* tui.navigate(child)
-      yield* tui.until("the subagent's view", (frame) => frame.join("\n").includes(CHILD))
+      yield* tui.until("the subagent's view", shows(CHILD))
       yield* tui.advance(500)
       const subagent = { text: tui.text(), tabs: tabs.list() }
       tabs.close(second)
-      yield* tui.until("back on the first", (frame) => frame.join("\n").includes(FIRST) && !frame.join("\n").includes(SECOND))
+      yield* tui.until("back on the first", (frame) => shows(FIRST)(frame) && !frame.join("\n").includes(SECOND))
       yield* tui.advance(500)
       const back = { text: tui.text(), tabs: tabs.list() }
       return { first, second, alone, both, subagent, back }
@@ -85,9 +94,10 @@ seeded("a window with only the session it shows draws no tab row, though that se
     const run = yield* scenario(seed)
     expect(run.alone.tabs).toEqual([run.first])
     expect(Option.isNone(strip(run.alone.text))).toBe(true)
-    expect(run.alone.text.join("\n")).toContain(FIRST)
+    expect(shows(FIRST)(run.alone.text)).toBe(true)
     expect(run.back.tabs).toEqual([run.first])
     expect(Option.isNone(strip(run.back.text))).toBe(true)
+    expect(shows(FIRST)(run.back.text)).toBe(true)
   }),
 )
 

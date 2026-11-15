@@ -107,4 +107,19 @@ App.effectTest(
   TIMEOUT_MS,
 )
 
+// The client drops an event stream silent for 45 s and reconnects; the real server's heartbeat keeps a quiet
+// one open. A seed quiet past 45 s of virtual time keeps its stream: `settle` fails on a drop or a reopen.
+App.effectTest(
+  "a stream quiet past the client's 45 s idle watchdog stays open: the harness sends the server's heartbeat",
+  App.seed(BOOT, { key: "quiet", seed: 1, model }, (tui) =>
+    Effect.gen(function* () {
+      yield* tui.advance(50_000)
+      yield* tui.type("Look at the docs")
+      yield* tui.press({ name: "enter" })
+      yield* tui.until("the reply", (text) => text.some((line) => line.includes("it is done")))
+    }),
+  ),
+  TIMEOUT_MS,
+)
+
 App.closeTest()
