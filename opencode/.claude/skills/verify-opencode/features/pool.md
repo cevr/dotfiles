@@ -40,3 +40,4 @@ The scratch server never loads the pool (`verify:seed` refuses it: it needs the 
 - Never point a drive at the owner's logins or his login store; a real pool run spends a Claude account.
 - The `/pool` pane is the status mod's; with no pool loaded it draws an empty pool, which proves nothing about the pool.
 - A failover seen only in the transcript is incomplete: read the provider's requests (which login each went out on).
+- Every usage figure the pool shows (pace holds, reset questions and notices, `pool_push`, the pane and sidebar) reads as the share used, out of 100% (`70% used of 100%`, `70%/100% used`): a bare `X%`, or a percent of room, left or remaining, is a regression. `cmd/pool/usage-wording.test.ts` holds each kind's text.
