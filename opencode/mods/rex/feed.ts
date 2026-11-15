@@ -68,11 +68,11 @@ export const tallyFor = (count: number, post: Option.Option<Post>): Tally => ({
   state: "working",
 })
 
-/** One session in Sideshow's list: its id, title, the folder its agent ran in, and when it was last active. */
+/** One session in Sideshow's list: its id, title, the folder its agent ran in (Sideshow sends null for an untitled session or one with no folder), and when it was last active. */
 export const SessionRow = Schema.Struct({
   id: Schema.String,
-  title: Schema.optional(Schema.String),
-  cwd: Schema.optional(Schema.String),
+  title: Schema.optional(Schema.NullOr(Schema.String)),
+  cwd: Schema.optional(Schema.NullOr(Schema.String)),
   lastActiveAt: Schema.optional(Schema.String),
 })
 export type SessionRow = typeof SessionRow.Type

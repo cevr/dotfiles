@@ -87,7 +87,7 @@ const server = (address: string, token: Option.Option<string>) => {
   )
   const known = (session: string) => Effect.map(ask(`/api/sessions/${encodeURIComponent(session)}/posts`), Option.isSome)
   const at: SideshowServer = {
-    title: (session) => Effect.map(sessions, (rows) => Option.flatMap(Arr.findFirst(rows, (row) => row.id === session), (row) => Option.fromUndefinedOr(row.title))),
+    title: (session) => Effect.map(sessions, (rows) => Option.flatMap(Arr.findFirst(rows, (row) => row.id === session), (row) => Option.fromNullishOr(row.title))),
     posts: (session) =>
       Effect.flatMap(json(`/api/sessions/${encodeURIComponent(session)}/posts`, `session ${session}`), (rows) =>
         decodePosts(rows).pipe(Effect.mapError(() => failed(`Sideshow at ${base} listed posts in a shape rex-show does not know`))),

@@ -17,6 +17,9 @@ const SESSIONS = [
   { id: "s0", title: "Old", cwd: "/work", lastActiveAt: "2026-11-15T09:00:00Z" },
 ]
 
+/** The list as Sideshow sends it: an untitled session with no folder has null for both. */
+const SESSIONS_SENT = JSON.stringify(SESSIONS).replace(/\]$/, ',{"id":"bare","title":null,"cwd":null,"lastActiveAt":"2026-11-15T11:00:00Z"}]')
+
 /** A stand-in Sideshow for the test's span, recording each request's path and authorization: its address and the log. */
 const served = Effect.acquireRelease(
   Effect.sync(() => {
@@ -27,7 +30,7 @@ const served = Effect.acquireRelease(
       fetch: (request) => {
         const path = new URL(request.url).pathname
         log.push(`${path} ${request.headers.get("authorization") ?? "-"}`)
-        if (path === "/api/sessions") return Response.json(SESSIONS)
+        if (path === "/api/sessions") return new Response(SESSIONS_SENT, { headers: { "content-type": "application/json" } })
         if (path === "/api/sessions/s1/posts") return Response.json(POSTS)
         if (path === "/a/a1") return new Response(new Uint8Array([1, 2, 3]))
         if (path === "/api/posts/p1/markdown") return new Response("# notes flattened")
@@ -107,6 +110,7 @@ describe("reading a server", () => {
         expect((yield* server.posts("s1")).map((shown) => [shown.id, shown.version, shown.surfaces[0].markdown])).toEqual([["p1", 2, "# hi"]])
         expect(yield* server.title("s1")).toEqual(Option.some("Plan"))
         expect(yield* server.title("nope")).toEqual(Option.none())
+        expect(yield* server.title("bare")).toEqual(Option.none())
         expect(Array.from(yield* server.asset("a1"))).toEqual([1, 2, 3])
         expect(yield* server.markdown("p1")).toBe("# notes flattened")
         expect(own.log.every((line) => line.endsWith(" Bearer t0k"))).toBe(true)
