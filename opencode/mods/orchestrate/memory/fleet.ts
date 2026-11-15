@@ -10,9 +10,10 @@ export interface Asked {
 
 /**
  * Fleet in memory: each record asked lands in `asked` (a report not named as the empty string),
- * and answers `outcome`'s answer for it (`Off`, nothing to say, unless a test names one).
+ * and answers `outcome`'s answer for it (`Off`, nothing to say, unless a test names one). It covers
+ * the directories `covers` answers for (every one unless a test names which).
  */
-export const layer = (asked: Array<Asked>, outcome: (asked: Asked) => FleetOutcome = () => FleetOutcome.Off()) =>
+export const layer = (asked: Array<Asked>, outcome: (asked: Asked) => FleetOutcome = () => FleetOutcome.Off(), covers: (directory: string) => boolean = () => true) =>
   Layer.succeed(
     Fleet,
     Fleet.of({
@@ -22,5 +23,6 @@ export const layer = (asked: Array<Asked>, outcome: (asked: Asked) => FleetOutco
           asked.push(each)
           return outcome(each)
         }),
+      covers: (directory) => Effect.sync(() => covers(directory)),
     }),
   )

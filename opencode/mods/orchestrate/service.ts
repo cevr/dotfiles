@@ -319,10 +319,16 @@ export class RunRecords extends Context.Service<
  *   the outcome (`fleet.ts`), and `Refused` with why when it records nothing (a batch file that does
  *   not name both heads, a commit the checkouts or origin lack, a head behind the current target, a
  *   push refused).
+ * - `covers`: whether `directory` is a checkout of the repository the fleet publishes (its origin is the dotfiles
+ *   checkout's origin). Another repository's batch (a Bite verifier's) is none of the fleet's: never recorded, never
+ *   told. A directory that does not read, or a host with no checkouts, is not covered.
  */
 export class Fleet extends Context.Service<
   Fleet,
-  { readonly record: (input: { readonly report: Option.Option<string>; readonly batch: string }) => Effect.Effect<FleetOutcome> }
+  {
+    readonly record: (input: { readonly report: Option.Option<string>; readonly batch: string }) => Effect.Effect<FleetOutcome>
+    readonly covers: (directory: string) => Effect.Effect<boolean>
+  }
 >()("dotfiles-opencode/orchestrate/Fleet") {}
 
 // ── The heavy-check footer (heavy.ts) ──

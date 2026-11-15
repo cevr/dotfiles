@@ -54,6 +54,18 @@ export type FleetOutcome = Data.TaggedEnum<{
 }>
 export const FleetOutcome = Data.taggedEnum<FleetOutcome>()
 
+/** An absolute path to a findings file: up to a space, quote, backtick, bracket or parenthesis. */
+const FINDINGS = /\/[^\s`'"()<>[\]]*-findings\.md/g
+
+/**
+ * The findings file a verifier's hand-back names: the last absolute path ending in `-findings.md` on its first line,
+ * past whatever stands between the verdict and the path (`accepted (sidebar-fit accepted, …) /run/batch-findings.md`).
+ */
+export const findingsOf = (text: string): Option.Option<string> => {
+  const first = Option.getOrElse(Arr.findFirst(text.split("\n"), (line) => line.trim() !== ""), () => "")
+  return Option.map(Arr.last([...first.matchAll(FINDINGS)]), (match) => match[0])
+}
+
 /** The note's description in the root's context. */
 export const FLEET_DESCRIPTION = "orchestrate: the fleet target was not published"
 

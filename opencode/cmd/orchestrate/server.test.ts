@@ -88,6 +88,8 @@ interface World {
   readonly fleet?: Array<FleetTest.Asked>
   /** What recording each of them answers; `Off` (nothing said) when not named. */
   readonly fleetOutcome?: (asked: FleetTest.Asked) => FleetOutcome
+  /** The directories that are checkouts of the fleet's repository; every one when not named. */
+  readonly fleetCovers?: (directory: string) => boolean
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -194,7 +196,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       OpenCodeSteer.tellLayer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void notes.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       SkillTest.skill(world.skill ?? { history: [] }),
       SkillTest.records(world.records ?? { seen: new Map() }),
-      FleetTest.layer(world.fleet ?? [], world.fleetOutcome),
+      FleetTest.layer(world.fleet ?? [], world.fleetOutcome, world.fleetCovers),
       MainLineTest.layer(() => Option.none()),
       RunFilesTest.layer(new Map()),
     )
@@ -1996,6 +1998,54 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         expect([told?.sessionID, told?.text.endsWith(said)]).toEqual(["root", true])
         const refusals = logged.filter((each) => each.line.endsWith(said))
         expect(refusals.map((each) => each.near)).toEqual(["/run/batch-2-findings.md"])
+      }),
+    ))
+
+  test("M1, M2: another repository's accepted batch (a Bite verifier's, no heads line) is none of the fleet's: no record, no notice, no log; a dotfiles one still publishes", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const logged: Array<{ readonly near: string; readonly line: string }> = []
+        const bite = "/workspaces/.rifts/bite/scratchpad/batches/batch-288-findings.md"
+        const sessions = steps({
+          ses_b: { agent: "verifier", lastWords: `verifier batch-288 r1: accepted ${bite}`, directory: "/workspaces/.rifts/bite/verify-batch-288" },
+          ses_d: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+        })
+        const target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-1" }
+        // Were the Bite batch recorded, its batch file would be refused: it has no heads line.
+        const fleetOutcome = (asked: FleetTest.Asked) => {
+          if (asked.batch === "batch-1") return FleetOutcome.Recorded({ target })
+          return FleetOutcome.Refused({ reason: `the batch file ${asked.batch}.md has no heads line; write one` })
+        }
+        const fleetCovers = (directory: string) => directory.startsWith("/checkouts/dotfiles")
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetOutcome, fleetCovers, records: { seen: new Map(), logged } })
+        yield* begin(plugin, verifier("batch-288"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* begin(plugin, verifier("batch-1"), "ses_d")
+        yield* plugin.idle("ses_d")
+        yield* eventually(() => expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true))
+        expect(fleet).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }])
+        expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toEqual([])
+        expect(logged.filter((each) => each.line.includes("batch-288"))).toEqual([])
+      }),
+    ))
+
+  test("M1, M2: a verifier's hand-back with a parenthetical between its verdict and its findings path records by that path", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const findings = "/private/var/folders/qd/T/opencode/verify-1115cj/batch-2026-11-15cj-findings.md"
+        const sessions = steps({
+          ses_v: {
+            agent: "verifier",
+            lastWords: `verifier batch-2026-11-15cj r1: accepted (sidebar-fit accepted, status-pct accepted) ${findings}\n\nTwo units accepted.`,
+            directory: "/checkouts/dotfiles",
+          },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet })
+        yield* begin(plugin, verifier("batch-2026-11-15cj"), "ses_v")
+        yield* plugin.idle("ses_v")
+        yield* eventually(() => expect(fleet).toEqual([{ report: findings, batch: "batch-2026-11-15cj" }]))
       }),
     ))
 })

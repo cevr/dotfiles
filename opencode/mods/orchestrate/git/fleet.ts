@@ -113,6 +113,26 @@ const recordTarget = Effect.fn("Fleet.recordTarget")(function* (program: string,
   return yield* publish(program, checkouts, wanted, PUSHES)
 })
 
+/**
+ * A repository as its origin URL names it, whatever the form (`https://host/owner/repo.git`, `git@host:owner/repo`,
+ * a local path): its last two path segments, lowercase, without `.git`.
+ */
+export const repositoryOf = (url: string): string =>
+  url
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .split(/[/:]/)
+    .slice(-2)
+    .join("/")
+    .toLowerCase()
+
+/** Whether `directory`'s origin is the repository `checkout`'s origin names; false when either does not read. */
+export const sameOrigin = (program: string, checkout: string, directory: string): Effect.Effect<boolean> =>
+  Effect.all([git(program, checkout, ["remote", "get-url", "origin"]), git(program, directory, ["remote", "get-url", "origin"])]).pipe(
+    Effect.map(([ours, theirs]) => Option.exists(Option.zipWith(ours, theirs, (a, b) => repositoryOf(a) === repositoryOf(b)), Boolean)),
+  )
+
 /** Records the target one accepted batch names, and answers the outcome; `program` is the git it runs (a test's may stand in another host). */
 export const recordOnce = (checkouts: Checkouts, report: string, batch: string, program = "git"): Effect.Effect<FleetOutcome> =>
   recordTarget(program, checkouts, report, batch).pipe(Effect.orElseSucceed(() => FleetOutcome.Refused({ reason: "recording the verified target failed" })))
@@ -132,6 +152,10 @@ export const layer = (checkouts: Option.Option<Checkouts>) =>
         if (Option.isNone(input.report)) return FleetOutcome.Refused({ reason: "the verifier named no report, so there is no batch file beside it" })
         return yield* recordOnce(checkouts.value, input.report.value, input.batch)
       })
-      return Fleet.of({ record: (input) => record(input).pipe(one.withPermits(1)) })
+      const covers = Effect.fn("Fleet.covers")(function* (directory: string) {
+        if (Option.isNone(checkouts)) return false
+        return yield* sameOrigin("git", checkouts.value.dotfiles, directory)
+      })
+      return Fleet.of({ record: (input) => record(input).pipe(one.withPermits(1)), covers })
     }),
   )
