@@ -399,7 +399,7 @@ Each of these cost time in the harness only. The owner does not pay them. **meas
 - **Terminal queries:** the TUI waits up to 1 s (`renderer.waitForThemeMode(1000)`) for the terminal to answer OSC 10/11. `@xterm/headless` never answers, and herdr's binary contains the reply format. `--replies` answers as a desktop terminal does. Without it, both builds lose about 1 s: 2.6 s (before) and 2.0 s (after) to ready.
 - **A fresh server:** the harness starts its own server. Its first `server.info` took 350–460 ms, and the location's first read through `fs.list` took 200–1,350 ms. The owner's long-running service has both warm. `--warm` loads the location on the server first, and `--settle 5000` lets the server settle.
 - **The Solid transform cache:** each run name keeps its own cache, so the first run of a name compiles every plugin through Babel. That alone took 700 ms of the main thread in one profile. `cmp.sh` runs each build once before it records anything.
-- **Tabs:** the harness runs with tabs on. The owner runs in herdr (`HERDR_ENV=1`), where `"auto"` turns them off.
+- **Tabs:** the harness runs with tabs on. The owner runs in herdr (`HERDR_ENV=1`, or a herdr-core terminal's `HC_TERMINAL_ID`), where `"auto"` turns them off.
 
 The 0.8 s from process start to "cli starting" in the last section is not there on a settled box. The binary's first import comes 80–145 ms after spawn, and "cli starting" follows 1–20 ms later. **measured**
 
