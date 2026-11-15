@@ -4,18 +4,18 @@
 //
 // A file's reach is derived from the checkout, never listed by hand:
 // - a file in a workspace package (mods/*, cmd/*, decider) reaches the whole
-//   package, since a package loads its own files by path too (the kernel's
-//   worker program, the wake backstop, the pool's ssh report), and every
-//   package its package.json depends on: each package's node_modules links
-//   only the workspace packages it declares, so an undeclared import does not
-//   resolve;
+//   package but its tests, since a package loads its own files by path too
+//   (the kernel's worker program, the wake backstop, the pool's ssh report)
+//   and never its tests, and every package its package.json depends on: each
+//   package's node_modules links only the workspace packages it declares, so an
+//   undeclared import does not resolve;
 // - any file reaches what it imports by a relative path or as @dotfiles/*;
 // - a file outside the packages (tests/, scenarios/, testbeds/, scripts/), which
 //   start plugins and programs by path, also reaches every `cmd/<name>` and
-//   `mods/<name>` it names, every `.ts`/`.tsx`/`.json` file a string of it
-//   names (from its own folder or the workspace root), and every package of
+//   `mods/<name>` its code names, every `.ts`/`.tsx`/`.json` file a string of
+//   it names (from its own folder or the workspace root), and every package of
 //   `cmd/` or `mods/` when it names the folder itself (`"cmd"`), as a loader of
-//   all plugins does.
+//   all plugins does; what its comments name it does not reach.
 // Every key also covers the shared inputs: the root manifest, lock file,
 // bunfig, tsconfig, the lint policy, these scripts, Bun's version and the OpenCode
 // checkout in OPENCODE_DEV, whose modules the packages link.
@@ -104,15 +104,28 @@ const read = (file: string) => {
   }
 }
 
-const transpilers = { ts: new Bun.Transpiler({ loader: "ts" }), tsx: new Bun.Transpiler({ loader: "tsx" }) }
+const TS = new Bun.Transpiler({ loader: "ts" })
+const TSX = new Bun.Transpiler({ loader: "tsx" })
 
-const imports = (file: string, source: string): ReadonlyArray<string> => {
+/**
+ * A file's imports and its code without its comments, through Bun's transpiler: the code keeps every string and
+ * template the source holds, and drops the comments (and the types). A file that is no source, or that the
+ * transpiler cannot read, has no imports and is taken whole. A program's `#!` line goes first: `scanImports` reads
+ * none (testbeds/gamut/gamut.ts has one).
+ */
+const scan = (file: string, source: string) => {
+  const whole = { imports: new Array<string>(), code: source }
+  if (!SOURCE.test(file)) return whole
+  const transpiler = (file.endsWith(".tsx") && TSX) || TS
+  const body = source.replace(/^#!.*/, "")
   try {
-    return transpilers[file.endsWith(".tsx") ? "tsx" : "ts"].scanImports(source).map((each) => each.path)
+    return { imports: transpiler.scanImports(body).map((each) => each.path), code: transpiler.transformSync(body) }
   } catch {
-    return []
+    return whole
   }
 }
+
+export const codeOf = (file: string, source: string): string => scan(file, source).code
 
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
@@ -141,7 +154,8 @@ export const reach = (workspace: Workspace, seeds: ReadonlyArray<string>, memo =
     const pkg = workspace.packages.get(dir)
     if (pkg === undefined || expanded.has(dir)) return
     expanded.add(dir)
-    for (const file of pkg.files) add(file)
+    // Its tests are no part of what the package loads: a suite reaches a package's tests only by importing them.
+    for (const file of pkg.files) if (!TEST.test(file)) add(file)
     for (const dep of pkg.deps) addPackage(dep)
   }
   for (const seed of seeds) add(seed)
@@ -165,9 +179,9 @@ export const reach = (workspace: Workspace, seeds: ReadonlyArray<string>, memo =
 
 /** A file's edges: workspace files, or package directories. */
 const edgesOf = (workspace: Workspace, known: ReadonlySet<string>, file: string): ReadonlyArray<string> => {
-  const source = read(file)
+  const { imports, code } = scan(file, read(file))
   const edges: Array<string> = []
-  for (const specifier of imports(file, source)) {
+  for (const specifier of imports) {
     if (specifier.startsWith(".")) {
       const local = resolveLocal(known, file, specifier)
       if (local !== undefined) edges.push(local)
@@ -177,9 +191,11 @@ const edgesOf = (workspace: Workspace, known: ReadonlySet<string>, file: string)
     }
   }
   if (packageOf(file) === undefined) {
-    for (const match of source.matchAll(NAMED_PACKAGE)) edges.push(`${match[1]}/${match[2]}`)
-    for (const match of source.matchAll(NAMED_GROUP)) for (const dir of workspace.packages.keys()) if (dir.startsWith(`${match[1]}/`)) edges.push(dir)
-    for (const match of source.matchAll(NAMED_FILE)) {
+    // What the code names, never what a comment does: a comment that mentions a script (sim/verify-model.ts names
+    // scripts/verify.ts) would make every suite that loads the file reach all that script loads.
+    for (const match of code.matchAll(NAMED_PACKAGE)) edges.push(`${match[1]}/${match[2]}`)
+    for (const match of code.matchAll(NAMED_GROUP)) for (const dir of workspace.packages.keys()) if (dir.startsWith(`${match[1]}/`)) edges.push(dir)
+    for (const match of code.matchAll(NAMED_FILE)) {
       const named = match[1]!
       const local = resolveLocal(known, file, named.startsWith(".") ? named : `./${named}`) ?? (known.has(named) ? named : undefined)
       if (local !== undefined) edges.push(local)
