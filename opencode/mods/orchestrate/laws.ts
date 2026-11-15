@@ -28,8 +28,8 @@ const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
 
 /** A law over a probe `make` gives within the test's scope, its body on the probe's layer. */
-const scenario = <P extends { readonly layer: Layer.Layer<S> }, S, E>(make: Effect.Effect<P, never, Scope.Scope>, body: (probe: P) => Effect.Effect<void, E, S>) =>
-  Effect.runPromise(Effect.scoped(Effect.flatMap(make, (probe) => body(probe).pipe(Effect.provide(probe.layer)))))
+const scenario = <P, S, E>(make: Effect.Effect<P, never, Scope.Scope>, layerOf: (probe: P) => Layer.Layer<S>, body: (probe: P) => Effect.Effect<void, E, S>) =>
+  Effect.runPromise(Effect.scoped(Effect.flatMap(make, (probe) => body(probe).pipe(Effect.provide(layerOf(probe))))))
 
 // ── CallLog ──
 
@@ -481,7 +481,7 @@ export interface UnitLogsProbe {
 /** `make` gives a fresh, empty checkout within the test's scope. */
 export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, never, Scope.Scope>) =>
   describe(`${name} keeps the UnitLogs laws`, () => {
-    const scoped = (body: (probe: UnitLogsProbe) => Effect.Effect<void, never, UnitLogs>) => scenario(make, body)
+    const scoped = (body: (probe: UnitLogsProbe) => Effect.Effect<void, never, UnitLogs>) => scenario(make, (probe) => probe.layer, body)
 
     test("a unit is found at a path named for it, absolute or relative to the directory, else under the checkout's runs", () =>
       scoped((probe) =>
@@ -708,7 +708,7 @@ const at = (list: ReadonlyArray<string>, index: number) => Option.getOrElse(Arr.
 export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, never, Scope.Scope>) =>
   describe(`${name} keeps the MainLine laws`, () => {
     test("one history answers its tip, first-parent merges, ancestry and commits", () =>
-      scenario(make, (probe) =>
+      scenario(make, (probe) => probe.layer, (probe) =>
         Effect.gen(function* () {
           const main = yield* MainLine
           const { checkout, line, tips } = yield* probe.repository("same", "main", 7)
@@ -727,7 +727,7 @@ export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, ne
       ))
 
     test("the default branch is origin's, else main, else master; none with neither, at a commit it lacks, or outside a repository", () =>
-      scenario(make, (probe) =>
+      scenario(make, (probe) => probe.layer, (probe) =>
         Effect.gen(function* () {
           const main = yield* MainLine
           const master = yield* probe.repository("master", "master", 1)
@@ -783,7 +783,7 @@ const RUN_FILES: ReadonlyArray<readonly [string, string, number]> = [
 export const runFilesLaws = (name: string, make: Effect.Effect<RunFilesProbe, never, Scope.Scope>) =>
   describe(`${name} keeps the RunFiles laws`, () => {
     test("a run dir answers its units, a unit's newest request and findings, and the newest verify with a verdict", () =>
-      scenario(make, (probe) =>
+      scenario(make, (probe) => probe.layer, (probe) =>
         Effect.gen(function* () {
           const files = yield* RunFiles
           const dir = `${probe.root}/run`
@@ -802,7 +802,7 @@ export const runFilesLaws = (name: string, make: Effect.Effect<RunFilesProbe, ne
       ))
 
     test("a write makes its directory and reads back; a path the store cannot take fails as unwritten", () =>
-      scenario(make, (probe) =>
+      scenario(make, (probe) => probe.layer, (probe) =>
         Effect.gen(function* () {
           const files = yield* RunFiles
           const path = `${probe.root}/written/verify-main-abc1234/batch-main-abc1234.md`
