@@ -1,7 +1,7 @@
 // A push: an ephemeral, owner-approved spend plan that uses resets to get a
 // body of work done. The owner starts one (the `pool_push` tool in their
-// session), or says yes to the pool's question when the queued work needs
-// more than the pool can spend before its windows reset by themselves.
+// session). The pool spends resets on its own without one (resets.ts, the
+// standing allowance); a push caps or shapes what is spent for its work.
 //
 // A push names a goal, a scope (a host, and a session's tree and an
 // orchestrate run within it), an end (a time, or "until the work is done":
@@ -12,8 +12,8 @@
 // - the pace's soft hold (the spend-evenly target) does not hold a start
 //   there: planners and verifiers stay on Opus (model.ts `pace`);
 // - a start held for real lack of quota has one of the push's resets claimed
-//   (resets.ts `pushDue`): an asked claim, the owner's yes given with the
-//   push, so it still goes through the fleet's lease, the fresh read before
+//   (resets.ts `pushDue`): a claim the owner approved with the push, so
+//   it passes over a peer that cannot be reached, and it still goes through the fleet's lease, the fresh read before
 //   the send, and one claim at a time; the reset is chosen by value
 //   (resets.ts `rankPush`).
 //
@@ -21,9 +21,7 @@
 // its run closes, or on `end`; its record goes then, and nothing of it lasts
 // but the claims it made, which the resets keep as any other.
 //
-// The Pushes aggregate keeps the host's pushes and the pool's questions about
-// starting one (`PushAsk`), once per scope per week: a no holds for the week.
-// The plan (`planOf`) is measured from the pool: what the scope can spend
+// The Pushes aggregate keeps the host's pushes. The plan (`planOf`) is measured from the pool: what the scope can spend
 // before its windows reset by themselves, what each approved reset adds, and
 // when each would likely be claimed at the current burn; and the host's load
 // against its cores, which a push never raises.
@@ -41,8 +39,6 @@ const WEEK = 7 * DAY
 
 /** No push lasts longer than this, "until the work is done" included: nothing persists past it. */
 export const MAX_PUSH_MS = WEEK
-/** The pool asks about a push at most once per scope in this long; a no holds for it. */
-export const ASK_EVERY_MS = WEEK
 /** What one queued orchestrate unit is taken to cost, as a share of one account's week, when the config names none (a guess: a planner, an implementor and a verifier round). */
 export const UNIT_COST = 0.1
 /** The unit states that are queued work: planned, or being implemented. */
@@ -85,48 +81,26 @@ export const Push = Schema.Struct({
   /** Named "until the work is done": it ends when its run closes, else at `endsAt`. */
   untilDone: Schema.Boolean,
   allowance: Allowance,
-  /** Started by the owner's call, or by a yes to the pool's question. */
+  /** Started by the owner's call; `proactive`: by a yes to an older pool's question. */
   by: PushBy,
   /** The session the owner started it from, or answered in. */
   sessionID: Schema.optionalKey(Schema.String),
 })
 export type Push = typeof Push.Type
 
-export const AskStage = Schema.Literals(["asked", "accepted", "declined"])
-export type AskStage = typeof AskStage.Type
-
-/** The pool's question whether to start a push, and the push a yes starts. */
-export const PushAsk = Schema.Struct({
-  /** The scope's key (`scopeKey`): one question per scope per ASK_EVERY_MS. */
-  key: Schema.String,
-  goal: Schema.String,
-  scope: PushScope,
-  allowance: Allowance,
-  sessionID: Schema.String,
-  question: Schema.String,
-  at: Schema.Number,
-  stage: AskStage,
-})
-export type PushAsk = typeof PushAsk.Type
-
 export const PushState = Schema.Struct({
   pushes: Schema.Record(Schema.String, Push),
-  asks: Schema.Record(Schema.String, PushAsk),
 })
 export type PushState = typeof PushState.Type
 
-export const empty: PushState = { pushes: {}, asks: {} }
+export const empty: PushState = { pushes: {} }
 
 /**
  * A scope as one key: the host and the session's root, or the host and the
  * run. A run's key names no session: its work is the same whichever session
- * asked about it, so a no holds for the run, and a new push for it replaces
- * the last.
+ * started it, so a new push for it replaces the last.
  */
 export const scopeKey = (scope: PushScope) => (scope.run === undefined ? `${scope.host}:${scope.sessionID ?? "*"}:*` : `${scope.host}:*:${scope.run}`)
-
-/** The question's key in the owner's tray. */
-export const askKey = (key: string) => `push:${key}`
 
 /** The pushes active on `host` at `now`. */
 export const activeOn = (state: PushState, host: string, now: number): ReadonlyArray<Push> =>
@@ -164,27 +138,11 @@ export interface StartPush extends Schema.Schema.Type<typeof StartPush> {}
 export const EndPush = Schema.TaggedStruct("EndPush", { id: Schema.String, why: Schema.String })
 export interface EndPush extends Schema.Schema.Type<typeof EndPush> {}
 
-/** Time passed: pushes past their end go, so do those whose run closed (`closedRuns`, by name), and questions older than ASK_EVERY_MS. */
+/** Time passed: pushes past their end go, so do those whose run closed (`closedRuns`, by name). */
 export const Tick = Schema.TaggedStruct("Tick", { closedRuns: Schema.Array(Schema.String) })
 export interface Tick extends Schema.Schema.Type<typeof Tick> {}
 
-/** Ask the owner whether to start a push: once per scope per ASK_EVERY_MS, never while a push covers the scope. */
-export const AskPush = Schema.TaggedStruct("AskPush", {
-  goal: Schema.String,
-  scope: PushScope,
-  /** What else the question is about, once per week each: a pool whose resets would expire unused. */
-  about: Schema.optionalKey(Schema.String),
-  allowance: Allowance,
-  sessionID: Schema.String,
-  question: Schema.String,
-})
-export interface AskPush extends Schema.Schema.Type<typeof AskPush> {}
-
-/** The owner answered the question under the scope's key (`undefined`: it went without an answer, a no). */
-export const TakePushAnswer = Schema.TaggedStruct("TakePushAnswer", { key: Schema.String, answer: Schema.optionalKey(Schema.String) })
-export interface TakePushAnswer extends Schema.Schema.Type<typeof TakePushAnswer> {}
-
-export type Command = StartPush | EndPush | Tick | AskPush | TakePushAnswer
+export type Command = StartPush | EndPush | Tick
 
 export const PushStarted = Schema.TaggedStruct("PushStarted", { push: Push })
 export interface PushStarted extends Schema.Schema.Type<typeof PushStarted> {}
@@ -192,27 +150,7 @@ export interface PushStarted extends Schema.Schema.Type<typeof PushStarted> {}
 export const PushEnded = Schema.TaggedStruct("PushEnded", { id: Schema.String, at: Schema.Number, why: Schema.String })
 export interface PushEnded extends Schema.Schema.Type<typeof PushEnded> {}
 
-export const PushAsked = Schema.TaggedStruct("PushAsked", { ask: PushAsk })
-export interface PushAsked extends Schema.Schema.Type<typeof PushAsked> {}
-
-export const PushAnswered = Schema.TaggedStruct("PushAnswered", { key: Schema.String, stage: AskStage, at: Schema.Number })
-export interface PushAnswered extends Schema.Schema.Type<typeof PushAnswered> {}
-
-export const AsksForgotten = Schema.TaggedStruct("AsksForgotten", { keys: Schema.Array(Schema.String) })
-export interface AsksForgotten extends Schema.Schema.Type<typeof AsksForgotten> {}
-
-export type Event = PushStarted | PushEnded | PushAsked | PushAnswered | AsksForgotten
-
-/** The question's choices; the first is the yes. */
-export const START = "Start the push"
-export const NOT_NOW = "No push this week"
-export const ASK_ASSUME = "No push: the pace holds starts as usual"
-
-/** Whether an answer to the pool's push question is a yes. */
-export const isStart = (answer: string): boolean => {
-  const said = answer.replace(/\s+/g, " ").trim().toLowerCase()
-  return said === "start the push" || said === "start" || said === "yes" || said === "y" || said.startsWith("start the push ") || said.startsWith("yes ")
-}
+export type Event = PushStarted | PushEnded
 
 /** A push's id: its scope and start, so two starts at once in one scope are one. */
 export const pushID = (scope: PushScope, at: number) => `push-${scopeKey(scope).replace(/[^A-Za-z0-9_-]/g, "_")}-${at.toString(36)}`
@@ -246,46 +184,7 @@ const tick = (state: PushState, command: Tick, now: number): ReadonlyArray<Event
         ? [PushEnded.make({ id: push.id, at: now, why: `its run ${push.scope.run} closed` })]
         : [],
   )
-  const old = Object.values(state.asks).flatMap((ask) => (now - ask.at >= ASK_EVERY_MS ? [ask.key] : []))
-  return [...ended, ...(old.length === 0 ? [] : [AsksForgotten.make({ keys: old })])]
-}
-
-const askPush = (state: PushState, command: AskPush, now: number): ReadonlyArray<Event> => {
-  const key = `${scopeKey(command.scope)}${command.about === undefined ? "" : `#${command.about}`}`
-  const asked = state.asks[key]
-  if (asked !== undefined && now - asked.at < ASK_EVERY_MS) return []
-  // A push of the whole host covers every question there, one of the asking session's tree covers its questions, and one for the run covers the run's, whichever session started it.
-  const covered = activeOn(state, command.scope.host, now).some(
-    (push) =>
-      push.scope.sessionID === undefined ||
-      (push.scope.run === undefined && push.scope.sessionID === command.scope.sessionID) ||
-      (push.scope.run !== undefined && push.scope.run === command.scope.run),
-  )
-  if (covered) return []
-  return [
-    PushAsked.make({
-      ask: {
-        key,
-        goal: command.goal,
-        scope: command.scope,
-        allowance: command.allowance,
-        sessionID: command.sessionID,
-        question: command.question,
-        at: now,
-        stage: "asked",
-      },
-    }),
-  ]
-}
-
-const takeAnswer = (state: PushState, command: TakePushAnswer, now: number): ReadonlyArray<Event> => {
-  const ask = state.asks[command.key]
-  if (ask === undefined || ask.stage !== "asked") return []
-  if (command.answer === undefined || !isStart(command.answer)) return [PushAnswered.make({ key: ask.key, stage: "declined", at: now })]
-  return [
-    PushAnswered.make({ key: ask.key, stage: "accepted", at: now }),
-    ...startPush(state, { goal: ask.goal, scope: ask.scope, allowance: ask.allowance, by: "proactive", sessionID: ask.sessionID }, now),
-  ]
+  return ended
 }
 
 export const Pushes: Decider<PushState, Command, Event> = {
@@ -298,10 +197,6 @@ export const Pushes: Decider<PushState, Command, Event> = {
         return Effect.succeed(state.pushes[command.id] === undefined ? [] : [PushEnded.make({ id: command.id, at: now, why: command.why })])
       case "Tick":
         return Effect.succeed(tick(state, command, now))
-      case "AskPush":
-        return Effect.succeed(askPush(state, command, now))
-      case "TakePushAnswer":
-        return Effect.succeed(takeAnswer(state, command, now))
     }
   },
   evolve: (state, event) => evolve(state, event),
@@ -313,17 +208,6 @@ export const evolve = (state: PushState, event: Event): PushState => {
       return { ...state, pushes: { ...state.pushes, [event.push.id]: event.push } }
     case "PushEnded":
       return { ...state, pushes: Object.fromEntries(Object.entries(state.pushes).filter(([id]) => id !== event.id)) }
-    case "PushAsked":
-      return { ...state, asks: { ...state.asks, [event.ask.key]: event.ask } }
-    case "PushAnswered": {
-      const ask = state.asks[event.key]
-      // The week is counted from the answer: a no holds a week from when it was said.
-      return ask === undefined ? state : { ...state, asks: { ...state.asks, [event.key]: { ...ask, stage: event.stage, at: event.at } } }
-    }
-    case "AsksForgotten": {
-      const drop = new Set(event.keys)
-      return { ...state, asks: Object.fromEntries(Object.entries(state.asks).filter(([key]) => !drop.has(key))) }
-    }
   }
 }
 
@@ -332,8 +216,7 @@ export const evolve = (state: PushState, event: Event): PushState => {
 /**
  * What the owner's session asks of the push method. `start` a push for
  * `goal`; `status` of the host's pushes; `end` one (`id`, else every push of
- * the host); `plan` without starting, for `units` of queued work: a plan that
- * needs resets asks the owner once (the proactive question). `host` names the
+ * the host); `plan` without starting, for `units` of queued work. `host` names the
  * host the push is for (default this one; a peer's is forwarded to it, with
  * the host as its scope, and the host named by none: the peer knows itself by
  * its own name); `session: true` scopes it to the calling session's tree
@@ -367,7 +250,7 @@ export type PushToolInput = typeof PushToolInput.Type
 
 /** What the `pool_push` tool tells the model. */
 export const PUSH_DESCRIPTION = [
-  "Start, read, end or plan a push: an owner-approved, time-boxed spend plan that uses rate-limit resets to get a body of work done. Call it only when the owner asked for a push, or said yes to one.",
+  "Start, read, end or plan a push: an owner-approved, time-boxed spend plan that uses rate-limit resets to get a body of work done. Call it only when the owner asked for a push: the pool spends resets on its own without one, and a push caps or shapes that for its work.",
   "While a push is active in its scope (a whole host, or this session's tree, which a run's push also is), agents start without the spend-evenly hold (planners and verifiers stay on Opus), and a start held for real lack of quota claims one of the push's approved resets (the most valuable first, one at a time, through the fleet's lease) and goes on. Outside the scope nothing changes. It ends by itself at its end time, when its run closes, or on end.",
   "Answers with the plan, measured from the pool: what the scope can spend before its windows reset by themselves, what each approved reset adds, when each would likely be claimed at the current burn, and the host's load against its cores (a push raises no CPU gate).",
 ].join("\n\n")
@@ -527,27 +410,6 @@ export const planOf = (input: {
   return { at: now, pools, resets, forecasts: input.views.map((view) => forecastOf(view, now)), ...(input.need === undefined ? {} : { need: input.need }), ...(input.load === undefined ? {} : { load: input.load }) }
 }
 
-/**
- * The resets a push would need for the queued work: when the work (`need`,
- * in shares of one account's week) is more than the pools can spend before
- * their weeks reset by themselves, the fewest of the plan's resets, in its
- * order, whose week-long use given back covers the rest. None when the room
- * covers the work, or when every approved reset together does not.
- */
-export const proposalOf = (plan: Plan, need: number): ReadonlyArray<PlannedReset> | undefined => {
-  const room = plan.pools.reduce((total, pool) => total + pool.weeklyRoom, 0)
-  if (need <= room) return undefined
-  const chosen: Array<PlannedReset> = []
-  let covered = room
-  for (const reset of plan.resets) {
-    if (reset.weekly <= 0) continue
-    chosen.push(reset)
-    covered += reset.weekly
-    if (covered >= need) return chosen
-  }
-  return undefined
-}
-
 // ── Use it or lose it: the forecast ──
 
 /** A reset in hand that, at the current burn, expires before the pool would need it. */
@@ -620,15 +482,6 @@ export const forecastText = (forecast: Forecast): string | undefined => {
     `Pool ${forecast.pool}: at this rate (it uses ${perHour(forecast.burn, "a week")}), ${wasted.length} of its ${forecast.inHand} resets (${kinds}; each gives back ≈${percent(each)} of a week) ` +
     `expire unused by ${iso(last)}${first === last ? "" : `, the first ${iso(first)}`}.`
   )
-}
-
-/** The pool's question when resets would expire unused: the waste, the queued work found, and the plan. */
-export const wasteAskText = (forecast: Forecast, queued: ReadonlyArray<{ readonly run: string; readonly units: number }>, plan: Plan): string => {
-  const work =
-    queued.length === 0
-      ? "No queued work was found (no orchestrate run with planned or implementing units): a push would still spend them before they expire."
-      : `Queued work: ${queued.map((item) => `run ${item.run} (${item.units} unit${item.units === 1 ? "" : "s"} planned or implementing)`).join(", ")}.`
-  return `Start a push to spend the ${forecast.pool} resets that would go unused?\n${work}\n${planText(plan)}`
 }
 
 /** Several accounts' use as the owner reads it, after `at`: their average out of 100%; `unread` with none read. */
@@ -715,16 +568,4 @@ export const pushText = (push: Push, used: number, now: number): string => {
   const accounts = push.allowance.accounts === undefined ? "" : ` on ${push.allowance.accounts.join(", ")}`
   const resets = `${push.allowance.asNeeded ? "as needed, up to" : "up to"} ${push.allowance.max} reset${push.allowance.max === 1 ? "" : "s"}${kinds}${accounts}, ${used} spent`
   return `Push ${push.id} "${push.goal}" (${push.by}): ${scope}; ${end}, ${spanOf(Math.max(0, push.endsAt - now))} left; ${resets}.`
-}
-
-/** The pool's question whether to start a push, with the plan's numbers. */
-export const askText = (goal: string, proposal: ReadonlyArray<PlannedReset>, plan: Plan): string => {
-  const using = proposal.map((reset) => `the ${KIND_LABEL[reset.kind]} on ${reset.label}`).join(", ")
-  return `Start a push for ${goal} using ${using}? The queued work needs more than the pool can spend before its windows reset by themselves.\n${planText(plan)}`
-}
-
-/** The header of the pool's push question, at most 30 characters. */
-export const askHeader = (goal: string) => {
-  const header = `Push? · ${goal}`
-  return header.length <= 30 ? header : `${header.slice(0, 29)}…`
 }

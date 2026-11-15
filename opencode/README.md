@@ -201,7 +201,7 @@ which the Prime look replaces, and no per-agent compaction window. The fork adds
 terminal. It shows pool accounts, holds, 5-hour and 7-day usage and reset
 times, and each rate-limit reset an account holds with its kind (5-hour,
 weekly, Fable, full or Codex), its expiry and what it clears; the resets the
-pool works (asked, offered on demand, claimed before they expired); live
+pool claimed on its own and why; live
 agents with their call-log descriptions; and each orchestrate
 run's unit states. Reads refresh every two seconds while open, retain the
 last reading on errors, and stop when closed. The pane takes focus when it
@@ -1004,10 +1004,12 @@ session with no cache of its own goes where its fork source's cache lives
 The model, in the domain files at `mods/pool`'s root:
 
 - Facts: `LoginsListed`, `RequestPlaced`, `RequestRefused` (with its hold),
-  `ReadingTaken` (with the hold it sets, if any), `StepRecorded` (a priced
-  step), `RunReleased` and `LedgerPruned`.
+  `ReadingTaken` (with the hold it sets, if any), `HoldCleared` (a reset
+  claimed, or a reading taken after a usage-limit hold that shows room and no
+  refusal: a late reading from before a claim never keeps the claimed login
+  held), `StepRecorded` (a priced step), `RunReleased` and `LedgerPruned`.
 - Commands: `ListLogins`, `PlaceRequest`, `RefuseRequest`, `TakeReading`,
-  `RecordStep`, `ReleaseRun` and `PruneLedger`. Each one is decided only
+  `ClearHold`, `RecordStep`, `ReleaseRun` and `PruneLedger`. Each one is decided only
   from the pool's state, its input and the clock.
 - Rejections: `NoAccount` (a request on a pool that lists no login). The
   plugin then names no login on the request.
@@ -1046,6 +1048,49 @@ The ledger keeps its holds, readings, priced steps and session caches under
 `<pool>/cache/<session>`, so a new process starts where the last one
 stopped. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
+
+### Rate-limit resets
+
+The pool spends the usage-limit resets its accounts hold on its own: the
+owner approved every reset in hand ahead of time (2026-11-15), so it never
+asks whether to claim one. One pure rule decides (`claim-rule.ts`
+`decideClaim`), on each review of a pool with fresh readings (`resets.ts`),
+and takes capacity in this order:
+
+1. A reset about to expire unused, soonest expiry first. One that expires
+   within a day is just used: at once on a spent window, else at its last
+   call (6 hours before it expires, more than one 5-hour period) on the
+   window it gives back most of, as long as it gives back at least 10% of
+   it. One that expires later but before that window resets by itself is
+   used once the window is spent and the work would use it.
+2. A fresh account: while one can take the held work, the work goes there
+   and no other reset is spent.
+3. Only then a reset for held work it frees, when the work would use at
+   least half of what it gives back before the window resets by itself
+   (the burn of the agents running, scaled to the work held and running, a
+   single held start counting a third of three agents), and not the last one
+   in hand while more than a day of the week remains, unless it expires
+   before the week resets: the account whose week is freshest first.
+
+No claim lands inside 30 minutes of the window's own reset, nor a week-long
+window's under a day before it resets (but in a reset's last day), and an
+account takes one claim per window period, each judged again right before
+it is sent. A pool weighed with work held and no claim logs the reason for
+each no (`pool resets: no claim on <pool>: …`), only when it changes.
+After a claim the owner is told once, in the waiting session's tray, in one
+clause: `Claimed the 5h reset on <account>: 5h 100% used of 100% → 0% used
+(held work no fresh account can take: 1 start held, 3 running, ~89% of the
+5h window would be used before its reset in 2 h). 1 reset left this week;
+next expires 2026-12-15 12:00Z.` The notice has one choice, `OK`, and asks
+nothing. A question an older pool left open is withdrawn.
+
+`resets: { auto: false }` claims nothing on its own; `resets: false` works
+none. `pool_push` still caps or shapes spending: a push's approved resets
+go for the work it scopes. A claim the pool decided on its own is sent
+only once every fleet peer granted the provider's lease; while a peer cannot
+be reached it is recorded unsent (`not sent: no agreement, <peer>
+unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
+its properties over generated weeks.
 
 ## Status
 
@@ -3077,7 +3122,7 @@ account is at a hold line: its 5-hour window at 90% used of 100%, or its
 week at 99% used of 100%.
 
 Every usage figure the owner or an agent reads (the pace's hold reasons and
-latches, the reset questions and claim notices, `pool_push` plan and status,
+latches, the reset claim notices and claim log, `pool_push` plan and status,
 the sidebar and the `/pool` pane) is the share of the window USED, out of
 100%: `70% used of 100%`, or `70%/100% used` where space is tight. A
 threshold says the line it holds at (`holds at 90% used of 100%`), a reset

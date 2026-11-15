@@ -1404,7 +1404,7 @@ describe("resets on the live adapters", () => {
   const OPENAI = PoolId.make("openai")
   const DAY = 86_400_000
 
-  /** A Claude login whose 5-hour window is spent, its week resetting in three days, with one reset grant. */
+  /** A Claude login whose 5-hour window is spent, its week resetting in three days, with a grant of two resets (not the last one, kept). */
   const spentClaude = (now: number): QuotaReading => ({
     at: now,
     windows: [
@@ -1413,15 +1413,20 @@ describe("resets on the live adapters", () => {
     ],
     resets: {
       available: 1,
-      credits: [{ id: "grant-1", count: 1, usable: true, expiresAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
+      credits: [{ id: "grant-1", count: 2, usable: true, expiresAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
     },
   })
 
-  test("every Codex account spent and a start held: the pool consumes one credit, once, on the ChatGPT backend, and asks no one", async () => {
+  /** Three agents started on the provider: work running, enough for a held start's reset to pay. */
+  const busy = (plugin: { readonly started: (input: { readonly providerID: string }) => Effect.Effect<unknown, unknown> }, providerID: string) =>
+    Effect.forEach([1, 2, 3], () => plugin.started({ providerID }), { discard: true })
+
+  test("every Codex account spent, a start held and work running: the pool consumes one credit, once, on the ChatGPT backend, and only tells the owner", async () => {
     const reply = Promise.withResolvers<void>()
     const fake = startFakeChatGPT({ beforeConsumeResponse: () => reply.promise })
     const now = Date.now()
-    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now))
+    // The credit ends before the week resets: not one to keep in hand.
+    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now, 40, 2 * DAY))
     try {
       await scenario(
         Effect.gen(function* () {
@@ -1429,6 +1434,7 @@ describe("resets on the live adapters", () => {
           state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
           state.credentials.set("chatgpt-1", { type: "oauth", access: "access-1", refresh: "r", expires: now + DAY, metadata: { accountID: "acct-1" } })
           const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live)
+          yield* busy(plugin, "openai")
           expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })
           yield* waitFor("the fake's consume request", () => fake.consumes.length > 0)
           yield* plugin.pace("openai", "ses_root")
@@ -1448,7 +1454,8 @@ describe("resets on the live adapters", () => {
             { account: "acct-1", creditID: "credit-1", code: "reset" },
           ])
           expect(String(fake.consumes[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
-          expect(state.owner.asked).toEqual([])
+          yield* waitFor("the notice", () => state.owner.asked.length > 0)
+          expect(state.owner.asked.map(({ header, options }) => [header, options.map((option) => option.label)])).toEqual([["Pool reset claimed", ["OK"]]])
           expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
             { provider: "codex", outcome: "reset", weekly: "moved" },
           ])
@@ -1461,7 +1468,7 @@ describe("resets on the live adapters", () => {
     }
   })
 
-  test("a Claude login: the owner is asked in the waiting subagent's root session, and the grant is claimed only on a yes", () =>
+  test("a Claude login with work running: the grant is claimed on its own, and the owner told after in the waiting subagent's root session", () =>
     scenario(
       Effect.gen(function* () {
         const now = Date.now()
@@ -1470,18 +1477,15 @@ describe("resets on the live adapters", () => {
         state.readings.set("cred-a", spentClaude(now))
         state.parents.set("ses_child", "ses_root")
         const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        yield* busy(plugin, "anthropic")
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
-        yield* waitFor("the owner's question", () => state.owner.asked.length > 0)
-        const asked = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
-        expect(asked).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Claude reset · Anthropic 1" })
-        expect(asked.question).toContain("3.0 days remain before the weekly reset")
-        expect(plugin.claims).toEqual([])
-        // The owner says yes; the questions change, and the pool reads the answer.
-        yield* OwnerTest.answer(state.owner, asked.key, "Claim it")
-        yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
-        yield* settle
+        yield* waitFor("the plugin's claim and the notice", () => plugin.claims.length > 0 && state.owner.asked.length > 0)
         expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "grant-1"]])
-        expect(state.owner.questions.size).toBe(0)
+        const told = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
+        expect(state.owner.asked).toHaveLength(1)
+        expect(told).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Pool reset claimed", options: [{ label: "OK" }] })
+        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (held work no fresh account can take: ")
+        expect(told.question).toContain("1 reset left this week")
         const resets = yield* plugin.resets
         expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
           { provider: "claude", outcome: "reset", weekly: "kept" },
@@ -1489,7 +1493,7 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
-  test("a no claims nothing", () =>
+  test("a held start with nothing else running is too little work: nothing claimed, nothing asked", () =>
     scenario(
       Effect.gen(function* () {
         const now = Date.now()
@@ -1497,15 +1501,13 @@ describe("resets on the live adapters", () => {
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
         const plugin = yield* start({ sweepMinutes: 0 }, state, live)
-        yield* plugin.pace("anthropic", "ses_root")
-        yield* waitFor("the owner's question", () => state.owner.asked.length > 0)
-        yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "Don't claim")
-        yield* waitFor("the owner's question to close", () => state.owner.questions.size === 0)
+        expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
+        yield* settle
         yield* plugin.pace("anthropic", "ses_root")
         yield* settle
         expect(plugin.claims).toEqual([])
-        expect(state.owner.asked).toHaveLength(1)
-        expect((yield* plugin.resets).resets.map((reset) => reset.stage)).toEqual(["declined"])
+        expect(state.owner.asked).toEqual([])
+        expect((yield* plugin.resets).resets).toEqual([])
       }),
     ))
 
@@ -1536,7 +1538,8 @@ describe("resets on the live adapters", () => {
         // No question before the claim: the one asked is the notice after it.
         expect(state.owner.asked).toHaveLength(1)
         expect(state.owner.asked[0]).toMatchObject({ sessionID: "ses_root", header: "Pool reset claimed", options: [{ label: "OK" }] })
-        expect(state.owner.asked[0]?.question).toContain("The pool claimed the Fable reset on account Anthropic 1 before it expired unused")
+        expect(state.owner.asked[0]?.question).toStartWith("Claimed the Fable reset on Anthropic 1: ")
+        expect(state.owner.asked[0]?.question).toContain("(about to expire unused: ")
         // Read, it leaves the tray.
         // The reading the memory quota keeps still lists the grant: it is not offered again under another key.
         yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "OK")
@@ -1549,7 +1552,7 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
-  test("resets: { auto: false } claims nothing no one asked for: the reset about to expire is left, the held start's question is still asked, and a yes claims", () =>
+  test("resets: { auto: false } claims nothing on its own, and asks nothing: the reset about to expire is left, and so is the held work's", () =>
     scenario(
       Effect.gen(function* () {
         const now = Date.now()
@@ -1570,15 +1573,13 @@ describe("resets on the live adapters", () => {
         })
         state.parents.set("ses_child", "ses_root")
         const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live)
+        yield* busy(plugin, "anthropic")
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
-        yield* waitFor("the owner's question", () => state.owner.asked.length > 0)
+        yield* settle
+        yield* plugin.pace("anthropic", "ses_child")
         yield* settle
         expect(plugin.claims).toEqual([])
-        expect(state.owner.asked).toHaveLength(1)
-        expect(state.owner.asked[0]).toMatchObject({ sessionID: "ses_root", header: "Claude reset · Anthropic 1" })
-        yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "Claim it")
-        yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
-        expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
+        expect(state.owner.asked).toEqual([])
       }),
     ))
 

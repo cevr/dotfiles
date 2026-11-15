@@ -200,7 +200,7 @@ export class Limits extends Context.Service<
   }
 >()("dotfiles-opencode/pool/Limits") {}
 
-/** A question the pool asks the owner about one hold's reset. */
+/** A notice the pool puts in the owner's tray (a claim it made), with its one choice. */
 export interface OwnerQuestion {
   /** The session whose start waits; the question shows in its tree's root. */
   readonly sessionID: string
