@@ -89,7 +89,8 @@ export default Plugin.define({
   id: "dotfiles-opencode.rex",
   setup(context) {
     const family = !attached(process.argv.slice(2))
-    const state = inRex(process.env)
+    // A host without `ui.programStatus` (a fork older than the claim) keeps its own records.
+    const state = inRex(process.env) && "programStatus" in context.ui
     if (!family && !state) return
     return createRoot((dispose) => {
       if (family) handFamily(context)
