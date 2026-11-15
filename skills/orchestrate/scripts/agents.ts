@@ -19,14 +19,14 @@ const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebS
 export const ROLES = {
   planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
   implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
-  verifier: 'Verifies one orchestrate batch on a clean checkout of its merged head: runs the batch acceptance once, tries to break each unit\'s change against its spec, and writes findings per unit.',
+  verifier: 'Verifies what an orchestrate batch file names (a range of main, a landed batch, or one deep unit before its merge) on a clean checkout of its head: tries to break each unit\'s change against its spec, and writes findings per unit.',
 } as const;
 
 /** What a role's first message names: a unit's spec, or for the verifier its batch's file. */
 const SUBJECT: Record<Role, string> = {
   planner: "one orchestrate unit. Your first message names the unit's `spec.md` and the round.",
   implementor: "one orchestrate unit. Your first message names the unit's `spec.md` and the round.",
-  verifier: "one orchestrate batch. Your first message names the batch's `batch-<k>.md`, which names each unit's `spec.md` and round.",
+  verifier: "one orchestrate verify. Your first message names its batch file, which names each unit's `spec.md` and round.",
 };
 export type Role = keyof typeof ROLES;
 

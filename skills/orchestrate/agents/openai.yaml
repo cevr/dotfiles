@@ -1,5 +1,5 @@
 interface:
   display_name: "Orchestrate"
-  short_description: "Run units through herdr implementor/verifier tracks"
+  short_description: "Run units through planner, implementor and verifier agents, by mode"
 policy:
   allow_implicit_invocation: true
