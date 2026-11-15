@@ -1059,12 +1059,17 @@ asks whether to claim one. One pure rule decides (`claim-rule.ts`
 Demand is a forecast of what runs now (2026-11-15: a start is almost never
 held any more). Each account's burn per window is measured over its readings
 of the last two hours in one window period (`burn.ts`, kept in memory; a
-restart, or a spent window, falls back to the period's average). The pool's
-burn on a window is its open accounts' (with none open, the rate it spent the
-others at), a start held adding its share of the agents running across the
-fleet (every start of the last hour on this host and in its peers' reports).
-That burn, run against the room left on the accounts not spent, says when
-the pool runs out, and the pool's first natural reset says whether that
+restart, or a spent window, falls back to the period's average, and a
+forecast on an average it lacks a measure for says so: `, burn the window's
+average (none measured yet, as after a restart)`). The pool's burn on a
+window is its open accounts' (with none open, the rate it spent the others
+at), a start held adding its share of the agents running across the fleet.
+The agents running are the sessions busy now (from a step's start until the
+session goes idle; one not heard of for an hour lost its idle event) on this
+host and on each peer that answered in the last 10 minutes (its report's
+`busy`), however long ago they started: a run of hours counts as long as it
+works. That burn, run against the room left on the accounts not spent, says
+when the pool runs out, and the pool's first natural reset says whether that
 matters. With no agent running and no start held there is no forecast. The
 readings decide which windows exist: the 5-hour one is optional (on
 2026-11-15 four of the seven Claude logins read none), and the forecast
