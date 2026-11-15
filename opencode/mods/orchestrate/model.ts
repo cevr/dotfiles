@@ -694,10 +694,11 @@ export class IdleRoots extends Context.Service<
   IdleRoots,
   {
     /**
-     * The session ended its turn; `background` still runs for it. A root's idle period is decided now, unless input it
-     * heard waits in its inbox: then the session goes on with it, and that turn's idle decides.
+     * The session ended its turn; `background` still runs for it. Run in the host's idle hook, it reads at once whether
+     * input it heard waits in its inbox, and answers the decision of a root's idle period, to run in the background:
+     * none while input waits (the session goes on with it, and that turn's idle decides).
      */
-    readonly idle: (sessionID: string, background: number) => Effect.Effect<IdleOutcome | undefined>
+    readonly idle: (sessionID: string, background: number) => Effect.Effect<Effect.Effect<IdleOutcome | undefined>>
     /** New input (inbox item `inboxID`, not the nudge) reached the session: its idle period, if any, ends. */
     readonly heard: (sessionID: string, inboxID: string) => Effect.Effect<void>
     /** A turn of the session took inbox item `inboxID`. */
@@ -760,14 +761,17 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
       const waiting = new Map<string, ReadonlySet<string>>()
       const waitingOf = (sessionID: string) => waiting.get(sessionID) ?? new Set<string>()
 
-      const idle = Effect.fn("IdleRoots.idle")(function* (sessionID: string, background: number) {
+      const decide = Effect.fn("IdleRoots.idle")(function* (sessionID: string, background: number, waits: boolean) {
         if ((yield* sessions.parentOf(sessionID)) !== undefined) return undefined
         // Input that came during the turn waits in its inbox: the session goes on with it, and that turn's idle,
         // with its own background, is the one that counts. This one opens no idle period.
-        if (waitingOf(sessionID).size > 0) return notNudged({ why: "working", detail: "new input waits in its inbox" })
+        if (waits) return notNudged({ why: "working", detail: "new input waits in its inbox" })
         yield* apply(sessionID, GoIdle.make({ background })).pipe(Effect.orDie)
         return yield* consider(sessionID)
       })
+
+      // Read in the hook, before the host goes on: the execution takes its inbox right after, and the decision runs later.
+      const idle = (sessionID: string, background: number) => Effect.sync(() => decide(sessionID, background, waitingOf(sessionID).size > 0))
 
       const heard = Effect.fn("IdleRoots.heard")(function* (sessionID: string, inboxID: string) {
         waiting.set(sessionID, new Set([...waitingOf(sessionID), inboxID]))

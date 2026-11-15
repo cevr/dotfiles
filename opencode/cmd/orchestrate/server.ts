@@ -589,7 +589,9 @@ export const make = (
               : Effect.logDebug("orchestrate: no nudge").pipe(Effect.annotateLogs({ sessionID, why: outcome.why, detail: outcome.detail }))
       const background = (sessionID: string, work: Effect.Effect<Model.IdleOutcome | undefined>) =>
         work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid)
-      yield* ctx.session.hook("experimental.idle", (event) => background(event.sessionID, idleRoots.idle(event.sessionID, event.background.length)))
+      yield* ctx.session.hook("experimental.idle", (event) =>
+        idleRoots.idle(event.sessionID, event.background.length).pipe(Effect.flatMap((decide) => background(event.sessionID, decide))),
+      )
 
       // A root whose run saw an older skill is told once what changed, and to reconcile the run's rules files.
       const drifts = Context.get(services, Model.SkillDrifts)
