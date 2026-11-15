@@ -1,0 +1,15 @@
+{
+  "name": "@dotfiles/opencode-cmd-rex",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Rex mod's OpenCode plugins and the rex-show command: the composition roots of @dotfiles/opencode-rex.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-rex": "workspace:*"
+  }
+}

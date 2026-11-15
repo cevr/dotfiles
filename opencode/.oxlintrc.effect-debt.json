@@ -284,6 +284,59 @@
     },
     {
       "files": [
+        "mods/rex/filestore/spool.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/process/rex.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/show.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/filestore/spool.test.ts",
+        "mods/rex/process/rex.test.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/show.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/server.ts",
+        "cmd/rex/tui.tsx"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
         "mods/stall/filestore/captures.ts",
         "mods/update/filestore/builds.ts",
         "mods/update/filestore/stage.ts"

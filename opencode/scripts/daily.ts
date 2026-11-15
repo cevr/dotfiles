@@ -477,6 +477,7 @@ if (import.meta.main) {
     pluginDir("cache"),
     pluginDir("memory"),
     pluginDir("stall"),
+    pluginDir("rex"),
     pluginDir("escape"),
     updateEntry(pluginDir("update"), settings),
     BUILTIN_SCHEDULE_OFF,
@@ -486,7 +487,7 @@ if (import.meta.main) {
   rmSync(loader, { recursive: true, force: true })
   const config = join(home, ".config/opencode")
   const models = roleModels(catalog)
-  const tui = [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF]
+  const tui = [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("rex"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF]
   writeConfigs({ config, server, cli: tui, models, owned: ownedDirs(share) })
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
