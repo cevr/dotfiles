@@ -191,7 +191,7 @@ describe("the orchestrate tool's description", () => {
       "A named unit that is not ready lands with a warning.",
       "A land does not wait for the deep run or the post-land step:",
       "A lane that exists is answered, never made again by hand.",
-      "The rift tool is for a session that runs no units;",
+      "The work tool is for a session that runs no units;",
     ])
       expect(sentences).toContain(sentence)
   })
@@ -261,7 +261,7 @@ const textsOf = (random: () => number): ReadonlyArray<string> => {
     ...Option.toArray(nameRefusal(input)),
     ...ACTIONS.map(parentRefusal),
     laneAnswer(unit, lane, random() < 0.5),
-    landAnswer([warningOf(unit, "blocked")], "Landed 1 Rift(s) as one push."),
+    landAnswer([warningOf(unit, "blocked")], "Landed 1 workspace(s) as one push."),
     verifyAnswer(`batch-${Math.floor(random() * 9)}`, lane, random() < 0.5, pick(["given", "origin"] as const, "origin")),
     NO_UNITS,
     statusAnswer(runs, lanes, workrift),
@@ -410,7 +410,7 @@ describe("the lane name rule", () => {
       expect(lanesOf("y", [y, featY], workrift)).toEqual([y])
       expect(lanesOf("feat-y", [y, featY], workrift)).toEqual([featY])
       const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "y", state: "ready" }, { unit: "feat-y", state: "ready" }] }]
-      expect(resolveLand({ action: "land", units: ["feat-y"] }, runs, [y], workrift)).toEqual({ refused: expect.stringContaining("no Rift of the warm source reads as feat-y") })
+      expect(resolveLand({ action: "land", units: ["feat-y"] }, runs, [y], workrift)).toEqual({ refused: expect.stringContaining("no workspace of the base reads as feat-y") })
       expect(resolveLand({ action: "land" }, runs, [y], workrift)).toEqual({ rifts: [{ unit: "y", path: y.path }], warnings: [] })
     }
   })
@@ -469,8 +469,8 @@ describe("a land", () => {
     const other = laneAt("/code/.rifts/app/db-2", Option.some("p5/db"))
     const db = laneOf("db", false)
     const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], false)
-    expect(resolved).toEqual({ refused: expect.stringContaining(`2 Rifts read as db: ${db.path}, ${other.path}`) })
-    expect(resolved).toEqual({ refused: expect.stringContaining('{ unit: "db", path: "<its Rift>" }') })
+    expect(resolved).toEqual({ refused: expect.stringContaining(`2 workspaces read as db: ${db.path}, ${other.path}`) })
+    expect(resolved).toEqual({ refused: expect.stringContaining('{ unit: "db", path: "<its workspace>" }') })
   })
 })
 
@@ -660,8 +660,10 @@ describe("a unit's files", () => {
   })
 
   test("the land's pushed commit and a unit's round, as the log's move takes them", () => {
-    expect(pushedOf("Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/a, feat/b; by their receipts, no full gate).")).toEqual(Option.some("abc1234"))
-    expect(pushedOf("Checked 1 Rift(s) as one batch in /x on main since 1234567; rift.push is false")).toEqual(Option.none())
+    expect(pushedOf("Landed 2 workspace(s) as one push: abc1234 Merge into main to main (merged feat/a, feat/b; by their receipts, no full gate).")).toEqual(Option.some("abc1234"))
+    // A rift plugin from before the words changed (a rollback) still names its push.
+    expect(pushedOf("Landed 1 Rift(s) as one push: def5678 feat: x to main (merged feat/x; the gate passed in 3s).")).toEqual(Option.some("def5678"))
+    expect(pushedOf("Checked 1 workspace(s) as one batch in /x on main since 1234567; rift.push is false")).toEqual(Option.none())
     const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "a", state: "ready", round: "3" }, { unit: "b", state: "ready" }] }]
     expect([roundIn("a", runs), roundIn("b", runs), roundIn("c", runs)]).toEqual([Option.some(3), Option.some(1), Option.none()])
   })

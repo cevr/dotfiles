@@ -32,14 +32,14 @@ export const OrchestrateInput = toolInput(
   Schema.Struct({
     action: Schema.Literals(ACTIONS).annotate({
       description:
-        "status: the run tables, each open unit's lane and the one next call. lane: the unit's Rift (made, or answered when it exists). land: the units named, or every ready unit with a lane. verify: a verifier's clean checkout and the subagent call that starts it.",
+        "status: the run tables, each open unit's lane and the one next call. lane: the unit's workspace (made, or answered when it exists). land: the units named, or every ready unit with a lane. verify: a verifier's clean checkout and the subagent call that starts it.",
     }),
     unit: Schema.optional(Schema.String).annotate({ description: "lane: the unit, as its role calls name it (`implementor <unit> r1`)." }),
     run: Schema.optional(Schema.String).annotate({ description: "lane: the run, for the branch `<run>/<unit>`." }),
     branch: Schema.optional(Schema.String).annotate({ description: "lane: the branch, in place of `<run>/<unit>` or `feat/<unit>`." }),
     source: Schema.optional(Schema.String).annotate({ description: "lane: a directory of the repository whose warm source to use. Default: this session's directory." }),
     units: Schema.optional(Schema.Array(LandUnit)).annotate({
-      description: "land: the units to land, by name, or { unit, path } to land the Rift at path as the unit. Default: every unit the run tables show ready that has a lane.",
+      description: "land: the units to land, by name, or { unit, path } to land the workspace at path as the unit. Default: every unit the run tables show ready that has a lane.",
     }),
     departs: Schema.optional(Schema.String).annotate({ description: "land: ignored; kept so an older call decodes." }),
     batch: Schema.optional(Schema.String).annotate({
@@ -112,14 +112,14 @@ const EXAMPLES = {
 export const STEP_ORDER = ["lane", "implement", "ready", "land", "verify"] as const
 
 export const ORCHESTRATE_DESCRIPTION = [
-  "The steps of an orchestrate run, for the root session that runs its units, in this order: lane → implement → ready → land → verify. Every answer is read at the call from the run tables (the units' log.md files, as the skill's status script derives them) and the warm source's Rifts, so a restart or another root session gets the same answer; status names the one next call.",
-  `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")]])} makes the unit's Rift (an isolated workspace from the warm source), named for the unit, on branch \`branch\`, else \`<run>/<unit>\`, else \`feat/<unit>\`. A lane that exists is answered, never made again by hand. Each answer ends with the \`(rift: <path>)\` its implementor's description takes.`,
+  "The steps of an orchestrate run, for the root session that runs its units, in this order: lane → implement → ready → land → verify. Every answer is read at the call from the run tables (the units' log.md files, as the skill's status script derives them) and the base's workspaces, so a restart or another root session gets the same answer; status names the one next call.",
+  `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")]])} makes the unit's workspace (an isolated copy-on-write copy of the base), named for the unit, on branch \`branch\`, else \`<run>/<unit>\`, else \`feat/<unit>\`. A lane that exists is answered, never made again by hand. Each answer ends with the \`(rift: <path>)\` its implementor's description takes.`,
   'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)", prompt, background: true }). Its start and its hand-back move the unit in its log.md.',
   "ready: the implementor's hand-back, `implementor <unit> r<N>: ready <request path>`, which the plugin writes to the unit's log.md when the implementor goes idle.",
-  `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their Rifts merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a Rift the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you.`,
-  `verify: ${VERIFY_CALL} verifies main since the last verify, every ${VERIFY_EVERY} lands or ${VERIFY_MAX_AGE_MS / 3_600_000} h: it writes the batch file (base, head, the merges and units between them) into the run dir, makes the verifier's clean checkout, the Rift verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier <batch> r1", prompt, background: true }). ${verifyCallOf("batch-7")} names a batch you wrote yourself.`,
+  `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their workspaces merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a workspace the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you.`,
+  `verify: ${VERIFY_CALL} verifies main since the last verify, every ${VERIFY_EVERY} lands or ${VERIFY_MAX_AGE_MS / 3_600_000} h: it writes the batch file (base, head, the merges and units between them) into the run dir, makes the verifier's clean checkout, the workspace verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier <batch> r1", prompt, background: true }). ${verifyCallOf("batch-7")} names a batch you wrote yourself.`,
   `status: ${STATUS_CALL} answers the run tables, each open unit's lane, and one next: line naming the call to make. Call it after a compaction, or whenever the next step is unclear. A land's and a status's answer start with a warning line when a verify is due.`,
-  "A subagent never lanes, lands or verifies: the root does. The rift tool is for a session that runs no units; in a root that runs units, lane replaces rift create and land replaces rift land.",
+  "A subagent never lanes, lands or verifies: the root does. The work tool is for a session that runs no units; in a root that runs units, lane replaces work's create and land replaces work's land.",
 ].join("\n\n")
 
 // ── The input rule ──
@@ -206,7 +206,7 @@ export const laneDecision = (unit: string, branch: string, name: string, workrif
   const named = Arr.findFirst(lanes, (lane) => baseOf(lane.path) === name)
   if (Option.isSome(named) && workrift && named.value.branch !== branch)
     return {
-      refused: `orchestrate: workrift names the Rift of branch ${branch} ${name}, and ${named.value.path} (${Option.getOrElse(
+      refused: `orchestrate: workrift names the workspace of branch ${branch} ${name}, and ${named.value.path} (${Option.getOrElse(
         Option.map(Option.fromUndefinedOr(named.value.branch), (other) => `branch ${other}`),
         () => `detached at ${named.value.head}`,
       )}) already has that name: it is another lane's. Lane ${unit} on a branch whose name is its own: ${callOf("lane", [
@@ -230,7 +230,7 @@ export const laneNamed = (name: string, lanes: ReadonlyArray<Lane>): Option.Opti
 
 /** Two Rifts read as one unit: never one picked; the call names them and the form that picks. */
 export const lanesRefusal = (unit: string, lanes: ReadonlyArray<Lane>): string =>
-  `orchestrate: ${lanes.length} Rifts read as ${unit}: ${lanes.map((lane) => lane.path).join(", ")}. Name the one to land: ${landCallOf([{ unit, path: "<its Rift>" }])}.`
+  `orchestrate: ${lanes.length} workspaces read as ${unit}: ${lanes.map((lane) => lane.path).join(", ")}. Name the one to land: ${landCallOf([{ unit, path: "<its workspace>" }])}.`
 
 // ── The run tables ──
 
@@ -261,7 +261,7 @@ export const warningOf = (unit: string, state: string): string => `orchestrate: 
 
 /** What a land with no units answers when no unit is ready with a lane. */
 export const nothingToLand = (runs: ReadonlyArray<Run>): string =>
-  `orchestrate: no unit is ready with a lane, so nothing landed. Name the units to land: ${landCallOf(["<unit>"])}, or { unit, path } for a Rift the plugin cannot name.${Arr.match(unitsIn(runs, "ready"), { onEmpty: () => "", onNonEmpty: (ready) => ` Ready with no lane or two: ${ready.join(", ")}.` })}`
+  `orchestrate: no unit is ready with a lane, so nothing landed. Name the units to land: ${landCallOf(["<unit>"])}, or { unit, path } for a workspace the plugin cannot name.${Arr.match(unitsIn(runs, "ready"), { onEmpty: () => "", onNonEmpty: (ready) => ` Ready with no lane or two: ${ready.join(", ")}.` })}`
 
 /**
  * The Rifts a land takes: `{ unit, path }` as given; a name, its one lane (none or two: the call names them and the
@@ -282,7 +282,7 @@ export const resolveLand = (input: OrchestrateInput, runs: ReadonlyArray<Run>, l
       continue
     }
     const found = lanesOf(each, lanes, workrift)
-    if (found.length === 0) return { refused: `orchestrate: no Rift of the warm source reads as ${each}. Name its Rift: ${landCallOf([{ unit: each, path: "<its Rift>" }])}.` }
+    if (found.length === 0) return { refused: `orchestrate: no workspace of the base reads as ${each}. Name its workspace: ${landCallOf([{ unit: each, path: "<its workspace>" }])}.` }
     if (found.length > 1) return { refused: lanesRefusal(each, found) }
     rifts.push({ unit: each, path: found[0]?.path ?? "" })
   }
@@ -303,8 +303,11 @@ export const laneAnswer = (unit: string, lane: Lane, made: boolean): string =>
     `(rift: ${lane.path})`,
   ].join("\n")
 
-/** The commit a land pushed, as the rift land's answer names it first (`Landed <n> Rift(s) as one push: <sha> …`); none when it pushed nothing. */
-export const pushedOf = (text: string): Option.Option<string> => Option.fromNullishOr(/^Landed \d+ Rift\(s\) as one push: ([0-9a-f]{7,40})\b/m.exec(text)?.[1])
+/**
+ * The commit a land pushed, as the land's answer names it first (`Landed <n> workspace(s) as one push: <sha> …`, or
+ * `Rift(s)` from a plugin before the words changed); none when it pushed nothing.
+ */
+export const pushedOf = (text: string): Option.Option<string> => Option.fromNullishOr(/^Landed \d+ (?:workspace|Rift)\(s\) as one push: ([0-9a-f]{7,40})\b/m.exec(text)?.[1])
 
 /** The round the run tables show for `unit` (its log's, 1 when it shows none); none when no table holds it. */
 export const roundIn = (unit: string, runs: ReadonlyArray<Run>): Option.Option<number> =>

@@ -103,7 +103,7 @@ if (laned) {
       "        execute: async (input) => {",
       `          appendFileSync(${JSON.stringify(riftLog)}, JSON.stringify(input.rifts ?? []) + "\\n")`,
       "          const rifts = input.rifts ?? []",
-      '          return { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push: ${rifts.join(", ")}.` }], metadata: { action: "land" } }',
+      '          return { content: [{ type: "text", text: `Landed ${rifts.length} workspace(s) as one push: ${rifts.join(", ")}.` }], metadata: { action: "land" } }',
       "        },",
       "      }),",
       "    )",

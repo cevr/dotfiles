@@ -207,7 +207,7 @@ const start = (world: World) =>
     const land = Effect.fn("HeavyFooterTest.land")(function* (rifts: ReadonlyArray<string>) {
       const input = { action: "land", rifts }
       expect((yield* call("rift", input)).refused).toBe(false)
-      yield* finish({ tool: "rift", input, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
+      yield* finish({ tool: "rift", input, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} workspace(s) as one push` }] } })
     })
     /** The wakes asking the opener to open the latch they kept for `ask`. */
     const open = (ask: LatchAsk & { readonly child: string }) => {

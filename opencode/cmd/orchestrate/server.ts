@@ -613,7 +613,7 @@ export const make = (
       const runs = Context.get(services, Runs)
       const remind = Context.get(services, Remind)
       const failWith = (message: string) => Effect.fail(new Tool.Error({ message }))
-      const unanswered = () => new Tool.Error({ message: "orchestrate: the rift plugin did not answer over its RPC; it is loaded with this plugin in every location." })
+      const unanswered = () => new Tool.Error({ message: "orchestrate: the work plugin did not answer over the rift RPC; it is loaded with this plugin in every location." })
       /** A rift RPC answer, or its failure's words. */
       const answeredOr = <A extends { readonly outcome: string }>(answer: A | RiftFailed): Effect.Effect<A, Tool.Error> => {
         if (isRiftFailed(answer)) return failWith(answer.message)
