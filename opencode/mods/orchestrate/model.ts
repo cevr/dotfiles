@@ -687,6 +687,9 @@ export type IdleOutcome =
   | { readonly _tag: "NotNudged"; readonly why: string; readonly detail: string }
   | { readonly _tag: "Refused"; readonly message: string }
 
+/** A decision's reason not to nudge, as its outcome. */
+const notNudged = (reason: { readonly why: string; readonly detail: string }): IdleOutcome => ({ _tag: "NotNudged", why: reason.why, detail: reason.detail })
+
 export class IdleRoots extends Context.Service<
   IdleRoots,
   {
@@ -739,14 +742,14 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
           const state = roots.get(sessionID) ?? IdleRoot.initial
           // Nothing is gathered while its own state already holds it back.
           const held = heldBack(state, yield* Clock.currentTimeMillis)
-          if (held !== undefined) return { _tag: "NotNudged", why: held.why, detail: held.detail } as const
+          if (held !== undefined) return notNudged(held)
           const resting = resumesAt(yield* sabbathNow, config.place) !== undefined
           const units = resting ? { moving: [], ready: [] } : unitsOf(yield* runs.list, yield* steps.units(sessionID))
           const gathered = units.moving.length === 0 && units.ready.length === 0 ? NO_HOLDS : yield* holds.of(sessionID)
           const decided = yield* apply(sessionID, Nudge.make({ ...units, holds: gathered, resting })).pipe(Effect.result)
-          if (decided._tag === "Failure") return { _tag: "NotNudged", why: decided.failure.why, detail: decided.failure.detail } as const
+          if (decided._tag === "Failure") return notNudged(decided.failure)
           const nudged = decided.success.events.find((event) => event._tag === "Nudged")
-          if (nudged === undefined) return { _tag: "NotNudged", why: "nudged", detail: "nothing to record" } as const
+          if (nudged === undefined) return notNudged({ why: "nudged", detail: "nothing to record" })
           return yield* steer.nudge(sessionID, nudged.line).pipe(
             Effect.as<IdleOutcome>({ _tag: "Nudged", line: nudged.line }),
             Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<IdleOutcome>({ _tag: "Refused", message: refused.message })),
@@ -761,7 +764,7 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
         if ((yield* sessions.parentOf(sessionID)) !== undefined) return undefined
         // Input that came during the turn waits in its inbox: the session goes on with it, and that turn's idle,
         // with its own background, is the one that counts. This one opens no idle period.
-        if (waitingOf(sessionID).size > 0) return { _tag: "NotNudged", why: "working", detail: "new input waits in its inbox" } as const
+        if (waitingOf(sessionID).size > 0) return notNudged({ why: "working", detail: "new input waits in its inbox" })
         yield* apply(sessionID, GoIdle.make({ background })).pipe(Effect.orDie)
         return yield* consider(sessionID)
       })

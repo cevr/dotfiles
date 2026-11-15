@@ -247,12 +247,26 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const idle = Effect.fn("OrchestrateServerTest.idle")(function* (sessionID: string, background: ReadonlyArray<unknown> = []) {
       for (const hook of hooks["experimental.idle"] ?? []) yield* hook({ sessionID, background })
     })
-    /** An input reaching a session's inbox: the owner's prompt, or a synthetic message with `metadata`. */
-    const enqueue = (sessionID: string, item: { readonly type: "user" } | { readonly type: "synthetic"; readonly metadata?: Record<string, unknown> }) =>
-      Queue.offer(published, {
+    const inboxIDs = { next: 0 }
+    /**
+     * An input reaching a session's inbox: the owner's prompt, or a synthetic message with `metadata`; a turn takes it
+     * (`session.inbox.delivered`) unless `taken` is false. Answers its inbox id.
+     */
+    const enqueue = Effect.fn("OrchestrateServerTest.enqueue")(function* (
+      sessionID: string,
+      item: { readonly type: "user" } | { readonly type: "synthetic"; readonly metadata?: Record<string, unknown> },
+      taken = true,
+    ) {
+      const inboxID = `inbox_${inboxIDs.next++}`
+      yield* Queue.offer(published, {
         type: "session.inbox.enqueued",
-        data: { sessionID, item: item.type === "user" ? { type: "user", payload: {} } : { type: "synthetic", payload: { text: "x", metadata: item.metadata } } },
+        data: { sessionID, inboxID, item: item.type === "user" ? { type: "user", payload: {} } : { type: "synthetic", payload: { text: "x", metadata: item.metadata } } },
       })
+      if (taken) yield* deliver(sessionID, inboxID)
+      return inboxID
+    })
+    /** A turn of the session took inbox item `inboxID`. */
+    const deliver = (sessionID: string, inboxID: string) => Queue.offer(published, { type: "session.inbox.delivered", data: { sessionID, inboxID } })
     /** An owner's TUI reporting a draft over the idle RPC. */
     const draft = (input: unknown) => {
       const handler = rpc["dotfiles-opencode.orchestrate.idle"]?.draft
@@ -264,7 +278,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const modelRequest = Effect.fn("OrchestrateServerTest.modelRequest")(function* (sessionID: string) {
       for (const hook of hooks["model.request"] || []) yield* hook({ sessionID, agent: "build", kind: "primary", headers: {} })
     })
-    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, briefs, compacted }
+    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, deliver, draft, nudges, notes, briefs, compacted }
   })
 
 /** Waits for the plugin's background work, in real time, until `check` passes (tests/wait.ts); one that never does fails with its own expectation. */
@@ -1578,6 +1592,24 @@ describe("an idle root with units to move or to land", () => {
         yield* settle
         yield* plugin.idle("root")
         yield* eventually(() => expect(plugin.nudges).toHaveLength(3))
+      }),
+    ))
+
+  test("an idle that comes while input heard during the turn still waits in the inbox does not nudge; the turn that takes it decides", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        // The owner's prompt came during the turn: the host runs the idle hook before the execution takes it.
+        const prompt = yield* plugin.enqueue("root", { type: "user" }, false)
+        yield* settle
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.nudges).toEqual([])
+        // The next turn takes it and ends with nothing running: that idle nudges.
+        yield* plugin.deliver("root", prompt)
+        yield* settle
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
       }),
     ))
 
