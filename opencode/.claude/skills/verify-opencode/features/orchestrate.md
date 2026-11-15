@@ -1,18 +1,18 @@
 # Orchestrate's tool and the land
 
-A root that runs the orchestrate skill starts role agents (planner, implementor, verifier, worker) with the `subagent` tool, named in the skill's form (`<role> <unit> r<N>`), and moves its units with the `orchestrate` tool. The plugin keeps no batch machine: no call is refused for a batch rule, and every `orchestrate` answer is computed at the call from the run tables (the skill's `status.ts`, over the status RPC) and the warm source's Rift list, so a restart or another root gets the same answer. A land goes through the rift tool's `land` (merge each Rift, one gate or the Rifts' receipts, one push). After a compaction the root is told its status and the re-read.
+A root that runs the orchestrate skill starts role agents (planner, implementor, verifier, worker) with the `subagent` tool, named in the skill's form (`<role> <unit> r<N>`), and moves its units with the `orchestrate` tool. The plugin keeps no batch machine: no call is refused for a batch rule, and every `orchestrate` answer is computed at the call from the run tables (the skill's `status.ts`, over the status RPC) and the base's workspace list, so a restart or another root gets the same answer. A land goes through the work tool's `land` (merge each workspace, one gate or the workspaces' receipts, one push). After a compaction the root is told its status and the re-read.
 
 ## Sub-features
 
 - `role-start`: a role call starts the role's agent on its model, its start and hand-back logged to the unit's `log.md`.
 - `no-batch-refusal`: no call is refused for a batch rule: a verifier named for a unit, a second verifier while one runs, a land of one unit that just handed back, a land while a verifier runs, `(departs: …)` and `(folds: …)` all pass; only a subagent's `lane`/`land`/`verify`, a malformed input, the Sabbath, a latched child and a Codex implementor are refused.
-- `stateless-restart`: after a restart, and from a new root session, `status` gives the same answer and a land of a unit the old root laned lands its Rift.
+- `stateless-restart`: after a restart, and from a new root session, `status` gives the same answer and a land of a unit the old root laned lands its workspace.
 - `land-warn`: a land naming a unit the run tables show in another state than `ready` lands it, its answer starting `orchestrate: warning: <unit> is <state>, not ready; landed as asked.`
 - `machine-brief`: after a compaction, a root that runs units gets one message: its `status` answer and the re-read.
-- `land`: the rift tool's `land` merges a batch's Rifts, takes their receipts or runs one gate, pushes once, and trashes the Rifts. A gate its systemd scope stopped for memory is answered as out of memory at the scope's MemoryMax, not as a bare `exit 143`.
+- `land`: the work tool's `land` merges a batch's workspaces, takes their receipts or runs one gate, pushes once, and trashes the workspaces. A gate its systemd scope stopped for memory is answered as out of memory at the scope's MemoryMax, not as a bare `exit 143`.
 - `orchestrate-tool`: the root's `orchestrate` tool. It has four actions:
-  - `lane` makes a unit's Rift, or answers the one that exists, ending `(rift: <path>)`; a Rift is never answered to another unit (`y`'s `feat-y` is not unit `feat-y`'s);
-  - `land` lands the named units' Rifts (`{ unit, path }` as given), or with no units every unit the run tables show `ready` with a lane;
+  - `lane` makes a unit's workspace, or answers the one that exists, ending `(rift: <path>)`; a workspace is never answered to another unit (`y`'s `feat-y` is not unit `feat-y`'s);
+  - `land` lands the named units' workspaces (`{ unit, path }` as given), or with no units every unit the run tables show `ready` with a lane;
   - `verify` makes the verifier's clean checkout and answers the one subagent call that starts it;
   - `status` names each unit's state, its lane and one `next:` call.
 - `derived-state`: a unit's state is its files and git, never kept: the skill's `status.ts <run dir> --repo <checkout>` prints `merged <head>` for a unit whose newest request's head is on the default branch (origin's, else `main`, else `master`), whatever its log says, `dropped` and the log's state otherwise, and a `Verdict` column (`changes r1`); merged and dropped units only with `--all`. The status mod reads each `orchestrate.dir` run beside `tmp/orchestrate/*`. After a land that pushed, each landed unit's log moves to `merged <commit>`.
@@ -23,20 +23,20 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 ## How to get to it (user POV)
 
 - The root agent's `subagent` call with a role and a description in the skill's form.
-- The rift tool's `{ "action": "land", "rifts": [...] }` (on the owner's machines only).
+- The work tool's `{ "action": "land", "workspaces": [...] }` (on the owner's machines only).
 - The root's `orchestrate` tool: `{ "action": "lane", "unit": "billing" }`, `{ "action": "land" }`, `{ "action": "verify" }`, `{ "action": "verify", "batch": "batch-7" }`, `{ "action": "status" }`.
 - `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir> --repo <checkout> [--all]` in a shell.
 - A compaction of a root that runs units (the note).
 
 ## Driving it with the world
 
-- **Preconditions:** orchestrate, the real rift plugin on its memory layers and the status plugin loaded over one memory world of warm sources, Rifts and unit logs (`orch-tools-world.ts`); the status script prints the logs as its table.
+- **Preconditions:** orchestrate, the real rift plugin on its memory layers and the status plugin loaded over one memory world of bases, workspaces and unit logs (`orch-tools-world.ts`); the status script prints the logs as its table.
 - **States:** default (a run of lanes, starts, hand-backs and lands), a restart, a new root, a compaction. Error is `cmd/orchestrate/orchestrate-faults.sim.test.ts`. Loading is `n/a`.
 - **World suites:** `cmd/orchestrate/orch-tools.sim.test.ts`, `cmd/orchestrate/batch-files.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`, `cmd/orchestrate/idle-root-property.sim.test.ts`, `cmd/orchestrate/orchestrate-latch.sim.test.ts`
 - **Code:** `mods/orchestrate/`, `cmd/orchestrate/`, `mods/work/`, `cmd/rift/`, `sim/`, `mods/status/`, `cmd/status/` (the status plugin the world loads: the run tables, the pool pane's runs and agents), `scripts/agents.ts` (the role agents it makes), `tests/orchestrate.test.ts`, `tests/orchestrate/` (its real check)
 - **Regression:** `mods/orchestrate/tools.test.ts` (the lane name rule, status and land resolution, B4's `next`, the due rule, the batch file's text), `mods/status/process/run-tables.test.ts` (B1: the real `status.ts` against a reference model over generated histories in a scratch repository; `orchestrate.dir` runs), `skills/orchestrate/scripts/status.test.ts` (B2, from the dotfiles root), `cmd/orchestrate/server.test.ts`, `cmd/rift/rpc.test.ts` (the rift plugin's RPC, which the `orchestrate` tool's lanes and lands go through).
 
-1. **Nothing refused.** A1 of `orch-tools.sim.test.ts`: up to 16 seeded commands (lanes, starts with `(rift: …)`, `(folds: …)`, `(departs: …)`, verifiers named for a batch, a unit or `main-<sha>`, lands, verifies of a batch and of main, restarts, new roots, over a main that holds zero to six merges from before the run); no call fails but the model's own, each land reaches the rift plugin with the Rifts the model resolves, a verify of main's batch file has the model's base and the fleet's `Heads:` line, and `status` equals the model's rendering after every command, its due line first when the model's merge count says one is due.
+1. **Nothing refused.** A1 of `orch-tools.sim.test.ts`: up to 16 seeded commands (lanes, starts with `(rift: …)`, `(folds: …)`, `(departs: …)`, verifiers named for a batch, a unit or `main-<sha>`, lands, verifies of a batch and of main, restarts, new roots, over a main that holds zero to six merges from before the run); no call fails but the model's own, each land reaches the rift plugin with the workspaces the model resolves, a verify of main's batch file has the model's base and the fleet's `Heads:` line, and `status` equals the model's rendering after every command, its due line first when the model's merge count says one is due.
 2. **A restart and a new root.** A2: lane `a`, `a` hands back ready, a restart, a new root lands `a`.
 3. **A warning, not a refusal.** A3: a land of a blocked and an implementing unit lands both, each warned first.
 4. **Verify due.** B3 (`batch-files.sim.test.ts`; its changes-verdict half in `orch-tools.sim.test.ts`): main holds three merges from before the run, then two lands, restarts and new roots between them; status and the next land start with the due line (N = 5); `verify` writes the batch file from the fifth merge back with the units in range; a verdict beside it ends the warning; the next verify starts from that head. A land with an open `changes` verdict warns and lands, and its log moves to merged.

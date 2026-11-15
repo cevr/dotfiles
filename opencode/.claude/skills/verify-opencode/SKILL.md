@@ -1,6 +1,6 @@
 ---
 name: verify-opencode
-description: Verify our OpenCode mods (opencode/mods, cmd: the server plugins orchestrate, rift land, pool, mail, wake and latches, guard, queue, questions, and the TUI plugins prime, status, escape) as an agent and a user meet them. Drive a feature on the simulated world (sim/, seeded and deterministic, the default) or on a real scratch OpenCode with its TUI in pilotty, keep the evidence, and turn the drive into the merge receipt (scripts/receipt.ts). Use to check a change to a mod, verify a batch, or show that a mod works.
+description: Verify our OpenCode mods (opencode/mods, cmd: the server plugins orchestrate, work and its land, pool, mail, wake and latches, guard, queue, questions, and the TUI plugins prime, status, escape) as an agent and a user meet them. Drive a feature on the simulated world (sim/, seeded and deterministic, the default) or on a real scratch OpenCode with its TUI in pilotty, keep the evidence, and turn the drive into the merge receipt (scripts/receipt.ts). Use to check a change to a mod, verify a batch, or show that a mod works.
 ---
 
 # Verify the OpenCode mods
@@ -8,7 +8,7 @@ description: Verify our OpenCode mods (opencode/mods, cmd: the server plugins or
 Our mods are OpenCode plugins: server plugins that add tools, hooks and RPCs, and TUI plugins that draw. A user or an agent meets them through a session: a prompt, a tool call, a key, a frame. This skill drives them that way, on two paths:
 
 1. **The world** (`sim/`), the default. Our real composition roots (`cmd/<mod>/server.ts`) run together on a simulated host: one seed, a virtual clock, memory alone, a scripted model. The host laws (`sim/host-laws.ts`) hold it to real OpenCode. A drive is a `*.sim.test.ts` journey, played on its fixed seeds and then on fresh ones; it takes milliseconds and no wall time, so load cannot break it.
-2. **A real scratch OpenCode**, only for what the world cannot show: the host laws' real run, the TUI's real frames, and a behaviour the feature file marks as real. It is the fork at `OPENCODE_DEV` (the `prime-look` Rift), on its own data dir, home, port and secret, with the verify model, and its TUI in a pilotty session.
+2. **A real scratch OpenCode**, only for what the world cannot show: the host laws' real run, the TUI's real frames, and a behaviour the feature file marks as real. It is the fork at `OPENCODE_DEV` (the `prime-look` workspace), on its own data dir, home, port and secret, with the verify model, and its TUI in a pilotty session.
 
 Both paths use one model, the **verify model** (`sim/verify-model.ts`): a prompt's lines say what it does, so a journey found on the world is typed into the real TUI word for word.
 
@@ -37,7 +37,7 @@ pilotty spawn --name verify-$PORT bun run verify:tui --root $ROOT
 pilotty wait-for -s verify-$PORT "Ask anything" -t 60000
 ```
 
-`verify:launch` runs until `verify:stop` (or its shell is killed): start it as a background shell, read its ready line (`{"ok":true,"ready":true,…}`), and leave it. Ready means the line *and* `GET /api/info` answering with the run's secret, which the launch waits for. The server loads the plugins `verify:seed` named (by default orchestrate, status, queue, wake with `backstop: "off"`, guard, mail, questions, escape, tool-names, skills); `update`, `rift`, `pool` and `anthropic-auth` are refused, since they act on the owner's checkouts or logins: drive those on the world. Every TUI plugin of `cmd/` loads through the run's `cli.json`, Prime first.
+`verify:launch` runs until `verify:stop` (or its shell is killed): start it as a background shell, read its ready line (`{"ok":true,"ready":true,…}`), and leave it. Ready means the line *and* `GET /api/info` answering with the run's secret, which the launch waits for. The server loads the plugins `verify:seed` named (by default orchestrate, status, queue, wake with `backstop: "off"`, guard, mail, questions, escape, tool-names, skills); `update`, `rift`, `work`, `pool` and `anthropic-auth` are refused, since they act on the owner's checkouts or logins: drive those on the world. Every TUI plugin of `cmd/` loads through the run's `cli.json`, Prime first.
 
 ## Doctor
 
@@ -69,7 +69,7 @@ The drive writes its proof outside every tracked path: `out/verify/<head>/` by d
 
 - A write is proved by a second view: on the world, the plugin's RPC or the store after a restart (`world.restart`); on real OpenCode, the RPC answer the TUI reads, or a reopened session.
 - A flaky step is reported as n/n trials with the load beside it; a world seed never flakes (a failure replays).
-- A failure is rerun on the base (a fresh Rift at the base, the same `SIM_SEED=<n>` or the same journey on another port) to tell new from pre-existing.
+- A failure is rerun on the base (a fresh workspace at the base, the same `SIM_SEED=<n>` or the same journey on another port) to tell new from pre-existing.
 - An unreachable entry point is reported with the command tried and its unmet precondition.
 
 ## Receipt
@@ -81,7 +81,7 @@ bun scripts/receipt.ts -- "bun run verify:drive --changed <base>"            # r
 bun scripts/receipt.ts --attest "verify-opencode: <evidence>/drive.json ok at <head>; batch-<k> accepted" --code 0
 ```
 
-The first form runs the drive itself and records its exit; use it. The second receipts a proof made already: a batch verifier's verdict with its findings file, a real TUI journey's evidence dir. A red drive is a red receipt (exit 1), and the land runs the Rift's focused gate or stops. The receipt names the head and the tree of tracked files; a commit after it voids it.
+The first form runs the drive itself and records its exit; use it. The second receipts a proof made already: a batch verifier's verdict with its findings file, a real TUI journey's evidence dir. A red drive is a red receipt (exit 1), and the land runs the workspace's focused gate or stops. The receipt names the head and the tree of tracked files; a commit after it voids it.
 
 ## Cleanup
 
@@ -111,4 +111,4 @@ The verify model is `sim/verify-model.ts` (`chatResponse` behind `verify:launch`
 ## Hosts
 
 - **Mac**: the fork at `~/Developer/personal/.rifts/opencode/prime-look`; the owner's service and TUIs are his, never driven: pick a port of your own, and never `opencode service` anything.
-- **Workbox** (`bite-workbox`): the same commands from its dotfiles checkout, with its fork Rift as `OPENCODE_DEV`; the owner's service there is his too. pilotty runs on the box itself; nothing opens a browser, so no Tailscale address is needed. Unproven there until a run covers it.
+- **Workbox** (`bite-workbox`): the same commands from its dotfiles checkout, with its fork workspace as `OPENCODE_DEV`; the owner's service there is his too. pilotty runs on the box itself; nothing opens a browser, so no Tailscale address is needed. Unproven there until a run covers it.

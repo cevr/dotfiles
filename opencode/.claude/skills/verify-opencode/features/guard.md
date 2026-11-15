@@ -8,7 +8,7 @@ A shell call that would lose work for good never runs: a recursive `rm` of the r
 - `guard-pass`: a force-push, a dry-run clean and an ordinary `rm` pass.
 - `guard-kill`: a pattern kill reaching OpenCode, and `kill -1`, are refused; a kill by PID passes.
 - `guard-sleep`: a subagent's opening `sleep` of 30 s or more is refused; the root's runs.
-- `guard-worktree`: `git worktree add` in a checkout Rift serves is refused, naming the rift tool.
+- `guard-worktree`: `git worktree add` in a checkout a workspace can copy is refused, naming the work tool's `create` and `workrift create <branch>`.
 - `guard-heavy`: a heavy command runs under the launcher, niced.
 
 ## How to get to it (user POV)
