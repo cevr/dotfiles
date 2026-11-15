@@ -42,7 +42,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, auto-title, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
 (`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions, the
@@ -2179,6 +2179,18 @@ lifetimes and the margins, `price.ts` what compacting costs and avoids, and `mod
 per session. It asks the `Sessions` contract in `service.ts`, implemented in
 `opencode/`, with the laws in `laws.ts`. `tests/idle-compact.test.ts` runs it
 in real OpenCode on a 20 s cache.
+
+## Auto-title
+
+`cmd/auto-title` keeps a long root session's title on its work: as the session goes idle, OpenCode's own title path
+(the one `/rename` with no argument takes: the original request and the recent conversation) names it again once 30
+minutes and 6 turns have passed since its last title (options `afterMinutes`, `afterTurns`), and after a compaction with
+a turn since then. A title you set (`/rename <text>`, the rename dialog) pins the session until you run `/rename` with no
+argument; an agent's `opencode_session_rename` does not pin. Subagents keep their role lines; a busy session waits for its
+next idle; one title request runs at a time on the host and a failed one leaves the old title. The rule is `due` in
+`mods/auto-title/retitle.ts`, the handlers in `model.ts`, the pins and counts in the plugin's storage
+(`opencode/tracks.ts`); it needs the fork's plugin `session.update` with an empty title generating one.
+`mods/auto-title/model.test.ts` tests the rule on the test clock, `tests/auto-title.test.ts` in real OpenCode.
 
 ## Session mail
 

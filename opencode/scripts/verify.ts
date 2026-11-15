@@ -99,6 +99,7 @@ const PLUGINS = {
   memory: plain("memory"),
   cache: plain("cache"),
   "idle-compact": plain("idle-compact"),
+  "auto-title": plain("auto-title"),
   git: plain("git"),
   kernel: plain("kernel"),
   stall: plain("stall"),

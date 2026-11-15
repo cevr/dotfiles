@@ -29,6 +29,13 @@
         "@dotfiles/opencode-anthropic-auth": "workspace:*",
       },
     },
+    "cmd/auto-title": {
+      "name": "@dotfiles/opencode-cmd-auto-title",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-auto-title": "workspace:*",
+      },
+    },
     "cmd/btw": {
       "name": "@dotfiles/opencode-cmd-btw",
       "version": "0.0.0",
@@ -228,6 +235,10 @@
       "dependencies": {
         "@dotfiles/opencode-pool": "workspace:*",
       },
+    },
+    "mods/auto-title": {
+      "name": "@dotfiles/opencode-auto-title",
+      "version": "0.0.0",
     },
     "mods/btw": {
       "name": "@dotfiles/opencode-btw",
@@ -435,11 +446,15 @@
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
+    "@dotfiles/opencode-auto-title": ["@dotfiles/opencode-auto-title@workspace:mods/auto-title"],
+
     "@dotfiles/opencode-btw": ["@dotfiles/opencode-btw@workspace:mods/btw"],
 
     "@dotfiles/opencode-cache": ["@dotfiles/opencode-cache@workspace:mods/cache"],
 
     "@dotfiles/opencode-cmd-anthropic-auth": ["@dotfiles/opencode-cmd-anthropic-auth@workspace:cmd/anthropic-auth"],
+
+    "@dotfiles/opencode-cmd-auto-title": ["@dotfiles/opencode-cmd-auto-title@workspace:cmd/auto-title"],
 
     "@dotfiles/opencode-cmd-btw": ["@dotfiles/opencode-cmd-btw@workspace:cmd/btw"],
 

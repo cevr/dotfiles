@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-auto-title",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Auto-title for OpenCode: a long root session's title is generated again as its work goes on, unless the owner set it.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

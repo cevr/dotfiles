@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-auto-title",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Auto-title's OpenCode server plugin: the composition root of @dotfiles/opencode-auto-title.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-auto-title": "workspace:*"
+  }
+}

@@ -294,6 +294,30 @@
     },
     {
       "files": [
+        "mods/auto-title/laws.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/auto-title/model.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/auto-title/opencode/tracks.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
         "mods/stall/laws.ts"
       ],
       "rules": {

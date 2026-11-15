@@ -384,6 +384,7 @@ const FENCES = [
   "mods/stall/*.ts",
   "mods/memory/*.ts",
   "mods/idle-compact/*.ts",
+  "mods/auto-title/*.ts",
   "mods/mail/*.ts",
   "mods/subagents/*.ts",
   "mods/subagents/opencode/*.ts",
