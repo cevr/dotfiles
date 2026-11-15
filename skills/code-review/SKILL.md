@@ -26,6 +26,8 @@ What was asked?
 | --- | --- |
 | [references/review-contract.md](references/review-contract.md) | Always. The criteria for correctness, minimality, each slop class, performance evidence, and the finding test |
 | [references/test-audit.md](references/test-audit.md) | The change adds or changes tests, or mode is `tests` |
+| [references/blast-radius.md](references/blast-radius.md) | A small diff you do not trust, or "what could this break": prove the one fact it is safe because of |
+| [references/interrogate.md](references/interrogate.md) | A defect would be costly: adversary subagents try to break the change, and only findings a run proves survive |
 
 ## Phase 1: Scope and mode
 
