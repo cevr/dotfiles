@@ -112,9 +112,9 @@
         "@dotfiles/opencode-pool": "workspace:*",
         "@dotfiles/opencode-questions": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
-        "@dotfiles/opencode-rift": "workspace:*",
         "@dotfiles/opencode-status": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
+        "@dotfiles/opencode-work": "workspace:*",
       },
     },
     "cmd/pool": {
@@ -160,7 +160,7 @@
       "name": "@dotfiles/opencode-cmd-rift",
       "version": "0.0.0",
       "dependencies": {
-        "@dotfiles/opencode-rift": "workspace:*",
+        "@dotfiles/opencode-work": "workspace:*",
       },
     },
     "cmd/skills": {
@@ -345,14 +345,6 @@
       "name": "@dotfiles/opencode-recover",
       "version": "0.0.0",
     },
-    "mods/rift": {
-      "name": "@dotfiles/opencode-rift",
-      "version": "0.0.0",
-      "dependencies": {
-        "@dotfiles/decider": "workspace:*",
-        "@dotfiles/opencode-guard": "workspace:*",
-      },
-    },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
       "version": "0.0.0",
@@ -386,11 +378,19 @@
       "dependencies": {
         "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-prime": "workspace:*",
-        "@dotfiles/opencode-rift": "workspace:*",
+        "@dotfiles/opencode-work": "workspace:*",
       },
     },
     "mods/wake": {
       "name": "@dotfiles/opencode-wake",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-guard": "workspace:*",
+      },
+    },
+    "mods/work": {
+      "name": "@dotfiles/opencode-work",
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
@@ -515,8 +515,6 @@
 
     "@dotfiles/opencode-recover": ["@dotfiles/opencode-recover@workspace:mods/recover"],
 
-    "@dotfiles/opencode-rift": ["@dotfiles/opencode-rift@workspace:mods/rift"],
-
     "@dotfiles/opencode-sim": ["@dotfiles/opencode-sim@workspace:sim"],
 
     "@dotfiles/opencode-sim-tui": ["@dotfiles/opencode-sim-tui@workspace:sim-tui"],
@@ -534,6 +532,8 @@
     "@dotfiles/opencode-update": ["@dotfiles/opencode-update@workspace:mods/update"],
 
     "@dotfiles/opencode-wake": ["@dotfiles/opencode-wake@workspace:mods/wake"],
+
+    "@dotfiles/opencode-work": ["@dotfiles/opencode-work@workspace:mods/work"],
 
     "@effect/platform-bun": ["@effect/platform-bun@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-m+QR4bp39ZWujCuEsUhZADIYIOFZcUHHlmrixENZqZRbEYgaPLMUWiPrRJ69CM4BuuHW8oCOxfMGUU7oSw/o5g=="],
 

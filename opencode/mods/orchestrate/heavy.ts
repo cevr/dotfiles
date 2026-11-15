@@ -10,7 +10,7 @@
 // role's cached prefix stays as it is.
 import { Option } from "effect"
 
-/** The host's load average over the last minute and its count of cores, as the pool and `mods/rift` read them. */
+/** The host's load average over the last minute and its count of cores, as the pool and `mods/work` read them. */
 export interface HostLoad {
   readonly load: number
   readonly cores: number

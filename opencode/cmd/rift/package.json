@@ -3,11 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The rift tool's OpenCode server plugin: the composition root of @dotfiles/opencode-rift.",
+  "description": "The rift tool's OpenCode server plugin: the composition root of @dotfiles/opencode-work.",
   "exports": {
     "./server": "./server.ts"
   },
   "dependencies": {
-    "@dotfiles/opencode-rift": "workspace:*"
+    "@dotfiles/opencode-work": "workspace:*"
   }
 }

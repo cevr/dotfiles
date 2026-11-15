@@ -36,7 +36,7 @@
 // named acceptance files narrow the run to them (the others are owed).
 //
 // One run at a time per machine: an flock on ACCEPT_LOCK (default
-// $TMPDIR/opencode-accept.flock, mods/rift/process/flock.ts), which ends with its
+// $TMPDIR/opencode-accept.flock, mods/work/process/flock.ts), which ends with its
 // holder; the holder's pid, checkout and mode are written beside it. A land run
 // behind a deep run (`owed`, `all`) sets a wanted mark (`<lock>.wanted/<pid>`);
 // the deep run, which looks every 250 ms, stops what it runs, writes the ledger,
@@ -49,7 +49,7 @@ import os from "node:os"
 import path from "node:path"
 import { $, type Subprocess } from "bun"
 import { Array as Arr, Console, Deferred, Effect, Fiber, Option, Stream } from "effect"
-import { holdingIfFree } from "../mods/rift/process/flock.ts"
+import { holdingIfFree } from "../mods/work/process/flock.ts"
 import { descendants, listing, type Proc, servers, stop, survivors, table, watch, type Watch } from "./leaks.ts"
 import { readyFork } from "./fork.ts"
 import * as Swarm from "./accept-plan.ts"
@@ -605,12 +605,12 @@ const tryLock = <A>(body: Effect.Effect<A>): Effect.Effect<Option.Option<A>> =>
   )
 
 /**
- * The `effect` flock.ts runs on: mods/rift's own (the fork's 4.1, linked there by `bun run link-fork`),
+ * The `effect` flock.ts runs on: mods/work's own (the fork's 4.1, linked there by `bun run link-fork`),
  * not the root's 4.0, so its Effects run on that runtime and this program meets them as a promise.
  * Resolved from flock.ts's folder, so it is whichever copy flock.ts loads.
  */
-type RiftRuntime = typeof import("../mods/rift/node_modules/effect/dist/index.js")
-const riftRuntime = Effect.promise((): Promise<RiftRuntime> => import(Bun.resolveSync("effect", path.join(ROOT, "mods/rift/process"))))
+type RiftRuntime = typeof import("../mods/work/node_modules/effect/dist/index.js")
+const riftRuntime = Effect.promise((): Promise<RiftRuntime> => import(Bun.resolveSync("effect", path.join(ROOT, "mods/work/process"))))
 
 const writeOwner = () => disk.write(OWNER, Accept.encodeOwner({ pid: process.pid, root: ROOT, mode }))
 

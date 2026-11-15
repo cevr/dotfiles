@@ -10,6 +10,6 @@
   "dependencies": {
     "@dotfiles/opencode-orchestrate": "workspace:*",
     "@dotfiles/opencode-prime": "workspace:*",
-    "@dotfiles/opencode-rift": "workspace:*"
+    "@dotfiles/opencode-work": "workspace:*"
   }
 }

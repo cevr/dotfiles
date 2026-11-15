@@ -74,7 +74,7 @@ The drive writes its proof outside every tracked path: `out/verify/<head>/` by d
 
 ## Receipt
 
-A drive on the merged head is the receipt a merge needs (`mods/rift/receipt.ts`, read by a land's `rift.mergeCheck`), in place of the long suites. In the checkout under test, at its head, with nothing uncommitted:
+A drive on the merged head is the receipt a merge needs (`mods/work/receipt.ts`, read by a land's `rift.mergeCheck`), in place of the long suites. In the checkout under test, at its head, with nothing uncommitted:
 
 ```sh
 bun scripts/receipt.ts -- "bun run verify:drive --changed <base>"            # runs the drive and receipts it

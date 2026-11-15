@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { spawnSync, write } from "bun"
-import { holdingIfFree } from "@dotfiles/opencode-rift/process/flock"
+import { holdingIfFree } from "@dotfiles/opencode-work/process/flock"
 import { Effect, Exit, Option, Ref } from "effect"
 import { buildName, FRESH_MS, stagingName } from "../builds.ts"
 import type { Build, Record } from "../record.ts"

@@ -10,7 +10,7 @@
 // - The lane name rule on either naming, the rift tool's description, and the tool's name against the registry's.
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
-import { RIFT_DESCRIPTION } from "@dotfiles/opencode-rift/rift"
+import { RIFT_DESCRIPTION } from "@dotfiles/opencode-work/rift"
 import { Array as Arr, Effect, Match, Option, Order, Result, Schema } from "effect"
 import { nearest } from "../../mods/tool-names/near-miss.ts"
 import * as Plugins from "../../sim/plugins.ts"

@@ -1,6 +1,6 @@
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { exclusivelySync } from "@dotfiles/opencode-rift/process/flock"
+import { exclusivelySync } from "@dotfiles/opencode-work/process/flock"
 import { buildName, stagingName } from "../builds.ts"
 import { stagedText } from "../process/install.ts"
 

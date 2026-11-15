@@ -915,13 +915,13 @@ describe("merge by key: two units' edits of the policy and its config merge with
     runScoped(
       Effect.gen(function* () {
         const real = yield* realInputs
-        const removed = realPolicy.exemptions.find((each) => each.file === "mods/rift/process/flock.ts")
+        const removed = realPolicy.exemptions.find((each) => each.file === "mods/work/process/flock.ts")
         expect(removed).toBeDefined()
         const { oursPolicy, oursConfig, theirsPolicy, theirsConfig } = unitEdits(real.debt)
         const extended = { ...oursConfig, overrides: extendGroup(oursConfig.overrides, "mods/update/model.test.ts", "mods/demo/extended.test.ts") }
         const oursWith = { ...oursPolicy, exemptions: [...oursPolicy.exemptions, exemptionOf("mods/demo/extended.test.ts", "effect/noEffectRunInTests")] }
         const theirsWithout = { ...theirsPolicy, exemptions: theirsPolicy.exemptions.filter((each) => each !== removed) }
-        const theirsConfigWithout = { ...theirsConfig, overrides: (theirsConfig.overrides ?? []).filter((group) => !group.files.includes("mods/rift/process/flock.ts")) }
+        const theirsConfigWithout = { ...theirsConfig, overrides: (theirsConfig.overrides ?? []).filter((group) => !group.files.includes("mods/work/process/flock.ts")) }
         const extendedTheirs = { ...theirsConfigWithout, overrides: extendGroup(theirsConfigWithout.overrides, "mods/update/model.test.ts", "mods/demo/theirs.test.ts") }
         const theirsAll = { ...theirsWithout, exemptions: [...theirsWithout.exemptions, exemptionOf("mods/demo/theirs.test.ts", "effect/noEffectRunInTests")] }
         const policy = Result.getOrThrow(mergePolicy(realPolicy, oursWith, theirsAll))
