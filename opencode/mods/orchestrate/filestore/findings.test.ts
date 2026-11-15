@@ -1,5 +1,6 @@
 // A verifier's findings, read from its report: the batch file names each unit's findings file.
 import { expect, test } from "bun:test"
+import { Option } from "effect"
 import { closedIn, findingsIn, unitFindings } from "./findings.ts"
 
 const files: Record<string, string> = {
@@ -59,9 +60,12 @@ test("a verdict file's closing lines mark findings closed: each <unit>/<id> and 
     "| billing | 2 | accepted | billing/round-2-findings.md |",
   ].join("\n")
   const unit = "Verdict: ACCEPTED\n## Major\nNone.\nbilling/M3, billing/B1 closed by batch-9 (its PR).\n"
-  const marks: Record<string, string> = { "/run/batch-287-findings.md": batch, "/run/billing/round-2-findings.md": unit }
-  const marked = (path: string): string | undefined => marks[path]
+  const marks = new Map([
+    ["/run/batch-287-findings.md", batch],
+    ["/run/billing/round-2-findings.md", unit],
+  ])
+  const marked = (path: string) => Option.fromUndefinedOr(marks.get(path))
   expect(closedIn("/run/batch-287-findings.md", marked)).toEqual(["approved-heads/M1", "approved-heads/M2", "pr-21583/B2", "billing/M3", "billing/B1"])
   expect(closedIn("/run/missing.md", marked)).toEqual([])
-  expect(closedIn("/run/batch-2-findings.md", read)).toEqual([])
+  expect(closedIn("/run/batch-2-findings.md", (path) => Option.fromUndefinedOr(read(path)))).toEqual([])
 })

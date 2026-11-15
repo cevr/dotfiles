@@ -152,7 +152,7 @@ const start = (world: World) =>
           Findings,
           Findings.of({
             read: (report) => Effect.sync(() => findingsIn(report, (path) => files.get(path))),
-            closed: (report) => Effect.sync(() => closedIn(report, (path) => files.get(path))),
+            closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr(files.get(path)))),
           }),
         ),
         Layer.succeed(Liveness, Liveness.of({ alive: (sessionID) => Effect.succeed(background(sessionID) > 0) })),

@@ -32,7 +32,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -956,11 +956,10 @@ export const machineLayer = (config: MachineConfig) =>
         })
 
       /** The findings a verdict's report marks closed by another batch; none when it names no report. */
-      const closedBy = (report: string | undefined) =>
-        Effect.map(Effect.forEach(Option.toArray(Option.fromNullishOr(report)), findings.closed), (read) => {
-          const closed = read.flat()
-          return closed.length === 0 ? {} : { closed }
-        })
+      const closedBy = (report: Option.Option<string>) =>
+        Effect.map(Effect.forEach(Option.toArray(report), findings.closed), (read) =>
+          Arr.match(read.flat(), { onEmpty: () => ({}), onNonEmpty: (closed) => ({ closed }) }),
+        )
 
       /**
        * The hand-back a step's session's last words say, as the machine takes it: a verifier's verdict with the
@@ -971,7 +970,7 @@ export const machineLayer = (config: MachineConfig) =>
           const words = yield* sessions.lastWordsOf(sessionID)
           const back = Option.fromNullishOr(stepHandBackOf(agent, words))
           if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict === "none" || back.value.verdict === "stopped") return back
-          const closed = yield* closedBy(reportOf(words))
+          const closed = yield* closedBy(Option.fromUndefinedOr(reportOf(words)))
           if (back.value.verdict !== "changes") return Option.some(HandBack.make({ ...back.value, ...closed }))
           return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))), ...closed }))
         })

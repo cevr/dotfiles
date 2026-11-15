@@ -192,7 +192,7 @@ const OUT_OF_MEMORY = /^rift-land: out of memory: oom_kill (\d+) at MemoryMax=(\
  * memory cap (systemd then stops the scope: exit 143, or 137 for the one killed), that it ran out of memory there.
  */
 export const exitWords = (ran: Pick<Ran, "code" | "output">): string =>
-  Option.match(Option.fromNullishOr(ran.code === 0 ? null : OUT_OF_MEMORY.exec(ran.output)), {
+  Option.match(Option.filter(Option.fromNullOr(OUT_OF_MEMORY.exec(ran.output)), () => ran.code !== 0), {
     onNone: () => `exit ${ran.code}`,
     onSome: (oom) => `exit ${ran.code}: out of memory, killed at the scope's limit MemoryMax=${oom[2]} (memory.events oom_kill ${oom[1]})`,
   })

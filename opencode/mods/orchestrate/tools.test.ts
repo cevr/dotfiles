@@ -3,7 +3,7 @@
 // domain, and the rule that names a unit's Rift. The next call's property runs on the real decider in
 // cmd/orchestrate/orch-tools.sim.test.ts, which has an Effect test runner.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Option, Schema } from "effect"
+import { Array as Arr, Option, Predicate, Schema } from "effect"
 import {
   BatchLanded,
   FindingFolded,
@@ -24,6 +24,7 @@ import {
   inputRefusal,
   type Lane,
   LAND_NEXT,
+  type LandUnit,
   landAnswer,
   landCallOf,
   laneAnswer,
@@ -403,12 +404,14 @@ describe("the lane name rule", () => {
       expect({ seed, said: resolved.refused }).toEqual({ seed, said: expect.stringContaining(`the machine holds no unit ${first.value}:`) })
       // The call it names: the unknown unit as { unit, path } on the one Rift that reads as it, made literally.
       const call = Option.getOrThrow(Option.fromNullishOr(/Adopt it and land it: orchestrate\((\{.*\})\)\.$/.exec(resolved.refused)?.[1]))
-      const input = Schema.decodeUnknownSync(OrchestrateInput)(JSON.parse(call.replace(/(\w+): /g, '"$1": ')))
-      expect({ seed, adopts: (input.units ?? []).some((unit) => typeof unit !== "string" && unit.unit === first.value && unit.path === laneOf(first.value).path) }).toEqual({ seed, adopts: true })
+      const input = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrateInput))(call.replace(/(\w+): /g, '"$1": '))
+      expect({ seed, adopts: (input.units ?? []).some((unit) => !Predicate.isString(unit) && unit.unit === first.value && unit.path === laneOf(first.value).path) }).toEqual({ seed, adopts: true })
       const again = resolveLand(input, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 }))
       // Each further unit not held is named alike in its own refusal; with them all named so, it resolves.
       const unheld = units.filter((unit) => !held.includes(unit))
-      const all = { ...input, units: (input.units ?? []).map((unit) => (typeof unit === "string" && unheld.includes(unit) ? { unit, path: laneOf(unit).path } : unit)) }
+      const adopting = (unit: LandUnit): LandUnit =>
+        Option.getOrElse(Option.map(Option.filter(Option.liftPredicate(unit, Predicate.isString), (name) => unheld.includes(name)), (name) => ({ unit: name, path: laneOf(name).path })), () => unit)
+      const all = { ...input, units: (input.units ?? []).map(adopting) }
       expect({ seed, resolved: "rifts" in resolveLand(all, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 })) }).toEqual({ seed, resolved: true })
       if (unheld.length === 1) expect({ seed, again: "rifts" in again }).toEqual({ seed, again: true })
     }

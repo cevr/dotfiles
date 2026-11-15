@@ -511,14 +511,18 @@ const recordedOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): Read
  * a restart, dropped, or verified already), with that Rift, the first entry of a unit named twice. Only that form
  * adopts: a bare name or path names what the machine holds, or nothing of its.
  */
-export const adopteesOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<{ readonly unit: string; readonly rift: string }> => {
-  const adopted = new Map<string, string>()
-  for (const rift of rifts) {
-    const entry = entryOf(rift)
-    if (entry.unit !== undefined && !Object.hasOwn(state.units, entry.unit) && !adopted.has(entry.unit)) adopted.set(entry.unit, entry.rift)
-  }
-  return [...adopted].map(([unit, path]) => ({ unit, rift: path }))
-}
+export const adopteesOf = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<{ readonly unit: string; readonly rift: string }> =>
+  Arr.dedupeWith(
+    rifts.flatMap((rift) =>
+      Option.toArray(
+        Option.map(
+          Option.filter(Option.fromUndefinedOr(entryOf(rift).unit), (unit) => !Object.hasOwn(state.units, unit)),
+          (unit) => ({ unit, rift: entryOf(rift).rift }),
+        ),
+      ),
+    ),
+    (a, b) => a.unit === b.unit,
+  )
 
 /** `state` with `unit` adopted on `rift` at `at`: ready, as if its implementor had handed back. */
 const adoptedState = (state: MachineState, unit: string, rift: string, at: number): MachineState => ({
@@ -618,9 +622,11 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
     }
     case "LandPartial": {
       // A unit the call names with its Rift keeps that form: it may be one this land adopts, which no bare name finds.
-      const given = call._tag === "Land" ? call.rifts.map(entryOf).filter((entry) => entry.unit !== undefined) : []
-      const units = ready.map((unit) => Option.match(Arr.findFirst(given, (entry) => entry.unit === unit), { onNone: () => unit, onSome: (entry) => ({ unit, path: entry.rift }) }))
-      return `Land every ready unit in one call: ${landCallOf(given.length === 0 ? [] : units)} lands ${list(ready)}.`
+      const given = Arr.filter([call], (named): named is Land => named._tag === "Land")
+        .flatMap((land) => land.rifts)
+        .flatMap((rift) => Option.toArray(Option.map(Option.fromUndefinedOr(entryOf(rift).unit), (unit) => ({ unit, path: entryOf(rift).rift }))))
+      const units = ready.map((unit) => Option.getOrElse(Arr.findFirst(given, (entry) => entry.unit === unit), (): string | { unit: string; path: string } => unit))
+      return `Land every ready unit in one call: ${landCallOf(Arr.match(given, { onEmpty: () => [], onNonEmpty: () => units }))} lands ${list(ready)}.`
     }
   }
 }
@@ -686,8 +692,10 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           }
           if (command.role === "verifier" && state.verifier?.batch === command.name) {
             // The open findings its report marks closed by another batch; a verifier with no verdict closes none.
-            const marked = command.verdict === "none" || command.verdict === "stopped" ? [] : (command.closed ?? []).filter((key) => Object.hasOwn(state.findings ?? {}, key))
-            const closed = marked.length === 0 ? {} : { closed: marked }
+            const silent = command.verdict === "none" || command.verdict === "stopped"
+            const open = { ...state.findings }
+            const marked = Option.getOrElse(Option.fromUndefinedOr(command.closed), () => []).filter((key) => !silent && Object.hasOwn(open, key))
+            const closed = Arr.match(marked, { onEmpty: () => ({}), onNonEmpty: (keys) => ({ closed: keys }) })
             if (command.verdict !== "changes") return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, ...closed, at: now })]
             // A `changes` whose findings were not read is unresolved, never an empty set.
             if (command.findings === undefined) {
@@ -856,7 +864,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         return tidy({ ...state, units, findings })
       }
       case "UnitAdopted":
-        return Object.hasOwn(state.units, event.unit) ? state : adoptedState(state, event.unit, event.rift, event.at)
+        return Option.getOrElse(Option.liftPredicate(state, (held) => Object.hasOwn(held.units, event.unit)), () => adoptedState(state, event.unit, event.rift, event.at))
     }
   },
 })

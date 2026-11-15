@@ -33,8 +33,9 @@
 // rule's words are the skill's own is git/machine-words.test.ts (this
 // folder's root files read no file).
 import { describe, expect, test } from "bun:test"
-import { Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Predicate, Schema } from "effect"
 import { lineOfCheckpoint } from "./ledger.ts"
+import { OrchestrateInput } from "./tools.ts"
 import { checkpointOf } from "./line.ts"
 import {
   briefOf,
@@ -164,13 +165,21 @@ const adopting = (shadow: Shadow, rifts: ReadonlyArray<LandTarget>, now: number)
   const units = new Map(shadow.units)
   for (const rift of rifts) {
     const entry = entryOf(rift)
-    if (entry.unit !== undefined && !units.has(entry.unit)) units.set(entry.unit, { state: "ready", since: now, direct: false, rifts: [entry.rift] })
+    for (const unit of Option.toArray(Option.fromUndefinedOr(entry.unit))) {
+      if (!units.has(unit)) units.set(unit, { state: "ready", since: now, direct: false, rifts: [entry.rift] })
+    }
   }
   return { ...shadow, units }
 }
+/** The shadow a command's rules read: a land's adoptions made, else `shadow` as it is. */
+const seenBy = (shadow: Shadow, command: Command, now: number): Shadow =>
+  Match.value(command).pipe(
+    Match.tag("Land", (land) => adopting(shadow, land.rifts, now)),
+    Match.orElse(() => shadow),
+  )
 /** The rules `command` breaks on `shadow`, in the order they are checked; a land's on the shadow its adoptions make. */
 const broken = (before: Shadow, command: Command, now: number): ReadonlyArray<Rule> => {
-  const shadow = command._tag === "Land" ? adopting(before, command.rifts, now) : before
+  const shadow = seenBy(before, command, now)
   if (command._tag === "Start" && command.role === "verifier") {
     const rules: Array<Rule> = []
     if (!BATCH.test(command.name) && shadow.units.size > 0) rules.push("VerifierPerUnit")
@@ -357,7 +366,8 @@ const command = (random: () => number, shadow: Shadow): Command => {
     const read = random() < 0.75
     const unread = !read && random() < 0.5 ? { unread: { report: "/nonexistent/loop-probe-x/findings.md", why: "it is missing" } } : {}
     // Now and then its report marks findings closed by another batch: open ones, and one that is no open finding's.
-    const closed = random() < 0.2 ? { closed: [...[...shadow.findings.keys()].filter(() => random() < 0.5), ...(random() < 0.3 ? [`${pick(UNITS)}/M7`] : [])] } : {}
+    const stray = Arr.filter([`${pick(UNITS)}/M7`], () => random() < 0.3)
+    const closed = Option.getOrElse(Arr.head(Arr.filter([{ closed: [...[...shadow.findings.keys()].filter(() => random() < 0.5), ...stray] }], () => random() < 0.2)), () => ({}))
     return HandBack.make({ role: "verifier", name: shadow.verifier ?? "batch-1", verdict, ...(verdict === "changes" && read ? { findings } : unread), ...closed })
   }
   if (roll < 0.8) return ReportRead.make({ batch: pick([...shadow.unresolved, "batch-1"]), findings: random() < 0.5 ? [] : [`${pick(UNITS)}/M3`] })
@@ -450,7 +460,7 @@ describe("the machine against its reference model", () => {
         expect([where, departed]).toEqual([where, departs ? [...rules] : []])
 
         // A land's rules read the shadow its adoptions make.
-        const seen = next._tag === "Land" ? adopting(shadow, next.rifts, now) : shadow
+        const seen = seenBy(shadow, next, now)
         const readyBefore = inState(seen, "ready")
         const pendingBefore = verdictDue(shadow)
         const coverBefore = coverOf(shadow)
@@ -603,11 +613,19 @@ describe("the machine's stories", () => {
 
   /** The `orchestrate` land a refusal names, as the machine's Land: each name as itself, each `{ unit, path }` as its entry. */
   const suggestedLand = (message: string, pattern: RegExp): Land => {
-    const call = Option.getOrThrow(Option.fromNullishOr(pattern.exec(message)?.[1]?.replace(/^orchestrate\((.*)\)$/, "$1")))
-    const input = JSON.parse(call.replace(/(\w+): /g, '"$1": ')) as { units?: ReadonlyArray<string | { unit: string; path: string }>; departs?: string }
-    const rifts = (input.units ?? []).map((unit): LandTarget => (typeof unit === "string" ? unit : { rift: unit.path, unit: unit.unit }))
-    return Land.make({ rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
+    const call = Option.getOrThrow(Option.flatMap(Option.fromNullOr(pattern.exec(message)), (found) => Arr.get(found, 1))).replace(/^orchestrate\((.*)\)$/, "$1")
+    const input = decodeInput(call.replace(/(\w+): /g, '"$1": '))
+    const rifts = Arr.map(input.units ?? [], (unit): LandTarget =>
+      Match.value(unit).pipe(
+        Match.when(Predicate.isString, (name) => name),
+        Match.orElse((entry) => ({ rift: entry.path, unit: entry.unit })),
+      ),
+    )
+    return Land.make(Option.match(Option.fromUndefinedOr(input.departs), { onNone: () => ({ rifts }), onSome: (departs) => ({ rifts, departs }) }))
   }
+  const decodeInput = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrateInput))
+  /** A refusal's words; none for an outcome that is no refusal. */
+  const wordsOf = (last: Outcome): string => Match.value(last).pipe(Match.when((out): out is Extract<Outcome, { refused: unknown }> => "refused" in out, (out) => out.message), Match.orElse(() => ""))
 
   test("land-adopt: a land's { path, unit } of a unit the machine does not hold adopts it, ready on that Rift, and its record lands it for the verifier", () => {
     const named = [{ rift: "/r/z", unit: "z" }, "b"] as const
@@ -625,7 +643,7 @@ describe("the machine's stories", () => {
     const pending = runNow([...landedOnce, [Land.make({ rifts: [{ rift: "/r/z", unit: "z" }] }), 4 * MIN]])
     expect(pending.last).toMatchObject({ refused: "VerdictPending" })
     expect(Object.hasOwn(pending.state.units, "z")).toBe(false)
-    const message = "refused" in pending.last ? pending.last.message : ""
+    const message = wordsOf(pending.last)
     expect(message).toContain('orchestrate({ action: "land", units: [{ unit: "z", path: "/r/z" }], departs: "<why>" })')
     const departing = runNow([[suggestedLand(message, /make the same call again and add departs: "<why>" to the land's input: (orchestrate\(.*\))\. It then/), 5 * MIN]], pending.state)
     expect("events" in departing.last).toBe(true)
@@ -633,7 +651,7 @@ describe("the machine's stories", () => {
     // LandPartial: the call it names takes every ready unit and keeps the adoptee's { unit, path }.
     const partial = runNow([[impl("b"), 0], [ready("b"), MIN], [Land.make({ rifts: [{ rift: "/r/z", unit: "z" }] }), 2 * MIN]])
     expect(partial.last).toMatchObject({ refused: "LandPartial" })
-    const words = "refused" in partial.last ? partial.last.message : ""
+    const words = wordsOf(partial.last)
     expect(words).toContain('Land every ready unit in one call: orchestrate({ action: "land", units: ["b", { unit: "z", path: "/r/z" }] })')
     const whole = runNow([[suggestedLand(words, /Land every ready unit in one call: (orchestrate\(.*?\)) lands/), 3 * MIN]], partial.state)
     expect(whole.last).toEqual({ events: [UnitAdopted.make({ unit: "z", rift: "/r/z", at: T0 + 3 * MIN })] })
@@ -1225,7 +1243,7 @@ describe("the machine's stories", () => {
     const refused = await run([...steps, [Land.make({ rifts: ["reset-use-3", { rift: "/u/.rifts/dotfiles/lu", unit: "nope" }] }), 51 * MIN]])
     expect("refused" in refused.last && refused.last.message).toContain('orchestrate({ action: "land", units: ["reset-use", { unit: "nope", path: "/u/.rifts/dotfiles/lu" }], departs: "<why>" })')
     // A Rift the land places as no unit's is still `<unit>`.
-    const placeless = await run([...steps, [Land.make({ rifts: ["reset-use-3", "lu-second-try"] }), 51 * MIN]])
+    const placeless = runNow([...steps, [Land.make({ rifts: ["reset-use-3", "lu-second-try"] }), 51 * MIN]])
     expect("refused" in placeless.last && placeless.last.message).toContain('orchestrate({ action: "land", units: ["reset-use", { unit: "<unit>", path: "lu-second-try" }], departs: "<why>" })')
   })
 

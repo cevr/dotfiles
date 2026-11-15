@@ -313,8 +313,9 @@ const unheldWords = (unit: string, land: ReadonlyArray<LandUnit>, lanes: Readonl
     onNonEmpty: (found) => Arr.match(Arr.drop(found, 1), { onEmpty: () => Arr.headNonEmpty(found).path, onNonEmpty: () => "<its Rift>" }),
   })
   // The land as asked, the unit named with its Rift, and every ready unit it left out: the call the machine passes.
-  const named = land.map((each): LandUnit => (each === unit ? { unit, path } : each))
-  const left = unitsIn(state, "ready").filter((ready) => !land.some((each) => (Predicate.isString(each) ? each : each.unit) === ready))
+  const named = land.map((each): LandUnit => Option.getOrElse(Option.as(Option.liftPredicate(each, (asked) => asked === unit), { unit, path }), () => each))
+  const nameOf = (each: LandUnit) => Match.value(each).pipe(Match.when(Predicate.isString, (name) => name), Match.orElse((entry) => entry.unit))
+  const left = unitsIn(state, "ready").filter((ready) => !land.some((each) => nameOf(each) === ready))
   return `orchestrate: the machine holds no unit ${unit}: a unit is the machine's once its implementor starts, or once a land names it with its Rift, which adopts it as ready. ${nowOf(state)} Adopt it and land it: ${landCallOf([...named, ...left])}.`
 }
 

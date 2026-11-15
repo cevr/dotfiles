@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
-import { Effect, Layer } from "effect"
+import { Array as Arr, Effect, Layer, Option } from "effect"
 import { Findings, type FindingsRead } from "../service.ts"
 
 const UNIT_FILE = /^round-\d+-findings\.md$/
@@ -74,27 +74,31 @@ const KEY = /(?:\b([a-z0-9][a-z0-9._-]*)\/)?\b([BM]\d+)\b/g
  * machine): each `<unit>/<id>` on a closing line, and each bare id after one (`approved-heads/M1, M2 -> …
  * accepted in batch-286: folded and closed`), as `<unit>/<id>`. A line that says `not` closes nothing.
  */
-export const closedFindings = (text: string): ReadonlyArray<string> => {
-  const closed: Array<string> = []
-  for (const line of text.split("\n")) {
-    if (!CLOSES.test(line) || /\bnot\b/i.test(line)) continue
-    let unit: string | undefined
-    for (const match of line.matchAll(KEY)) {
-      unit = match[1] ?? unit
-      const key = unit === undefined ? undefined : `${unit}/${match[2]}`
-      if (key !== undefined && !closed.includes(key)) closed.push(key)
-    }
-  }
-  return closed
-}
+export const closedFindings = (text: string): ReadonlyArray<string> =>
+  Arr.dedupe(
+    text
+      .split("\n")
+      .filter((line) => CLOSES.test(line) && !/\bnot\b/i.test(line))
+      .flatMap((line) =>
+        // Each id takes the unit named last on its line: a bare id before any unit closes nothing.
+        Arr.reduce([...line.matchAll(KEY)], { unit: Option.none<string>(), keys: Arr.empty<string>() }, (acc, match) => {
+          const unit = Option.orElse(Option.fromUndefinedOr(match[1]), () => acc.unit)
+          return { unit, keys: [...acc.keys, ...Option.toArray(Option.map(unit, (named) => `${named}/${match[2]}`))] }
+        }).keys,
+      ),
+  )
 
 /** The findings `report` and each unit findings file it names that reads mark closed (`closedFindings`); none when it does not read. */
-export const closedIn = (report: string, read: (path: string) => string | undefined): ReadonlyArray<string> => {
+export const closedIn = (report: string, read: (path: string) => Option.Option<string>): ReadonlyArray<string> => {
   const path = expand(report, process.cwd())
-  const text = read(path)
-  if (text === undefined) return []
-  const units = UNIT_FILE.test(basename(path)) ? [] : [...new Set((text.match(UNIT_PATH) ?? []).map((found) => expand(found, dirname(path))))]
-  return [...new Set([text, ...units.flatMap((unit) => [read(unit) ?? ""])].flatMap(closedFindings))]
+  return Option.match(read(path), {
+    onNone: () => [],
+    onSome: (text) => {
+      const named = Arr.filter([text], () => !UNIT_FILE.test(basename(path))).flatMap((batch) => [...batch.matchAll(UNIT_PATH)].map((found) => expand(found[0], dirname(path))))
+      const units = Arr.dedupe(named).flatMap((unit) => Option.toArray(read(unit)))
+      return Arr.dedupe([text, ...units].flatMap(closedFindings))
+    },
+  })
 }
 
 const readText = (path: string) => {
@@ -105,7 +109,10 @@ const readText = (path: string) => {
   }
 }
 
-export const layer = Layer.succeed(Findings, {
-  read: (report) => Effect.sync(() => findingsIn(report, readText)),
-  closed: (report) => Effect.sync(() => closedIn(report, readText)),
-})
+export const layer = Layer.succeed(
+  Findings,
+  Findings.of({
+    read: (report) => Effect.sync(() => findingsIn(report, readText)),
+    closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr(readText(path)))),
+  }),
+)

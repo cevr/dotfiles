@@ -26,8 +26,10 @@ afterEach(() => {
   for (const scratch of scratches.splice(0)) rmSync(scratch, { recursive: true, force: true })
 })
 
+const spawned = (cwd: string, argv: ReadonlyArray<string>) => Bun.spawnSync([...argv], { cwd, env: { ...process.env, ...ENV }, stdout: "pipe", stderr: "pipe" })
+
 const sh = (cwd: string, ...argv: ReadonlyArray<string>): string => {
-  const ran = Bun.spawnSync([...argv], { cwd, env: { ...process.env, ...ENV }, stdout: "pipe", stderr: "pipe" })
+  const ran = spawned(cwd, argv)
   if (ran.exitCode !== 0) throw new Error(`${argv.join(" ")} failed: ${ran.stderr.toString()}`)
   return ran.stdout.toString().trim()
 }
@@ -559,7 +561,7 @@ describe("process Landing", () => {
     write(scratch, "fs/user.slice/run-x.scope/memory.events", `low 0\nhigh 0\nmax 9\noom 1\noom_kill ${kills}\noom_group_kill 0\n`)
     const log = join(scratch, "gate.log")
     const argv = ProcessLanding.checkArgv(command, log, { scope: false, ionice: false }, { self: join(scratch, "self"), root: join(scratch, "fs") })
-    const ran = Bun.spawnSync([...argv], { cwd: scratch, stdout: "pipe", stderr: "pipe" })
+    const ran = spawned(scratch, argv)
     return { code: ran.exitCode, output: readFileSync(log, "utf8") }
   }
 

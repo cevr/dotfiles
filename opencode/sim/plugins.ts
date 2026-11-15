@@ -195,7 +195,7 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
         Findings,
         Findings.of({
           read: (report) => Effect.sync(() => findingsIn(report, (path) => (doubles.files ?? NO_FILES).get(path))),
-          closed: (report) => Effect.sync(() => closedIn(report, (path) => (doubles.files ?? NO_FILES).get(path))),
+          closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr((doubles.files ?? NO_FILES).get(path)))),
         }),
       ),
       Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
