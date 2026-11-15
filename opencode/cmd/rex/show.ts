@@ -7,6 +7,12 @@
  *
  *   rex-show image FILE                 a PNG, as large as the pane allows
  *   rex-show md FILE                    a Markdown file, as styled text
+ *   rex-show url URL [--every S] [--width PX]
+ *                                       a web page, shot by a headless Chrome
+ *                                       on this host every S seconds (5) at
+ *                                       PX pixels wide (1280), redrawn when
+ *                                       the shot changes; a page that does
+ *                                       not answer shows as an error line
  *   rex-show tally TEXT [--progress N] [--state working|done|blocked|error|idle]
  *                                       a line in the pane and in Rex's tab
  *                                       header (OSC 7501, record `tally`)
@@ -15,7 +21,8 @@
  *
  * It prints the showcase's block id. Exit 2: not in a Rex pane
  * (REX_SESSION and REX_BLOCK unset), or a usage error; exit 1: Rex or the
- * spool failed. The spool is `$XDG_STATE_HOME/rex-show/<session>/`, and the
+ * spool failed (a page that does not answer is the pane's to show, not an
+ * exit). The spool is `$XDG_STATE_HOME/rex-show/<session>/`, and the
  * viewer is told it; the viewer is started as this same program (Bun and
  * this script, so a PATH without rex-show still finds it), or as
  * `$REX_SHOW_BIN view …` when that is set; Rex's tool as
@@ -25,16 +32,18 @@ import { readFile } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FileSpool from "@dotfiles/opencode-rex/filestore/spool"
-import { Content, frame } from "@dotfiles/opencode-rex/frame"
+import { Content, frame, roomOf } from "@dotfiles/opencode-rex/frame"
 import { type Cells, type CellPixels, DEFAULT_CELL } from "@dotfiles/opencode-rex/graphics"
-import { setTally, showFile } from "@dotfiles/opencode-rex/model"
+import { setTally, showFile, showUrl } from "@dotfiles/opencode-rex/model"
 import { type Pane, paneOf } from "@dotfiles/opencode-rex/pane"
+import * as ProcessBrowser from "@dotfiles/opencode-rex/process/browser"
 import * as ProcessRex from "@dotfiles/opencode-rex/process/rex"
-import { Spool } from "@dotfiles/opencode-rex/service"
-import { empty, Page, Picture, type Shown } from "@dotfiles/opencode-rex/spool"
+import { Browser, Spool } from "@dotfiles/opencode-rex/service"
+import { DEFAULT_EVERY, DEFAULT_WIDTH, due, fingerprint, nameOf, type Taken, viewport } from "@dotfiles/opencode-rex/shots"
+import { empty, Page, Picture, Shown, Url } from "@dotfiles/opencode-rex/spool"
 import { TallyState } from "@dotfiles/opencode-rex/status"
 import { answered, CELL_QUERIES, cellOf } from "@dotfiles/opencode-rex/terminal"
-import { Array as Arr, Config, Console, Data, Effect, Exit, Layer, Option, Schema } from "effect"
+import { Array as Arr, Clock, Config, Console, Data, Effect, Exit, Layer, Option, Schema } from "effect"
 
 /** A refusal with its exit code: 2 for a usage error or no pane, 1 for a failed call. */
 export class Refused extends Schema.TaggedError<Refused>()("Refused", { message: Schema.String, code: Schema.Int }) {}
@@ -42,6 +51,7 @@ export class Refused extends Schema.TaggedError<Refused>()("Refused", { message:
 export const USAGE = [
   "usage: rex-show image FILE",
   "       rex-show md FILE",
+  "       rex-show url URL [--every SECONDS] [--width PX]",
   "       rex-show tally TEXT [--progress N] [--state working|done|blocked|error|idle]",
 ].join("\n")
 
@@ -55,7 +65,8 @@ const SELF = process.argv.slice(0, 2)
 
 /** A request rex-show understood. */
 export type Request = Data.TaggedEnum<{
-  Show: { readonly shown: Shown }
+  Show: { readonly shown: Picture | Page }
+  Visit: { readonly page: Url }
   Tally: { readonly msg: string; readonly progress: Option.Option<number>; readonly state: TallyState }
   View: { readonly session: string; readonly spool: Option.Option<string> }
 }>
@@ -101,6 +112,23 @@ const show = Effect.fn("RexShow.show")(function* (command: "image" | "md", rest:
   return Request.Show({ shown: Option.match(Option.liftPredicate(command, (name) => name === "image"), { onSome: () => Picture.make(fields), onNone: () => Page.make(fields) }) })
 })
 
+const decodeEvery = Schema.decodeUnknownOption(Schema.Number.check(Schema.isBetween({ minimum: 1, maximum: 3600 })))
+const decodeWidth = Schema.decodeUnknownOption(Schema.Int.check(Schema.isBetween({ minimum: 200, maximum: 4096 })))
+
+/** `text` as an http or https URL; none for anything else. */
+const webUrl = (text: string) =>
+  Option.filter(Option.liftThrowable(() => new URL(text))(), (url) => url.protocol === "http:" || url.protocol === "https:")
+
+const visit = Effect.fn("RexShow.visit")(function* (rest: ReadonlyArray<string>) {
+  const text = yield* single(positional(rest, ["--every", "--width"]), "url", "URL")
+  const url = yield* Option.match(webUrl(text), { onNone: () => Effect.fail(usage(`url takes an http or https URL, not ${text}`)), onSome: Effect.succeed })
+  const every = yield* decoded(rest, "--every", (value) => decodeEvery(Number(value)), "takes seconds from 1 to 3600")
+  const width = yield* decoded(rest, "--width", (value) => decodeWidth(Number(value)), "takes a whole number of pixels from 200 to 4096")
+  return Request.Visit({
+    page: Url.make({ url: url.href, name: nameOf(url), every: Option.getOrElse(every, () => DEFAULT_EVERY), width: Option.getOrElse(width, () => DEFAULT_WIDTH) }),
+  })
+})
+
 const view = Effect.fn("RexShow.viewRequest")(function* (rest: ReadonlyArray<string>) {
   const session = yield* Option.match(flag(rest, "--session"), { onNone: () => Effect.fail(usage("view takes --session ID")), onSome: Effect.succeed })
   return Request.View({ session, spool: flag(rest, "--spool") })
@@ -110,6 +138,7 @@ const view = Effect.fn("RexShow.viewRequest")(function* (rest: ReadonlyArray<str
 export const parse = Effect.fn("RexShow.parse")(function* (args: ReadonlyArray<string>) {
   const [command, ...rest] = args
   if (command === "image" || command === "md") return yield* show(command, rest)
+  if (command === "url") return yield* visit(rest)
   if (command === "tally") return yield* tally(rest)
   if (command === "view") return yield* view(rest)
   return yield* usage(Option.match(Arr.head(args), { onNone: () => "no command", onSome: (name) => `unknown command ${name}` }))
@@ -133,7 +162,7 @@ const callerPane = Effect.gen(function* () {
 const failed = (error: { readonly message: string }) => new Refused({ message: `rex-show: ${error.message}`, code: 1 })
 
 /** What the shown file holds, read for a frame; a file that cannot be read says why. */
-const contentOf = (shown: Shown) =>
+const contentOf = (shown: Picture | Page) =>
   Effect.tryPromise({ try: () => readFile(shown.file), catch: (cause) => String(cause) }).pipe(
     Effect.match({
       onSuccess: (bytes) => Content.Bytes({ bytes }),
@@ -148,10 +177,33 @@ export interface Screen {
   readonly display: (text: string) => Effect.Effect<void>
 }
 
-/** The showcase pane's program: draws the session's spool again whenever it or the pane's size changes. */
+/** What a shot of the page holds: its PNG, or the error line, and its fingerprint. */
+const shotOf = (result: Exit.Exit<Uint8Array, { readonly message: string }>) =>
+  Exit.match(result, {
+    onSuccess: (bytes) => ({ content: Content.Bytes({ bytes }), print: fingerprint(bytes) }),
+    onFailure: (cause) => {
+      const reason = Option.match(Exit.findErrorOption(result), { onNone: () => String(cause), onSome: (error) => error.message })
+      return { content: Content.Unreadable({ reason }), print: fingerprint(new TextEncoder().encode(reason)) }
+    },
+  })
+
+/**
+ * The showcase pane's program: draws the session's spool again whenever it
+ * or the pane's size changes; a web page it shoots again when due, and
+ * draws again only when the shot differs from the last.
+ */
 export const viewer = Effect.fn("RexShow.view")(function* (session: string, screen: Screen) {
   const spool = yield* Spool
-  const drawn = { key: "", sized: "", cell: DEFAULT_CELL }
+  const browser = yield* Browser
+  const drawn = { key: "", sized: "", cell: DEFAULT_CELL, taken: Option.none<Taken>(), shot: Option.none<Content>() }
+  /** The page shot again when it is due, its content and fingerprint kept. */
+  const shoot = Effect.fn("RexShow.shoot")(function* (page: Url, seq: number, room: Cells) {
+    const now = yield* Clock.currentTimeMillis
+    if (!due(drawn.taken, seq, drawn.sized, now, page.every * 1000)) return
+    const taken = shotOf(yield* Effect.exit(browser.shoot({ url: page.url, ...viewport(page.width, room, drawn.cell) })))
+    drawn.taken = Option.some({ seq, sized: drawn.sized, at: now, print: taken.print })
+    drawn.shot = Option.some(taken.content)
+  })
   const look = Effect.gen(function* () {
     // A spool not written yet, or unreadable for a moment, is drawn as nothing shown; the next look reads it again.
     const spooled = yield* spool.read(session).pipe(Effect.catchTag("SpoolFailed", () => Effect.succeed(empty)))
@@ -161,12 +213,21 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
       drawn.sized = sized
       drawn.cell = yield* screen.cell(size)
     }
-    const key = `${spooled.seq}:${sized}`
+    const shown = Option.fromUndefinedOr(spooled.shown)
+    const page = Option.filter(shown, Shown.guards.Url)
+    yield* Option.match(page, { onNone: () => Effect.void, onSome: (url) => shoot(url, spooled.seq, roomOf(spooled, size)) })
+    const print = Option.match(Option.flatMap(page, () => drawn.taken), { onNone: () => "", onSome: (taken) => `:${taken.print}` })
+    const key = `${spooled.seq}:${sized}${print}`
     if (key === drawn.key) return
     drawn.key = key
-    const content = yield* Option.match(Option.fromUndefinedOr(spooled.shown), {
+    const content = yield* Option.match(shown, {
       onNone: () => Effect.succeed(Option.none<Content>()),
-      onSome: (shown) => Effect.map(contentOf(shown), Option.some),
+      onSome: (item) =>
+        Shown.match(item, {
+          Url: () => Effect.succeed(drawn.shot),
+          Picture: (picture) => Effect.map(contentOf(picture), Option.some),
+          Page: (text) => Effect.map(contentOf(text), Option.some),
+        }),
     })
     yield* screen.display(frame(spooled, content, size, drawn.cell))
   })
@@ -185,6 +246,7 @@ export const spoolOf = (request: Request, settings: Settings): string =>
   Request.$match(request, {
     View: (asked) => Option.getOrElse(asked.spool, () => settings.spool),
     Show: () => settings.spool,
+    Visit: () => settings.spool,
     Tally: () => settings.spool,
   })
 
@@ -201,6 +263,7 @@ export const run = Effect.fn("RexShow.run")(
     const start = Option.match(bin, { onNone: () => settings.self, onSome: (path) => [path] })
     const program = [...start, "view", "--session", pane.session, "--spool", settings.spool]
     if (request._tag === "Show") return yield* showFile(pane, request.shown, program)
+    if (request._tag === "Visit") return yield* showUrl(pane, request.page, program)
     return yield* setTally(pane, { msg: request.msg, state: request.state, progress: Option.getOrUndefined(request.progress) }, program)
   },
   Effect.catchTags({ RexFailed: (error) => Effect.fail(failed(error)), SpoolFailed: (error) => Effect.fail(failed(error)) }),
@@ -228,9 +291,24 @@ const settingsFor = Effect.fn("RexShow.settingsFor")(function* (args: ReadonlyAr
   return { ...settings, spool: spoolOf(request, settings) } satisfies Settings
 })
 
-/** The live systems `args` run on: Rex's tool and the spool, as `settingsFor` finds them. */
+/** Where this host's headless browser is looked for: `$REX_SHOW_CHROME`, the host, the home folder and `$PLAYWRIGHT_BROWSERS_PATH`. */
+const placesOf = Effect.gen(function* () {
+  return {
+    chosen: yield* optional("REX_SHOW_CHROME"),
+    platform: process.platform,
+    home: TuiDirs.dirs().home,
+    playwright: yield* optional("PLAYWRIGHT_BROWSERS_PATH"),
+  } satisfies ProcessBrowser.Places
+})
+
+/** The live systems `args` run on: Rex's tool, the spool and the browser, as `settingsFor` and `placesOf` find them. */
 export const live = (args: ReadonlyArray<string>) =>
-  Layer.unwrap(Effect.map(settingsFor(args), (settings) => Layer.mergeAll(ProcessRex.layer(settings.rex), FileSpool.layer(settings.spool))))
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const settings = yield* settingsFor(args)
+      return Layer.mergeAll(ProcessRex.layer(settings.rex), FileSpool.layer(settings.spool), ProcessBrowser.layer(yield* placesOf))
+    }),
+  )
 
 /** rex-show on `args`, needing Rex and the spool. */
 export const main = Effect.fn("RexShow.main")(function* (args: ReadonlyArray<string>, screen: Screen) {

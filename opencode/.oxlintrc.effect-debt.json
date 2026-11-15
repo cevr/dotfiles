@@ -310,6 +310,16 @@
     },
     {
       "files": [
+        "mods/rex/process/browser.ts",
+        "mods/rex/process/browser.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "mods/rex/filestore/spool.test.ts",
         "mods/rex/process/rex.test.ts"
       ],

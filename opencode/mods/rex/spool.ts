@@ -1,4 +1,4 @@
-// What a session's showcase pane draws: the picture or page shown last, and
+// What a session's showcase pane draws: the picture, page or URL shown last, and
 // the tally. Each rex-show call changes one of the two and keeps the other;
 // the viewer draws the whole of it again whenever it changes.
 import { Option, Schema } from "effect"
@@ -12,7 +12,11 @@ export type Picture = typeof Picture.Type
 export const Page = Schema.TaggedStruct("Page", { file: Schema.String, name: Schema.String })
 export type Page = typeof Page.Type
 
-export const Shown = Schema.Union([Picture, Page]).pipe(Schema.toTaggedUnion("_tag"))
+/** A web page, shot by a headless browser on the viewer's host every `every` seconds, `width` pixels wide and as tall as the pane's shape. */
+export const Url = Schema.TaggedStruct("Url", { url: Schema.String, name: Schema.String, every: Schema.Number, width: Schema.Int })
+export type Url = typeof Url.Type
+
+export const Shown = Schema.Union([Picture, Page, Url]).pipe(Schema.toTaggedUnion("_tag"))
 export type Shown = typeof Shown.Type
 
 /** The spool of one session: a counter that grows with each change, what is shown, and the tally. */

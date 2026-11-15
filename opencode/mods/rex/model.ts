@@ -6,7 +6,7 @@ import { Effect, Option } from "effect"
 import type { Pane } from "./pane.ts"
 import { arrange, LABEL } from "./showcase.ts"
 import { Rex, Spool } from "./service.ts"
-import { count, show, type Shown } from "./spool.ts"
+import { count, type Page, type Picture, show, type Url } from "./spool.ts"
 import type { Tally } from "./status.ts"
 
 /** The showcase panes `arrange` closes, closed. */
@@ -42,11 +42,19 @@ export const ensureShowcase = Effect.fn("Showcase.ensure")(function* (pane: Pane
 })
 
 /** Shows `shown` (its file kept in the spool first) in `pane`'s showcase; the showcase's block id. */
-export const showFile = Effect.fn("Showcase.show")(function* (pane: Pane, shown: Shown, viewer: ReadonlyArray<string>) {
+export const showFile = Effect.fn("Showcase.show")(function* (pane: Pane, shown: Picture | Page, viewer: ReadonlyArray<string>) {
   const spool = yield* Spool
   const kept = yield* spool.keep(pane.session, shown.file)
   const spooled = yield* spool.read(pane.session)
   yield* spool.write(pane.session, show(spooled, { ...shown, file: kept }))
+  return yield* ensureShowcase(pane, viewer)
+})
+
+/** Shows the web page `url` in `pane`'s showcase, whose viewer shoots it; the showcase's block id. Whether the page answers is the viewer's to say, in the pane. */
+export const showUrl = Effect.fn("Showcase.url")(function* (pane: Pane, url: Url, viewer: ReadonlyArray<string>) {
+  const spool = yield* Spool
+  const spooled = yield* spool.read(pane.session)
+  yield* spool.write(pane.session, show(spooled, url))
   return yield* ensureShowcase(pane, viewer)
 })
 

@@ -1,6 +1,6 @@
 // The contracts rex-show needs from outside: Rex, which holds the session's
-// panes, and the spool, where a call leaves what the showcase pane draws.
-// `laws.ts` states what every Rex owes.
+// panes; the spool, where a call leaves what the showcase pane draws; and a
+// headless browser, which shoots the web page the pane shows.
 import { Context, type Effect, Schema } from "effect"
 import type { Block } from "./showcase.ts"
 import type { Spooled } from "./spool.ts"
@@ -16,6 +16,28 @@ export class SpoolFailed extends Schema.TaggedError<SpoolFailed>()("SpoolFailed"
   path: Schema.String,
   message: Schema.String,
 }) {}
+
+/** A web page could not be shot: unreachable, no browser on this host, or the browser failed; the page and why, for the pane's error line. */
+export class ShotFailed extends Schema.TaggedError<ShotFailed>()("ShotFailed", {
+  url: Schema.String,
+  message: Schema.String,
+}) {}
+
+/** One screenshot to take: the page, and the viewport in pixels. */
+export interface Shot {
+  readonly url: string
+  readonly width: number
+  readonly height: number
+}
+
+/** A headless browser on this host, with a profile of its own (never the owner's). */
+export class Browser extends Context.Service<
+  Browser,
+  {
+    /** The page at `shot.url` as a PNG of `shot.width` × `shot.height` pixels. */
+    readonly shoot: (shot: Shot) => Effect.Effect<Uint8Array, ShotFailed>
+  }
+>()("dotfiles-opencode/rex/Browser") {}
 
 /** Where a new pane goes and what runs in it. */
 export interface Split {

@@ -14,6 +14,7 @@ const HIDE_CURSOR = `${ESC}[?25l`
 const DIM = `${ESC}[2m`
 const BOLD = `${ESC}[1m`
 const RESET = `${ESC}[0m`
+const RED = `${ESC}[31m`
 
 /** What the shown file holds, as the viewer read it: a picture's bytes, a page's text, or why it could not. */
 export type Content = Data.TaggedEnum<{
@@ -38,22 +39,45 @@ const picture = (name: string, bytes: Uint8Array, room: Cells, cell: CellPixels)
     onSome: (size) => drawPng(bytes, fit(size, room, cell)),
   })
 
-const body = (shown: Shown, content: Content, room: Cells, cell: CellPixels): string =>
-  Content.$match(content, {
-    Unreadable: ({ reason }) => `${DIM}${cut(reason, room.cols)}${RESET}`,
-    Text: ({ text }) => Shown.match(shown, { Page: () => page(text, room), Picture: () => picture(shown.name, new TextEncoder().encode(text), room, cell) }),
-    Bytes: ({ bytes }) => Shown.match(shown, { Page: () => page(new TextDecoder().decode(bytes), room), Picture: () => picture(shown.name, bytes, room, cell) }),
+const failed = (shown: Shown, reason: string, cols: number) =>
+  Shown.match(shown, {
+    Url: () => `${RED}${cut(`✗ ${reason}`, cols)}${RESET}`,
+    Picture: () => `${DIM}${cut(reason, cols)}${RESET}`,
+    Page: () => `${DIM}${cut(reason, cols)}${RESET}`,
   })
 
-/** The frame for `spooled` in a pane of `size` cells of `cell` pixels, `content` being what its shown file holds. */
+const body = (shown: Shown, content: Content, room: Cells, cell: CellPixels): string =>
+  Content.$match(content, {
+    Unreadable: ({ reason }) => failed(shown, reason, room.cols),
+    Text: ({ text }) =>
+      Shown.match(shown, {
+        Page: () => page(text, room),
+        Picture: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
+        Url: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
+      }),
+    Bytes: ({ bytes }) =>
+      Shown.match(shown, {
+        Page: () => page(new TextDecoder().decode(bytes), room),
+        Picture: () => picture(shown.name, bytes, room, cell),
+        Url: () => picture(shown.name, bytes, room, cell),
+      }),
+  })
+
+/** The lines above what is shown: the header, and the tally's line when there is one. */
+const headerLines = (spooled: Spooled) => 1 + Option.match(Option.fromUndefinedOr(spooled.tally), { onNone: () => 0, onSome: () => 1 })
+
+/** The cells left for what is shown in a pane of `size`, under the header and a blank line. */
+export const roomOf = (spooled: Spooled, size: Cells): Cells => ({ cols: size.cols, rows: Math.max(1, size.rows - headerLines(spooled) - 1) })
+
+/** The frame for `spooled` in a pane of `size` cells of `cell` pixels, `content` being what its shown file holds (or the page's last shot). */
 export const frame = (spooled: Spooled, content: Option.Option<Content>, size: Cells, cell: CellPixels = DEFAULT_CELL): string => {
   const shown = Option.fromUndefinedOr(spooled.shown)
   const tally = Option.fromUndefinedOr(spooled.tally)
   const name = Option.match(shown, { onNone: () => "showcase", onSome: (item) => `showcase · ${item.name}` })
   const header = [`${DIM}${cut(name, size.cols)}${RESET}`, ...Option.toArray(Option.map(tally, (item) => tallyLine(item, size.cols)))]
-  const room = { cols: size.cols, rows: Math.max(1, size.rows - header.length - 1) }
+  const room = roomOf(spooled, size)
   const drawn = Option.match(Option.all({ shown, content }), {
-    onNone: () => `${DIM}Nothing shown yet: rex-show image FILE, rex-show md FILE${RESET}`,
+    onNone: () => `${DIM}Nothing shown yet: rex-show image FILE, rex-show md FILE, rex-show url URL${RESET}`,
     onSome: (both) => body(both.shown, both.content, room, cell),
   })
   const status = Option.match(tally, { onNone: () => clearReport, onSome: report })
