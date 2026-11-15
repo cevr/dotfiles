@@ -217,11 +217,23 @@ export const unitOfLane = (lane: Lane, units: ReadonlyArray<string>, state: Mach
   )
 }
 
-/** The Rifts of `lanes` that are `unit`'s, with `unit` counted among the machine's units. */
+/**
+ * The Rifts of `lanes` that are `unit`'s, with `unit` counted among the machine's units: those named as its lane names
+ * them (the Rift's name is the unit, on the Mac, or its branch is `<run>/<unit>`, on the workbox) and no other unit's
+ * start names, else those the machine's name rule reads as it. The lane's own name comes first: the name rule reads
+ * `y-1` as unit `y-1` and as unit `y`'s first round, and gives none, yet the lane of unit `y-1` named it so
+ * (SIM_SEED=254407219).
+ */
 export const lanesOf = (unit: string, lanes: ReadonlyArray<Lane>, state: MachineState): ReadonlyArray<Lane> => {
   const units = Arr.dedupe([...Object.keys(state.units), unit])
-  return lanes.filter((lane) => Option.contains(unitOfLane(lane, units, state), unit))
+  const others = Object.entries(ownedOf(state)).flatMap(([other, rifts]) => rifts.filter(() => other !== unit))
+  const own = lanes.filter((lane) => isOwnLane(unit, lane) && !Arr.contains(others, lane.path))
+  return Arr.match(own, { onEmpty: () => lanes.filter((lane) => Option.contains(unitOfLane(lane, units, state), unit)), onNonEmpty: (named) => named })
 }
+
+/** Whether `lane` is named as a lane of `unit` names its Rift: by the unit itself, or on a branch whose last segment it is. */
+const isOwnLane = (unit: string, lane: Lane): boolean =>
+  baseOf(lane.path) === unit || Option.exists(Option.fromUndefinedOr(lane.branch), (branch) => baseOf(branch) === unit)
 
 /** The last segment of a path. */
 const baseOf = (path: string): string => Option.getOrElse(Arr.last(path.replace(/\/+$/, "").split("/")), () => path)

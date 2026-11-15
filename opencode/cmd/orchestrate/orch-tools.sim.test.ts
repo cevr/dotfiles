@@ -501,6 +501,22 @@ seeded("a lane's Rift, on the Mac's naming or the workbox's, is the one a land r
   }),
 )
 
+seeded("a unit named like another's later round lands from its own lane on either naming, never none (SIM_SEED=254407219: y-1 and y)", ({ expect }) =>
+  Effect.sync(() => {
+    const decider = machine()
+    const units = ["y-1", "oea", "y"]
+    const state = units.reduce((held, unit) => decider.evolve(held, UnitStarted.make({ unit, round: 1, direct: false, at: 0 })), decider.initial)
+    for (const workbox of [false, true]) {
+      const lanes: ReadonlyArray<Lane> = units.map((unit) => {
+        const named = Option.getOrElse(Option.liftPredicate(workriftName(laneBranchOf({ unit })), () => workbox), () => unit)
+        return { path: `/code/.rifts/app/${named}`, branch: laneBranchOf({ unit }), head: "abc1234", state: "clean" }
+      })
+      const resolved = resolveLand({ action: "land", units }, lanes, state, nextOf(state, 0, DUE))
+      expect([workbox, "rifts" in resolved && resolved.rifts.map((rift) => rift.path)]).toEqual([workbox, lanes.map((lane) => lane.path)])
+    }
+  }),
+)
+
 seeded("on the workbox, a unit whose branch workrift names like another lane's is refused, never answered that lane (SIM_SEED=1640407: w and w-)", ({ expect }) =>
   Effect.sync(() => {
     const decider = machine()
