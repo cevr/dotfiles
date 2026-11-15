@@ -5,6 +5,7 @@
 // open. Nothing here reaches a provider: the claim is the memory quota's.
 import { describe, expect, test } from "bun:test"
 import { Context, Effect, Layer, Schema } from "effect"
+import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as FleetTest from "./fleet.ts"
@@ -84,8 +85,9 @@ const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ re
 
 const scoped = <A, E>(body: Effect.Effect<A, E, import("effect").Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
-/** Three agents started on the provider: work running, which a spent window would hold too. */
-const busy = (pool: Model.Pool["Service"], providerID: string) => Effect.forEach([1, 2, 3], () => pool.started(providerID), { discard: true })
+/** Three sessions busy on the provider, each a step started: work running, which a spent window would hold too. */
+const busy = (pool: Model.Pool["Service"], providerID: string) =>
+  Effect.forEach([1, 2, 3], (n) => pool.stepStarted(`ses_busy_${n}`, providerID), { discard: true })
 
 /** Let the review a held pace forked run. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
@@ -199,6 +201,64 @@ describe("Claude resets", () => {
         expect(status.resets.map((reset) => reset.why)).toEqual(["forecast"])
       }),
     ))
+
+  describe("agents busy for hours, admitted long ago", () => {
+    const T0 = 1_800_000_000_000
+    const MINUTE = 60_000
+    const sessions = ["ses_1", "ses_2", "ses_3", "ses_4"]
+    /** The week only, `used` of it, resetting at T0 + 3 days; one full reset in hand. */
+    const week = (at: number, used: number): QuotaReading => ({
+      at,
+      windows: [{ name: "7d", utilization: used, resetAt: T0 + 3 * DAY }],
+      resets: { available: 1, credits: [{ ...credit("grant-1", T0, 120 * DAY), clears: ["seven_day"], requiresLimit: false }] },
+    })
+    /**
+     * Four sessions admitted at T0 that step every 10 minutes for 3 hours,
+     * no start after, the week climbing 10 points an hour from 55%; the pool
+     * is read and reviewed at each step. With `idle`, they all go idle just
+     * before the last read.
+     */
+    const run = (idle: boolean) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(T0)
+        const claude = world(config, logins)
+        const pool = yield* claude.pool
+        yield* Effect.forEach(sessions, () => pool.started("anthropic"), { discard: true })
+        const before: Array<number> = []
+        for (let step = 0; step <= 18; step++) {
+          const at = T0 + step * 10 * MINUTE
+          yield* TestClock.setTime(at)
+          if (idle && step === 18) yield* Effect.forEach(sessions, (id) => pool.release(id), { discard: true })
+          else yield* Effect.forEach(sessions, (id) => pool.stepStarted(id, "anthropic"), { discard: true })
+          if (step === 18) before.push(claude.claims.length)
+          claude.readings.get(ANTHROPIC)!.set("claude-a", week(at, 0.55 + (0.1 * step) / 6))
+          yield* pool.sweep
+        }
+        return { claude, before: before[0] ?? 0, resets: (yield* pool.resets).resets }
+      }).pipe(Effect.provide(TestClock.layer()))
+
+    test("still busy at 3 hours, the week 85% used and forecast to run out in 1.5 h, days before its reset: a grant is claimed for the forecast", () =>
+      scoped(
+        Effect.gen(function* () {
+          const { claude, before, resets } = yield* run(false)
+          // Not near its limit until the last read: nothing claimed before it.
+          expect(before).toBe(0)
+          expect(claude.claims.map((claim) => claim.creditID)).toEqual(["grant-1"])
+          expect(resets.map((reset) => [reset.why, reset.reason])).toEqual([
+            ["forecast", "the pool runs out before its reset: 4 agents running on 1 host, weekly 85% used, forecast 100% in 2 h, reset in 2.9 days"],
+          ])
+        }),
+      ))
+
+    test("the same world with the four gone idle: nothing runs, nothing is claimed", () =>
+      scoped(
+        Effect.gen(function* () {
+          const { claude, resets } = yield* run(true)
+          expect(claude.claims).toEqual([])
+          expect(resets).toEqual([])
+        }),
+      ))
+  })
 
   test("an older pool's question still open, about a reset or a push, is withdrawn", () =>
     scoped(

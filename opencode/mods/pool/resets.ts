@@ -472,16 +472,22 @@ export interface PoolView {
   readonly labels: Readonly<Record<string, string>>
   /** Points of the weekly window per point of a model's own week, by that window's name (`7d:Fable`); `weeklyRatios`. */
   readonly ratios?: Readonly<Record<string, Ratio>>
-  /** The agents of the pool's provider running across the fleet (admitted in the last hour, this host's and its peers'), and the hosts they run on. */
+  /** The agents of the pool's provider running across the fleet (its sessions busy now, this host's and its peers'), and the hosts they run on. */
   readonly running?: number
   readonly hosts?: number
   /** Each account's burn per window now, by credential and window name (burn.ts `burnsOf`); a window left out burns its period's average. */
   readonly burns?: Readonly<Record<string, Readonly<Record<string, number>>>>
+  /** Each account's open windows whose burn is the period's average, not measured (burn.ts `averagedOf`): after a restart, say. */
+  readonly averaged?: Readonly<Record<string, ReadonlyArray<string>>>
 }
 
 /** A window's burn on an account now: as measured, else its period's average. */
 const burnOn = (view: PoolView, account: AccountStatus, window: QuotaWindow, now: number): number =>
   view.burns?.[account.credentialID]?.[window.name] ?? periodBurn(window, now)
+
+/** Whether a window's burn on an account is its period's average for want of a measure. */
+const averagedOn = (view: PoolView, account: AccountStatus, window: QuotaWindow): boolean =>
+  (view.averaged?.[account.credentialID] ?? []).includes(window.name)
 
 /** Each account of the pool as the forecast reads it: its windows still running, and until when a spent window or a usage-limit hold keeps it. */
 const loadsOf = (view: PoolView, now: number): ReadonlyArray<AccountLoad> =>
@@ -491,7 +497,13 @@ const loadsOf = (view: PoolView, now: number): ReadonlyArray<AccountLoad> =>
       Option.toArray(
         Option.map(
           Option.filter(Option.fromUndefinedOr(window.resetAt), (at) => at > now),
-          (resetAt) => ({ name: window.name, used: window.utilization, resetAt, burn: burnOn(view, account, window, now) }),
+          (resetAt) => ({
+            name: window.name,
+            used: window.utilization,
+            resetAt,
+            burn: burnOn(view, account, window, now),
+            averaged: averagedOn(view, account, window),
+          }),
         ),
       ),
     ),

@@ -7,6 +7,7 @@ import { fold } from "@dotfiles/decider/decider"
 import * as Story from "@dotfiles/decider/story"
 import {
   type Event,
+  BUSY_FRESH_MS,
   ClaimPoll,
   Fleet,
   inflight,
@@ -140,40 +141,29 @@ describe("the fleet's starts", () => {
     expect(ownStarts(state, T0, SETTLE)).toEqual([{ providerID: "anthropic", at: T0 - 2 * MINUTE }])
   })
 
-  test("a report carries only this host's own starts of the last hour, never a peer's, so no start counts twice", () => {
-    expect(report(state, "mac", T0, [])).toEqual({
+  test("a report carries only this host's own starts and busy sessions, never a peer's, so nothing counts twice", () => {
+    expect(report(state, "mac", T0, SETTLE, [], ["anthropic", "openai"])).toEqual({
       host: "mac",
       at: T0,
-      starts: [
-        { providerID: "anthropic", at: T0 - 12 * MINUTE },
-        { providerID: "anthropic", at: T0 - 2 * MINUTE },
-      ],
+      starts: [{ providerID: "anthropic", at: T0 - 2 * MINUTE }],
+      busy: ["anthropic", "openai"],
       readings: [],
     })
-    expect(report(state, "mac", T0 + 50 * MINUTE, []).starts).toEqual([{ providerID: "anthropic", at: T0 - 2 * MINUTE }])
   })
 
-  test("the agents running are every start of the last hour on this host and its peers, on the hosts that run any", () => {
-    expect(running(state, T0)).toEqual({
-      starts: [
-        { providerID: "anthropic", at: T0 - 12 * MINUTE },
-        { providerID: "anthropic", at: T0 - 2 * MINUTE },
-        { providerID: "openai", at: T0 - 3 * MINUTE },
-        { providerID: "anthropic", at: T0 - 11 * MINUTE },
-      ],
-      hosts: 2,
-    })
-    // Later the oldest age out, and the start stamped ahead of this clock counts once its time has come.
-    expect(running(state, T0 + 50 * MINUTE)).toEqual({
-      starts: [
-        { providerID: "anthropic", at: T0 - 2 * MINUTE },
-        { providerID: "openai", at: T0 - 3 * MINUTE },
-        { providerID: "anthropic", at: T0 + 5 * MINUTE },
-      ],
-      hosts: 2,
-    })
-    expect(running(state, T0 + 64 * MINUTE)).toEqual({ starts: [{ providerID: "anthropic", at: T0 + 5 * MINUTE }], hosts: 2 })
-    expect(running(state, T0 + 66 * MINUTE)).toEqual({ starts: [], hosts: 1 })
+  test("the agents running are the sessions busy now on this host and on each peer that answered lately, however long ago they started", () => {
+    // The workbox has run two sessions for hours: no start of the last hour, and both count while it answers.
+    const busy = fold(Fleet, [
+      PeerReported.make({ peer: "workbox", report: { ...workbox(T0 - MINUTE), busy: ["anthropic", "anthropic"] }, at: T0 - MINUTE }),
+      PeerReported.make({ peer: "laptop", report: { ...workbox(T0 - MINUTE), host: "laptop", busy: [] }, at: T0 - MINUTE }),
+    ])
+    expect(running(busy, ["anthropic"], T0)).toEqual({ busy: ["anthropic", "anthropic", "anthropic"], hosts: 2 })
+    // Nothing busy here: this host still counts as one.
+    expect(running(busy, [], T0)).toEqual({ busy: ["anthropic", "anthropic"], hosts: 2 })
+    // A peer not heard from within BUSY_FRESH_MS runs nothing known.
+    expect(running(busy, ["anthropic"], T0 - MINUTE + BUSY_FRESH_MS + 1)).toEqual({ busy: ["anthropic"], hosts: 1 })
+    // A peer older than the field reports no busy sessions.
+    expect(running(state, [], T0)).toEqual({ busy: [], hosts: 1 })
   })
 
   test("the pane's rows name each peer's host, its starts that count and since when it is missed", () => {

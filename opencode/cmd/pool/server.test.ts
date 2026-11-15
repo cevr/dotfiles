@@ -1265,6 +1265,8 @@ describe("the fleet", () => {
         // A malformed question records nothing; a provider this pool does not pace is reported but not counted here.
         expect(yield* plugin.started({ provider: "anthropic" })).toEqual({})
         yield* plugin.started({ providerID: "openai" })
+        // A session busy on a step: an agent running, told to the peer until it goes idle.
+        yield* plugin.emit({ type: "session.step.started", data: { sessionID: "ses_busy", assistantMessageID: "msg_busy", model: { providerID: "anthropic", id: "claude-opus-5-5" } } })
         const report = yield* plugin.report
         // The starts are a set: two in the same millisecond come back in either order.
         expect(report.starts.map((start) => start.providerID).sort()).toEqual(["anthropic", "openai"])
@@ -1275,6 +1277,7 @@ describe("the fleet", () => {
             { providerID: "anthropic", at: expect.any(Number) },
             { providerID: "openai", at: expect.any(Number) },
           ]),
+          busy: ["anthropic"],
           readings: [
             { pool: "anthropic", credentialID: "cred-a", reading: week(0.5, now) },
             { pool: "anthropic", credentialID: "cred-b", reading: week(0.5, now) },
@@ -1283,6 +1286,8 @@ describe("the fleet", () => {
           limits: { since: expect.any(Number), rows: [] },
         })
         expect(JSON.stringify(report)).not.toContain("token")
+        yield* plugin.emit({ type: "session.execution.succeeded", data: { sessionID: "ses_busy" } })
+        expect((yield* plugin.report).busy).toEqual([])
         expect((yield* plugin.fleet).starts).toBe(2)
         expect((yield* plugin.pace("anthropic")).reason).toContain("plus 5.0% of the week counted for 1 agent started in the last 10 min")
       }),
@@ -1417,9 +1422,14 @@ describe("resets on the live adapters", () => {
     },
   })
 
-  /** Three agents started on the provider: work running, enough for a held start's reset to pay. */
-  const busy = (plugin: { readonly started: (input: { readonly providerID: string }) => Effect.Effect<unknown, unknown> }, providerID: string) =>
-    Effect.forEach([1, 2, 3], () => plugin.started({ providerID }), { discard: true })
+  /** Three sessions busy on the provider, each on a step: work running, enough for a held start's reset to pay. */
+  const busy = (plugin: { readonly emit: (event: SessionEvent) => Effect.Effect<unknown, unknown> }, providerID: string) =>
+    Effect.forEach(
+      [1, 2, 3],
+      (n) =>
+        plugin.emit({ type: "session.step.started", data: { sessionID: `ses_busy_${n}`, assistantMessageID: `msg_busy_${n}`, model: { providerID, id: "agent-model" } } }),
+      { discard: true },
+    )
 
   test("every Codex account spent, a start held and work running: the pool consumes one credit, once, on the ChatGPT backend, and only tells the owner", async () => {
     const reply = Promise.withResolvers<void>()

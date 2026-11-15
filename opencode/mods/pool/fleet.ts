@@ -11,7 +11,7 @@
 // it (the FleetStore, in the plugin's storage): a start admitted in one
 // project counts on the pace in all of them, and the report a peer reads is
 // the host's whole.
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { type PeerStatus, Report, type SharedReading, Start } from "./status.ts"
 
@@ -168,29 +168,37 @@ export const inflight = (state: FleetState, now: number, settleMs: number): Read
   ...Object.values(state.peers).flatMap((peer) => (peer.report?.starts ?? []).filter((start) => unsettled(start, now, settleMs))),
 ]
 
-/** Whether `start` is likely still running at `now`: admitted within KEEP_MS, and not from a clock too far ahead. */
-const recent = (start: Start, now: number) => unsettled(start, now, KEEP_MS)
+/**
+ * What this host answers a peer: its own starts that still count, the
+ * provider of each of its sessions busy now (`busy`), and its readings.
+ */
+export const report = (
+  state: FleetState,
+  host: string,
+  now: number,
+  settleMs: number,
+  readings: ReadonlyArray<SharedReading>,
+  busy: ReadonlyArray<string>,
+): Report => ({ host, at: now, starts: ownStarts(state, now, settleMs), busy, readings })
+
+/** A peer's busy sessions count while its last report came within this long: a peer that stops answering runs nothing known. */
+export const BUSY_FRESH_MS = 10 * 60_000
 
 /**
- * What this host answers a peer: its own starts of the last KEEP_MS and its
- * readings. The peer's pace counts only those within its settle time; the
- * reset rule counts them all as agents running (`running`).
+ * The agents running across the fleet now: the provider of every session busy
+ * on this host (`own`) and in each peer's last report, while that report is
+ * fresh (BUSY_FRESH_MS), and the hosts they run on (this one always counts).
+ * A session running for hours counts as long as it is busy, however long ago
+ * it started.
  */
-export const report = (state: FleetState, host: string, now: number, readings: ReadonlyArray<SharedReading>): Report => ({
-  host,
-  at: now,
-  starts: state.starts.filter((start) => recent(start, now)),
-  readings,
-})
-
-/**
- * The agents likely running across the fleet: every start admitted within
- * KEEP_MS on this host and in each peer's last report, and the hosts they run
- * on (this one always counts).
- */
-export const running = (state: FleetState, now: number) => {
-  const peers = Object.values(state.peers).map((peer) => (peer.report?.starts ?? []).filter((start) => recent(start, now)))
-  return { starts: [...state.starts.filter((start) => recent(start, now)), ...peers.flat()], hosts: 1 + peers.filter((starts) => starts.length > 0).length }
+export const running = (state: FleetState, own: ReadonlyArray<string>, now: number) => {
+  const peers = Object.values(state.peers).map((peer) =>
+    Option.match(
+      Option.filter(Option.fromUndefinedOr(peer.seenAt), (at) => at > now - BUSY_FRESH_MS),
+      { onNone: () => [], onSome: () => peer.report?.busy ?? [] },
+    ),
+  )
+  return { busy: [...own, ...peers.flat()], hosts: 1 + peers.filter((busy) => busy.length > 0).length }
 }
 
 /** Each peer as the pane draws it, in the order `names` lists them. */

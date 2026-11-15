@@ -591,8 +591,10 @@ export const make = (
             if (event.type === "session.step.started") {
               // A step that never ends leaves its entry: past a bound, the oldest go.
               if (stepModels.size >= STEP_MODELS) stepModels.delete(stepModels.keys().next().value ?? "")
-              if (event.data.model !== undefined) stepModels.set(event.data.assistantMessageID, event.data.model)
-              return Effect.void
+              if (event.data.model === undefined) return Effect.void
+              stepModels.set(event.data.assistantMessageID, event.data.model)
+              // The session is busy, an agent running for the reset forecast, until it goes idle.
+              return pool.stepStarted(event.data.sessionID, event.data.model.providerID)
             }
             return usageOf(event.data).pipe(
               Effect.flatMap((usage) => pool.stepEnded(event.data.sessionID, Number(event.data.cost), event.data.assistantMessageID, usage)),

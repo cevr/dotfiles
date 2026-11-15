@@ -5,8 +5,8 @@
 // world's Anthropic (sim/provider.ts: its usage endpoint lists each account's
 // grants, its claim endpoint takes them). The pool's RPC is called as the pane
 // calls it, on the world's clock.
-import { Data, Effect, Option, Schema } from "effect"
-import { claimEffect, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
+import { Array as Arr, Data, Effect, Option, Schema } from "effect"
+import { claimEffect, type FakeAnswer, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
 import { spentAccount } from "../../tests/fake-chatgpt.ts"
 import * as ChatGPT from "../../sim/chatgpt.ts"
 import * as Plugins from "../../sim/plugins.ts"
@@ -41,7 +41,7 @@ const serve = (seed: number, names: ReadonlyArray<string>, anthropic: Omit<Provi
     const world = World.make({
       seed,
       script: () => World.say(""),
-      anthropic: { accounts, ...anthropic },
+      anthropic: { accounts, script: working, ...anthropic },
       integrations: {
         anthropic: names.map((name) => ({ id: `cred_${name}`, label: `Claude ${name}`, ...accounts[name], expires: World.START + 8 * HOUR })),
         openai: Option.match(chatgpt, {
@@ -92,8 +92,46 @@ const serve = (seed: number, names: ReadonlyArray<string>, anthropic: Omit<Provi
           yield* world.advance(SECOND)
         }
       })
-    return { world, accounts, pool, questions, open, pace, until }
+    /**
+     * `count` agents put to work in sessions of their own: each runs a long command (`working`), busy until it ends,
+     * with no start recorded. Fails when one is not busy once prompted.
+     */
+    const work = (count: number) =>
+      Effect.gen(function* () {
+        const ids: Array<string> = []
+        for (let agent = 0; agent < count; agent++) {
+          const id = yield* world.session(WORK, { id: `ses_agent_${agent}` })
+          yield* world.prompt(id, "work")
+          ids.push(id)
+        }
+        yield* world.advance(SECOND)
+        const idle = ids.filter((id) => world.sessions.get(id)?.running !== true)
+        if (idle.length > 0) return yield* Effect.fail(new Waited({ message: `not busy once prompted: ${idle.join(", ")} ${line(idle.map((id) => world.messages(id)))}` }))
+        return ids
+      })
+    return { world, accounts, pool, questions, open, pace, until, work }
   })
+
+/** How long an agent's command runs: the sessions it runs in stay busy for hours. */
+const WORK_COMMAND = "sleep 10800"
+
+/** The shell tool's name as a request offers it: as is, or as the auth plugin encodes it (`mcp_T` and its base64). */
+const SHELL_NAMES = ["shell", `mcp_T${Buffer.from("shell").toString("base64").replace(/=+$/, "")}`]
+
+const ToolNames = Schema.Array(Schema.Struct({ name: Schema.String }))
+
+/** The model's answers: a request offering the shell, with no tool result yet, runs WORK_COMMAND; any other is answered in text. */
+const working = (request: Provider.RequestInfo): FakeAnswer => {
+  const answered = line(request.body["messages"] ?? []).includes('"tool_result"')
+  const names = Option.getOrElse(Schema.decodeUnknownOption(ToolNames)(request.body["tools"] ?? []), () => [])
+  return Option.match(
+    Option.filter(Arr.findFirst(names, (tool) => SHELL_NAMES.includes(tool.name)), () => !answered),
+    {
+      onNone: (): FakeAnswer => ({ kind: "ok" }),
+      onSome: (shell): FakeAnswer => ({ kind: "ok", tool: { name: shell.name, input: { command: WORK_COMMAND } } }),
+    },
+  )
+}
 
 const QUESTIONS = "dotfiles-opencode.questions"
 
@@ -146,7 +184,7 @@ seeded(
       const quotaOf = (account: string): FakeQuota => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
       // The world's clock, once the world is made.
       const clock = { now: () => now }
-      const { world, accounts, pool, open, until } = yield* serve(seed, ["a", "b"], {
+      const { world, accounts, pool, open, until, work } = yield* serve(seed, ["a", "b"], {
         chatgpt: backend,
         quota: quotaOf,
         // Two resets in hand on each account: not the last one, kept in reserve.
@@ -177,8 +215,13 @@ seeded(
         { account: "acct-1", creditID: "credit-1", code: "reset" },
       ])
 
-      // ── Claude: three starts running: the forecast runs the pool out before its reset, one grant claimed on its own, nothing asked ──
-      for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
+      // ── Claude: three agents put to work while the 5-hour windows had room, then the windows spent under them; busy, with no start recorded:
+      // the forecast runs the pool out before its reset, one grant claimed on its own, nothing asked ──
+      const spent = new Map(quotas)
+      for (const [account, quota] of spent) quotas.set(account, { ...quota, fiveHour: { ...quota.fiveHour, utilization: 0.5 } })
+      yield* world.advance(7 * SECOND)
+      yield* work(3)
+      for (const [account, quota] of spent) quotas.set(account, quota)
       yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, 250)
       // The claimed account takes the work: the other is not claimed.
       yield* until(() => false, "the pane pacing on", 20 * SECOND).pipe(Effect.ignore)
@@ -239,7 +282,7 @@ seeded(
           },
         ]
       }
-      const { world, pool, questions, open, until } = yield* serve(seed, ["c", "d"], {
+      const { world, pool, questions, open, until, work } = yield* serve(seed, ["c", "d"], {
         quota: quotaOf,
         grants: grantsOf,
         claim: (account, grant) => {
@@ -250,8 +293,8 @@ seeded(
       })
       const claims = () => world.provider().claims()
 
-      // ── Demand: three starts in flight, the pane pacing a start each second: c's room outlasts the reset, so d's week is left ──
-      for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
+      // ── Demand: three agents busy, the pane pacing a start each second: c's room outlasts the reset, so d's week is left ──
+      yield* work(3)
       yield* until(() => false, "a minute of starts", CLAIM_LIMIT_MS).pipe(Effect.ignore)
       expect(claims()).toEqual([])
       expect(yield* open).toEqual([])
