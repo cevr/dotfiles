@@ -163,6 +163,14 @@
         "@dotfiles/opencode-recover": "workspace:*",
       },
     },
+    "cmd/rex": {
+      "name": "@dotfiles/opencode-cmd-rex",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-rex": "workspace:*",
+      },
+    },
     "cmd/rift": {
       "name": "@dotfiles/opencode-cmd-rift",
       "version": "0.0.0",
@@ -364,6 +372,10 @@
       "name": "@dotfiles/opencode-recover",
       "version": "0.0.0",
     },
+    "mods/rex": {
+      "name": "@dotfiles/opencode-rex",
+      "version": "0.0.0",
+    },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
       "version": "0.0.0",
@@ -496,6 +508,8 @@
 
     "@dotfiles/opencode-cmd-recover": ["@dotfiles/opencode-cmd-recover@workspace:cmd/recover"],
 
+    "@dotfiles/opencode-cmd-rex": ["@dotfiles/opencode-cmd-rex@workspace:cmd/rex"],
+
     "@dotfiles/opencode-cmd-rift": ["@dotfiles/opencode-cmd-rift@workspace:cmd/rift"],
 
     "@dotfiles/opencode-cmd-skills": ["@dotfiles/opencode-cmd-skills@workspace:cmd/skills"],
@@ -539,6 +553,8 @@
     "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
 
     "@dotfiles/opencode-recover": ["@dotfiles/opencode-recover@workspace:mods/recover"],
+
+    "@dotfiles/opencode-rex": ["@dotfiles/opencode-rex@workspace:mods/rex"],
 
     "@dotfiles/opencode-sim": ["@dotfiles/opencode-sim@workspace:sim"],
 
