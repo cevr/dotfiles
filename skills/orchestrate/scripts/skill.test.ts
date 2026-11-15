@@ -119,6 +119,15 @@ describe('nothing names what was deleted', () => {
     });
 });
 
+test("loop and dream name orchestrate's modes, not the deleted machine or its file names", () => {
+  const gone: ReadonlyArray<RegExp> = [/(?:through|states of) (?:its|the) machine\b(?!')/i, /Fresh implementor\)/, /`verify-\*\.md`/];
+  const said = ['loop', 'dream'].flatMap((name) => {
+    const text = read(join(REPO, 'skills', name, 'SKILL.md'));
+    return gone.filter((pattern) => pattern.test(text)).map((pattern) => `${name}: ${pattern}`);
+  });
+  expect(said).toEqual([]);
+});
+
 describe('links and scripts resolve', () => {
   /** A link's file: relative to the doc, or a `~/` path into this checkout. */
   const target = (doc: string, link: string) => {
