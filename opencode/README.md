@@ -628,48 +628,53 @@ role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, and stops agent work over the Sabbath. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `drops`, `skill`, `ledger`, `cadence`, `guard` and `fleet` (the checkouts an accepted verdict records the verified target from; The update).
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill` and `fleet` (the checkouts an accepted verdict records the verified target from; The update).
 An absent option takes its default. A
-malformed one stops the plugin at setup, with a message that names it.
+malformed one stops the plugin at setup, with a message that names it. An
+older config's `ledger`, `cadence`, `guard` and `drops` are ignored.
 
 ### The orchestrate tool
 
 The plugin adds one direct tool, `orchestrate` (`mods/orchestrate/tools.ts`:
 its input, its one description, every answer's and refusal's words), whose
 actions are the run's steps for the root session that runs its units. Its
-description tells the loop in order: lane → implement → ready → land → verify
-→ fold.
+description tells the loop in order: lane → implement → ready → land →
+verify. It keeps nothing between calls: every answer is computed at the call
+from the run tables (the status mod's `STATUS` RPC over the skill's
+`status.ts`, through `Runs`) and the warm source's Rift list (the rift RPC's
+`list`), so a restart or another root session gets the same answer.
 
 - `orchestrate({ action: "lane", unit, run?, branch?, source? })`: the unit's
   Rift, named for the unit (on the workbox as `workrift` names it, after the
   branch) on `branch`, else `<run>/<unit>`, else `feat/<unit>`. A unit whose
-  Rift exists is answered that Rift, and nothing is made. The answer ends
-  with the `(rift: <path>)` its implementor's description takes.
-- `orchestrate({ action: "land", units?, departs? })`: the batch. With no
-  `units` it lands every unit the root's machine holds ready. Each unit's
-  Rift is the path given (`{ unit, path }`), else the one its implementor was
-  started on (the ledger), else the one Rift of the warm source the machine's
-  own name rule reads as that unit; none or two, or a unit the machine does
-  not hold, is refused. The machine decides it once, in the same two land
-  hooks a `rift` land passes; then the rift plugin's land runs, unchanged.
-  Its answer is the rift land's, then `orchestrate: next:` naming the verify.
-- `orchestrate({ action: "verify", batch, head? })`: the batch verifier's
-  clean checkout, the Rift `verify-<batch>` detached at `head` (default:
-  origin's default branch head, read then), and the `subagent` call that
-  starts it. Refused, in the machine's words, when nothing landed awaits a
-  verifier or one runs; the start itself is still decided at that call.
-- `orchestrate({ action: "status" })`: the machine's brief, each unit's lane,
-  and one `next:` line naming the call to make.
+  Rift exists is answered that Rift, and nothing is made. A Rift is a unit's
+  by its branch's last segment, and on the Mac also by its folder's name; on
+  the workbox a folder name, which workrift derives from the branch, is never
+  read as a unit (unit `feat-y` is never given unit `y`'s `feat-y`). The
+  answer ends with the `(rift: <path>)` its implementor's description takes.
+- `orchestrate({ action: "land", units?, departs? })`: the rift plugin's land
+  of the named units. A name resolves to the one Rift that is that unit's;
+  `{ unit, path }` is taken as given; an unknown name, or one two Rifts read
+  as, is refused with the `{ unit, path }` form. With no `units` it lands
+  every unit the run tables show `ready` that has a lane, and with none it
+  says what to name. A named unit in another state than `ready` lands, its
+  answer starting `orchestrate: warning: <unit> is <state>, not ready; landed
+  as asked.` `departs` still decodes and means nothing.
+- `orchestrate({ action: "verify", batch, head? })`: the verifier's clean
+  checkout, the Rift `verify-<batch>` detached at `head` (default: origin's
+  default branch head, read then), and the `subagent` call that starts it.
+  Any unit-name-shaped batch (`batch-<k>`, a unit, `main-<sha>`) is taken.
+- `orchestrate({ action: "status" })`: each run's units with their states,
+  each open unit's lane, and one `next:` line: the land call when a unit is
+  ready with a lane, else a wait for the implementors' hand-backs, else none.
 
 A subagent is refused `lane`, `land` and `verify` (the root lands); `status`
 answers it. A call carrying another action's field (a `land` with `unit`, a
 `lane` with `units`) is refused with a call that decodes. Its Rifts and land
 go to this location's rift plugin over the rift RPC
-(`@dotfiles/opencode-rift/rpc`), on the model the `rift` tool runs on. In a
-root that runs units, a `rift` create or land still runs for one release,
-and its answer starts with the `orchestrate` call to use; every other
-session's `rift` answers are unchanged. `orchestrate` is in the kernel's
-`HOOKED_TOOLS`: a cell never reaches it past the land hooks.
+(`@dotfiles/opencode-rift/rpc`), on the model the `rift` tool runs on; a
+`rift` land runs as it always does. `orchestrate` is in the kernel's
+`HOOKED_TOOLS`, so a cell's call passes the same hooks.
 
 The model (the domain files at `mods/orchestrate/`):
 
@@ -737,7 +742,7 @@ The units' logs (`unit-log.ts`): a planner's or implementor's start moves
 its unit, by the call's `<role> <unit> r<N>` description, to `plan` or
 `implement`; its hand-back, the first line of its last answer when its
 session goes idle (the fork's `experimental.idle` hook), moves it as the
-machine says (implementor `ready` to `ready`, where it waits for its batch;
+skill says (implementor `ready` to `ready`, where it waits to land;
 `blocked` to `blocked`; a planner's `ready` waits for the orchestrator). A
 verifier moves nothing: it verifies a batch (`verifier batch-<k> r1`), and
 the orchestrator logs each landed unit's moves from the batch's findings
@@ -747,20 +752,7 @@ through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
 unit dir being the one a path in the prompt or the hand-back names, else the
 one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
 move the orchestrator already logged, or one log.ts refuses writes nothing.
-
-A unit the root drops (`log.ts <unit dir> <from> dropped r<N>`) ends on its
-machine and releases its findings. log.ts says which: each move to
-`dropped` it writes from an OpenCode shell (`OPENCODE_SESSION_ID`) is also a
-line in the drops journal (option `drops`, default
-`~/.cache/orchestrate/drops.jsonl`, handed to every shell as
-`ORCHESTRATE_DROPS`), naming the session and the unit dir it resolved. After
-each of the root's shell calls, and before each start, land and hand-back it
-decides, the plugin reads the root's lines and drops each unit whose
-`log.md` still ends in that move, unless the ledger holds it at a later
-round (revived). The command's text never counts, so a dir named through a
-variable or after a `cd`, or a drop written after its call answered
-(backgrounded, timed out), ends its unit once; a refused move writes no
-line, and an older drop under a later move is no drop.
+A unit the root drops is its `log.md` line alone: no journal is kept.
 
 A restart in the Sabbath rest (a crash, a restart by hand; the update never
 restarts then) resumes every turn the old server left running, each opened
@@ -799,24 +791,16 @@ skill's `status.ts`), it is steered once with one line:
 idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on.
 ```
 
-Units in `ready` wait for their batch (the orchestrate skill's Land a batch).
-Once the batch is due, the line says to land it, naming each unit's Rift by
-its branch, `<run>/<unit>`, which the rift tool finds whether `rift create`
-named the Rift `<unit>` or `workrift create` named it `<run>-<unit>`:
+Units in `ready` are ready to land at once, however few; no cadence holds
+them:
 
 ```
-idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["p5/gamma", "p5/delta", "p5/eps"] }).
+idle with units ready to land: gamma, delta; land them with orchestrate({ action: "land" }).
 ```
 
-A batch is due by each ready unit's cadence: its spec's `Batch cadence` line,
-else its plan's, else 3 ready or 30 minutes. Only the line's numbers are read
-(`<n> ready`, `<n> min` or `<n> h`); a number it leaves out comes from the
-level above. The skill's `status.ts` prints it per unit (`Cadence`, `3 ready
-or 30 min`, its `cadence.ts`). It is due once the ready units reach any ready
-unit's count, or any ready unit has waited its wait by its `log.md` time.
-
-With both, the batch follows the first line as `… A batch due (…): …`. Units from more than one run read `run/unit`; past eight the rest
-are counted (the land call names every one). The line is a steered synthetic message carrying the metadata key
+With both, the ready units follow the first line as `… Units ready to land:
+…`. Units from more than one run read `run/unit`; past eight the rest are
+counted. The line is a steered synthetic message carrying the metadata key
 `dotfiles-opencode.orchestrate.idle`, so its own arrival is not new input.
 
 Once per idle period: after a nudge the root is not nudged again until new
@@ -875,115 +859,30 @@ idle nudge above is its own. The rules are in `skill-drift.ts`, the handler
 `SkillDrifts` in `model.ts`, over the contracts `Skill` (`git/skill.ts`),
 `RunRecords` (`filestore/run-records.ts`) and `Tell` (`opencode/steer.ts`).
 
-### The batch machine, kept and enforced
+### What the plugin keeps, and what still refuses
 
-The audit of 2026-11-11 found roots that drifted from the skill's machine
-after compactions (a verifier per unit, a land of the one unit that just
-handed back) while their summaries still quoted the rule. So the plugin keeps
-each root's machine itself, from the calls it already sees, and refuses a
-call against it at the point of action (`mods/orchestrate/machine.ts`).
+Until 2026-11-15 the plugin kept a batch machine per root in a ledger and
+refused a land or a verifier start against six batch rules; the run's drift
+from those rules reached 559, and a restart lost the root's units. That
+machine, its ledger, its drops journal and its formal model are gone. No call
+is refused for a batch rule; a land of a unit that is not `ready` lands with
+a warning.
 
-- **The ledger.** One JSONL line per event or refusal, `{ at, sessionID,
-  kind, ... }`, in `~/.cache/orchestrate/machine.jsonl` (option `ledger`): a
-  role's start (`<role> <unit> r<N>`), its hand-back (on its idle), its
-  session once known, a `rift` land and what it landed green. A root's state
-  is the fold of its lines, read back after a restart. No run dir is needed:
-  a root is held to the machine once it starts `implementor <unit> rN` agents;
-  a root that runs no unit is left alone.
-- **One ledger per root, wherever it is.** A root is keyed by its session
-  alone. The plugin has one copy per location, and a root that moves (a
-  Rift's `session_move`) is decided by each in turn, so each decision reads
-  the file afresh, under one lock shared by every copy in the process.
-- **Bounded.** Past 256 KiB the file is compacted: each root becomes one
-  `Checkpoint` line of its state (none when it holds nothing) and its newest
-  20 departures and refusals of the last week; a root idle a week is dropped,
-  and only the 64 most recently active roots are kept. The next compaction
-  waits for twice what this one kept.
-- **The six rules**, each refused in the skill's own words (held to SKILL.md
-  by `git/machine-words.test.ts`) with what to do instead: a verifier not
-  named `batch-<k>` (VerifierPerUnit), a second verifier while one runs
-  (VerifierRunning), a land or a verifier before the cadence while an
-  implementor still runs (BatchNotDue), a land while a landed batch has no
-  verdict, its verifier not started or still running, whatever round its
-  units have moved on to (VerdictPending), a land with a finding of the last
-  verdict folded into no unit, or into a ready unit the land does not take
-  (a finding folded into a running implementor, or one that handed back
-  blocked or stuck or died, holds no land: it rides with that unit's later
-  land, whose verifier is told it; only a ledger's unit ended with no
-  hand-back on record, from before hand-backs were kept, has its findings
-  settled at the next land or verdict), or with a `changes` whose
-  report did not read (FindingUnfolded: an unread report is never an empty
-  set; the plugin reads it again before each start and land), a land that leaves a ready unit out
-  (LandPartial). No rule holds an implementor's start. A refused call
-  starts, latches and counts nothing.
-- **The pipeline.** While batch N's verifier runs, batch N+1's implementors
-  start. On the verifier's `changes`, the plugin reads its report (the
-  batch findings file and each unit's `round-N-findings.md` it names) and
-  opens each Blocker and Major as `<unit>/<id>`. An implementor's start
-  folds its own unit's findings, and those its description names in
-  `(folds: auth/M1, billing)`, a `FindingFolded` line each: a follow-up to a
-  running implementor (its `sessionID`) or a new fix unit. The next land
-  carries the folded findings to the next batch verifier, whose prompt ends
-  with them and whose start answers with them.
-- **The heavy footer.** Every implementor and verifier prompt the plugin
-  sends ends with one footer (`mods/orchestrate/heavy.ts`), after the
-  verifier's folds: a new start's, a follow-up's (an older footer in the
-  prompt is replaced, never doubled), and a latched start's as its latch
-  opens, at the share of that moment. It names the agent's heavy-check
-  thread share, `max(4, floor(cores / (working + 2)))` capped at the
-  host's cores, where `working` counts the implementors and verifiers the
-  call log shows working on the host now, every root's, each while its
-  session still works (12 h at most), the prompted one not counted; with
-  the flags for it (`bun test --parallel=<share>`, Go's `-p` with
-  `GOMAXPROCS`, Cargo's `-j`). It says an implementor runs its spec's round
-  gate only, and a verifier reads the batch's gate and accept logs and
-  reruns neither, since the batch runs the full gate, the full e2e and the
-  affected acceptance once. A host that cannot be read within two seconds
-  gives the share of its cores with no one else working; a start never
-  waits on it or is refused for it. The share is advice, not a cap, and no
-  option turns the footer off. Planner and worker prompts are untouched,
-  and nothing is added to a system prompt.
-- **A land's units.** A unit is named by its role call's description
-  (`implementor <unit> rN`); no prompt is read. An implementor's description
-  may end `(rift: <path>)`: the ledger keeps that Rift as the unit's, across
-  rounds. A Rift a land names is a unit's by what the land and the ledger
-  say: the unit an entry names (`{ path, unit }`), else the unit whose start
-  named that Rift (by path, or a name that is its last segment; two such
-  units is none), else the branch checked out at an entry's path (read
-  before the land runs, since a pushed land trashes the Rift), else the
-  entry itself. A branch or name is read by its last segment, every way it
-  reads: as a unit's exact name, as `<unit>-<n>` (a later round's Rift or
-  branch), and through workrift's `feat-<unit>`. One unit among the readings
-  is that unit; none, or two (`db-2` when both `db` and `db-2` are units),
-  is none: the land goes through as none of the machine's, never as another
-  unit's (`unitOfEntry`). A LandPartial refusal names each ready unit's Rift
-  as `{ path, unit }` from the ledger.
-- **Departures.** The same call passes with `(departs: <why>)` at the end of
-  a role call's description, or `departs: "<why>"` in a land's input; the
-  ledger records a `Departed` line per rule it broke.
-- **Dead steps hold nothing.** Before a verifier start or a land, each
-  implementor or verifier whose session neither runs a turn, nor is latched,
-  nor keeps background work of its own (as its last idle listed it), and
-  whose call is not in flight, is handed back as `none`; an implementor
-  whose last words hand its unit back is handed back with that verdict. A
-  `ready` read after such an end, or a land that names an ended unit, takes
-  the unit on as ready.
-- **Notes.** A planner's or implementor's start answers first with a due
-  batch, a landed batch with no verifier, the findings it folds, the ones
-  still unfolded, a `folds` that names no open finding, or a fourth round.
-- **The brief.** When a root's compaction ends, it gets one steered message
-  (`resume: false`, so it starts no turn; mark
-  `dotfiles-opencode.orchestrate.brief`, so it is no new input to the idle
-  nudge): SKILL.md's "The machine" section (agents.json `machine`, written by
-  `bun run agents`), its run from the ledger, and the re-read.
-- **Options.** `cadence: { ready, waitMs }` (default 3 and 30 minutes) and
-  `guard`: `refuse` (default) or `warn`, under which a call against the
-  machine passes, its answer carries the rule's words, and the ledger records
-  the departure.
+What stays, none of it kept between calls:
 
-`tests/orchestrate-machine.test.ts` drives it in real OpenCode: a root that
-compacts mid-run and then drifts is refused twice and still lands one batch
-and starts one verifier.
+- **The unit logs**: a role's start and hand-back move its unit's `log.md`.
+- **The heavy footer** (`mods/orchestrate/heavy.ts`): every implementor and
+  verifier prompt ends with its heavy-check thread share,
+  `max(4, floor(cores / (working + 2)))`, and says the batch runs the full gate.
+- **The compaction note**: a root that compacts while it runs units gets one
+  message (no new turn): its `status` answer and the re-read.
+- **The fleet target**: a verifier's `accepted` hand-back publishes the
+  verified target once per verdict (`fleet.ts`, the `Verdicts` handler).
+
+Still refused: a subagent's `lane`, `land` or `verify`; a malformed input;
+the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
+whatever `mods/rift` and `mods/guard` refuse (a red merge check never pushes;
+one land per host at a time).
 
 ## Pool
 
