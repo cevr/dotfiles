@@ -28,6 +28,7 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Match, Option } from "effect"
 import {
   type AccountLoad,
+  AVERAGED_TEXT,
   type ClaimOption,
   type ClaimSituation,
   ClaimVerdict,
@@ -340,6 +341,15 @@ describe("the rule on one pool, by example", () => {
     expect(verdict._tag).toBe("Claim")
     expect(verdict).toMatchObject({ step: "reset", option: { creditID: "ra" } })
     if (verdict._tag === "Claim") expect(verdict.reason).toBe("6 agents running on 2 hosts, 7d 92% used, forecast 100% in 15 h, reset in 3.0 days")
+  })
+
+  test("a burn that is the window's average, as after a restart, is said in the reason", () => {
+    const full = load("a", 0.92, 3 * DAY, 0.02)
+    const half = load("b", 0.5, 4 * DAY, 0.02)
+    const averaged = { ...half, windows: half.windows.map((window) => ({ ...window, averaged: true })) }
+    const verdict = verdictOf([full, averaged], [option(full, "ra")])
+    expect(verdict._tag).toBe("Claim")
+    if (verdict._tag === "Claim") expect(verdict.reason).toBe(`6 agents running on 2 hosts, 7d 92% used, forecast 100% in 15 h, reset in 3.0 days${AVERAGED_TEXT}`)
   })
 
   test("the same pool burning slowly keeps room to its first reset: nothing claimed, the freshest account takes the work", () => {

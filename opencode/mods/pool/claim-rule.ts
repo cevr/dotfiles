@@ -87,6 +87,8 @@ export interface LoadWindow {
   readonly resetAt: number
   /** Its use per hour now (share of the window). */
   readonly burn: number
+  /** That burn is the period's average, not measured (no readings far enough apart yet, as after a restart). */
+  readonly averaged?: boolean
 }
 
 /** One account of the pool, as the forecast reads it: its windows still running, and until when a spent window holds it, if one does. */
@@ -177,6 +179,8 @@ export interface Forecast {
   readonly burn: number
   readonly runOutAt: number
   readonly naturalAt: number
+  /** Some account's burn on it is the period's average, not measured. */
+  readonly averaged: boolean
 }
 
 const loadOf = (account: AccountLoad, name: string) => Arr.findFirst(account.windows, (window) => window.name === name)
@@ -203,7 +207,14 @@ export const forecastOf = (situation: ClaimSituation, name: string): Forecast =>
     Match.when({ burn: 0 }, () => Number.POSITIVE_INFINITY),
     Match.orElse(() => now + (room / burn) * HOUR),
   )
-  return { window: name, room, burn, runOutAt, naturalAt: Math.min(...frees, Number.POSITIVE_INFINITY) }
+  return {
+    window: name,
+    room,
+    burn,
+    runOutAt,
+    naturalAt: Math.min(...frees, Number.POSITIVE_INFINITY),
+    averaged: read.some(({ window }) => window.averaged === true),
+  }
 }
 
 /** Whether work is on the pool now: an agent running across the fleet, or a start held. The burn of a pool no agent runs on is past use, not a forecast. */
@@ -246,9 +257,16 @@ export const forecastText = (situation: ClaimSituation, option: ClaimOption, for
   )
   return (
     `${held}${situation.running} ${plural(situation.running, "agent")} running on ${situation.hosts} ${plural(situation.hosts, "host")}, ` +
-    `${option.window} ${pct(option.from)} used, forecast 100% ${out}, reset in ${span(option.resetAt - now)}`
+    `${option.window} ${pct(option.from)} used, forecast 100% ${out}, reset in ${span(option.resetAt - now)}` +
+    Match.value(forecast.averaged).pipe(
+      Match.when(true, () => AVERAGED_TEXT),
+      Match.orElse(() => ""),
+    )
   )
 }
+
+/** Said of a forecast whose burn is a window's period average: no measure since a restart. */
+export const AVERAGED_TEXT = ", burn the window's average (none measured yet, as after a restart)"
 
 /** The work in one clause, for a reset that expires before its window resets: `3 agents running, ~70% of the 5h window would be used before its reset in 3 h`. */
 export const workText = (situation: ClaimSituation, option: ClaimOption): string =>

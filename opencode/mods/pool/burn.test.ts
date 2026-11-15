@@ -3,7 +3,7 @@
 // window burns at the average that spent it.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { BURN_MS, burnsOf, MIN_SPAN_MS, periodBurn, remember, type Sample } from "./burn.ts"
+import { averagedOf, BURN_MS, burnsOf, MIN_SPAN_MS, periodBurn, remember, type Sample } from "./burn.ts"
 import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
@@ -28,6 +28,16 @@ describe("the burn", () => {
     expect(average).toBeCloseTo(0.5 / ((4 * DAY + MIN_SPAN_MS - MINUTE) / HOUR), 8)
     expect(burnsOf(kept([reading(T0, 0.45), reading(now, 0.5)], now), now)["7d"]).toBeCloseTo(average)
     expect(burnsOf(kept([reading(now, 0.5)], now), now)["7d"]).toBeCloseTo(average)
+    // Said so: the window is averaged, for want of a measure.
+    expect(averagedOf(kept([reading(now, 0.5)], now))).toEqual(["7d"])
+  })
+
+  test("a window is averaged only while open and not measured", () => {
+    const now = T0 + HOUR
+    expect(averagedOf(kept([reading(T0, 0.4), reading(now, 0.5)], now))).toEqual([])
+    // A spent window burns at its average by design, not for want of a measure.
+    expect(averagedOf(kept([reading(now, 1)], now))).toEqual([])
+    expect(averagedOf([])).toEqual([])
   })
 
   test("a claim or a reset between readings starts it over: only the readings since count", () => {

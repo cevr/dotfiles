@@ -69,6 +69,19 @@ const measured = (samples: ReadonlyArray<Sample>, newest: QuotaWindow, newestAt:
   )
 }
 
+/**
+ * The windows still open on an account whose burn is its period's average
+ * because its samples do not measure one: none far enough apart since a
+ * restart or since use last dropped. A spent window's average is by design,
+ * not a missing measure, and is left out.
+ */
+export const averagedOf = (samples: ReadonlyArray<Sample>): ReadonlyArray<string> =>
+  Option.match(Arr.last(samples), {
+    onNone: () => [],
+    onSome: (newest) =>
+      newest.windows.filter((window) => window.utilization < 1 && Option.isNone(measured(samples, window, newest.at))).map((window) => window.name),
+  })
+
 /** Each window's burn on an account now, by name: measured over its samples, else (or when spent) its period's average. */
 export const burnsOf = (samples: ReadonlyArray<Sample>, now: number): Readonly<Record<string, number>> =>
   Option.match(Arr.last(samples), {
