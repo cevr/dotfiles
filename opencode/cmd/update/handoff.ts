@@ -17,7 +17,7 @@ export const live = (settings: Settings, env: Readonly<globalThis.Record<string,
   Layer.mergeAll(
     Service.layer(settings, env, registration),
     Builds.layer(Builds.optionsOf(shareDir(home), buildsLock(home), process.platform)),
-    Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env }),
+    Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env, workbox: process.platform === "linux" }),
     Records.layer(settings.record),
     Rejections.layer(files(settings).rejected),
     HandoffMark.layer(files(settings).mark, process.pid),
