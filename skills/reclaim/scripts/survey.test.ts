@@ -142,9 +142,11 @@ test.if(APFS)("the survey lists a work workspace as a Rift and work's trash for 
     clone(source, `${dir}/big.bin`);
     file(`${dir}/new.bin`, 60 * MIB);
   }
-  // A store left with only trash, over a GiB by du (clones), holds no checkout: it is still no loose folder.
-  store.push(file('code/.work/other/.registry', 64));
-  for (let i = 0; i < 9; i++) clone(source, `code/.work/other/.work-trash/gone.1/big${i}.bin`);
+  // A store left with only trash, over a GiB by du (clones), holds no checkout: neither it nor its
+  // folder for a base is a loose folder.
+  const bare = join(root, 'bare');
+  store.push(file('bare/.work/gone/.registry', 64));
+  for (let i = 0; i < 9; i++) clone(source, `bare/.work/gone/.work-trash/gone.1/big${i}.bin`);
   // A repository with a .work folder of its own: its data, not a store.
   mkdirSync(join(code, 'lib/.git'), { recursive: true });
   file('code/lib/.work/x/.registry', 64);
@@ -157,7 +159,7 @@ test.if(APFS)("the survey lists a work workspace as a Rift and work's trash for 
   file('other/.work/.work/.registry', 64);
   mkdirSync(join(other, '.work/.work/main/.git'), { recursive: true });
 
-  const run = Bun.spawnSync(['bun', SCRIPT, '--json', '--roots', `${code},${other}`], { env: { ...process.env, HOME: join(root, 'home') } });
+  const run = Bun.spawnSync(['bun', SCRIPT, '--json', '--roots', `${code},${other},${bare}`], { env: { ...process.env, HOME: join(root, 'home') } });
   expect(run.exitCode).toBe(0);
   const items: { tier: string; category: string; what: string; paths: string[]; bytes: number; command: string; clone?: { sharedWith: string } }[] = JSON.parse(run.stdout.toString()).items;
   const at = (path: string) => items.filter((i) => i.paths.includes(path));
