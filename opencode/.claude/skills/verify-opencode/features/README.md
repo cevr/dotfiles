@@ -35,11 +35,12 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 
 `verify:drive --changed` reports each changed source file no feature's `Code` covers as unreachable. These need no drive, and it sets them aside:
 
-- **No drive:** `scripts/`, `formal/`, `lint/`
+- **No drive:** `scripts/`, `formal/`, `lint/`, `tests/accept-clock.test.ts`
 
 - `scripts/`: the repository's own tooling (the gate, the acceptance runner, this drive, receipts, the fork's link, the daily build). No user or agent meets it in a session; the gate runs its tests. A script that makes what a mod serves is in that feature's `Code` instead (`scripts/agents.ts`, the role agents, in orchestrate's).
 - `formal/`: the formal models and their trace replays, checked by their own tests in the gate. They model a mod; the mod's code is in its feature's `Code`.
 - `lint/`: the oxlint rules the gate runs over the tree. No session reaches them.
+- `tests/accept-clock.test.ts`: the acceptance runner's own clock bounds (`scripts/accept.ts`'s lock between land and deep runs), timed one at a time. It checks tooling under `scripts/`, not a mod.
 
 ## Features
 
@@ -51,3 +52,4 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Queue](queue.md): the agent's live queue, the tool, the RPC, the sidebar.
 - [Prime's panel](prime-panel.md): the background-work panel and its tabs.
 - [Kernel](kernel.md): the persistent TypeScript kernel, its tool calls, calls in parallel.
+- [Rex panes](rex.md): `rex-show` in a showcase pane beside the caller's, the pane a subagent's shell names.

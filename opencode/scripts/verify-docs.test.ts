@@ -142,7 +142,30 @@ describe("the verify-opencode skill names only what the tree has", () => {
         "tests/orchestrate/run.ts",
         "tests/orchestrate/sim.ts",
       ]
-      expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({ exempt: ["scripts/", "formal/", "lint/"], uncovered: [] })
+      expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({ exempt: ["scripts/", "formal/", "lint/", "tests/accept-clock.test.ts"], uncovered: [] })
+    }),
+  )
+
+  live("every source file batch 2026-11-15cl's drive found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const at = yield* root
+      const features = (yield* docs)
+        .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
+        .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
+      const exempt = noDrive(yield* fs.readFileString(path.join(at, INDEX)))
+      const found = [
+        "cmd/rex/server.ts",
+        "cmd/rex/show.ts",
+        "cmd/rex/tui.tsx",
+        "mods/rex/model.ts",
+        "mods/rex/pane.ts",
+        "scenarios/tui-paint.ts",
+        "testbeds/busy-agents.ts",
+        "tests/accept-clock.test.ts",
+      ]
+      expect(uncovered(features, found, exempt)).toEqual([])
     }),
   )
 
