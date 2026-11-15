@@ -1,4 +1,4 @@
-// pane-restore against a fake herdr, a fake hc and a fake OpenCode server
+// pane-restore against a fake herdr and a fake OpenCode server
 // (fake.ts): the shims on PATH run it, so the CLI runs exactly as on a host.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
@@ -91,7 +91,6 @@ const world = (): World => ({
       },
     },
   },
-  hc: { terminals: [] },
   opencode: { sessions: ["ses_A1", "ses_A2", "ses_B6", "ses_W1"] },
   calls: [],
 })
@@ -103,7 +102,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "pane-restore-test-"))
   const bin = join(root, "bin")
   mkdirSync(bin)
-  for (const tool of ["herdr", "hc", "opencode"]) {
+  for (const tool of ["herdr", "opencode"]) {
     const shim = join(bin, tool)
     writeFileSync(shim, `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' ${tool} "$@"\n`)
     chmodSync(shim, 0o755)
@@ -139,7 +138,7 @@ const saved = (stdout: string) => {
 }
 
 describe("save", () => {
-  test("records every pane with its workspace, tab, hcm tab key, cwd and the session its TUI has open", () => {
+  test("records every pane with its workspace, tab, cwd and the session its TUI has open", () => {
     const result = run("save")
     expect(result.code).toBe(0)
     const { path, file } = saved(result.stdout)
@@ -147,10 +146,10 @@ describe("save", () => {
     expect(readdirSync(join(root, "state/pane-restore"))).toHaveLength(1)
     expect(file.host).toBe(host)
     expect(file.panes).toEqual([
-      { workspace: { id: "wA", label: "dotfiles" }, tab: { id: "wA:t1", label: "main", index: 0 }, from: "wA/0", pane: "wA:p1P", cwd: "/w/dotfiles", session: "ses_A1", source: "herdr-state" },
-      { workspace: { id: "wA", label: "dotfiles" }, tab: { id: "wA:tC", label: "second", index: 1 }, from: "wA/1", pane: "wA:p2", cwd: "/w/dotfiles/sub", session: "ses_A2", source: "argv" },
-      { workspace: { id: "wB", label: "manna" }, tab: { id: "wB:t2", label: "apps", index: 0 }, from: "wB/0", pane: "wB:p6", cwd: "/w/manna", session: "ses_B6", source: "herdr-state" },
-      { workspace: { id: "wB", label: "manna" }, tab: { id: "wB:t3", label: "shell", index: 1 }, from: "wB/1", pane: "wB:p7", cwd: "/w/manna", session: null, source: null },
+      { workspace: { id: "wA", label: "dotfiles" }, tab: { id: "wA:t1", label: "main", index: 0 }, pane: "wA:p1P", cwd: "/w/dotfiles", session: "ses_A1", source: "herdr-state" },
+      { workspace: { id: "wA", label: "dotfiles" }, tab: { id: "wA:tC", label: "second", index: 1 }, pane: "wA:p2", cwd: "/w/dotfiles/sub", session: "ses_A2", source: "argv" },
+      { workspace: { id: "wB", label: "manna" }, tab: { id: "wB:t2", label: "apps", index: 0 }, pane: "wB:p6", cwd: "/w/manna", session: "ses_B6", source: "herdr-state" },
+      { workspace: { id: "wB", label: "manna" }, tab: { id: "wB:t3", label: "shell", index: 1 }, pane: "wB:p7", cwd: "/w/manna", session: null, source: null },
     ])
     // It only reads: the herdr calls are the snapshot and process info.
     const herdrCalls = readWorld().calls.filter((c) => c[0] === "herdr").map((c) => c.slice(1, 3).join(" "))
@@ -182,7 +181,7 @@ describe("save", () => {
     expect(path).toContain("/pane-restore/Workbox-")
     expect(file.machine).toBe("Workbox")
     expect(file.panes).toEqual([
-      { workspace: { id: "w1", label: "bite" }, tab: { id: "w1:t1", label: "", index: 0 }, from: "w1/0", pane: "w1:pF", cwd: "/home/u", session: "ses_W1", source: "argv" },
+      { workspace: { id: "w1", label: "bite" }, tab: { id: "w1:t1", label: "", index: 0 }, pane: "w1:pF", cwd: "/home/u", session: "ses_W1", source: "argv" },
     ])
     expect(readWorld().calls.every((c) => c[0] !== "herdr" || c[1] === "--machine")).toBe(true)
   })
@@ -213,81 +212,6 @@ describe("check", () => {
   })
 })
 
-describe("restore", () => {
-  const terminal = (address: string, from: string, labels: Record<string, string> = {}, foreground: { name: string; argv: string[] } | null = { name: "zsh", argv: ["-zsh"] }) => ({
-    address,
-    state: "live",
-    labels: { "migrate.from": from, ...labels },
-    foreground,
-  })
-
-  test("labels each moved OpenCode pane's hc terminal with its resume command, once, and never types", () => {
-    const { path } = saved(run("save").stdout)
-    const w = readWorld()
-    w.hc.terminals = [
-      terminal("t1", "wA/0"),
-      terminal("t2", "wA/1", {}, { name: "vim", argv: ["vim"] }),
-      terminal("t3", "wB/1"),
-      // wB/0 has no hc terminal: hcm apply has not moved it.
-    ]
-    w.calls = []
-    writeWorld(w)
-
-    const first = run("restore", path)
-    expect(first.code).toBe(1)
-    expect(first.stdout).toContain("restored wA:p1P → t1: migrate.resume=opencode --session ses_A1")
-    expect(first.stdout).toContain("skipped wA:p2 → t2: runs vim")
-    expect(first.stdout).toContain("failed wB:p6: no hc terminal from wB/0 (run hcm apply first)")
-    expect(first.stdout).not.toContain("wB:p7")
-    const after = readWorld()
-    expect(after.hc.terminals.find((t) => t.address === "t1")?.labels["migrate.resume"]).toBe("opencode --session ses_A1")
-    expect(after.hc.terminals.find((t) => t.address === "t2")?.labels["migrate.resume"]).toBeUndefined()
-    expect(after.hc.terminals.find((t) => t.address === "t3")?.labels["migrate.resume"]).toBeUndefined()
-    // Only `hc ls`, `hc get` (the labels) and `hc label`: nothing is typed into any terminal.
-    expect(new Set(after.calls.filter((c) => c[0] === "hc").map((c) => c[1]))).toEqual(new Set(["ls", "get", "label"]))
-    expect(after.calls.some((c) => c[0] === "herdr")).toBe(false)
-
-    after.calls = []
-    writeWorld(after)
-    const second = run("restore", path)
-    expect(second.stdout).toContain("skipped wA:p1P → t1: already labelled")
-    expect(readWorld().calls.some((c) => c[0] === "hc" && c[1] === "label")).toBe(false)
-  })
-
-  test("leaves a resume hcm already set, a finished terminal, and a session the server lost", () => {
-    const { path } = saved(run("save").stdout)
-    const w = readWorld()
-    w.hc.terminals = [
-      terminal("t1", "wA/0", { "migrate.resume": "claude --resume abc" }),
-      { ...terminal("t2", "wA/1"), state: "finished", foreground: null },
-      terminal("t3", "wB/0"),
-    ]
-    w.opencode.sessions = ["ses_A1", "ses_A2"]
-    writeWorld(w)
-    const result = run("restore", path)
-    expect(result.code).toBe(1)
-    expect(result.stdout).toContain("skipped wA:p1P → t1: already resumes claude --resume abc")
-    expect(result.stdout).toContain("failed wA:p2 → t2: terminal finished")
-    expect(result.stdout).toContain("failed wB:p6 → t3: session ses_B6 does not open through the server")
-    expect(readWorld().hc.terminals.every((t) => t.labels["migrate.resume"] !== "opencode --session ses_B6")).toBe(true)
-  })
-
-  test("exits 0 when every pane is restored or skipped", () => {
-    const { path } = saved(run("save").stdout)
-    const w = readWorld()
-    w.hc.terminals = [terminal("t1", "wA/0"), terminal("t2", "wA/1"), terminal("t3", "wB/0")]
-    writeWorld(w)
-    const result = run("restore", path)
-    expect(result.code).toBe(0)
-    expect(result.stdout).toContain("3 restored, 0 skipped, 0 failed")
-    expect(readWorld().hc.terminals.map((t) => t.labels["migrate.resume"])).toEqual([
-      "opencode --session ses_A1",
-      "opencode --session ses_A2",
-      "opencode --session ses_B6",
-    ])
-  })
-})
-
 describe("restore --herdr", () => {
   /** herdr after a restart: the saved panes are back as idle shells unless a test says otherwise. */
   const restarted = (w: World, processes: Record<string, string[][]> = {}) => {
@@ -311,7 +235,6 @@ describe("restore --herdr", () => {
     expect(first.stdout).not.toContain("wB:p7")
     expect(first.stdout).toContain("1 restored, 1 skipped, 1 failed")
     expect(runs()).toEqual([["herdr", "pane", "run", "wA:p1P", "opencode --session ses_A1"]])
-    expect(readWorld().calls.some((c) => c[0] === "hc")).toBe(false)
 
     // Run again: the pane now runs that session, so nothing is typed twice.
     const again = readWorld()
@@ -397,18 +320,16 @@ describe("restore --herdr", () => {
 describe("runbooks", () => {
   const book = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8")
   const CLI = "bun ~/Developer/personal/dotfiles/pane-restore/main.ts"
-  // The hc path is herdr-core's cutover (hc-cutover): it reads this unit's save with `--save`.
-  const CUTOVER = "bun ~/Developer/personal/dotfiles/herdr-core/cutover.ts"
 
-  test("the Mac runbook saves and checks before the move, and checks and moves the panes into hc after", () => {
+  test("the Mac runbook saves and checks the sessions before the move", () => {
     const mac = book("mac/developer-volume/RUNBOOK.md")
-    const needed = [`${CLI} save`, `${CLI} check`, `${CUTOVER} pre`, "hcm apply", `${CUTOVER} labels --snapshot <saved> --save <save>`, `${CUTOVER} resume`, `${CUTOVER} verify`]
+    const needed = [`${CLI} save`, `${CLI} check`]
     expect(needed.filter((text) => !mac.includes(text))).toEqual([])
   })
 
-  test("the workbox runbook saves herdr's bite session, and restores into herdr now or hc after the cutover", () => {
+  test("the workbox runbook saves herdr's bite session, and restores into herdr after", () => {
     const workbox = book("linux/workbox-btrfs/RUNBOOK.md")
-    const needed = [`${CLI} save --session bite`, `${CLI} check`, `${CLI} restore --herdr`, `${CUTOVER} pre --session bite`, "hcm apply", `${CUTOVER} labels --snapshot <saved> --save <save> --session bite`, `${CUTOVER} resume --session bite`, `${CUTOVER} verify`]
+    const needed = [`${CLI} save --session bite`, `${CLI} check`, `${CLI} restore --herdr`]
     expect(needed.filter((text) => !workbox.includes(text))).toEqual([])
   })
 })

@@ -1,25 +1,20 @@
 #!/usr/bin/env bun
-// pane-restore: carry each Herdr pane's OpenCode session across a move to
-// herdr-core (hc). `save` reads herdr's live panes and the session each
-// OpenCode TUI has open; `check` asks the OpenCode server that every saved
-// session still opens; `restore` labels each moved pane's hc terminal with
-// `migrate.resume`, so `hcm resume` types `opencode --session <id>` there once.
-// See README.md.
+// pane-restore: carry each Herdr pane's OpenCode session across a herdr
+// restart. `save` reads herdr's live panes and the session each OpenCode TUI
+// has open; `check` asks the OpenCode server that every saved session still
+// opens; `restore --herdr` runs `opencode --session <id>` in each saved pane
+// that is back as an idle shell. See README.md.
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { hostname, tmpdir } from "node:os"
 import { join } from "node:path"
 
 const USAGE = `usage: pane-restore save [--machine <herdr machine> | --session <herdr session>] [--herdr-state <session.json>]
        pane-restore check [<saved file>]
-       pane-restore restore [<saved file>]
        pane-restore restore --herdr [--machine <herdr machine>] [<saved file>]
 
 save     record every herdr pane: workspace, tab, cwd and the OpenCode session
          its TUI has open, in $XDG_STATE_HOME/pane-restore/<host>-<time>.json
 check    ask the OpenCode server that every saved session still opens
-restore  after \`hcm apply\`, label each saved OpenCode pane's hc terminal with
-         migrate.resume=opencode --session <id>; \`hcm resume\` then types it once.
-         It never types into a terminal itself.
 restore --herdr
          after a herdr restart, run \`opencode --session <id>\` (herdr pane run)
          in each saved pane that is back as an idle shell, in the herdr the
@@ -28,18 +23,12 @@ restore --herdr
 With no file, check and restore use the newest save of this host (or of
 --machine).`
 
-/** hcm's label: the command \`hcm resume\` types into the terminal, then empties. */
-const RESUME = "migrate.resume"
-/** hcm's label: the Herdr tab a terminal was moved from, `<workspace id>/<tab index>`. */
-const FROM = "migrate.from"
 const SESSION_ID = /^ses_[A-Za-z0-9]+$/
 const SHELLS = new Set(["zsh", "bash", "sh", "fish", "dash", "ksh", "nu", "tcsh"])
 
 export interface SavedPane {
   readonly workspace: { readonly id: string; readonly label: string }
   readonly tab: { readonly id: string; readonly label: string; readonly index: number }
-  /** hcm's `migrate.from` for the pane's tab. */
-  readonly from: string
   readonly pane: string
   readonly cwd: string
   readonly session: string | null
@@ -162,7 +151,6 @@ export const save = (options: { machine?: string; session?: string; herdrState?:
     return {
       workspace: { id: pane.workspace_id, label: workspaces.get(pane.workspace_id) ?? "" },
       tab: { id: pane.tab_id, label: tab.label, index: tab.index },
-      from: `${pane.workspace_id}/${tab.index}`,
       pane: pane.pane_id,
       cwd: pane.cwd ?? "",
       session,
@@ -207,38 +195,7 @@ export const check = (saved: Saved): { lines: string[]; ok: boolean } => {
 
 // ── restore ──
 
-interface Terminal {
-  readonly address: string
-  readonly state: string
-  readonly labels: Record<string, string>
-  readonly foreground: { readonly name: string; readonly argv: ReadonlyArray<string> } | null
-}
-
 type Outcome = { readonly kind: "restored" | "skipped" | "failed"; readonly line: string }
-
-export const restore = (saved: Saved): Outcome[] => {
-  // `hc ls` lists addresses without labels (hc 0.1.21); `hc get` carries each terminal's labels and foreground.
-  const addresses: string[] = (json(["hc", "ls", "--json"]).terminals ?? []).map((t: { address: string }) => t.address)
-  const terminals: Terminal[] = addresses.map((address) => json(["hc", "get", address, "--json"]))
-  return saved.panes
-    .filter((p) => p.session !== null)
-    .map((pane): Outcome => {
-      const command = `opencode --session ${pane.session}`
-      const terminal = terminals.find((t) => t.labels?.[FROM] === pane.from)
-      if (terminal === undefined) return { kind: "failed", line: `failed ${pane.pane}: no hc terminal from ${pane.from} (run hcm apply first)` }
-      const at = `${pane.pane} → ${terminal.address}`
-      const label = terminal.labels[RESUME] ?? ""
-      if (label === command) return { kind: "skipped", line: `skipped ${at}: already labelled` }
-      if (label !== "") return { kind: "skipped", line: `skipped ${at}: already resumes ${label}` }
-      if (terminal.state !== "live") return { kind: "failed", line: `failed ${at}: terminal finished` }
-      const running = terminal.foreground?.name.replace(/^-/, "") ?? ""
-      if (!SHELLS.has(running)) return { kind: "skipped", line: `skipped ${at}: runs ${running || "something unknown"}` }
-      if (!opens(pane.session!)) return { kind: "failed", line: `failed ${at}: session ${pane.session} does not open through the server` }
-      const result = exec(["hc", "label", terminal.address, `${RESUME}=${command}`, "--json"])
-      if (result.code !== 0) return { kind: "failed", line: `failed ${at}: hc label exited ${result.code}: ${result.stderr.trim()}` }
-      return { kind: "restored", line: `restored ${at}: ${RESUME}=${command}` }
-    })
-}
 
 /**
  * Back into herdr itself, after a herdr restart left the panes as plain shells:
@@ -303,14 +260,11 @@ const main = (argv: ReadonlyArray<string>): number => {
     for (const line of lines) console.log(line)
     return ok ? 0 : 1
   }
-  if (command === "restore") {
-    const intoHerdr = rest.includes("--herdr")
-    const saved = load(positional, flag("--machine"))
-    const outcomes = intoHerdr ? restoreHerdr(saved) : restore(saved)
+  if (command === "restore" && rest.includes("--herdr")) {
+    const outcomes = restoreHerdr(load(positional, flag("--machine")))
     for (const outcome of outcomes) console.log(outcome.line)
     const count = (kind: Outcome["kind"]) => outcomes.filter((o) => o.kind === kind).length
     console.log(`${count("restored")} restored, ${count("skipped")} skipped, ${count("failed")} failed`)
-    if (!intoHerdr && count("restored") > 0) console.log("next: hcm resume (after herdr has stopped)")
     return count("failed") === 0 ? 0 : 1
   }
   console.error(USAGE)
