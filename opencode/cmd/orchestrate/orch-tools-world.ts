@@ -88,7 +88,7 @@ export const requestHeadFor = (unit: string, round: number): string => shaFor(`r
  * The default branch of the run's warm source, as its lands made it (memory/main-line.ts): a root commit, then one
  * merge per branch each pushed land merged, oldest first. A merge takes in the head of its unit's newest request, as
  * the run's files hold it when the land ran; the landing's push answers the push's last merge. A unit in `fastForward`
- * lands as `rift land` fast-forwards: its branch's commits go onto the line, its request head last, and no merge.
+ * lands as a land fast-forwards: its branch's commits go onto the line, its request head last, and no merge.
  */
 const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number, fastForward: ReadonlyArray<string>) => {
   const line: Array<MemoryMainLine.Entry> = [{ sha: shaFor("root"), subject: "root", merged: [] }]

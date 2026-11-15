@@ -93,12 +93,12 @@
  * - The `orchestrate` tool (mods/orchestrate/tools.ts): lane, land, verify
  *   and status for a root that runs units. The plugin keeps no state of a run:
  *   every answer is computed at the call from the run tables (the status
- *   plugin's RPC over the skill's status.ts) and the warm source's Rift list
- *   (the rift plugin's RPC), so a restart or another root session gets the
+ *   plugin's RPC over the skill's status.ts) and the base's workspace list
+ *   (the rift RPC), so a restart or another root session gets the
  *   same answer. No batch rule refuses a call; a land of a unit the run tables
  *   show in another state than `ready` lands with a warning. What still
  *   refuses: a subagent's lane, land or verify (merge and push are the
- *   root's), a malformed input, and what the rift plugin refuses. After a
+ *   root's), a malformed input, and what the work plugin refuses. After a
  *   root's compaction it gets one message (no new turn): its status and the
  *   re-read. An older config's `ledger`, `cadence`, `guard` and `drops`, and a
  *   call's `departs`, `(departs: …)` and `(folds: …)`, still decode and mean
@@ -468,7 +468,7 @@ const SPAWNED = "You are a subagent spawned by another session."
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
-/** A rift RPC call that did not act, in the rift tool's words. */
+/** A rift RPC call that did not act, in the work tool's words. */
 interface RiftFailed {
   readonly outcome: "failed"
   readonly message: string
@@ -605,8 +605,8 @@ export const make = (
         drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid),
       )
       // The `orchestrate` tool's reads (mods/orchestrate/tools.ts), at each call: the run tables (the status plugin's
-      // RPC, through `Runs`) and the warm source's Rifts (the rift plugin's RPC). Its lanes, its verify checkout and
-      // its land go to this location's rift plugin over the rift RPC (`@dotfiles/opencode-work/rpc`). Nothing of a
+      // RPC, through `Runs`) and the base's workspaces (the rift RPC). Its lanes, its verify checkout and
+      // its land go to this location's work plugin over the rift RPC (`@dotfiles/opencode-work/rpc`). Nothing of a
       // run is kept between calls.
       const riftRpc = () => ctx.rpc(RIFT_RPC)
       const sessions = Context.get(services, Sessions)
@@ -898,7 +898,7 @@ export const make = (
           return Tools.laneAnswer(unit, created.rift, true)
         })
 
-      /** A verify's clean checkout: the Rift `verify-<batch>` detached at `at`, answered when it exists, else made. */
+      /** A verify's clean checkout: the workspace `verify-<batch>` detached at `at`, answered when it exists, else made. */
       const verifyLane = (sessionID: string, batch: string, at: string) =>
         Effect.gen(function* () {
           const name = Tools.verifyLaneOf(batch)

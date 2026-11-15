@@ -1,9 +1,9 @@
 // The `orchestrate` tool's domain, pure: its input (`OrchestrateInput`), its one description, which tells the
 // loop `lane → implement → ready → land → verify`, the input rule (which fields each action takes), the rule that
-// names a unit's Rift, and the words of every answer. The plugin (cmd/orchestrate/server.ts) runs it and keeps no
+// names a unit's workspace, and the words of every answer. The plugin (cmd/orchestrate/server.ts) runs it and keeps no
 // state of a run: every answer is computed at the call from the run tables (the skill's status script, through the
-// status plugin) and the warm source's Rift list (the rift plugin's RPC), so a restart or another root session gets
-// the same answer. The rift plugin makes and lands the Rifts; nothing here refuses a land for a batch rule.
+// status plugin) and the base's workspace list (the rift RPC), so a restart or another root session gets
+// the same answer. The work plugin makes and lands the workspaces; nothing here refuses a land for a batch rule.
 import { Array as Arr, Match, Option, Predicate, Result, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { headsOf } from "./fleet.ts"
@@ -37,7 +37,7 @@ export const OrchestrateInput = toolInput(
     unit: Schema.optional(Schema.String).annotate({ description: "lane: the unit, as its role calls name it (`implementor <unit> r1`)." }),
     run: Schema.optional(Schema.String).annotate({ description: "lane: the run, for the branch `<run>/<unit>`." }),
     branch: Schema.optional(Schema.String).annotate({ description: "lane: the branch, in place of `<run>/<unit>` or `feat/<unit>`." }),
-    source: Schema.optional(Schema.String).annotate({ description: "lane: a directory of the repository whose warm source to use. Default: this session's directory." }),
+    source: Schema.optional(Schema.String).annotate({ description: "lane: a directory of the repository whose base to use. Default: this session's directory." }),
     units: Schema.optional(Schema.Array(LandUnit)).annotate({
       description: "land: the units to land, by name, or { unit, path } to land the workspace at path as the unit. Default: every unit the run tables show ready that has a lane.",
     }),
