@@ -5,7 +5,7 @@ description: Free disk space on a Mac. Surveys developer caches, build output, i
 
 # Reclaim
 
-The survey is read-only; every removal follows an answered question. `df` is the only measure of space freed. `du` counts APFS clones in full, so a removal can free far less than its `du` size: a Rift (`rift create --copy-all`) shares its blocks with its warm source until a file is written, and so do Rift trash, bun's and uv's caches, `node_modules` and code-sign clones. The survey sizes these by what removal would free and marks them `~`. Git worktrees are real copies: `du` is right for them.
+The survey is read-only; every removal follows an answered question. `df` is the only measure of space freed. `du` counts APFS clones in full, so a removal can free far less than its `du` size: a Rift (`rift create --copy-all`) or a `work` workspace shares its blocks with its warm source (its base) until a file is written, and so do their trash, bun's and uv's caches, `node_modules` and code-sign clones. The survey sizes these by what removal would free and marks them `~`. Git worktrees are real copies: `du` is right for them.
 
 ## 1. Survey
 
@@ -17,11 +17,13 @@ It prints free space, then every candidate by tier with its size, idle age, the 
 
 A clone's line reads `~X GiB own, Y GiB by du (shared with …)`. The own figure is the bytes no file outside the item shares (APFS reports each file's private size and clone family; shared blocks count only when every file of their family is inside the item). Tier totals and sorting use it. On a throwaway clone it matched `df` to 0.1% (1.563 GiB estimated, 1.562 GiB freed, 4.0 GiB by `du`). Quote the own figure for a clone, never its `du`. Removing a Rift and its source together frees more than both own figures: they share the rest. Off APFS, a Rift's own figure is the files written since its `.rift` marker, and the line says so; elsewhere a clone falls back to `du`, and the line says df tells. `rift remove` only moves a Rift to `.rifts/<repo>/.trash`; the space frees at `rift gc`, which empties every repo's trash.
 
+`work` keeps the workspaces of `<parent>/<repo>` in `<parent>/.work/<repo>/<name>`; the survey lists them with the Rifts, sized the same way, with `work rm <name>` run from the base. Off APFS a workspace's own figure is the files written since its folder was made. `work rm` only moves a workspace, or a Rift adopted into `work`, to `.work-trash/<name>.<n>` beside it, in `.work/<repo>/` or `.rifts/<repo>/`; the space frees at `work gc`, run from the base, which empties all of that base's trash. Until 2026-12-06 that trash is what a rollback from `work` to Rift restores from: do not run `work gc` before then, and the survey says so. The `.registry`, `.trusted` and `.lock` files in `.work/<repo>/` are `work`'s own state: never remove them, nor the `.work` folder.
+
 Before you run it, look for anything that reads old agent transcripts, such as a model eval or a retro due soon, and pass its start date as `--keep-since`.
 
 To see what an unexplained large folder holds, use `uvx fdu@latest <dir> --view largest`. To find stale dependency folders, use `uvx fdu@latest <dir> --kind dir --include node_modules --modified-before 30d --long`.
 
-On btrfs, `du` counts reflinked clones in full; `sudo btrfs filesystem du -s <dir>` gives the exclusive part, which is what removal frees. Quote that figure for Rifts and Rift trash.
+On btrfs, `du` counts reflinked clones in full; `sudo btrfs filesystem du -s <dir>` gives the exclusive part, which is what removal frees. Quote that figure for Rifts, workspaces and their trash.
 
 Deleted files that a process still holds open free their space only when that process exits. Old Claude and Codex binaries held by long-running sessions are the usual case. To total them, run `lsof +L1 | awk 'NR>1 && $7 ~ /^[0-9]+$/ {s+=$7} END {print s/2^30 " GiB"}'`. Report the total as "frees when those sessions restart".
 
@@ -35,7 +37,7 @@ Show one table: item, size (what removal frees: the own figure for a clone), idl
 |---|---|---|
 | A | Regenerable: package caches, build output, idle `node_modules`, DerivedData, old DeviceSupport, unavailable simulators, updater leftovers, old CLI versions, Bun WebView profiles, agent leftovers, inlined transcript images | Per category. Recommend removal. |
 | B | Costly to get back: simulator runtimes, Android SDK and emulators, Docker images and volumes, local AI models | Per item. Say what it costs to get back. |
-| C | User data: Rifts, Rift trash, worktrees, renders, bundles, scratch folders that git ignores, loose folders, big personal files | Per item. Never pre-select removal. For a Rift or a worktree, show its dirty and unpushed counts. |
+| C | User data: Rifts and workspaces, their trash, worktrees, renders, bundles, scratch folders that git ignores, loose folders, big personal files | Per item. Never pre-select removal. For a Rift, a workspace or a worktree, show its dirty and unpushed counts. |
 
 Leave alone, and say so: source code, `.git`, uncommitted or unpushed work, anything `[busy]`, Photos, Mail, Messages, Keychains, `~/.ssh`, credential and `.env` files, and app data outside the caches listed.
 
@@ -46,7 +48,7 @@ For each approved category, in order:
 1. Record `df -k /System/Volumes/Data`.
 2. Check the precondition: no `[busy]` process, and the app is closed. If anything is busy, ask the user to quit it, or skip the item.
 3. Run the command the survey printed. Use the tool's own command where there is one, and delete by path only the exact paths listed.
-4. Record `df` again. The difference is what that category freed; report it, not the survey's figure. For a Rift, measure after `rift gc`.
+4. Record `df` again. The difference is what that category freed; report it, not the survey's figure. For a Rift, measure after `rift gc`; for a workspace, after `work gc`, and not before 2026-12-06.
 
 A folder that is a symlink target (`find ~ -maxdepth 4 -type l -lname '*<dir>*'`) is live storage moved off the main disk: empty what is safe inside it, keep the folder. A filesystem in a loop-mounted image file returns freed blocks to the host disk only after a trim: run `sudo fstrim -v <mount>` and measure the host disk after it.
 
