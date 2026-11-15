@@ -609,7 +609,7 @@
     "mods/pool/pace.ts": {"effect/noNullish":14,"effect/noTernary":13},
     "mods/pool/placement.ts": {"effect/noNullish":5,"effect/noTernary":6},
     "mods/pool/push.test.ts": {"effect/noEffectRunInTests":1,"effect/noNullish":1,"effect/noTernary":3,"effect/preferTaggedConstructors":2},
-    "mods/pool/push.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":11,"effect/noGlobals":1,"effect/noNullish":51,"effect/noTernary":48,"effect/preferMatchTagsExhaustive":2},
+    "mods/pool/push.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":11,"effect/noNullish":49,"effect/noTernary":43,"effect/preferMatchTagsExhaustive":2},
     "mods/pool/quota.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":17,"effect/noNullish":15,"effect/noRuntimeTypeof":10,"effect/noTernary":23,"effect/noUnknownParameters":2,"effect/noUnsafeDictionaryType":1},
     "mods/pool/reset-safety.test.ts": {"effect/maxCognitiveComplexity":3,"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":3,"effect/noEffectRunInTests":1,"effect/noGlobals":5,"effect/noKnownValueWidening":1,"effect/noNullish":9,"effect/noTernary":13,"effect/preferTaggedConstructors":1},
     "mods/pool/reset-use.test.ts": {"effect/noConditionalEmptyObjectSpread":2,"effect/noEffectRunInTests":1,"effect/noNewError":1,"effect/noNullish":10,"effect/noTernary":5,"effect/noThrowStatement":1,"effect/preferTaggedConstructors":8},

@@ -162,7 +162,7 @@ describe("use it or lose it", () => {
     ])
     const told = run([[T0 + MINUTE, SettleClaim.make({ key, outcome: "reset", before: [] })]], claimed.state)
     expect(tags(told.events)).toEqual(["ClaimSettled", "OwnerTold"])
-    expect(told.events[1]).toMatchObject({ key, sessionID: "ses_root", text: "The pool claimed the weekly reset on account a before it expired unused: it gave back weekly 100% → 0%." })
+    expect(told.events[1]).toMatchObject({ key, sessionID: "ses_root", text: "The pool claimed the weekly reset on account a before it expired unused: weekly 100% used of 100% → 0% used, next reset 2026-11-12 12:00Z." })
     expect(told.state.resets[key]?.told).toContain("before it expired unused")
     expect(tags(run([[T0 + MINUTE, SettleClaim.make({ key, outcome: "cooldown", before: [] })]], claimed.state).events)).toEqual(["ClaimSettled"])
   })
@@ -218,9 +218,9 @@ describe("offered on demand", () => {
         header: "Reset now · a",
         key: offerKey("claude", "a", "weekly", T0 + 6 * DAY),
         question:
-          "weekly reset on account a now? Demand: a start is held and 3 starts are in flight across the fleet. It gives back weekly 100% → 0%. " +
+          "weekly reset on account a now? Demand: a start is held and 3 starts are in flight across the fleet. Claiming it takes weekly 100% used of 100% → 0% used, next reset 2026-11-15 12:00Z. " +
           "6.0 days remain before the weekly window resets by itself (2026-11-15), which a claim does not move; " +
-          "at its burn this period (100% in 1.0 days) ~100% of the 100% given back would be used by then. The reset expires 2027-01-08. Claim it?",
+          "at its burn this period (100% used of 100% in 1.0 days) it would use ~100% of the window again by then, of the 100% the claim gives back. The reset expires 2027-01-08. Claim it?",
       },
     })
   })
@@ -361,7 +361,7 @@ describe("a Fable reset", () => {
     const asked = events[1]
     if (asked?._tag !== "OwnerAsked") throw new Error("not asked")
     expect(asked.reset.question).toContain("Fable reset on account a now?")
-    expect(asked.reset.question).toContain("Fable week 100% → 0%, weekly 60% → ~10% (Fable's part 50% (40%–60%) by the limit tally)")
+    expect(asked.reset.question).toContain("Fable week 100% used of 100% → 0% used, next reset 2026-11-15 12:00Z, weekly 60% used of 100% → ~10% used, next reset 2026-11-15 12:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)")
     expect(asked.reset.question).toContain("before the Fable week resets by itself")
   })
 

@@ -239,7 +239,7 @@ if (args.includes('--codex')) {
     );
   } else console.log('cost: no fit yet');
   if (week && pace) {
-    console.log(`week: ${week.used}% used, resets ${when(week.resetsAt)}; pace ${p(pace.pctph)} (+${Math.round(leeway * 100)}% leeway; even ${p(pace.floor)}, rolling ${p(pace.rolling)}, ceiling ${p(pace.ceiling)})`);
+    console.log(`week: ${week.used}% used of 100%, resets ${when(week.resetsAt)}; pace ${p(pace.pctph)} (+${Math.round(leeway * 100)}% leeway; even ${p(pace.floor)}, rolling ${p(pace.rolling)}, ceiling ${p(pace.ceiling)})`);
   } else console.log('week: no host has seen its use');
   if (fit) {
     const interactive: Record<string, number> = {};

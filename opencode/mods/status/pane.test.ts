@@ -30,7 +30,7 @@ describe("accountRows", () => {
       {
         held: false,
         title: "anthropic / store:alpha · available",
-        windows: ["  5h 23% · reset 2026-11-04 16:00Z", "  7d 44% · reset unknown"],
+        windows: ["  5h 23%/100% used · reset 2026-11-04 16:00Z", "  7d 44%/100% used · reset unknown"],
       },
       {
         held: true,
@@ -61,8 +61,8 @@ describe("accountRows", () => {
     }
     expect(accountRows(pools)[0]?.windows).toEqual([
       "  5h unknown · reset unknown",
-      "  7d 50% · reset unknown",
-      "  Fable 7d 12% · reset 2026-11-04 16:00Z",
+      "  7d 50%/100% used · reset unknown",
+      "  Fable 7d 12%/100% used · reset 2026-11-04 16:00Z",
       "  resets 2 · until 2026-11-30",
     ])
     expect(accountRows(pools)[1]?.windows).toEqual(["  5h unknown · reset unknown", "  7d unknown · reset unknown"])
@@ -130,7 +130,7 @@ describe("accountRows", () => {
         {
           held: true,
           title: "anthropic / store:beta · held (usage-limit) until 2026-11-04 15:00Z",
-          windows: ["  5h 100% · reset 2026-11-04 15:00Z", "  7d unknown · reset unknown"],
+          windows: ["  5h 100%/100% used · reset 2026-11-04 15:00Z", "  7d unknown · reset unknown"],
         },
       ]),
     )

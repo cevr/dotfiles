@@ -1239,7 +1239,8 @@ describe("the fleet", () => {
         const pace = yield* plugin.pace("anthropic")
         expect(pace).toMatchObject({ ok: false, measured: true })
         expect(pace.reason).toBe(
-          "the pool's weekly pace is over (90.0% spent across 2 accounts, +30.0% for 3 agents started in the last 10 min)",
+          "the pool's weekly pace is over: its 2 accounts' weeks are at 45.0% used of 100% on average, plus 15.0% of the week counted for 3 agents started in the last 10 min; " +
+            "the spend-evenly line averages 54.5% used of 100% now, and the start holds past it",
         )
         // It holds until the oldest start settles, sooner than the week catches up.
         expect(pace.ok ? 0 : pace.retryAt).toBe(now - 3 * 60_000 + 10 * 60_000 + 1)
@@ -1283,7 +1284,7 @@ describe("the fleet", () => {
         })
         expect(JSON.stringify(report)).not.toContain("token")
         expect((yield* plugin.fleet).starts).toBe(2)
-        expect((yield* plugin.pace("anthropic")).reason).toContain("+10.0% for 1 agent started in the last 10 min")
+        expect((yield* plugin.pace("anthropic")).reason).toContain("plus 5.0% of the week counted for 1 agent started in the last 10 min")
       }),
     ))
 
@@ -1314,7 +1315,7 @@ describe("the fleet", () => {
         yield* project.started({ providerID: "anthropic" })
         expect((yield* home.fleet).starts).toBe(1)
         expect((yield* home.report).starts).toEqual([{ providerID: "anthropic", at: expect.any(Number) }])
-        expect((yield* home.pace("anthropic")).reason).toContain("+10.0% for 1 agent started in the last 10 min")
+        expect((yield* home.pace("anthropic")).reason).toContain("plus 5.0% of the week counted for 1 agent started in the last 10 min")
       }),
     ))
 

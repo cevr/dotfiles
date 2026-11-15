@@ -37,6 +37,7 @@ import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
 import { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, type RunWork, Workload, type LoginsUnavailable } from "./service.ts"
 import * as PushModel from "./push.ts"
+import { used as usedOf } from "./usage-text.ts"
 import type { PushAnswer, PushRequest } from "./push.ts"
 
 /** A question gone from the owner's tray this long after it was asked, with no answer, was dismissed. */
@@ -561,7 +562,7 @@ export const layer = (config: Config) =>
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
         (windows ?? [])
           .filter((window) => window.name === "5h" || window.name === "7d")
-          .map((window) => `${window.name} ${Math.round(window.utilization * 100)}%${window.resetAt === undefined ? "" : ` (resets ${new Date(window.resetAt).toISOString()})`}`)
+          .map((window) => `${window.name} ${usedOf(window.utilization)}${window.resetAt === undefined ? "" : ` (resets ${new Date(window.resetAt).toISOString()})`}`)
           .join(", ")
 
       // The host's leases and claim locks: the process's, unless a test gives each host its own.

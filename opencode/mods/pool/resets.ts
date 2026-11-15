@@ -57,12 +57,13 @@
 //
 // `Review` is the decision: it reads every pool's accounts as the pool holds
 // them now and records what is due. The model (model.ts) carries it out.
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { windowMs } from "./limits.ts"
 import { type PacePlan, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
+import { iso, percent, used } from "./usage-text.ts"
 
 export { ClaimOutcome } from "./quota.ts"
 
@@ -377,7 +378,6 @@ export const effectOf = (
   ]
 }
 
-const percent = (value: number) => `${Math.round(value * 100)}%`
 const windowLabel = (name: string) => (name === "5h" ? "5h" : name === "7d" ? "weekly" : `${scopeOf(name) ?? name} week`)
 
 const SOURCES: Readonly<Record<Share["source"], string>> = {
@@ -390,17 +390,26 @@ const SOURCES: Readonly<Record<Share["source"], string>> = {
 const shareText = (share: Share) =>
   share.source === "unread"
     ? "Fable's part unread, none counted"
-    : `Fable's part ${percent(share.points)}${share.low === share.high ? "" : ` (${percent(share.low)}–${percent(share.high)})`} ${SOURCES[share.source]}`
+    : `Fable's part ${percent(share.points)} of the week${share.low === share.high ? "" : ` (${percent(share.low)}–${percent(share.high)})`} ${SOURCES[share.source]}`
 
-/** What a reset gives back, as the owner reads it: `5h 100% → 0%, Fable week 80% → 0%, weekly 45% → ~39% (Fable's part 6% (4%–8%) by the limit tally)`. */
+/** A week-long window's own reset, which a claim does not move: `, next reset 2026-11-18 12:00Z`; none for the 5-hour window, which starts again. */
+const resetsText = (give: Giveback) =>
+  Option.match(Option.filter(Option.fromUndefinedOr(give.resetAt), () => give.window !== "5h"), { onNone: () => "", onSome: (at) => `, next reset ${iso(at)}` })
+
+/**
+ * What a reset gives back, as the owner reads it, each window's use before
+ * and after: `5h 100% used of 100% → 0% used, Fable week 80% used of 100% →
+ * 0% used, next reset <time>, weekly 45% used of 100% → ~39% used, next reset <time>
+ * (Fable's part 6% of the week (4%–8%) by the limit tally)`.
+ */
 export const buysOf = (gives: ReadonlyArray<Giveback>): string =>
   gives.length === 0
     ? "nothing the account reads"
     : gives
         .map((give) =>
           give.share === undefined
-            ? `${windowLabel(give.window)} ${percent(give.from)} → ${percent(give.to)}`
-            : `${windowLabel(give.window)} ${percent(give.from)} → ~${percent(give.to)} (${shareText(give.share)})`,
+            ? `${windowLabel(give.window)} ${used(give.from)} → ${percent(give.to)} used${resetsText(give)}`
+            : `${windowLabel(give.window)} ${used(give.from)} → ~${percent(give.to)} used${resetsText(give)} (${shareText(give.share)})`,
         )
         .join(", ")
 
@@ -506,11 +515,15 @@ export const claudeQuestion = (label: string, account: AccountStatus, credit: Re
   const clears = credit.clears ?? []
   const week = weekly(account)
   const weekSpent = spent.includes("7d")
+  const fiveFrom = Option.match(Option.fromUndefinedOr(account.reading).pipe(Option.flatMap((reading) => Option.fromUndefinedOr(reading.windows.find((window) => window.name === "5h" && accountWide(window))))), {
+    onNone: () => "",
+    onSome: (five) => ` from ${used(five.utilization)}`,
+  })
   const buys = weekSpent
     ? clears.includes("seven_day")
-      ? "buys the 5h and weekly windows back"
-      : `buys the 5h window back, but its weekly window is spent too and the grant clears ${clears.length === 0 ? "only the 5h window" : clears.join(", ")}, not seven_day: it may not lift the hold`
-    : "buys the 5h window back"
+      ? `takes the 5h window${fiveFrom} and the weekly window from ${used(1)} to 0% used`
+      : `takes the 5h window${fiveFrom} to 0% used, but its weekly window is at ${used(1)} too and the grant clears ${clears.length === 0 ? "only the 5h window" : clears.join(", ")}, not seven_day: it may not lift the hold`
+    : `takes the 5h window${fiveFrom} to 0% used`
   const left = week?.resetAt === undefined || week.resetAt <= now ? undefined : week.resetAt - now
   const remain = left === undefined ? "the weekly reset is unread" : `${spanOf(left)} remain before the weekly reset (${dayOf(now + left)})`
   const ends = credit.expiresAt === undefined ? "" : ` The grant ends ${dayOf(credit.expiresAt)}.`
@@ -1096,10 +1109,10 @@ export const offerQuestion = (label: string, offer: Offer, demand: Pick<Demand, 
   const said = held ? `a start is held${inflight > 0 ? ` and ${flight}` : ""}` : flight
   const ends = offer.credit.expiresAt === undefined ? "" : ` The reset expires ${dayOf(offer.credit.expiresAt)}.`
   return (
-    `${KIND_LABEL[offer.kind]} on account ${label} now? Demand: ${said}. It gives back ${buysOf(offer.gives)}. ` +
+    `${KIND_LABEL[offer.kind]} on account ${label} now? Demand: ${said}. Claiming it takes ${buysOf(offer.gives)}. ` +
     `${spanOf(offer.left)} remain before the ${windowNoun(offer.window)} resets by itself (${dayOf(offer.resetAt)}), which a claim does not move; ` +
-    `at its burn this period (${percent(offer.gives.find((give) => give.window === offer.window)?.from ?? 0)} in ${spanOf(offer.elapsed)}) ` +
-    `~${percent(offer.expected)} of the ${percent(offer.restored)} given back would be used by then.${ends} Claim it?`
+    `at its burn this period (${used(offer.gives.find((give) => give.window === offer.window)?.from ?? 0)} in ${spanOf(offer.elapsed)}) ` +
+    `it would use ~${percent(offer.expected)} of the window again by then, of the ${percent(offer.restored)} the claim gives back.${ends} Claim it?`
   )
 }
 
@@ -1459,7 +1472,7 @@ const takeAnswer = (state: ResetsState, command: TakeAnswer, now: number): Reado
 export const unagreedQuestion = (reset: Pick<Reset, "label" | "kind" | "why" | "buys">, unreachable: ReadonlyArray<string>): string => {
   const kind = reset.kind === undefined ? "A reset" : KIND_LABEL[reset.kind].replace(/^./, (first) => first.toUpperCase())
   const due = reset.why === "expiring" ? "It would expire unused otherwise." : "Every Codex account is held and a start waits."
-  const gives = reset.buys === undefined ? "" : ` It gives back ${reset.buys}.`
+  const gives = reset.buys === undefined ? "" : ` Claiming it takes ${reset.buys}.`
   const one = unreachable.length === 1
   return (
     `${kind} on account ${reset.label} now? ${due}${gives} ` +
@@ -1534,10 +1547,13 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
   const newest = Object.values(state.waits)
     .filter((wait) => wait.sessionID !== undefined)
     .toSorted((left, right) => right.at - left.at)[0]
-  const kind = reset.kind === undefined ? "reset" : KIND_LABEL[reset.kind]
-  const text = `The pool claimed the ${kind} on account ${reset.label} before it expired unused${reset.buys === undefined ? "" : `: it gave back ${reset.buys}`}.`
+  const text = toldText(reset)
   return [settled, OwnerTold.make({ key: reset.key, at: now, text, ...(newest?.sessionID === undefined ? {} : { sessionID: newest.sessionID }) })]
 }
+
+/** What the owner is told of a reset the pool claimed on its own before it expired: its kind, account and each window's use before and after. */
+export const toldText = (reset: Pick<Reset, "kind" | "label" | "buys">): string =>
+  `The pool claimed the ${reset.kind === undefined ? "reset" : KIND_LABEL[reset.kind]} on account ${reset.label} before it expired unused${reset.buys === undefined ? "" : `: ${reset.buys}`}.`
 
 /**
  * Why a claim decided earlier is no longer to be sent, judged on the

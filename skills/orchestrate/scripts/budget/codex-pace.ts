@@ -270,16 +270,16 @@ export function admit(input: {
   // Interactive use is no worker: alone means no other worker thread live and none just started.
   const alone = reserve === 0 && !others.some((t) => t.role !== 'interactive');
   const adds = wph * k;
-  const p = (n: number) => `${n.toFixed(1)} %/h`;
+  const p = (n: number) => `${n.toFixed(1)}% of the week per hour`;
   const who = `${family} ${role === 'none' ? 'thread' : role}`;
-  const burns = `codex burns ${p(now)}${reserve > 0 ? ` (${p(reserve)} of it just started)` : ''}`;
+  const burns = `codex uses ${p(now)}${reserve > 0 ? ` (${p(reserve)} of it just started)` : ''}`;
   // A turn is the smallest unit of work: with no other worker live, one runs even when it alone passes the pace.
   const room = leeway > 0 ? ` (+${Math.round(leeway * 100)}% leeway)` : '';
   if (now + adds > pctph * (1 + leeway)) {
-    if (alone) return { ok: true, reason: `fits: this ${who} runs alone, as no other worker burns; the pace is ${p(pctph)} (+${p(adds)})` };
+    if (alone) return { ok: true, reason: `fits: this ${who} runs alone, as no other worker uses the week; it would use ${p(adds)}, the pace allows ${p(pctph)}` };
     const workers = others.filter((t) => t.role !== 'interactive');
     const opensAt = opening({ workers, threads, f, burning: now, reserve, adds, pctph: pctph * (1 + leeway), family, role, now: at });
-    return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}${room}`, opensAt };
+    return { ok: false, reason: `${burns}; this ${who} would use about ${p(adds)} more; the pace allows ${p(pctph)}${room}`, opensAt };
   }
-  return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)}${room} with this ${who} (+${p(adds)})` };
+  return { ok: true, reason: `fits: codex would use ${p(now + adds)} with this ${who} (+${p(adds)}); the pace allows ${p(pctph)}${room}` };
 }

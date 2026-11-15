@@ -4,7 +4,7 @@
 // and how alarming each line is.
 // tui/sidebar.tsx reads the answer and draws these lines.
 import { Schema } from "effect"
-import { stamp } from "./pane.ts"
+import { stamp, usedShort } from "./pane.ts"
 
 /**
  * The pool's `session` answer as the sidebar reads it. The pool's
@@ -107,7 +107,7 @@ export const sidebarLines = (answer: SidebarAnswer, now: number): ReadonlyArray<
     // A window that has reset since the answer is empty, until the next one says otherwise.
     const reset = window.resetAt !== undefined && window.resetAt > now ? window.resetAt : undefined
     const utilization = window.resetAt !== undefined && reset === undefined ? 0 : window.utilization
-    const percent = `${shown} ${Math.round(utilization * 100)}%`
+    const percent = `${shown} ${usedShort(utilization)}`
     return [{ text: reset === undefined ? percent : `${percent} · ${when(reset, now)}`, tone: toneOf(utilization) }]
   })
   return [title, ...hold, ...(windows.length === 0 ? [{ text: "no reading yet", tone: "muted" as const }] : windows)]

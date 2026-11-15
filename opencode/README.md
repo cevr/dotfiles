@@ -3065,8 +3065,20 @@ The shared Claude `budget.ts` scans `~/.claude/projects` transcripts, so it
 cannot measure OpenCode's load or estimate its agent costs. Instead, this
 pool reads provider quotas, including spend by other harnesses on the same
 accounts. It holds new starts when pooled weekly use exceeds a 99% even
-weekly allowance plus five percentage points of leeway, or all available
-accounts have no short/weekly-window room.
+weekly allowance plus five percentage points of leeway, or every available
+account is at a hold line: its 5-hour window at 90% used of 100%, or its
+week at 99% used of 100%.
+
+Every usage figure the owner or an agent reads (the pace's hold reasons and
+latches, the reset questions and claim notices, `pool_push` plan and status,
+the sidebar and the `/pool` pane) is the share of the window USED, out of
+100%: `70% used of 100%`, or `70%/100% used` where space is tight. A
+threshold says the line it holds at (`holds at 90% used of 100%`), a reset
+claim each window's use before and after (`5h 100% used of 100% → 0% used`),
+a rate the use per hour (`uses 0.85% of a week per hour`), and a figure over
+several accounts their average. Never a bare `X%`, and never room, left or
+remaining as a percent. `mods/pool/usage-text.ts` holds the wording, and
+`cmd/pool/usage-wording.test.ts` lists every kind of message with its text.
 
 A held start falls back to Codex first (see
 [Opus first, Codex second](#opus-first-codex-second)); one both hold latches,
@@ -3121,8 +3133,10 @@ accounts. The pool's `fleet` option closes that gap. Each host records the
 subagents orchestrate admits (`started`). It reads its peers' reports every
 `pollSeconds` (30), and its pace charges each start in the fleet
 `startCost` (0.005 of one account's week) for `settleMinutes` (10). The
-hold names the extra: `the pool's weekly pace is over (90.0% spent across 2
-accounts, +30.0% for 3 agents started in the last 10 min)`. It opens when the
+hold names the extra: `the pool's weekly pace is over: its 2 accounts' weeks
+are at 45.0% used of 100% on average, plus 15.0% of the week counted for 3
+agents started in the last 10 min; the spend-evenly line averages 54.5% used
+of 100% now, and the start holds past it`. It opens when the
 oldest start settles. A report also carries the host's readings. A peer's
 newer reading of a login this pool lists (the same credential id, such as
 `store:<label>`) replaces the older one.

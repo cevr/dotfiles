@@ -155,7 +155,7 @@ describe('admit', () => {
     // Thread a burns 1.0 %/h; sol threads run 2 active hours: without it, 0.1 + 0.4 %/h fits.
     expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'implementor', now: T })).toEqual({
       ok: false,
-      reason: 'codex burns 1.1 %/h; this sol implementor adds about 0.4 %/h; the pace is 1.2 %/h',
+      reason: "codex uses 1.1% of the week per hour; this sol implementor would use about 0.4% of the week per hour more; the pace allows 1.2% of the week per hour",
       opensAt: T + 2 * HOUR,
     });
     // Two live sol verifiers at 1.0 %/h each, 0.5 and 1.5 hours in: the first to end (in half an hour) leaves 1.0 + 0.4 %/h.
@@ -166,24 +166,24 @@ describe('admit', () => {
   });
 
   test('starts one that fits', () => {
-    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', now: T })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 2.0 %/h with this sol implementor (+0.4 %/h)' });
+    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', now: T })).toEqual({ ok: true, reason: "fits: codex would use 1.5% of the week per hour with this sol implementor (+0.4% of the week per hour); the pace allows 2.0% of the week per hour" });
   });
 
   test('the leeway admits a turn that passes the pace by no more than its fraction', () => {
     // 1.1 + 0.4 = 1.5 %/h against a pace of 1.45: held at no leeway, admitted at 5% (1.52).
     expect(admit({ loads, fit: k, pctph: 1.45, family: 'sol', role: 'implementor', now: T })?.ok).toBe(false);
-    expect(admit({ loads, fit: k, pctph: 1.45, family: 'sol', role: 'implementor', leeway: 0.05, now: T })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 1.4 %/h (+5% leeway) with this sol implementor (+0.4 %/h)' });
+    expect(admit({ loads, fit: k, pctph: 1.45, family: 'sol', role: 'implementor', leeway: 0.05, now: T })).toEqual({ ok: true, reason: "fits: codex would use 1.5% of the week per hour with this sol implementor (+0.4% of the week per hour); the pace allows 1.4% of the week per hour (+5% leeway)" });
   });
 
   test("a next turn does not count its own thread's live burn again", () => {
     // Without thread a's 1.0 %/h: 0.1 %/h interactive, plus 0.4 %/h for the turn.
-    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'verifier', thread: 'a', now: T })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol verifier (+0.4 %/h)' });
+    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'verifier', thread: 'a', now: T })).toEqual({ ok: true, reason: "fits: codex would use 0.5% of the week per hour with this sol verifier (+0.4% of the week per hour); the pace allows 1.2% of the week per hour" });
   });
 
   test('counts the turns just started that the live burn does not show yet', () => {
     expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', reserve: 0.6, now: T })).toEqual({
       ok: false,
-      reason: 'codex burns 1.7 %/h (0.6 %/h of it just started); this sol implementor adds about 0.4 %/h; the pace is 2.0 %/h',
+      reason: "codex uses 1.7% of the week per hour (0.6% of the week per hour of it just started); this sol implementor would use about 0.4% of the week per hour more; the pace allows 2.0% of the week per hour",
       opensAt: T + 2 * HOUR,
     });
   });
@@ -191,7 +191,7 @@ describe('admit', () => {
   test('starts a lone turn that alone passes the pace', () => {
     expect(admit({ loads: [load({}), load({ host: 'box', threads: [], now: T })], fit: k, pctph: 0.3, family: 'sol', role: 'implementor' })).toEqual({
       ok: true,
-      reason: 'fits: this sol implementor runs alone, as no other worker burns; the pace is 0.3 %/h (+0.4 %/h)',
+      reason: "fits: this sol implementor runs alone, as no other worker uses the week; it would use 0.4% of the week per hour, the pace allows 0.3% of the week per hour",
     });
     // Interactive use is no worker: even a little of it would otherwise hold a host's queue.
     expect(admit({ loads: [load({ interactive1h: { sol: 1.6e6 }, now: T })], fit: k, pctph: 0.5, family: 'sol', role: 'implementor' })).toMatchObject({ ok: true });

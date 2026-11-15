@@ -43,8 +43,8 @@ describe("sidebarLines", () => {
     }
     expect(sidebarLines(answer, now)).toEqual([
       { text: "claude-max-2", tone: "base" },
-      { text: "week 41% · in 1d 23h · Fri 14:00Z", tone: "muted" },
-      { text: "5h 12% · in 6h 40m · 21:40Z", tone: "muted" },
+      { text: "week 41%/100% used · in 1d 23h · Fri 14:00Z", tone: "muted" },
+      { text: "5h 12%/100% used · in 6h 40m · 21:40Z", tone: "muted" },
     ])
   })
 
@@ -63,8 +63,8 @@ describe("sidebarLines", () => {
     }
     expect(sidebarLines(answer, now)).toEqual([
       { text: "claude-max-2", tone: "base" },
-      { text: "week 41% · in 1d 23h · Fri 14:00Z", tone: "muted" },
-      { text: "Fable week 100% · in 1d 23h · Fri 14:00Z", tone: "error" },
+      { text: "week 41%/100% used · in 1d 23h · Fri 14:00Z", tone: "muted" },
+      { text: "Fable week 100%/100% used · in 1d 23h · Fri 14:00Z", tone: "error" },
     ])
   })
 
@@ -85,8 +85,8 @@ describe("sidebarLines", () => {
     expect(sidebarLines(answer, now)).toEqual([
       { text: "beta", tone: "warning" },
       { text: "held · in 2h 0m · 17:00Z", tone: "warning" },
-      { text: "week 80%", tone: "warning" },
-      { text: "5h 100% · in 2h 0m · 17:00Z", tone: "error" },
+      { text: "week 80%/100% used", tone: "warning" },
+      { text: "5h 100%/100% used · in 2h 0m · 17:00Z", tone: "error" },
     ])
   })
 
@@ -108,7 +108,7 @@ describe("sidebarLines", () => {
     }
     expect(sidebarLines(answer, now)).toEqual([
       { text: "alpha", tone: "base" },
-      { text: "5h 0%", tone: "muted" },
+      { text: "5h 0%/100% used", tone: "muted" },
     ])
   })
 
