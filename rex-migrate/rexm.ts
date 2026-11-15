@@ -2,7 +2,8 @@
 // rexm: make Rex sessions from herdr-core (hc) spaces, as hcm made hc spaces from herdr workspaces.
 // Each hc space becomes a Rex session, each hc tab a Rex tab (window) with a fresh shell per hc terminal,
 // in that terminal's folder. Running programs cannot move; `resume` types each OpenCode terminal's
-// `opencode -s <id>` into its new Rex shell once, and only after the hc copy stopped. See README.md.
+// `opencode -s <id>` into its new Rex shell once; the hc copy may keep running (an OpenCode session can be
+// open in several TUIs). See README.md.
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -18,8 +19,8 @@ is typed into its new shell once, by resume.
   apply   make them on the Rex server; a rerun adds only what is new, and a space
           whose Rex session exists gets the new tabs. Changes nothing in hc
   resume  type \`opencode -s <id>\` into each OpenCode tab's new Rex shell, once;
-          refused for a session whose hc copy still runs
-  verify  read-only: one Rex tab per hc tab, no resume pending, no session open twice
+          the hc copy may keep running: a session can be open in several TUIs
+  verify  read-only: one Rex tab per hc tab, no resume pending, no session in two Rex panes
 
 -S, REX_SERVER  the Rex server (a host label or an address); default the local one
 HC_SESSION      the hc session, as for hc itself
@@ -429,7 +430,7 @@ export const reconcile = async (planned: Plan, rex: Rex | null, store: Store, dr
   }
   lines.push(...planned.notes.map((n) => `note: ${n}`))
   const pending = Object.values(resumes).filter((r) => r.state === "pending").length
-  lines.push(dry ? `plan: ${planned.spaces.length} spaces; apply makes what says "would add"` : `${made} made; ${pending} resume(s) pending${pending > 0 ? ": quit those sessions in hc, then rexm resume" : ""}`)
+  lines.push(dry ? `plan: ${planned.spaces.length} spaces; apply makes what says "would add"` : `${made} made; ${pending} resume(s) pending${pending > 0 ? ": rexm resume" : ""}`)
   return { lines, code }
 }
 
@@ -445,16 +446,13 @@ const rexOpen = async (rex: Rex, live: Live, skip: string): Promise<Map<string, 
   return open
 }
 
-/** Type each pending resume once, only where its hc copy stopped and its Rex block is a fresh shell. */
-export const resume = async (hc: Hc, rex: Rex, store: Store, opencode = "opencode", settleMs = 15_000): Promise<Result> => {
+/** Type each pending resume once, where its Rex block is a fresh shell. The hc copy may still run: an OpenCode session can be open in several TUIs at once. */
+export const resume = async (_hc: Hc, rex: Rex, store: Store, opencode = "opencode", settleMs = 15_000): Promise<Result> => {
   const lines: string[] = []
   let code = 0
   const state = store.load()
   const resumes = { ...state.resumes }
-  const view = await hc.view()
   const live = index(await rex.sessions())
-  const openHc = new Map<string, string[]>()
-  for (const t of view.terminals) for (const id of openIn(t)) openHc.set(id, [...(openHc.get(id) ?? []), t.address])
   let typed = 0
   for (const [id, r] of Object.entries(state.resumes)) {
     if (r.state !== "pending") continue
@@ -469,16 +467,6 @@ export const resume = async (hc: Hc, rex: Rex, store: Store, opencode = "opencod
     }
     if (!live.blocks.has(r.block)) {
       refuse("its Rex shell is gone; run rexm apply again")
-      continue
-    }
-    const inHc = openHc.get(id)
-    if (inHc !== undefined) {
-      refuse(`still open in hc ${inHc.join(", ")}; quit it there first`)
-      continue
-    }
-    const origin = view.terminals.find((t) => t.address === r.from)
-    if (origin !== undefined && (origin.foreground === null || runsOpenCode(origin))) {
-      refuse(`hc ${origin.address} still runs ${fg(origin.foreground)}; quit it there first`)
       continue
     }
     let here = await rex.foreground(r.session, r.block)
@@ -513,7 +501,7 @@ export const resume = async (hc: Hc, rex: Rex, store: Store, opencode = "opencod
   return { lines, code }
 }
 
-/** Read-only: one Rex tab per hc tab, no resume pending, no session open twice. */
+/** Read-only: one Rex tab per hc tab, no resume pending, no session in two Rex panes. */
 export const verify = async (hc: Hc, rex: Rex, store: Store): Promise<Result> => {
   const problems: string[] = []
   const state = store.load()
@@ -536,7 +524,6 @@ export const verify = async (hc: Hc, rex: Rex, store: Store): Promise<Result> =>
     if (r.state === "failed") problems.push(`resumes: typing ${id} into ${short(r.block)} failed (${r.note ?? "?"}); open it there by hand`)
   }
   const where = new Map<string, string[]>()
-  for (const t of view.terminals) for (const id of openIn(t)) where.set(id, [...(where.get(id) ?? []), `hc ${t.address}`])
   for (const [block, session] of live.blocks)
     for (const id of sessionsIn(text(await rex.foreground(session, block)))) where.set(id, [...(where.get(id) ?? []), `Rex ${short(block)}`])
   for (const [id, at] of where) if (at.length > 1) problems.push(`sessions: ${id} is open in ${at.join(" and ")}`)

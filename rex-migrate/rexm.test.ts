@@ -225,7 +225,6 @@ const COMMANDS = ["apply", "apply", "resume", "resume", "stop", "stop", "addTab"
 interface Stats {
   quit: number
   typed: number
-  refusedOpen: number
   adopted: number
   closedTyped: number
   splits: number
@@ -239,10 +238,8 @@ const run = async (seed: number, steps: number, stats: Stats) => {
   const closedTyped = new Set<string>()
   const check = (what: string) => {
     const inRex = w.rex.open()
-    const inHc = hcOpen(w.hc)
     for (const [id, n] of inRex) {
       if (n > 1) throw new Error(`seed ${seed} after ${what}: ${id} open ${n} times in Rex`)
-      if ((inHc.get(id) ?? 0) > 0) throw new Error(`seed ${seed} after ${what}: ${id} open in hc and in Rex`)
     }
     const counts = new Map<string, number>()
     for (const t of w.rex.typed) for (const id of sessionsIn(`opencode ${t.text}`)) counts.set(id, (counts.get(id) ?? 0) + 1)
@@ -285,7 +282,6 @@ const run = async (seed: number, steps: number, stats: Stats) => {
         const before = w.rex.typed.length
         const result = await resume(w.hc, w.rex, w.store, "opencode", 0)
         stats.typed += w.rex.typed.length - before
-        stats.refusedOpen += result.lines.filter((l) => l.includes("still open in hc")).length
         for (const t of w.rex.typed.slice(before)) for (const id of sessionsIn(`opencode ${t.text}`)) typedIds.add(id)
         break
       }
@@ -386,11 +382,10 @@ const run = async (seed: number, steps: number, stats: Stats) => {
 
 describe("model-based: generated hc layouts and command sequences", () => {
   test("400 runs of 30 commands: one Rex tab per hc tab, at most once per session, never open twice", async () => {
-    const stats: Stats = { quit: 0, typed: 0, refusedOpen: 0, adopted: 0, closedTyped: 0, splits: 0 }
+    const stats: Stats = { quit: 0, typed: 0, adopted: 0, closedTyped: 0, splits: 0 }
     for (let seed = 1; seed <= 400; seed++) await run(seed, 30, stats)
     // The runs reach the states that matter.
     expect(stats.typed).toBeGreaterThan(200)
-    expect(stats.refusedOpen).toBeGreaterThan(50)
     expect(stats.adopted).toBeGreaterThan(10)
     expect(stats.closedTyped).toBeGreaterThan(5)
     expect(stats.splits).toBeGreaterThan(50)
@@ -472,15 +467,10 @@ describe("the parts", () => {
     return { hc, rex: new FakeRex(), store: memoryStore() }
   }
 
-  test("resume refuses while the hc copy runs, and says where; after it stops, types once", async () => {
+  test("resume types while the hc copy still runs (a session can be open in several TUIs), once", async () => {
     const { hc, rex, store } = single()
     const applied = await reconcile(plan(await hc.view()), rex, store, false)
     expect(applied.lines.join("\n")).toContain("resume will type opencode -s ses_one")
-    const early = await resume(hc, rex, store, "opencode", 0)
-    expect(early.code).toBe(1)
-    expect(early.lines[0]).toContain("still open in hc t1; quit it there first")
-    expect(rex.typed).toEqual([])
-    stopInHc(hc, "ses_one")
     const late = await resume(hc, rex, store, "/opt/oc", 0)
     expect(late.code).toBe(0)
     expect(rex.typed.map((t) => t.text)).toEqual(["/opt/oc -s ses_one\r"])
@@ -681,16 +671,12 @@ describe.skipIf(missing.length > 0)("scratch drive: rexm on a scratch Rex server
       expect(again.out).toContain("0 made")
       expect(JSON.parse(rex("ls", "--json").out).sessions.length).toBe(2)
 
-      const early = rexm("resume")
-      expect(early.code).toBe(1)
-      expect(early.out).toContain(`still open in hc ${t1}`)
-      // The log has the hc copy's line alone.
+      // The hc copy keeps running: a session can be open in several TUIs.
       const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [])
       expect(lines()).toEqual(["-s ses_scratchOne1"])
 
-      run(["hc", "kill", t1, "--json"])
       let typed = { code: 0, out: "", err: "" }
-      await until("resume to type once the hc copy stopped", () => (typed = rexm("resume")).out.includes("1 typed"), 15_000).catch(() => {
+      await until("resume to type while the hc copy runs", () => (typed = rexm("resume")).out.includes("1 typed"), 15_000).catch(() => {
         throw new Error(`resume never typed: ${typed.out}`)
       })
       expect(typed.out).toContain(`typed ses_scratchOne1`)
