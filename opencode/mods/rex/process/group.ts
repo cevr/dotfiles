@@ -1,8 +1,8 @@
-// A program the viewer runs for one shot (a headless browser, `xcrun simctl`,
-// `ssh` to the Mac), in a process group of its own: when the run is
-// interrupted before the program ends (Ctrl-C, the pane closing), the whole
-// group is killed, helpers too, so a shot in flight leaves nothing behind.
-import { Effect, Option } from "effect"
+// A program the viewer runs (a headless browser, `xcrun simctl`, `ssh` to
+// the Mac), in a process group of its own: when its scope closes before the
+// program ends (a run interrupted by Ctrl-C or the pane closing, a live tab
+// left), the whole group is killed, helpers too, so nothing is left behind.
+import { Effect, Option, type Scope } from "effect"
 
 /** A finished run: its exit code (none when a signal ended it), what it wrote to stdout, and its last words on stderr. */
 export interface Ran {
@@ -10,6 +10,21 @@ export interface Ran {
   readonly out: Uint8Array
   readonly err: string
 }
+
+/** Kills `running`'s group unless it has ended. */
+const killGroup = (running: Bun.Subprocess) =>
+  Effect.sync(() => {
+    if (Option.isSome(Option.fromNullishOr(running.exitCode)) || Option.isSome(Option.fromNullishOr(running.signalCode))) return
+    // The group this run started: its leader is the program itself.
+    Option.liftThrowable(() => process.kill(-running.pid, "SIGKILL"))()
+  })
+
+/** Starts `argv` in a group of its own, its output dropped, for as long as the scope lasts: the group is killed when the scope closes; fails with why when it cannot start. */
+export const keepGroup = (argv: ReadonlyArray<string>): Effect.Effect<Bun.Subprocess<"ignore", "ignore", "ignore">, string, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.try({ try: () => Bun.spawn([...argv], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true }), catch: (cause) => String(cause) }),
+    killGroup,
+  )
 
 /** Runs `argv` to its end (killed after `timeoutMs`), its group killed if interrupted first; fails with why when it cannot start. */
 export const runGroup = (argv: ReadonlyArray<string>, timeoutMs: number): Effect.Effect<Ran, string> =>
@@ -20,12 +35,7 @@ export const runGroup = (argv: ReadonlyArray<string>, timeoutMs: number): Effect
           try: () => Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs, killSignal: "SIGKILL", detached: true }),
           catch: (cause) => String(cause),
         }),
-        (running) =>
-          Effect.sync(() => {
-            if (Option.isSome(Option.fromNullishOr(running.exitCode)) || Option.isSome(Option.fromNullishOr(running.signalCode))) return
-            // The group this run started: its leader is the program itself.
-            Option.liftThrowable(() => process.kill(-running.pid, "SIGKILL"))()
-          }),
+        killGroup,
       )
       const [out, err, code] = yield* Effect.all(
         [

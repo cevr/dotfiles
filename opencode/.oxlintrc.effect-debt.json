@@ -323,7 +323,9 @@
     },
     {
       "files": [
-        "mods/rex/process/group.ts"
+        "mods/rex/process/group.ts",
+        "mods/rex/process/cdp.ts",
+        "mods/rex/process/cdp.test.ts"
       ],
       "rules": {
         "effect/noGlobals": "off"

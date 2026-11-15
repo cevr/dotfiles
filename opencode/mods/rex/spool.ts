@@ -1,4 +1,4 @@
-// What a session's showcase pane draws: the picture, page, URL, Sideshow session or simulator shown last, and
+// What a session's showcase pane draws: the picture, page, URL, Sideshow session, simulator or live tab shown last, and
 // the tally. Each rex-show call changes one of the two and keeps the other;
 // the viewer draws the whole of it again whenever it changes.
 import { Option, Schema } from "effect"
@@ -28,7 +28,15 @@ export type Feed = typeof Feed.Type
 export const Sim = Schema.TaggedStruct("Sim", { device: Schema.String, host: Schema.String, name: Schema.String, every: Schema.Number })
 export type Sim = typeof Sim.Type
 
-export const Shown = Schema.Union([Picture, Page, Url, Feed, Sim]).pipe(Schema.toTaggedUnion("_tag"))
+/**
+ * A live tab on `url` in a headless browser on the viewer's host: its
+ * frames drawn at most `fps` a second, clicks, scrolls and keys sent back;
+ * `width` CSS pixels wide (0: as wide as the pane's pixels).
+ */
+export const Browse = Schema.TaggedStruct("Browse", { url: Schema.String, name: Schema.String, width: Schema.Int, fps: Schema.Number })
+export type Browse = typeof Browse.Type
+
+export const Shown = Schema.Union([Picture, Page, Url, Feed, Sim, Browse]).pipe(Schema.toTaggedUnion("_tag"))
 export type Shown = typeof Shown.Type
 
 /** The spool of one session: a counter that grows with each change, what is shown, and the tally. */

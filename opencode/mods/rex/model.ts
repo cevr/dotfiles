@@ -6,7 +6,7 @@ import { Effect, Option } from "effect"
 import type { Pane } from "./pane.ts"
 import { arrange, LABEL } from "./showcase.ts"
 import { Rex, Spool } from "./service.ts"
-import { count, type Feed, type Page, type Picture, show, type Sim, type Url } from "./spool.ts"
+import { type Browse, count, type Feed, type Page, type Picture, show, type Sim, type Url } from "./spool.ts"
 import type { Tally } from "./status.ts"
 
 /** The showcase panes `arrange` closes, closed. */
@@ -52,10 +52,10 @@ export const showFile = Effect.fn("Showcase.show")(function* (pane: Pane, shown:
 
 /**
  * Shows a live item in `pane`'s showcase: a web page its viewer shoots, a
- * Sideshow session it follows, or a simulator it mirrors; the showcase's block id. Whether the page or
+ * Sideshow session it follows, a simulator it mirrors, or a live tab; the showcase's block id. Whether the page or
  * Sideshow answers is the viewer's to say, in the pane.
  */
-export const showLive = Effect.fn("Showcase.live")(function* (pane: Pane, live: Url | Feed | Sim, viewer: ReadonlyArray<string>) {
+export const showLive = Effect.fn("Showcase.live")(function* (pane: Pane, live: Url | Feed | Sim | Browse, viewer: ReadonlyArray<string>) {
   const spool = yield* Spool
   const spooled = yield* spool.read(pane.session)
   yield* spool.write(pane.session, show(spooled, live))

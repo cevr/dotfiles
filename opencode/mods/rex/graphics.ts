@@ -63,18 +63,24 @@ export const fit = (size: Size, space: Cells, cell: CellPixels = DEFAULT_CELL): 
 }
 
 /** The escape sequences that draw `png` at the cursor over `cells`, with replies off (`q=2`). */
-export const drawPng = (png: Uint8Array, cells: Cells): string => {
-  const data = Base64.encode(png)
+export const drawPng = (png: Uint8Array, cells: Cells): string => drawBase64(Base64.encode(png), cells, "")
+
+/**
+ * The escape sequences that draw a PNG already in base64 (`data`) at the
+ * cursor over `cells`, replies off, with `keys` added to the first chunk's
+ * (an image id, say, so a new frame replaces the last in place).
+ */
+export const drawBase64 = (data: string, cells: Cells, keys: string): string => {
   const chunks = Arr.makeBy(Math.max(1, Math.ceil(data.length / CHUNK)), (at) => data.slice(at * CHUNK, (at + 1) * CHUNK))
   const last = chunks.length - 1
   return chunks
     .map((chunk, at) => {
       const more = `m=${Number(at < last)}`
-      const keys = Option.match(Option.liftPredicate(at, (index) => index === 0), {
+      const first: string = Option.match(Option.liftPredicate(at, (index) => index === 0), {
         onNone: () => more,
-        onSome: () => `a=T,f=100,q=2,c=${cells.cols},r=${cells.rows},${more}`,
+        onSome: () => `a=T,f=100,q=2,c=${cells.cols},r=${cells.rows},${keys}${more}`,
       })
-      return `${ESC}_G${keys};${chunk}${ESC}\\`
+      return `${ESC}_G${first};${chunk}${ESC}\\`
     })
     .join("")
 }

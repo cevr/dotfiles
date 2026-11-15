@@ -14,7 +14,7 @@ import { ensureShowcase, setTally, showFile, showLive } from "../model.ts"
 import type { Pane } from "../pane.ts"
 import type { Rex, Spool } from "../service.ts"
 import { arrange, LABEL } from "../showcase.ts"
-import { Feed, Picture, Sim, type Spooled, Url } from "../spool.ts"
+import { Browse, Feed, Picture, Sim, type Spooled, Url } from "../spool.ts"
 
 /** A seeded generator of numbers in [0, 1) (mulberry32). */
 const drawer = (seed: number) => {
@@ -30,8 +30,8 @@ const drawer = (seed: number) => {
 const SESSIONS = ["session:a", "session:b", "session:c"]
 const VIEWER = ["rex-show", "view"]
 
-/** What a call shows: a picture, a tally, or a live item (a simulator, a Sideshow session, a web page). */
-const KINDS = ["image", "tally", "sim", "sideshow", "url"] as const
+/** What a call shows: a picture, a tally, or a live item (a simulator, a Sideshow session, a web page, a live tab). */
+const KINDS = ["image", "tally", "sim", "sideshow", "url", "browse"] as const
 type Kind = (typeof KINDS)[number]
 
 interface Call {
@@ -88,6 +88,7 @@ const CALLS: Record<Kind, (pane: Pane) => ReturnType<typeof showLive>> = {
   sim: (pane) => showLive(pane, Sim.make({ device: "", host: "", name: "simulator", every: 1 }), VIEWER),
   sideshow: (pane) => showLive(pane, Feed.make({ base: "http://localhost:8228", session: "s1", name: "s1", every: 3 }), VIEWER),
   url: (pane) => showLive(pane, Url.make({ url: "http://localhost:3000/", name: "localhost:3000", every: 5, width: 1280 }), VIEWER),
+  browse: (pane) => showLive(pane, Browse.make({ url: "http://localhost:3000/", name: "localhost:3000", width: 0, fps: 6 }), VIEWER),
 }
 
 const callOf = (call: Call) => CALLS[call.kind](call.pane)

@@ -50,7 +50,7 @@ describe("the arguments of rex-show sideshow", () => {
 
 describe("the caller of rex-show sideshow", () => {
   const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
-  const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void }
+  const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
   /** The systems of one call, from a pane of session:a, with `mine` as the caller's own Sideshow session. */
   const systems = (rex: Ref.Ref<MemoryRex.World>, spools: Ref.Ref<ReadonlyMap<string, Spooled>>, mine: Option.Option<string>) =>
     Layer.mergeAll(
@@ -107,6 +107,7 @@ const pane = (frames: Queue.Queue<string>): Screen => ({
   size: Effect.succeed({ cols: 82, rows: 35 }),
   cell: () => Effect.succeed({ width: 12, height: 38 }),
   display: (text) => Queue.offer(frames, text),
+  input: Effect.succeed(Effect.never),
 })
 
 /** The session s1, titled Plan, holding `posts`; with `more` besides. */

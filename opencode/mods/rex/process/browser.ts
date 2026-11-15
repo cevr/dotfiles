@@ -6,21 +6,27 @@
 // `$REX_SHOW_CHROME` names, else the first found of: Google Chrome or
 // Chromium installed on a Mac, Playwright's headless shell or Chromium
 // (its cache, newest first: what the workbox has), then `chromium` or
-// `google-chrome` on PATH.
+// `google-chrome` on PATH. A live tab (`open`) runs the same browser,
+// headless with a fresh profile, kept running with its debugger on a port
+// of its own on loopback, for as long as the tab's scope lasts.
 import { existsSync, readdirSync } from "node:fs"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { Array as Arr, Effect, Layer, Option, Schedule, Schema } from "effect"
 import { isPng } from "../graphics.ts"
-import { Browser, type Shot, ShotFailed } from "../service.ts"
-import { lastLine, runGroup } from "./group.ts"
+import { Browser, type Command, type Shot, ShotFailed } from "../service.ts"
+import { connect } from "./cdp.ts"
+import { keepGroup, lastLine, runGroup } from "./group.ts"
 
 /** How long the page has to answer before it is taken as unreachable. */
 const REACH_MS = 5_000
 
 /** How long one browser run may take before it is killed. */
 const SHOT_MS = 30_000
+
+/** How long a live browser has to open its debugger. */
+const DEBUGGER_MS = 15_000
 
 /** Where to look for a browser: the environment's choice, the host, and its home. */
 export interface Places {
@@ -86,6 +92,40 @@ export const browserArgs = (shot: Shot, folder: string): ReadonlyArray<string> =
   shot.url,
 ]
 
+/** The browser's arguments for a live tab kept in `folder`: headless, a profile of its own, no first-run pages, its debugger on a free port on loopback, a blank page until the tab is set up. */
+export const liveArgs = (folder: string): ReadonlyArray<string> => [
+  "--headless",
+  "--hide-scrollbars",
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--disable-gpu",
+  "--mute-audio",
+  `--user-data-dir=${join(folder, "profile")}`,
+  "--remote-debugging-address=127.0.0.1",
+  "--remote-debugging-port=0",
+  "about:blank",
+]
+
+const Targets = Schema.fromJsonString(Schema.Array(Schema.Struct({ type: Schema.String, webSocketDebuggerUrl: Schema.optional(Schema.String) })))
+const decodeTargets = Schema.decodeUnknownOption(Targets)
+
+/** The debugger socket of the browser's page, once the browser wrote its port to `DevToolsActivePort` in its profile and lists the page. */
+const pageSocket = (folder: string, failed: (message: string) => ShotFailed) =>
+  Effect.gen(function* () {
+    const port = yield* Effect.tryPromise({ try: () => readFile(join(folder, "profile", "DevToolsActivePort"), "utf8"), catch: () => failed("no debugger port yet") }).pipe(
+      Effect.map((written) => written.split("\n")[0].trim()),
+      Effect.filterOrFail((found) => /^\d+$/.test(found), () => failed("no debugger port yet")),
+    )
+    const listed = yield* Effect.tryPromise({
+      try: () => fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(REACH_MS) }).then((answer) => answer.text()),
+      catch: (cause) => failed(`cannot list the browser's pages: ${why(cause)}`),
+    })
+    return yield* Option.match(
+      Option.flatMap(decodeTargets(listed), (targets) => Arr.findFirst(targets, (target) => target.type === "page").pipe(Option.flatMap((page) => Option.fromUndefinedOr(page.webSocketDebuggerUrl)))),
+      { onNone: () => Effect.fail(failed("the browser lists no page yet")), onSome: Effect.succeed },
+    )
+  }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: DEBUGGER_MS / 100 }))
+
 /** A failed request's error code, as Bun's fetch gives it (ECONNREFUSED, ConnectionRefused, TimeoutError…). */
 const decodeCode = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))
 
@@ -138,5 +178,22 @@ export const layer = (places: Places) =>
         (folder) => Effect.promise(() => rm(folder, { recursive: true, force: true })),
       )
     })
-    return Browser.of({ shoot })
+    const open = Effect.fn("ProcessBrowser.open")(function* (url: string, setup: ReadonlyArray<Command>) {
+      const failed = (message: string) => new ShotFailed({ url, message })
+      const browser = yield* Option.match(found, {
+        onNone: () => Effect.fail(failed("no Chrome or Chromium on this host: install one, or set REX_SHOW_CHROME")),
+        onSome: Effect.succeed,
+      })
+      yield* reach(url)
+      const folder = yield* Effect.acquireRelease(
+        Effect.tryPromise({ try: () => mkdtemp(join(tmpdir(), "rex-show-live-")), catch: (cause) => failed(`no scratch folder: ${String(cause)}`) }),
+        (made) => Effect.promise(() => rm(made, { recursive: true, force: true })),
+      )
+      // Chrome starts helpers: its whole group goes when the tab's scope closes.
+      yield* keepGroup([browser, ...liveArgs(folder)]).pipe(Effect.mapError((why) => failed(`cannot start ${browser}: ${why}`)))
+      const tab = yield* connect(yield* pageSocket(folder, failed), url)
+      yield* tab.send([{ method: "Page.enable", params: {} }, ...setup, { method: "Page.navigate", params: { url } }])
+      return tab
+    })
+    return Browser.of({ shoot, open })
   })

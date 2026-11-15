@@ -2,7 +2,7 @@
 // panes; the spool, where a call leaves what the showcase pane draws; and a
 // headless browser, which shoots the web page the pane shows; and Sideshow,
 // whose session the pane follows; and the iOS simulators the pane mirrors.
-import { Context, type Effect, type Option, Schema } from "effect"
+import { Context, type Effect, type Option, Schema, type Scope } from "effect"
 import type { Block } from "./showcase.ts"
 import type { Device } from "./sim.ts"
 import type { Spooled } from "./spool.ts"
@@ -89,8 +89,38 @@ export class Browser extends Context.Service<
   {
     /** The page at `shot.url` as a PNG of `shot.width` × `shot.height` pixels. */
     readonly shoot: (shot: Shot) => Effect.Effect<Uint8Array, ShotFailed>
+    /** A live tab on `url`, set up by `setup` before it loads (its viewport, its screencast); the browser lives as long as the scope. */
+    readonly open: (url: string, setup: ReadonlyArray<Command>) => Effect.Effect<Tab, ShotFailed, Scope.Scope>
   }
 >()("dotfiles-opencode/rex/Browser") {}
+
+/** A JSON value, as a DevTools protocol command's parameters are. */
+export type Json = string | number | boolean | ReadonlyArray<Json> | { readonly [key: string]: Json }
+
+/** One DevTools protocol command for a live tab: its method and parameters. */
+export interface Command {
+  readonly method: string
+  readonly params: { readonly [key: string]: Json }
+}
+
+/** One screencast frame of a live tab: a PNG in base64, and the tab's viewport it shows, in CSS pixels. */
+export interface Frame {
+  readonly data: string
+  readonly width: number
+  readonly height: number
+}
+
+/** A live tab in a headless browser. Each wait fails once the browser is gone. */
+export interface Tab {
+  /** The next frame after the last one taken (frames that came between are dropped). */
+  readonly frame: Effect.Effect<Frame, ShotFailed>
+  /** The page's address after its next navigation (links, history, reload). */
+  readonly url: Effect.Effect<string, ShotFailed>
+  /** `commands` sent in order, each answered before the next. */
+  readonly send: (commands: ReadonlyArray<Command>) => Effect.Effect<void, ShotFailed>
+  /** What `expression` evaluates to in the page. */
+  readonly ask: (expression: string) => Effect.Effect<unknown, ShotFailed>
+}
 
 /** The simulators could not be listed or screenshot: no Mac, ssh refused, or simctl failed; why, for the pane's error line. */
 export class SimFailed extends Schema.TaggedError<SimFailed>()("SimFailed", {

@@ -50,7 +50,7 @@ describe("the caller of rex-show sim", () => {
   const rex = Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }]))
   const spools = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
   const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
-  const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void }
+  const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 
   effectTest(
     "spools the simulator asked for and the Mac REX_SHOW_SIM_HOST names, in one showcase, asking no simulator",
@@ -97,6 +97,7 @@ const pane = (frames: Queue.Queue<string>): Screen => ({
   size: Effect.succeed({ cols: 82, rows: 35 }),
   cell: () => Effect.succeed({ width: 12, height: 38 }),
   display: (text) => Queue.offer(frames, text),
+  input: Effect.succeed(Effect.never),
 })
 
 effectTest(

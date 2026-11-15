@@ -16,7 +16,7 @@ import { ConfigProvider, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema 
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
-const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void }
+const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
 const SHOW = fileURLToPath(new URL("./show.ts", import.meta.url))
 
@@ -100,6 +100,7 @@ const recording = (frames: Queue.Queue<string>, asked: Ref.Ref<number>): Screen 
   size: Effect.succeed({ cols: 82, rows: 35 }),
   cell: () => Effect.as(Ref.update(asked, (count) => count + 1), { width: 12, height: 38 }),
   display: (text) => Queue.offer(frames, text),
+  input: Effect.succeed(Effect.never),
 })
 
 const viewed = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
