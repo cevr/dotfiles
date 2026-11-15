@@ -21,7 +21,7 @@ import { Array as Arr, Clock, Config, Console, Data, Duration, Effect, FileSyste
 import { Argument, Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { cliConfig, DEFAULT_FORK, forkLaunch, pluginPaths, runEnv, runPaths, SIM_PROVIDER, simProvider } from "../testbeds/gamut/gamut.ts"
-import { type Feature, FEATURES_DIR, parseFeature, swarmFrom, touched, underOpencode, unreachableOf } from "./verify-map.ts"
+import { type Feature, FEATURES_DIR, INDEX, noDrive, parseFeature, swarmFrom, touched, underOpencode, unreachableOf } from "./verify-map.ts"
 import { chatResponse } from "../sim/verify-model.ts"
 
 /** opencode/: every path the helpers name is from here. */
@@ -487,6 +487,12 @@ const readMap = Effect.fn("verify.readMap")(function* () {
   )
 })
 
+/** The path prefixes the map's index says need no drive. */
+const readNoDrive = Effect.fn("verify.readNoDrive")(function* () {
+  const fs = yield* FileSystem.FileSystem
+  return noDrive(yield* fs.readFileString(join(OPENCODE, INDEX)).pipe(Effect.mapError(failed("map"))))
+})
+
 /** The paths (from opencode/) the change since `base` touches; none without a base. */
 const changedSince = (base: Option.Option<string>) =>
   Option.match(base, {
@@ -575,7 +581,9 @@ const drive = Command.make(
     const map = yield* readMap()
     const changed = yield* changedSince(input.changed)
     const features = yield* chosen(map, input.feature, changed, input.all)
-    const unreachable = unreachableOf(map, features, changed)
+    // A deleted file is due its feature's drive, but there is nothing of it left to reach.
+    const present = yield* Effect.filter(changed, (file) => fs.exists(join(OPENCODE, file)).pipe(Effect.mapError(failed("changed"))))
+    const unreachable = unreachableOf(map, features, present, yield* readNoDrive())
     if (features.length === 0 && input.scenario.length === 0)
       return yield* new VerifyFailed({ step: "features", message: ["nothing to drive: name --feature, --changed <base>, --all or --scenario", ...unreachable].join("; ") })
     const head = yield* headOf(OPENCODE)

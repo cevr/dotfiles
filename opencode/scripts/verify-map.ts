@@ -48,19 +48,27 @@ export const touched = (features: ReadonlyArray<Feature>, changed: ReadonlyArray
 /** A source file: what a feature's code is, and what a drive can leave undriven. */
 const SOURCE = /\.[cm]?[jt]sx?$/
 
-/**
- * The changed source files (from opencode/) no feature's `Code` holds: a drive of the change never reaches them, so
- * `--changed` reports each as unreachable instead of passing them unseen.
- */
-export const uncovered = (features: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<string> =>
-  changed.filter((path) => SOURCE.test(path) && !features.some((feature) => feature.code.some((prefix) => path.startsWith(prefix))))
+/** The map's index, from opencode/: where the paths that need no drive are listed (`**No drive:**`). */
+export const INDEX = `${FEATURES_DIR}/README.md`
 
-/** A drive's unreachable lines: each chosen feature with no world suite, and each changed source file no feature of `map` covers. */
-export const unreachableOf = (map: ReadonlyArray<Feature>, chosen: ReadonlyArray<Feature>, changed: ReadonlyArray<string>): ReadonlyArray<string> => {
+/** The path prefixes the index says need no drive (its `- **No drive:**` line), each with its why beside it there. */
+export const noDrive = (index: string): ReadonlyArray<string> => listed(index, "No drive")
+
+/**
+ * The changed source files (from opencode/) no feature's `Code` holds and the index's `No drive` does not set aside: a
+ * drive of the change never reaches them, so `--changed` reports each as unreachable instead of passing them unseen.
+ */
+export const uncovered = (features: ReadonlyArray<Feature>, changed: ReadonlyArray<string>, exempt: ReadonlyArray<string> = []): ReadonlyArray<string> =>
+  changed.filter(
+    (path) => SOURCE.test(path) && !exempt.some((prefix) => path.startsWith(prefix)) && !features.some((feature) => feature.code.some((prefix) => path.startsWith(prefix))),
+  )
+
+/** A drive's unreachable lines: each chosen feature with no world suite, and each changed source file no feature of `map` covers and `exempt` does not set aside. */
+export const unreachableOf = (map: ReadonlyArray<Feature>, chosen: ReadonlyArray<Feature>, changed: ReadonlyArray<string>, exempt: ReadonlyArray<string> = []): ReadonlyArray<string> => {
   const worldless = Arr.filter(chosen, (feature) => feature.world.length === 0)
   return [
     ...Arr.map(worldless, (feature) => `${feature.id}: no world suite; drive it on real OpenCode (--real, or the feature file's pilotty steps)`),
-    ...Arr.map(uncovered(map, changed), (file) => `${file}: changed, and no feature's Code covers it; drive it on real OpenCode or add it to a feature`),
+    ...Arr.map(uncovered(map, changed, exempt), (file) => `${file}: changed, and no feature's Code covers it; drive it on real OpenCode, add it to a feature, or list it under No drive in ${INDEX} with why`),
   ]
 }
 

@@ -5,12 +5,12 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, PlatformError, Schema } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { FEATURES_DIR, parseFeature, SHARED, SKILL_DIR, undriven } from "./verify-map.ts"
+import { FEATURES_DIR, INDEX, noDrive, parseFeature, SHARED, SKILL_DIR, uncovered, undriven } from "./verify-map.ts"
 
 /** The H2s of a feature file, in order. */
 const CONTRACT = ["Sub-features", "How to get to it (user POV)", "Driving it with the world", "Driving it with real OpenCode", "Gotchas"]
 /** The folders a backticked path may start with, from opencode/; `out/` is a drive's output, never checked. */
-const PATH = /^(?:\.claude|cmd|mods|sim|sim-tui|scripts|tests|scenarios|testbeds|decider|themes)\/[\w./-]*$/
+const PATH = /^(?:\.claude|cmd|mods|sim|sim-tui|scripts|tests|scenarios|testbeds|decider|themes|formal|lint)\/[\w./-]*$/
 /** A drive's own output (`out/`, `sim/out/`): git ignores it, and a fresh checkout has none. */
 const OUTPUT = /(?:^|\/)out\//
 const Manifest = Schema.fromJsonString(Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) }))
@@ -108,6 +108,41 @@ describe("the verify-opencode skill names only what the tree has", () => {
       const suites = Arr.dedupe((yield* Effect.forEach(folders, (folder) => files(folder.replace(/\/$/, "")))).flat())
       expect(suites).toContain("cmd/queue/queue.sim.test.ts")
       expect(features.map((feature) => ({ feature: feature.id, undriven: undriven(feature, suites) }))).toEqual(features.map((feature) => ({ feature: feature.id, undriven: [] })))
+    }),
+  )
+
+  live("every source file batch 2026-11-15cc's drive found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const at = yield* root
+      const features = (yield* docs)
+        .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
+        .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
+      const exempt = noDrive(yield* fs.readFileString(path.join(at, INDEX)))
+      const found = [
+        "cmd/status/server.test.ts",
+        "formal/check.ts",
+        "formal/itf.ts",
+        "formal/orchestrate/replay.ts",
+        "formal/orchestrate/story.ts",
+        "formal/orchestrate/trace.ts",
+        "mods/status/model.ts",
+        "mods/status/pane.test.ts",
+        "mods/status/pane.ts",
+        "mods/status/run-table.test.ts",
+        "mods/status/run-table.ts",
+        "mods/status/status.ts",
+        "scripts/agents.ts",
+        "scripts/link-fork.ts",
+        "scripts/typecheck.ts",
+        "tests/kernel.test.ts",
+        "tests/kernel/run.ts",
+        "tests/orchestrate.test.ts",
+        "tests/orchestrate/run.ts",
+        "tests/orchestrate/sim.ts",
+      ]
+      expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({ exempt: ["scripts/", "formal/", "lint/"], uncovered: [] })
     }),
   )
 
