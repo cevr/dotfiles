@@ -4,7 +4,7 @@
 // registry and fails. Without WORK_BIN these do not run: `work` is not on this host's PATH yet.
 import { describe, expect, test } from "bun:test"
 import { Context, Effect, Exit, Fiber, Layer, Option, Schedule, Schema } from "effect"
-import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
+import { gitClone, gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { check, riftsLaws } from "../laws.ts"
 import * as MemoryRifts from "../memory/rifts.ts"
@@ -335,7 +335,7 @@ if (runnable) {
             const rifts = yield* Rifts
             const workspace = yield* rifts.create({ source: made.base, from: made.base, name: "ws", branch: "ws" })
             const adopted = `${made.root}/elsewhere/copy`
-            yield* made.sh(made.root, "git", "clone", "-q", made.base, adopted)
+            yield* Effect.sync(() => gitClone(made.base, adopted, ["-q"], withProcessEnv(made.env)))
             yield* made.work("adopt", adopted).pipe(Effect.orDie)
             const stacked = yield* rifts.create({ source: workspace, from: workspace, name: "stacked", branch: "stacked" })
             const onAdopted = yield* rifts.create({ source: adopted, from: adopted, name: "on-adopted", branch: "on-adopted" })
@@ -368,7 +368,7 @@ if (runnable) {
             const local = yield* out(made, made.base, "git", "rev-parse", "HEAD")
             yield* made.sh(made.base, "git", "switch", "-q", "main")
             const other = `${made.root}/other`
-            yield* made.sh(made.root, "git", "clone", "-q", made.origin, other)
+            yield* Effect.sync(() => gitClone(made.origin, other, ["-q"], withProcessEnv(made.env)))
             yield* made.sh(other, "git", "switch", "-q", "-c", "remote-only")
             yield* made.sh(other, "git", "commit", "-q", "--allow-empty", "-m", "remote only")
             yield* made.sh(other, "git", "push", "-q", "origin", "remote-only")
