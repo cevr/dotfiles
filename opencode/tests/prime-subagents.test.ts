@@ -6,6 +6,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { Array as Arr, Option } from "effect"
 import { DOCK_COUNT, dockRow, workingRow } from "../scenarios/prime-subagents-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -93,7 +94,8 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
   }))
 
   test("inside a subagent the rows sit under the composer, on the main session's rows, and mark the one shown", kept.test(() => {
-    const rowsAt = (frame: ReadonlyArray<string>) => frame.flatMap((line, y) => (/^ (›| )? ?\S general gpt  /.test(line) && y > railEnd(frame) ? [y] : []))
+    const rowsAt = (frame: ReadonlyArray<string>) =>
+      Arr.getSomes(frame.map((line, y) => Option.liftPredicate(y, (at: number) => at > railEnd(frame) && /^ (›| )? ?\S general gpt  /.test(line))))
     for (const frame of [frames.clicked, frames.child, frames.sibling]) {
       const worker = shown(frame)
       expect(railEnd(frame)).toBe(railEnd(frames.started))
