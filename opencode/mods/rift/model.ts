@@ -22,6 +22,7 @@ import {
   checkAcceptedText,
   checkedText,
   digest,
+  exitWords,
   explainLand,
   landedText,
   postLandedText,
@@ -99,7 +100,7 @@ const Gated = Data.taggedEnum<Gated>()
 const BY: Readonly<Record<Standing["_tag"], Covered["by"]>> = { Current: "held", Missing: "missing", Moved: "moved", Red: "red" }
 
 /** A red check's exit, time, log and the lines of its output worth reading. */
-const ranDetail = (ran: Ran): string => `exit ${ran.code} in ${ran.seconds}s; log: ${ran.log}\n${digest(ran.output)}`
+const ranDetail = (ran: Ran): string => `${exitWords(ran)} in ${ran.seconds}s; log: ${ran.log}\n${digest(ran.output)}`
 
 /** The merge check's run, when the land ran one. */
 const mergedRan = (gated: Gated): Option.Option<Ran> =>
