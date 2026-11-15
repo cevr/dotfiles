@@ -59,8 +59,15 @@ const commandsOf = (seed: number): ReadonlyArray<Command> => {
   return Array.from({ length: 4 + below(random, 11) }, () => commandOf(below(random, 9), random))
 }
 
-/** The last line of a request's text: what the model answers. */
-const lastLine = (text: string) => text.slice(text.lastIndexOf("\n") + 1)
+/**
+ * What the model answers in a request: the owner's newest prompt since its last answer, else the request's last line.
+ * A prompt and a planner's notice can reach it in one turn; it acts on the prompt.
+ */
+const inputOf = (text: string) => {
+  const lines = text.split("\n")
+  const fresh = lines.slice(lines.findLastIndex((line) => line.startsWith("assistant")) + 1)
+  return Option.getOrElse(Option.fromUndefinedOr(fresh.findLast((line) => line.startsWith("user: "))), () => lines.at(-1) ?? "")
+}
 
 /** A planner's work: a foreground shell as long as its prompt says. */
 const planner = (text: string) => {
@@ -76,7 +83,7 @@ const planner = (text: string) => {
 const model: World.Script = (request) => {
   if (request.kind === "title") return World.say("Idle property")
   if (request.agent === "planner") return planner(request.text)
-  const last = lastLine(request.text)
+  const last = inputOf(request.text)
   const id = `${request.text.split("\n").length}`
   const start = /^user: start (\w+) (\d+)$/.exec(last)
   if (start) return World.call(`call_start_${id}`, "subagent", { agent: "planner", description: `planner ${start[1]} r1`, prompt: `Plan ${start[1]} for ${start[2]} s.`, background: true })
