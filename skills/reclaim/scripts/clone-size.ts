@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // What removing a folder of APFS clones would free, rather than what `du` says.
 //
-// A Rift (`rift create --copy-all`), bun's node_modules and uv environments are
+// A Rift (`rift create --copy-all`), a `work` workspace, bun's node_modules and uv environments are
 // clonefile copies: their blocks are shared with the source until a file is
 // written. `du` counts every clone in full, so removing a 15 GiB Rift can free
 // almost nothing. On APFS each file reports the bytes no other file shares
@@ -11,8 +11,8 @@
 // Measured against df on a 4.0 GiB (du) clone with 1.56 GiB written into it:
 // estimate 1.563 GiB, df freed 1.562 GiB.
 //
-// Elsewhere (Linux, a volume that is not APFS) a Rift falls back to the files
-// written since its marker, which overcounts a file only partly rewritten;
+// Elsewhere (Linux, a volume that is not APFS) a Rift or workspace falls back to the files
+// written since it was made (a Rift's marker, a workspace folder's birth), which overcounts a file only partly rewritten;
 // other folders fall back to `du`.
 //
 // Usage: bun clone-size.ts [--since <ms>] <path...>   prints one Part as JSON (for the survey's pool)
@@ -195,7 +195,7 @@ type Opts = { since?: number; method?: Method };
 
 /**
  * Measure a set of paths that may be clones, as a part to merge with others.
- * `since`: when the copy was made (a Rift's marker), for the fallback: files written later are its own.
+ * `since`: when the copy was made (a Rift's marker, a workspace folder's birth), for the fallback: files written later are its own.
  * `method`: force one way of measuring (tests); by default APFS where it works.
  */
 export function measure(paths: string[], opts: Opts = {}): Part {

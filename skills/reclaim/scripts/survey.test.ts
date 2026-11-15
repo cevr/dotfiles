@@ -122,3 +122,67 @@ test.if(APFS)('the survey sizes Rifts and their trash by their own blocks, and w
   expect(worktree!.clone).toBeUndefined();
   expect(worktree!.bytes).toBeGreaterThanOrEqual(55 * MIB);
 }, 60_000);
+
+test.if(APFS)("the survey lists a work workspace as a Rift and work's trash as held, and never the store's own files", () => {
+  root = mkdtempSync(join(tmpdir(), 'survey-'));
+  const code = join(root, 'code');
+  const source = file('code/app/big.bin', 120 * MIB);
+  mkdirSync(join(code, 'app/.git'), { recursive: true });
+  file('code/app/.rift', 26, LAST_WEEK); // a warm source's marker, cloned into its workspaces
+  // A Rift of the same base, to compare with.
+  rift('code/.rifts/app/feature');
+  mkdirSync(join(code, '.rifts/app/feature/.git'));
+  clone(source, 'code/.rifts/app/feature/big.bin');
+  file('code/.rifts/app/feature/new.bin', 60 * MIB);
+  // work's store for code/app: its own files, a workspace, and the trash of a removed one.
+  const store = ['.registry', '.trusted', '.lock', '.lock-1'].map((f) => file(`code/.work/app/${f}`, 64));
+  for (const dir of ['code/.work/app/feat-x', 'code/.work/app/.work-trash/old.1794762895', 'code/.rifts/app/.work-trash/adopted.1794762895']) {
+    mkdirSync(join(root, dir, '.git'), { recursive: true });
+    file(`${dir}/.rift`, 26, LAST_WEEK);
+    clone(source, `${dir}/big.bin`);
+    file(`${dir}/new.bin`, 60 * MIB);
+  }
+  // A store left with only trash, over a GiB by du (clones), holds no checkout: neither it nor its
+  // folder for a base is a loose folder.
+  const bare = join(root, 'bare');
+  store.push(file('bare/.work/gone/.registry', 64));
+  for (let i = 0; i < 9; i++) clone(source, `bare/.work/gone/.work-trash/gone.1/big${i}.bin`);
+  // A repository with a .work folder of its own: its data, not a store.
+  mkdirSync(join(code, 'lib/.git'), { recursive: true });
+  file('code/lib/.work/x/.registry', 64);
+  mkdirSync(join(code, 'lib/.work/x/y/.git'), { recursive: true });
+  file('code/lib/.work/x/.work-trash/z.1/new.bin', 60 * MIB);
+  // A base named .work, whose store is .work/.work: a base, never a copy.
+  const other = join(root, 'other');
+  mkdirSync(join(other, '.work/.git'), { recursive: true });
+  file('other/.work/big.bin', 60 * MIB);
+  file('other/.work/.work/.registry', 64);
+  mkdirSync(join(other, '.work/.work/main/.git'), { recursive: true });
+
+  const run = Bun.spawnSync(['bun', SCRIPT, '--json', '--roots', `${code},${other},${bare}`], { env: { ...process.env, HOME: join(root, 'home') } });
+  expect(run.exitCode).toBe(0);
+  const items: { tier: string; category: string; what: string; paths: string[]; bytes: number; command?: string; held?: string; note?: string; clone?: { sharedWith: string } }[] = JSON.parse(run.stdout.toString()).items;
+  const at = (path: string) => items.filter((i) => i.paths.includes(path));
+
+  const [riftItem] = at(join(code, '.rifts/app/feature'));
+  const [workspace] = at(join(code, '.work/app/feat-x'));
+  expect([workspace!.tier, workspace!.category]).toEqual([riftItem!.tier, riftItem!.category]);
+  expect(workspace!.clone!.sharedWith).toBe(join(code, 'app'));
+  expect(workspace!.command).toStartWith(`work rm feat-x (from ${join(code, 'app')})`);
+  expect(workspace!.bytes).toBeGreaterThanOrEqual(60 * MIB);
+  expect(workspace!.bytes).toBeLessThan(62 * MIB);
+
+  // work gc can lose data (work's verify): the trash is held, with no command, and nothing offers work gc.
+  const trash = items.filter((i) => i.category === 'work trash');
+  expect(trash.flatMap((i) => i.paths).sort()).toEqual([join(code, '.rifts/app/.work-trash'), join(code, '.work/app/.work-trash')]);
+  for (const t of trash) {
+    expect(t.what).toContain('1 removed workspaces');
+    expect(t.command).toBeUndefined();
+    expect(t.held).toBe("held: work gc is not safe yet (data-loss finding in work's verify); keep until 2026-12-06");
+  }
+  expect(items.filter((i) => `${i.command ?? ''} ${i.note ?? ''}`.includes('work gc'))).toEqual([]);
+
+  const paths = items.flatMap((i) => i.paths);
+  for (const f of store) expect(paths.filter((p) => f === p || f.startsWith(p + '/'))).toEqual([]);
+  expect(paths.filter((p) => p.startsWith(join(code, 'lib/.work')) || p.startsWith(other))).toEqual([]);
+}, 60_000);

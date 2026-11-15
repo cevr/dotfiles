@@ -1,17 +1,17 @@
-// The rift RPC (`@dotfiles/opencode-rift/rpc`) against the `rift` tool, on the plugin's seam: a stand-in host
+// The rift RPC (`@dotfiles/opencode-work/rpc`) against the `rift` tool, on the plugin's seam: a stand-in host
 // whose registry and RPC take what the plugin registers, over Rifts, sessions and a landing in memory. A
 // differential: one seeded sequence of calls goes to the tool on one world and to the RPC on a twin world, and
 // each answer's text is the tool's. Then `at`, and the one model both share. Its tests register through
 // sim-tui/effect-test.ts, as heavy-footer's do.
 import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer, Match, Option, Predicate, Schema } from "effect"
-import * as MemoryDebts from "@dotfiles/opencode-rift/memory/debts"
-import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
-import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
-import * as MemoryRifts from "@dotfiles/opencode-rift/memory/rifts"
-import * as MemorySessionDirectories from "@dotfiles/opencode-rift/memory/session-directories"
-import * as MemoryWorkbox from "@dotfiles/opencode-rift/memory/workbox"
-import { Created, Inspected, LandAnswered, Listed, RIFT_RPC } from "@dotfiles/opencode-rift/rpc"
+import * as MemoryDebts from "@dotfiles/opencode-work/memory/debts"
+import * as MemoryLanding from "@dotfiles/opencode-work/memory/landing"
+import * as MemoryNotices from "@dotfiles/opencode-work/memory/notices"
+import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
+import * as MemorySessionDirectories from "@dotfiles/opencode-work/memory/session-directories"
+import * as MemoryWorkbox from "@dotfiles/opencode-work/memory/workbox"
+import { Created, Inspected, LandAnswered, Listed, RIFT_RPC } from "@dotfiles/opencode-work/rpc"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import Rift, { make } from "./server.ts"
 

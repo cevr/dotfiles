@@ -75,14 +75,18 @@ const writeRate = (u: Usage): number => {
 };
 
 const labelDir = join(homedir(), '.cache', 'orchestrate', 'labels');
-function projectFor(sessionId: string, cwd: string | undefined): string {
-  try {
-    return (JSON.parse(readFileSync(join(labelDir, `${sessionId}.json`), 'utf8')) as { project: string }).project;
-  } catch {}
+// host.ts's projectFor, kept here so each script runs alone.
+export function projectFor(sessionId: string | undefined, cwd: string | undefined): string {
+  if (sessionId) {
+    try {
+      return (JSON.parse(readFileSync(join(labelDir, `${sessionId}.json`), 'utf8')) as { project: string }).project;
+    } catch {}
+  }
   if (!cwd) return 'unknown';
+  // A workspace sits at …/.work/<repo>/<name>; an adopted Rift copy at …/.rifts/<repo>/<name>.
   const m =
     cwd.match(/\/tmp\/orchestrate\/([^/]+)/) ??
-    cwd.match(/\/\.rifts\/([^/]+)/) ??
+    cwd.match(/\/(?:\.work|\.rifts)\/([^/]+)/) ??
     cwd.match(/\/Developer\/(?:personal|work)\/([^/.][^/]*)/) ??
     cwd.match(/\/workspaces\/([^/]+)/);
   return m?.[1] ?? basename(cwd);

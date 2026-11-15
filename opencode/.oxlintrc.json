@@ -368,7 +368,7 @@
     },
     {
       "files": [
-        "mods/rift/*.ts"
+        "mods/work/*.ts"
       ],
       "rules": {
         "no-restricted-imports": [

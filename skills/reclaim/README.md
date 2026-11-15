@@ -12,7 +12,7 @@ cp -R /tmp/reclaim-src/skills/reclaim ~/.claude/skills/reclaim
 
 Then ask Claude Code to "reclaim disk space", or run `/reclaim`. The survey alone: `bun ~/.claude/skills/reclaim/scripts/survey.ts` (`--roots` for code folders other than `~/Developer`).
 
-The survey sizes APFS clones (Rifts and their trash, bun's and uv's caches, `node_modules`) by what removing them would free, the bytes they share with no other file, and shows their `du` size beside it: a Rift that `du` puts at 15 GiB can free almost nothing. Git worktrees are real copies and keep their `du` size.
+The survey sizes APFS clones (Rifts, `work` workspaces and their trash, bun's and uv's caches, `node_modules`) by what removing them would free, the bytes they share with no other file, and shows their `du` size beside it: a Rift that `du` puts at 15 GiB can free almost nothing. Git worktrees are real copies and keep their `du` size.
 
 To keep transcripts small every week, schedule `bun ~/.claude/skills/reclaim/scripts/cull-transcript-images.ts`. It replaces images inlined in Claude Code and Codex transcripts with a short note.
 

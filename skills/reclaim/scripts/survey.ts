@@ -2,7 +2,7 @@
 // Read-only survey of the disk space a Mac could reclaim: free space, then each
 // candidate with its size, idle age, tier, and the command that removes it.
 // Nothing is changed. Each size is what removing the item would free: for APFS
-// clones (Rifts and their trash, bun's and uv's caches, node_modules, code-sign
+// clones (Rifts, `work` workspaces and their trash, bun's and uv's caches, node_modules, code-sign
 // clones) the bytes no other file shares, marked `~` and given beside their `du`
 // size (see clone-size.ts); for everything else, `du`. `df` after a removal is
 // the real figure.
@@ -31,7 +31,10 @@ type Item = {
   /** How a clone's bytes were measured, and what it shares its blocks with. */
   clone?: { method: Method; sharedWith: string };
   idleDays?: number;
-  command: string;
+  /** None when the item is held: nothing may remove it yet. */
+  command?: string;
+  /** Why the item has no command. */
+  held?: string;
   busy?: string;
   note?: string;
 };
@@ -235,18 +238,47 @@ if (culled.freedGB > 0.05)
 const BUILD = new Set(['.next', 'dist', 'build', '.turbo', '.parcel-cache', 'target', '.gradle', 'DerivedData']);
 // A Rift (`rift create --copy-all`) is an APFS clone of its source: a checkout with a `.rift` marker in
 // a hidden folder (`.rifts`). Its warm source carries a marker too, but sits in the open, and stays.
+// A `work` workspace is a clone too, in work's store (below). A base stays, even one in a hidden folder.
 // A git worktree, or another checkout in a hidden folder, is a real copy.
-type Checkout = { path: string; worktree: boolean; riftSince?: number };
+type Checkout = { path: string; worktree: boolean; riftSince?: number; workBase?: string };
 function checkouts(dir: string, depth: number, hidden: boolean, out: Checkout[] = []): Checkout[] {
   for (const e of ls(dir)) {
-    if (!e.isDirectory() || e.name === 'node_modules' || e.name === '.git' || e.name === RIFT_TRASH) continue;
+    if (!e.isDirectory() || e.name === 'node_modules' || e.name === '.git' || e.name === RIFT_TRASH || e.name === WORK_TRASH) continue;
     const p = join(dir, e.name);
     const isHidden = hidden || e.name.startsWith('.');
-    if (exists(join(p, '.git'))) out.push({ path: p, worktree: isHidden || lstatSync(join(p, '.git')).isFile(), riftSince: isHidden ? riftSince(p) : undefined });
+    if (exists(join(p, '.git')))
+      out.push({
+        path: p,
+        worktree: !isWorkBase(p) && (isHidden || lstatSync(join(p, '.git')).isFile()),
+        riftSince: isHidden ? riftSince(p) : undefined,
+        workBase: isHidden ? workBase(p) : undefined,
+      });
     else if (depth > 0) checkouts(p, depth - 1, isHidden, out);
   }
   return out;
 }
+// `work` keeps the workspaces of <parent>/<repo> in its store <parent>/.work/<repo>/, beside the store's
+// .registry, .trusted and .lock files, which are never candidates. `work rm <name>`, run from the base,
+// moves a workspace (or an adopted Rift) to .work-trash/<name>.<n> beside it; `work gc` deletes that trash.
+const WORK_STORE = '.work';
+const WORK_TRASH = '.work-trash';
+// Until this day the work trash is what a rollback to Rift restores from, so no `work gc` before it.
+const ROLLBACK_UNTIL = '2026-12-06';
+// `work gc` can lose data (work's verify found `gc -idle -archive` removing an adopted copy with fresh
+// edits and dropping other branches and stashes): until that is fixed the survey holds work's trash and
+// never offers `work gc`. Flip to true once work's fix lands.
+const WORK_GC_SAFE = false;
+const WORK_GC_HELD = `held: work gc is not safe yet (data-loss finding in work's verify); keep until ${ROLLBACK_UNTIL}`;
+// A store or Rift folder, not a checkout that happens to bear the name.
+const isStore = (dir: string) => (basename(dir) === WORK_STORE || basename(dir) === '.rifts') && !exists(join(dir, '.git'));
+/** The base of a workspace at <parent>/.work/<repo>/<name> (or of the trash <parent>/.work/<repo>/.work-trash): <parent>/<repo>. */
+const workBase = (path: string): string | undefined => {
+  const store = dirname(dirname(path));
+  return basename(store) === WORK_STORE && isStore(store) ? join(dirname(store), basename(dirname(path))) : undefined;
+};
+const isWorkBase = (dir: string) => exists(join(dirname(dir), WORK_STORE, basename(dir), '.registry'));
+// A workspace's `.rift`, if any, is its base's marker cloned with it; the folder's birth is when it was made.
+const madeAt = (dir: string) => statSync(dir).birthtimeMs || undefined;
 // Rifts live in <parent>/.rifts/<repo>/<name>, cloned from <parent>/<repo>; `rift remove` moves one to
 // <parent>/.rifts/<repo>/.trash, and `rift gc` deletes the trash.
 const RIFT_TRASH = '.trash';
@@ -255,13 +287,18 @@ const riftSource = (rift: string) => {
   const source = join(dirname(dirname(repo)), basename(repo));
   return basename(dirname(repo)) === '.rifts' && exists(source) ? tilde(source) : 'its source';
 };
-function riftTrashes(dir: string, depth: number, out: string[] = []): string[] {
+// Rift's trash (.rifts/<repo>/.trash) and work's (.work/<repo>/.work-trash, and .rifts/<repo>/.work-trash
+// for an adopted Rift that `work rm` removed).
+function trashes(dir: string, depth: number, out: { path: string; work: boolean }[] = []): { path: string; work: boolean }[] {
   for (const e of ls(dir)) {
     if (!e.isDirectory() || e.name === 'node_modules' || e.name === '.git') continue;
     const p = join(dir, e.name);
-    if (e.name === '.rifts') {
-      for (const repo of ls(p)) if (repo.isDirectory() && exists(join(p, repo.name, RIFT_TRASH))) out.push(join(p, repo.name, RIFT_TRASH));
-    } else if (depth > 0 && !exists(join(p, '.git'))) riftTrashes(p, depth - 1, out);
+    if (isStore(p)) {
+      for (const repo of ls(p).filter((r) => r.isDirectory())) {
+        if (e.name === '.rifts' && exists(join(p, repo.name, RIFT_TRASH))) out.push({ path: join(p, repo.name, RIFT_TRASH), work: false });
+        if (exists(join(p, repo.name, WORK_TRASH))) out.push({ path: join(p, repo.name, WORK_TRASH), work: true });
+      }
+    } else if (depth > 0 && !exists(join(p, '.git'))) trashes(p, depth - 1, out);
   }
   return out;
 }
@@ -311,7 +348,9 @@ for (const root of ROOTS)
       const ahead = git(repo.path, 'rev-list', '--count', '@{u}..HEAD');
       const pushed = ahead === '' ? 'no upstream' : `${ahead} unpushed`;
       const what = `${name} (${git(repo.path, 'branch', '--show-current') || 'detached'}, ${dirty} dirty, ${pushed})`;
-      if (repo.riftSince !== undefined)
+      if (repo.workBase !== undefined)
+        add({ tier: 'C', category: 'rifts', what, paths: [repo.path], idleDays: idle, busy, clone: { sharedWith: exists(repo.workBase) ? tilde(repo.workBase) : 'its base', since: madeAt(repo.path) }, command: `work rm ${basename(repo.path)} (from ${tilde(repo.workBase)}), after its work is merged`, note: WORK_GC_SAFE ? `rm only moves it to ${WORK_TRASH}: the space frees at work gc` : `rm only moves it to ${WORK_TRASH}, which is held: the space does not free yet` });
+      else if (repo.riftSince !== undefined)
         add({ tier: 'C', category: 'rifts', what, paths: [repo.path], idleDays: idle, busy, clone: { sharedWith: riftSource(repo.path), since: repo.riftSince }, command: 'rift remove, after its work is merged', note: 'remove only moves it to the Rift trash: the space frees at rift gc' });
       else
         add({ tier: 'C', category: 'worktrees', what, paths: [repo.path], idleDays: idle, busy, command: 'git worktree remove, after its work is merged', note: 'a real copy: du is what it frees, less any node_modules bun cloned from its cache' });
@@ -321,8 +360,19 @@ for (const root of ROOTS)
     for (const dir of ignoredData(repo.path)) add({ tier: 'C', category: 'ignored data', what: `${tilde(dir)}: ignored by git`, paths: [dir], idleDays: idleDays(newest(dir, 2)), command: 'move to the Trash, item by item', note: 'renders, bundles, scratch: ask what it is', min: GIB });
     if (idle >= IDLE_DAYS && !busy) add({ tier: 'A', category: 'idle node_modules', what: `${name}: node_modules, project idle ${idle} days`, paths: nodeModules(repo.path), idleDays: idle, clone: { sharedWith: "the package manager's cache and its Rifts" }, command: 'rm -rf <paths> (reinstall with the lockfile)', note: 'a warm source for clones loses its install' });
   }
-for (const trash of ROOTS.flatMap((root) => riftTrashes(root, 3))) {
+const beforeRollbackEnds = NOW < Date.parse(`${ROLLBACK_UNTIL}T00:00:00`);
+for (const { path: trash, work } of ROOTS.flatMap((root) => trashes(root, 3))) {
   const removed = ls(trash).filter((e) => e.isDirectory()).length;
+  if (work) {
+    // <parent>/{.work,.rifts}/<repo>/.work-trash belongs to the base <parent>/<repo>.
+    const base = join(dirname(dirname(dirname(trash))), basename(dirname(trash)));
+    const gc = `work gc (from ${tilde(base)}; deletes all of its trash)`;
+    const removal = WORK_GC_SAFE
+      ? { command: beforeRollbackEnds ? `keep until ${ROLLBACK_UNTIL}, then ${gc}` : gc, note: `${beforeRollbackEnds ? `a rollback to Rift restores from it until ${ROLLBACK_UNTIL}; ` : ''}removed workspaces can hold unpushed work: ask` }
+      : { held: WORK_GC_HELD, note: 'a rollback to Rift restores from it; removed workspaces can hold unpushed work' };
+    add({ tier: 'C', category: 'work trash', what: `${tilde(trash)}: ${removed} removed workspaces`, paths: [trash], idleDays: idleDays(statSync(trash).mtimeMs), clone: { sharedWith: `${exists(base) ? tilde(base) : 'its base'} and its live workspaces`, split: true }, ...removal });
+    continue;
+  }
   add({ tier: 'C', category: 'rift trash', what: `${tilde(trash)}: ${removed} removed Rifts`, paths: [trash], idleDays: idleDays(statSync(trash).mtimeMs), clone: { sharedWith: `${riftSource(join(dirname(trash), 'x'))} and its live Rifts`, split: true }, command: 'rift gc (deletes the trash of every repo)', note: 'removed Rifts can hold unpushed work: ask' });
 }
 
@@ -378,9 +428,10 @@ for (const line of sh(['docker', 'system', 'df']).split('\n').slice(1)) {
 const repoPaths = ROOTS.flatMap((root) => checkouts(root, 3, false)).map((c) => c.path);
 const holdsRepo = (dir: string) => repoPaths.some((r) => r === dir || r.startsWith(dir + sep));
 for (const root of ROOTS)
-  for (const group of [root, ...ls(root).filter((e) => e.isDirectory()).map((e) => join(root, e.name))].filter((g) => !exists(join(g, '.git'))))
+  // A Rift or work store holds trash and the store's own files: the trash items above cover it.
+  for (const group of [root, ...ls(root).filter((e) => e.isDirectory()).map((e) => join(root, e.name))].filter((g) => !exists(join(g, '.git')) && !isStore(g) && !isStore(dirname(g))))
     for (const e of ls(group))
-      if (e.isDirectory() && !holdsRepo(join(group, e.name)) && join(group, e.name) !== root)
+      if (e.isDirectory() && !isStore(join(group, e.name)) && !holdsRepo(join(group, e.name)) && join(group, e.name) !== root)
         add({ tier: 'C', category: 'loose folders', what: `${tilde(join(group, e.name))}: not a checkout`, paths: [join(group, e.name)], idleDays: idleDays(newest(join(group, e.name), 2)), command: 'move to the Trash, item by item', min: GIB });
 const PERSONAL = ['~/Downloads', '~/Desktop', '~/Documents', '~/Movies', '~/Music'].map(home).filter(exists);
 for (const file of sh(['find', ...PERSONAL, '-type', 'f', '-size', '+500M']).split('\n').filter(Boolean))
@@ -409,7 +460,7 @@ if (args.includes('--json')) {
     for (const r of rows) {
       console.log(`  ${`${r.clone && r.clone.method !== 'du' ? '~' : ''}${gib(r.bytes)}`.padStart(11)}  ${r.idleDays === undefined ? '' : `${r.idleDays}d idle  `}${r.what}${r.busy ? `  [busy: ${r.busy}]` : ''}`);
       if (r.clone) console.log(`               ${r.clone.method === 'du' ? `${gib(r.bytes)} by du; clone sharing unknown here, df tells` : `~${gib(r.bytes)} own, ${gib(r.duBytes ?? 0)} by du (shared with ${r.clone.sharedWith})${r.clone.method === 'mtime' ? ', own = files written since it was made' : ''}`}`);
-      console.log(`               ${r.command}${r.note ? `  (${r.note})` : ''}`);
+      console.log(`               ${r.command ?? r.held}${r.note ? `  (${r.note})` : ''}`);
       if (r.paths.length > 1 && r.paths.length <= 8) for (const p of r.paths) console.log(`                 ${tilde(p)}`);
     }
     console.log();

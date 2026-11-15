@@ -14,7 +14,7 @@
     "@dotfiles/opencode-pool": "workspace:*",
     "@dotfiles/opencode-questions": "workspace:*",
     "@dotfiles/opencode-queue": "workspace:*",
-    "@dotfiles/opencode-rift": "workspace:*",
+    "@dotfiles/opencode-work": "workspace:*",
     "@dotfiles/opencode-status": "workspace:*",
     "@dotfiles/opencode-wake": "workspace:*"
   }

@@ -268,7 +268,7 @@
     },
     {
       "files": [
-        "mods/rift/process/flock.ts"
+        "mods/work/process/flock.ts"
       ],
       "rules": {
         "effect/noNodeBuiltinImport": "off"
@@ -276,7 +276,7 @@
     },
     {
       "files": [
-        "mods/rift/filestore/debts.ts"
+        "mods/work/filestore/debts.ts"
       ],
       "rules": {
         "effect/noNodeBuiltinImport": "off"
@@ -370,7 +370,7 @@
     },
     {
       "files": [
-        "mods/rift/filestore/debts.test.ts"
+        "mods/work/filestore/debts.test.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off",
@@ -380,7 +380,7 @@
     },
     {
       "files": [
-        "mods/rift/memory/post-land-owed.test.ts"
+        "mods/work/memory/post-land-owed.test.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off"
@@ -519,7 +519,7 @@
     },
     {
       "files": [
-        "mods/rift/memory/land-receipts.test.ts"
+        "mods/work/memory/land-receipts.test.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off"
@@ -527,7 +527,7 @@
     },
     {
       "files": [
-        "mods/rift/process/land-receipts.test.ts"
+        "mods/work/process/land-receipts.test.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off",
