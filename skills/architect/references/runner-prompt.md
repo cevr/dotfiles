@@ -1,6 +1,6 @@
 # Architect runner prompt
 
-The architect passes this file to each candidate runner in Phase B, one per model family, and fills in the inputs around it: the task, the Phase A grounding, the runner's own working directory (a Rift, or a subdirectory of the sketch dir), and the path to write outputs. What matters is that the candidates stay independent.
+The architect passes this file to each candidate runner in Phase B, one per model family, and fills in the inputs around it: the task, the Phase A grounding, the runner's own working directory (a workspace, or a subdirectory of the sketch dir), and the path to write outputs. What matters is that the candidates stay independent.
 
 You are producing one candidate design in architect's parallel exploration. Read the **architect** skill in full first. That's the workflow you're inside. Output a candidate design package: type sketch, function signatures, module map, and prose rationale shaped per [`rationale-template.md`](rationale-template.md).
 

@@ -6,7 +6,7 @@ Use it when a defect would be costly: ownership, authority, a stored or wire for
 
 ## Start the adversaries
 
-The caller starts two by default, each a fresh `verifier` or `worker` subagent in its own Rift or a clean checkout of the head, with any uncommitted changes copied in. Give each the scope (a diff from its merge base, or the files named), the intent in one line, and this brief:
+The caller starts two by default, each a fresh `verifier` or `worker` subagent in its own workspace or a clean checkout of the head, with any uncommitted changes copied in. Give each the scope (a diff from its merge base, or the files named), the intent in one line, and this brief:
 
 > Break this change. Prove each finding with a run against the real code: a failing test, a repro script, a command whose output shows the wrong behavior. For a design, run a prototype or probe the current tree. Keep your repros in your own checkout. Report each finding with a title, the exact command, the output it printed, and the output the intent requires. Leave out what you did not run: style, naming, structure, and risks that need a future change to matter. No findings is a valid result. Report; do not fix.
 
