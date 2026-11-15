@@ -10,11 +10,11 @@ import { Array as Arr, Data, Effect, Layer, Option, Ref } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import * as MemoryRex from "./rex.ts"
 import * as MemorySpool from "./spool.ts"
-import { ensureShowcase, setTally, showFile } from "../model.ts"
+import { ensureShowcase, setTally, showFile, showLive } from "../model.ts"
 import type { Pane } from "../pane.ts"
 import type { Rex, Spool } from "../service.ts"
 import { arrange, LABEL } from "../showcase.ts"
-import { Picture, type Spooled } from "../spool.ts"
+import { Feed, Picture, Sim, type Spooled, Url } from "../spool.ts"
 
 /** A seeded generator of numbers in [0, 1) (mulberry32). */
 const drawer = (seed: number) => {
@@ -30,9 +30,13 @@ const drawer = (seed: number) => {
 const SESSIONS = ["session:a", "session:b", "session:c"]
 const VIEWER = ["rex-show", "view"]
 
+/** What a call shows: a picture, a tally, or a live item (a simulator, a Sideshow session, a web page). */
+const KINDS = ["image", "tally", "sim", "sideshow", "url"] as const
+type Kind = (typeof KINDS)[number]
+
 interface Call {
   readonly pane: Pane
-  readonly kind: "image" | "tally"
+  readonly kind: Kind
 }
 
 type Step = Data.TaggedEnum<{
@@ -73,16 +77,20 @@ const stepOf = (draw: () => number, world: MemoryRex.World): Step => {
   if (roll >= 0.65) return Step.ViewerExits({ session: pick(draw, SESSIONS) })
   const call = (): Call => {
     const session = pick(draw, SESSIONS)
-    return { pane: { session, block: pick(draw, panesIn(world, session)).id }, kind: pick(draw, ["image", "tally"] as const) }
+    return { pane: { session, block: pick(draw, panesIn(world, session)).id }, kind: pick(draw, KINDS) }
   }
   return Step.Calls({ calls: Array.from({ length: 1 + Math.floor(draw() * 3) }, call) })
 }
 
-const callOf = (call: Call) =>
-  Option.match(Option.liftPredicate(call.kind, (kind) => kind === "image"), {
-    onSome: () => showFile(call.pane, Picture.make({ file: "x.png", name: "x.png" }), VIEWER),
-    onNone: () => setTally(call.pane, { msg: "2 of 5 done", state: "working", progress: 40 }, VIEWER),
-  })
+const CALLS: Record<Kind, (pane: Pane) => ReturnType<typeof showLive>> = {
+  image: (pane) => showFile(pane, Picture.make({ file: "x.png", name: "x.png" }), VIEWER),
+  tally: (pane) => setTally(pane, { msg: "2 of 5 done", state: "working", progress: 40 }, VIEWER),
+  sim: (pane) => showLive(pane, Sim.make({ device: "", host: "", name: "simulator", every: 1 }), VIEWER),
+  sideshow: (pane) => showLive(pane, Feed.make({ base: "http://localhost:8228", session: "s1", name: "s1", every: 3 }), VIEWER),
+  url: (pane) => showLive(pane, Url.make({ url: "http://localhost:3000/", name: "localhost:3000", every: 5, width: 1280 }), VIEWER),
+}
+
+const callOf = (call: Call) => CALLS[call.kind](call.pane)
 
 /** The user closes a session's oldest showcase. */
 const closeShowcase = (rex: Ref.Ref<MemoryRex.World>, session: string) =>

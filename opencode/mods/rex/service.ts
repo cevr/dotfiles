@@ -1,9 +1,10 @@
 // The contracts rex-show needs from outside: Rex, which holds the session's
 // panes; the spool, where a call leaves what the showcase pane draws; and a
 // headless browser, which shoots the web page the pane shows; and Sideshow,
-// whose session the pane follows.
+// whose session the pane follows; and the iOS simulators the pane mirrors.
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { Block } from "./showcase.ts"
+import type { Device } from "./sim.ts"
 import type { Spooled } from "./spool.ts"
 
 /** Rex refused a call or could not be reached; the command and its words. */
@@ -90,6 +91,28 @@ export class Browser extends Context.Service<
     readonly shoot: (shot: Shot) => Effect.Effect<Uint8Array, ShotFailed>
   }
 >()("dotfiles-opencode/rex/Browser") {}
+
+/** The simulators could not be listed or screenshot: no Mac, ssh refused, or simctl failed; why, for the pane's error line. */
+export class SimFailed extends Schema.TaggedError<SimFailed>()("SimFailed", {
+  message: Schema.String,
+}) {}
+
+/** The iOS simulators of one Mac, read only: never booted, shut down, installed to or erased. */
+export interface SimHost {
+  /** The booted simulators. */
+  readonly booted: Effect.Effect<ReadonlyArray<Device>, SimFailed>
+  /** A PNG of simulator `udid`'s screen. */
+  readonly screenshot: (udid: string) => Effect.Effect<Uint8Array, SimFailed>
+}
+
+/** The iOS simulators this host can reach: its own on a Mac, or a Mac's over ssh. */
+export class Simulators extends Context.Service<
+  Simulators,
+  {
+    /** The simulators on `host` (user@mac, reached with ssh), or on this host when it is "". */
+    readonly at: (host: string) => SimHost
+  }
+>()("dotfiles-opencode/rex/Simulators") {}
 
 /** Where a new pane goes and what runs in it. */
 export interface Split {

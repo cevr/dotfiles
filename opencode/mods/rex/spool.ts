@@ -1,4 +1,4 @@
-// What a session's showcase pane draws: the picture, page, URL or Sideshow session shown last, and
+// What a session's showcase pane draws: the picture, page, URL, Sideshow session or simulator shown last, and
 // the tally. Each rex-show call changes one of the two and keeps the other;
 // the viewer draws the whole of it again whenever it changes.
 import { Option, Schema } from "effect"
@@ -20,7 +20,15 @@ export type Url = typeof Url.Type
 export const Feed = Schema.TaggedStruct("Feed", { base: Schema.String, session: Schema.String, name: Schema.String, every: Schema.Number })
 export type Feed = typeof Feed.Type
 
-export const Shown = Schema.Union([Picture, Page, Url, Feed]).pipe(Schema.toTaggedUnion("_tag"))
+/**
+ * A booted iOS simulator, screenshot by the viewer every `every` seconds:
+ * `device` by name or udid ("" for the one used last), on the Mac `host`
+ * reached with ssh ("" for this host).
+ */
+export const Sim = Schema.TaggedStruct("Sim", { device: Schema.String, host: Schema.String, name: Schema.String, every: Schema.Number })
+export type Sim = typeof Sim.Type
+
+export const Shown = Schema.Union([Picture, Page, Url, Feed, Sim]).pipe(Schema.toTaggedUnion("_tag"))
 export type Shown = typeof Shown.Type
 
 /** The spool of one session: a counter that grows with each change, what is shown, and the tally. */
