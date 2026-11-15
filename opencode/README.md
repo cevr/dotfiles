@@ -934,7 +934,12 @@ What stays, none of it kept between calls:
   server restart forgets which verdicts it published, so it may read the same
   one again: the record then finds `refs/fleet/verified` already naming those
   heads, pushes nothing, and the run's log says `the verified target is
-  already …` (`git/fleet-record.test.ts`).
+  already …` (`git/fleet-record.test.ts`). Only a batch of the dotfiles is
+  the fleet's: the verifier's checkout (else its root's directory) must have
+  the dotfiles checkout's origin. Another repository's accepted batch (a Bite
+  verifier's) is not recorded and not told. The report is the last absolute
+  path ending in `-findings.md` on the hand-back's first line, past any
+  parenthetical after the verdict.
 
 Still refused: a subagent's `lane`, `land` or `verify`; a malformed input;
 the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
