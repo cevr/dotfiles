@@ -28,7 +28,19 @@ export interface Checkout {
   readonly fork: string
   /** Variables every command gets (PATH with bun's directory first). */
   readonly env: Readonly<globalThis.Record<string, string>>
+  /**
+   * Whether this host is the workbox (Linux), whose `~/.local/bin` holds copies of the checkout's
+   * `workbox/bin` scripts: each move installs them again (`WORKBOX_BIN`).
+   */
+  readonly workbox: boolean
 }
+
+/**
+ * The workbox's script install, as bootstrap runs it, then the fresh `apply-agent-settings`. Without
+ * it, `~/.local/bin` kept the copies bootstrap made, missing what the checkout added since (the rexm
+ * link, 2026-11-15). A commit older than the script has none, and its move installs nothing.
+ */
+export const WORKBOX_BIN = "workbox/install-bin.sh"
 
 /** Whether `path` is a file a reset leaves as the host has it. */
 export const kept = (path: string): boolean => KEPT.some((each) => path === each || (each.endsWith("/") && path.startsWith(each)))
@@ -82,13 +94,23 @@ export const layer = (checkout: Checkout) => {
     Effect.asVoid,
   )
 
+  const scripts = Effect.gen(function* () {
+    if (!checkout.workbox) return
+    const script = `${checkout.root}/${WORKBOX_BIN}`
+    const exists = yield* Effect.tryPromise({ try: () => file(script).exists(), catch: (cause) => new UpdateFailed({ step: "find the workbox's scripts", message: String(cause) }) })
+    if (exists) yield* run("install the workbox's scripts", ["sh", script, "--apply"], here)
+  })
+
+  /** The dependencies, then on the workbox its scripts: what a move of the checkout installs. */
+  const installMoved = install.pipe(Effect.andThen(scripts))
+
   const advance = Effect.fn("Source.advance")(function* (commit: string) {
     const prior = yield* head
     yield* move(commit)
-    yield* install.pipe(
+    yield* installMoved.pipe(
       Effect.catchTag("UpdateFailed", (failed) =>
         move(prior).pipe(
-          Effect.andThen(install),
+          Effect.andThen(installMoved),
           Effect.ignore,
           Effect.andThen(Effect.fail(new UpdateFailed({ step: failed.step, message: `${failed.message}\nthe checkout moved back to ${prior.slice(0, 10)}` }))),
         ),

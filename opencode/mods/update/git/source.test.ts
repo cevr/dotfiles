@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { argv, file, spawnSync, write } from "bun"
+import { argv, env as hostEnv, file, spawnSync, write } from "bun"
 import { Effect, Exit } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { Source } from "../service.ts"
@@ -59,7 +59,7 @@ const scratch = Effect.gen(function* () {
 const advance = (root: string, mode: "ff" | "reset", commit: string) =>
   Effect.gen(function* () {
     return yield* (yield* Source).advance(commit)
-  }).pipe(Effect.provide(SourceLive.layer({ root, mode, bun: BUN, fork: "/nonexistent/loop-probe-x", env: GIT_ENV })), Effect.exit)
+  }).pipe(Effect.provide(SourceLive.layer({ root, mode, bun: BUN, fork: "/nonexistent/loop-probe-x", env: GIT_ENV, workbox: false })), Effect.exit)
 
 describe("the advance step over real git and bun", () => {
   for (const mode of ["ff", "reset"] as const) {
@@ -135,6 +135,62 @@ describe("the advance step over real git and bun", () => {
   )
 
   test(
+    "W1: on the workbox a move installs the target's workbox/bin over a stale copy and runs apply-agent-settings; a removed script stays; a commit without the script moves too",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { root, a } = yield* scratch
+          const repo = (path: string) => Effect.promise(() => file(new URL(`../../../../${path}`, import.meta.url)).text())
+          const settings = yield* repo("workbox/bin/apply-agent-settings")
+          // The target: the real install script and apply-agent-settings; the scripts it calls in the
+          // checkout do nothing here, so no step touches this host's Claude or herdr.
+          yield* files(root, [
+            ["opencode/package.json", EMPTY_PACKAGE],
+            ["workbox/install-bin.sh", yield* repo("workbox/install-bin.sh")],
+            ["workbox/bin/apply-agent-settings", settings],
+            ["claude/mods/fx-ui/install.sh", "#!/bin/sh\nexit 0\n"],
+            ["claude/install-herdr-hook.sh", "#!/bin/sh\nexit 0\n"],
+          ])
+          sh(root, ["chmod", "755", "workbox/install-bin.sh", "workbox/bin/apply-agent-settings", "claude/mods/fx-ui/install.sh", "claude/install-herdr-hook.sh"])
+          sh(root, ["git", "add", "-A"])
+          sh(root, ["git", "commit", "-qm", "C"])
+          const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+          sh(root, ["git", "reset", "-q", "--hard", a])
+          // A fake home as the workbox has it: bootstrap's older apply-agent-settings, a script since
+          // removed from workbox/bin, herdr, the synced settings, the dotfiles where the scripts look.
+          const home = sh(".", ["mktemp", "-d", "-t", "update-source-home"]).out
+          const stubs = `${home}/stubs`
+          yield* files(home, [
+            [".local/bin/apply-agent-settings", "#!/bin/sh\nexit 0\n"],
+            [".local/bin/gone-script", "#!/bin/sh\nexit 0\n"],
+            [".local/bin/herdr", "#!/bin/sh\nexit 0\n"],
+            [".config/bite-workbox/settings-source/claude/settings.local.json", "{}"],
+            [".config/bite-workbox/settings-source/claude/statusline-git.sh", "#!/bin/sh\n"],
+            ["stubs/sudo", "#!/bin/sh\nexit 0\n"],
+          ])
+          sh(home, ["chmod", "755", ".local/bin/apply-agent-settings", ".local/bin/gone-script", ".local/bin/herdr", "stubs/sudo"])
+          sh(home, ["mkdir", "-p", "Developer/personal"])
+          sh(home, ["ln", "-s", root, "Developer/personal/dotfiles"])
+          const env = { ...GIT_ENV, HOME: home, PATH: `${stubs}:${hostEnv.PATH ?? ""}` }
+          const advanceTo = (target: string) =>
+            Effect.gen(function* () {
+              return yield* (yield* Source).advance(target)
+            }).pipe(Effect.provide(SourceLive.layer({ root, mode: "reset", bun: BUN, fork: "/nonexistent/loop-probe-x", env, workbox: true })), Effect.exit)
+          const moved = yield* advanceTo(c)
+          expect(Exit.match(moved, { onSuccess: () => "installed", onFailure: String })).toBe("installed")
+          expect(yield* Effect.promise(() => file(`${home}/.local/bin/apply-agent-settings`).text())).toBe(settings)
+          expect(sh(home, ["readlink", ".local/bin/rexm"]).out).toBe(`${home}/Developer/personal/dotfiles/rex-migrate/rexm.ts`)
+          expect(yield* Effect.promise(() => file(`${home}/.local/bin/gone-script`).exists())).toBe(true)
+          // A commit older than the install script (a rollback's) moves with nothing to install.
+          expect(Exit.isSuccess(yield* advanceTo(a))).toBe(true)
+          expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
+          spawnSync(["rm", "-rf", root, home])
+        }),
+      ),
+    60_000,
+  )
+
+  test(
     "a target whose sim-tui links the fork's protocol installs, and the next one too: the fork's modules stay as they were",
     () =>
       Effect.runPromise(
@@ -178,7 +234,7 @@ describe("the advance step over real git and bun", () => {
           const advanceTo = (target: string) =>
             Effect.gen(function* () {
               return yield* (yield* Source).advance(target)
-            }).pipe(Effect.provide(SourceLive.layer({ root: checkoutRoot, mode: "ff", bun: BUN, fork, env })), Effect.exit)
+            }).pipe(Effect.provide(SourceLive.layer({ root: checkoutRoot, mode: "ff", bun: BUN, fork, env, workbox: false })), Effect.exit)
           expect(Exit.isSuccess(yield* advanceTo(b))).toBe(true)
           expect(forkModules()).toBe(before)
           // The next install's link-fork checks the fork first: a link written into it would fail it there.

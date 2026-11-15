@@ -137,9 +137,7 @@ ln -sfn "$workbox_dir/../orchestrate/budget.json" "$HOME/.config/orchestrate/bud
 "$workbox_dir/../claude/mods/fx-ui/install.sh"
 sudo chsh -s /usr/bin/zsh "$USER"
 
-for script in "$workbox_dir"/bin/*; do
-  install -m 755 "$script" "$local_bin_dir/$(basename "$script")"
-done
+"$workbox_dir/install-bin.sh"
 rm -rf "$HOME/.config/bite-workbox/bun-tools"
 for tool in "$workbox_dir"/bun-tools/*/; do
   tool=${tool%/}
