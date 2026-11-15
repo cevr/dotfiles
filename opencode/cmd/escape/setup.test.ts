@@ -10,7 +10,7 @@
 // tests/prime-escape.test.ts, tests/escape-states.test.ts and
 // tests/queue-merge.test.ts run it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { Deferred, Effect, Option } from "effect"
 import { STOP_MS } from "@dotfiles/opencode-escape/escape"
 import type { InboxItem, Message } from "@dotfiles/opencode-escape/opencode/view"
 import { SEND_COMMAND } from "@dotfiles/opencode-escape/send"
@@ -278,15 +278,15 @@ describe("escape plugin", () => {
     run.sessions.ses_root!.messages.push({ id: "msg_3", type: "user", text: "Then tag it.", time: { created: SENT + 6_000 } })
     run.sessions.ses_root!.pending = [waitingPrompt("msg_3", "queue", SENT + 6_000)]
     run.state.now = SENT + 60_000
-    const answer = Promise.withResolvers<{ left: ReadonlyArray<string> }>()
+    const answer = Deferred.makeUnsafe<{ left: ReadonlyArray<string> }>()
     run.host.ui.composer.takeBack = (input) => {
       run.calls.push(`take ${input.inboxIDs.join(",")}`)
-      return answer.promise
+      return Effect.runPromise(Deferred.await(answer))
     }
     run.press()
     await run.flush()
     expect(run.calls).toEqual(["take msg_3"])
-    answer.resolve({ left: [] })
+    Effect.runSync(Deferred.succeed(answer, { left: [] }))
     await run.flush()
     expect(run.calls).toEqual(["take msg_3", "interrupt false"])
   })
