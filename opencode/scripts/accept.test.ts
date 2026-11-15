@@ -11,7 +11,7 @@ import { Option } from "effect"
 import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
-import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmFirst, swarmRead, swarmSlot, timingSigns } from "./accept-plan.ts"
+import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, timingSigns } from "./accept-plan.ts"
 import { parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
 import { acceptanceTests, acceptReach, load, packageOf, reach } from "./reach.ts"
@@ -748,6 +748,23 @@ describe("the swarm's plan", () => {
     ])
   })
 
+  test("reads a stopped suite's swarm: a seed that failed before the stop fails, one that failed only as it was stopped is named apart, a line under way at the stop counts as before it", () => {
+    const file = "cmd/a.sim.test.tsx"
+    const out = ["sim-swarm cmd/a.sim.test.tsx 900", "sim-swarm cmd/a.sim.test.tsx 901", ""].join("\n")
+    const err = ["error: SIM_SEED=902 bun test cmd/a.sim.test.tsx: a real failure", "error: SIM_SEED=903 bun test cmd/a.sim.test.tsx: torn down", ""].join("\n")
+    // The stop is decided once the first error line has begun to arrive: it and every seed out printed are before it.
+    const midLine = err.indexOf("a real")
+    expect([
+      swarmCut([{ text: out, atStop: out.length }, { text: err, atStop: midLine }], file),
+      swarmCut([{ text: out, atStop: 0 }, { text: err, atStop: 0 }], file),
+      swarmCut([{ text: out, atStop: out.length }, { text: err, atStop: err.length }], file),
+    ]).toEqual([
+      { passed: 2, failing: [902], stopped: [903] },
+      { passed: 2, failing: [], stopped: [902, 903] },
+      { passed: 2, failing: [902, 903], stopped: [] },
+    ])
+  })
+
   test("the long swarm is due when it never ran or last ran to its end a day ago", () => {
     const day = 24 * 60 * 60 * 1000
     expect([longSwarmDue(Option.none(), 5), longSwarmDue(Option.some(0), day - 1), longSwarmDue(Option.some(0), day)]).toEqual([true, false, true])
@@ -796,6 +813,53 @@ describe("a land run's swarm", () => {
         inBox: true,
         closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 0, deep: 0, budget: 0 }),
         replays: [1, 2, 3].map(() => ({ code: 1, names: true })),
+      })
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a suite its box stops is owed, timed out: the seeds that fail only as it is stopped are named, never failing seeds; a seed that failed before the stop still fails the run",
+    async () => {
+      using dir = scratch("accept-swarm-cut-")
+      const sim = join(dir.path, "sim")
+      mkdirSync(sim)
+      // Two stand-in suites that play one seed and then run on past the box; stopped, each fails a seed as its
+      // teardown runs (as a TUI torn down under a test does). The second failed a seed before the stop as well.
+      const suite = (name: string, before: string) => {
+        const file = join(sim, name)
+        const fails = (seed: number, what: string) => `console.error(${JSON.stringify(`error: ${replayLine(file, seed)}: ${what}`)})`
+        const body = [
+          'import { test } from "bun:test"',
+          'test("plays on past its box", async () => {',
+          `  process.on("SIGTERM", () => { ${fails(2, "torn down by the stop")}; process.exit(1) })`,
+          `  console.log(${JSON.stringify(`sim-swarm ${file} 1`)})`,
+          `  ${before}`,
+          "  await Bun.sleep(120_000)",
+          "})",
+          "",
+        ]
+        writeFileSync(file, body.join("\n"))
+        return file
+      }
+      const quiet = suite("quiet.sim.test.ts", "")
+      const red = suite("red.sim.test.ts", `console.error(${JSON.stringify(`error: ${replayLine(join(sim, "red.sim.test.ts"), 7)}: failed before the stop`)})`)
+      const env = scratchEnv(dir.path, { ACCEPT_FILES: join(dir.path, "none", "*.test.ts"), ACCEPT_BUDGET_MS: "6000" })
+      const land = await accept(["--land", "--parallel=2"], env)
+      expect({
+        code: land.code,
+        failing: land.lines.filter((line) => line.startsWith("accept: swarm: a failing seed: ")),
+        owed: land.lines.filter((line) => line.startsWith("owed: ")),
+        closing: closingOf(land.lines),
+      }).toEqual({
+        code: 1,
+        failing: [`accept: swarm: a failing seed: ${replayLine(red, 7)}`],
+        owed: [
+          expect.stringMatching(
+            new RegExp(`^owed: ${quiet.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(past the budget: its swarm timed out at its box: stopped after 1 seeds; seeds that failed only as it was stopped, not judged: 2 \\(log `),
+          ),
+        ],
+        closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 1, deep: 0, budget: 1 }),
       })
     },
     RUN_MS,
