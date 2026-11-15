@@ -90,13 +90,13 @@ describe("a land by receipts", () => {
     return landOnce(made, ["feat-x", "feat-y"], (answer) => {
       expect(answer).toBe(
         [
-          "Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; by their receipts, no full gate).",
+          "Landed 2 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; by their receipts, no full gate).",
           `  feat/x: its receipt: 1 check(s) green at aaa111 (${RECEIPT_AT})`,
           `  feat/y: its receipt: 1 check(s) green at bbb222 (${RECEIPT_AT})`,
           "The merge check passed in 3s; log: /logs/merge.log",
           "Receipts recorded: /logs/receipts/head-integrate.land.json",
           `To the trash: ${X}, ${Y}.`,
-          "The accept check runs in the background in its own Rift (land-accept) on the batch since base0; this session is woken with its result. The next land need not wait for it.",
+          "The accept check runs in the background in its own workspace (land-accept) on the batch since base0; this session is woken with its result. The next land need not wait for it.",
         ].join("\n"),
       )
       expect(made.landing.steps).toEqual([
@@ -150,7 +150,7 @@ describe("a land by receipts", () => {
     made.landing.standings.set(Y, Standing.Red({ receipt: MemoryLanding.receiptOf(Y, "head-feat-y", "round", 1) }))
     return landOnce(made, ["feat-x", "feat-y"], (answer) => {
       expect(answer).toBe(
-        `refused: The focused gate of ${Y} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the Rift and land again:\nits receipt is red, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a workspace. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`,
+        `refused: The focused gate of ${Y} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the workspace and land again:\nits receipt is red, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a workspace. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`,
       )
       expect(made.landing.steps.some((step) => step.startsWith("focus ") || step.startsWith("gate ") || step.startsWith("merge "))).toBe(false)
     })
@@ -202,7 +202,7 @@ describe("a land by receipts", () => {
     return landOnce(made, ["feat-x", "feat-y"], (answer) => {
       expect(answer).toBe(
         [
-          `refused: The focused gate of ${Y} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the Rift and land again:`,
+          `refused: The focused gate of ${Y} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the workspace and land again:`,
           "exit 1 in 3s; log: /logs/focus.log",
           "  1 fail",
           "  (fail) feat y",
@@ -221,7 +221,7 @@ describe("a land by receipts", () => {
     return landOnce(made, ["feat-x", "feat-y"], (answer) => {
       expect(answer).toBe(
         [
-          `refused: The merge check failed on the merged batch in ${INTEGRATE}; nothing was pushed. Route each failure to the Rift whose diff it touches:`,
+          `refused: The merge check failed on the merged batch in ${INTEGRATE}; nothing was pushed. Route each failure to the workspace whose diff it touches:`,
           "exit 2 in 3s; log: /logs/merge.log",
           "  error TS2322: no",
         ].join("\n"),
@@ -240,9 +240,9 @@ describe("a land by receipts", () => {
     return landOnce(made, ["feat-x"], (answer) => {
       expect(answer).toBe(
         [
-          "Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x; by their receipts, no full gate).",
+          "Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x; by their receipts, no full gate).",
           `  feat/x: its receipt: 1 check(s) green at aaa111 (${RECEIPT_AT})`,
-          "No merge check: the land fast-forwarded to the one Rift's own checked head.",
+          "No merge check: the land fast-forwarded to the one workspace's own checked head.",
           "Receipts recorded: /logs/receipts/aaa111.land.json",
           `To the trash: ${X}.`,
           "No rift.accept is configured, so no check runs after the push.",
@@ -261,11 +261,11 @@ describe("a land by receipts", () => {
         Effect.gen(function* () {
           const never = yield* Deferred.make<void>()
           hold(made, Deferred.await(never))
-          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
           yield* settle
           expect(made.landing.steps).toContain(running)
           const second = yield* answerOf(tool, { action: "land", rifts: ["feat-y"] }).pipe(Effect.timeoutOption("2 seconds"))
-          expect(Option.map(second, (text) => text.split("\n")[0])).toEqual(Option.some("Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged feat/y; by their receipts, no full gate)."))
+          expect(Option.map(second, (text) => text.split("\n")[0])).toEqual(Option.some("Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/y; by their receipts, no full gate)."))
           return yield* answerOf(tool, { action: "remove", name: "land-accept", force: true })
         }),
       check,

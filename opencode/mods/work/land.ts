@@ -77,7 +77,7 @@ export interface LandConfig {
    * integration Rift with RIFT_LAND_BASE set. When set, a land, pushed or checked, lands by receipts
    * (receipt.ts) and never runs `rift.gate` on the batch: each Rift's current round receipt is taken (one
    * without runs its focused gate in the land), the merged tree runs this check unless the land fast-forwarded
-   * to one Rift's own checked head, and the accept check (the full suite) runs in its own Rift (ACCEPT) in the
+   * to one Rift's own checked head, and the accept check (the full suite) runs in its own workspace (ACCEPT) in the
    * background, a receipt for the next verifier that holds no merge and no next land.
    */
   readonly mergeCheck: Option.Option<string>
@@ -201,7 +201,7 @@ export const exitWords = (ran: Pick<Ran, "code" | "output">): string =>
 export const landedText = (landed: Landed, integration: string, accepting: boolean, postLand = false): string => {
   const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
   return [
-    `Landed ${landed.units.length} Rift(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; the gate passed in ${landed.gate.seconds}s).`,
+    `Landed ${landed.units.length} workspace(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; the gate passed in ${landed.gate.seconds}s).`,
     ...(landed.locks.length > 0 ? [`Installed or regenerated and committed: ${landed.locks.join(", ")}.`] : []),
     ...(removed.length > 0 ? [`To the trash: ${removed.map((unit) => unit.path).join(", ")}.`] : []),
     ...landed.kept.map((kept) => `Kept ${kept.path}: ${kept.why}`),
@@ -210,7 +210,7 @@ export const landedText = (landed: Landed, integration: string, accepting: boole
       : "No rift.accept is configured, so no check runs after the push.",
     ...(postLand
       ? [
-          `Then the repository's post-land step (rift.postLand) runs in the background${accepting ? " after the accept check" : ""}, in its own Rift (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`,
+          `Then the repository's post-land step (rift.postLand) runs in the background${accepting ? " after the accept check" : ""}, in its own workspace (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`,
         ]
       : []),
   ].join("\n")
@@ -242,13 +242,13 @@ const coverLine = (covered: Covered): string =>
 export const RECEIPT_CLI = "bun <dotfiles>/opencode/scripts/receipt.ts -- '<command>' …, or --attest '<proof>' for one already made"
 
 /** A checked land by receipts' line on its accept check. */
-export const ACCEPT_APART = `The accept check runs in the background in its own Rift (${ACCEPT}), a receipt for the next batch's verifier; its result holds no Rift, and this session is woken with it.`
+export const ACCEPT_APART = `The accept check runs in the background in its own workspace (${ACCEPT}), a receipt for the next batch's verifier; its result holds no workspace, and this session is woken with it.`
 
 /** A land by receipts' lines: each Rift's cover, the merge check, and where the record went. */
 export const receiptLines = (covered: ReadonlyArray<Covered>, merge: Option.Option<Ran>, record: string): ReadonlyArray<string> => [
   ...covered.map(coverLine),
   Option.match(merge, {
-    onNone: () => "No merge check: the land fast-forwarded to the one Rift's own checked head.",
+    onNone: () => "No merge check: the land fast-forwarded to the one workspace's own checked head.",
     onSome: (ran) => Match.value(ran.code).pipe(
       Match.when(0, () => `The merge check passed in ${ran.seconds}s; log: ${ran.log}`),
       Match.orElse(() => `The merge check FAILED (${exitWords(ran)}) in ${ran.seconds}s; log: ${ran.log}`),
@@ -261,17 +261,17 @@ export const receiptLines = (covered: ReadonlyArray<Covered>, merge: Option.Opti
 export const receiptLandedText = (landed: ReceiptLanded, accepting: boolean, postLand: boolean): string => {
   const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
   return [
-    `Landed ${landed.units.length} Rift(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; by their receipts, no full gate).`,
+    `Landed ${landed.units.length} workspace(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; by their receipts, no full gate).`,
     ...receiptLines(landed.covered, landed.merge, landed.record),
     ...Arr.map(Arr.filter([landed.locks], Arr.isReadonlyArrayNonEmpty), (locks) => `Installed or regenerated and committed: ${locks.join(", ")}.`),
     ...Arr.map(Arr.filter([removed], Arr.isReadonlyArrayNonEmpty), (gone) => `To the trash: ${gone.map((unit) => unit.path).join(", ")}.`),
     ...landed.kept.map((kept) => `Kept ${kept.path}: ${kept.why}`),
     Match.value(accepting).pipe(
-      Match.when(true, () => `The accept check runs in the background in its own Rift (${ACCEPT}) on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result. The next land need not wait for it.`),
+      Match.when(true, () => `The accept check runs in the background in its own workspace (${ACCEPT}) on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result. The next land need not wait for it.`),
       Match.orElse(() => "No rift.accept is configured, so no check runs after the push."),
     ),
     ...Arr.filter(
-      [`Then the repository's post-land step (rift.postLand) runs in the background, in its own Rift (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`],
+      [`Then the repository's post-land step (rift.postLand) runs in the background, in its own workspace (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`],
       () => postLand,
     ),
   ].join("\n")
@@ -325,20 +325,20 @@ export interface Checked {
 export const checkedText = (checked: Checked): string => {
   const gate = checked.gate
   return [
-    `Checked ${checked.units.length} Rift(s) as one batch in ${checked.integration} on ${checked.main} since ${checked.base.slice(0, 9)}; rift.push is false, so ${checked.main} was not pushed and every Rift stays.`,
-    ...(checked.locks.length > 0 ? [`Installed or regenerated and committed in the integration Rift: ${checked.locks.join(", ")}.`] : []),
+    `Checked ${checked.units.length} workspace(s) as one batch in ${checked.integration} on ${checked.main} since ${checked.base.slice(0, 9)}; rift.push is false, so ${checked.main} was not pushed and every workspace stays.`,
+    ...(checked.locks.length > 0 ? [`Installed or regenerated and committed in the integration workspace: ${checked.locks.join(", ")}.`] : []),
     gate === undefined
-      ? "The gate did not run: no Rift merged."
+      ? "The gate did not run: no workspace merged."
       : gate.code === 0
         ? `The gate passed in ${gate.seconds}s.`
         : [
-            `The gate FAILED (${exitWords(gate)}) in ${gate.seconds}s; log: ${gate.log}. Route each failure to the Rift whose diff it touches.`,
+            `The gate FAILED (${exitWords(gate)}) in ${gate.seconds}s; log: ${gate.log}. Route each failure to the workspace whose diff it touches.`,
             digest(gate.output),
           ].join("\n"),
     ...outcomeLines(checked.outcomes),
     ...(checked.accepting
       ? [
-          `The accept check runs in the background in ${checked.integration}; this session is woken with each Rift's result${checked.pushBranches ? ", and a green Rift's branch is pushed then" : ""}.`,
+          `The accept check runs in the background in ${checked.integration}; this session is woken with each workspace's result${checked.pushBranches ? ", and a green workspace's branch is pushed then" : ""}.`,
         ]
       : []),
   ].join("\n")
@@ -350,7 +350,7 @@ export const checkAcceptedText = (main: string, ran: ReadonlyArray<Unit>, accept
     accept.code === 0
       ? `rift land: the accept check for ${branches(ran)} passed in ${accept.seconds}s; ${main} was not pushed.`
       : [
-          `rift land: the accept check for ${branches(ran)} FAILED (${exitWords(accept)}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the Rift whose diff it touches. Log: ${accept.log}`,
+          `rift land: the accept check for ${branches(ran)} FAILED (${exitWords(accept)}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the workspace whose diff it touches. Log: ${accept.log}`,
           digest(accept.output, 20),
         ].join("\n"),
     ...outcomeLines(outcomes),
@@ -370,9 +370,9 @@ export const explainLand = (failure: GateMissing | LandRefused | LandStopped): s
         case "gate":
           return `The gate failed on the batch in ${failure.path}; nothing was pushed.\n${failure.detail}`
         case "focus":
-          return `The focused gate of ${failure.path} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the Rift and land again:\n${failure.detail}`
+          return `The focused gate of ${failure.path} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the workspace and land again:\n${failure.detail}`
         case "merge-check":
-          return `The merge check failed on the merged batch in ${failure.path}; nothing was pushed. Route each failure to the Rift whose diff it touches:\n${failure.detail}`
+          return `The merge check failed on the merged batch in ${failure.path}; nothing was pushed. Route each failure to the workspace whose diff it touches:\n${failure.detail}`
         case "push":
           return `The push from ${failure.path} failed: ${failure.detail}`
         default:

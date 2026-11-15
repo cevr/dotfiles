@@ -90,13 +90,13 @@ describe("the rift plugin", () => {
     scenario(
       Effect.gen(function* () {
         const { call, state } = yield* start()
-        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the Rift /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
+        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
         expect(yield* call({ action: "list" })).toBe("Workspaces of /code/app:\n- /code/.rifts/app/feat-x · branch feat/x · clean")
         MemoryRifts.change(state, "/code/.rifts/app/feat-x", (workspace) => ({ ...workspace, unpushed: ["d85f04d only here"] }))
         expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith(
           "error: /code/.rifts/app/feat-x holds work found nowhere else:\n1 commit(s) on no remote and in no branch of its source:\n  d85f04d only here",
         )
-        expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the Rift /code/.rifts/app/feat-x (branch feat/x) to Rift's trash; it held 1 unpushed.")
+        expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the workspace /code/.rifts/app/feat-x (branch feat/x) to the trash; it held 1 unpushed.")
         expect(yield* call({ action: "create" })).toStartWith("error: create needs a branch")
       }),
     ))
@@ -107,17 +107,17 @@ describe("the rift plugin", () => {
         const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")])
         const landing = MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept") })
         const { call, woken } = yield* start({ workrift: false }, state, landing)
-        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).")
+        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).")
         yield* Effect.sleep("20 millis")
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
         expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The warm source /code/app has no workspace named nope.")
         // An orchestrate run names each Rift with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
         const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
         state.rifts.set(named.path, named)
-        expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2", unit: "db" }] })).toStartWith("Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged p5/db-2;")
+        expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2", unit: "db" }] })).toStartWith("Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged p5/db-2;")
         yield* Effect.sleep("20 millis")
         state.rifts.set(named.path, named)
-        expect(yield* call({ action: "land", rifts: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", rifts: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 workspace(s) as one push")
         expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2" }] })).toStartWith("refused input:")
         expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.")
       }),
@@ -132,7 +132,7 @@ describe("the rift plugin", () => {
         const debts = MemoryDebts.world()
         const first = yield* Scope.make()
         const { call, woken } = yield* Scope.provide(start({ workrift: false }, state, landing, debts), first)
-        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
         const loads = () => landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])
         const postLandWakes = () => woken.map((wake) => wake.notice.description).filter((description) => description.includes("post-land"))
@@ -165,7 +165,7 @@ describe("the rift plugin", () => {
         landing.postLandRun = { code: 0, output: "", report: "" }
         const debts = MemoryDebts.world()
         const { call, woken } = yield* start({ workrift: false }, state, landing, debts)
-        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
         expect({
           loads: landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"]),

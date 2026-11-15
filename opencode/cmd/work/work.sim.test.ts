@@ -36,7 +36,7 @@ describe("the work plugin on the world", () => {
 
       yield* world.prompt(root, CREATE)
       yield* world.until(() => Read.texts(world, root).length === 1 && Read.idle(world, root), 60_000)
-      expect(Read.answers(world, root, "work")[0]).toStartWith("Created the Rift /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
+      expect(Read.answers(world, root, "work")[0]).toStartWith("Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
 
       yield* world.prompt(root, LIST)
       yield* world.until(() => Read.texts(world, root).length === 2 && Read.idle(world, root), 60_000)
@@ -44,7 +44,7 @@ describe("the work plugin on the world", () => {
 
       yield* world.prompt(root, LAND)
       yield* world.until(() => Read.texts(world, root).length >= 3 && Read.idle(world, root) && doubles.landing.steps.some((step) => step.startsWith("accept ")), 60_000)
-      expect(Read.answers(world, root, "work")[1]).toStartWith("Landed 1 Rift(s) as one push")
+      expect(Read.answers(world, root, "work")[1]).toStartWith("Landed 1 workspace(s) as one push")
       expect([...doubles.rifts.rifts.keys()]).toEqual(["/code/.rifts/app/integrate"])
     }),
   )

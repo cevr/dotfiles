@@ -241,7 +241,7 @@ describe("the rift RPC of the work plugin", () => {
         const created = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "verify-batch-1", at: "origin/HEAD" }))
         expect(created).toEqual({
           outcome: "answered",
-          text: expect.stringContaining("Created the Rift /code/.rifts/app/verify-batch-1 from /code/app, on detached at f00dfeed."),
+          text: expect.stringContaining("Created the workspace /code/.rifts/app/verify-batch-1 from /code/app, on detached at f00dfeed."),
           rift: { path: "/code/.rifts/app/verify-batch-1", head: "f00dfeed", state: "clean" },
         })
         const missing = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "verify-batch-2", at: "0000000" }))
@@ -263,7 +263,7 @@ describe("the rift RPC of the work plugin", () => {
         const { rpc, tool } = yield* start(world)
         const first = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "db" }))
         expect(first).toMatchObject({ outcome: "answered", rift: { path: "/code/.rifts/app/db", branch: "db" } })
-        expect(yield* tool({ action: "remove", name: "db" })).toStartWith("Moved the Rift /code/.rifts/app/db")
+        expect(yield* tool({ action: "remove", name: "db" })).toStartWith("Moved the workspace /code/.rifts/app/db")
         const again = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "db" }))
         expect(again).toEqual({
           outcome: "answered",
@@ -273,7 +273,7 @@ describe("the rift RPC of the work plugin", () => {
         // A verify checkout detached at a commit, made again under its name, likewise.
         world.rifts.commitOf = (at) => Option.liftPredicate("f00dfeed", () => at === "origin/HEAD")
         yield* rpc("create", { sessionID: SESSION, branch: "verify-batch-1", at: "origin/HEAD" })
-        expect(yield* tool({ action: "remove", name: "verify-batch-1" })).toStartWith("Moved the Rift /code/.rifts/app/verify-batch-1")
+        expect(yield* tool({ action: "remove", name: "verify-batch-1" })).toStartWith("Moved the workspace /code/.rifts/app/verify-batch-1")
         const verify = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "verify-batch-1", at: "origin/HEAD" }))
         expect(verify).toMatchObject({ outcome: "answered", rift: { path: "/code/.rifts/app/verify-batch-1-2", head: "f00dfeed" } })
       }),
@@ -287,7 +287,7 @@ describe("the rift RPC of the work plugin", () => {
       Effect.gen(function* () {
         const { rpc, woken } = yield* start(worldOf())
         const landed = yield* Schema.decodeUnknownEffect(LandAnswered)(yield* rpc("land", { sessionID: SESSION, rifts: [{ path: "/code/.rifts/app/feat-x", unit: "x" }] }))
-        expect(textOf(landed)).toStartWith("Landed 1 Rift(s) as one push")
+        expect(textOf(landed)).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
         expect(woken.map((wake) => [wake.sessionID, wake.notice.description])).toEqual([[SESSION, "rift land · accept passed"]])
         const malformed = yield* Schema.decodeUnknownEffect(LandAnswered)(yield* rpc("land", { sessionID: SESSION }))

@@ -17,10 +17,10 @@ const LandTargets = Schema.Array(Schema.Union([Schema.String, Schema.Struct({ pa
 export const RiftInput = toolInput(Schema.Struct({
   action: Schema.Literals(["create", "list", "remove", "land", ...WORKBOX_ACTIONS]).annotate({
     description:
-      "create: a new Rift for a branch. list: the Rifts of this repository's warm source, with their branch and unsaved work. remove: move a Rift to the trash when its work is done. land: merge the Rifts onto main as one batch, gate once, push, remove them, check in the background (a PR repository, rift.push false: gate and check only, and answer each Rift green or red). Workbox only (workrift): init, refresh, deps, check, sources, prune (a dry run), storage.",
+      "create: a new workspace for a branch. list: the workspaces of this repository's base, with their branch and unsaved work. remove: move a workspace to the trash when its work is done. land: merge the workspaces onto main as one batch, gate once, push, remove them, check in the background (a PR repository, rift.push false: gate and check only, and answer each workspace green or red). Workbox only (workrift): init, refresh, deps, check, sources, prune (a dry run), storage.",
   }),
   name: Schema.optional(Schema.String).annotate({
-    description: "create: the Rift's directory name (default: the branch, with / as -). remove and deps: the Rift, by that name.",
+    description: "create: the workspace's directory name (default: the branch, with / as -). remove and deps: the workspace, by that name.",
   }),
   branch: Schema.optional(Schema.String).annotate({
     description: "create: the branch to check out: the local branch, else the remote one, else a new branch from the source's HEAD. Default: the name.",
@@ -29,7 +29,7 @@ export const RiftInput = toolInput(Schema.Struct({
     description: "create, list, refresh and check: a directory of the repository whose warm source to use. Default: this session's directory.",
   }),
   path: Schema.optional(Schema.String).annotate({
-    description: "remove and deps: the Rift's directory, in place of its name. init: where to clone (default: /workspaces/<repository>).",
+    description: "remove and deps: the workspace's directory, in place of its name. init: where to clone (default: /workspaces/<repository>).",
   }),
   workspaces: Schema.optional(LandTargets).annotate({
     description:
@@ -46,7 +46,7 @@ export const RiftInput = toolInput(Schema.Struct({
     description: "remove: remove it although it holds uncommitted changes, stashes or commits found nowhere else. Only when the user said to drop that work.",
   }),
   withChildren: Schema.optional(Schema.Boolean).annotate({
-    description: "remove: remove the Rift's own Rifts with it (each still refused while it holds unsaved work, unless force).",
+    description: "remove: remove the workspace's own workspaces with it (each still refused while it holds unsaved work, unless force).",
   }),
 }))
 export type RiftInput = typeof RiftInput.Type
@@ -121,7 +121,7 @@ export const stateOf = (workspace: Workspace): string => {
 /** The answer to a create. */
 export const created = (workspace: Workspace, source: string): string =>
   [
-    `Created the Rift ${workspace.path} from ${source}, on ${at(workspace)}.`,
+    `Created the workspace ${workspace.path} from ${source}, on ${at(workspace)}.`,
     `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${workspace.path}"), or give each shell call workdir "${workspace.path}".`,
   ].join("\n")
 
@@ -133,7 +133,7 @@ export const listed = (source: string, workspaces: ReadonlyArray<Workspace>): st
 
 /** The answer to a remove. */
 export const removed = (workspace: Workspace): string =>
-  `Moved the Rift ${workspace.path} (${at(workspace)}) to Rift's trash${stateOf(workspace) === "clean" ? "" : `; it held ${stateOf(workspace)}`}.`
+  `Moved the workspace ${workspace.path} (${at(workspace)}) to the trash${stateOf(workspace) === "clean" ? "" : `; it held ${stateOf(workspace)}`}.`
 
 /** The answer to a workbox command: what it printed. */
 export const ranOnWorkbox = (command: string, output: string): string => {

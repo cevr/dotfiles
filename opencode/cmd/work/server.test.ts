@@ -181,7 +181,7 @@ const inputOf = (random: () => number) => {
 const asWorkspaces = (input: Ask): Ask => Object.fromEntries(Object.entries(input).map(([field, value]) => [field.replace(/^rifts$/, "workspaces"), value]))
 
 /** The kinds of answer generated inputs reach, by how each starts (the workbox commands refuse here, as errors). */
-const KINDS = ["refused input:", "error:", "Created the Rift", "Workspaces of", "Moved the Rift", "Landed 1 Rift(s)"]
+const KINDS = ["refused input:", "error:", "Created the workspace", "Workspaces of", "Moved the workspace", "Landed 1 workspace(s)"]
 
 /** Options that do not decode. */
 const MALFORMED: ReadonlyArray<Ask> = [{ workrift: "yes" }, { work: 5 }]
@@ -247,7 +247,7 @@ describe("the work plugin", () => {
           `error: land takes its targets once: as workspaces, or as rifts (the old name, accepted until ${RIFT_ALIAS_REMOVAL}); this call gave both.`,
         )
         expect([world.landing.pushes, world.landing.steps]).toEqual([0, []])
-        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
       }),
     ),
     TIMEOUT_MS,
@@ -259,13 +259,13 @@ describe("the work plugin", () => {
       Effect.gen(function* () {
         const world = worldOf()
         const { call } = yield* start(world)
-        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the Rift /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
+        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
         expect(yield* call({ action: "list" })).toBe("Workspaces of /code/app:\n- /code/.rifts/app/feat-x · branch feat/x · clean")
         MemoryRifts.change(world.rifts, "/code/.rifts/app/feat-x", (workspace) => ({ ...workspace, unpushed: ["d85f04d only here"] }))
         expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith(
           "error: /code/.rifts/app/feat-x holds work found nowhere else:\n1 commit(s) on no remote and in no branch of its source:\n  d85f04d only here",
         )
-        expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the Rift /code/.rifts/app/feat-x (branch feat/x) to Rift's trash; it held 1 unpushed.")
+        expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the workspace /code/.rifts/app/feat-x (branch feat/x) to the trash; it held 1 unpushed.")
         expect(yield* call({ action: "create" })).toStartWith("error: create needs a branch")
       }),
     ),
@@ -278,10 +278,10 @@ describe("the work plugin", () => {
       Effect.gen(function* () {
         const world = worldOf()
         const { answer, call } = yield* start(world)
-        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the Rift /code/.rifts/app/feat-x from")
-        expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith("Moved the Rift /code/.rifts/app/feat-x")
+        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.rifts/app/feat-x from")
+        expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith("Moved the workspace /code/.rifts/app/feat-x")
         const again = yield* answer("work", { action: "create", branch: "feat/x" })
-        expect(again.text).toStartWith("Created the Rift /code/.rifts/app/feat-x-2 from /code/app, on branch feat/x.")
+        expect(again.text).toStartWith("Created the workspace /code/.rifts/app/feat-x-2 from /code/app, on branch feat/x.")
         expect(again.text).toEndWith("The name feat-x is still held by a removed workspace (in the trash until a gc), so this one is feat-x-2.")
         expect(again.metadata).toMatchObject({ action: "create", path: "/code/.rifts/app/feat-x-2", branch: "feat/x" })
         // A name a live workspace holds is no trash's: refused as before.
@@ -299,10 +299,10 @@ describe("the work plugin", () => {
       Effect.gen(function* () {
         const world = worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x"), MemoryRifts.clean("/code/.rifts/app/feat-y", "feat/y")], GATED)
         const { call } = yield* start(world)
-        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
-        expect(yield* call({ action: "remove", name: "integrate" })).toStartWith("Moved the Rift /code/.rifts/app/integrate")
-        expect(yield* call({ action: "land", workspaces: ["feat-y"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "remove", name: "integrate" })).toStartWith("Moved the workspace /code/.rifts/app/integrate")
+        expect(yield* call({ action: "land", workspaces: ["feat-y"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
         expect([...world.rifts.rifts.keys()].filter((path) => path.includes("integrate"))).toEqual(["/code/.rifts/app/integrate-2"])
         expect(yield* call({ action: "land", workspaces: ["integrate-2"] })).toStartWith(
@@ -320,7 +320,7 @@ describe("the work plugin", () => {
         const world = worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")], GATED)
         const { call, woken } = yield* start(world)
         expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith(
-          "Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).",
+          "Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).",
         )
         yield* settle
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
@@ -329,11 +329,11 @@ describe("the work plugin", () => {
         const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
         world.rifts.rifts.set(named.path, named)
         expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2", unit: "db" }] })).toStartWith(
-          "Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged p5/db-2;",
+          "Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged p5/db-2;",
         )
         yield* settle
         world.rifts.rifts.set(named.path, named)
-        expect(yield* call({ action: "land", workspaces: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", workspaces: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 workspace(s) as one push")
         expect(yield* call({ action: "land", workspaces: [{ path: "/code/.rifts/app/db-2" }] })).toStartWith("refused input:")
         expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.")
       }),
@@ -351,7 +351,7 @@ describe("the work plugin", () => {
         world.landing.load = { load: 20, cores: 8 }
         const first = yield* Scope.make()
         const { call, woken } = yield* Scope.provide(start(world), first)
-        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
         const loads = () => world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])
         const postLandWakes = () => woken.map((wake) => wake.notice.description).filter((description) => description.includes("post-land"))
@@ -387,7 +387,7 @@ describe("the work plugin", () => {
         world.landing.load = { load: 20, cores: 8 }
         world.landing.postLandRun = { code: 0, output: "", report: "" }
         const { call, woken } = yield* start(world)
-        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+        expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
         expect({
           loads: world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"]),

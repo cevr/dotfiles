@@ -235,7 +235,7 @@ const play = (seed: number, ops: ReadonlyArray<Op>) =>
           // Each land through the next instance in turn.
           const tool = life.current.tools[world.seen.landed.length % INSTANCES]!
           const answer = yield* tool.run("ses_1", { action: "land", rifts: [name] }).pipe(Effect.map((done) => done.text))
-          expect(answer).toStartWith("Landed 1 Rift(s) as one push")
+          expect(answer).toStartWith("Landed 1 workspace(s) as one push")
           world.seen.landed.push({ head: `h${world.landing.pushes}`, at: yield* Clock.currentTimeMillis })
           yield* settle
           break

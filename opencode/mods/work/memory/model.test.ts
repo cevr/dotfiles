@@ -75,13 +75,13 @@ describe("the rift tool", () => {
     const state = MemoryRifts.world([SOURCE])
     expect(await call(state, { action: "create", branch: "feat/x" })).toBe(
       [
-        `Created the Rift ${FEAT} from ${SOURCE}, on branch feat/x.`,
+        `Created the workspace ${FEAT} from ${SOURCE}, on branch feat/x.`,
         `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
       ].join("\n"),
     )
     expect(state.rifts.get(FEAT)?.branch).toBe("feat/x")
     // A name alone is the branch too; a Rift's own session makes Rifts of the same source.
-    expect(await call(state, { action: "create", name: "spike" }, "ses_in")).toStartWith(`Created the Rift /code/.rifts/app/spike from ${SOURCE}, on branch spike.`)
+    expect(await call(state, { action: "create", name: "spike" }, "ses_in")).toStartWith(`Created the workspace /code/.rifts/app/spike from ${SOURCE}, on branch spike.`)
     expect(await call(state, { action: "create" })).toBe('refused: create needs a branch (or a name, which becomes the branch): { action: "create", branch: "feat/x" }.')
   })
 
@@ -96,11 +96,11 @@ describe("the rift tool", () => {
 
   test("remove trashes a clean Rift by name or path, and refuses one with work found nowhere else until forced", async () => {
     const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean("/code/.rifts/app/busy", "busy"), uncommitted: [" M a.ts"] }])
-    expect(await call(state, { action: "remove", name: "feat/x" })).toBe(`Moved the Rift ${FEAT} (branch feat/x) to Rift's trash.`)
+    expect(await call(state, { action: "remove", name: "feat/x" })).toBe(`Moved the workspace ${FEAT} (branch feat/x) to the trash.`)
     expect(state.rifts.has(FEAT)).toBe(false)
     expect(await call(state, { action: "remove", path: "../../.rifts/app/busy" })).toStartWith("refused: /code/.rifts/app/busy holds work found nowhere else:\n1 uncommitted change(s):\n   M a.ts")
     expect(state.rifts.has("/code/.rifts/app/busy")).toBe(true)
-    expect(await call(state, { action: "remove", name: "busy", force: true })).toBe("Moved the Rift /code/.rifts/app/busy (branch busy) to Rift's trash; it held 1 uncommitted.")
+    expect(await call(state, { action: "remove", name: "busy", force: true })).toBe("Moved the workspace /code/.rifts/app/busy (branch busy) to the trash; it held 1 uncommitted.")
     expect(state.rifts.size).toBe(0)
   })
 
@@ -128,7 +128,7 @@ describe("the rift tool", () => {
     const state = () => MemoryRifts.world([SOURCE], [{ ...MemoryRifts.clean(FEAT, "feat/x"), children: [CHILD] }, MemoryRifts.clean(CHILD, "child")])
     const plain = state()
     expect(await call(plain, { action: "remove", name: "feat-x" })).toStartWith(`refused: ${FEAT} has workspaces of its own, which would go with it.`)
-    expect(await call(plain, { action: "remove", name: "feat-x", withChildren: true })).toBe(`Moved the Rift ${FEAT} (branch feat/x) to Rift's trash; it held 1 workspace(s) of its own.`)
+    expect(await call(plain, { action: "remove", name: "feat-x", withChildren: true })).toBe(`Moved the workspace ${FEAT} (branch feat/x) to the trash; it held 1 workspace(s) of its own.`)
     expect(plain.rifts.size).toBe(0)
     const busy = state()
     MemoryRifts.change(busy, CHILD, (workspace) => ({ ...workspace, stashes: 1 }))
@@ -139,14 +139,14 @@ describe("the rift tool", () => {
   test("remove counts only a Rift's own stash: one inherited from the warm source is found there, one made in the Rift is not", async () => {
     const state = MemoryRifts.world([SOURCE])
     MemoryRifts.stash(state, SOURCE, "5a5a5a5")
-    expect(await call(state, { action: "create", branch: "feat/x" })).toStartWith(`Created the Rift ${FEAT}`)
+    expect(await call(state, { action: "create", branch: "feat/x" })).toStartWith(`Created the workspace ${FEAT}`)
     expect(await call(state, { action: "list" })).toBe([`Workspaces of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`].join("\n"))
     MemoryRifts.stash(state, FEAT, "6b6b6b6")
     expect(await call(state, { action: "remove", name: "feat-x" })).toStartWith(`refused: ${FEAT} holds work found nowhere else:\n1 stash entry`)
     expect(state.rifts.has(FEAT)).toBe(true)
     // Once the warm source holds the same entry (the Rift's stash came from it), nothing of the Rift's own is lost.
     MemoryRifts.stash(state, SOURCE, "6b6b6b6")
-    expect(await call(state, { action: "remove", name: "feat-x" })).toBe(`Moved the Rift ${FEAT} (branch feat/x) to Rift's trash.`)
+    expect(await call(state, { action: "remove", name: "feat-x" })).toBe(`Moved the workspace ${FEAT} (branch feat/x) to the trash.`)
   })
 })
 
@@ -165,7 +165,7 @@ describe("land", () => {
     const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x", "../../.rifts/app/feat-y"] }])
     expect(answer).toBe(
       [
-        "Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
+        "Landed 2 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
         "Installed or regenerated and committed: opencode/bun.lock, opencode/mods/orchestrate/agents.json.",
         `To the trash: ${FEAT}, ${OTHER}.`,
         `The accept check runs in the background in ${INTEGRATE} on the batch since base0; this session is woken with its result.`,
@@ -199,7 +199,7 @@ describe("land", () => {
       made.landing.postLandRun = { code: 0, output: "lots of output\n", report: "upstream: merged 3 commits and pushed prime-look\nfork work: none\n" }
       const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x"] }])
       expect(answer).toEndWith(
-        `Then the repository's post-land step (rift.postLand) runs in the background after the accept check, in its own Rift (post-land), one at a time; this session is woken with its report. The next land need not wait for it.`,
+        `Then the repository's post-land step (rift.postLand) runs in the background after the accept check, in its own workspace (post-land), one at a time; this session is woken with its report. The next land need not wait for it.`,
       )
       expect(made.landing.steps.slice(-6)).toEqual([
         `accept ${INTEGRATE} base0`,
@@ -235,12 +235,12 @@ describe("land", () => {
           made.landing.headOf = (push) => `head${push}`
           const step = `post-land ${POST_LAND} base0 head1`
           const ended = `ended post-land ${POST_LAND}`
-          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
           yield* Queue.take(started)
           // While the first post-land step runs, each next land goes on with its accept check, and its own step waits for the lock.
-          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-y"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-y"] })).toStartWith("Landed 1 workspace(s) as one push")
           yield* settle
-          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-z"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-z"] })).toStartWith("Landed 1 workspace(s) as one push")
           yield* settle
           expect(made.landing.steps.indexOf("merge feat/y")).toBeGreaterThan(made.landing.steps.indexOf(step))
           expect(made.landing.steps.filter(ran)).toEqual([step])
@@ -267,7 +267,7 @@ describe("land", () => {
       const made = withPostLand("bun run accept")
       return within(made, (tool) =>
         Effect.gen(function* () {
-          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
           yield* settle
           const release = yield* Deferred.make<string>()
           made.rifts.removeHold = Effect.asVoid(Deferred.await(release))
@@ -278,8 +278,8 @@ describe("land", () => {
           yield* settle
           expect(made.landing.steps.filter((step) => step.startsWith(`start ${INTEGRATE}`))).toHaveLength(starts)
           yield* Deferred.succeed(release, "released")
-          expect(yield* Fiber.join(removing)).toStartWith(`Moved the Rift ${INTEGRATE}`)
-          expect(yield* Fiber.join(landing)).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* Fiber.join(removing)).toStartWith(`Moved the workspace ${INTEGRATE}`)
+          expect(yield* Fiber.join(landing)).toStartWith("Landed 1 workspace(s) as one push")
           expect(made.rifts.rifts.has(INTEGRATE)).toBe(true)
         }),
       )
@@ -291,13 +291,13 @@ describe("land", () => {
         Effect.gen(function* () {
           const release = yield* Deferred.make<string>()
           made.landing.checkHold.accept = Effect.asVoid(Deferred.await(release))
-          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
           expect(yield* answerOf(tool, { action: "remove", name: "integrate", force: true })).toBe(
             `refused: ${INTEGRATE} is busy: the accept check of feat/x runs there. Remove it after its wake.`,
           )
           yield* Deferred.succeed(release, "released")
           yield* settle
-          expect(yield* answerOf(tool, { action: "remove", name: "integrate" })).toStartWith(`Moved the Rift ${INTEGRATE}`)
+          expect(yield* answerOf(tool, { action: "remove", name: "integrate" })).toStartWith(`Moved the workspace ${INTEGRATE}`)
         }),
       )
     })
@@ -351,7 +351,7 @@ describe("land", () => {
     const PARSER = "/code/.rifts/app/fu-parser"
     const state = () => MemoryRifts.world([SOURCE], [MemoryRifts.clean(LEXER, "run/lexer"), MemoryRifts.clean(PARSER, "run/parser")])
     const made = bench(state(), MemoryLanding.world(configured))
-    expect(await call(made, { action: "land", rifts: ["run/lexer", "run-parser"] })).toStartWith("Landed 2 Rift(s) as one push")
+    expect(await call(made, { action: "land", rifts: ["run/lexer", "run-parser"] })).toStartWith("Landed 2 workspace(s) as one push")
     expect(made.landing.steps.slice(0, 3)).toEqual([`start ${INTEGRATE} main`, "merge run/lexer", "merge run/parser"])
 
     const twice = bench(state(), MemoryLanding.world(configured))
@@ -439,7 +439,7 @@ describe("land", () => {
       made.landing.regenerates.push(AGENTS)
       expect(await call(made, { action: "land", rifts: ["feat-x", "feat-y"] })).toBe(
         [
-          "Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
+          "Landed 2 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
           `Installed or regenerated and committed: ${AGENTS}.`,
           `To the trash: ${FEAT}, ${OTHER}.`,
           "No rift.accept is configured, so no check runs after the push.",
@@ -450,7 +450,7 @@ describe("land", () => {
 
     test("nothing to commit makes no commit; a failing regenerate stops the batch before the gate", async () => {
       const quiet = regenerating()
-      expect(await call(quiet, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+      expect(await call(quiet, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
       expect(quiet.landing.steps.slice(0, 5)).toEqual([`start ${INTEGRATE} main`, "merge feat/x", "install", "regenerate", `gate ${INTEGRATE}`])
 
       const broken = regenerating()
@@ -470,7 +470,7 @@ describe("land", () => {
     )
     expect(await call(made, { action: "land", rifts: ["feat-x", "feat-y"] }, "ses_in")).toBe(
       [
-        "Landed 2 Rift(s) as one push: abc1234 Merge into trunk to trunk (merged feat/x, feat/y; the gate passed in 3s).",
+        "Landed 2 workspace(s) as one push: abc1234 Merge into trunk to trunk (merged feat/x, feat/y; the gate passed in 3s).",
         `To the trash: ${OTHER}.`,
         `Kept ${FEAT}: This session runs in ${FEAT}/src, inside ${FEAT}. Move the session out first (session_move to the source), then remove it.`,
         "No rift.accept is configured, so no check runs after the push.",
@@ -481,7 +481,7 @@ describe("land", () => {
       MemoryRifts.world([SOURCE], [{ ...MemoryRifts.clean(FEAT, "feat/x"), uncommitted: [" M codex/config.toml"] }]),
       MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "true", undefined) }),
     )
-    expect(await call(quick, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+    expect(await call(quick, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
     expect([...quick.rifts.rifts.keys()]).toEqual([INTEGRATE])
   })
 
@@ -492,7 +492,7 @@ describe("land", () => {
         MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y"), MemoryRifts.clean(THIRD, "feat/z")]),
         MemoryLanding.world({ [SOURCE]: MemoryLanding.config("master", "bite gate", accept, { push: false, pushBranches }) }),
       )
-    const header = `Checked 3 Rift(s) as one batch in ${INTEGRATE} on master since base0; rift.push is false, so master was not pushed and every Rift stays.`
+    const header = `Checked 3 workspace(s) as one batch in ${INTEGRATE} on master since base0; rift.push is false, so master was not pushed and every workspace stays.`
 
     test("gates the batch once, pushes no default branch, keeps every Rift, and answers each green with its own branch pushed; a conflict reds only its Rift", async () => {
       const made = prs(true)
@@ -518,7 +518,7 @@ describe("land", () => {
       expect(await call(red, { action: "land", rifts: ["feat-x", "feat-y", "feat-z"] })).toBe(
         [
           header,
-          "The gate FAILED (exit 1) in 3s; log: /logs/gate.log. Route each failure to the Rift whose diff it touches.\n   9 pass\n   1 fail\n  (fail) orders > total",
+          "The gate FAILED (exit 1) in 3s; log: /logs/gate.log. Route each failure to the workspace whose diff it touches.\n   9 pass\n   1 fail\n  (fail) orders > total",
           `- feat/x (${FEAT}): red; the batch gate failed`,
           `- feat/y (${OTHER}): red; the batch gate failed`,
           `- feat/z (${THIRD}): red; the batch gate failed`,
@@ -543,7 +543,7 @@ describe("land", () => {
           `- feat/x (${FEAT}): pending; the accept check runs`,
           `- feat/y (${OTHER}): pending; the accept check runs`,
           `- feat/z (${THIRD}): red; conflicts with the batch: b.ts`,
-          `The accept check runs in the background in ${INTEGRATE}; this session is woken with each Rift's result, and a green Rift's branch is pushed then.`,
+          `The accept check runs in the background in ${INTEGRATE}; this session is woken with each workspace's result, and a green workspace's branch is pushed then.`,
         ].join("\n"),
       )
       expect(made.woken).toEqual([
@@ -567,7 +567,7 @@ describe("land", () => {
       await calls(late, [{ action: "land", rifts: ["feat-x"] }])
       expect(late.woken[0]?.notice.text).toBe(
         [
-          "rift land: the accept check for feat/x FAILED (exit 2) in 3s; master was not pushed. Route each failure to the Rift whose diff it touches. Log: /logs/accept.log",
+          "rift land: the accept check for feat/x FAILED (exit 2) in 3s; master was not pushed. Route each failure to the workspace whose diff it touches. Log: /logs/accept.log",
           "  (fail) e2e > checkout",
           `- feat/x (${FEAT}): red; the accept check failed`,
         ].join("\n"),
@@ -579,7 +579,7 @@ describe("land", () => {
       const made = prs(true)
       made.landing.merges.set("feat/x", { _tag: "Conflict", files: ["a.ts"] })
       expect(await call(made, { action: "land", rifts: ["feat-x"] })).toBe(
-        [header.replace("3 Rift(s)", "1 Rift(s)"), "The gate did not run: no Rift merged.", `- feat/x (${FEAT}): red; conflicts with the batch: a.ts`].join("\n"),
+        [header.replace("3 workspace(s)", "1 workspace(s)"), "The gate did not run: no workspace merged.", `- feat/x (${FEAT}): red; conflicts with the batch: a.ts`].join("\n"),
       )
       expect(made.landing.steps).toEqual([`start ${INTEGRATE} master`, "merge feat/x", "install"])
     })

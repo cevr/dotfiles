@@ -136,7 +136,7 @@ describe("a land by receipts, on real Git", () => {
         const started = performance.now()
         const answer = yield* made.land(["feat-x", "feat-y"])
         const seconds = (performance.now() - started) / 1000
-        expect(answer.split("\n")[0]).toMatch(/^Landed 2 Rift\(s\) as one push: \w+ Merge feat\/y to main \(merged feat\/x, feat\/y; by their receipts, no full gate\)\.$/)
+        expect(answer.split("\n")[0]).toMatch(/^Landed 2 workspace\(s\) as one push: \w+ Merge feat\/y to main \(merged feat\/x, feat\/y; by their receipts, no full gate\)\.$/)
         expect(made.marked()).toEqual([`merge-check ${made.integrate}`])
         expect(mainSubjects(made.origin).sort()).toEqual(["Merge feat/y", "change x.txt", "change y.txt", "init"])
         const pushed = sh(made.origin, "git", "rev-parse", "main")
@@ -291,7 +291,7 @@ describe("a land by receipts, on real Git", () => {
         yield* held(made.locks.accept, "exclusive")
         yield* held(made.locks.wanted, "exclusive")
         const answer = yield* made.land(["feat-x", "feat-y"]).pipe(Effect.timeoutOption("30 seconds"))
-        expect(Option.map(answer, (text) => text.split("\n")[0]?.startsWith("Landed 2 Rift(s) as one push"))).toEqual(Option.some(true))
+        expect(Option.map(answer, (text) => text.split("\n")[0]?.startsWith("Landed 2 workspace(s) as one push"))).toEqual(Option.some(true))
       }),
     )
   })
@@ -311,7 +311,7 @@ describe("a land by receipts, on real Git", () => {
         expect(Option.isNone(early)).toBe(true)
         expect(made.marked()).toEqual([])
         yield* Deferred.succeed(release, true)
-        expect((yield* Fiber.join(landing)).split("\n")[0]).toStartWith("Landed 2 Rift(s) as one push")
+        expect((yield* Fiber.join(landing)).split("\n")[0]).toStartWith("Landed 2 workspace(s) as one push")
         expect(made.marked()).toEqual([`merge-check ${made.integrate}`])
       }),
     )
