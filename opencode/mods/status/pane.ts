@@ -90,6 +90,9 @@ export type PanePools = typeof PanePools.Type
 /** An epoch-ms time as `YYYY-MM-DD HH:MMZ`, or `unknown`. */
 export const stamp = (at?: number) => (at === undefined ? "unknown" : new Date(at).toISOString().slice(0, 16).replace("T", " ") + "Z")
 
+/** A window's use where space is tight, the share used out of 100% (the pool's `usedShort`, mods/pool/usage-text.ts, which the status fence keeps out): `23%/100% used`. */
+export const usedShort = (share: number) => `${Math.round(share * 100)}%/100% used`
+
 /** The windows each account shows, whether or not it has a reading of them. */
 const WINDOWS = ["5h", "7d"] as const
 
@@ -98,8 +101,8 @@ export interface AccountRow {
   /** `<pool> / <credential> · held (<kind>) until <time>`, or `· available`. */
   readonly title: string
   /**
-   * One line per window: `  5h 23% · reset <time>`; then each model's own
-   * window, `  Fable 7d 12% · reset <time>`; then each reset the account
+   * One line per window: `  5h 23%/100% used · reset <time>`; then each model's own
+   * window, `  Fable 7d 12%/100% used · reset <time>`; then each reset the account
    * holds, with its kind, expiry and what it clears (`creditLine`), or
    * `  resets 2 · until <date>` when only their count was read.
    */
@@ -124,12 +127,12 @@ export const accountRows = (pools: PanePools, now = Date.now()): ReadonlyArray<A
         windows: [
           ...WINDOWS.map((name) => {
             const window = account.reading?.windows.find((item) => item.name === name)
-            return `  ${name} ${window ? `${Math.round(window.utilization * 100)}%` : "unknown"} · reset ${stamp(window?.resetAt)}`
+            return `  ${name} ${window ? usedShort(window.utilization) : "unknown"} · reset ${stamp(window?.resetAt)}`
           }),
           ...(account.reading?.windows ?? []).flatMap((window) => {
             const at = window.name.indexOf(":")
             if (at < 0) return []
-            return [`  ${window.name.slice(at + 1)} ${window.name.slice(0, at)} ${Math.round(window.utilization * 100)}% · reset ${stamp(window.resetAt)}`]
+            return [`  ${window.name.slice(at + 1)} ${window.name.slice(0, at)} ${usedShort(window.utilization)} · reset ${stamp(window.resetAt)}`]
           }),
           // Each reset listed, else the count when only the count was read.
           ...(credits.length > 0
