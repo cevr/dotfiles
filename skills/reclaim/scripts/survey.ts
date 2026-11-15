@@ -31,7 +31,10 @@ type Item = {
   /** How a clone's bytes were measured, and what it shares its blocks with. */
   clone?: { method: Method; sharedWith: string };
   idleDays?: number;
-  command: string;
+  /** None when the item is held: nothing may remove it yet. */
+  command?: string;
+  /** Why the item has no command. */
+  held?: string;
   busy?: string;
   note?: string;
 };
@@ -261,6 +264,11 @@ const WORK_STORE = '.work';
 const WORK_TRASH = '.work-trash';
 // Until this day the work trash is what a rollback to Rift restores from, so no `work gc` before it.
 const ROLLBACK_UNTIL = '2026-12-06';
+// `work gc` can lose data (work's verify found `gc -idle -archive` removing an adopted copy with fresh
+// edits and dropping other branches and stashes): until that is fixed the survey holds work's trash and
+// never offers `work gc`. Flip to true once work's fix lands.
+const WORK_GC_SAFE = false;
+const WORK_GC_HELD = `held: work gc is not safe yet (data-loss finding in work's verify); keep until ${ROLLBACK_UNTIL}`;
 // A store or Rift folder, not a checkout that happens to bear the name.
 const isStore = (dir: string) => (basename(dir) === WORK_STORE || basename(dir) === '.rifts') && !exists(join(dir, '.git'));
 /** The base of a workspace at <parent>/.work/<repo>/<name> (or of the trash <parent>/.work/<repo>/.work-trash): <parent>/<repo>. */
@@ -341,7 +349,7 @@ for (const root of ROOTS)
       const pushed = ahead === '' ? 'no upstream' : `${ahead} unpushed`;
       const what = `${name} (${git(repo.path, 'branch', '--show-current') || 'detached'}, ${dirty} dirty, ${pushed})`;
       if (repo.workBase !== undefined)
-        add({ tier: 'C', category: 'rifts', what, paths: [repo.path], idleDays: idle, busy, clone: { sharedWith: exists(repo.workBase) ? tilde(repo.workBase) : 'its base', since: madeAt(repo.path) }, command: `work rm ${basename(repo.path)} (from ${tilde(repo.workBase)}), after its work is merged`, note: `rm only moves it to ${WORK_TRASH}: the space frees at work gc` });
+        add({ tier: 'C', category: 'rifts', what, paths: [repo.path], idleDays: idle, busy, clone: { sharedWith: exists(repo.workBase) ? tilde(repo.workBase) : 'its base', since: madeAt(repo.path) }, command: `work rm ${basename(repo.path)} (from ${tilde(repo.workBase)}), after its work is merged`, note: WORK_GC_SAFE ? `rm only moves it to ${WORK_TRASH}: the space frees at work gc` : `rm only moves it to ${WORK_TRASH}, which is held: the space does not free yet` });
       else if (repo.riftSince !== undefined)
         add({ tier: 'C', category: 'rifts', what, paths: [repo.path], idleDays: idle, busy, clone: { sharedWith: riftSource(repo.path), since: repo.riftSince }, command: 'rift remove, after its work is merged', note: 'remove only moves it to the Rift trash: the space frees at rift gc' });
       else
@@ -359,7 +367,10 @@ for (const { path: trash, work } of ROOTS.flatMap((root) => trashes(root, 3))) {
     // <parent>/{.work,.rifts}/<repo>/.work-trash belongs to the base <parent>/<repo>.
     const base = join(dirname(dirname(dirname(trash))), basename(dirname(trash)));
     const gc = `work gc (from ${tilde(base)}; deletes all of its trash)`;
-    add({ tier: 'C', category: 'work trash', what: `${tilde(trash)}: ${removed} removed workspaces`, paths: [trash], idleDays: idleDays(statSync(trash).mtimeMs), clone: { sharedWith: `${exists(base) ? tilde(base) : 'its base'} and its live workspaces`, split: true }, command: beforeRollbackEnds ? `keep until ${ROLLBACK_UNTIL}, then ${gc}` : gc, note: `${beforeRollbackEnds ? `a rollback to Rift restores from it until ${ROLLBACK_UNTIL}; ` : ''}removed workspaces can hold unpushed work: ask` });
+    const removal = WORK_GC_SAFE
+      ? { command: beforeRollbackEnds ? `keep until ${ROLLBACK_UNTIL}, then ${gc}` : gc, note: `${beforeRollbackEnds ? `a rollback to Rift restores from it until ${ROLLBACK_UNTIL}; ` : ''}removed workspaces can hold unpushed work: ask` }
+      : { held: WORK_GC_HELD, note: 'a rollback to Rift restores from it; removed workspaces can hold unpushed work' };
+    add({ tier: 'C', category: 'work trash', what: `${tilde(trash)}: ${removed} removed workspaces`, paths: [trash], idleDays: idleDays(statSync(trash).mtimeMs), clone: { sharedWith: `${exists(base) ? tilde(base) : 'its base'} and its live workspaces`, split: true }, ...removal });
     continue;
   }
   add({ tier: 'C', category: 'rift trash', what: `${tilde(trash)}: ${removed} removed Rifts`, paths: [trash], idleDays: idleDays(statSync(trash).mtimeMs), clone: { sharedWith: `${riftSource(join(dirname(trash), 'x'))} and its live Rifts`, split: true }, command: 'rift gc (deletes the trash of every repo)', note: 'removed Rifts can hold unpushed work: ask' });
@@ -449,7 +460,7 @@ if (args.includes('--json')) {
     for (const r of rows) {
       console.log(`  ${`${r.clone && r.clone.method !== 'du' ? '~' : ''}${gib(r.bytes)}`.padStart(11)}  ${r.idleDays === undefined ? '' : `${r.idleDays}d idle  `}${r.what}${r.busy ? `  [busy: ${r.busy}]` : ''}`);
       if (r.clone) console.log(`               ${r.clone.method === 'du' ? `${gib(r.bytes)} by du; clone sharing unknown here, df tells` : `~${gib(r.bytes)} own, ${gib(r.duBytes ?? 0)} by du (shared with ${r.clone.sharedWith})${r.clone.method === 'mtime' ? ', own = files written since it was made' : ''}`}`);
-      console.log(`               ${r.command}${r.note ? `  (${r.note})` : ''}`);
+      console.log(`               ${r.command ?? r.held}${r.note ? `  (${r.note})` : ''}`);
       if (r.paths.length > 1 && r.paths.length <= 8) for (const p of r.paths) console.log(`                 ${tilde(p)}`);
     }
     console.log();

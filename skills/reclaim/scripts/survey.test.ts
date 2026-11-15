@@ -123,7 +123,7 @@ test.if(APFS)('the survey sizes Rifts and their trash by their own blocks, and w
   expect(worktree!.bytes).toBeGreaterThanOrEqual(55 * MIB);
 }, 60_000);
 
-test.if(APFS)("the survey lists a work workspace as a Rift and work's trash for work gc, and never the store's own files", () => {
+test.if(APFS)("the survey lists a work workspace as a Rift and work's trash as held, and never the store's own files", () => {
   root = mkdtempSync(join(tmpdir(), 'survey-'));
   const code = join(root, 'code');
   const source = file('code/app/big.bin', 120 * MIB);
@@ -161,7 +161,7 @@ test.if(APFS)("the survey lists a work workspace as a Rift and work's trash for 
 
   const run = Bun.spawnSync(['bun', SCRIPT, '--json', '--roots', `${code},${other},${bare}`], { env: { ...process.env, HOME: join(root, 'home') } });
   expect(run.exitCode).toBe(0);
-  const items: { tier: string; category: string; what: string; paths: string[]; bytes: number; command: string; clone?: { sharedWith: string } }[] = JSON.parse(run.stdout.toString()).items;
+  const items: { tier: string; category: string; what: string; paths: string[]; bytes: number; command?: string; held?: string; note?: string; clone?: { sharedWith: string } }[] = JSON.parse(run.stdout.toString()).items;
   const at = (path: string) => items.filter((i) => i.paths.includes(path));
 
   const [riftItem] = at(join(code, '.rifts/app/feature'));
@@ -172,14 +172,15 @@ test.if(APFS)("the survey lists a work workspace as a Rift and work's trash for 
   expect(workspace!.bytes).toBeGreaterThanOrEqual(60 * MIB);
   expect(workspace!.bytes).toBeLessThan(62 * MIB);
 
-  const trash = items.filter((i) => i.command.includes('work gc'));
+  // work gc can lose data (work's verify): the trash is held, with no command, and nothing offers work gc.
+  const trash = items.filter((i) => i.category === 'work trash');
   expect(trash.flatMap((i) => i.paths).sort()).toEqual([join(code, '.rifts/app/.work-trash'), join(code, '.work/app/.work-trash')]);
   for (const t of trash) {
     expect(t.what).toContain('1 removed workspaces');
-    expect(t.command).toContain(`work gc (from ${join(code, 'app')}`);
-    // The trash is what a rollback to Rift restores from until the window closes.
-    if (Date.now() < Date.parse('2026-12-06T00:00:00')) expect(t.command).toStartWith('keep until 2026-12-06');
+    expect(t.command).toBeUndefined();
+    expect(t.held).toBe("held: work gc is not safe yet (data-loss finding in work's verify); keep until 2026-12-06");
   }
+  expect(items.filter((i) => `${i.command ?? ''} ${i.note ?? ''}`.includes('work gc'))).toEqual([]);
 
   const paths = items.flatMap((i) => i.paths);
   for (const f of store) expect(paths.filter((p) => f === p || f.startsWith(p + '/'))).toEqual([]);

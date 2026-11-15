@@ -17,7 +17,7 @@ It prints free space, then every candidate by tier with its size, idle age, the 
 
 A clone's line reads `~X GiB own, Y GiB by du (shared with …)`. The own figure is the bytes no file outside the item shares (APFS reports each file's private size and clone family; shared blocks count only when every file of their family is inside the item). Tier totals and sorting use it. On a throwaway clone it matched `df` to 0.1% (1.563 GiB estimated, 1.562 GiB freed, 4.0 GiB by `du`). Quote the own figure for a clone, never its `du`. Removing a Rift and its source together frees more than both own figures: they share the rest. Off APFS, a Rift's own figure is the files written since its `.rift` marker, and the line says so; elsewhere a clone falls back to `du`, and the line says df tells. `rift remove` only moves a Rift to `.rifts/<repo>/.trash`; the space frees at `rift gc`, which empties every repo's trash.
 
-`work` keeps the workspaces of `<parent>/<repo>` in `<parent>/.work/<repo>/<name>`; the survey lists them with the Rifts, sized the same way, with `work rm <name>` run from the base. Off APFS a workspace's own figure is the files written since its folder was made. `work rm` only moves a workspace, or a Rift adopted into `work`, to `.work-trash/<name>.<n>` beside it, in `.work/<repo>/` or `.rifts/<repo>/`; the space frees at `work gc`, run from the base, which empties all of that base's trash. Until 2026-12-06 that trash is what a rollback from `work` to Rift restores from: do not run `work gc` before then, and the survey says so. The `.registry`, `.trusted` and `.lock` files in `.work/<repo>/` are `work`'s own state: never remove them, nor the `.work` folder.
+`work` keeps the workspaces of `<parent>/<repo>` in `<parent>/.work/<repo>/<name>`; the survey lists them with the Rifts, sized the same way, with `work rm <name>` run from the base. Off APFS a workspace's own figure is the files written since its folder was made. `work rm` only moves a workspace, or a Rift adopted into `work`, to `.work-trash/<name>.<n>` beside it, in `.work/<repo>/` or `.rifts/<repo>/`; only `work gc`, run from the base, would free that space. Do not run `work gc` and do not offer it: work's own verify found it can lose data (`gc -idle -archive` removed an adopted copy with fresh edits and dropped other branches and stashes), and until 2026-12-06 that trash is what a rollback from `work` to Rift restores from. The survey lists the work trash as held, with that reason and no command; leave it, and say so. The `.registry`, `.trusted` and `.lock` files in `.work/<repo>/` are `work`'s own state: never remove them, nor the `.work` folder.
 
 Before you run it, look for anything that reads old agent transcripts, such as a model eval or a retro due soon, and pass its start date as `--keep-since`.
 
@@ -39,7 +39,7 @@ Show one table: item, size (what removal frees: the own figure for a clone), idl
 | B | Costly to get back: simulator runtimes, Android SDK and emulators, Docker images and volumes, local AI models | Per item. Say what it costs to get back. |
 | C | User data: Rifts and workspaces, their trash, worktrees, renders, bundles, scratch folders that git ignores, loose folders, big personal files | Per item. Never pre-select removal. For a Rift, a workspace or a worktree, show its dirty and unpushed counts. |
 
-Leave alone, and say so: source code, `.git`, uncommitted or unpushed work, anything `[busy]`, Photos, Mail, Messages, Keychains, `~/.ssh`, credential and `.env` files, and app data outside the caches listed.
+Leave alone, and say so: source code, `.git`, uncommitted or unpushed work, anything `[busy]`, anything the survey marks `held:`, Photos, Mail, Messages, Keychains, `~/.ssh`, credential and `.env` files, and app data outside the caches listed.
 
 ## 3. Remove
 
@@ -48,7 +48,7 @@ For each approved category, in order:
 1. Record `df -k /System/Volumes/Data`.
 2. Check the precondition: no `[busy]` process, and the app is closed. If anything is busy, ask the user to quit it, or skip the item.
 3. Run the command the survey printed. Use the tool's own command where there is one, and delete by path only the exact paths listed.
-4. Record `df` again. The difference is what that category freed; report it, not the survey's figure. For a Rift, measure after `rift gc`; for a workspace, after `work gc`, and not before 2026-12-06.
+4. Record `df` again. The difference is what that category freed; report it, not the survey's figure. For a Rift, measure after `rift gc`. A removed workspace frees nothing yet: its trash is held (see Survey).
 
 A folder that is a symlink target (`find ~ -maxdepth 4 -type l -lname '*<dir>*'`) is live storage moved off the main disk: empty what is safe inside it, keep the folder. A filesystem in a loop-mounted image file returns freed blocks to the host disk only after a trim: run `sudo fstrim -v <mount>` and measure the host disk after it.
 
