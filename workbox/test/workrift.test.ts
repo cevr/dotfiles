@@ -8,7 +8,7 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -452,7 +452,7 @@ describeWork("workrift with the work backend", () => {
   )
 
   test(
-    "prune --dry-run lists idle workspaces and removes nothing; prune runs gc -idle with -archive on each base without a kept path",
+    "prune lists by Rift's rules what it would remove, skips a base with a kept path, and calls no work gc while gc is held",
     () => {
       const w = workBench("prune", work)
       const lib = w.base("lib")
@@ -475,27 +475,44 @@ describeWork("workrift with the work backend", () => {
       exe(join(w.bin, "work-logged"), `#!/bin/sh\nprintf '%s %s\\n' "\${WORK_BASE:-}" "$*" >>'${calls}'\nexec '${work}' "$@"\n`)
       const env = { ...w.env, WORK: join(w.bin, "work-logged") }
 
+      // Rift's rules read the folder, not the record: age every file and folder of the idle ones three days,
+      // then write one file in the workspace made on idle-one, which keeps it and so its parent.
+      const age = (path: string) => {
+        if (lstatSync(path).isSymbolicLink()) return
+        if (lstatSync(path).isDirectory()) for (const entry of readdirSync(path)) age(join(path, entry))
+        utimesSync(path, old, old)
+      }
+      const onName = w.active(w.app).find((each) => each.path === idle[0])?.name ?? ""
+      const nested = (JSON.parse(w.inBase(w.app, "--json", "new", "-on", onName, "-branch", "nested", "nested")) as { path: string }).path
+      for (const path of [...idle, nested, kept, libIdle]) age(path)
+      writeFileSync(join(nested, "fresh-edit.txt"), "today\n")
+      const listing = [
+        `skip parent of kept workspaces: ${idle[0]}`,
+        `would remove: ${idle[1]}`,
+        `skip recent: ${nested}`,
+        `skip recent: ${fresh}`,
+        `skip base with kept workspaces: ${lib} (kept: ${kept})`,
+      ].sort()
+      const everyone = () => [...w.active(w.app), ...w.active(lib)].map((each) => each.path).sort()
+      const before = everyone()
+
       const dry = run(w.app, env, [SCRIPT, "prune", "--dry-run"])
       expect(dry.code, dry.err).toBe(0)
-      expect(lines(dry.out).sort()).toEqual([...idle.map((path) => `would remove: ${path}`), `skip base with kept workspaces: ${lib} (kept: ${kept})`].sort())
-      expect(w.active(w.app).map((each) => each.path).sort()).toEqual([...idle, fresh].sort())
-      expect(readFileSync(calls, "utf8")).not.toContain(" gc")
+      expect(lines(dry.out).sort()).toEqual(listing)
 
+      // work gc is held (work's own verify found it can lose data): prune lists the same and says so.
       const pruned = run(w.app, env, [SCRIPT, "prune"])
       expect(pruned.code, pruned.err).toBe(0)
-      const gcs = lines(readFileSync(calls, "utf8")).filter((line) => / gc( |$)/.test(line))
-      expect(gcs).toEqual([`${w.app} --json gc -idle 48h -archive -older 168h`])
-      expect(pruned.out).toContain(`skip base with kept workspaces: ${lib}`)
-      expect(pruned.out).toContain("removed: idle-two of")
-      expect(w.active(w.app).map((each) => each.path)).toEqual([fresh])
-      expect(w.active(lib).map((each) => each.path).sort()).toEqual([kept, libIdle].sort())
-      for (const path of idle) expect(existsSync(path)).toBe(false)
-      // The removed workspaces wait in the trash; the unsaved file is in the base's archive.
-      expect(readdirSync(join(w.root, ".work/app/.work-trash")).length).toBe(2)
-      const archived = lines(sh(w.app, w.env, "git", "for-each-ref", "--format=%(refname)", "refs/work/archive"))
-      expect(archived.some((ref) => ref.startsWith("refs/work/archive/idle-two/"))).toBe(true)
-      const ref = archived.find((each) => each.startsWith("refs/work/archive/idle-two/")) ?? ""
-      expect(sh(w.app, w.env, "git", "show", `${ref}:unsaved.txt`)).toBe("keep me in the archive\n")
+      expect(lines(pruned.out)[0]).toBe("held: work gc is not safe yet (data-loss finding in work's verify)")
+      expect(lines(pruned.out).slice(1).sort()).toEqual(listing)
+
+      // No gc call reached work, nothing moved, nothing went to the trash or the archive.
+      expect(lines(readFileSync(calls, "utf8")).filter((line) => /\bgc\b/.test(line))).toEqual([])
+      expect(everyone()).toEqual(before)
+      for (const path of before) expect(existsSync(path)).toBe(true)
+      expect(readFileSync(join(idle[1] ?? "", "unsaved.txt"), "utf8")).toBe("keep me in the archive\n")
+      expect(existsSync(join(w.root, ".work/app/.work-trash"))).toBe(false)
+      expect(sh(w.app, w.env, "git", "for-each-ref", "refs/work/archive")).toBe("")
     },
     60_000,
   )

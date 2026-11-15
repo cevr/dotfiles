@@ -41,6 +41,10 @@ work_bin="${WORK:-work}"
 # for seven, the window in which a switch back to Rift can move it back.
 work_idle=48h
 work_trash_age=168h
+# Held: work's own verify found `work gc -idle -archive` can lose data (an
+# adopted copy with fresh edits, other branches, stashes). Until work's owner
+# clears it, prune calls no work gc. Flip to true then.
+work_gc_safe=false
 
 usage() {
   cat <<'EOF'
@@ -777,11 +781,51 @@ work_remove() {
   fi
 }
 
-# Prune under work: each base runs `work gc -idle`, which removes the
+# The workspaces of one base (a work_workspaces file) that Rift's prune would
+# remove, by its rules: one is kept when missing, pinned, in use by a process
+# or written in the last two days, and so is every workspace above a kept one.
+# Prints the same skip and `would remove` lines; removes nothing.
+work_prune_list() {
+  : >"$work_dir/kept.txt"
+  : >"$work_dir/stale.txt"
+  while IFS='	' read -r _ _ w_path _ _; do
+    if [ ! -d "$w_path" ]; then
+      printf 'skip missing: %s\n' "$w_path"
+      printf '%s\n' "$w_path" >>"$work_dir/kept.txt"
+    elif is_pinned "$w_path"; then
+      printf 'skip pinned: %s\n' "$w_path"
+      printf '%s\n' "$w_path" >>"$work_dir/kept.txt"
+    elif is_active "$w_path"; then
+      printf 'skip active: %s\n' "$w_path"
+      printf '%s\n' "$w_path" >>"$work_dir/kept.txt"
+    elif is_recent "$w_path"; then
+      printf 'skip recent: %s\n' "$w_path"
+      printf '%s\n' "$w_path" >>"$work_dir/kept.txt"
+    else
+      printf '%s\n' "$w_path" >>"$work_dir/stale.txt"
+    fi
+  done <"$1"
+  while IFS= read -r w_up; do
+    while w_up=$(awk -F '	' -v p="$w_up" '$3 == p { print $4 }' "$1") && [ -n "$w_up" ]; do
+      printf '%s\n' "$w_up"
+    done
+  done <"$work_dir/kept.txt" >"$work_dir/protected.txt"
+  while IFS= read -r w_path; do
+    if grep -qxF "$w_path" "$work_dir/protected.txt"; then
+      printf 'skip parent of kept workspaces: %s\n' "$w_path"
+    else
+      printf 'would remove: %s\n' "$w_path"
+    fi
+  done <"$work_dir/stale.txt"
+}
+
+# Prune under work. A base that holds a path in the keep file is left out
+# whole (gc has no pin). --dry-run lists, by Rift's rules, what would go.
+# While work_gc_safe is not true, prune only lists too, and says it is held.
+# Once it is, each other base runs `work gc -idle`, which removes the
 # workspaces no new, ready or sync touched for two days, keeping the work of
 # each in the base at refs/work/archive/NAME/ID (-archive), and empties only
-# trash older than seven days. gc has no pin, so a base that holds a path in
-# the keep file is left out whole. --dry-run lists the idle workspaces.
+# trash older than seven days.
 work_prune() {
   w_dry_run=$1
   w_bases=$(work_bases)
@@ -789,7 +833,9 @@ work_prune() {
     printf 'no workspaces registered\n'
     return 0
   fi
-  w_cutoff=$(($(date +%s) - prune_idle_minutes * 60))
+  if [ "$w_dry_run" = false ] && [ "$work_gc_safe" != true ]; then
+    printf "held: work gc is not safe yet (data-loss finding in work's verify)\n"
+  fi
   w_failures=0
   w_old_ifs=$IFS
   IFS='
@@ -799,7 +845,7 @@ work_prune() {
     work_workspaces "$w_base" >"$work_dir/workspaces.tsv"
     w_kept=
     is_pinned "$w_base" && w_kept=$w_base
-    while IFS='	' read -r _ _ w_path _ w_since; do
+    while IFS='	' read -r _ _ w_path _ _; do
       if is_pinned "$w_path"; then
         w_kept="${w_kept:+$w_kept }$w_path"
       fi
@@ -808,12 +854,8 @@ work_prune() {
       printf 'skip base with kept workspaces: %s (kept: %s)\n' "$w_base" "$w_kept"
       continue
     fi
-    if [ "$w_dry_run" = true ]; then
-      while IFS='	' read -r _ _ w_path _ w_since; do
-        if [ "$w_since" -le "$w_cutoff" ]; then
-          printf 'would remove: %s\n' "$w_path"
-        fi
-      done <"$work_dir/workspaces.tsv"
+    if [ "$w_dry_run" = true ] || [ "$work_gc_safe" != true ]; then
+      work_prune_list "$work_dir/workspaces.tsv"
       continue
     fi
     if ! w_out=$(work_in "$w_base" --json gc -idle "$work_idle" -archive -older "$work_trash_age"); then
