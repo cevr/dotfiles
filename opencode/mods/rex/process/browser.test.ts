@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Context, Effect, Exit, Layer, Option } from "effect"
+import { Array as Arr, Context, Effect, Exit, Fiber, Layer, Option, Schedule } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Browser } from "../service.ts"
 import * as ProcessBrowser from "./browser.ts"
@@ -116,6 +116,47 @@ describe("a shot", () => {
         expect(String(exit)).toContain("the browser made no shot (exit 4): headless: page crashed")
       }),
     ).pipe(Effect.provide(fake("blank"))),
+    10_000,
+  )
+
+  effectTest(
+    "given a settle time lets the page's scripts run that long first",
+    Effect.scoped(
+      Effect.gen(function* () {
+        const url = yield* served
+        const browser = yield* Browser
+        yield* browser.shoot({ url, width: 800, height: 600, settle: 5_000 })
+        const [line] = yield* calls
+        expect(line).toEndWith(` --virtual-time-budget=5000 ${url}`)
+      }),
+    ).pipe(Effect.provide(fake("ok"))),
+    10_000,
+  )
+
+  effectTest(
+    "interrupted, kills the browser and the helpers it started, leaving no process behind",
+    Effect.scoped(
+      Effect.gen(function* () {
+        const url = yield* served
+        const browser = yield* Browser
+        const shooting = yield* Effect.forkChild(browser.shoot({ url, width: 800, height: 600 }))
+        // The stand-in logs its own pid and its helper's once both run.
+        const pids = yield* calls.pipe(
+          Effect.map((lines) => Arr.findFirst(lines, (line) => line.startsWith("pids "))),
+          Effect.flatMap(Effect.fromOption),
+          Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 250 }),
+          Effect.map((line) => line.split(" ").slice(1).map(Number)),
+        )
+        yield* Fiber.interrupt(shooting)
+        const alive = (pid: number) => Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)], { stdout: "pipe" }).stdout.toString().trim().replace(/^Z.*/, "")
+        const gone = yield* Effect.sync(() => pids.map(alive)).pipe(
+          Effect.filterOrFail((states) => states.every((state) => state === "")),
+          Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 60 }),
+          Effect.orElseSucceed(() => pids.map(alive)),
+        )
+        expect({ pids: pids.length, gone }).toEqual({ pids: 2, gone: ["", ""] })
+      }),
+    ).pipe(Effect.provide(fake("hang"))),
     10_000,
   )
 })

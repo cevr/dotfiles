@@ -70,7 +70,7 @@ export const findBrowser = (places: Places): Option.Option<string> =>
     ),
   )
 
-/** The browser's arguments for one shot of `shot` into `folder`: headless, a profile of its own, no first-run pages. */
+/** The browser's arguments for one shot of `shot` into `folder`: headless, a profile of its own, no first-run pages, and the page's scripts given `settle` ms of its own time when asked. */
 export const browserArgs = (shot: Shot, folder: string): ReadonlyArray<string> => [
   "--headless",
   "--hide-scrollbars",
@@ -81,8 +81,28 @@ export const browserArgs = (shot: Shot, folder: string): ReadonlyArray<string> =
   `--user-data-dir=${join(folder, "profile")}`,
   `--window-size=${shot.width},${shot.height}`,
   `--screenshot=${join(folder, "shot.png")}`,
+  ...Option.match(Option.fromUndefinedOr(shot.settle), { onNone: () => [], onSome: (ms) => [`--virtual-time-budget=${ms}`] }),
   shot.url,
 ]
+
+/**
+ * The browser running `args`, in a process group of its own (Chrome starts
+ * helpers), the whole group killed when the scope closes before it exits:
+ * an interrupted shot leaves no browser behind.
+ */
+const started = (browser: string, args: ReadonlyArray<string>, failed: (message: string) => ShotFailed) =>
+  Effect.acquireRelease(
+    Effect.try({
+      try: () => Bun.spawn([browser, ...args], { stdin: "ignore", stdout: "ignore", stderr: "pipe", timeout: SHOT_MS, killSignal: "SIGKILL", detached: true }),
+      catch: (cause) => failed(`cannot start ${browser}: ${String(cause)}`),
+    }),
+    (child) =>
+      Effect.sync(() => {
+        if (Option.isSome(Option.fromNullishOr(child.exitCode)) || Option.isSome(Option.fromNullishOr(child.signalCode))) return
+        // The group this shot started: its leader is the browser itself.
+        Option.liftThrowable(() => process.kill(-child.pid, "SIGKILL"))()
+      }),
+  )
 
 /** A failed request's error code, as Bun's fetch gives it (ECONNREFUSED, ConnectionRefused, TimeoutError…). */
 const decodeCode = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))
@@ -122,11 +142,8 @@ export const layer = (places: Places) =>
       return yield* Effect.acquireUseRelease(
         Effect.tryPromise({ try: () => mkdtemp(join(tmpdir(), "rex-show-chrome-")), catch: (cause) => failed(`no scratch folder: ${String(cause)}`) }),
         (folder) =>
-          Effect.gen(function* () {
-            const child = yield* Effect.try({
-              try: () => Bun.spawn([browser, ...browserArgs(shot, folder)], { stdin: "ignore", stdout: "ignore", stderr: "pipe", timeout: SHOT_MS, killSignal: "SIGKILL" }),
-              catch: (cause) => failed(`cannot start ${browser}: ${String(cause)}`),
-            })
+          Effect.scoped(Effect.gen(function* () {
+            const child = yield* started(browser, browserArgs(shot, folder), failed)
             const [err, code] = yield* Effect.all(
               [Effect.promise(() => new Response(child.stderr).text()), Effect.promise(() => child.exited)],
               { concurrency: 2 },
@@ -137,7 +154,7 @@ export const layer = (places: Places) =>
             })
             if (!isPng(bytes)) return yield* failed("the browser's shot is not a PNG")
             return new Uint8Array(bytes)
-          }),
+          })),
         (folder) => Effect.promise(() => rm(folder, { recursive: true, force: true })),
       )
     })

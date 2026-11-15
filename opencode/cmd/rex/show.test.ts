@@ -7,6 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
+import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySpool from "@dotfiles/opencode-rex/memory/spool"
 import { Page, Picture, type Spooled } from "@dotfiles/opencode-rex/spool"
@@ -42,7 +43,7 @@ describe("the arguments rex-show takes", () => {
 describe("a run from a caller's pane", () => {
   const rex = Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }]))
   const spools = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
-  const systems = Layer.mergeAll(MemoryRex.layer(rex), MemorySpool.layer(spools), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())))
+  const systems = Layer.mergeAll(MemoryRex.layer(rex), MemorySpool.layer(spools), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)))
   const env = (vars: Record<string, string>) => ConfigProvider.layer(ConfigProvider.fromEnvRecord(vars))
 
   const inPane = { REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) }
@@ -121,7 +122,7 @@ effectTest(
         expect(yield* Ref.get(asked)).toBe(1)
       }),
     (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
-  ).pipe(Effect.provide(Layer.mergeAll(MemorySpool.layer(viewed), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map()))))),
+  ).pipe(Effect.provide(Layer.mergeAll(MemorySpool.layer(viewed), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty))))),
   10_000,
 )
 

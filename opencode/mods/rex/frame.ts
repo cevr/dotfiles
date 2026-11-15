@@ -1,5 +1,6 @@
 // One frame of the showcase pane: the screen cleared, a header naming what
-// is shown, the tally's line, then the picture or the page in the room left,
+// is shown (a followed Sideshow session's post: Markdown as text, anything
+// else as a picture), the tally's line, then the picture or the page in the room left,
 // and the tally's status report for Rex. The viewer writes a new frame each
 // time the spool or the pane's size changes.
 import { Data, Option } from "effect"
@@ -42,6 +43,7 @@ const picture = (name: string, bytes: Uint8Array, room: Cells, cell: CellPixels)
 const failed = (shown: Shown, reason: string, cols: number) =>
   Shown.match(shown, {
     Url: () => `${RED}${cut(`✗ ${reason}`, cols)}${RESET}`,
+    Feed: () => `${RED}${cut(`✗ ${reason}`, cols)}${RESET}`,
     Picture: () => `${DIM}${cut(reason, cols)}${RESET}`,
     Page: () => `${DIM}${cut(reason, cols)}${RESET}`,
   })
@@ -54,12 +56,14 @@ const body = (shown: Shown, content: Content, room: Cells, cell: CellPixels): st
         Page: () => page(text, room),
         Picture: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
         Url: () => picture(shown.name, new TextEncoder().encode(text), room, cell),
+        Feed: () => page(text, room),
       }),
     Bytes: ({ bytes }) =>
       Shown.match(shown, {
         Page: () => page(new TextDecoder().decode(bytes), room),
         Picture: () => picture(shown.name, bytes, room, cell),
         Url: () => picture(shown.name, bytes, room, cell),
+        Feed: () => picture(shown.name, bytes, room, cell),
       }),
   })
 
@@ -77,7 +81,7 @@ export const frame = (spooled: Spooled, content: Option.Option<Content>, size: C
   const header = [`${DIM}${cut(name, size.cols)}${RESET}`, ...Option.toArray(Option.map(tally, (item) => tallyLine(item, size.cols)))]
   const room = roomOf(spooled, size)
   const drawn = Option.match(Option.all({ shown, content }), {
-    onNone: () => `${DIM}Nothing shown yet: rex-show image FILE, rex-show md FILE, rex-show url URL${RESET}`,
+    onNone: () => `${DIM}Nothing shown yet: rex-show image FILE, rex-show md FILE, rex-show url URL, rex-show sideshow${RESET}`,
     onSome: (both) => body(both.shown, both.content, room, cell),
   })
   const status = Option.match(tally, { onNone: () => clearReport, onSome: report })
