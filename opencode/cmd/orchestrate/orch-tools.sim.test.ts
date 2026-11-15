@@ -8,7 +8,7 @@
 // - A2 to A6: a restart and a new root lose nothing, a land of a unit that is not ready warns and lands, the harm
 //   rules still refuse, no ledger is kept and old options load, and a verdict publishes the fleet target once.
 // - The lane name rule on either naming, the rift tool's description, and the tool's name against the registry's.
-import { headsOf } from "@dotfiles/opencode-orchestrate/git/fleet"
+import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
 import { RIFT_DESCRIPTION } from "@dotfiles/opencode-rift/rift"
 import { Array as Arr, Effect, Match, Option, Order, Result, Schema } from "effect"
@@ -105,18 +105,21 @@ interface Model {
 
 const NO_UNITS = `orchestrate: no run of this repository holds a unit; orchestrate({ action: "lane", unit: "<unit>" }) starts one.`
 
-/** The merges main holds since the last verify, as the model counts them; with none, at most the five the first verify takes. */
-const mergesSince = (model: Model): number =>
+/**
+ * The lands main holds since the last verify, as the model counts them; with none, at most the five the first verify
+ * takes. Each land here is a merge (one per unit), so the count is the merges.
+ */
+const landsSince = (model: Model): number =>
   Option.match(model.main.verified, { onNone: () => Math.min(model.main.total, VERIFY_EVERY), onSome: (verify) => model.main.total - verify.total })
 
 /** The start of the line a land's and a status's answer start with when a verify of main is due (a run dir exists); none when it is not. */
 const duePrefix = (model: Model): Option.Option<string> =>
-  Option.liftPredicate(`orchestrate: ${mergesSince(model)} merges on main since the last verify (`, () => model.logs.size > 0 && mergesSince(model) >= VERIFY_EVERY)
+  Option.liftPredicate(`orchestrate: ${landsSince(model)} lands on main since the last verify (`, () => model.logs.size > 0 && landsSince(model) >= VERIFY_EVERY)
 
 /** Status as the model renders it, after its due line: the run's open units with their states and lanes, and the one next call. */
 const rendered = (model: Model): string => {
   const units = [...model.logs].filter(([, log]) => !isClosed(log)).toSorted(([a], [b]) => byName(a, b))
-  const dueNext = `next: orchestrate({ action: "verify" }) (${mergesSince(model)} merges on main since the last verify).`
+  const dueNext = `next: orchestrate({ action: "verify" }) (${landsSince(model)} lands on main since the last verify).`
   if (units.length === 0) return Option.match(duePrefix(model), { onNone: () => NO_UNITS, onSome: () => [NO_UNITS, dueNext].join("\n") })
   const laneOf = (unit: string) =>
     Option.match(Option.fromUndefinedOr(model.lanes.get(unit)), { onNone: () => "no lane", onSome: (lane) => `lane ${lane.path} (branch ${lane.branch})` })
@@ -357,8 +360,8 @@ const landOne = Effect.fn("B3.landOne")(function* (run: Run, root: string, unit:
   return yield* run.probe(root, ORCHESTRATE, { action: "land", units: [unit] })
 })
 
-/** The due line's words for `n` merges, up to its parenthesis. */
-const dueStart = (n: number) => `orchestrate: ${n} merges on main since the last verify (`
+/** The due line's words for `n` lands, up to its parenthesis. */
+const dueStart = (n: number) => `orchestrate: ${n} lands on main since the last verify (`
 
 seeded("B3: after the fifth land since a verify, land and status start with the due line; a verify with a verdict ends it; restarts and new roots change no answer", ({ seed, expect }) =>
   Effect.gen(function* () {
@@ -380,7 +383,7 @@ seeded("B3: after the fifth land since a verify, land and status start with the 
     // The fifth land is in: the next status and land start with the due line, N = 5 (the first verify takes the five back).
     const status = yield* run.probe(root(), ORCHESTRATE, { action: "status" })
     expect(status.text.split("\n")[0]).toStartWith(`${dueStart(5)}none recorded`)
-    expect(status.text).toContain('next: orchestrate({ action: "verify" }) (5 merges on main since the last verify).')
+    expect(status.text).toContain('next: orchestrate({ action: "verify" }) (5 lands on main since the last verify).')
     yield* shuffle()
     const sixth = yield* landOne(run, root(), "u3", false)
     expect([sixth.error, sixth.text.split("\n")[0]]).toEqual([false, expect.stringContaining(dueStart(5))])

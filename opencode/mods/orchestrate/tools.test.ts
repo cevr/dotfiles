@@ -33,7 +33,9 @@ import {
   findingsVerdictOf,
   holdsVerdict,
   batchHeadOf,
+  inRange,
   isDue,
+  landsOf,
   nextOf,
   pushedOf,
   requestHeadOf,
@@ -217,10 +219,10 @@ const HOUR = 3_600_000
 /** A 40-hex commit name from a number. */
 const shaOf = (n: number): string => n.toString(16).padStart(40, "0")
 
-/** A generated default branch since the last verify: any merge count, a last verify of any age or none. */
+/** A generated default branch since the last verify: any land count, a last verify of any age or none. */
 const sinceOf = (random: () => number): MainSince => {
   const last = Option.map(Option.liftPredicate(random(), (draw) => draw >= 0.3), (): Verified => ({ file: "/run/verify-x/batch-x.md", head: shaOf(1 + Math.floor(random() * 99)), at: NOW - Math.floor(random() * 48) * HOUR }))
-  return { branch: Option.getOrElse(Arr.get(["main", "master"], Math.floor(random() * 2)), () => "main"), head: shaOf(1000), base: shaOf(7), merges: Math.floor(random() * 9), last }
+  return { branch: Option.getOrElse(Arr.get(["main", "master"], Math.floor(random() * 2)), () => "main"), head: shaOf(1000), base: shaOf(7), lands: Math.floor(random() * 9), last }
 }
 
 /** A land's unit by its name. */
@@ -558,22 +560,32 @@ describe("next", () => {
 // ── Main since the last verify ──
 
 describe("a verify of main", () => {
-  const since = (merges: number, last: Option.Option<Verified>): MainSince => ({ branch: "main", head: shaOf(1000), base: shaOf(7), merges, last })
+  const since = (lands: number, last: Option.Option<Verified>): MainSince => ({ branch: "main", head: shaOf(1000), base: shaOf(7), lands, last })
   const verifiedAt = (at: number): Option.Option<Verified> => Option.some({ file: "/run/verify-a/batch-a.md", head: shaOf(42), at })
 
-  test(`is due at ${VERIFY_EVERY} merges, or one merge once the last is ${VERIFY_MAX_AGE_MS / HOUR} h old`, () => {
-    for (const merges of [0, 1, 4, 5, 9])
+  test(`is due at ${VERIFY_EVERY} lands, or one land once the last is ${VERIFY_MAX_AGE_MS / HOUR} h old`, () => {
+    for (const lands of [0, 1, 4, 5, 9])
       for (const age of [0, 23, 24, 30])
         for (const last of [verifiedAt(NOW - age * HOUR), Option.none<Verified>()]) {
-          const due = merges >= VERIFY_EVERY || (merges >= 1 && Option.isSome(last) && age >= 24)
-          expect({ merges, age, last: Option.isSome(last), due: isDue(since(merges, last), NOW) }).toEqual({ merges, age, last: Option.isSome(last), due })
-          expect(Option.isSome(dueWarning(since(merges, last), NOW))).toBe(due)
+          const due = lands >= VERIFY_EVERY || (lands >= 1 && Option.isSome(last) && age >= 24)
+          expect({ lands, age, last: Option.isSome(last), due: isDue(since(lands, last), NOW) }).toEqual({ lands, age, last: Option.isSome(last), due })
+          expect(Option.isSome(dueWarning(since(lands, last), NOW))).toBe(due)
         }
     expect(dueWarning(since(5, verifiedAt(NOW - 26 * HOUR)), NOW)).toEqual(
-      Option.some(`orchestrate: 5 merges on main since the last verify (${shaOf(42).slice(0, 7)}, 26 h ago): ${VERIFY_CALL}.`),
+      Option.some(`orchestrate: 5 lands on main since the last verify (${shaOf(42).slice(0, 7)}, 26 h ago): ${VERIFY_CALL}.`),
     )
-    expect(dueWarning(since(1, verifiedAt(NOW - 24 * HOUR)), NOW)).toEqual(Option.some(`orchestrate: 1 merge on main since the last verify (${shaOf(42).slice(0, 7)}, 24 h ago): ${VERIFY_CALL}.`))
+    expect(dueWarning(since(1, verifiedAt(NOW - 24 * HOUR)), NOW)).toEqual(Option.some(`orchestrate: 1 land on main since the last verify (${shaOf(42).slice(0, 7)}, 24 h ago): ${VERIFY_CALL}.`))
     expect(Option.getOrElse(dueWarning(since(5, Option.none()), NOW), () => "")).toContain(`none recorded; counted from ${shaOf(7).slice(0, 7)}`)
+  })
+
+  test("counts a fast-forward land like a merge: the units whose request head the range holds, or the merges when more", () => {
+    // ce: since 2541c442, run-state landed by a fast-forward (no merge commit) and skill-modes by a merge: two lands.
+    const range = ["a1b2c3d".padEnd(40, "1"), "e4f5a6b".padEnd(40, "2")]
+    expect([inRange(range, "e4f5a6b".padEnd(40, "2")), inRange(range, "a1b2c3d"), inRange(range, "a1b2c3e"), inRange(range, shaOf(304))]).toEqual([true, true, false, false])
+    expect(landsOf(1, 2)).toBe(2)
+    // A merge with no unit dir behind it (a land the run does not hold) still counts.
+    expect(landsOf(3, 1)).toBe(3)
+    expect(landsOf(0, 0)).toBe(0)
   })
 
   test("counts from the last verified head; with none, from the fifth first-parent merge back, never the whole history", () => {
