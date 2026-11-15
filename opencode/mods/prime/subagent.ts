@@ -76,10 +76,10 @@ export function neighbour(
 }
 
 /**
- * The hint that says how to move: in a subagent, the way back and, when
- * another subagent runs, the way across (above the composer); in a session
- * with subagents running, the way down to them (under the composer, on the
- * dock's first line). Empty otherwise.
+ * The hint that says how to move, on the dock's first line under the
+ * composer: in a subagent, the way back and, when another subagent runs, the
+ * way across; in a session with subagents running, the way down to them.
+ * Empty otherwise.
  */
 export function navigationHint(input: { readonly child: boolean; readonly others: number }): string {
   if (input.child) return input.others > 0 ? "↑ back to parent · ←/→ other subagents" : "↑ back to parent"

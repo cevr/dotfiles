@@ -10,7 +10,7 @@
 
   Reading the parser
 
-  ⠴ Executing · 1s
+  ⠼ Executing · 1s
 
 
 
@@ -31,10 +31,10 @@
 
 
 
- ↑ back to parent
- › ◆ general gpt  Fix money parsing  Reading the parser · 1s
  ┃
-                                                                                            gpt-sim-model
+ ↑ back to parent                                                                           gpt-sim-model
  ────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 1 subagent  ·  0 shells
+ › ◆ general gpt  Fix money parsing  Reading the parser · 1s
 
- ✓ Server  ● UI  Theme  Tools  Experiments
+ ✓ Server  ○ UI  Theme  Tools  Experiments

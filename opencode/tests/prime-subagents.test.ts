@@ -6,6 +6,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { Array as Arr, Option } from "effect"
 import { DOCK_COUNT, dockRow, workingRow } from "../scenarios/prime-subagents-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -28,17 +29,16 @@ const INSIDE = "↑ back to parent · ←/→ other subagents"
 
 /** The worker whose session a frame shows, by its top bar. */
 const shown = (frame: ReadonlyArray<string>) => WORKERS.find((worker) => frame[0]?.includes(`${PARENT} › ${worker.title}`))
-/**
- * Prime's hint line, trimmed: the row above the composer's rail (the frame's
- * last run of ` ┃` rows) and the subagent rows over it (`› ◇ general gpt …`).
- */
+/** Prime's hint line, trimmed: the row above the composer's rail (the frame's last run of ` ┃` rows). */
 const hint = (frame: ReadonlyArray<string>) => {
   let at = frame.findLastIndex((line) => line.startsWith(" ┃"))
-  while (at > 0 && /^ (?:┃|[› ] [◇◆] )/.test(frame[at - 1] ?? "")) at--
+  while (at > 0 && /^ ┃/.test(frame[at - 1] ?? "")) at--
   return frame[at - 1]?.trim()
 }
 /** The dock's first line, trimmed: the row right under the composer's rail. */
 const under = (frame: ReadonlyArray<string>) => frame[frame.findLastIndex((line) => line.startsWith(" ┃")) + 1]?.trim()
+/** The composer's last rail row. */
+const railEnd = (frame: ReadonlyArray<string>) => frame.findLastIndex((line) => line.startsWith(" ┃"))
 
 /** In the main session the way down sits under the composer, the model at the line's right, and the line above it holds no hint. */
 function expectDownUnder(frame: ReadonlyArray<string>) {
@@ -57,7 +57,9 @@ function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[n
   expect(text).toContain(`● Ran printf '${worker.brief}\\n'`)
   expect(text).toMatch(/Executing · \d+s/)
   expect(text).toContain("agent general")
-  expect(hint(frame)).toStartWith(INSIDE)
+  // The way back sits where the main session's way down does: under the composer, on the dock's first line.
+  expect(under(frame)).toStartWith(INSIDE)
+  expect(hint(frame) ?? "").not.toContain("back to parent")
 }
 
 describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV)", () => {
@@ -91,10 +93,14 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     WORKERS.forEach((worker, index) => expect(rows[index]).toMatch(dockRow(worker.title)))
   }))
 
-  test("inside a subagent the rows sit above the picker and mark the one shown", kept.test(() => {
+  test("inside a subagent the rows sit under the composer, on the main session's rows, and mark the one shown", kept.test(() => {
+    const rowsAt = (frame: ReadonlyArray<string>) =>
+      Arr.getSomes(frame.map((line, y) => Option.liftPredicate(y, (at: number) => at > railEnd(frame) && /^ (›| )? ?\S general gpt  /.test(line))))
     for (const frame of [frames.clicked, frames.child, frames.sibling]) {
       const worker = shown(frame)
-      const rows = frame.filter((line) => /^ (›| ) \S general gpt  /.test(line))
+      expect(railEnd(frame)).toBe(railEnd(frames.started))
+      expect(rowsAt(frame)).toEqual(rowsAt(frames.started))
+      const rows = frame.filter((line, y) => y > railEnd(frame) && /^ (›| ) \S general gpt  /.test(line))
       expect(rows).toHaveLength(WORKERS.length)
       expect(rows.filter((line) => line.startsWith(" › "))).toEqual([expect.stringContaining(`general gpt  ${worker?.title ?? "?"}`)])
     }

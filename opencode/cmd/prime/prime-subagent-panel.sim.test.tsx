@@ -32,7 +32,7 @@ const isPanel = (frame: ReadonlyArray<string>) => frame.some((line) => /^\s*┃\
 const has = (shown: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(shown)
 /** A subagent's view: its title behind its parent's on the top bar. */
 const inside = (frame: ReadonlyArray<string>) => (frame[0] ?? "").includes(" › ")
-/** The panel row that lists `title`: under the panel's header, past the subagent's own rows above the composer. */
+/** The panel row that lists `title`: under the panel's header, before the family's rows under the composer. */
 const rowOf = (frame: ReadonlyArray<string>, title: string) => {
   const header = frame.findIndex((line) => /^\s*┃\s+Subagents(\s|$)/.test(line))
   if (header < 0) return -1

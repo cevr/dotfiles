@@ -657,7 +657,7 @@
     "mods/prime/step-end.ts": {"effect/noNullish":4,"effect/noTernary":2},
     "mods/prime/subagent.test.ts": {"effect/noNullish":2},
     "mods/prime/subagent.ts": {"effect/noNullish":10,"effect/noRuntimeTypeof":1,"effect/noTernary":5},
-    "mods/prime/tui/chrome.tsx": {"effect/noGlobals":3,"effect/noNullish":15,"effect/noTernary":20},
+    "mods/prime/tui/chrome.tsx": {"effect/noGlobals":3,"effect/noNullish":14,"effect/noTernary":19},
     "mods/prime/tui/clock.test.ts": {"effect/noAsyncFunction":5,"effect/noDynamicImports":1,"effect/noFixedWaitInTests":2,"effect/noGlobals":2,"effect/noModuleMocks":1},
     "mods/prime/tui/clock.ts": {"effect/noModuleLevelMutableState":2,"effect/noNullish":1,"effect/noTernary":1},
     "mods/prime/tui/compaction.tsx": {"effect/noTernary":3},

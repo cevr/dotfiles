@@ -3,7 +3,7 @@
 // the last run of rail rows (` ┃`) above the dock's rule; the row right above
 // it is Prime's hint line (navigation hints on the left, the update notice on
 // the right, often empty), which no longer carries a standing text to find it
-// by. A goal line, or a subagent's family rows, would sit between the two.
+// by. A goal line would sit between the two.
 
 const RAIL = /^ ┃/
 const RULE = /^ ─{10,}\s*$/
