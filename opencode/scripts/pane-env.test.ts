@@ -1,8 +1,10 @@
-// A multiplexer pane's variables, and the spawn helper the tests use (tests/owned.ts) leaving them out
-// of a child's environment, so a scenario's TUI draws the same from a herdr pane, a Rex pane or a shell.
+// A multiplexer pane's variables, and the spawn helper the tests use (tests/owned.ts) leaving the ones
+// a test inherited out of a child's environment, so a scenario's TUI draws the same from a herdr pane,
+// a Rex pane or a shell, while the ones the test sets for its child stay.
 import { Effect, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { owned } from "../tests/owned.ts"
+import { parentEnv } from "../tests/scratch.ts"
 import { isPaneVariable, outsidePanes } from "./pane-env.ts"
 
 const PANE = {
@@ -22,16 +24,26 @@ describe("a multiplexer pane's variables", () => {
     Effect.sync(() => {
       expect(Object.keys(PANE).filter((name) => !isPaneVariable(name))).toEqual([])
       expect(["PATH", "HOME", "TERM", "HC", "REXX", "OPENCODE_DEV"].filter(isPaneVariable)).toEqual([])
-      expect(outsidePanes({ ...PANE, PATH: "/bin" })).toEqual({ PATH: "/bin" })
     }),
   )
 
-  it.live("a test's child runs outside the pane the test started in", () =>
+  it.effect("a child loses the pane variables it inherited and keeps the ones its caller set", () =>
+    Effect.sync(() => {
+      const parent = { ...PANE, PATH: "/bin" }
+      // Spread from the parent, as a test spreads process.env, with the herdr test's socket and a pane of its own on top.
+      const env = { ...parent, HERDR_FAKE_SOCKET: "/nonexistent/loop-probe-x/herdr.sock", HERDR_PANE_ID: "wtest:p1" }
+      expect(outsidePanes(env, parent)).toEqual({ PATH: "/bin", HERDR_FAKE_SOCKET: "/nonexistent/loop-probe-x/herdr.sock", HERDR_PANE_ID: "wtest:p1" })
+      expect(outsidePanes(parent, {})).toEqual(parent)
+    }),
+  )
+
+  it.live("a test's child runs outside the pane the test started in, with the pane variables the test set", () =>
     Effect.gen(function* () {
-      const child = owned(["/usr/bin/env"], { env: { ...PANE, KEPT: "yes", TMPDIR: "/nonexistent/loop-probe-x" }, stdout: "pipe" })
+      const env = { ...parentEnv, HERDR_FAKE_SOCKET: "/nonexistent/loop-probe-x/herdr.sock", KEPT: "yes", TMPDIR: "/nonexistent/loop-probe-x" }
+      const child = owned(["/usr/bin/env"], { env, stdout: "pipe" })
       const text = yield* Stream.fromReadableStream({ evaluate: () => child.stdout, onError: String }).pipe(Stream.decodeText(), Stream.mkString)
       expect(yield* Effect.promise(() => child.exited)).toBe(0)
-      expect(names(text).filter(isPaneVariable)).toEqual([])
+      expect(names(text).filter(isPaneVariable)).toEqual(["HERDR_FAKE_SOCKET"])
       expect(names(text)).toContain("KEPT")
     }),
   )
