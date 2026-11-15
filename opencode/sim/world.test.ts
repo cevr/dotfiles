@@ -475,6 +475,24 @@ describe("the world", () => {
   )
 
   Seed.effect(
+    "a queued prompt taken back is never delivered; queued prompts merged are delivered as one, the originals cancelled",
+    Effect.gen(function* () {
+      const world = make({ seed: 1, script: () => say("ok") })
+      const session = yield* world.session("/work")
+      // The first prompt starts a turn; the next three queue behind it.
+      yield* world.prompt(session, "first")
+      for (const text of ["a", "b", "c"]) yield* world.prompt(session, text)
+      yield* world.takeBack(session)
+      yield* world.merge(session)
+      yield* world.until(() => world.sessions.get(session)?.running === false, 60_000)
+      const messages = world.messages(session)
+      const users = messages.filter((message): message is Extract<(typeof messages)[number], { type: "user" }> => message.type === "user").map((message) => message.text)
+      expect(users).toEqual(["first", "a\nb"])
+      expect(world.trace().split("\n").filter((entry) => entry.includes('"cancelled"')).length).toBe(3)
+    }),
+  )
+
+  Seed.effect(
     "a simulated hour costs milliseconds",
     Effect.gen(function* () {
       const world = yield* worldOf(7)

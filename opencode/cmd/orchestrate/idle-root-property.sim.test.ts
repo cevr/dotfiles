@@ -4,7 +4,10 @@
 // in plan), and the orchestrate TUI's draft reports from a client of the
 // world. The seed chooses up to 14 commands: the owner's prompt, a planner
 // start (it works 1 to 40 s), a draft shown or cleared in the composer, a
-// wait named or cleared in the root's queue, and the clock moving on.
+// wait named or cleared in the root's queue, and the clock moving on. Behind
+// a prompt the owner may queue more while the root works: one prompt taken
+// back into the composer, or two the escape plugin merges into one; the host
+// cancels the originals either way.
 //
 // Over the whole run, the root is nudged only once it owns the run, never
 // while the owner's draft shows, a planner of its runs or a named wait holds
@@ -40,9 +43,15 @@ const processes = (command: string): World.Process => {
 
 const UNITS = ["alpha", "beta"] as const
 
-/** What the owner does: each prompt is the root's input, `show` is what the composer holds. */
+/**
+ * What the owner does with prompts queued while the root works on one: takes the newest back into the composer, or
+ * the escape plugin's merge delivers them as one. The host cancels the originals either way.
+ */
+type Queued = "none" | "take-back" | "merge"
+
+/** What the owner does: each prompt is the root's input, then what it queues behind it; `show` is what the composer holds. */
 type Command =
-  | { readonly type: "prompt"; readonly text: string }
+  | { readonly type: "prompt"; readonly text: string; readonly queued?: Queued }
   | { readonly type: "show"; readonly composer: string }
   | { readonly type: "advance"; readonly ms: number }
 
@@ -54,9 +63,16 @@ const commandOf = (pick: number, random: ReturnType<typeof generator>): Command 
   return { type: "advance", ms: 1 + below(random, 60_000) }
 }
 
+const QUEUED: ReadonlyArray<Queued> = ["take-back", "merge", "none", "none"]
+
+/** The seed's commands; what each prompt queues comes from a generator of its own, so the commands stay each seed's. */
 const commandsOf = (seed: number): ReadonlyArray<Command> => {
   const random = generator(`idle-root:${seed}`)
-  return Array.from({ length: 4 + below(random, 11) }, () => commandOf(below(random, 9), random))
+  const queuing = generator(`idle-root-queued:${seed}`)
+  return Array.from({ length: 4 + below(random, 11) }, () => commandOf(below(random, 9), random)).map((command) => {
+    if (command.type !== "prompt") return command
+    return { ...command, queued: QUEUED[below(queuing, QUEUED.length)] ?? "none" }
+  })
 }
 
 /**
@@ -136,8 +152,15 @@ const run = (seed: number) =>
     const rested = () => Option.match(Option.fromNullishOr(world.sessions.get(root)), { onNone: () => true, onSome: (session) => !session.running && session.inbox.length === 0 })
     const children = () => [...world.sessions.values()].filter((session) => Option.contains(session.parentID, root))
     const shown: Array<{ readonly at: number; readonly on: boolean }> = []
+    /** What the owner queues behind a prompt the root works on, and what becomes of it. */
+    const queue = (queued: Queued) => {
+      if (queued === "take-back") return world.prompt(root, "start beta 3").pipe(Effect.andThen(world.takeBack(root)))
+      if (queued === "merge") return world.prompt(root, "go").pipe(Effect.andThen(world.prompt(root, "go")), Effect.andThen(world.merge(root)))
+      return Effect.void
+    }
     const apply = (command: Command) => {
-      if (command.type === "prompt") return world.prompt(root, command.text).pipe(Effect.andThen(world.until(rested, 60_000)), Effect.ignore)
+      if (command.type === "prompt")
+        return world.prompt(root, command.text).pipe(Effect.andThen(queue(command.queued ?? "none")), Effect.andThen(world.until(rested, 60_000)), Effect.ignore)
       if (command.type === "advance") return world.advance(command.ms)
       shown.push({ at: world.now(), on: command.composer !== "" })
       return tui.show(root, command.composer)
