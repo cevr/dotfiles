@@ -311,7 +311,9 @@
     {
       "files": [
         "mods/rex/process/browser.ts",
-        "mods/rex/process/browser.test.ts"
+        "mods/rex/process/browser.test.ts",
+        "mods/rex/process/sideshow.ts",
+        "mods/rex/process/sideshow.test.ts"
       ],
       "rules": {
         "effect/noGlobals": "off",
