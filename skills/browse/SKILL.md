@@ -103,6 +103,8 @@ return await files.write("export.csv", Buffer.from(b64, "base64"))
 
 **Network capture** (HAR with credentials replaced by `${BC_SECRET_N}`): see [references/derive-client.md](references/derive-client.md).
 
+**Show it beside you in Rex.** When your shell runs in a Rex pane (`REX_BLOCK` is set), show the owner what you made instead of only naming a path: `rex-show image shot.png` (PNG only) after a screenshot that proves a step, `rex-show md report.md` for a page to read, and `rex-show tally "3 of 7 checks green" --progress 43` (`--state done|blocked|error` at the end) during a long run; the tally also shows in Rex's tab header. Each call draws in your session's one pane labeled `showcase`, split off beside yours on the first call and reused after. The file must be on the host your shell runs on: a browse screenshot lands on the Mac, so from the workbox copy it over first. Exit 2 means no Rex pane: skip it and name the path as usual.
+
 ## Logins, handoffs and secrets
 
 - The owner's sessions are already in this Chrome: go straight to the page and check where you landed. A redirect to a login page means the owner is logged out there.
