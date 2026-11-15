@@ -1,4 +1,4 @@
-// accept: deep (it boots real OpenCode three times, one turn each, on the real work binary)
+// accept: deep (8.2 s alone at a 1-minute load of 7.8 on 12 cores: it boots real OpenCode three times on the real work binary, which only WORK_BIN names until work is on PATH)
 // The work tool in real OpenCode (the fork, through its SDK) on the scripted model and the real `work` binary
 // (WORK_BIN), in a scratch HOME: tests/work/run.ts, once per task. The model makes a workspace for a branch
 // with `work` (under `.work/<base>/`), commits in it, lists it, is refused removing it while the commit is found

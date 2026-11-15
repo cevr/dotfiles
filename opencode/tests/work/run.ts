@@ -11,6 +11,7 @@ import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Config, Data, Effect, FileSystem, Option, Path, Predicate, Schedule, Schema, Stream } from "effect"
 import { HttpServer } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { gitInit } from "../git-repo.ts"
 import { type Call, model, Result, type Seen } from "./sim.ts"
 
 class RunFailed extends Data.TaggedError("RunFailed")<{ readonly message: string; readonly cause?: unknown }> {}
@@ -104,8 +105,9 @@ const run = Effect.gen(function* () {
   // The base: one commit pushed to a bare origin, work.toml kept out of Git's view, registered with work.
   const work = yield* fs.realPath(path.join(base, "code/work"))
   const origin = path.join(base, "origin.git")
-  yield* git(base, "init", "-q", "--bare", "-b", "main", origin)
-  yield* git(work, "init", "-q", "-b", "main")
+  // Made through gitInit, as every test repository is: no background gc or maintenance.
+  yield* Effect.try({ try: () => gitInit(origin, ["-q", "--bare", "-b", "main"]), catch: (cause) => new RunFailed({ message: "git init of the origin failed", cause }) })
+  yield* Effect.try({ try: () => gitInit(work, ["-q", "-b", "main"]), catch: (cause) => new RunFailed({ message: "git init of the base failed", cause }) })
   yield* fs.writeFileString(path.join(work, "README.md"), "work\n")
   yield* git(work, "add", "README.md")
   yield* git(work, "commit", "-q", "-m", "first")
