@@ -57,7 +57,8 @@ export default OpenCodeDriver.use({
     const text = JSON.stringify(request)
     if (text.includes("You name conversations")) return Stream.make(Llm.text("Pool status"), Llm.finish())
     if (!text.includes("show-pool-fixture")) return Stream.fromEffect(Deferred.await(child)).pipe(Stream.drain, Stream.concat(Stream.make(Llm.text("agent done"), Llm.finish())))
-    if (!text.includes("call_worker")) return Stream.make(Llm.toolCall({ index: 0, id: "call_worker", name: "subagent", input: { description: "implementor pane r1", prompt: "wait in fixture", agent: "worker", background: true } }), Llm.finish("tool-calls"))
+    // A verifier, not an implementor: the sim's model is a gpt one, and Codex never implements.
+    if (!text.includes("call_worker")) return Stream.make(Llm.toolCall({ index: 0, id: "call_worker", name: "subagent", input: { description: "verifier pane r1", prompt: "wait in fixture", agent: "worker", background: true } }), Llm.finish("tool-calls"))
     return Stream.make(Llm.text("Status fixture ready"), Llm.finish())
   })
   type Frame = { lines: readonly { spans: readonly { text: string }[] }[] }

@@ -22,7 +22,8 @@ const out = process.env.SCENARIO_OUT ?? "out"
 const via = process.env.QUEUE_VIA === "kernel" ? "kernel" : "direct"
 const label = `queue-${via}`
 
-const MONEY = { description: "Fix money parsing", prompt: "Worker brief money.", agent: "implementor", background: true }
+// A verifier, not an implementor: the sim's model is a gpt one, and Codex never implements.
+const MONEY = { description: "Fix money parsing", prompt: "Worker brief money.", agent: "verifier", background: true }
 const FORGOTTEN = { description: "Forgotten worker", prompt: "Worker brief forgotten.", background: true }
 /** What each subagent thinks before it waits: its row's update. */
 const THOUGHTS: ReadonlyArray<readonly [string, string]> = [
@@ -125,7 +126,7 @@ export default OpenCodeDriver.use(
         (frame) =>
           frame.includes("Queue fixture ready") &&
           frame.includes("● Money parsing worker") &&
-          /^ [◇◈◆] implementor gpt +Fix money parsing /m.test(frame) &&
+          /^ [◇◈◆] verifier +gpt +Fix money parsing /m.test(frame) &&
           /^ [◇◈◆] worker +gpt +Forgotten worker /m.test(frame),
       )
       writeFileSync(`${out}/${label}-set.txt`, text(yield* ui.capture()))
