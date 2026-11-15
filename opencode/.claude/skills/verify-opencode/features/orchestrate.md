@@ -43,7 +43,7 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 1. **A verifier named for a unit.** Type `verify: call subagent {"agent":"implementor","description":"implementor alpha r1","prompt":"verify: say alpha ready","background":true}`, Enter. Wait for the call's answer; the implementor's row shows under the composer.
 2. **It starts.** Type `verify: call subagent {"agent":"verifier","description":"verifier alpha r1","prompt":"verify: say accepted"}`, Enter. Wait for `accepted`. The verifier session starts; no answer says a batch rule.
 3. **Status.** Type `verify: call orchestrate {"action":"status"}`, Enter. Wait for `orchestrate:`. The scratch checkout has no `tmp/orchestrate` run, so the answer is `orchestrate: no run of this repository holds a unit; …`, the same after a restart; it is not an error.
-4. **Proof.** Snapshot after steps 2 and 3 into `$EVIDENCE/orchestrate/`; `$ROOT/home/.cache/orchestrate/` holds no `machine.jsonl`.
+4. **Proof.** Snapshot after steps 2 and 3 into `$EVIDENCE/orchestrate/`; `$ROOT/home/.cache/orchestrate/` holds no ledger file.
 
 The land itself is never driven on a scratch server (`verify:seed` refuses the rift plugin, which lands real repositories): its proof is `tests/rift.test.ts` and the world's `orch-tools` suite.
 
