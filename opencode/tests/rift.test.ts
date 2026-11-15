@@ -7,7 +7,7 @@
 // `opencode_worktree_create`, which is no longer offered. In a second run it
 // commits in a Rift and lands it: one push to the bare origin's main, the
 // Rift trashed, and the accept check's wake after the turn. The plugins on their
-// own are tested beside their code in mods/rift, cmd/rift, mods/tool-names
+// own are tested beside their code in mods/work, cmd/rift, mods/tool-names
 // and cmd/tool-names.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"

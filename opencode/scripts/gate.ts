@@ -19,13 +19,13 @@
 //
 // One full gate runs on a host at a time: the whole run, link included, holds
 // the host's checks lock (the one a land's gate and accept checks hold
-// shared; mods/rift/process/flock.ts's `gateTurn`) exclusively. A second gate
+// shared; mods/work/process/flock.ts's `gateTurn`) exclusively. A second gate
 // waits for its turn, saying who holds the lock and since when, and a land's
 // check that comes while it waits goes first. The land's own gate check
 // (RIFT_LAND_CHECK=gate) runs at once, under the locks its land holds.
 // Focused runs (`bun test <files>`) never take it.
 //
-// Receipts (mods/rift/receipt.ts): a gate run by hand writes a `round` receipt for the head and tracked
+// Receipts (mods/work/receipt.ts): a gate run by hand writes a `round` receipt for the head and tracked
 // files it started at into the checkout (its Git dir's rift-receipt.json) and the host's receipts folder,
 // green or red; a land takes it instead of running the Rift's checks again (any other proof of a round
 // is written with scripts/receipt.ts). `--merge <base>` is a land's merge check (`rift.mergeCheck`): the link, every
@@ -39,7 +39,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
 import { Array as Arr, Option } from "effect"
-import { hostLocks, landLogs, scriptReceipt } from "../mods/rift/process/landing.ts"
+import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
 

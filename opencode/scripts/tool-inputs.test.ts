@@ -15,7 +15,7 @@ import { ForgetInput, SaveInput, SearchInput } from "../mods/memory/notebook.ts"
 import { AskInput } from "../mods/questions/ask.ts"
 import { PushToolInput } from "../mods/pool/push.ts"
 import { QueueInput } from "../mods/queue/queue.ts"
-import { RiftInput } from "../mods/rift/rift.ts"
+import { RiftInput } from "../mods/work/rift.ts"
 import { CancelInput, JobInput, ListInput, MonitorInput, WakeInput } from "../mods/wake/tools.ts"
 
 // The mods build their schemas on the fork's effect, this script on the root's: typed apart, the same at run time.

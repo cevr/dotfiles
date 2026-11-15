@@ -1,6 +1,6 @@
 /**
  * The rift tool as an OpenCode server plugin. The composition root: it
- * builds the model (`@dotfiles/opencode-rift/model`) on Rift, Git, the
+ * builds the model (`@dotfiles/opencode-work/model`) on Rift, Git, the
  * workbox's scripts and OpenCode's sessions, registers the `rift` tool (a
  * direct tool, reached from a kernel cell as `tools.rift`), and takes
  * OpenCode's worktree tools (`opencode_worktree_create`, `_list`, `_remove`)
@@ -8,15 +8,15 @@
  * and remove Git worktrees, which a Rift is not: on Rifts they failed.
  *
  * `rift({ action: "create" | "list" | "remove" | "land" | <workbox action>, ... })`:
- * see `@dotfiles/opencode-rift/rift` for the input and the answers,
- * `@dotfiles/opencode-rift/workspace` for what a removal refuses, and
- * `@dotfiles/opencode-rift/land` for a land. A land's accept check runs in
+ * see `@dotfiles/opencode-work/rift` for the input and the answers,
+ * `@dotfiles/opencode-work/workspace` for what a removal refuses, and
+ * `@dotfiles/opencode-work/land` for a land. A land's accept check runs in
  * the plugin's scope and wakes the calling session through
  * `session.synthetic`; its logs go to `${XDG_CACHE_HOME:-~/.cache}/rift-land`, and
- * a post-land step owed while the host is loaded (`@dotfiles/opencode-rift/owed`)
+ * a post-land step owed while the host is loaded (`@dotfiles/opencode-work/owed`)
  * to `post-land-owed.json` there, which the plugin's check reads every minute.
  *
- * It also serves the rift RPC (`@dotfiles/opencode-rift/rpc`: create, with `at` to detach a new Rift at a commit,
+ * It also serves the rift RPC (`@dotfiles/opencode-work/rpc`: create, with `at` to detach a new Rift at a commit,
  * list, inspect, land) on the same model, for the orchestrate plugin's `orchestrate` tool.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
@@ -26,14 +26,14 @@
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import * as FilestoreDebts from "@dotfiles/opencode-rift/filestore/debts"
-import * as Model from "@dotfiles/opencode-rift/model"
-import * as OpenCodeNotices from "@dotfiles/opencode-rift/opencode/notices"
-import * as OpenCodeSessionDirectories from "@dotfiles/opencode-rift/opencode/session-directories"
-import * as ProcessLanding from "@dotfiles/opencode-rift/process/landing"
-import * as ProcessRifts from "@dotfiles/opencode-rift/process/rifts"
-import * as ProcessWorkbox from "@dotfiles/opencode-rift/process/workbox"
-import { RIFT_DESCRIPTION, RiftInput, listed, stateOf } from "@dotfiles/opencode-rift/rift"
+import * as FilestoreDebts from "@dotfiles/opencode-work/filestore/debts"
+import * as Model from "@dotfiles/opencode-work/model"
+import * as OpenCodeNotices from "@dotfiles/opencode-work/opencode/notices"
+import * as OpenCodeSessionDirectories from "@dotfiles/opencode-work/opencode/session-directories"
+import * as ProcessLanding from "@dotfiles/opencode-work/process/landing"
+import * as ProcessRifts from "@dotfiles/opencode-work/process/rifts"
+import * as ProcessWorkbox from "@dotfiles/opencode-work/process/workbox"
+import { RIFT_DESCRIPTION, RiftInput, listed, stateOf } from "@dotfiles/opencode-work/rift"
 import {
   CreateAsk,
   type Created,
@@ -46,9 +46,9 @@ import {
   ListAsk,
   type Listed,
   RIFT_RPC,
-} from "@dotfiles/opencode-rift/rpc"
-import { type Landing, type Notices, type PostLandClaim, type PostLandDebts, Rifts, SessionDirectories, type Workbox } from "@dotfiles/opencode-rift/service"
-import type { Workspace } from "@dotfiles/opencode-rift/workspace"
+} from "@dotfiles/opencode-work/rpc"
+import { type Landing, type Notices, type PostLandClaim, type PostLandDebts, Rifts, SessionDirectories, type Workbox } from "@dotfiles/opencode-work/service"
+import type { Workspace } from "@dotfiles/opencode-work/workspace"
 
 /** OpenCode's worktree tools, by their registry ids; the rift tool replaces them. */
 export const WORKTREE_TOOLS = ["opencode_worktree_create", "opencode_worktree_list", "opencode_worktree_remove"] as const
@@ -108,7 +108,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         })
       })
 
-      // The rift RPC (`@dotfiles/opencode-rift/rpc`), on the model the tool runs on: the tool's answer for the same input.
+      // The rift RPC (`@dotfiles/opencode-work/rpc`), on the model the tool runs on: the tool's answer for the same input.
       const answers = rpcHandlers(rift, Context.get(services, Rifts), Context.get(services, SessionDirectories), options)
       yield* ctx.rpc
         .register(RIFT_RPC, {

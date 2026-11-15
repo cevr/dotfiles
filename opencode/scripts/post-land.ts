@@ -14,15 +14,15 @@
 // `bun run daily`'s step 0, under the same lock), refreshes `upstream.json` for the TUI's corner,
 // and writes one outcome line with the fork work (scripts/fork-work.ts) to `RIFT_POST_LAND_REPORT`
 // (stdout without it): the report the land's session is woken with. On any other host (the
-// workbox) it runs the deep run, merges nothing and says so. Under a land it holds the land's locks (mods/rift/process/flock.ts): the checks lock for each change to prime-look, which the land's gate and accept read, and the accept lock for the fork's tests, so they never run beside an accept check.
+// workbox) it runs the deep run, merges nothing and says so. Under a land it holds the land's locks (mods/work/process/flock.ts): the checks lock for each change to prime-look, which the land's gate and accept read, and the accept lock for the fork's tests, so they never run beside an accept check.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { Array as Arr, Effect, Option } from "effect"
 import { decodeDeepReport, type DeepReport } from "./accept-ledger.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
-import { exclusively, exclusivelySync } from "../mods/rift/process/flock.ts"
-import { landLogs, scriptReceipt } from "../mods/rift/process/landing.ts"
+import { exclusively, exclusivelySync } from "../mods/work/process/flock.ts"
+import { landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
 import { readyFork } from "./fork.ts"
 import { type ForkWork, droppable, forkWork, forkWorkText, ghLookup, readAgents } from "./fork-work.ts"
 import { DEFAULT_FORK } from "../testbeds/gamut/gamut.ts"
@@ -208,7 +208,7 @@ if (import.meta.main) {
   const run = (argv: ReadonlyArray<string>) => Bun.spawnSync([...argv], { cwd: opencode, stdout: "pipe", stderr: "pipe" })
   const git = (...args: ReadonlyArray<string>) => run(["git", "-C", fork, ...args]).stdout.toString().trim()
   const agents = readAgents(join(opencode, "AGENTS.md"))
-  // A fork move holds the checks lock and the fork lock, as `bun run daily`'s does (mods/rift/process/landing.ts's `hostLocks`).
+  // A fork move holds the checks lock and the fork lock, as `bun run daily`'s does (mods/work/process/landing.ts's `hostLocks`).
   const checksOnly = exclusivelySync(env.RIFT_LAND_CHECKS_LOCK || "")
   const forkLock = exclusivelySync(env.RIFT_LAND_FORK_LOCK || "")
   const checksLock = <A>(step: () => A): A => checksOnly(() => forkLock(step))

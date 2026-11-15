@@ -153,7 +153,7 @@ import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
-import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-rift/rpc"
+import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
@@ -606,7 +606,7 @@ export const make = (
       )
       // The `orchestrate` tool's reads (mods/orchestrate/tools.ts), at each call: the run tables (the status plugin's
       // RPC, through `Runs`) and the warm source's Rifts (the rift plugin's RPC). Its lanes, its verify checkout and
-      // its land go to this location's rift plugin over the rift RPC (`@dotfiles/opencode-rift/rpc`). Nothing of a
+      // its land go to this location's rift plugin over the rift RPC (`@dotfiles/opencode-work/rpc`). Nothing of a
       // run is kept between calls.
       const riftRpc = () => ctx.rpc(RIFT_RPC)
       const sessions = Context.get(services, Sessions)

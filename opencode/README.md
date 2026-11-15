@@ -717,7 +717,7 @@ A subagent is refused `lane`, `land` and `verify` (the root lands); `status`
 answers it. A call carrying another action's field (a `land` with `unit`, a
 `lane` with `units`) is refused with a call that decodes. Its Rifts and land
 go to this location's rift plugin over the rift RPC
-(`@dotfiles/opencode-rift/rpc`), on the model the `rift` tool runs on; a
+(`@dotfiles/opencode-work/rpc`), on the model the `rift` tool runs on; a
 `rift` land runs as it always does. `orchestrate` is in the kernel's
 `HOOKED_TOOLS`, so a cell's call passes the same hooks.
 
@@ -936,7 +936,7 @@ What stays, none of it kept between calls:
 
 Still refused: a subagent's `lane`, `land` or `verify`; a malformed input;
 the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
-whatever `mods/rift` and `mods/guard` refuse (a red merge check never pushes;
+whatever `mods/work` and `mods/guard` refuse (a red merge check never pushes;
 one land per host at a time).
 
 ## Pool
@@ -1831,7 +1831,7 @@ instead (The orchestrate tool). One input, with an `action`:
   batch, as the orchestrator's batch landing does by hand. Each entry names a
   Rift by path (it starts with `/` or `.`), by name, or by its branch: exact
   first (the name, or the branch), then the branch with `/` as `-`
-  (`mods/rift/find.ts`); an entry two Rifts answer to is refused, naming both
+  (`mods/work/find.ts`); an entry two Rifts answer to is refused, naming both
   with their branches. An entry may be `{ path, unit }`: the land lands its
   path, and the orchestrate plugin records it as that unit's. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
   uncommitted changes (a file the same as in the warm source does not count)
@@ -1890,7 +1890,7 @@ knows no repository's commands:
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
 | `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
-| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land Rift (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit), `RIFT_POST_LAND_LOAD` (`settled`, `forced` or `loaded`: what the host allows; the step decides what each word means) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines), and a `loaded` run that exits 0 with an empty report wakes no one. A step is owed from the push until it has run, one per warm source over every land since one last ran (`mods/rift/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once (`settled`) when no reading in the last 5 minutes was at or past the cores, and else runs it `loaded`, which never pays it: it stays owed, and the wake says what ran and what still waits; the plugin itself reads the load every minute while one is owed, runs it `loaded` again 30 minutes after its last run ended (never while another run holds the claim), and runs it `settled` once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/rift/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration Rift is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its Rift) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/rift/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/rift/process/landing.ts`). `remove` refuses the integration and post-land Rifts while a step runs there |
+| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land Rift (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit), `RIFT_POST_LAND_LOAD` (`settled`, `forced` or `loaded`: what the host allows; the step decides what each word means) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines), and a `loaded` run that exits 0 with an empty report wakes no one. A step is owed from the push until it has run, one per warm source over every land since one last ran (`mods/work/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once (`settled`) when no reading in the last 5 minutes was at or past the cores, and else runs it `loaded`, which never pays it: it stays owed, and the wake says what ran and what still waits; the plugin itself reads the load every minute while one is owed, runs it `loaded` again 30 minutes after its last run ended (never while another run holds the claim), and runs it `settled` once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/work/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration Rift is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its Rift) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/work/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/work/process/landing.ts`). `remove` refuses the integration and post-land Rifts while a step runs there |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
 ### Landing by receipts
@@ -1900,7 +1900,7 @@ a repository can land on the proof its rounds already made instead. With
 `rift.mergeCheck` set, a land (pushed, or checked with `rift.push` false)
 never runs `rift.gate` on the batch:
 
-1. Before any merge, each Rift's receipt is read (`mods/rift/receipt.ts`):
+1. Before any merge, each Rift's receipt is read (`mods/work/receipt.ts`):
    the newest one in its Git dir (`rift-receipt.json`). It is current when it
    names the Rift's head and the tree of its tracked files as they are on
    disk, and every check in it exited 0. A Rift without a current one (none,
@@ -2018,7 +2018,7 @@ The gate and accept logs are `${XDG_CACHE_HOME:-~/.cache}/rift-land/<rift>.<gate
 There is no `gc` action: `rift gc` empties the trash of every repository at
 once, for good, and the workbox's nightly `workrift prune` already runs it.
 
-The model (the domain files at the root of `mods/rift`): `rift.ts` is the
+The model (the domain files at the root of `mods/work`): `rift.ts` is the
 tool's input and the words of each answer, `workspace.ts` what a Rift holds
 and the rule for removing one (`removal`), `land.ts` a land's rules and
 words, and `model.ts` the handler. The contracts are in `service.ts`:
@@ -2028,8 +2028,8 @@ for tests), `Landing` (`process/`: Git and the repository's checks),
 `SessionDirectories` (`opencode/`), with the Rifts laws in `laws.ts`. The
 plugin's one option, `workrift`, defaults to whether `workrift` is on PATH.
 `tests/rift.test.ts` proves the flow and a land in real OpenCode on real
-Rift; `mods/rift/process/landing.test.ts` runs Landing on real Git
-repositories; `mods/rift/process` runs the
+Rift; `mods/work/process/landing.test.ts` runs Landing on real Git
+repositories; `mods/work/process` runs the
 laws on `rift` and on the workbox's own `workrift` script (with a no-op
 `flock`), in a scratch HOME. Both need macOS.
 

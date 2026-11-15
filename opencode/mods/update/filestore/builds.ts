@@ -1,6 +1,6 @@
 import { spawn, readableStreamToText } from "bun"
 import { readdir, readlink, stat, unlink } from "node:fs/promises"
-import { holdingIfFree } from "@dotfiles/opencode-rift/process/flock"
+import { holdingIfFree } from "@dotfiles/opencode-work/process/flock"
 import { Array as Arr, Clock, Data, Duration, Effect, Layer, Match, Option, Schedule } from "effect"
 import { FRESH_MS, isFresh, prunable } from "../builds.ts"
 import type { Record } from "../record.ts"
