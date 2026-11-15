@@ -65,6 +65,38 @@ export const findingsIn = (report: string, read: (path: string) => string | unde
   return missing.length === 0 ? { _tag: "Read", findings } : { _tag: "Unread", why: `the unit findings ${missing.length === 1 ? "file" : "files"} ${missing.join(", ")} of ${path} ${missing.length === 1 ? "does" : "do"} not read` }
 }
 
+/** A line that closes findings: `closed by batch-<k>`, or the verifiers' `folded and closed`; never one that says `not`. */
+const CLOSES = /closed by batch-[\w.-]+|folded and closed/i
+const KEY = /(?:\b([a-z0-9][a-z0-9._-]*)\/)?\b([BM]\d+)\b/g
+
+/**
+ * The findings a verdict file's lines mark closed by another batch (a fix landed and verified outside the
+ * machine): each `<unit>/<id>` on a closing line, and each bare id after one (`approved-heads/M1, M2 -> …
+ * accepted in batch-286: folded and closed`), as `<unit>/<id>`. A line that says `not` closes nothing.
+ */
+export const closedFindings = (text: string): ReadonlyArray<string> => {
+  const closed: Array<string> = []
+  for (const line of text.split("\n")) {
+    if (!CLOSES.test(line) || /\bnot\b/i.test(line)) continue
+    let unit: string | undefined
+    for (const match of line.matchAll(KEY)) {
+      unit = match[1] ?? unit
+      const key = unit === undefined ? undefined : `${unit}/${match[2]}`
+      if (key !== undefined && !closed.includes(key)) closed.push(key)
+    }
+  }
+  return closed
+}
+
+/** The findings `report` and each unit findings file it names that reads mark closed (`closedFindings`); none when it does not read. */
+export const closedIn = (report: string, read: (path: string) => string | undefined): ReadonlyArray<string> => {
+  const path = expand(report, process.cwd())
+  const text = read(path)
+  if (text === undefined) return []
+  const units = UNIT_FILE.test(basename(path)) ? [] : [...new Set((text.match(UNIT_PATH) ?? []).map((found) => expand(found, dirname(path))))]
+  return [...new Set([text, ...units.flatMap((unit) => [read(unit) ?? ""])].flatMap(closedFindings))]
+}
+
 const readText = (path: string) => {
   try {
     return readFileSync(path, "utf8")
@@ -73,4 +105,7 @@ const readText = (path: string) => {
   }
 }
 
-export const layer = Layer.succeed(Findings, { read: (report) => Effect.sync(() => findingsIn(report, readText)) })
+export const layer = Layer.succeed(Findings, {
+  read: (report) => Effect.sync(() => findingsIn(report, readText)),
+  closed: (report) => Effect.sync(() => closedIn(report, readText)),
+})

@@ -955,13 +955,25 @@ export const machineLayer = (config: MachineConfig) =>
           return read._tag === "Read" ? { findings: read.findings } : { unread: { report, why: read.why } }
         })
 
-      /** The hand-back a step's session's last words say, as the machine takes it: a verifier's `changes` with its report read. */
+      /** The findings a verdict's report marks closed by another batch; none when it names no report. */
+      const closedBy = (report: string | undefined) =>
+        Effect.map(Effect.forEach(Option.toArray(Option.fromNullishOr(report)), findings.closed), (read) => {
+          const closed = read.flat()
+          return closed.length === 0 ? {} : { closed }
+        })
+
+      /**
+       * The hand-back a step's session's last words say, as the machine takes it: a verifier's verdict with the
+       * findings its report marks closed, and a `changes` with its report read.
+       */
       const saidBy = (agent: string, sessionID: string) =>
         Effect.gen(function* () {
           const words = yield* sessions.lastWordsOf(sessionID)
           const back = Option.fromNullishOr(stepHandBackOf(agent, words))
-          if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict !== "changes") return back
-          return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))) }))
+          if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict === "none" || back.value.verdict === "stopped") return back
+          const closed = yield* closedBy(reportOf(words))
+          if (back.value.verdict !== "changes") return Option.some(HandBack.make({ ...back.value, ...closed }))
+          return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))), ...closed }))
         })
 
       /** A verifier whose verdict a reconcile read from its last words, before its idle was seen: its batch, session and verdict. */

@@ -43,7 +43,6 @@ import {
   STEP_ORDER,
   statusAnswer,
   UNDECIDED,
-  unheldRefusal,
   verifyAnswer,
 } from "./tools.ts"
 
@@ -389,22 +388,29 @@ describe("the lane name rule", () => {
     }
   })
 
-  test("F2: a land naming { path, unit } of a unit the machine does not hold is refused, by either tool's input; one it holds, or a bare path, is not", () => {
+  test("land-adopt: a land naming a unit the machine does not hold by name alone is refused; the call it names instead adopts it with its Rift, and resolves when made literally", () => {
     for (const seed of SEEDS) {
       const random = rng(seed)
       const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 4) }, () => unitName(random)))]
       const held = units.filter(() => random() < 0.6)
       const state = implementing(held, random() < 0.5)
-      const rifts = units.map((unit) => ({ rift: laneOf(unit).path, unit }))
-      const refused = unheldRefusal(rifts, state)
-      // Refused at the first unit not held, naming it; with every unit held, not refused.
+      const lanes = units.map(laneOf)
+      const asked = { action: "land", units } as const
+      const resolved = resolveLand(asked, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 }))
       const first = Arr.findFirst(units, (unit) => !held.includes(unit))
-      expect({ seed, refused: Option.isSome(refused), first: Option.isSome(first) }).toEqual({ seed, refused: Option.isSome(first), first: Option.isSome(first) })
-      expect({ seed, names: Option.exists(Option.zipWith(refused, first, (said, unit) => said.includes(`the machine holds no unit ${unit}:`)), (named) => named) }).toEqual({
-        seed,
-        names: Option.isSome(first),
-      })
-      expect({ seed, bare: Option.isNone(unheldRefusal(units.map((unit) => laneOf(unit).path), state)) }).toEqual({ seed, bare: true })
+      expect({ seed, refused: "refused" in resolved }).toEqual({ seed, refused: Option.isSome(first) })
+      if (!("refused" in resolved) || Option.isNone(first)) continue
+      expect({ seed, said: resolved.refused }).toEqual({ seed, said: expect.stringContaining(`the machine holds no unit ${first.value}:`) })
+      // The call it names: the unknown unit as { unit, path } on the one Rift that reads as it, made literally.
+      const call = Option.getOrThrow(Option.fromNullishOr(/Adopt it and land it: orchestrate\((\{.*\})\)\.$/.exec(resolved.refused)?.[1]))
+      const input = Schema.decodeUnknownSync(OrchestrateInput)(JSON.parse(call.replace(/(\w+): /g, '"$1": ')))
+      expect({ seed, adopts: (input.units ?? []).some((unit) => typeof unit !== "string" && unit.unit === first.value && unit.path === laneOf(first.value).path) }).toEqual({ seed, adopts: true })
+      const again = resolveLand(input, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 }))
+      // Each further unit not held is named alike in its own refusal; with them all named so, it resolves.
+      const unheld = units.filter((unit) => !held.includes(unit))
+      const all = { ...input, units: (input.units ?? []).map((unit) => (typeof unit === "string" && unheld.includes(unit) ? { unit, path: laneOf(unit).path } : unit)) }
+      expect({ seed, resolved: "rifts" in resolveLand(all, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 })) }).toEqual({ seed, resolved: true })
+      if (unheld.length === 1) expect({ seed, again: "rifts" in again }).toEqual({ seed, again: true })
     }
   })
 

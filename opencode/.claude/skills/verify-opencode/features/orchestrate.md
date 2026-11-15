@@ -10,7 +10,9 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 - `machine-pipeline`: batch N+1's implementors start while batch N's verifier runs; its findings fold into the next starts.
 - `machine-brief`: after a compaction, one steered brief of the machine and the run.
 - `machine-move`: a root that moves between locations keeps one ledger.
-- `land`: the rift tool's `land` merges a batch's Rifts, takes their receipts or runs one gate, pushes once, and trashes the Rifts.
+- `land`: the rift tool's `land` merges a batch's Rifts, takes their receipts or runs one gate, pushes once, and trashes the Rifts. A gate its systemd scope stopped for memory is answered as out of memory at the scope's MemoryMax, not as a bare `exit 143`.
+- `land-adopt`: a land (either tool) naming `{ unit, path }` of a unit the machine does not hold (its implementor started before a restart) adopts it as ready on that Rift, checks it as one of the batch, and records it for the verifier; a bare unknown name is refused with the `{ unit, path }` call to make, and every refusal's suggested call passes when made as written.
+- `findings-closed`: a verdict's report line marking findings `closed by batch-<k>` (or `folded and closed`) closes them in the ledger; the next land no longer counts them.
 - `orchestrate-tool`: the root's `orchestrate` tool. It has four actions:
   - `lane` makes a unit's Rift, or answers the one that exists, ending `(rift: <path>)`;
   - `land` with no units lands every ready unit, decided by the same machine as a rift land;
@@ -50,6 +52,6 @@ The land itself is never driven on a scratch server (`verify:seed` refuses the r
 
 ## Gotchas
 
-- The machine holds a root only once it starts `implementor <unit> rN` agents; a root that runs no unit is never refused, so step 2 without step 1 passes and proves nothing.
+- The machine holds a root only once it starts `implementor <unit> rN` agents, or a land adopts a `{ unit, path }`; a root that runs no unit is never refused, so step 2 without step 1 passes and proves nothing.
 - The refusal's words are SKILL.md's, through `bun run agents`; after a skill edit, `bun run agents --check` tells whether `agents.json` is stale.
 - A Codex fallback never implements: a held implementor start latches and waits.

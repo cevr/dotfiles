@@ -118,6 +118,41 @@ seeded("a whole batch through the new actions: three lanes, one land of the thre
   }),
 )
 
+/** The `orchestrate` call a refusal names after `lead`, as the input the tool takes. */
+const suggested = (text: string, lead: string): Input => {
+  const at = text.indexOf(`${lead} orchestrate(`)
+  const from = text.indexOf("{", at)
+  const call = text.slice(from, text.indexOf(" })", from) + 2)
+  return JSON.parse(call.replace(/(\w+): /g, '"$1": ')) as Input
+}
+
+seeded("land-adopt: a unit whose implementor started before a restart lands by { unit, path }: a bare name is refused with the call to make, which lands it; the rift land of it too", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true)
+    const root = yield* run.world.session(WORK)
+    const at = rootOf(run, root)
+    const [alpha, beta, gamma] = yield* Effect.forEach(UNITS, (unit) => Effect.map(at.orchestrate({ action: "lane", unit }), (lane) => suffixOf(lane.text)))
+    // beta's implementor starts after the restart: the root runs units. alpha's and gamma's started before it, so the ledger holds neither.
+    yield* at.implement("beta", 1, `implementor beta r1 (rift: ${beta})`, "ready")
+    const bare = yield* at.orchestrate({ action: "land", units: ["alpha"] })
+    expect([bare.error, bare.text]).toEqual([true, expect.stringContaining("the machine holds no unit alpha")])
+    expect(run.lines(root).map((line) => line.kind)).not.toContain("UnitAdopted")
+    // The call it names, made literally: alpha adopted with its lane, landed with beta.
+    const asked = suggested(bare.text, "Adopt it and land it:")
+    expect(asked).toEqual({ action: "land", units: [{ unit: "alpha", path: alpha }, "beta"] })
+    const landed = yield* at.orchestrate(asked)
+    expect([landed.error, landed.text.endsWith(LAND_NEXT)]).toEqual([false, true])
+    expect(run.lines(root).filter((line) => line.kind === "BatchLanded").map((line) => [...(line.units ?? [])].sort())).toEqual([["alpha", "beta"]])
+    // The batch's verdict, then gamma by the root's rift land: the same adoption, checked and recorded alike.
+    yield* run.probe(root, "subagent", { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: accepted ${FINDINGS}`, background: true })
+    yield* run.has(root, (line) => line.kind === "VerifierEnded")
+    const viaRift = yield* run.probe(root, "rift", { action: "land", rifts: [{ path: gamma, unit: "gamma" }] })
+    expect([viaRift.error, viaRift.text.startsWith(aliasLine("land"))]).toEqual([false, true])
+    expect(run.lines(root).filter((line) => line.kind === "UnitAdopted").map((line) => line.unit)).toEqual(["alpha", "gamma"])
+    expect(run.lines(root).filter((line) => line.kind === "BatchLanded").map((line) => [...(line.units ?? [])].sort())).toEqual([["alpha", "beta"], ["gamma"]])
+  }),
+)
+
 // ── Model-based ──
 
 /** The commands of one seed's run: within the file's CPU budget (sim/seed.ts `BUDGET_MS`) at 20 seeds, on three worlds. */

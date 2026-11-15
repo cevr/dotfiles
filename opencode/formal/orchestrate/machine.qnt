@@ -139,7 +139,14 @@ module machine {
   pure def verdictPending(s: Machine): bool =
     s.verifierOn or s.unverified != Set() or unitsIn(s, Set("landed", "verify")) != Set()
 
-  /** machine.ts `decide` for `Land`: the first rule it breaks, "" when it passes. */
+  /**
+   * machine.ts `adopteesOf` and `UnitAdopted`: a land's `{ path, unit }` of a unit the machine does not hold adopts
+   * it, ready, before the rules are read (every land here names its Rifts so). A refused land adopts nothing.
+   */
+  pure def adopted(s: Machine, rifts: Set[str]): Machine =
+    { ...s, units: rifts.fold(s.units, (acc, u) => if (acc.keys().contains(u)) acc else acc.put(u, { state: "ready", said: "" })) }
+
+  /** machine.ts `decide` for `Land`, on the state its adoptions make: the first rule it breaks, "" when it passes. */
   pure def landRule(s: Machine, rifts: Set[str]): str = {
     val lands = named(s, rifts)
     if (heldOf(s, rifts) == Set()) ""
@@ -463,18 +470,21 @@ module machine {
    * the tool. Unless `free`, the root lands only units whose implementor handed back (`ready`, or stopped: the
    * land is the root's word that it is ready). A free root also lands a Rift no implementor of the run worked
    * in, a unit still implementing, one landed already, or one it dropped: finding F2 (`stepLandAny`).
-   * With `tool`, the land is checked by the plugin before the machine decides it: a `{ path, unit }` of a unit the
-   * machine does not hold is refused (mods/orchestrate/tools.ts `unheldRefusal`, in the land's execute.before hook,
-   * for the `orchestrate` tool and the `rift` tool alike).
+   * Either tool's `{ path, unit }` of a unit the machine does not hold adopts it (`adopted`), ready, and the land is
+   * checked on that state. With `tool`, the root may also name its units bare (the `orchestrate` land's names): a
+   * bare name of a unit the machine does not hold is refused before the machine (mods/orchestrate/tools.ts
+   * `riftOfUnit`), so such a land names only held units.
    */
   action landCalled(free: bool, tool: bool): bool = {
     nondet rifts = UNITS.powerset().exclude(Set(Set())).oneOf()
-    val rule = landRule(m, rifts)
+    nondet bare = Set(true, false).oneOf()
+    val seen = adopted(m, rifts)
+    val rule = landRule(seen, rifts)
     all {
       calls.size() < 2,
       free or rifts.forall(u => Set("ready", "stopped").contains(g.status.get(u))),
-      not(tool) or rifts.subseteq(m.units.keys()),
-      fed({ ...NO_CMD, kind: "Land", units: rifts }, rule, m, g),
+      not(tool and bare) or rifts.subseteq(m.units.keys()),
+      fed({ ...NO_CMD, kind: "Land", units: rifts }, rule, seen, g),
       calls' = if (rule == "") calls.union(Set({ rifts: rifts, broke: breakOf(g, rifts) })) else calls,
       landing' = landing, landingOn' = landingOn, batchCount' = batchCount,
     }

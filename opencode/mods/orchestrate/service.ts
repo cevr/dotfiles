@@ -299,7 +299,14 @@ export class Remind extends Context.Service<
  */
 export type FindingsRead = { readonly _tag: "Read"; readonly findings: ReadonlyArray<string> } | { readonly _tag: "Unread"; readonly why: string }
 
-export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<FindingsRead> }>()("dotfiles-opencode/orchestrate/Findings") {}
+export class Findings extends Context.Service<
+  Findings,
+  {
+    readonly read: (report: string) => Effect.Effect<FindingsRead>
+    /** The earlier verdicts' findings a verdict's report marks closed by another batch (`closed by batch-<k>`, `folded and closed`). */
+    readonly closed: (report: string) => Effect.Effect<ReadonlyArray<string>>
+  }
+>()("dotfiles-opencode/orchestrate/Findings") {}
 
 /**
  * The branch checked out in a Rift (a land's entry by path, `~/` for home): what names its unit

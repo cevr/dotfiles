@@ -90,6 +90,8 @@ interface World {
   readonly alive?: Readonly<Record<string, boolean>>
   /** The findings each verifier report holds, by its path, read at each read (a test may add one later); a report not here does not read. */
   readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
+  /** The findings each report marks closed by another batch, by its path. */
+  readonly closed?: Readonly<Record<string, ReadonlyArray<string>>>
   /** The branch checked out at each Rift path; a path not here reads none. */
   readonly branches?: Readonly<Record<string, string>>
   /** The verified targets the plugin asked to record. */
@@ -195,6 +197,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
             const found = world.findings?.[report]
             return found === undefined ? { _tag: "Unread", why: `the report ${report} does not read` } : { _tag: "Read", findings: found }
           }),
+        closed: (report: string) => Effect.succeed(world.closed?.[report] ?? []),
       }),
       Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
       Layer.succeed(Branches, { of: (path: string) => Effect.succeed(world.branches?.[path.replace(/\/+$/, "")]) }),
@@ -1947,18 +1950,24 @@ describe("the batch machine", () => {
       }),
     ))
 
-  test("F2: a rift land naming { path, unit } of a unit the machine does not hold is refused before the machine decides it; a Rift by its path alone is the root's own", () =>
+  test("land-adopt: a rift land in a root that runs units naming { path, unit } of a unit the machine does not hold adopts it and is checked as one of the batch; its record lands it", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
         yield* begin(plugin, implementor("alpha"), "ses_a")
         yield* plugin.idle("ses_a")
-        const unheld = yield* plugin.call("rift", "root", { action: "land", rifts: [{ path: "/r/zeta", unit: "zeta" }] })
-        expect(unheld.refused?.message).toContain("the machine holds no unit zeta")
-        const departing = yield* plugin.call("rift", "root", { action: "land", rifts: [{ path: "/r/zeta", unit: "zeta" }], departs: "the owner asked" })
-        expect(departing.refused?.message).toContain("the machine holds no unit zeta")
-        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "Departed" }))
+        // A Rift by its path alone is the root's own, as before.
         expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["/r/zeta"] })).refused).toBeUndefined()
+        // zeta alone leaves alpha out: refused, adopting nothing, naming the land that takes both.
+        const partial = yield* plugin.call("rift", "root", { action: "land", rifts: [{ path: "/r/zeta", unit: "zeta" }] })
+        expect(partial.refused?.message).toContain(RULES.LandPartial.words)
+        expect(partial.refused?.message).toContain('orchestrate({ action: "land", units: ["alpha", { unit: "zeta", path: "/r/zeta" }] })')
+        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "UnitAdopted" }))
+        const rifts = ["alpha", { path: "/r/zeta", unit: "zeta" }]
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitAdopted", unit: "zeta", rift: "/r/zeta" }))
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed 2 Rift(s) as one push" }] } })
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["alpha", "zeta"] })
       }),
     ))
 
@@ -2403,6 +2412,42 @@ describe("the batch machine", () => {
         yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
         yield* plugin.idle("ses_w")
         yield* eventually(() => expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }]))
+      }),
+    ))
+
+  test("land-adopt: a verdict whose report marks findings closed by another batch closes them in the ledger; the next land no longer counts them", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = {
+          ...steps({
+            ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
+            ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+            ses_c: { agent: "implementor", lastWords: "implementor gamma r1: ready x" },
+          }),
+          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: changes /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+          ses_w: { parentID: "root", agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
+        }
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          { sessions, findings: { "/run/batch-1-findings.md": ["alpha/M1", "alpha/M2"] }, closed: { "/run/batch-2-findings.md": ["alpha/M1", "alpha/M2"] } },
+        )
+        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* plugin.idle("ses_v")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        expect((yield* land(["beta"])).refused?.message).toContain(RULES.FindingUnfolded.words)
+        // batch-2's verifier stands in for beta's land by hand, and its report marks alpha's findings closed.
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        yield* plugin.idle("ses_w")
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-2", verdict: "accepted", closed: ["alpha/M1", "alpha/M2"] }))
+        yield* begin(plugin, implementor("gamma"), "ses_c")
+        yield* plugin.idle("ses_c")
+        expect((yield* land(["gamma"])).refused).toBeUndefined()
       }),
     ))
 
