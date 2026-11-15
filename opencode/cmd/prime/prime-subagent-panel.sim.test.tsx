@@ -35,7 +35,8 @@ const inside = (frame: ReadonlyArray<string>) => (frame[0] ?? "").includes(" ›
 /** The panel row that lists `title`: under the panel's header, past the subagent's own rows above the composer. */
 const rowOf = (frame: ReadonlyArray<string>, title: string) => {
   const header = frame.findIndex((line) => /^\s*┃\s+Subagents(\s|$)/.test(line))
-  return header < 0 ? -1 : frame.findIndex((line, y) => y > header && line.includes(title))
+  if (header < 0) return -1
+  return frame.findIndex((line, y) => y > header && line.includes(title))
 }
 /** The colour a panel row's title is drawn in: the selected row's differs from the others'. */
 const titleColor = (shot: Shot, title: string) => {
@@ -93,7 +94,8 @@ const play = (seed: number) => {
       yield* tui.until("parent", (frame) => !inside(frame) && has(ASK)(frame), 10_000)
       yield* save("parent")
       const shot = (name: Name) => shots.get(name) ?? { text: [], frame: { lines: [] } }
-      return { second, shots: Object.fromEntries(NAMES.map((name) => [name, shot(name)])) as Record<Name, Shot> }
+      const taken = { entered: shot("entered"), panel: shot("panel"), moved: shot("moved"), closed: shot("closed"), parent: shot("parent") } satisfies Record<Name, Shot>
+      return { second, shots: taken }
     }),
   )
 }
