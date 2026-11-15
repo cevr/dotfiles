@@ -2,7 +2,7 @@ import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Sch
 import { describeGate, Gate, gate, rootsOf } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
-import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
+import { Builder, Builds, type CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
 import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
@@ -61,6 +61,7 @@ export const updaterLayer = (policy: Policy) =>
       const rejections = yield* Rejections
       const configs = yield* Configs
       const log = yield* Log
+      const notice = yield* Notice
       const heartbeat = yield* Heartbeat
       const runs = yield* Ref.make(IDLE)
       const handedOff = yield* Ref.make(Option.none<Target>())
@@ -69,6 +70,30 @@ export const updaterLayer = (policy: Policy) =>
         rejections
           .write({ dotfiles: target.dotfiles, fork: target.fork, step, cause })
           .pipe(Effect.andThen(log.line(`update: ${shortTarget(target)} failed at ${step}; it is not tried again until another target comes`)))
+
+      /**
+       * The target whose checkout could not move, for its notice: shown once per target, then only
+       * logged on each check that tries again, and cleared once a move goes through.
+       */
+      const stuckOn = yield* Ref.make(Option.none<string>())
+
+      /** A move git refused: no rejection, a log line on each try, the notice once; the next check tries again. */
+      const held = (target: Target, stuck: CheckoutStuck) =>
+        Effect.gen(function* () {
+          yield* log.line(`update: ${shortTarget(target)}: the dotfiles checkout could not move (${stuck.step}: ${stuck.message}); nothing changed, the next check tries again`)
+          const shown = yield* Ref.getAndSet(stuckOn, Option.some(target.dotfiles))
+          if (Option.exists(shown, (each) => each === target.dotfiles)) return
+          // The line that names the files in the way when there is one, else what git said first.
+          const said = stuck.message.split("\n")
+          const why = Option.getOrElse(Option.orElse(Arr.findFirst(said, (line) => line.startsWith("untracked files")), () => Arr.head(said)), () => stuck.step)
+          yield* notice.show(`update ${shortTarget(target)} is held: the dotfiles checkout could not move: ${why}`)
+        })
+
+      /** A move that went through clears the notice a refused one showed. */
+      const release = Effect.gen(function* () {
+        if (Option.isNone(yield* Ref.getAndSet(stuckOn, Option.none()))) return
+        yield* notice.clear
+      })
 
       const waitForGate = Effect.fn("Updater.waitForGate")(function* (target: Target) {
         const since = yield* Clock.currentTimeMillis
@@ -107,7 +132,13 @@ export const updaterLayer = (policy: Policy) =>
       const install = Effect.fn("Updater.install")(function* (target: Target) {
         const prior = yield* source.head
         yield* log.line(`update: ${shortTarget(target)}; advancing the dotfiles from ${prior.slice(0, 10)}`)
-        yield* source.advance(target.dotfiles).pipe(Effect.tapError((failed) => reject(target, "advance", failed.message)))
+        const moved = yield* source.advance(target.dotfiles).pipe(
+          Effect.as(true),
+          Effect.tapErrorTag("UpdateFailed", (failed) => reject(target, "advance", failed.message)),
+          Effect.catchTag("CheckoutStuck", (stuck) => held(target, stuck).pipe(Effect.as(false))),
+        )
+        if (!moved) return false
+        yield* release
         yield* configs.keep
         yield* builder.stage(target).pipe(
           Effect.tapError((failed) =>
@@ -196,7 +227,7 @@ const pruneBuilds = Effect.gen(function* () {
 })
 
 /** A step that failed on the restart path, as the health it leaves: sick, for good. */
-const failedStep = (step: string) => (failed: UpdateFailed) => Health.Sick({ plugin: step, cause: failed.message, final: true })
+const failedStep = (step: string) => (failed: UpdateFailed | CheckoutStuck) => Health.Sick({ plugin: step, cause: failed.message, final: true })
 
 /**
  * The handoff: install the staged build, restart the service, read its health, and recover. A sick

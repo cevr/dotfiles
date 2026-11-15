@@ -190,6 +190,49 @@ describe("the advance step over real git and bun", () => {
     60_000,
   )
 
+  for (const mode of ["ff", "reset"] as const) {
+    test(
+      `U1 (${mode}): an untracked copy of a file the target adds is the target's own and goes; an untracked file with other content refuses the move as CheckoutStuck, naming it, and nothing moves`,
+      () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const { root, a } = yield* scratch
+            const NOTE = "# The note the target adds\n"
+            yield* files(root, [
+              ["opencode/package.json", EMPTY_PACKAGE],
+              ["docs/research/note.md", NOTE],
+            ])
+            sh(root, ["git", "add", "-A"])
+            sh(root, ["git", "commit", "-qm", "C"])
+            const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+            sh(root, ["git", "reset", "-q", "--hard", a])
+            // The copy that came ahead of the commit, by hand or by Syncthing, byte for byte.
+            yield* files(root, [["docs/research/note.md", NOTE]])
+            expect(Exit.isSuccess(yield* advance(root, mode, c))).toBe(true)
+            expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(c)
+            expect(sh(root, ["git", "status", "--porcelain"]).out).toBe("")
+            sh(root, ["git", "reset", "-q", "--hard", a])
+            // Another file at that path: the owner's, so it stays, and the move waits for him.
+            const OTHER = "# My own draft\n"
+            yield* files(root, [["docs/research/note.md", OTHER]])
+            const stuck = yield* advance(root, mode, c)
+            if (mode === "reset") {
+              // A reset follows the commit whatever the tree holds: the commit's file wins, as it always has there.
+              expect(Exit.isSuccess(stuck)).toBe(true)
+            } else {
+              const error = Exit.findErrorOption(stuck)
+              expect(Option.map(error, (each) => each._tag)).toEqual(Option.some("CheckoutStuck"))
+              expect(Option.exists(error, (each) => each.message.includes("untracked files the target tracks with other content: docs/research/note.md"))).toBe(true)
+              expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
+              expect(yield* Effect.promise(() => file(`${root}/docs/research/note.md`).text())).toBe(OTHER)
+            }
+            spawnSync(["rm", "-rf", root])
+          }),
+        ),
+      60_000,
+    )
+  }
+
   test("M1: each host runs its own commands script: the workbox's on Linux, the Mac's on macOS, none elsewhere", () => {
     expect(SourceLive.binScript("linux")).toEqual(Option.some(SourceLive.WORKBOX_BIN))
     expect(SourceLive.binScript("darwin")).toEqual(Option.some(SourceLive.MAC_BIN))

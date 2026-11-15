@@ -1,7 +1,7 @@
 import { file } from "bun"
 import { Effect, Layer, Option } from "effect"
 import { run, spawned, type Place } from "../process/run.ts"
-import { Source, UpdateFailed } from "../service.ts"
+import { CheckoutStuck, Source, UpdateFailed } from "../service.ts"
 import { targetOfTag, VERIFIED_REF } from "../target.ts"
 
 /**
@@ -124,9 +124,45 @@ export const layer = (checkout: Checkout) => {
   /** The dependencies, then the host's commands: what a move of the checkout installs. */
   const installMoved = install.pipe(Effect.andThen(scripts))
 
+  /**
+   * The untracked files `commit` tracks: one with the commit's content is the commit's own file (a
+   * copy that came ahead of it, by hand or by Syncthing) and goes, so git does not refuse the move
+   * over it; one with other content stays, and is answered for the refusal's message.
+   */
+  const untrackedAhead = (commit: string) =>
+    Effect.gen(function* () {
+      const untracked = lines(yield* git("list the untracked files", "ls-files", "--others", "--exclude-standard")).filter((path) => !kept(path))
+      if (untracked.length === 0) return []
+      const tracked = new Set(lines(yield* git("list the commit's files", "ls-tree", "-r", "--name-only", commit)))
+      const ahead = untracked.filter((path) => tracked.has(path))
+      const same = yield* Effect.filter(ahead, (path) =>
+        Effect.all([git("hash an untracked file", "hash-object", "--", path), git("read the commit's file", "rev-parse", `${commit}:${path}`)]).pipe(
+          Effect.map(([here, there]) => here.trim() === there.trim()),
+        ),
+      )
+      yield* Effect.forEach(same, (path) => remove("delete an untracked copy of the commit's file", path), { discard: true })
+      return ahead.filter((path) => !same.includes(path))
+    })
+
+  /** The move to `commit`, its refusal `CheckoutStuck`, naming each untracked file in the way. */
+  const moveForward = (commit: string) =>
+    untrackedAhead(commit).pipe(
+      Effect.mapError((failed) => new CheckoutStuck({ step: failed.step, message: failed.message })),
+      Effect.flatMap((differing) =>
+        move(commit).pipe(
+          Effect.mapError((failed) =>
+            new CheckoutStuck({
+              step: failed.step,
+              message: [failed.message, ...(differing.length > 0 ? [`untracked files the target tracks with other content: ${differing.join(", ")}`] : [])].join("\n"),
+            }),
+          ),
+        ),
+      ),
+    )
+
   const advance = Effect.fn("Source.advance")(function* (commit: string) {
     const prior = yield* head
-    yield* move(commit)
+    yield* moveForward(commit)
     yield* installMoved.pipe(
       Effect.catchTag("UpdateFailed", (failed) =>
         move(prior).pipe(

@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/effect"
 import * as Configs from "@dotfiles/opencode-update/filestore/configs"
 import * as Heartbeat from "@dotfiles/opencode-update/filestore/heartbeat"
 import * as Log from "@dotfiles/opencode-update/filestore/log"
+import * as Notice from "@dotfiles/opencode-update/filestore/notice"
 import * as Records from "@dotfiles/opencode-update/filestore/records"
 import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Source from "@dotfiles/opencode-update/git/source"
@@ -35,6 +36,7 @@ export const live = (ctx: Plugin.Context, options: Options, env: Readonly<global
     Rejections.layer(files(options).rejected),
     Configs.layer({ config: options.config, kept: files(options).kept }),
     Log.layer(files(options).log, options.host),
+    Notice.layer(options.notice),
     Heartbeat.layer(files(options).checked),
   )
 
