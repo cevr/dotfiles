@@ -25,11 +25,11 @@ import * as World from "../../sim/world.ts"
 
 /**
  * Seeds a wider sweep found failing (pool-seeds), replayed on every run: 1 to 500 in round 1; 1 to 1000 in round 2,
- * every login refused (522 and on).
+ * every login refused (522 and on); a refused login whose last trade, another holder's, met a 429 (39066929).
  */
 const PAST = [
   27, 50, 126, 130, 137, 141, 150, 160, 174, 216, 220, 223, 225, 241, 245, 251, 296, 300, 318, 327, 332, 346, 353, 388, 393, 437, 452, 483, 492,
-  522, 582, 677, 956, 981, 994,
+  522, 582, 677, 956, 981, 994, 39066929,
 ]
 
 const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
@@ -280,10 +280,14 @@ const property = (seed: number, expect: Seed.Seeded["expect"], commands: Readonl
       }
     }
     // The final turn, every limit past and the token endpoint answering, is answered in every session. Only when the
-    // endpoint refused the refresh token of every login (its last trade a 400: it rotated none since) may it end in
-    // the store's sign-in instead.
+    // endpoint refused the refresh token of every login (a 400, and no rotation since) may it end in the store's
+    // sign-in instead. A trade after the 400 that rotated nothing (a 429 or 503 another holder met) leaves it refused.
     const tokenTrades = world.provider().received().filter((request) => request.path === "/v1/oauth/token")
-    const lost = LOGINS.every((login) => tokenTrades.findLast((request) => request.account === login)?.status === 400)
+    const lost = LOGINS.every((login) => {
+      const own = tokenTrades.filter((request) => request.account === login)
+      const refused = own.findLastIndex((request) => request.status === 400)
+      return refused >= 0 && !own.slice(refused + 1).some((request) => request.status === 200)
+    })
     for (const session of sessions) {
       const messages = world.messages(session)
       const final = messages.slice(messages.findLastIndex((message) => message.type === "user") + 1)
