@@ -467,6 +467,7 @@ if (import.meta.main) {
     pluginDir("queue"),
     pluginDir("git"),
     pluginDir("idle-compact"),
+    pluginDir("auto-title"),
     mailEntry(pluginDir("mail"), { host: hostname(), tailscale: await tailscaleAddress() }),
     pluginDir("questions"),
     pluginDir("wake"),
