@@ -107,16 +107,31 @@ App.effectTest(
   TIMEOUT_MS,
 )
 
-// The client drops an event stream silent for 45 s and reconnects; the real server's heartbeat keeps a quiet
-// one open. A seed quiet past 45 s of virtual time keeps its stream: `settle` fails on a drop or a reopen.
+/** Whether the frame draws the reply to the prompt that ends in `word`. */
+const draws = (text: ReadonlyArray<string>, word: string) => text.some((line) => line.includes(`About the ${word}: it is done`))
+
+// The client drops an event stream silent for 45 s and reconnects, and a reconnect draws a blank body; the real
+// server's heartbeat keeps a quiet one open. A seed quiet past 45 s of virtual time keeps its stream (`settle`
+// fails on a drop or a reopen) and its body: every frame drawn over the quiet stretch, and after the next turn,
+// still draws the turn drawn before it.
 App.effectTest(
-  "a stream quiet past the client's 45 s idle watchdog stays open: the harness sends the server's heartbeat",
+  "a stream quiet past the client's 45 s idle watchdog stays open and its body stays drawn: the harness sends the server's heartbeat",
   App.seed(BOOT, { key: "quiet", seed: 1, model }, (tui) =>
     Effect.gen(function* () {
-      yield* tui.advance(50_000)
       yield* tui.type("Look at the docs")
       yield* tui.press({ name: "enter" })
-      yield* tui.until("the reply", (text) => text.some((line) => line.includes("it is done")))
+      yield* tui.until("the first reply", (text) => draws(text, "docs"))
+      const from = tui.elapsed()
+      const [, quiet] = yield* tui.record(tui.advance(50_000))
+      // A reconnect fetches the session's messages again: a request the quiet stretch makes only by reconnecting.
+      const refetched = tui
+        .trace()
+        .filter((entry) => entry.kind === "request" && entry.at >= from && entry.value.startsWith(`GET /api/session/${tui.sessionID}/message`))
+        .map((entry) => `${entry.at} ${entry.value}`)
+      yield* tui.type("Look at the tests")
+      yield* tui.press({ name: "enter" })
+      yield* tui.until("the second reply", (text) => draws(text, "tests"))
+      expect({ refetched, blank: quiet.filter((frame) => !draws(frame, "docs")), afterNext: draws(tui.text(), "docs") }).toEqual({ refetched: [], blank: [], afterNext: true })
     }),
   ),
   TIMEOUT_MS,
