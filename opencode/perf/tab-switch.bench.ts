@@ -70,6 +70,8 @@ export default bench({
         cols: 160,
         rows: 45,
         unset: ["HERDR_*", "OPENCODE_*"],
+        // The tab strip (row 0): its unread tabs' pulse dots blink, so a run's start may catch either phase.
+        ignore: [[0, 0, 160, 1]],
         env: {
           OPENCODE_PASSWORD: password,
           OPENCODE_TUI_CHANNEL: "bench",
@@ -102,7 +104,7 @@ export default bench({
     // Scrubbed words read as runs of x: the transcript is on screen.
     await page.waitFor("text=xxxxx", { timeout: 120_000 })
     await page.idle()
-    for (const _ of tabs) await page.press("Alt+ArrowDown", { until: "idle", timeout: 30_000 })
+    for (const _ of tabs) await page.press("Alt+ArrowDown", { until: ["frame", "idle"], timeout: 30_000 })
   },
   cases: {
     "switch tabs": {
@@ -112,7 +114,9 @@ export default bench({
       metrics: ["cpu.work", "tty.settle.p50", "tty.frames", "tty.updates"],
       timeout: 120_000,
       run: async ({ page }) => {
-        for (const _ of tabs) await page.press("Alt+ArrowDown", { until: "idle", timeout: 30_000 })
+        // The switch's frame first, then still: under load "idle" alone can end before the first frame,
+        // and the next press would outrun it.
+        for (const _ of tabs) await page.press("Alt+ArrowDown", { until: ["frame", "idle"], timeout: 30_000 })
       },
     },
   },
