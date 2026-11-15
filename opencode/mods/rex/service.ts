@@ -39,6 +39,8 @@ export class Rex extends Context.Service<
     readonly split: (split: Split) => Effect.Effect<string, RexFailed>
     /** Closes a block; one already gone is no failure. */
     readonly close: (session: string, block: string) => Effect.Effect<void, RexFailed>
+    /** Whether a terminal block's program still runs: a pane whose program ended stays open, showing it exited. */
+    readonly running: (session: string, block: string) => Effect.Effect<boolean, RexFailed>
   }
 >()("dotfiles-opencode/rex/Rex") {}
 

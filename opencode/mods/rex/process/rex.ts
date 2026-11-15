@@ -2,13 +2,17 @@
 // and `rex block close`, each with the session named (`-s`), so the
 // caller's own REX_SESSION never picks it. A call that exits non-zero or
 // prints what does not decode is RexFailed with Rex's own words.
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { Rex, RexFailed } from "../service.ts"
 
 const Listing = Schema.Struct({
   blocks: Schema.Array(Schema.Struct({ block_id: Schema.String, label: Schema.optional(Schema.String) })),
 })
 const decodeListing = Schema.decodeUnknownEffect(Schema.fromJsonString(Listing))
+
+/** A terminal's `process` method: `child` while its program runs, left out (or null) once it exited. */
+const Process = Schema.Struct({ child: Schema.optional(Schema.NullOr(Schema.Struct({ pid: Schema.Number }))) })
+const decodeProcess = Schema.decodeUnknownEffect(Schema.fromJsonString(Process))
 
 const Made = Schema.Struct({ block_ids: Schema.NonEmptyArray(Schema.String) })
 const decodeMade = Schema.decodeUnknownEffect(Schema.fromJsonString(Made))
@@ -88,6 +92,17 @@ export const layer = (bin = "rex") =>
           // A block already gone (closed by another call, or when its program ended) is what was asked.
           const left = yield* blocks(session)
           if (left.some((held) => held.id === block)) return yield* new RexFailed({ command: "block close", message: said(closed) })
+        }),
+        running: Effect.fn("ProcessRex.running")(function* (session: string, block: string) {
+          const asked = yield* run(["block", "call", "-s", session, "-b", block, "process"])
+          if (asked.code !== 0) {
+            // A block already gone (closed by another call) runs nothing.
+            const left = yield* blocks(session)
+            if (left.some((held) => held.id === block)) return yield* new RexFailed({ command: "block call", message: said(asked) })
+            return false
+          }
+          const answer = yield* decodeProcess(asked.out).pipe(Effect.mapError(undecodable("block call process")))
+          return Option.isSome(Option.fromNullishOr(answer.child))
         }),
       })
   })

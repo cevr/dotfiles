@@ -15,15 +15,26 @@ const closeAll = Effect.fn("Showcase.closeAll")(function* (session: string, bloc
   yield* Effect.forEach(blocks, (block) => rex.close(session, block), { discard: true })
 })
 
+/** The showcase `arrange` keeps when its viewer still runs; one whose viewer ended is closed, to be made again. */
+const live = Effect.fn("Showcase.live")(function* (session: string, keep: Option.Option<string>) {
+  const rex = yield* Rex
+  if (Option.isNone(keep)) return keep
+  if (yield* rex.running(session, keep.value)) return keep
+  yield* rex.close(session, keep.value)
+  return Option.none<string>()
+})
+
 /**
  * The showcase pane of `pane`'s session: the one already there (the oldest,
- * any other closed), or a new one beside `pane` running `viewer`. Its block id.
+ * any other closed) while its viewer runs, or a new one beside `pane`
+ * running `viewer`. Its block id.
  */
 export const ensureShowcase = Effect.fn("Showcase.ensure")(function* (pane: Pane, viewer: ReadonlyArray<string>) {
   const rex = yield* Rex
   const before = arrange(yield* rex.blocks(pane.session), pane.block)
   yield* closeAll(pane.session, before.close)
-  if (Option.isSome(before.keep)) return before.keep.value
+  const kept = yield* live(pane.session, before.keep)
+  if (Option.isSome(kept)) return kept.value
   const made = yield* rex.split({ session: pane.session, beside: pane.block, label: LABEL, command: viewer })
   const after = arrange(yield* rex.blocks(pane.session), pane.block)
   yield* closeAll(pane.session, after.close)

@@ -2,8 +2,9 @@
 // several at once interleaved at every call to Rex, from any pane of any
 // session, and whatever the user does between them (closing a showcase,
 // labeling another pane `showcase`), each session a call came from ends with
-// exactly one showcase pane, every other session's panes are as they were,
-// and no caller's pane is ever closed. Seeded; a failure names its seed.
+// exactly one showcase pane, its viewer running (one that exited is made
+// again), every other session's panes are as they were, and no caller's
+// pane is ever closed. Seeded; a failure names its seed.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Data, Effect, Layer, Option, Ref } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
@@ -37,6 +38,7 @@ interface Call {
 type Step = Data.TaggedEnum<{
   Calls: { readonly calls: ReadonlyArray<Call> }
   CloseShowcase: { readonly session: string }
+  ViewerExits: { readonly session: string }
   LabelShowcase: { readonly block: string }
 }>
 const Step = Data.taggedEnum<Step>()
@@ -67,7 +69,8 @@ const pick = <A>(draw: () => number, items: ReadonlyArray<A>): A => items[Math.f
 const stepOf = (draw: () => number, world: MemoryRex.World): Step => {
   const roll = draw()
   if (roll >= 0.85) return Step.LabelShowcase({ block: pick(draw, world.blocks).id })
-  if (roll >= 0.7) return Step.CloseShowcase({ session: pick(draw, SESSIONS) })
+  if (roll >= 0.75) return Step.CloseShowcase({ session: pick(draw, SESSIONS) })
+  if (roll >= 0.65) return Step.ViewerExits({ session: pick(draw, SESSIONS) })
   const call = (): Call => {
     const session = pick(draw, SESSIONS)
     return { pane: { session, block: pick(draw, panesIn(world, session)).id }, kind: pick(draw, ["image", "tally"] as const) }
@@ -88,6 +91,13 @@ const closeShowcase = (rex: Ref.Ref<MemoryRex.World>, session: string) =>
     return { ...now, blocks: now.blocks.filter((block) => Option.match(gone, { onNone: () => true, onSome: (held) => held.id !== block.id })) }
   })
 
+/** The viewer of a session's oldest showcase exits; Rex keeps its pane open, showing it exited. */
+const viewerExits = (rex: Ref.Ref<MemoryRex.World>, session: string) =>
+  Ref.update(rex, (now) => {
+    const ended = Arr.head(showcasesIn(now, session))
+    return { ...now, blocks: now.blocks.map((block) => Option.match(Option.filter(ended, (held) => held.id === block.id), { onNone: () => block, onSome: () => ({ ...block, exited: true }) })) }
+  })
+
 /** The user labels a pane `showcase`, unless it is the last plain pane of its session: a session keeps a pane to call from. */
 const labelShowcase = (rex: Ref.Ref<MemoryRex.World>, id: string) =>
   Ref.update(rex, (now) => {
@@ -105,7 +115,8 @@ const calls = (run: Seeded, step: number, batch: ReadonlyArray<Call>) =>
     const called = new Set(batch.map((call) => call.pane.session))
     for (const session of SESSIONS) {
       const where = `seed ${run.seed}, step ${step}, ${session}`
-      if (called.has(session)) expect({ where, showcases: showcasesIn(after, session).length }).toEqual({ where, showcases: 1 })
+      if (called.has(session))
+        expect({ where, showcases: showcasesIn(after, session).map((block) => block.exited === true) }).toEqual({ where, showcases: [false] })
       else expect({ where, blocks: blocksIn(after, session) }).toEqual({ where, blocks: blocksIn(before, session) })
     }
     for (const call of batch) expect({ where: `seed ${run.seed}, step ${step}`, kept: after.blocks.some((block) => block.id === call.pane.block) }).toMatchObject({ kept: true })
@@ -120,6 +131,7 @@ const play = (run: Seeded) =>
         Step.$match(stepOf(run.draw, world), {
           Calls: ({ calls: batch }) => calls(run, step, batch),
           CloseShowcase: ({ session }) => closeShowcase(run.rex, session),
+          ViewerExits: ({ session }) => viewerExits(run.rex, session),
           LabelShowcase: ({ block }) => labelShowcase(run.rex, block),
         }),
       ),

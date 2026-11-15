@@ -74,6 +74,26 @@ describe("Rex over its tool", () => {
   )
 
   effectTest(
+    "a block runs while its terminal has a child, not once its program exited, nor once it is gone",
+    Effect.gen(function* () {
+      const rex = yield* Rex
+      expect(yield* rex.running("session:a", "block:2")).toBe(true)
+      expect(yield* rex.running("session:a", "block:3")).toBe(false)
+      expect(yield* called).toEqual(["block call -s session:a -b block:2 process", "block call -s session:a -b block:3 process"])
+    }).pipe(Effect.provide(fake("ok"))),
+    10_000,
+  )
+
+  effectTest(
+    "a block gone before its process is asked runs nothing",
+    Effect.gen(function* () {
+      const rex = yield* Rex
+      expect(yield* rex.running("session:a", "block:2")).toBe(false)
+    }).pipe(Effect.provide(fake("gone"))),
+    10_000,
+  )
+
+  effectTest(
     "a failing tool is RexFailed with its words",
     Effect.gen(function* () {
       const rex = yield* Rex

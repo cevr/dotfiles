@@ -10,6 +10,8 @@ export interface Held extends Block {
   readonly session: string
   /** The program a split started in it; none for a block the world began with. */
   readonly command?: ReadonlyArray<string>
+  /** Whether its program has ended, the pane left open showing it exited. */
+  readonly exited?: boolean
 }
 
 /** The memory Rex's state: every block, and the last id it gave. */
@@ -30,7 +32,7 @@ export const world = (blocks: ReadonlyArray<Omit<Held, "id">>): World => ({
 /**
  * The Rex over `state`. `pause()` is how many times a call yields before it
  * reads or changes the world; a split beside a block that is not in the
- * session fails, as Rex refuses it.
+ * session fails, as Rex refuses it; a block gone or exited runs nothing.
  */
 export const layer = (state: Ref.Ref<World>, pause: () => number = () => 0) => {
   const wait = Effect.suspend(() => Effect.forEach(Array.from({ length: Math.max(0, pause()) }), () => Effect.yieldNow, { discard: true }))
@@ -54,6 +56,11 @@ export const layer = (state: Ref.Ref<World>, pause: () => number = () => 0) => {
       close: Effect.fn("MemoryRex.close")(function* (session: string, block: string) {
         yield* wait
         yield* Ref.update(state, (now) => ({ ...now, blocks: now.blocks.filter((held) => !(held.session === session && held.id === block)) }))
+      }),
+      running: Effect.fn("MemoryRex.running")(function* (session: string, block: string) {
+        yield* wait
+        const now = yield* Ref.get(state)
+        return now.blocks.some((held) => held.session === session && held.id === block && held.exited !== true)
       }),
     }),
   )

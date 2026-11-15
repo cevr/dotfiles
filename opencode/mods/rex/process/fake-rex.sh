@@ -4,7 +4,8 @@
 #   ok        block ls lists a shell, a showcase and an unlabeled block; split makes block:new; close succeeds
 #   fail      every call exits 3 with "no such session" on stderr
 #   garbage   every call prints what is not JSON
-#   gone      close exits 1, and block ls lists only the shell
+#             block call process: block:2's program runs, any other block's exited
+#   gone      close and block call exit 1, and block ls lists only the shell
 printf '%s\n' "$*" >> "$FAKE_REX_LOG"
 case "$FAKE_REX_MODE" in
   fail) echo "no such session" >&2; exit 3 ;;
@@ -20,6 +21,14 @@ case "$1 $2" in
   "block close")
     [ "$FAKE_REX_MODE" = gone ] && exit 1
     exit 0 ;;
+  "block call")
+    [ "$FAKE_REX_MODE" = gone ] && exit 1
+    # block:2 runs its program; any other block's program exited.
+    if [ "$6" = block:2 ]; then
+      echo '{"last_exit":null,"child":{"pid":42,"name":"bun"},"home":"/home/x"}'
+    else
+      echo '{"last_exit":{"exit_code":127,"error":"exit status 127"},"home":"/home/x"}'
+    fi ;;
   split*) echo '{"anchor_id":"block:1","block_ids":["block:new"],"split_ids":["split:1"],"revision":4}' ;;
   *) echo "unknown: $1 $2" >&2; exit 9 ;;
 esac
