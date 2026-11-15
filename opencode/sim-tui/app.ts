@@ -80,6 +80,13 @@ const UNTIL_MS = 15_000
 const LOBBY_MS = 6_000
 /** The virtual time no seed reaches, and the shortest timer the harness never lets fire (`capped`). */
 const LONG_MS = 60_000
+/**
+ * The real server's event-stream heartbeat (the fork's packages/server/src/handlers/event.ts): a
+ * comment every 15 s, so the client's 45 s idle watchdog never drops a quiet stream. One app lives
+ * through many seeds, so the fake time it sees adds up past 45 s within a process.
+ */
+const HEARTBEAT_MS = 15_000
+const HEARTBEAT = ": heartbeat\n\n"
 
 export class SimTuiError extends Data.TaggedError("SimTuiError")<{ readonly message: string }> {}
 const fail = (message: string) => Effect.fail(new SimTuiError({ message }))
@@ -160,6 +167,8 @@ interface Harness {
   recorded: Option.Option<Array<ReadonlyArray<string>>>
   /** The file's host dirs (`hold`), made when its app starts and removed by the file's last test (`shutdown`, `dropHost`) or the next start. */
   host: Option.Option<string>
+  /** The client's event streams (`stream`): how many it opened and dropped since its app started, and the open ones the heartbeat reaches. */
+  streams: { opened: number; dropped: number; readonly live: Set<ReadableStreamDefaultController<Uint8Array>> }
   release: () => void
 }
 const harness: Harness = {
@@ -173,6 +182,7 @@ const harness: Harness = {
   key: "",
   recorded: Option.none(),
   host: Option.none(),
+  streams: { opened: 0, dropped: 0, live: new Set() },
   release: () => {},
 }
 
@@ -263,6 +273,47 @@ const waiting = (app: Booted) => {
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"])
 
 /**
+ * The client's event stream as the harness serves it: the fixture's stream, byte for byte, which the
+ * heartbeat (`hold`) also writes to, counted when the client opens it and when it drops it (aborts
+ * its request), so `settle` fails on a reconnect no seed asked for.
+ */
+const stream = (request: Request, response: Response) => {
+  if (response.body === null) return response
+  const reader = response.body.getReader()
+  const streams = harness.streams
+  streams.opened += 1
+  const live = { controller: Option.none<ReadableStreamDefaultController<Uint8Array>>() }
+  const forget = () => Option.map(live.controller, (controller) => streams.live.delete(controller))
+  request.signal.addEventListener(
+    "abort",
+    () => {
+      streams.dropped += 1
+      forget()
+    },
+    { once: true },
+  )
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        live.controller = Option.some(controller)
+        streams.live.add(controller)
+      },
+      pull: (controller) =>
+        reader.read().then((next) => {
+          if (!next.done) return controller.enqueue(next.value)
+          forget()
+          controller.close()
+        }),
+      cancel: (reason) => {
+        forget()
+        return reader.cancel(reason)
+      },
+    }),
+    response,
+  )
+}
+
+/**
  * The TUI's client reaches the fixture's server in this process, not over a socket: a request to
  * a loopback host goes straight to the fixture's routes (`createFetch`, the same handler its
  * `Bun.serve` runs), so an answer and an event reach the client in turns of this process, never
@@ -275,7 +326,7 @@ const routed = (input: string | URL | Request, init?: RequestInit) => {
   if (Option.isNone(local)) return Effect.runPromise(Effect.succeed(new Response(`sim-tui serves loopback only, not ${url.host}`, { status: 502 })))
   // The event stream stays open for the app's life; every other answer is read whole here, so a
   // settle waits on it from the call to the last byte, and one pass more for the client to take it.
-  if (url.pathname === "/api/event") return local.value(request)
+  if (url.pathname === "/api/event") return Effect.runPromise(Effect.promise(() => local.value(request)).pipe(Effect.map((response) => stream(request, response))))
   harness.open += 1
   return Effect.runPromise(
     Effect.promise(() => local.value(request)).pipe(
@@ -339,6 +390,9 @@ const capped = (fake: typeof setTimeout): typeof setTimeout =>
  * What the harness holds while an app runs, taken once and given back by `release`: the fake
  * timers, the TUI clock, the in-process fetch, the held randomness and the highlighter.
  *
+ * - The event stream's heartbeat (`HEARTBEAT_MS`), on the fake timers, which the real server sends
+ *   and the double does not: without it the client's 45 s idle watchdog drops the stream mid-file.
+ *
  * - The host's dirs our plugins read (decider/tui-dirs.ts): HOME and the XDG base dirs, all under
  *   `host`, the file's own scratch, so no frame shows this machine's files (its daily's upstream reading).
  *
@@ -355,6 +409,10 @@ const hold = (clock: TuiClock.Clock, host: string) => {
     bag["tree-sitter-client"] = mock
   }
   jest.useFakeTimers()
+  // On the fake timers, as the real server's heartbeat runs on its clock: every open stream, written to as one.
+  const heartbeat = setInterval(() => {
+    for (const controller of harness.streams.live) controller.enqueue(new TextEncoder().encode(HEARTBEAT))
+  }, HEARTBEAT_MS)
   const untimed = wrap(globalThis, "setTimeout", capped)
   const unclock = TuiClock.install(clock)
   const undirs = TuiDirs.install(ConfigProvider.fromEnv({ env: hostEnv(host) }))
@@ -365,6 +423,7 @@ const hold = (clock: TuiClock.Clock, host: string) => {
     unfetch()
     harness.local = Option.none()
     untimed()
+    clearInterval(heartbeat)
     unclock()
     undirs()
     jest.useRealTimers()
@@ -420,6 +479,8 @@ const settleOn = (app: Booted) =>
       if (unserved.length > 0) return yield* fail(`the TUI asked the double for what it does not serve: ${unserved.join(", ")}`)
       const broken = app.current.broken()
       if (broken.length > 0) return yield* fail(`the double sent what the fork's schemas refuse: ${broken.join("; ")}`)
+      const { opened, dropped } = harness.streams
+      if (dropped > 0 || opened > 1) return yield* fail(`the client's event stream dropped and reconnected, which no seed asked for (opened ${opened}, dropped ${dropped} since the app started)`)
       harness.frame = capture(app.fixture)
       harness.key = styleKey(harness.frame)
       const busy = waiting(app)
@@ -491,6 +552,7 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   yield* dropHost
   const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
   harness.host = Option.some(host)
+  harness.streams = { opened: 0, dropped: 0, live: new Set() }
   hold(simClock((entry) => traced.trace.push(entry), () => traced.started), host)
   jest.setSystemTime(EPOCH)
   const lobby = Server.make({ draw: () => 0, now: TuiClock.system.now, model: lobbyModel })
