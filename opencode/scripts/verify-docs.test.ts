@@ -176,10 +176,26 @@ describe("the verify-opencode skill names only what the tree has", () => {
         .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
       const due = (path: string) => touched(features, [path]).map((feature) => feature.id).toSorted()
       // A change to owned.ts went to main with neither the herdr test nor the TUI tests run (cl-fu, M1).
-      expect(due("tests/owned.ts")).toEqual(["guard", "kernel", "mail", "orchestrate", "pool", "prime-panel", "queue", "wake-latch"])
+      expect(due("tests/owned.ts")).toEqual(["escape", "guard", "kernel", "mail", "orchestrate", "pool", "prime-panel", "queue", "wake-latch"])
       expect(due("tests/scratch.ts")).toEqual(due("tests/owned.ts"))
       const real = Option.getOrElse(Option.map(Arr.findFirst(features, (feature) => feature.id === "prime-panel"), (feature) => feature.real), (): ReadonlyArray<string> => [])
       expect(["tests/herdr.test.ts", "tests/tui-cpu.test.ts", "tests/tui-paint.test.ts"].filter((test) => !real.includes(test))).toEqual([])
+    }),
+  )
+
+  live("a change to the escape plugin or the herdr reporter makes the feature that runs their checks due (batch 2026-11-15co)", () =>
+    Effect.gen(function* () {
+      const features = (yield* docs)
+        .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
+        .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
+      const due = (path: string) => touched(features, [path]).map((feature) => feature.id).toSorted()
+      const real = (id: string) => Option.getOrElse(Option.map(Arr.findFirst(features, (feature) => feature.id === id), (feature) => feature.real), (): ReadonlyArray<string> => [])
+      // cmd/escape changed with none of the escape checks run: no feature's Code covered it (fu-small, co B1).
+      for (const path of ["cmd/escape/setup.ts", "cmd/escape/server.ts", "mods/escape/escape.ts", "scenarios/queue-merge.ts"]) expect(due(path)).toContain("escape")
+      const escapeChecks = ["tests/escape-send.test.ts", "tests/escape-states.test.ts", "tests/escape-subagent.test.ts", "tests/prime-escape.test.ts", "tests/queue-merge.test.ts"]
+      expect(escapeChecks.filter((test) => !real("escape").includes(test))).toEqual([])
+      for (const path of ["cmd/herdr/tui.tsx", "mods/herdr/report.ts"]) expect(due(path)).toEqual(["prime-panel"])
+      expect(real("prime-panel")).toContain("tests/herdr.test.ts")
     }),
   )
 
