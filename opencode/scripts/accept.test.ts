@@ -284,6 +284,20 @@ describe("the acceptance tiers over the real tree", () => {
     })
   })
 
+  test("tests/orchestrate.test.ts runs after the land, never in it: deep, so a land owes it; its key holds every source of mods/orchestrate and cmd/orchestrate, so a change there makes it due in the post-land deep run (accept:owed), loaded or not", async () => {
+    const workspace = await load()
+    const file = "tests/orchestrate.test.ts"
+    const reached = acceptReach(workspace, file)
+    const sources = workspace.files.filter((each) => /^(mods|cmd)\/orchestrate\//.test(each) && /\.tsx?$/.test(each) && !/\.test\.tsx?$/.test(each))
+    expect({ tier: tierOf(read(file)), serial: isSerial(read(file)), sources: sources.length > 20, unreached: sources.filter((each) => !reached.has(each)) }).toEqual({
+      tier: "deep",
+      // A loaded post-land run holds back only the one-at-a-time files.
+      serial: false,
+      sources: true,
+      unreached: [],
+    })
+  })
+
   test("every file allowed past the deep share exists, each with the unit that removes it: the list only shrinks", () => {
     expect(SLOW_DEEP.filter(([file, unit]) => !existsSync(join(ROOT, file)) || unit === "")).toEqual([])
   })
