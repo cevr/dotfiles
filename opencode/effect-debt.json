@@ -813,7 +813,7 @@
     "mods/work/memory/rifts.ts": {"effect/noNullish":8,"effect/noTernary":3},
     "mods/work/memory/session-directories.ts": {"effect/noNullish":2,"effect/noTernary":2},
     "mods/work/memory/workbox.ts": {"effect/noNullish":2,"effect/noTernary":2},
-    "mods/work/model.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":27,"effect/noRuntimeTypeof":1,"effect/noTernary":18,"effect/preferTaggedConstructors":1},
+    "mods/work/model.ts": {"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":26,"effect/noRuntimeTypeof":1,"effect/noTernary":17,"effect/preferTaggedConstructors":1},
     "mods/work/opencode/notices.test.ts": {"effect/noAsyncFunction":3,"effect/noEffectRunInTests":1,"effect/noNewError":1},
     "mods/work/opencode/notices.ts": {"effect/noUnsafeDictionaryType":1},
     "mods/work/opencode/session-directories.test.ts": {"effect/noNewError":1,"effect/noNullish":2,"effect/noTernary":2},

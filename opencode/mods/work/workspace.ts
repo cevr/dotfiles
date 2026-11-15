@@ -109,11 +109,11 @@ const some = (lines: ReadonlyArray<string>, limit = 10): string =>
 export const explainRefusal = (refusal: RemoveRefused): string => {
   switch (refusal._tag) {
     case "SourceKept":
-      return `${refusal.path} is a warm source, not a Rift made from one; the rift tool never removes a source.`
+      return `${refusal.path} is a warm source, not a workspace made from one; this tool never removes a source.`
     case "SessionInside":
       return `This session runs in ${refusal.directory}, inside ${refusal.path}. Move the session out first (session_move to the source), then remove it.`
     case "ChildrenKept":
-      return `${refusal.path} has Rifts of its own, which would go with it. Remove them first:\n${some(refusal.children)}`
+      return `${refusal.path} has workspaces of its own, which would go with it. Remove them first:\n${some(refusal.children)}`
     case "StepRunning":
       return `${refusal.path} is busy: ${refusal.step}. Remove it after its wake.`
     case "WorkUnsaved": {
@@ -123,7 +123,7 @@ export const explainRefusal = (refusal: RemoveRefused): string => {
         ...(refusal.unpushed.length > 0 ? [`${refusal.unpushed.length} commit(s) on no remote and in no branch of its source:\n${some(refusal.unpushed)}`] : []),
         ...(refusal.stashes > 0 ? [`${refusal.stashes} stash entr${refusal.stashes === 1 ? "y" : "ies"}`] : []),
       ]
-      return `${refusal.path} holds work found nowhere else:\n${parts.join("\n")}\nCommit and push it, or pass force: true to remove it anyway (it goes to Rift's trash until the next gc).`
+      return `${refusal.path} holds work found nowhere else:\n${parts.join("\n")}\nCommit and push it, or pass force: true to remove it anyway (it goes to the trash until the next gc).`
     }
   }
 }

@@ -76,7 +76,7 @@ describe("the rift tool", () => {
     expect(await call(state, { action: "create", branch: "feat/x" })).toBe(
       [
         `Created the Rift ${FEAT} from ${SOURCE}, on branch feat/x.`,
-        `This session still runs in its own directory. To work in the Rift, move the session there with the session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
+        `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
       ].join("\n"),
     )
     expect(state.rifts.get(FEAT)?.branch).toBe("feat/x")
@@ -88,9 +88,9 @@ describe("the rift tool", () => {
   test("list shows each Rift with its branch and its unsaved work", async () => {
     const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean("/code/.rifts/app/old", undefined), unpushed: ["d85f04d wip"], stashes: 2 }])
     expect(await call(state, { action: "list" })).toBe(
-      [`Rifts of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`, "- /code/.rifts/app/old · detached at abc1234 · 1 unpushed, 2 stashed"].join("\n"),
+      [`Workspaces of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`, "- /code/.rifts/app/old · detached at abc1234 · 1 unpushed, 2 stashed"].join("\n"),
     )
-    expect(await call(MemoryRifts.world([SOURCE]), { action: "list" })).toBe(`The warm source ${SOURCE} has no Rifts.`)
+    expect(await call(MemoryRifts.world([SOURCE]), { action: "list" })).toBe(`The warm source ${SOURCE} has no workspaces.`)
     expect(await call(MemoryRifts.world(["/other"]), { action: "list" })).toBe("failed: rift ancestors failed: /code/app/src is in no Rift source")
   })
 
@@ -106,9 +106,9 @@ describe("the rift tool", () => {
 
   test("remove names what it cannot find, and never takes the source or the session's own Rift", async () => {
     const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x")])
-    expect(await call(state, { action: "remove" })).toStartWith("refused: remove needs the Rift")
-    expect(await call(state, { action: "remove", name: "nope" })).toBe(`refused: The warm source ${SOURCE} has no Rift named nope. Its Rifts:\n  ${FEAT}`)
-    expect(await call(state, { action: "remove", path: SOURCE, force: true })).toBe(`refused: ${SOURCE} is a warm source, not a Rift made from one; the rift tool never removes a source.`)
+    expect(await call(state, { action: "remove" })).toStartWith("refused: remove needs the workspace")
+    expect(await call(state, { action: "remove", name: "nope" })).toBe(`refused: The warm source ${SOURCE} has no workspace named nope. Its workspaces:\n  ${FEAT}`)
+    expect(await call(state, { action: "remove", path: SOURCE, force: true })).toBe(`refused: ${SOURCE} is a warm source, not a workspace made from one; this tool never removes a source.`)
     expect(await call(state, { action: "remove", name: "feat-x", force: true }, "ses_in")).toStartWith(`refused: This session runs in ${FEAT}/src, inside ${FEAT}.`)
     expect(state.rifts.has(FEAT)).toBe(true)
   })
@@ -127,8 +127,8 @@ describe("the rift tool", () => {
     const CHILD = "/code/.rifts/.rifts/feat-x/child"
     const state = () => MemoryRifts.world([SOURCE], [{ ...MemoryRifts.clean(FEAT, "feat/x"), children: [CHILD] }, MemoryRifts.clean(CHILD, "child")])
     const plain = state()
-    expect(await call(plain, { action: "remove", name: "feat-x" })).toStartWith(`refused: ${FEAT} has Rifts of its own, which would go with it.`)
-    expect(await call(plain, { action: "remove", name: "feat-x", withChildren: true })).toBe(`Moved the Rift ${FEAT} (branch feat/x) to Rift's trash; it held 1 Rift(s) of its own.`)
+    expect(await call(plain, { action: "remove", name: "feat-x" })).toStartWith(`refused: ${FEAT} has workspaces of its own, which would go with it.`)
+    expect(await call(plain, { action: "remove", name: "feat-x", withChildren: true })).toBe(`Moved the Rift ${FEAT} (branch feat/x) to Rift's trash; it held 1 workspace(s) of its own.`)
     expect(plain.rifts.size).toBe(0)
     const busy = state()
     MemoryRifts.change(busy, CHILD, (workspace) => ({ ...workspace, stashes: 1 }))
@@ -140,7 +140,7 @@ describe("the rift tool", () => {
     const state = MemoryRifts.world([SOURCE])
     MemoryRifts.stash(state, SOURCE, "5a5a5a5")
     expect(await call(state, { action: "create", branch: "feat/x" })).toStartWith(`Created the Rift ${FEAT}`)
-    expect(await call(state, { action: "list" })).toBe([`Rifts of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`].join("\n"))
+    expect(await call(state, { action: "list" })).toBe([`Workspaces of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`].join("\n"))
     MemoryRifts.stash(state, FEAT, "6b6b6b6")
     expect(await call(state, { action: "remove", name: "feat-x" })).toStartWith(`refused: ${FEAT} holds work found nowhere else:\n1 stash entry`)
     expect(state.rifts.has(FEAT)).toBe(true)
@@ -212,7 +212,7 @@ describe("land", () => {
       expect(made.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
       expect([...made.rifts.rifts.keys()].sort()).toEqual([INTEGRATE, OTHER, THIRD, POST_LAND].sort())
       expect(await call(made.rifts, { action: "land", rifts: ["post-land"] })).toBe(
-        `refused: Did not land anything: ${POST_LAND} is the Rift the post-land step runs in; it holds no work to land.`,
+        `refused: Did not land anything: ${POST_LAND} is the workspace the post-land step runs in; it holds no work to land.`,
       )
       expect(made.woken.map((woken) => woken.notice.description)).toEqual(["rift land · accept passed", "rift land · post-land ran"])
       expect(made.woken[1]!.notice.text).toBe(
@@ -357,7 +357,7 @@ describe("land", () => {
     const twice = bench(state(), MemoryLanding.world(configured))
     MemoryRifts.change(twice.rifts, PARSER, (workspace) => ({ ...workspace, branch: "run/lexer" }))
     expect(await call(twice, { action: "land", rifts: ["run/lexer"] })).toBe(
-      `refused: run/lexer names more than one Rift of ${SOURCE}; name one by its path:\n  ${LEXER} (branch run/lexer)\n  ${PARSER} (branch run/lexer)`,
+      `refused: run/lexer names more than one workspace of ${SOURCE}; name one by its path:\n  ${LEXER} (branch run/lexer)\n  ${PARSER} (branch run/lexer)`,
     )
     expect(twice.landing.steps).toEqual([])
   })
@@ -587,16 +587,16 @@ describe("land", () => {
 
   test("refuses before touching a Rift: no Rifts named, an unknown one, its own uncommitted changes, a detached HEAD, the integration Rift, no gate configured", async () => {
     const made = two()
-    expect(await call(made, { action: "land" })).toBe('refused: land needs the Rifts to land, in order: { action: "land", rifts: ["feat-x"] }.')
-    expect(await call(made, { action: "land", rifts: ["feat-x", "nope"] })).toStartWith(`refused: The warm source ${SOURCE} has no Rift named nope.`)
+    expect(await call(made, { action: "land" })).toBe('refused: land needs the workspaces to land, in order: { action: "land", workspaces: ["feat-x"] }.')
+    expect(await call(made, { action: "land", rifts: ["feat-x", "nope"] })).toStartWith(`refused: The warm source ${SOURCE} has no workspace named nope.`)
     made.landing.own.set(FEAT, [" M src/a.ts"])
     expect(await call(made, { action: "land", rifts: ["feat-y", "feat-x"] })).toBe(`refused: Did not land anything: ${FEAT} holds uncommitted changes; commit them first:\n   M src/a.ts`)
     made.rifts.rifts.set(INTEGRATE, MemoryRifts.clean(INTEGRATE, "integrate"))
-    expect(await call(made, { action: "land", rifts: ["integrate"] })).toStartWith(`refused: Did not land anything: ${INTEGRATE} is the integration Rift`)
+    expect(await call(made, { action: "land", rifts: ["integrate"] })).toStartWith(`refused: Did not land anything: ${INTEGRATE} is the integration workspace`)
     const bare = bench(MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, undefined)]))
     expect(await call(bare, { action: "land", rifts: ["feat-x"] })).toStartWith(`refused: The repository of ${SOURCE} names no gate, so land will not push. Set it in the warm source's Git config: git -C ${SOURCE} config rift.gate`)
     expect(await call(bare, { action: "land", rifts: ["feat-y"] })).toBe(`refused: Did not land anything: ${OTHER} is not on a Git branch.`)
-    expect(await call(bare, { action: "land", rifts: [SOURCE] })).toBe(`refused: Did not land anything: ${SOURCE} is a warm source; land a Rift made from one.`)
+    expect(await call(bare, { action: "land", rifts: [SOURCE] })).toBe(`refused: Did not land anything: ${SOURCE} is a warm source; land a workspace made from one.`)
     expect([...made.landing.steps, ...bare.landing.steps]).toEqual([])
     expect(bare.rifts.rifts.has(INTEGRATE)).toBe(false)
   })
@@ -632,7 +632,7 @@ describe("the workbox's commands", () => {
 
   test("say they need the workbox where there is no workrift", async () => {
     expect(await call(MemoryRifts.world([SOURCE]), { action: "refresh" })).toBe(
-      "refused: refresh runs the workbox's workrift, which this machine does not have. Here the rift tool offers create, list, remove and land.",
+      "refused: refresh runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.",
     )
   })
 })

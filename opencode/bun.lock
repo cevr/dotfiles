@@ -218,6 +218,14 @@
         "@dotfiles/opencode-wake": "workspace:*",
       },
     },
+    "cmd/work": {
+      "name": "@dotfiles/opencode-cmd-work",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-cmd-rift": "workspace:*",
+        "@dotfiles/opencode-work": "workspace:*",
+      },
+    },
     "decider": {
       "name": "@dotfiles/decider",
       "version": "0.0.0",
@@ -501,6 +509,8 @@
     "@dotfiles/opencode-cmd-update": ["@dotfiles/opencode-cmd-update@workspace:cmd/update"],
 
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
+
+    "@dotfiles/opencode-cmd-work": ["@dotfiles/opencode-cmd-work@workspace:cmd/work"],
 
     "@dotfiles/opencode-escape": ["@dotfiles/opencode-escape@workspace:mods/escape"],
 

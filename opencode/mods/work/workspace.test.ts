@@ -38,7 +38,7 @@ describe("removing a Rift", () => {
         "1 commit(s) on no remote and in no branch of its source:",
         "  d85f04d only here",
         "1 stash entry",
-        "Commit and push it, or pass force: true to remove it anyway (it goes to Rift's trash until the next gc).",
+        "Commit and push it, or pass force: true to remove it anyway (it goes to the trash until the next gc).",
       ].join("\n"),
     )
     expect(refusal(busy, true)).toBeUndefined()
@@ -57,7 +57,7 @@ describe("removing a Rift", () => {
     expect(refusal(RIFT, true, "/code/.rifts/app/feat-xy")).toBeUndefined()
     const parent = { ...RIFT, children: ["/code/.rifts/feat-x/inner"] }
     expect(explainRefusal(refusal(parent, true)!)).toBe(
-      "/code/.rifts/app/feat-x has Rifts of its own, which would go with it. Remove them first:\n  /code/.rifts/feat-x/inner",
+      "/code/.rifts/app/feat-x has workspaces of its own, which would go with it. Remove them first:\n  /code/.rifts/feat-x/inner",
     )
   })
 
