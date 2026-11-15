@@ -109,6 +109,7 @@ const PLUGINS = {
 const REFUSED = {
   update: "it moves the dotfiles checkout and restarts the owner's service",
   rift: "it makes and trashes Rifts of real repositories",
+  work: "it makes and trashes workspaces of real repositories",
   pool: "it needs the owner's Claude logins; drive it on the world",
   "anthropic-auth": "it needs the owner's Claude logins; drive it on the world",
 } satisfies Rec.ReadonlyRecord<string, string>

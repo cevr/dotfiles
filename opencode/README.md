@@ -1804,7 +1804,7 @@ kernel cell reaches it as `tools.rift`) and takes OpenCode's worktree tools
 make Git worktrees, and on Rifts they failed (10 times in 7 sessions on the
 workbox in a week). A root session that runs orchestrate units makes and
 lands its units' Rifts with the `orchestrate` tool's `lane` and `land`
-instead (The orchestrate tool). One input, with an `action`:
+instead (The orchestrate tool). `cmd/work`, not enabled yet, is the same tool over Ergo's `work` binary: it adds `work` and keeps `rift` as its alias (and the land's `rifts` beside `workspaces`) until 2026-12-06 (`RIFT_ALIAS_REMOVAL`), and never loads beside `cmd/rift`. One input, with an `action`:
 
 - `{ action: "create", branch, name?, source? }` makes a Rift of the warm
   source the session's directory (or `source`) belongs to, on `branch` (the

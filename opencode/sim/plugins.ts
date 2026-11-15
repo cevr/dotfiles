@@ -50,6 +50,12 @@ import { make as makeStatus } from "@dotfiles/opencode-cmd-status/server"
 import * as StatusCallLog from "@dotfiles/opencode-status/memory/call-log"
 import { RunTables, RunsUnreadable } from "@dotfiles/opencode-status/service"
 import { Effect, Layer, Option, Schema } from "effect"
+import { live as riftLive } from "../cmd/rift/server.ts"
+import { make as makeWork } from "../cmd/work/server.ts"
+import * as MemoryDebts from "../mods/work/memory/debts.ts"
+import * as MemoryLanding from "../mods/work/memory/landing.ts"
+import * as MemoryRifts from "../mods/work/memory/rifts.ts"
+import * as MemoryWorkbox from "../mods/work/memory/workbox.ts"
 import type { World } from "./world.ts"
 
 /** A check in the world's shell: the command's answer at this instant, after the time it runs (at most `timeoutMs`). */
@@ -254,6 +260,26 @@ export const status = (world: World) => makeStatus((options) => Layer.merge(Stat
 
 /** The queue plugin (`cmd/queue/server.ts`'s `make`) on the world: its store the memory one (`memory`), which keeps the store's laws. */
 export const queue = (memory: MemoryQueue.MemoryQueues = MemoryQueue.empty()) => makeQueue(() => MemoryQueue.layer(memory))
+
+/** What the work plugin keeps outside OpenCode, in memory: its workspaces, a landing and the owed post-land steps. */
+export interface WorkDoubles {
+  readonly rifts: MemoryRifts.World
+  readonly landing: MemoryLanding.World
+  readonly debts: MemoryDebts.World
+}
+
+/**
+ * The work plugin (`cmd/work/server.ts`'s `make`) on the world: OpenCode's adapters on its context (cmd/rift's `live`,
+ * whose process systems the memory doubles in `doubles` replace) and no workbox. The world loads it and never
+ * cmd/rift beside it: both register the `rift` tool and the rift RPC.
+ */
+export const work = (doubles: WorkDoubles) =>
+  makeWork((ctx, options) =>
+    Layer.merge(
+      riftLive(ctx, options),
+      Layer.mergeAll(MemoryRifts.layer(doubles.rifts), MemoryLanding.layer(doubles.landing), MemoryDebts.layer(doubles.debts), MemoryWorkbox.layer(false)),
+    ),
+  )
 
 /**
  * The orchestrate TUI's draft reports (`cmd/orchestrate/tui.ts` `report`) as one client of the world: what it sees (the
