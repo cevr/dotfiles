@@ -30,7 +30,8 @@
 // green or red; a land takes it instead of running the Rift's checks again (any other proof of a round
 // is written with scripts/receipt.ts). `--merge <base>` is a land's merge check (`rift.mergeCheck`): the link, every
 // project's typecheck, oxlint over the files changed since <base> and the debt ratchet over them
-// (`effect-debt.ts --check --since <base>`), no lock and no receipt (the land writes it).
+// (`effect-debt.ts --check --since <base>`), the verify-opencode docs guard when the changes can turn it red
+// (scripts/docs-guard.ts), no lock and no receipt (the land writes it).
 //
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
 //        bun scripts/gate.ts --merge <base>
@@ -40,6 +41,7 @@ import path from "node:path"
 import { $ } from "bun"
 import { Array as Arr, Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
+import { docsGuardDue, parseNameStatus } from "./docs-guard.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
 
@@ -160,9 +162,21 @@ const changedSince = (base: string): Promise<ReadonlyArray<string>> =>
     .text()
     .then((out) => out.split("\n").filter((file) => /\.tsx?$/.test(file) && existsSync(path.join(ROOT, file))))
 
+/** The docs guard (scripts/verify-docs.test.ts) when the changes since `base` can turn it red (scripts/docs-guard.ts); else a passed leg saying so. */
+const docsGuard = (base: string): Promise<Leg> =>
+  $`git -C ${ROOT} diff --name-status --relative ${base} HEAD -- .`
+    .nothrow()
+    .quiet()
+    .text()
+    .then((out) => {
+      if (!docsGuardDue(parseNameStatus(out))) return { name: "docs", ok: true, output: "", time: "0.00s", note: "not due" }
+      return run("docs", [process.execPath, "test", "scripts/verify-docs.test.ts"], ENV, "verify-opencode guard")
+    })
+
 /**
  * A land's merge check of the merged tree: the link, every project's typecheck, oxlint over the files changed since
- * `base`, and the Effect debt ratchet held over those files (`effect-debt.ts --check --since`), so new debt fails here.
+ * `base`, the Effect debt ratchet held over those files (`effect-debt.ts --check --since`), so new debt fails here,
+ * and the verify-opencode docs guard when the changes can turn it red.
  */
 const mergeCheck = (base: string) =>
   linked("merge check", () => [
@@ -172,6 +186,7 @@ const mergeCheck = (base: string) =>
     ),
     run("debt", [process.execPath, "scripts/effect-debt.ts", "--check", "--since", base], ENV, "changed files"),
     types(),
+    docsGuard(base),
   ])
 
 /** The full gate: by hand, its `round` receipt written from where the repository stood; under a land (RIFT_LAND_CHECK set), the land writes its own. */
