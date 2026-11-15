@@ -461,6 +461,7 @@ const close = (app: Booted) =>
     harness.release()
     harness.booted = Option.none()
     router().navigate = Option.none()
+    router().tabs = Option.none()
     if (!done.closed) return yield* fail(`${app.options.file}: the app did not shut down within ${UNTIL_MS} ms`)
   })
 
