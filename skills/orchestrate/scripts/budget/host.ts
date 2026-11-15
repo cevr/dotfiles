@@ -99,9 +99,10 @@ export function projectFor(sessionId: string | undefined, cwd: string | undefine
     } catch {}
   }
   if (!cwd) return 'unknown';
+  // A workspace sits at …/.work/<repo>/<name>; an adopted Rift copy at …/.rifts/<repo>/<name>.
   const m =
     cwd.match(/\/tmp\/orchestrate\/([^/]+)/) ??
-    cwd.match(/\/\.rifts\/([^/]+)/) ??
+    cwd.match(/\/(?:\.work|\.rifts)\/([^/]+)/) ??
     cwd.match(/\/Developer\/(?:personal|work)\/([^/.][^/]*)/) ??
     cwd.match(/\/workspaces\/([^/]+)/);
   return m?.[1] ?? basename(cwd);
