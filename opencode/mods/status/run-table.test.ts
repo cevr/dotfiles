@@ -27,6 +27,19 @@ describe("unitsOf", () => {
     expect(unitsOf(table)).toEqual([{ unit: "lexer", state: "ready", round: "1", since: "2026-11-04T15:00Z" }])
   })
 
+  test("the Verdict column, by its header, when a row has one", () => {
+    const table = [
+      "| Unit | State | Round | Since | Cause | Verdict |",
+      "| ---- | ----- | ----- | ----- | ----- | ------- |",
+      "| lexer | verify | 1 | 2026-11-04T15:00Z | round-1-request.md | changes r1 |",
+      "| parser | implement | 2 | 2026-11-04T15:01Z | spec.md |  |",
+    ].join("\n")
+    expect(unitsOf(table)).toEqual([
+      { unit: "lexer", state: "verify", round: "1", since: "2026-11-04T15:00Z", verdict: "changes r1" },
+      { unit: "parser", state: "implement", round: "2", since: "2026-11-04T15:01Z" },
+    ])
+  })
+
   test("a row with no state, a warning line and a short row", () => {
     expect(unitsOf(["| fresh |  | | |", "plan.md is over 40 KB", "| bare | plan"].join("\n"))).toEqual([
       { unit: "bare", state: "plan", round: "", since: "" },
