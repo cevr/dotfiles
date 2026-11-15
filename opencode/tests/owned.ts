@@ -15,8 +15,17 @@
 // once it and all it started have stopped: opencode-drive makes
 // `$TMPDIR/opencode-drive` and the driven OpenCode `$TMPDIR/opencode`, and
 // neither removes its folder. A TMPDIR the test chose for the child is kept.
+//
+// A test that imports this runs outside any multiplexer pane: the pane's variables (herdr's, Rex's,
+// `TERM_PROGRAM`; scripts/pane-env.ts) leave this process's environment on import, before any test
+// spreads it into a child's. A scenario's TUI then draws the same from a herdr pane, a Rex pane or a
+// plain shell (tui-cpu passed or failed by an inherited HERDR_ENV); a test or scenario that wants a
+// pane sets its variables itself.
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
+import { isPaneVariable } from "../scripts/pane-env.ts"
 import { type ChildTemp, childTemp } from "./scratch.ts"
+
+for (const name of Object.keys(process.env)) if (isPaneVariable(name)) delete process.env[name]
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
