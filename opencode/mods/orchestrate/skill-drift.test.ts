@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test"
-import { LISTED, noteOf, RECONCILE, stepOf } from "./skill-drift.ts"
+import { LISTED, noteOf, stepOf } from "./skill-drift.ts"
+
+/** The note's last line: where the skill says how to reconcile. */
+const RECONCILE_LINE = "Reconcile the run's rules file once, as the orchestrate skill's references/run-rules.md says (When the skill changes). This note comes once per skill version."
 
 const A = "a".repeat(40)
 const B = "b".repeat(40)
@@ -22,8 +25,14 @@ test("the note names each run, lists at most LISTED lines of each kind, and ends
   ]).split("\n")
   expect(note[0]).toBe(`The orchestrate skill changed since run wf10 saw it (aaaaaaa..bbbbbbb, ${LISTED + 2} commits):`)
   expect(note).toContain("- and 2 more")
-  expect(note).toContain(`Run wf10's rules files mark no departure ("Departs from <rule>: <why>"); any rule in them that differs from the skill is drift.`)
+  expect(note).toContain(`Run wf10's rules files mark no departure ("Departs from <rule>: <why>").`)
   expect(note).toContain("The orchestrate skill changed since run p5 saw it (aaaaaaa, not in this checkout's history; now bbbbbbb). Its newest changes:")
   expect(note).toContain("- common.md:1: Departs from X: y")
-  expect(note.at(-1)).toBe(RECONCILE)
+  expect(note.at(-1)).toBe(RECONCILE_LINE)
+})
+
+test("the note points at the skill's reconcile and restates none of it: no drift, no offer upstream at close, no rules list", () => {
+  const note = noteOf([{ run: "p5", seen: A, installed: B, subjects: ["feat: x"], unrelated: false, departures: [] }])
+  expect(note).toContain("references/run-rules.md")
+  expect(note).not.toMatch(/\bdrift\b|upstream|at close|thread shares|round boundary/i)
 })
