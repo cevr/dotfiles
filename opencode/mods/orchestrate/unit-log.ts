@@ -26,7 +26,8 @@ import { described, isStep, type Step } from "./described.ts"
 /** One move of a unit, as log.ts takes it: the state it moves to, the round, and the note (its cause first). */
 export interface Transition {
   readonly unit: string
-  readonly to: "plan" | "implement" | "ready" | "blocked"
+  /** `merged` is the land's move (its note the pushed commit first); a role's start and hand-back move to the others. */
+  readonly to: "plan" | "implement" | "ready" | "blocked" | "merged"
   readonly round: number
   readonly note: string
 }

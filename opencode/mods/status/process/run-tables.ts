@@ -1,9 +1,12 @@
 // The orchestrate runs of a repository and the orchestrate skill's status
 // script. The runs live in `tmp/orchestrate/<run>` at the repository's main
-// checkout (a worktree's common git dir points there); the script prints one
-// table per run, derived from its units' log.md transitions.
-import { readdir } from "node:fs/promises"
-import { basename, dirname, join } from "node:path"
+// checkout (a worktree's common git dir points there), and in each directory
+// the checkout's `git config --get-all orchestrate.dir` names (a run that
+// keeps its unit dirs elsewhere, one run each). The script prints one table
+// per run, derived from its units' files and the repository's git
+// (`--repo <main checkout>`).
+import { readdir, stat } from "node:fs/promises"
+import { basename, dirname, join, resolve } from "node:path"
 import { Effect, Layer, Option } from "effect"
 import type { RunTable } from "../run-table.ts"
 import { RunTables, RunsUnreadable } from "../service.ts"
@@ -15,8 +18,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 const isNotFound = (cause: unknown) => isRecord(cause) && cause.code === "ENOENT"
 
-/** A command's output; a command that exits non-zero fails with its stderr. */
-const command = Effect.fn("RunTables.command")(function* (argv: ReadonlyArray<string>, cwd?: string) {
+/** A command's exit code and output. */
+const ran = Effect.fn("RunTables.ran")(function* (argv: ReadonlyArray<string>, cwd?: string) {
   const [out, err, code] = yield* Effect.tryPromise({
     try: () => {
       const run = Bun.spawn([...argv], { cwd, stdout: "pipe", stderr: "pipe", signal: AbortSignal.timeout(TIMEOUT_MS) })
@@ -24,8 +27,23 @@ const command = Effect.fn("RunTables.command")(function* (argv: ReadonlyArray<st
     },
     catch: (cause) => new RunsUnreadable({ message: `${argv[0]} failed: ${messageOf(cause)}` }),
   })
+  return { out, err, code }
+})
+
+/** A command's output; a command that exits non-zero fails with its stderr. */
+const command = Effect.fn("RunTables.command")(function* (argv: ReadonlyArray<string>, cwd?: string) {
+  const { out, err, code } = yield* ran(argv, cwd)
   if (code !== 0) return yield* new RunsUnreadable({ message: `${argv[0]} failed: ${err.trim()}` })
   return out
+})
+
+/** The directories `orchestrate.dir` names in the checkout at `top`, each as it exists; none when unset. */
+const namedDirs = Effect.fn("RunTables.namedDirs")(function* (top: string) {
+  const { out, code } = yield* ran(["git", "-C", top, "config", "--get-all", "orchestrate.dir"])
+  if (code !== 0) return []
+  const named = out.split("\n").flatMap((line) => Option.toArray(Option.map(Option.liftPredicate(line.trim(), (dir) => dir !== ""), (dir) => resolve(top, dir))))
+  const found = yield* Effect.forEach(named, (dir) => Effect.promise(() => stat(dir).then((info) => info.isDirectory(), () => false)), { concurrency: 4 })
+  return named.filter((_, index) => found[index] === true)
 })
 
 /** The runs `script` (the orchestrate skill's `scripts/status.ts`) reads. */
@@ -41,12 +59,12 @@ export const layer = (script: string) =>
           isNotFound(cause) ? Effect.succeed([]) : Effect.fail(new RunsUnreadable({ message: messageOf(cause) })),
         ),
       )
+      const inRepo = entries.filter((entry) => entry.isDirectory()).map((entry) => ({ name: entry.name, dir: join(root, entry.name) }))
+      const named = (yield* namedDirs(top).pipe(Effect.orElseSucceed(() => []))).map((dir) => ({ name: basename(dir), dir }))
+      const runs = [...inRepo, ...named.filter((run) => !inRepo.some((each) => each.dir === run.dir))]
       return yield* Effect.forEach(
-        entries.filter((entry) => entry.isDirectory()),
-        (entry) =>
-          command([process.execPath, script, join(root, entry.name)]).pipe(
-            Effect.map((table): RunTable => ({ name: entry.name, dir: join(root, entry.name), table })),
-          ),
+        runs,
+        (run) => command([process.execPath, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table }))),
         { concurrency: "unbounded" },
       )
     }),

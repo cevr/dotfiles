@@ -3,7 +3,7 @@
 // domain, the rule that names a unit's Rift, a land's resolution from the run tables and the Rift list, and
 // status. The tool on a simulated host runs in cmd/orchestrate/orch-tools.sim.test.ts.
 import { describe, expect, test } from "bun:test"
-import { Option, Schema } from "effect"
+import { Array as Arr, Match, Option, Predicate, Schema } from "effect"
 import type { Run } from "./idle.ts"
 import {
   ACTIONS,
@@ -20,6 +20,31 @@ import {
   laneBranchOf,
   laneDecision,
   lanesOf,
+  type MainBatch,
+  type MainSince,
+  mainBatchPathOf,
+  mainBatchText,
+  mainRunDirOf,
+  mainVerifyAnswer,
+  mainVerifyName,
+  changesWarningOf,
+  changesWarnings,
+  dueWarning,
+  findingsVerdictOf,
+  holdsVerdict,
+  batchHeadOf,
+  isDue,
+  nextOf,
+  pushedOf,
+  requestHeadOf,
+  roundIn,
+  type UnitFiles,
+  VERIFY_CALL,
+  VERIFY_EVERY,
+  VERIFY_MAX_AGE_MS,
+  type Verified,
+  verifyBaseOf,
+  readyWithLane,
   lanesRefusal,
   nameRefusal,
   nextLine,
@@ -185,6 +210,40 @@ const runOf = (random: () => number, units: ReadonlyArray<string>): Run => {
   return { name: "app", units: units.map((unit) => ({ unit, state: pick(["implement", "ready", "blocked", "verify", "merged abc1234", "plan"], "ready") })) }
 }
 
+/** The clock the verify-due tests read: a Wednesday afternoon. */
+const NOW = Date.parse("2026-11-04T15:00:00Z")
+const HOUR = 3_600_000
+
+/** A 40-hex commit name from a number. */
+const shaOf = (n: number): string => n.toString(16).padStart(40, "0")
+
+/** A generated default branch since the last verify: any merge count, a last verify of any age or none. */
+const sinceOf = (random: () => number): MainSince => {
+  const last = Option.map(Option.liftPredicate(random(), (draw) => draw >= 0.3), (): Verified => ({ file: "/run/verify-x/batch-x.md", head: shaOf(1 + Math.floor(random() * 99)), at: NOW - Math.floor(random() * 48) * HOUR }))
+  return { branch: Option.getOrElse(Arr.get(["main", "master"], Math.floor(random() * 2)), () => "main"), head: shaOf(1000), base: shaOf(7), merges: Math.floor(random() * 9), last }
+}
+
+/** A land's unit by its name. */
+const landNameOf = (unit: LandUnit): string =>
+  Match.value(unit).pipe(
+    Match.when(Predicate.isString, (name) => name),
+    Match.orElse((named) => named.unit),
+  )
+
+/** Some of `value` when the draw is at least `below`. */
+const sometimes = <A,>(random: () => number, below: number, value: () => A): Option.Option<A> => Option.map(Option.liftPredicate(random(), (draw) => draw >= below), value)
+
+/** A generated verify of main. */
+const batchOf = (random: () => number): MainBatch => ({
+  name: mainVerifyName(shaOf(1000)),
+  base: shaOf(7),
+  head: shaOf(1000),
+  last: sinceOf(random).last,
+  merges: Array.from({ length: Math.floor(random() * 4) }, (_, n) => ({ sha: shaOf(500 + n), parent: shaOf(400 + n), subject: `Merge branch 'feat/u${n}'` })),
+  units: Array.from({ length: Math.floor(random() * 3) }, (_, n) => ({ unit: `u${n}`, dir: `/run/u${n}`, round: 1 + n, spec: `/run/u${n}/spec.md`, request: `/run/u${n}/round-${1 + n}-request.md` })),
+  heads: sometimes(random, 0.5, () => ({ dotfiles: shaOf(1000), fork: shaOf(77) })),
+})
+
 /** Every text tools.ts writes, over generated run tables, lanes and input. */
 const textsOf = (random: () => number): ReadonlyArray<string> => {
   const pick = pickOf(random)
@@ -204,8 +263,14 @@ const textsOf = (random: () => number): ReadonlyArray<string> => {
     verifyAnswer(`batch-${Math.floor(random() * 9)}`, lane, random() < 0.5, pick(["given", "origin"] as const, "origin")),
     NO_UNITS,
     statusAnswer(runs, lanes, workrift),
+    statusAnswer(runs, lanes, workrift, Option.some(sinceOf(random)), NOW),
     LAND_NEXT,
     nextLine(runs, lanes, workrift),
+    nextLine(runs, lanes, workrift, Option.some(sinceOf(random)), NOW),
+    ...Option.toArray(dueWarning(sinceOf(random), NOW)),
+    changesWarningOf(unit, 1 + Math.floor(random() * 3), `/run/${unit}/round-1-findings.md`),
+    mainVerifyAnswer(batchOf(random), Option.some("/run/verify-main-abc1234/batch-main-abc1234.md"), lane, random() < 0.5, pick(["given", "origin"] as const, "origin")),
+    mainVerifyAnswer(batchOf(random), Option.none(), lane, random() < 0.5, "origin"),
     nothingToLand(runs),
     landCallOf(units),
     lanesRefusal(unit, [laneOf(unit, false), laneOf(`${unit}-2`, false)]),
@@ -292,7 +357,7 @@ describe("the input rule", () => {
     expect(inputRefusal(decode({ action: "lane" }))).toEqual(Option.some(expect.stringContaining("lane needs unit")))
     expect(inputRefusal(decode({ action: "land" }))).toEqual(Option.none())
     expect(inputRefusal(decode({ action: "land", departs: "an old root's reason" }))).toEqual(Option.none())
-    expect(inputRefusal(decode({ action: "verify" }))).toEqual(Option.some(expect.stringContaining("verify needs batch")))
+    expect(inputRefusal(decode({ action: "verify" }))).toEqual(Option.none())
     expect(inputRefusal(decode({ action: "status", head: "abc1234" }))).toEqual(Option.some(expect.stringContaining("status takes no head: head belongs to verify")))
     expect(nameRefusal(decode({ action: "lane", unit: "Bad Name" }))).toEqual(Option.some(expect.stringContaining("is no unit name")))
     expect(nameRefusal(decode({ action: "verify", batch: "Batch 7" }))).toEqual(Option.some(expect.stringContaining("is no batch")))
@@ -430,7 +495,162 @@ describe("status", () => {
       ].join("\n"),
     )
     expect(nextLine(runs, [], false)).toBe("next: wait for the hand-backs of beta (implementing).")
-    expect(nextLine([], [], false)).toBe("next: none (no unit is ready with a lane or implementing).")
+    expect(nextLine([], [], false)).toBe("next: none (no unit is ready with a lane or implementing, and no verify is due).")
     expect(statusAnswer([{ name: "app", units: [] }], [alpha], false)).toBe(NO_UNITS)
+  })
+})
+
+// ── B4: next reads the derived table ──
+
+const STATES = ["plan", "implement", "ready", "verify", "blocked", "merged abc1234", "dropped", "waiting(pr)"]
+
+describe("next", () => {
+  test("B4: over generated derived tables, next names a call that decodes, and a land only for a unit ready with a lane", () => {
+    let lands = 0
+    let verifies = 0
+    for (const seed of SEEDS) {
+      const random = rng(seed)
+      const pick = pickOf(random)
+      const workrift = random() < 0.5
+      const runs: ReadonlyArray<Run> = Array.from({ length: 1 + Math.floor(random() * 2) }, (_, n) => ({
+        name: `run${n}`,
+        units: UNITS.flatMap((unit) => Option.toArray(Option.liftPredicate(unit, () => random() < 0.6))).map((unit) => ({ unit, state: pick(STATES, "plan") })),
+      }))
+      const lanes = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(laneOf(name, workrift), () => random() < 0.5)))
+      const since = sometimes(random, 0.3, () => sinceOf(random))
+      const next = nextOf(runs, lanes, workrift, since, NOW)
+      const calls = decodedIn(next.line)
+      expect({ seed, calls: calls.length }).toEqual({ seed, calls: Option.toArray(next.input).length })
+      expectCallsDecode(next.line)
+      for (const { decoded } of calls) expect({ seed, decoded }).toEqual({ seed, decoded: next.input })
+      const ready = readyWithLane(runs, lanes, workrift)
+      const units = runs.flatMap((run) => run.units)
+      Option.map(next.input, (input) => {
+        if (input.action === "land") {
+          lands += 1
+          // A land with no units lands every unit ready with a lane: there is one; one that names units names only those.
+          expect({ seed, ready: ready.length > 0 }).toEqual({ seed, ready: true })
+          for (const named of input.units ?? []) expect({ seed, named, ready: ready.includes(landNameOf(named)) }).toEqual({ seed, named, ready: true })
+        }
+        if (input.action === "verify") {
+          verifies += 1
+          expect({ seed, ready, due: Option.exists(since, (each) => isDue(each, NOW)) }).toEqual({ seed, ready: [], due: true })
+        }
+      })
+      // Wait and none name no call, and come after a land and a due verify.
+      if (Option.isNone(next.input)) {
+        expect({ seed, ready, due: Option.exists(since, (each) => isDue(each, NOW)) }).toEqual({ seed, ready: [], due: false })
+        const waits = units.some((unit) => unit.state === "implement")
+        expect({ waits, line: next.line }).toEqual({
+          waits,
+          line: Option.match(Option.liftPredicate(waits, (each) => each), {
+            onSome: () => expect.stringContaining("next: wait for the hand-backs of"),
+            onNone: () => "next: none (no unit is ready with a lane or implementing, and no verify is due).",
+          }),
+        })
+      }
+    }
+    expect(lands).toBeGreaterThan(10)
+    expect(verifies).toBeGreaterThan(10)
+  })
+})
+
+// ── Main since the last verify ──
+
+describe("a verify of main", () => {
+  const since = (merges: number, last: Option.Option<Verified>): MainSince => ({ branch: "main", head: shaOf(1000), base: shaOf(7), merges, last })
+  const verifiedAt = (at: number): Option.Option<Verified> => Option.some({ file: "/run/verify-a/batch-a.md", head: shaOf(42), at })
+
+  test(`is due at ${VERIFY_EVERY} merges, or one merge once the last is ${VERIFY_MAX_AGE_MS / HOUR} h old`, () => {
+    for (const merges of [0, 1, 4, 5, 9])
+      for (const age of [0, 23, 24, 30])
+        for (const last of [verifiedAt(NOW - age * HOUR), Option.none<Verified>()]) {
+          const due = merges >= VERIFY_EVERY || (merges >= 1 && Option.isSome(last) && age >= 24)
+          expect({ merges, age, last: Option.isSome(last), due: isDue(since(merges, last), NOW) }).toEqual({ merges, age, last: Option.isSome(last), due })
+          expect(Option.isSome(dueWarning(since(merges, last), NOW))).toBe(due)
+        }
+    expect(dueWarning(since(5, verifiedAt(NOW - 26 * HOUR)), NOW)).toEqual(
+      Option.some(`orchestrate: 5 merges on main since the last verify (${shaOf(42).slice(0, 7)}, 26 h ago): ${VERIFY_CALL}.`),
+    )
+    expect(dueWarning(since(1, verifiedAt(NOW - 24 * HOUR)), NOW)).toEqual(Option.some(`orchestrate: 1 merge on main since the last verify (${shaOf(42).slice(0, 7)}, 24 h ago): ${VERIFY_CALL}.`))
+    expect(Option.getOrElse(dueWarning(since(5, Option.none()), NOW), () => "")).toContain(`none recorded; counted from ${shaOf(7).slice(0, 7)}`)
+  })
+
+  test("counts from the last verified head; with none, from the fifth first-parent merge back, never the whole history", () => {
+    const merges = Array.from({ length: 8 }, (_, n) => ({ sha: shaOf(100 + n), parent: shaOf(200 + n), subject: `m${n}` }))
+    expect(verifyBaseOf(shaOf(1000), verifiedAt(NOW), merges)).toBe(shaOf(42))
+    expect(verifyBaseOf(shaOf(1000), Option.none(), merges)).toBe(shaOf(105))
+    expect(verifyBaseOf(shaOf(1000), Option.none(), merges.slice(0, 3))).toBe(shaOf(202))
+    expect(verifyBaseOf(shaOf(1000), Option.none(), [])).toBe(shaOf(1000))
+  })
+
+  test("its batch file names Base and Head in full, the fleet's Heads line as git/fleet.ts reads it, the merges and the units", () => {
+    const batch: MainBatch = {
+      name: mainVerifyName(shaOf(1000)),
+      base: shaOf(42),
+      head: shaOf(1000),
+      last: verifiedAt(NOW),
+      merges: [{ sha: shaOf(501), parent: shaOf(500), subject: "Merge branch 'feat/u1'" }],
+      units: [{ unit: "u1", dir: "/run/u1", round: 2, spec: "/run/u1/spec.md", request: "/run/u1/round-2-request.md" }],
+      heads: Option.some({ dotfiles: shaOf(1000), fork: shaOf(77) }),
+    }
+    const text = mainBatchText(batch)
+    const lines = text.split("\n")
+    expect(lines).toContain(`Base: ${shaOf(42)}`)
+    expect(lines).toContain(`Head: ${shaOf(1000)}`)
+    expect(lines.filter((line) => /^Heads: dotfiles=[0-9a-f]{40} fork=[0-9a-f]{40}$/.test(line))).toEqual([`Heads: dotfiles=${shaOf(1000)} fork=${shaOf(77)}`])
+    expect(text).toContain(`- ${shaOf(501).slice(0, 10)} Merge branch 'feat/u1'`)
+    expect(text).toContain("- u1 r2: unit dir /run/u1, spec /run/u1/spec.md, request /run/u1/round-2-request.md")
+    expect(batchHeadOf(text)).toEqual(Option.some(shaOf(1000)))
+    expect(mainBatchText({ ...batch, heads: Option.none() })).not.toMatch(/^heads:/im)
+    expect(mainBatchPathOf("/run/", batch.name)).toBe(`/run/verify-main-${shaOf(1000).slice(0, 7)}/batch-main-${shaOf(1000).slice(0, 7)}.md`)
+  })
+
+  test("writes into the run dir holding a unit in its range; with none or several, the first orchestrate.dir, else the first run", () => {
+    const unit = (dir: string) => ({ unit: "u", dir, round: 1, spec: `${dir}/spec.md`, request: `${dir}/round-1-request.md` })
+    const a = "/repo/tmp/orchestrate/a"
+    const b = "/repo/tmp/orchestrate/b"
+    const flat = "/tmp/opencode"
+    expect(mainRunDirOf([a, b, flat], [unit(`${b}/u`)])).toEqual(Option.some(b))
+    expect(mainRunDirOf([a, b, flat], [unit(`${a}/u`), unit(`${b}/v`)])).toEqual(Option.some(flat))
+    expect(mainRunDirOf([a, b], [])).toEqual(Option.some(a))
+    expect(mainRunDirOf([], [])).toEqual(Option.none())
+  })
+})
+
+describe("a unit's files", () => {
+  const files = (request: Option.Option<number>, findings: Option.Option<readonly [number, string]>): UnitFiles => ({
+    unit: "u",
+    dir: "/run/u",
+    request: Option.map(request, (round) => ({ round, path: `/run/u/round-${round}-request.md`, head: Option.some(shaOf(1)) })),
+    findings: Option.map(findings, ([round, verdict]) => ({ round, path: `/run/u/round-${round}-findings.md`, verdict: Option.some(verdict) })),
+  })
+
+  test("a land warns of a changes verdict not older than the newest request, and of no other", () => {
+    expect(changesWarnings([files(Option.some(1), Option.some([1, "changes"]))])).toEqual([changesWarningOf("u", 1, "/run/u/round-1-findings.md")])
+    expect(changesWarningOf("u", 1, "/p")).toBe("orchestrate: warning: u lands with r1's changes verdict open (/p).")
+    expect(changesWarnings([files(Option.none(), Option.some([2, "changes"]))])).toHaveLength(1)
+    expect(changesWarnings([files(Option.some(2), Option.some([1, "changes"]))])).toEqual([])
+    expect(changesWarnings([files(Option.some(1), Option.some([1, "accepted"]))])).toEqual([])
+    expect(changesWarnings([files(Option.some(1), Option.none())])).toEqual([])
+  })
+
+  test("the request's head (its Head:, or a range's right side); the verdict is the findings' first line's", () => {
+    expect(requestHeadOf(`Head: ${shaOf(9)}\n`)).toEqual(Option.some(shaOf(9)))
+    expect(requestHeadOf("- base 1234567, head commit abcdef01.")).toEqual(Option.some("abcdef01"))
+    expect(requestHeadOf("Range 1234567..89abcde, 3 files")).toEqual(Option.some("89abcde"))
+    expect(requestHeadOf("no head here")).toEqual(Option.none())
+    expect(findingsVerdictOf("\nverifier batch-3 r1: CHANGES /x\nAccepted later")).toEqual(Option.some("changes"))
+    expect(findingsVerdictOf("# Findings\naccepted")).toEqual(Option.none())
+    expect(holdsVerdict("Verdict: ACCEPTED\n")).toBe(true)
+    expect(holdsVerdict("intro\n\nverifier main-abc1234 r1: changes /x\n")).toBe(true)
+    expect(holdsVerdict("nothing decided yet\n")).toBe(false)
+  })
+
+  test("the land's pushed commit and a unit's round, as the log's move takes them", () => {
+    expect(pushedOf("Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/a, feat/b; by their receipts, no full gate).")).toEqual(Option.some("abc1234"))
+    expect(pushedOf("Checked 1 Rift(s) as one batch in /x on main since 1234567; rift.push is false")).toEqual(Option.none())
+    const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "a", state: "ready", round: "3" }, { unit: "b", state: "ready" }] }]
+    expect([roundIn("a", runs), roundIn("b", runs), roundIn("c", runs)]).toEqual([Option.some(3), Option.some(1), Option.none()])
   })
 })

@@ -8,13 +8,15 @@
 // - A2 to A6: a restart and a new root lose nothing, a land of a unit that is not ready warns and lands, the harm
 //   rules still refuse, no ledger is kept and old options load, and a verdict publishes the fleet target once.
 // - The lane name rule on either naming, the rift tool's description, and the tool's name against the registry's.
+import { headsOf } from "@dotfiles/opencode-orchestrate/git/fleet"
+import { VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
 import { RIFT_DESCRIPTION } from "@dotfiles/opencode-rift/rift"
-import { Array as Arr, Effect, Match, Option, Order, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Order, Result, Schema } from "effect"
 import { nearest } from "../../mods/tool-names/near-miss.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
-import { boot, HAND_BACK, type Input, PLAIN, RUN, type Run, type UnitLog, WORK } from "./orch-tools-world.ts"
+import { boot, FORK_HEAD, HAND_BACK, type Input, isClosed, PLAIN, requestHeadFor, RUN, RUN_DIR, type Run, type UnitLog, WORK } from "./orch-tools-world.ts"
 
 const { seeded } = Seed.runner("cmd/orchestrate/orch-tools.sim.test.ts")
 
@@ -62,6 +64,8 @@ const byName = Order.String
 
 /** An implementor's start in `root`, with its hand-back line (none for `none`), waited out until its hand-back is in the logs. */
 const implement = Effect.fn("OrchTools.implement")(function* (run: Run, root: string, unit: string, round: number, description: string, verdict: "ready" | "blocked" | "none") {
+  // A ready implementor has written its round's request, naming its Rift's head, before it hands back.
+  if (verdict === "ready") run.files.set(`${RUN_DIR}/${unit}/round-${round}-request.md`, { text: `Head: ${requestHeadFor(unit, round)}\n`, at: run.world.now() })
   const prompt = promptOf(verdict, "Work on it.", `implementor ${unit} r${round}: ${verdict} ${READY}`)
   const answer = yield* run.probe(root, "subagent", { agent: "implementor", description, prompt, background: true })
   yield* run.world.until(run.settled, 60_000)
@@ -81,16 +85,39 @@ interface Lane {
   readonly branch: string
 }
 
-/** The reference model: each unit's log as the plugin must have written it, and each unit's lane (its Rift). */
+/** A verify of main the model made: its name, batch file, head, and the merges main held then. */
+interface MainVerify {
+  readonly name: string
+  readonly file: string
+  readonly head: string
+  readonly total: number
+}
+
+/**
+ * The reference model: each unit's log as the plugin must have written it, each unit's lane (its Rift), the merges on
+ * main so far, the verifies of main made, and the one whose findings were written last.
+ */
 interface Model {
   readonly logs: Map<string, UnitLog>
   readonly lanes: Map<string, Lane>
+  readonly main: { total: number; verified: Option.Option<MainVerify>; readonly made: Map<string, MainVerify> }
 }
 
-/** Status as the model renders it: the run's units with their states and lanes, and the one next call. */
+const NO_UNITS = `orchestrate: no run of this repository holds a unit; orchestrate({ action: "lane", unit: "<unit>" }) starts one.`
+
+/** The merges main holds since the last verify, as the model counts them; with none, at most the five the first verify takes. */
+const mergesSince = (model: Model): number =>
+  Option.match(model.main.verified, { onNone: () => Math.min(model.main.total, VERIFY_EVERY), onSome: (verify) => model.main.total - verify.total })
+
+/** The start of the line a land's and a status's answer start with when a verify of main is due (a run dir exists); none when it is not. */
+const duePrefix = (model: Model): Option.Option<string> =>
+  Option.liftPredicate(`orchestrate: ${mergesSince(model)} merges on main since the last verify (`, () => model.logs.size > 0 && mergesSince(model) >= VERIFY_EVERY)
+
+/** Status as the model renders it, after its due line: the run's open units with their states and lanes, and the one next call. */
 const rendered = (model: Model): string => {
-  if (model.logs.size === 0) return `orchestrate: no run of this repository holds a unit; orchestrate({ action: "lane", unit: "<unit>" }) starts one.`
-  const units = [...model.logs].toSorted(([a], [b]) => byName(a, b))
+  const units = [...model.logs].filter(([, log]) => !isClosed(log)).toSorted(([a], [b]) => byName(a, b))
+  const dueNext = `next: orchestrate({ action: "verify" }) (${mergesSince(model)} merges on main since the last verify).`
+  if (units.length === 0) return Option.match(duePrefix(model), { onNone: () => NO_UNITS, onSome: () => [NO_UNITS, dueNext].join("\n") })
   const laneOf = (unit: string) =>
     Option.match(Option.fromUndefinedOr(model.lanes.get(unit)), { onNone: () => "no lane", onSome: (lane) => `lane ${lane.path} (branch ${lane.branch})` })
   const ready = units.flatMap(([unit, log]) => Option.toArray(Option.liftPredicate(unit, () => log.state === "ready" && model.lanes.has(unit))))
@@ -98,23 +125,62 @@ const rendered = (model: Model): string => {
   const next = Arr.match(ready, {
     onNonEmpty: (named) => `next: orchestrate({ action: "land" }) (ready with a lane: ${named.join(", ")}).`,
     onEmpty: () =>
-      Arr.match(implementing, {
-        onNonEmpty: (named) => `next: wait for the hand-backs of ${named.join(", ")} (implementing).`,
-        onEmpty: () => "next: none (no unit is ready with a lane or implementing).",
+      Option.match(duePrefix(model), {
+        onSome: () => dueNext,
+        onNone: () =>
+          Arr.match(implementing, {
+            onNonEmpty: (named) => `next: wait for the hand-backs of ${named.join(", ")} (implementing).`,
+            onEmpty: () => "next: none (no unit is ready with a lane or implementing, and no verify is due).",
+          }),
       }),
   })
   return [`orchestrate: run ${RUN}:`, ...units.map(([unit, log]) => `- ${unit}: ${log.state} · ${laneOf(unit)}`), next].join("\n")
 }
+
+/** An answer checked against the model's due line: it starts with it when one is due, then `rest`; else it is `rest` alone. */
+const dueChecked = (model: Model, text: string): { readonly due: boolean; readonly rest: string } => {
+  const prefix = duePrefix(model)
+  const [first = "", ...others] = text.split("\n")
+  return Option.match(prefix, {
+    onNone: () => ({ due: first.includes("since the last verify ("), rest: text }),
+    onSome: (start) => ({ due: first.startsWith(start) && first.endsWith(`: orchestrate({ action: "verify" }).`), rest: others.join("\n") }),
+  })
+}
+
+/** The base a verify of main takes in the world: the last verified head, else the fifth merge back, else the oldest's parent, else the head. */
+const baseIn = (run: Run, model: Model): string => {
+  const line = run.memory.main.line()
+  const merges = line.filter((entry) => entry.merged.length > 0).toReversed()
+  return Option.match(model.main.verified, {
+    onSome: (verify) => verify.head,
+    onNone: () =>
+      Option.getOrElse(
+        Option.orElse(
+          Option.map(Arr.get(merges, VERIFY_EVERY), (entry) => entry.sha),
+          () => Option.flatMap(Arr.last(merges), (oldest) => Option.map(Arr.get(line, line.indexOf(oldest) - 1), (entry) => entry.sha)),
+        ),
+        () => Option.getOrElse(Option.map(Arr.last(line), (entry) => entry.sha), () => ""),
+      ),
+  })
+}
+
+/** The batch file a verify of main's answer says it wrote. */
+const batchFileIn = (answer: string): Option.Option<string> => Option.flatMap(Option.fromNullishOr(/^Batch file written: (.+)\.$/m.exec(answer)), (match) => Arr.get(match, 1))
+
+/** When the next findings are written: after every file before them, on the world's clock. */
+const stampOf = (run: Run): number => Math.max(run.world.now(), ...[...run.files.values()].map((file) => file.at + 1))
 
 seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, expect }) =>
   Effect.gen(function* () {
     const random = rng(seed)
     const pick = <A,>(list: ReadonlyArray<A>, fallback: A): A => Option.getOrElse(Arr.get(list, Math.floor(random() * list.length)), () => fallback)
     const coin = () => random() < 0.5
-    const run = yield* boot(seed, true)
+    // Main holds zero to six merges from before the run, so a seed's lands reach a due verify of main.
+    const earlier = Math.floor(random() * 7)
+    const run = yield* boot(seed, true, { merges: earlier })
     const roots = [yield* run.world.session(WORK)]
     const root = () => roots.at(-1) ?? ""
-    const model: Model = { logs: new Map(), lanes: new Map() }
+    const model: Model = { logs: new Map(), lanes: new Map(), main: { total: earlier, verified: Option.none(), made: new Map() } }
     const batches = { count: 0 }
 
     /** A call's answer, checked: it fails only when the model says it must, and never in the machine's words. */
@@ -147,9 +213,17 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
     })
 
     const verifier = Effect.fn("A1.verifier")(function* () {
-      const name = pick([`batch-${(batches.count += 1)}`, pick(UNITS, "u1"), "main-abc1234"], "batch-1")
+      const made = [...model.main.made.keys()]
+      const name = pick([`batch-${(batches.count += 1)}`, pick(UNITS, "u1"), "main-abc1234", ...made, ...made], "batch-1")
       const verdict = pick(["accepted", "changes", "none"] as const, "accepted")
-      const prompt = promptOf(verdict, "Verify it.", `verifier ${name} r1: ${verdict} ${FINDINGS}`)
+      // A verifier of main writes its findings beside the batch file before it hands back, as protocol.md has it.
+      const main = Option.fromUndefinedOr(model.main.made.get(name))
+      const findings = Option.getOrElse(Option.map(main, (verify) => verify.file.replace(/\.md$/, "-findings.md")), () => FINDINGS)
+      if (Option.isSome(main) && verdict !== "none") {
+        run.files.set(findings, { text: `verifier ${name} r1: ${verdict} ${findings}\n`, at: stampOf(run) })
+        model.main.verified = main
+      }
+      const prompt = promptOf(verdict, "Verify it.", `verifier ${name} r1: ${verdict} ${findings}`)
       const answer = yield* run.probe(root(), "subagent", { agent: "verifier", description: `verifier ${name} r1`, prompt, background: true })
       checked(answer, false, `verifier ${name}`)
       // Half of them are left running: the next verifier starts while this one works.
@@ -190,13 +264,18 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
       }
       // The land reached the rift plugin with exactly the Rifts the model resolves.
       expect(mergedSince(run, from).toSorted()).toEqual(targets.map((unit) => model.lanes.get(unit)?.branch ?? "").toSorted())
-      // A named unit the logs show in another state than ready is landed with a warning first.
-      const warned = Arr.filter(targets, () => asked.length > 0).flatMap((unit) => Option.toArray(Option.filter(Option.fromUndefinedOr(model.logs.get(unit)), (log) => log.state !== "ready").pipe(Option.map((log) => warningOf(unit, log.state)))))
-      for (const warning of warned) expect(answer.text).toContain(warning)
-      if (warned.length > 0) expect(answer.text.split("\n")[0]).toStartWith("orchestrate: warning: ")
-      else expect(answer.text).not.toContain("orchestrate: warning: ")
-      // A pushed land trashes the Rifts it landed.
+      // It starts with the due line when a verify of main was due before it, then warns of each named unit the run
+      // tables show in another state than ready; it lands.
+      const due = dueChecked(model, answer.text)
+      expect({ due: due.due }).toEqual({ due: Option.isSome(duePrefix(model)) })
+      const open = (unit: string) => Option.filter(Option.fromUndefinedOr(model.logs.get(unit)), (log) => !isClosed(log))
+      const warned = Arr.filter(targets, () => asked.length > 0).flatMap((unit) => Option.toArray(Option.filter(open(unit), (log) => log.state !== "ready").pipe(Option.map((log) => warningOf(unit, log.state)))))
+      expect(due.rest.split("\n").slice(0, warned.length)).toEqual(warned)
+      if (warned.length === 0) expect(due.rest).not.toContain("orchestrate: warning: ")
+      // The log follows the land: each unit the tables showed moves to merged. A pushed land trashes the Rifts it landed.
+      for (const unit of targets) Option.map(open(unit), (log) => model.logs.set(unit, { state: "merged", round: Math.max(log.round, 1) }))
       for (const unit of targets) model.lanes.delete(unit)
+      model.main.total += targets.length
     })
 
     /** A land by the `rift` tool: the Rifts as paths or { path, unit }. */
@@ -209,13 +288,34 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
       checked(answer, false, `rift land ${laned.map(([unit]) => unit).join(",")}`)
       expect(mergedSince(run, from).toSorted()).toEqual(laned.map(([, found]) => found.branch).toSorted())
       for (const [unit] of laned) model.lanes.delete(unit)
+      model.main.total += laned.length
     })
 
     const verify = Effect.fn("A1.verify")(function* () {
-      const batch = pick([`batch-${batches.count + 1}`, pick(UNITS, "u1"), "main-abc1234"], "batch-1")
-      const answer = yield* run.probe(root(), ORCHESTRATE, { action: "verify", batch })
-      checked(answer, false, `verify ${batch}`)
-      expect(answer.text).toContain(`subagent({ agent: "verifier", description: "verifier ${batch} r1"`)
+      const batch = pick([Option.some(`batch-${batches.count + 1}`), Option.some(pick(UNITS, "u1")), Option.some("main-abc1234"), Option.none<string>(), Option.none<string>()], Option.none<string>())
+      const answer = yield* run.probe(root(), ORCHESTRATE, Option.match(batch, { onNone: () => ({ action: "verify" }), onSome: (named) => ({ action: "verify", batch: named }) }))
+      checked(answer, false, `verify ${Option.getOrElse(batch, () => "main")}`)
+      if (Option.isSome(batch)) {
+        expect(answer.text).toContain(`subagent({ agent: "verifier", description: "verifier ${batch.value} r1"`)
+        return
+      }
+      // A verify of main: named for the head, its batch file written (with a run dir) from the base the model names.
+      const head = Option.getOrElse(Option.map(Arr.last(run.memory.main.line()), (entry) => entry.sha), () => "")
+      const name = `batch-main-${head.slice(0, 7)}`
+      expect(answer.text).toContain(`subagent({ agent: "verifier", description: "verifier ${name} r1"`)
+      const file = batchFileIn(answer.text)
+      if (model.logs.size === 0) {
+        expect(answer.text).toContain("No run dir is known, so no batch file was written")
+        return
+      }
+      expect(file).toEqual(Option.some(`${RUN_DIR}/verify-main-${head.slice(0, 7)}/${name}.md`))
+      const text = Option.getOrElse(Option.map(Option.flatMap(file, (path) => Option.fromUndefinedOr(run.files.get(path))), (written) => written.text), () => "")
+      const lines = text.split("\n")
+      expect(lines).toContain(`Base: ${baseIn(run, model)}`)
+      expect(lines).toContain(`Head: ${head}`)
+      expect(lines.filter((line) => /^Heads: dotfiles=[0-9a-f]{40} fork=[0-9a-f]{40}$/.test(line))).toEqual([`Heads: dotfiles=${head} fork=${FORK_HEAD}`])
+      expect(Result.isSuccess(headsOf(text))).toBe(true)
+      model.main.made.set(name, { name, file: Option.getOrElse(file, () => ""), head, total: model.main.total })
     })
 
     const commands: ReadonlyArray<readonly [number, () => Effect.Effect<unknown, unknown>]> = [
@@ -236,10 +336,109 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
         () => commands[0] ?? [0, () => Effect.void],
       )
       yield* chosen[1]()
-      // Status is the model's rendering, from whichever root asks, after every command.
+      // Status is the model's rendering, from whichever root asks, after every command: its due line first when one is due.
       const status = yield* run.probe(root(), ORCHESTRATE, { action: "status" })
-      expect([status.error, status.text]).toEqual([false, rendered(model)])
+      const due = dueChecked(model, status.text)
+      expect([status.error, due.due, due.rest]).toEqual([false, Option.isSome(duePrefix(model)), rendered(model)])
     }
+  }),
+)
+
+// ── B3: main since the last verify ──
+
+/**
+ * A unit laned, its round-1 request written (as its implementor writes it) and landed alone by the orchestrate tool:
+ * the land's answer. Only the first unit runs an implementor, so the run has a log (a run dir) at the least cost.
+ */
+const landOne = Effect.fn("B3.landOne")(function* (run: Run, root: string, unit: string, implemented: boolean) {
+  yield* run.probe(root, ORCHESTRATE, { action: "lane", unit })
+  if (implemented) yield* implement(run, root, unit, 1, `implementor ${unit} r1`, "ready")
+  else run.files.set(`${RUN_DIR}/${unit}/round-1-request.md`, { text: `Head: ${requestHeadFor(unit, 1)}\n`, at: run.world.now() })
+  return yield* run.probe(root, ORCHESTRATE, { action: "land", units: [unit] })
+})
+
+/** The due line's words for `n` merges, up to its parenthesis. */
+const dueStart = (n: number) => `orchestrate: ${n} merges on main since the last verify (`
+
+seeded("B3: after the fifth land since a verify, land and status start with the due line; a verify with a verdict ends it; restarts and new roots change no answer", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    // Main holds three merges from before the run: the run's second land is the fifth.
+    const run = yield* boot(seed, true, { merges: 3 })
+    const roots = [yield* run.world.session(WORK)]
+    const root = () => roots.at(-1) ?? ""
+    const random = rng(seed)
+    /** A restart, a new root, both or neither, as the seed picks, between two commands. */
+    const shuffle = Effect.fn("B3.shuffle")(function* () {
+      if (random() < 0.4) yield* run.world.restart
+      if (random() < 0.4) roots.push(yield* run.world.session(WORK))
+    })
+    for (const n of [1, 2]) {
+      const landed = yield* landOne(run, root(), `u${n}`, n === 1)
+      expect([n, landed.error, landed.text.split("\n")[0]]).toEqual([n, false, expect.not.stringContaining("since the last verify")])
+      yield* shuffle()
+    }
+    // The fifth land is in: the next status and land start with the due line, N = 5 (the first verify takes the five back).
+    const status = yield* run.probe(root(), ORCHESTRATE, { action: "status" })
+    expect(status.text.split("\n")[0]).toStartWith(`${dueStart(5)}none recorded`)
+    expect(status.text).toContain('next: orchestrate({ action: "verify" }) (5 merges on main since the last verify).')
+    yield* shuffle()
+    const sixth = yield* landOne(run, root(), "u3", false)
+    expect([sixth.error, sixth.text.split("\n")[0]]).toEqual([false, expect.stringContaining(dueStart(5))])
+    yield* shuffle()
+    // The verify of main: its batch file's base is the fifth merge back, its head main's head, its Heads line the fleet's.
+    const line = run.memory.main.line()
+    const head = Option.getOrElse(Option.map(Arr.last(line), (entry) => entry.sha), () => "")
+    const verified = yield* run.probe(root(), ORCHESTRATE, { action: "verify" })
+    const name = `batch-main-${head.slice(0, 7)}`
+    expect([verified.error, verified.text]).toEqual([false, expect.stringContaining(`subagent({ agent: "verifier", description: "verifier ${name} r1"`)])
+    const file = `${RUN_DIR}/verify-main-${head.slice(0, 7)}/${name}.md`
+    const text = run.files.get(file)?.text ?? ""
+    expect(text.split("\n")).toContain(`Base: ${Option.getOrElse(Option.map(Arr.get(line.toReversed(), VERIFY_EVERY), (entry) => entry.sha), () => "")}`)
+    expect(text.split("\n")).toContain(`Head: ${head}`)
+    expect(headsOf(text)).toEqual(Result.succeed({ dotfiles: head, fork: FORK_HEAD }))
+    // Its units: those whose request head the range holds (u1 to u3); the earlier merges hold no unit's.
+    for (const unit of ["u1", "u2", "u3"]) expect(text).toContain(`- ${unit} r1: unit dir ${RUN_DIR}/${unit}`)
+    expect(text.split("\n").filter((each) => / r\d+: unit dir /.test(each))).toHaveLength(3)
+    yield* shuffle()
+    // The verifier hands back a verdict, its findings beside the batch file: no due line after it.
+    const verdict = Option.getOrElse(Arr.get(["accepted", "changes"], Math.floor(random() * 2)), () => "accepted")
+    const findings = file.replace(/\.md$/, "-findings.md")
+    run.files.set(findings, { text: `verifier ${name} r1: ${verdict} ${findings}\n`, at: stampOf(run) })
+    yield* run.probe(root(), "subagent", { agent: "verifier", description: `verifier ${name} r1`, prompt: `${HAND_BACK} verifier ${name} r1: ${verdict} ${findings}`, background: true })
+    yield* run.world.until(run.settled, 60_000)
+    yield* shuffle()
+    const after = yield* run.probe(root(), ORCHESTRATE, { action: "status" })
+    expect(after.text).not.toContain("since the last verify (")
+    const seventh = yield* landOne(run, root(), "u4", false)
+    expect([seventh.error, seventh.text]).toEqual([false, expect.not.stringContaining("since the last verify (")])
+    // The next verify counts from the head the last one verified.
+    const next = yield* run.probe(root(), ORCHESTRATE, { action: "verify" })
+    const nextHead = Option.getOrElse(Option.map(Arr.last(run.memory.main.line()), (entry) => entry.sha), () => "")
+    expect(next.error).toBe(false)
+    expect((run.files.get(`${RUN_DIR}/verify-main-${nextHead.slice(0, 7)}/batch-main-${nextHead.slice(0, 7)}.md`)?.text ?? "").split("\n")).toContain(`Base: ${head}`)
+  }),
+)
+
+seeded("B3: a land of a unit with an open changes verdict lands and warns; once a newer round's request is in, it does not", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true)
+    const root = yield* run.world.session(WORK)
+    yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "a" })
+    yield* implement(run, root, "a", 1, "implementor a r1", "ready")
+    const findings = `${RUN_DIR}/a/round-1-findings.md`
+    run.files.set(findings, { text: `verifier batch-1 r1: changes ${findings}\n`, at: stampOf(run) })
+    const from = run.memory.landing.steps.length
+    const landed = yield* run.probe(root, ORCHESTRATE, { action: "land", units: ["a"] })
+    expect([landed.error, landed.text.split("\n")[0]]).toEqual([false, `orchestrate: warning: a lands with r1's changes verdict open (${findings}).`])
+    expect(mergedSince(run, from)).toEqual(["feat/a"])
+    // The log follows the land.
+    expect(run.logs.get("a")).toEqual({ state: "merged", round: 1 })
+    // Round 2's request answers the verdict: its land warns of nothing.
+    yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "b" })
+    yield* implement(run, root, "b", 2, "implementor b r2", "ready")
+    run.files.set(`${RUN_DIR}/b/round-1-findings.md`, { text: "verifier batch-1 r1: changes /x\n", at: stampOf(run) })
+    const quiet = yield* run.probe(root, ORCHESTRATE, { action: "land", units: ["b"] })
+    expect([quiet.error, quiet.text]).toEqual([false, expect.not.stringContaining("orchestrate: warning:")])
   }),
 )
 

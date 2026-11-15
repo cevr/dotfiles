@@ -15,13 +15,17 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
   - `land` lands the named units' Rifts (`{ unit, path }` as given), or with no units every unit the run tables show `ready` with a lane;
   - `verify` makes the verifier's clean checkout and answers the one subagent call that starts it;
   - `status` names each unit's state, its lane and one `next:` call.
+- `derived-state`: a unit's state is its files and git, never kept: the skill's `status.ts <run dir> --repo <checkout>` prints `merged <head>` for a unit whose newest request's head is on the default branch (origin's, else `main`, else `master`), whatever its log says, `dropped` and the log's state otherwise, and a `Verdict` column (`changes r1`); merged and dropped units only with `--all`. The status mod reads each `orchestrate.dir` run beside `tmp/orchestrate/*`. After a land that pushed, each landed unit's log moves to `merged <commit>`.
+- `verify-main`: `orchestrate({ action: "verify" })` with no batch verifies main from the last verified head (the newest `verify-*/batch-*.md` whose findings hold a verdict; with none, the fifth first-parent merge back) to origin's head: it writes `<run dir>/verify-main-<short>/batch-main-<short>.md` (`Base:`, `Head:`, `Heads:` with `fleet`, the merges, the units in the range) and answers `verifier batch-main-<short> r1`; an accepted verdict publishes the fleet target from that file (git/fleet.ts `batchFileOf`).
+- `verify-due`: a land's and a status's answer start with `orchestrate: <N> merges on <branch> since the last verify (…): orchestrate({ action: "verify" }).` at 5 merges since the last verify, or one merge once it is 24 h old; and a land of a unit whose newest findings say `changes` (not older than its newest request) starts with `orchestrate: warning: <unit> lands with r<N>'s changes verdict open (<path>).` Neither refuses.
 - `idle-root`: a root that ends its turn with nothing of its own going while units are in plan, implement or verify, or in `ready`, is steered once per idle period, with `idle with units in plan, implement or verify: …` or `… ready to land: …`. It is never steered while the owner drafts, while a question to him is open, or once it has a `waiting` queue item.
 
 ## How to get to it (user POV)
 
 - The root agent's `subagent` call with a role and a description in the skill's form.
 - The rift tool's `{ "action": "land", "rifts": [...] }` (on the owner's machines only).
-- The root's `orchestrate` tool: `{ "action": "lane", "unit": "billing" }`, `{ "action": "land" }`, `{ "action": "verify", "batch": "batch-7" }`, `{ "action": "status" }`.
+- The root's `orchestrate` tool: `{ "action": "lane", "unit": "billing" }`, `{ "action": "land" }`, `{ "action": "verify" }`, `{ "action": "verify", "batch": "batch-7" }`, `{ "action": "status" }`.
+- `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir> --repo <checkout> [--all]` in a shell.
 - A compaction of a root that runs units (the note).
 
 ## Driving it with the world
@@ -30,11 +34,12 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 - **States:** default (a run of lanes, starts, hand-backs and lands), a restart, a new root, a compaction. Error is `cmd/orchestrate/orchestrate-faults.sim.test.ts`. Loading is `n/a`.
 - **World suites:** `cmd/orchestrate/orch-tools.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`, `cmd/orchestrate/idle-root-property.sim.test.ts`, `cmd/orchestrate/orchestrate-latch.sim.test.ts`
 - **Code:** `mods/orchestrate/`, `cmd/orchestrate/`, `mods/rift/`, `cmd/rift/`, `sim/`
-- **Regression:** `mods/orchestrate/tools.test.ts` (the lane name rule, status and land resolution), `cmd/orchestrate/server.test.ts`, `cmd/rift/rpc.test.ts` (the rift plugin's RPC, which the `orchestrate` tool's lanes and lands go through).
+- **Regression:** `mods/orchestrate/tools.test.ts` (the lane name rule, status and land resolution, B4's `next`, the due rule, the batch file's text), `mods/status/process/run-tables.test.ts` (B1: the real `status.ts` against a reference model over generated histories in a scratch repository; `orchestrate.dir` runs), `skills/orchestrate/scripts/status.test.ts` (B2, from the dotfiles root), `cmd/orchestrate/server.test.ts`, `cmd/rift/rpc.test.ts` (the rift plugin's RPC, which the `orchestrate` tool's lanes and lands go through).
 
-1. **Nothing refused.** A1 of `orch-tools.sim.test.ts`: up to 16 seeded commands (lanes, starts with `(rift: …)`, `(folds: …)`, `(departs: …)`, verifiers named for a batch, a unit or `main-<sha>`, lands, restarts, new roots); no call fails but the model's own, each land reaches the rift plugin with the Rifts the model resolves, and `status` equals the model's rendering after every command.
+1. **Nothing refused.** A1 of `orch-tools.sim.test.ts`: up to 16 seeded commands (lanes, starts with `(rift: …)`, `(folds: …)`, `(departs: …)`, verifiers named for a batch, a unit or `main-<sha>`, lands, verifies of a batch and of main, restarts, new roots, over a main that holds zero to six merges from before the run); no call fails but the model's own, each land reaches the rift plugin with the Rifts the model resolves, a verify of main's batch file has the model's base and the fleet's `Heads:` line, and `status` equals the model's rendering after every command, its due line first when the model's merge count says one is due.
 2. **A restart and a new root.** A2: lane `a`, `a` hands back ready, a restart, a new root lands `a`.
 3. **A warning, not a refusal.** A3: a land of a blocked and an implementing unit lands both, each warned first.
+4. **Verify due.** B3: main holds three merges from before the run, then two lands, restarts and new roots between them; status and the next land start with the due line (N = 5); `verify` writes the batch file from the fifth merge back with the units in range; a verdict beside it ends the warning; the next verify starts from that head. A land with an open `changes` verdict warns and lands, and its log moves to merged.
 
 ## Driving it with real OpenCode
 
@@ -49,6 +54,7 @@ The land itself is never driven on a scratch server (`verify:seed` refuses the r
 
 ## Gotchas
 
-- The run tables come from the status plugin of the repository's location; with no status plugin, or no `tmp/orchestrate/<run>`, `status` says no run holds a unit and a land with no units has nothing to land.
+- The run tables come from the status plugin of the repository's location; with no status plugin, or no `tmp/orchestrate/<run>` and no `orchestrate.dir`, `status` says no run holds a unit, a land with no units has nothing to land, and no verify is ever due.
+- A unit merged by a squash (a PR repository) puts no request head on the default branch: it keeps its log's state until the root logs `merged`.
 - `(departs: …)` and `(folds: …)` still parse in a description and mean nothing; `departs` still decodes in a land's input.
 - A Codex fallback never implements: a held implementor start latches and waits.

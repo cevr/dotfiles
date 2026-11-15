@@ -9,6 +9,7 @@ import type { Holds, Run } from "./idle.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
+import type { Merge, UnitFiles, Verified } from "./tools.ts"
 import type { Transition } from "./unit-log.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
@@ -204,6 +205,46 @@ export class StepLog extends Context.Service<
  * be read are none.
  */
 export class Runs extends Context.Service<Runs, { readonly list: Effect.Effect<ReadonlyArray<Run>> }>()("dotfiles-opencode/orchestrate/Runs") {}
+
+/**
+ * The default branch of a checkout, as git reads it there (local refs as they are). Never fails: what cannot be
+ * read is none, or nothing.
+ * - `tip`: the default branch's name (origin's `origin/HEAD`, else `main`, else `master`) and the commit `at` names
+ *   (default: that branch's head); none outside a repository, with no default branch, or for a commit git does not know.
+ * - `merges`: the first-parent merges of `head`, newest first, back to `base` (excluded; none: from the start), at most `limit`.
+ * - `holds`: whether `commit` is `head` or one of its ancestors.
+ * - `commitOf`: the full commit `rev` names in `checkout`.
+ */
+export class MainLine extends Context.Service<
+  MainLine,
+  {
+    readonly tip: (checkout: string, at: Option.Option<string>) => Effect.Effect<Option.Option<{ readonly branch: string; readonly head: string }>>
+    readonly merges: (checkout: string, head: string, base: Option.Option<string>, limit: number) => Effect.Effect<ReadonlyArray<Merge>>
+    readonly holds: (checkout: string, commit: string, head: string) => Effect.Effect<boolean>
+    readonly commitOf: (checkout: string, rev: string) => Effect.Effect<Option.Option<string>>
+  }
+>()("dotfiles-opencode/orchestrate/MainLine") {}
+
+/** A file the run dirs could not take. */
+export class RunFileUnwritten extends Schema.TaggedError<RunFileUnwritten>()("RunFileUnwritten", { path: Schema.String, message: Schema.String }) {}
+
+/**
+ * The runs' files, read on every call and never kept (tools.ts reads them):
+ * - `verified`: the newest `<run dir>/verify-*\/batch-*.md` of `runDirs` whose findings beside it
+ *   (`batch-*-findings.md`) hold a verdict line, by when that verdict was written: the head its `Head:` names.
+ * - `units`: each unit dir of a run dir (one holding log.md), with its newest request and findings.
+ * - `unit`: one unit dir's newest request and findings.
+ * - `write`: the one file the plugin writes, a verify's batch file, its directory made.
+ */
+export class RunFiles extends Context.Service<
+  RunFiles,
+  {
+    readonly verified: (runDirs: ReadonlyArray<string>) => Effect.Effect<Option.Option<Verified>>
+    readonly units: (runDir: string) => Effect.Effect<ReadonlyArray<UnitFiles>>
+    readonly unit: (unitDir: string) => Effect.Effect<UnitFiles>
+    readonly write: (path: string, text: string) => Effect.Effect<void, RunFileUnwritten>
+  }
+>()("dotfiles-opencode/orchestrate/RunFiles") {}
 
 /**
  * What the other plugins hold for a session: its wakes, its open questions

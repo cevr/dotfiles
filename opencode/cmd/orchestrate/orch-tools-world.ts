@@ -6,6 +6,8 @@
 // subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts drives it.
 import { Array as Arr, Effect, Layer, Option, Order, Schema } from "effect"
 import type { Asked } from "@dotfiles/opencode-orchestrate/memory/fleet"
+import type * as MemoryMainLine from "@dotfiles/opencode-orchestrate/memory/main-line"
+import type * as MemoryRunFiles from "@dotfiles/opencode-orchestrate/memory/run-files"
 import * as MemoryDebts from "@dotfiles/opencode-rift/memory/debts"
 import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
@@ -66,25 +68,80 @@ export const said = (message: World.Message): string => {
   }
 }
 
+/** The fleet's checkouts the plugin is loaded with, and the fork's checked-out commit. */
+export const FLEET = { dotfiles: "/scratch/dotfiles", fork: "/scratch/fork" }
+/** FNV-1a of `text` from `seed`, as 8 hex. */
+const fnv = (text: string, seed: number): string =>
+  Arr.reduce(Array.from(text), seed >>> 0, (hash, char) => Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0)
+    .toString(16)
+    .padStart(8, "0")
+
+/** A commit name for `what`: 40 hex, five FNV-1a hashes of it from different seeds, distinct in its first 7 for the world's names. */
+export const shaFor = (what: string): string => [0x811c9dc5, 0x050c5d1f, 0x2166136a, 0x6b43a9b5, 0x1b873593].map((seed) => fnv(what, seed)).join("")
+
+export const FORK_HEAD = shaFor("fork")
+
+/** The head a unit's round-N request names, as its implementor's Rift had it. */
+export const requestHeadFor = (unit: string, round: number): string => shaFor(`request ${unit} r${round}`)
+
+/**
+ * The default branch of the run's warm source, as its lands made it (memory/main-line.ts): a root commit, then one
+ * merge per branch each pushed land merged, oldest first. A merge takes in the head of its unit's newest request, as
+ * the run's files hold it when the land ran; the landing's push answers the push's last merge.
+ */
+const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number) => {
+  const line: Array<MemoryMainLine.Entry> = [{ sha: shaFor("root"), subject: "root", merged: [] }]
+  // The merges main held before the run: no unit of the run is in them.
+  for (let n = 1; n <= earlier; n += 1) line.push({ sha: shaFor(`earlier ${n}`), subject: `Merge branch 'feat/earlier-${n}'`, merged: [shaFor(`earlier tip ${n}`)] })
+  const pushes: Array<string> = []
+  const read = { steps: 0, pending: Arr.empty<string>() }
+  /** The newest request head of the unit a branch is named for (its last segment). */
+  const headOf = (branch: string): ReadonlyArray<string> => {
+    const unit = branch.split("/").at(-1) ?? branch
+    const rounds = [...files.keys()].flatMap((path) => Option.toArray(Option.map(Option.fromNullishOr(new RegExp(`^${RUN_DIR}/${unit}/round-(\\d+)-request\\.md$`).exec(path)?.[1]), Number)))
+    return Option.toArray(Option.map(Arr.last(rounds.toSorted((a, b) => a - b)), (round) => requestHeadFor(unit, round)))
+  }
+  const sync = () => {
+    for (const step of landing.steps.slice(read.steps)) {
+      if (step.startsWith("start ")) read.pending = []
+      if (step.startsWith("merge ")) read.pending.push(step.slice("merge ".length))
+      if (step.startsWith("push ") && read.pending.length > 0) {
+        for (const branch of read.pending) line.push({ sha: shaFor(`merge ${line.length} ${branch}`), subject: `Merge branch '${branch}'`, merged: Arr.match(headOf(branch), { onEmpty: () => [shaFor(`tip ${branch} ${line.length}`)], onNonEmpty: (heads) => heads }) })
+        pushes.push(line.at(-1)?.sha ?? "")
+        read.pending = []
+      }
+    }
+    read.steps = landing.steps.length
+    return line
+  }
+  return { line: sync, pushed: (push: number) => Option.getOrElse(Arr.get(pushes, push - 1), () => shaFor(`push ${push}`)) }
+}
+
 /** The memory world under every rift plugin copy: the two warm sources, their Rifts, the landing, the debts. */
-const riftWorldOf = () => {
+const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number) => {
   const landing = MemoryLanding.world({
     [WORK]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
     [PLAIN]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
   })
+  const main = mainLineOf(landing, files, earlier)
+  // A push answers its last merge's commit, as the line holds it.
+  landing.headOf = (push) => {
+    main.line()
+    return main.pushed(push)
+  }
   const base = MemoryRifts.world([WORK, PLAIN])
-  // `origin/HEAD` reads as the last push's commit, as `git rev-parse` reads it after a land; any other commit is itself.
+  // `origin/HEAD` reads as the default branch's head, as `git rev-parse` reads it after a land; any other commit is itself.
   const rifts: MemoryRifts.World = {
     ...base,
     commitOf: (at) =>
       Option.some(
         Option.getOrElse(
-          Option.map(Option.liftPredicate(at, (commit) => commit === ORIGIN), () => landing.headOf(landing.pushes)),
+          Option.flatMap(Option.liftPredicate(at, (commit) => commit === ORIGIN), () => Option.map(Arr.last(main.line()), (entry) => entry.sha)),
           () => at,
         ),
       ),
   }
-  return { rifts, landing, debts: MemoryDebts.world() }
+  return { rifts, landing, debts: MemoryDebts.world(), main }
 }
 
 /** A tool's answer: its text, and whether it failed (a refusal, or the tool's own failure). */
@@ -102,12 +159,18 @@ const answerAfter = (messages: ReadonlyArray<World.Message>, from: number): Answ
     (): Answer => ({ text: "", error: true }),
   )
 
-/** The status script's table for the logs, as status.ts prints it: one row per unit, by name. */
+/** Whether a log's state closes its unit: status.ts leaves a merged or dropped unit out of its default table. */
+export const isClosed = (log: UnitLog): boolean => /^(merged|dropped)\b/.test(log.state)
+
+/** The status script's table for the logs, as status.ts prints it by default: one row per open unit, by name. */
 export const tableOf = (logs: ReadonlyMap<string, UnitLog>): string =>
   [
-    "| Unit | State | Round | Since | Cause |",
-    "| --- | --- | --- | --- | --- |",
-    ...[...logs].toSorted(([a], [b]) => Order.String(a, b)).map(([unit, log]) => `| ${unit} | ${log.state} | ${log.round} | ${SINCE} | log.md |`),
+    "| Unit | State | Round | Since | Cause | Verdict |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...[...logs]
+      .filter(([, log]) => !isClosed(log))
+      .toSorted(([a], [b]) => Order.String(a, b))
+      .map(([unit, log]) => `| ${unit} | ${log.state} | ${log.round} | ${SINCE} | log.md |  |`),
     "",
   ].join("\n")
 
@@ -115,6 +178,8 @@ export const tableOf = (logs: ReadonlyMap<string, UnitLog>): string =>
 export interface BootOptions {
   readonly now?: string
   readonly models?: ReadonlyArray<World.CatalogModel>
+  /** The merges the default branch holds before the run (none by default). */
+  readonly merges?: number
 }
 
 /** The rift plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the rift plugin alone). */
@@ -123,7 +188,9 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   // The units' logs: written by the orchestrate plugin, as log.ts writes log.md; read by the status script.
   const logs = new Map<string, UnitLog>()
   const fleet: Array<Asked> = []
-  const memory = riftWorldOf()
+  // The runs' files (requests, findings, batch files), outside every plugin copy: a restart keeps them, as a disk does.
+  const files: MemoryRunFiles.Files = new Map()
+  const memory = riftWorldOf(files, options.merges ?? 0)
   const calls = { count: 0 }
   /** The tool names the last request offered, as the registry listed them. */
   const offered: Array<string> = []
@@ -182,13 +249,19 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   )
   const plugin = Plugins.orchestrate({
     fleet,
+    files,
+    mainLine: (checkout) => Option.liftPredicate({ branch: "main", line: memory.main.line() }, () => checkout === WORK),
+    refs: (checkout, rev) =>
+      Option.orElse(Option.liftPredicate(FORK_HEAD, () => checkout === FLEET.fork && rev === "HEAD"), () =>
+        Option.liftPredicate(rev, (sha) => checkout === FLEET.dotfiles && /^[0-9a-f]{40}$/.test(sha)),
+      ),
     unitLogs: {
       find: ({ unit }) => Effect.succeed(`${RUN_DIR}/${unit}`),
       append: (dir, transition) => Effect.sync(() => void logs.set(dir.split("/").at(-1) ?? transition.unit, { state: transition.to, round: transition.round })),
     },
   })
   for (const directory of [WORK, PLAIN]) {
-    if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: { dotfiles: "/scratch/dotfiles", fork: "/scratch/fork" } } })
+    if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET } })
     yield* world.load(rift, { directory, options: { workrift: false } })
   }
   // The status plugin in the units' location only: the simulated host keeps one RPC per id, the last copy registered,
@@ -206,7 +279,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   })
   /** The children of a session, in the order made. */
   const children = (parent: string) => [...world.sessions.values()].filter((session) => Option.contains(session.parentID, parent))
-  return { world, offered, logs, fleet, memory, woken, probe, idle, settled, children }
+  return { world, offered, logs, fleet, files, memory, woken, probe, idle, settled, children }
 })
 
 export type Run = Effect.Success<ReturnType<typeof boot>>

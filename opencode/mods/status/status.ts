@@ -21,12 +21,13 @@ export const AgentCall = Schema.Struct({
 })
 export type AgentCall = typeof AgentCall.Type
 
-/** One unit of an orchestrate run, as the orchestrate skill's status script derives it from the unit's log. */
+/** One unit of an orchestrate run, as the orchestrate skill's status script derives it from the unit's files and git; `verdict` (`changes r1`) when its newest findings state one. */
 export const Unit = Schema.Struct({
   unit: Schema.String,
   state: Schema.String,
   round: Schema.String,
   since: Schema.String,
+  verdict: Schema.optionalKey(Schema.String),
 })
 export type Unit = typeof Unit.Type
 

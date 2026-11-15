@@ -36,6 +36,8 @@ import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
+import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
+import * as RunFilesTest from "@dotfiles/opencode-orchestrate/memory/run-files"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
@@ -158,6 +160,11 @@ export interface OrchestrateDoubles {
   readonly unitLogs?: Parameters<typeof UnitLogs.of>[0]
   /** The fleet records the plugin asked for, in order (memory/fleet.ts). */
   readonly fleet?: Array<FleetTest.Asked>
+  /** Each checkout's default branch (memory/main-line.ts), and the other refs it reads; none by default. */
+  readonly mainLine?: MainLineTest.World
+  readonly refs?: MainLineTest.Refs
+  /** The runs' files (memory/run-files.ts); none by default. */
+  readonly files?: RunFilesTest.Files
 }
 
 /** A call log line as the file holds it: JSON. */
@@ -192,6 +199,8 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
       SkillTest.skill({ history: [] }),
       SkillTest.records({ seen: new Map() }),
       FleetTest.layer(doubles.fleet ?? []),
+      MainLineTest.layer(doubles.mainLine ?? (() => Option.none()), doubles.refs),
+      RunFilesTest.layer(doubles.files ?? new Map()),
     ),
   )
 }

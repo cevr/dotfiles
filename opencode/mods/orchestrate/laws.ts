@@ -1,7 +1,7 @@
 // What every implementation of a contract in service.ts owes, as shared test
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, type Scope } from "effect"
+import { Array as Arr, Effect, Layer, Option, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
 import { type Holds, NO_HOLDS, type Run } from "./idle.ts"
@@ -11,10 +11,12 @@ import {
   type LatchRequest,
   Latches,
   type LatchStart,
+  MainLine,
   Models,
   type Offered,
   PoolPace,
   RootHolds,
+  RunFiles,
   Runs,
   Sessions,
   Steer,
@@ -24,6 +26,10 @@ import {
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
+
+/** A law over a probe `make` gives within the test's scope, its body on the probe's layer. */
+const scenario = <P, S, E>(make: Effect.Effect<P, never, Scope.Scope>, layerOf: (probe: P) => Layer.Layer<S>, body: (probe: P) => Effect.Effect<void, E, S>) =>
+  Effect.runPromise(Effect.scoped(Effect.flatMap(make, (probe) => body(probe).pipe(Effect.provide(layerOf(probe))))))
 
 // ── CallLog ──
 
@@ -475,8 +481,7 @@ export interface UnitLogsProbe {
 /** `make` gives a fresh, empty checkout within the test's scope. */
 export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, never, Scope.Scope>) =>
   describe(`${name} keeps the UnitLogs laws`, () => {
-    const scoped = (body: (probe: UnitLogsProbe) => Effect.Effect<void, never, UnitLogs>) =>
-      Effect.runPromise(Effect.scoped(Effect.flatMap(make, (probe) => body(probe).pipe(Effect.provide(probe.layer)))))
+    const scoped = (body: (probe: UnitLogsProbe) => Effect.Effect<void, never, UnitLogs>) => scenario(make, (probe) => probe.layer, body)
 
     test("a unit is found at a path named for it, absolute or relative to the directory, else under the checkout's runs", () =>
       scoped((probe) =>
@@ -593,7 +598,7 @@ export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<
         units: [
           { unit: "alpha", state: "implement" },
           { unit: "beta", state: "merged 1234567" },
-          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z" },
+          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z", round: "2", verdict: "changes r1" },
         ],
       },
       { name: "p2", units: [] },
@@ -673,6 +678,139 @@ export const steerLaws = (
           const refused = yield* Effect.flip((yield* Steer).nudge("root", "line"))
           expect(refused._tag).toBe("NudgeRefused")
           expect(refused.message).toContain("session not found")
+        }),
+      ))
+  })
+
+// ── MainLine ──
+
+/** A history a MainLine probe made: its checkout, its first-parent line (oldest first) and the tips its merges took in. */
+export interface MainLineHistory {
+  readonly checkout: string
+  readonly line: ReadonlyArray<string>
+  readonly tips: ReadonlyArray<string>
+}
+
+/** A default branch under test: repositories made as git would hold them, origin's default branch moved, and a path that is no repository. */
+export interface MainLineProbe {
+  readonly layer: Layer.Layer<MainLine>
+  /** A checkout named `name` on `branch`: a root commit, then `merges` merges of one branch commit each. */
+  readonly repository: (name: string, branch: string, merges: number) => Effect.Effect<MainLineHistory>
+  /** Point the checkout's `origin/HEAD` at `sha`, a commit of its line. */
+  readonly origin: (checkout: string, sha: string) => Effect.Effect<void>
+  /** A directory that is no repository. */
+  readonly plain: Effect.Effect<string>
+}
+
+const at = (list: ReadonlyArray<string>, index: number) => Option.getOrElse(Arr.get(list, index), () => "")
+
+/** `make` gives a fresh probe within the test's scope. */
+export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, never, Scope.Scope>) =>
+  describe(`${name} keeps the MainLine laws`, () => {
+    test("one history answers its tip, first-parent merges, ancestry and commits", () =>
+      scenario(make, (probe) => probe.layer, (probe) =>
+        Effect.gen(function* () {
+          const main = yield* MainLine
+          const { checkout, line, tips } = yield* probe.repository("same", "main", 7)
+          const head = at(line, line.length - 1)
+          expect(yield* main.tip(checkout, Option.none())).toEqual(Option.some({ branch: "main", head }))
+          expect(yield* main.tip(checkout, Option.some(at(line, 3)))).toEqual(Option.some({ branch: "main", head: at(line, 3) }))
+          const all = yield* main.merges(checkout, head, Option.none(), 100)
+          expect(all.map((merge) => merge.sha)).toEqual(line.slice(1).toReversed())
+          expect(all.map((merge) => merge.parent)).toEqual(line.slice(0, -1).toReversed())
+          expect(Option.map(Arr.head(all), (merge) => merge.subject)).toEqual(Option.some("Merge branch 'feat/u6'"))
+          expect(yield* main.merges(checkout, head, Option.none(), 6)).toHaveLength(6)
+          expect((yield* main.merges(checkout, head, Option.some(at(line, 4)), 100)).map((merge) => merge.sha)).toEqual(line.slice(5).toReversed())
+          expect([yield* main.holds(checkout, at(tips, 2), head), yield* main.holds(checkout, at(tips, 5), at(line, 3))]).toEqual([true, false])
+          expect(yield* main.commitOf(checkout, head)).toEqual(Option.some(head))
+        }),
+      ))
+
+    test("the default branch is origin's, else main, else master; none with neither, at a commit it lacks, or outside a repository", () =>
+      scenario(make, (probe) => probe.layer, (probe) =>
+        Effect.gen(function* () {
+          const main = yield* MainLine
+          const master = yield* probe.repository("master", "master", 1)
+          expect(yield* main.tip(master.checkout, Option.none())).toEqual(Option.some({ branch: "master", head: at(master.line, 1) }))
+          const trunk = yield* probe.repository("trunk", "trunk", 1)
+          expect(yield* main.tip(trunk.checkout, Option.none())).toEqual(Option.none())
+          // origin's default branch, as the checkout last fetched it, wins over a local main that moved on.
+          const both = yield* probe.repository("origin", "main", 3)
+          yield* probe.origin(both.checkout, at(both.line, 1))
+          expect(yield* main.tip(both.checkout, Option.none())).toEqual(Option.some({ branch: "main", head: at(both.line, 1) }))
+          expect(yield* main.tip(both.checkout, Option.some("f".repeat(40)))).toEqual(Option.none())
+          const plain = yield* probe.plain
+          expect([yield* main.tip(plain, Option.none()), yield* main.merges(plain, "HEAD", Option.none(), 5), yield* main.holds(plain, "a", "b")]).toEqual([Option.none(), [], false])
+        }),
+      ))
+  })
+
+// ── RunFiles ──
+
+/** The runs' files under test: a root for run dirs, a way to write a file as of a time, to read one back, and a path no write can take. */
+export interface RunFilesProbe {
+  readonly layer: Layer.Layer<RunFiles>
+  /** An empty directory, absolute, with no trailing slash. */
+  readonly root: string
+  /** Write `text` at `path`, its directories made, last written at `when` (epoch ms, whole seconds). */
+  readonly put: (path: string, text: string, when: number) => Effect.Effect<void>
+  /** A file's text; none when there is none. */
+  readonly read: (path: string) => Effect.Effect<Option.Option<string>>
+  /** A path under which nothing can be written, when the store has one. */
+  readonly unwritable: Effect.Effect<Option.Option<string>>
+}
+
+const lawSha = (n: number) => n.toString(16).padStart(40, "0")
+const LAW_T0 = Date.parse("2026-11-14T10:00:00Z")
+
+/** A run dir's files, by path under it, and when each was written (minutes after LAW_T0). */
+const RUN_FILES: ReadonlyArray<readonly [string, string, number]> = [
+  ["a/log.md", "2026-11-14T10:00Z implement → ready r2\n", 0],
+  ["a/round-1-request.md", `Head: ${lawSha(1)}\n`, 1],
+  ["a/round-2-request.md", `Range 1234567..${lawSha(2).slice(0, 9)}\n`, 2],
+  ["a/round-1-findings.md", "verifier batch-1 r1: changes /x\n", 3],
+  ["b/log.md", "2026-11-14T10:00Z plan → implement r1\n", 0],
+  ["c/spec.md", "a spec, no log: no unit dir\n", 0],
+  ["verify-old/batch-old.md", `# batch-old\nBase: ${lawSha(5)}\nHead: ${lawSha(6)}\n`, 4],
+  ["verify-old/batch-old-findings.md", "Verdict: ACCEPTED\n", 5],
+  ["verify-new/batch-new.md", `# batch-new\nHead: ${lawSha(7)}\n`, 6],
+  ["verify-new/batch-new-findings.md", "verifier batch-new r1: changes /x\n", 9],
+  ["verify-open/batch-open.md", `Head: ${lawSha(8)}\n`, 10],
+  ["verify-open/batch-open-findings.md", "still verifying\n", 11],
+]
+
+/** `make` gives a fresh probe within the test's scope. */
+export const runFilesLaws = (name: string, make: Effect.Effect<RunFilesProbe, never, Scope.Scope>) =>
+  describe(`${name} keeps the RunFiles laws`, () => {
+    test("a run dir answers its units, a unit's newest request and findings, and the newest verify with a verdict", () =>
+      scenario(make, (probe) => probe.layer, (probe) =>
+        Effect.gen(function* () {
+          const files = yield* RunFiles
+          const dir = `${probe.root}/run`
+          yield* Effect.forEach(RUN_FILES, ([path, text, minutes]) => probe.put(`${dir}/${path}`, text, LAW_T0 + minutes * 60_000), { discard: true })
+          expect((yield* files.units(dir)).map((unit) => unit.unit).toSorted()).toEqual(["a", "b"])
+          expect(yield* files.unit(`${dir}/a`)).toEqual({
+            unit: "a",
+            dir: `${dir}/a`,
+            request: Option.some({ round: 2, path: `${dir}/a/round-2-request.md`, head: Option.some(lawSha(2).slice(0, 9)) }),
+            findings: Option.some({ round: 1, path: `${dir}/a/round-1-findings.md`, verdict: Option.some("changes") }),
+          })
+          // The newest verify by its verdict's time; one whose findings hold no verdict line is none.
+          expect(yield* files.verified([dir, `${probe.root}/none`])).toEqual(Option.some({ file: `${dir}/verify-new/batch-new.md`, head: lawSha(7), at: LAW_T0 + 9 * 60_000 }))
+          expect(yield* files.verified([`${probe.root}/none`])).toEqual(Option.none())
+        }),
+      ))
+
+    test("a write makes its directory and reads back; a path the store cannot take fails as unwritten", () =>
+      scenario(make, (probe) => probe.layer, (probe) =>
+        Effect.gen(function* () {
+          const files = yield* RunFiles
+          const path = `${probe.root}/written/verify-main-abc1234/batch-main-abc1234.md`
+          yield* files.write(path, "# batch\n")
+          expect(yield* probe.read(path)).toEqual(Option.some("# batch\n"))
+          const unwritable = yield* probe.unwritable
+          const failed = yield* Effect.forEach(Option.toArray(unwritable), (blocked) => Effect.flip(files.write(blocked, "x")))
+          expect(failed.map((each) => each._tag)).toEqual(Option.toArray(Option.as(unwritable, "RunFileUnwritten")))
         }),
       ))
   })
