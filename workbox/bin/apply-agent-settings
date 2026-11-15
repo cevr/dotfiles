@@ -26,6 +26,8 @@ ln -sfn "$dotfiles_dir/codex/agents" "$HOME/.codex/agents"
 # The daemon the codex mod drives Codex threads through.
 mkdir -p "$HOME/.local/bin"
 ln -sf "$dotfiles_dir/claude/mods/codex/bridge/bridge.ts" "$HOME/.local/bin/codex-bridge"
+# Shows work in a Rex pane beside the caller's (opencode/mods/rex).
+ln -sf "$dotfiles_dir/opencode/cmd/rex/show.ts" "$HOME/.local/bin/rex-show"
 codex_system_config=$(mktemp)
 trap 'rm -f "$codex_system_config"' EXIT HUP INT TERM
 cat > "$codex_system_config" <<'EOF'
