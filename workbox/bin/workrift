@@ -19,6 +19,12 @@
 #   workrift.install  dependency install (default: from the lock file)
 #   workrift.warm     build step after the install, run by refresh and create
 #                     (default: none)
+#
+# The backend is one word in the backend file, `rift` (also when the file is
+# absent) or `work`. Under `work` (Ergo's workspaces, the binary $WORK, else
+# `work` on PATH) a warm source is a base `work init` made, and a workspace is
+# its `work new` clone under <base's folder>/.work/<base>/; the verbs and the
+# lines they print stay the same. Rollback is moving the file aside.
 
 set -eu
 
@@ -29,6 +35,12 @@ keep_file="${WORKRIFT_KEEP_FILE:-$config_dir/keep}"
 archive_root="${WORKRIFT_ARCHIVE:-$HOME/rift-archive}"
 prune_idle_minutes=2880
 archive_retention_days=30
+backend_file="${WORKRIFT_BACKEND_FILE:-$config_dir/backend}"
+work_bin="${WORK:-work}"
+# Under `work`: idle is two days, as above; the trash keeps a removed workspace
+# for seven, the window in which a switch back to Rift can move it back.
+work_idle=48h
+work_trash_age=168h
 
 usage() {
   cat <<'EOF'
@@ -47,6 +59,8 @@ usage: workrift <command>
 
 The warm source is WORKRIFT_SOURCE, else the Rift root of the current
 directory, else the warm source with the same origin as the current checkout.
+The backend file (WORKRIFT_BACKEND_FILE, else ~/.config/workrift/backend)
+holds rift or work; absent, it is rift. Under work a warm source is a work base.
 EOF
 }
 
@@ -80,6 +94,10 @@ resolve_source() {
   fi
 
   top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout or set WORKRIFT_SOURCE'
+  if [ "$backend" = work ]; then
+    work_resolve_source "$top"
+    return
+  fi
   if [ -f "$top/.rift" ]; then
     root=$(rift ancestors "$top" | tail -n 1)
     printf '%s\n' "${root:-$top}"
@@ -102,6 +120,10 @@ resolve_source() {
 
 require_source() {
   test -d "$1/.git" || fail "not a Git repository: $1"
+  if [ "$backend" = work ]; then
+    test -f "$1/work.toml" || fail "not a work base (run work init there): $1"
+    return 0
+  fi
   test -f "$1/.rift" || fail "not a Rift source: $1"
 }
 
@@ -268,19 +290,27 @@ create_workspace() {
   install_dependency_hooks "$source_path"
   lock_source "$source_path"
   advance_source "$source_path" "$main"
-  workspace=$(rift create "$source_path" --copy-all --name "$name")
-  exec 9>&-
-  # Git hooks print to stdout, and stdout carries only the workspace path.
-  if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$workspace" switch "$branch" >&2
-    if git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      git -C "$workspace" merge --ff-only "origin/$branch" >&2
-    fi
-  elif git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    git -C "$workspace" switch --track -c "$branch" "origin/$branch" >&2
+  work_deps_tag=
+  if [ "$backend" = work ]; then
+    made=$(work_new "$source_path" "$name" "$branch" "$main")
+    exec 9>&-
+    work_deps_tag=${made%%	*}
+    workspace=${made#*	}
   else
-    # --no-track so the first push sets the branch's own upstream, not the default branch.
-    git -C "$workspace" switch --no-track -c "$branch" "origin/$main" >&2
+    workspace=$(rift create "$source_path" --copy-all --name "$name")
+    exec 9>&-
+    # Git hooks print to stdout, and stdout carries only the workspace path.
+    if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$workspace" switch "$branch" >&2
+      if git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git -C "$workspace" merge --ff-only "origin/$branch" >&2
+      fi
+    elif git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      git -C "$workspace" switch --track -c "$branch" "origin/$branch" >&2
+    else
+      # --no-track so the first push sets the branch's own upstream, not the default branch.
+      git -C "$workspace" switch --no-track -c "$branch" "origin/$main" >&2
+    fi
   fi
 
   if [ -n "$gh_stack_metadata" ]; then
@@ -288,7 +318,11 @@ create_workspace() {
     printf 'Imported gh stack metadata from %s.\n' "$gh_stack_metadata" >&2
   fi
 
-  sync_dependencies "$workspace" >&2
+  # `work new` installs by the base's work.toml [deps] when it finds the lock
+  # changed; then workrift does not install a second time.
+  case "$work_deps_tag" in
+    '' | NoDeps | Unchanged) sync_dependencies "$workspace" >&2 ;;
+  esac
   # The copied build output matches the source's commit, not the branch. A warm
   # step that shares its cache with the source rebuilds only what differs.
   warm=$(warm_command "$source_path")
@@ -305,7 +339,11 @@ initialize_source() {
     fail "path is not empty: $source_path"
   fi
   git clone "$repository" "$source_path"
-  rift init --here "$source_path"
+  if [ "$backend" = work ]; then
+    work_init "$source_path"
+  else
+    rift init --here "$source_path"
+  fi
   refresh_source "$source_path"
 }
 
@@ -361,6 +399,10 @@ remove_workspace() {
     shift
   fi
   target=${1:-$PWD}
+  if [ "$backend" = work ]; then
+    work_remove "$target" "$with_children"
+    return
+  fi
   children=$(rift list "$target")
   # `rift remove` trashes the whole subtree, so a child workspace that someone
   # still uses would go with it.
@@ -454,6 +496,11 @@ prune_workspaces() {
   work_dir=$(mktemp -d)
   trap 'rm -rf "$work_dir"' EXIT
 
+  if [ "$backend" = work ]; then
+    work_prune "$dry_run"
+    return
+  fi
+
   sql "
     with recursive tree(id, parent_id, depth, path) as (
       select id, parent_id, 0, path from rift where parent_id is null
@@ -544,6 +591,270 @@ check_source() {
   printf 'Warm source checks passed: %s\n' "$source_path"
 }
 
+# The work backend. Every call names its base with WORK_BASE and runs in it:
+# inside an adopted Rift copy, work would otherwise take the copy for the base.
+# Variables here start with w_, since sh functions share one scope.
+
+work_in() {
+  w_in_base=$1
+  shift
+  (cd "$w_in_base" && WORK_BASE=$w_in_base "$work_bin" "$@")
+}
+
+work_bases() {
+  w_json=$("$work_bin" --json bases) || fail "work bases failed: $w_json"
+  printf '%s' "$w_json" | jq -r '.[]'
+}
+
+# The base's active workspaces, one a line: name, id, path, parent, since.
+work_workspaces() {
+  w_json=$(work_in "$1" --json list) || fail "work list failed in $1: $w_json"
+  printf '%s' "$w_json" |
+    jq -r '.[] | select(.state._tag == "Active") | [.name, .id, .path, .parent, (.since | tostring)] | @tsv'
+}
+
+# A [deps] table in the base's work.toml: work installs in each workspace.
+work_installs() {
+  [ "$backend" = work ] && [ -f "$1/work.toml" ] && grep -q '^\[deps\]' "$1/work.toml"
+}
+
+# The base whose registry holds the checkout at $1, else the base with its origin.
+work_resolve_source() {
+  w_top=$1
+  w_bases=$(work_bases)
+  w_old_ifs=$IFS
+  IFS='
+'
+  for w_base in $w_bases; do
+    if [ "$w_base" = "$w_top" ]; then
+      IFS=$w_old_ifs
+      printf '%s\n' "$w_base"
+      return
+    fi
+    w_rows=$(work_workspaces "$w_base")
+    if printf '%s\n' "$w_rows" | cut -f3 | grep -qxF "$w_top"; then
+      IFS=$w_old_ifs
+      printf '%s\n' "$w_base"
+      return
+    fi
+  done
+  IFS=$w_old_ifs
+
+  w_origin=$(normalized_origin "$w_top")
+  [ -n "$w_origin" ] || fail "no origin remote in $w_top"
+  w_matches=$(printf '%s\n' "$w_bases" | while IFS= read -r w_candidate; do
+    if [ -n "$w_candidate" ] && [ -d "$w_candidate" ] && [ "$(normalized_origin "$w_candidate")" = "$w_origin" ]; then
+      printf '%s\n' "$w_candidate"
+    fi
+  done)
+  case "$(printf '%s' "$w_matches" | grep -c .)" in
+    1) printf '%s\n' "$w_matches" ;;
+    0) fail "no warm source for $w_origin; run workrift init" ;;
+    *) fail "several warm sources for $w_origin; set WORKRIFT_SOURCE: $(printf '%s' "$w_matches" | tr '\n' ' ')" ;;
+  esac
+}
+
+# The base's work.toml stays out of Git's view, as step C's runbook does.
+work_init() {
+  if ! git -C "$1" ls-files --error-unmatch work.toml >/dev/null 2>&1; then
+    w_exclude=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude)
+    mkdir -p "$(dirname "$w_exclude")"
+    grep -qxF work.toml "$w_exclude" 2>/dev/null || printf 'work.toml\n' >>"$w_exclude"
+  fi
+  (cd "$1" && "$work_bin" init >/dev/null)
+}
+
+# `work new` of a workspace for branch $3 in the base $1, named $2, or $2-N
+# while a trashed workspace still holds the name; $4 is the default branch.
+# Prints what work's install did (its deps tag), a tab, and the path.
+# The branch continues the base's branch of that name, else origin's
+# (tracking it), else starts at origin's default branch, as with Rift.
+work_new() {
+  w_source=$1
+  w_name=$2
+  w_branch=$3
+  w_main=$4
+  w_json=$(work_in "$w_source" --json list) || fail "work list failed in $w_source: $w_json"
+  w_free=$w_name
+  w_n=2
+  while w_state=$(printf '%s' "$w_json" | jq -r --arg n "$w_free" '.[] | select(.name == $n) | .state._tag') && [ -n "$w_state" ]; do
+    case "$w_state" in
+      *Active*) fail "workspace already exists: $(printf '%s' "$w_json" | jq -r --arg n "$w_free" '.[] | select(.name == $n and .state._tag == "Active") | .path')" ;;
+    esac
+    w_free=$w_name-$w_n
+    w_n=$((w_n + 1))
+  done
+
+  w_track=false
+  if git -C "$w_source" show-ref --verify --quiet "refs/heads/$w_branch"; then
+    w_from=
+  elif git -C "$w_source" show-ref --verify --quiet "refs/remotes/origin/$w_branch"; then
+    w_from=origin/$w_branch
+    w_track=true
+  else
+    w_from=origin/$w_main
+  fi
+  # An install or hook work runs must not inherit the source lock.
+  w_made=$(work_in "$w_source" --json new -branch "$w_branch" ${w_from:+-from "$w_from"} "$w_free" 9>&-) ||
+    fail "work new failed for $w_branch in $w_source: $w_made"
+  w_path=$(printf '%s' "$w_made" | jq -r '.path')
+  [ -n "$w_path" ] && [ -d "$w_path/.git" ] || fail "work new made no workspace for $w_branch: $w_made"
+  printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail|Untrusted"))) | .[] | "workrift: work new: \(.)"' >&2
+
+  # Git hooks print to stdout, and stdout carries only the workspace path.
+  if [ "$w_track" = true ]; then
+    git -C "$w_path" branch --quiet --set-upstream-to "origin/$w_branch" "$w_branch" >&2
+  elif [ -z "$w_from" ] && git -C "$w_path" show-ref --verify --quiet "refs/remotes/origin/$w_branch"; then
+    git -C "$w_path" merge --ff-only "origin/$w_branch" >&2
+  fi
+  # work gives the clone's origin a push URL that refuses every push; a branch
+  # made here is pushed for review, as one made in a Rift is.
+  if [ "$(git -C "$w_path" config --get remote.origin.pushurl || true)" = no-push:workspaces-never-push-origin ]; then
+    git -C "$w_path" config --unset remote.origin.pushurl
+  fi
+  printf '%s\t%s\n' "$(printf '%s' "$w_made" | jq -r '.deps._tag')" "$w_path"
+}
+
+# The plugin's removal rule (workspace.ts): no uncommitted change, no commit on
+# no remote and in no branch of the base, and no stash entry of its own. $1 is
+# the workspace, $2 the base, $3 the stash commits of the folders above it.
+work_require_held() {
+  w_dirty=$(git -C "$1" status --porcelain -- . ':(exclude).rift')
+  [ -z "$w_dirty" ] || fail "$1 has uncommitted changes: $(printf '%s' "$w_dirty" | head -n 3 | tr '\n' ' ')"
+  w_tips=$(git -C "$2" for-each-ref --format='%(objectname)' refs/heads)
+  # shellcheck disable=SC2086 # one argument per tip
+  w_unpushed=$(git -C "$1" log --format='%h %s' HEAD --branches --ignore-missing --not --remotes $w_tips)
+  [ -z "$w_unpushed" ] || fail "$1 has commits on no remote and in no branch of $2: $(printf '%s' "$w_unpushed" | head -n 3 | tr '\n' ' ')"
+  for w_stash in $(git -C "$1" stash list --format=%H); do
+    printf '%s\n' "$3" | grep -qxF "$w_stash" || fail "$1 has stash entries of its own"
+  done
+}
+
+work_remove() {
+  w_target=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || fail "not a workspace: $1"
+  w_with_children=$2
+  w_base=
+  w_bases=$(work_bases)
+  w_old_ifs=$IFS
+  IFS='
+'
+  for w_candidate in $w_bases; do
+    w_json=$(work_in "$w_candidate" --json list) || fail "work list failed in $w_candidate: $w_json"
+    if printf '%s' "$w_json" | jq -e --arg p "$w_target" 'any(.[]; .path == $p and .state._tag == "Active")' >/dev/null; then
+      w_base=$w_candidate
+      break
+    fi
+  done
+  IFS=$w_old_ifs
+  [ -n "$w_base" ] || fail "not a workspace of any work base: $w_target"
+
+  # shellcheck disable=SC2016 # jq's variables
+  w_tree='[.[] | select(.state._tag == "Active")] as $all
+    | def below($p): ($all[] | select(.parent == $p) | .path) as $k | $k, below($k);
+    def above($p): ($all[] | select(.path == $p) | .parent) as $q | $q, above($q);'
+  w_id=$(printf '%s' "$w_json" | jq -r --arg p "$w_target" '.[] | select(.path == $p and .state._tag == "Active") | .id')
+  w_name=$(printf '%s' "$w_json" | jq -r --arg p "$w_target" '.[] | select(.path == $p and .state._tag == "Active") | .name')
+  w_children=$(printf '%s' "$w_json" | jq -r --arg p "$w_target" '.[] | select(.parent == $p and .state._tag == "Active") | .path')
+  # work rm -tree trashes the whole subtree, so a child workspace that someone
+  # still uses would go with it.
+  if [ -n "$w_children" ] && [ "$w_with_children" = false ]; then
+    fail "$w_target has child workspaces; pass --with-children to trash them too: $(printf '%s' "$w_children" | tr '\n' ' ')"
+  fi
+
+  # work rm refuses a workspace whose head no branch of its parent holds, even
+  # when origin holds it; the rule above is the owner's, and -abandon follows it.
+  w_doomed=$(printf '%s' "$w_json" | jq -r --arg p "$w_target" "$w_tree"' $p, below($p)')
+  for w_path in $w_doomed; do
+    w_above=$(printf '%s' "$w_json" | jq -r --arg p "$w_path" "$w_tree"' above($p)')
+    w_inherited=$(for w_up in $w_above; do git -C "$w_up" stash list --format=%H; done)
+    work_require_held "$w_path" "$w_base" "$w_inherited"
+  done
+
+  if [ "$w_with_children" = true ]; then
+    w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" -tree "$w_name") || fail "work rm failed for $w_target: $w_out"
+  else
+    w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" "$w_name") || fail "work rm failed for $w_target: $w_out"
+  fi
+}
+
+# Prune under work: each base runs `work gc -idle`, which removes the
+# workspaces no new, ready or sync touched for two days, keeping the work of
+# each in the base at refs/work/archive/NAME/ID (-archive), and empties only
+# trash older than seven days. gc has no pin, so a base that holds a path in
+# the keep file is left out whole. --dry-run lists the idle workspaces.
+work_prune() {
+  w_dry_run=$1
+  w_bases=$(work_bases)
+  if [ -z "$w_bases" ]; then
+    printf 'no workspaces registered\n'
+    return 0
+  fi
+  w_cutoff=$(($(date +%s) - prune_idle_minutes * 60))
+  w_failures=0
+  w_old_ifs=$IFS
+  IFS='
+'
+  for w_base in $w_bases; do
+    IFS=$w_old_ifs
+    work_workspaces "$w_base" >"$work_dir/workspaces.tsv"
+    w_kept=
+    is_pinned "$w_base" && w_kept=$w_base
+    while IFS='	' read -r _ _ w_path _ w_since; do
+      if is_pinned "$w_path"; then
+        w_kept="${w_kept:+$w_kept }$w_path"
+      fi
+    done <"$work_dir/workspaces.tsv"
+    if [ -n "$w_kept" ]; then
+      printf 'skip base with kept workspaces: %s (kept: %s)\n' "$w_base" "$w_kept"
+      continue
+    fi
+    if [ "$w_dry_run" = true ]; then
+      while IFS='	' read -r _ _ w_path _ w_since; do
+        if [ "$w_since" -le "$w_cutoff" ]; then
+          printf 'would remove: %s\n' "$w_path"
+        fi
+      done <"$work_dir/workspaces.tsv"
+      continue
+    fi
+    if ! w_out=$(work_in "$w_base" --json gc -idle "$work_idle" -archive -older "$work_trash_age"); then
+      printf 'failed to prune: %s: %s\n' "$w_base" "$w_out" >&2
+      w_failures=$((w_failures + 1))
+      continue
+    fi
+    printf '%s' "$w_out" | jq -r --arg base "$w_base" '
+      (.idle[] | if .removed
+        then "removed: \(.name) of \($base)" + (if .archived != "" then " (archive: \(.archived))" else "" end)
+        else "skip \(.name) of \($base): \(.why)" end),
+      (.purged[] | "emptied from the trash: \(.) of \($base)")'
+  done
+  IFS=$w_old_ifs
+  test "$w_failures" -eq 0
+}
+
+# `workrift deps` in a workspace of a base whose work.toml has [deps] is
+# `work deps`; anywhere else it is workrift's own install.
+work_deps() {
+  w_top=$1
+  w_base=$(resolve_source)
+  if ! work_installs "$w_base" || [ "$w_base" = "$w_top" ]; then
+    sync_dependencies "$w_top"
+    return
+  fi
+  w_rows=$(work_workspaces "$w_base")
+  w_name=$(printf '%s\n' "$w_rows" | awk -F '	' -v p="$w_top" '$3 == p { print $1 }')
+  [ -n "$w_name" ] || fail "not a workspace of $w_base: $w_top"
+  work_in "$w_base" deps -name "$w_name"
+}
+
+backend=rift
+if [ -e "$backend_file" ]; then
+  backend=$(tr -d '[:space:]' <"$backend_file")
+  case "$backend" in
+    rift | work) ;;
+    *) fail "$backend_file names no backend: it holds '$backend', not rift or work" ;;
+  esac
+fi
+
 # init, create, refresh and deps fetch, clone, install and build. They run below
 # the interactive work (the OpenCode service and the TUIs), as the OpenCode
 # guard's heavy launcher runs a test: at nice 10 and, where ionice is, in the
@@ -576,7 +887,11 @@ case "$command" in
   deps)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
     top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
-    sync_dependencies "$top"
+    if [ "$backend" = work ]; then
+      work_deps "$top"
+    else
+      sync_dependencies "$top"
+    fi
     ;;
   refresh)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
@@ -584,7 +899,14 @@ case "$command" in
     ;;
   list)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-    rift list "$(resolve_source)"
+    if [ "$backend" = work ]; then
+      # As `rift list` of the source: the workspaces made on it, not theirs.
+      source_path=$(resolve_source)
+      rows=$(work_workspaces "$source_path")
+      printf '%s\n' "$rows" | awk -F '	' -v p="$source_path" '$4 == p { print $3 }'
+    else
+      rift list "$(resolve_source)"
+    fi
     ;;
   remove)
     [ "$#" -le 2 ] || { usage >&2; exit 2; }
@@ -595,7 +917,11 @@ case "$command" in
     ;;
   sources)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-    registered_sources
+    if [ "$backend" = work ]; then
+      work_bases
+    else
+      registered_sources
+    fi
     ;;
   check)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
