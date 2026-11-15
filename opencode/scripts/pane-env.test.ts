@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test"
-import { join } from "node:path"
+// A multiplexer pane's variables, and the spawn helper the tests use (tests/owned.ts) leaving them out
+// of a child's environment, so a scenario's TUI draws the same from a herdr pane, a Rex pane or a shell.
+import { Effect, Stream } from "effect"
+import { describe, expect, it } from "effect-bun-test"
+import { owned } from "../tests/owned.ts"
 import { isPaneVariable, outsidePanes } from "./pane-env.ts"
 
 const PANE = {
@@ -11,26 +14,25 @@ const PANE = {
   TERM_PROGRAM: "rex",
 }
 
-describe("a multiplexer pane's variables", () => {
-  test("herdr's, herdr-core's, Rex's and TERM_PROGRAM are a pane's; others are not", () => {
-    expect(Object.keys(PANE).filter((name) => !isPaneVariable(name))).toEqual([])
-    expect(["PATH", "HOME", "TERM", "HC", "REXX", "OPENCODE_DEV"].filter(isPaneVariable)).toEqual([])
-    expect(outsidePanes({ ...PANE, PATH: "/bin" })).toEqual({ PATH: "/bin" })
-  })
+/** The names of `env`'s output lines (`NAME=value`). */
+const names = (text: string) => text.split("\n").filter((line) => line !== "").map((line) => line.slice(0, line.indexOf("=")))
 
-  test("a test's child runs outside the pane the test started in, unless the test sets the pane itself", async () => {
-    const run = Bun.spawn([process.execPath, join(import.meta.dir, "pane-env-fixture.ts")], {
-      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...PANE, KEPT: "yes" },
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
-    expect(stderr).toBe("")
-    expect(code).toBe(0)
-    const { inherited, set } = JSON.parse(stdout) as { inherited: ReadonlyArray<string>; set: ReadonlyArray<string> }
-    const names = (lines: ReadonlyArray<string>) => lines.map((line) => line.slice(0, line.indexOf("=")))
-    expect(names(inherited).filter(isPaneVariable)).toEqual([])
-    expect(inherited).toContain("KEPT=yes")
-    expect(names(set).filter(isPaneVariable)).toEqual(["HERDR_ENV"])
-  }, 30_000)
+describe("a multiplexer pane's variables", () => {
+  it.effect("herdr's, herdr-core's, Rex's and TERM_PROGRAM are a pane's; others are not", () =>
+    Effect.sync(() => {
+      expect(Object.keys(PANE).filter((name) => !isPaneVariable(name))).toEqual([])
+      expect(["PATH", "HOME", "TERM", "HC", "REXX", "OPENCODE_DEV"].filter(isPaneVariable)).toEqual([])
+      expect(outsidePanes({ ...PANE, PATH: "/bin" })).toEqual({ PATH: "/bin" })
+    }),
+  )
+
+  it.live("a test's child runs outside the pane the test started in", () =>
+    Effect.gen(function* () {
+      const child = owned(["/usr/bin/env"], { env: { ...PANE, KEPT: "yes", TMPDIR: "/nonexistent/loop-probe-x" }, stdout: "pipe" })
+      const text = yield* Stream.fromReadableStream({ evaluate: () => child.stdout, onError: String }).pipe(Stream.decodeText(), Stream.mkString)
+      expect(yield* Effect.promise(() => child.exited)).toBe(0)
+      expect(names(text).filter(isPaneVariable)).toEqual([])
+      expect(names(text)).toContain("KEPT")
+    }),
+  )
 })
