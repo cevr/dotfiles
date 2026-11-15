@@ -31,26 +31,30 @@ const fableReset = buysOf([
   { window: "7d", from: 0.6, to: 0.1, resetAt: now + 3.5 * DAY, share: { points: 0.5, low: 0.4, high: 0.6, source: "tally" } },
 ])
 
-/** A 5-hour window spent, a grant that gives it all back and does not expire soon, and the week a third used. */
-const spentFiveHour: ClaimOption = {
-  credentialID: "a",
-  creditID: "g",
-  label: "a",
-  window: "5h",
-  long: false,
-  from: 1,
-  restored: 1,
-  resetAt: now + 2 * HOUR,
-  elapsed: 3 * HOUR,
-  expiresAt: Option.none(),
-  frees: true,
-  inHand: 2,
-  weekUsed: 0.3,
-  weekResetAt: Option.some(now + 3.5 * DAY),
+/** The pool's one account, its week `used` and burning `burn` of it an hour, resetting in three days; a weekly grant in hand that does not expire soon. */
+const weekOf = (used: number, burn: number) => {
+  const resetAt = now + 3 * DAY
+  const option: ClaimOption = {
+    credentialID: "a",
+    creditID: "g",
+    label: "a",
+    window: "weekly",
+    long: true,
+    forecast: "7d",
+    from: used,
+    restored: used,
+    resetAt,
+    burn,
+    expiresAt: Option.none(),
+    frees: true,
+    weekUsed: used,
+    weekResetAt: Option.some(resetAt),
+  }
+  const situation = { now, held: 0, running: 7, hosts: 2, accounts: [{ credentialID: "a", windows: [{ name: "7d", used, resetAt, burn }], freeAt: Option.none() }], settling: false, pushed: false }
+  return decideClaim(situation, [option])
 }
-const busy = { now, held: 1, running: 3, freeAccount: false, pushed: false }
-const chosen = decideClaim(busy, [spentFiveHour])
-const weighed = decideClaim({ ...busy, running: 0 }, [spentFiveHour])
+const chosen = weekOf(0.88, 0.144)
+const weighed = weekOf(0.5, 0.005)
 
 const table: ReadonlyArray<readonly [string, string]> = [
   [
@@ -79,19 +83,19 @@ const table: ReadonlyArray<readonly [string, string]> = [
   ],
   [
     toldText({
-      kind: "session",
+      kind: "weekly",
       label: "a",
-      buys: fiveHourReset,
+      buys: "weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z",
       reason: ClaimVerdict.$match(chosen, { Claim: ({ step, reason }) => `${STEP_TEXT[step]}: ${reason}`, NoClaim: () => "" }),
       left: 1,
       nextExpires: now + 30 * DAY,
     }),
-    "Claimed the 5h reset on a: 5h 100% used of 100% → 0% used (held work no fresh account can take: 1 start held, 3 running, ~89% of the 5h window would be used before its reset in 2 h). 1 reset left this week; next expires 2026-12-15 12:00Z.",
+    "Claimed the weekly reset on a: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z (the pool runs out before its reset: 7 agents running on 2 hosts, weekly 88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this week; next expires 2026-12-15 12:00Z.",
   ],
   [toldText({ kind: "weekly", label: "a", buys: fiveHourReset, left: 0 }), "Claimed the weekly reset on a: 5h 100% used of 100% → 0% used. No resets left this week."],
   [
     ClaimVerdict.$match(weighed, { Claim: () => "", NoClaim: ({ reasons }) => reasons.join("; ") }),
-    "a: 1 start held, 0 running, ~22% of the 5h window would be used before its reset in 2 h, under 50% of the 100% it gives back",
+    "a: 7 agents running on 2 hosts, weekly 50% used, forecast 100% in 4.2 days, reset in 3.0 days; the pool keeps room until its first reset",
   ],
   [
     forecastText({ pool: "anthropic", burn: 0.0085, inHand: 2, wasted: [{ pool: "anthropic", label: "a", kind: "weekly", spare: 0.99, expiresAt: now + 6 * DAY }] }) ?? "",

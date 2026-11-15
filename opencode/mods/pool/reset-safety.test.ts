@@ -90,7 +90,7 @@ const view = (accounts: ReadonlyArray<AccountStatus>, ratios: Readonly<Record<st
   accounts,
   labels: Object.fromEntries(accounts.map((item) => [item.credentialID, item.credentialID])),
   ratios,
-  inflight,
+  running: inflight,
 })
 
 /** A second account with room: held work goes there, so only an expiring reset is claimed. */

@@ -144,9 +144,10 @@ describe("a push's resets", () => {
     expect(due).toMatchObject([{ reset: { why: "push", yes: true, push: "push-1", credentialID: "b", creditID: "g-b", stage: "claiming" } }])
     // A weekly reset alone leaves a's spent 5-hour window holding the start: not a candidate.
     expect(waitThen(pool([spent("a", [grant("g-a", T0 + 30 * DAY, WEEKLY)])]), { hard: true }).events.some((event) => event._tag === "ClaimDue")).toBe(false)
-    // Another session's tree: the push does not cover it; the standing allowance's rule decides (here, too little work running), and asks nothing.
+    // Another session's tree: the push does not cover it; the standing allowance's rule decides (here every account is spent with a start held: the pool has run out), not as the push's, and asks nothing.
     const elsewhere = waitThen(view, { hard: true, root: "ses_other" }, [grantFor({ scope: { host: "workbox", sessionID: "ses_root" } })])
-    expect(elsewhere.events.map((event) => event._tag)).toEqual(["WaitNoted", "ClaimWeighed"])
+    expect(elsewhere.events.map((event) => event._tag)).toEqual(["WaitNoted", "ClaimDue"])
+    expect(elsewhere.events[1]).toMatchObject({ reset: { why: "forecast" } })
     // The spend-evenly target alone is no lack of quota for a push of a session's tree.
     const scoped = [grantFor({ scope: { host: "workbox", sessionID: "ses_root" } })]
     expect(waitThen(view, { root: "ses_root" }, scoped).events.some((event) => event._tag === "ClaimDue")).toBe(false)

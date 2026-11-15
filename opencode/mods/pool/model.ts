@@ -26,6 +26,7 @@ import {
   PoolId,
 } from "./account-pool.ts"
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
+import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
@@ -207,7 +208,9 @@ export class Pool extends Context.Service<
     readonly logins: (query: LoginsQuery) => Effect.Effect<SessionLogins>
     /** A new agent was admitted on the provider: it counts on the pace, here and on the peers, until it settles. */
     readonly started: (providerID: string) => Effect.Effect<void>
-    /** What this host tells a peer: its starts that still count and its readings. */
+    /** A step of a session started on the provider: the session is busy, an agent running, until it goes idle (`release`). */
+    readonly stepStarted: (sessionID: string, providerID: string) => Effect.Effect<void>
+    /** What this host tells a peer: its starts that still count, its busy sessions' providers and its readings. */
     readonly report: Effect.Effect<Report>
     /**
      * Read every peer not read in the last half `pollMs` by any instance on
@@ -254,6 +257,9 @@ const processPushes = Effect.gen(function* () {
 
 /** How long after a start held for lack of quota in a push's scope the pace asks to be asked again: the push's claim takes seconds. */
 export const PUSH_RETRY_MS = 60_000
+
+/** A busy session not heard of (no step started) for this long lost its idle event: it no longer counts as running. */
+export const BUSY_MS = 60 * 60_000
 
 export const layer = (config: Config) =>
   Layer.effect(
@@ -397,8 +403,32 @@ export const layer = (config: Config) =>
         return shouldFailOver(yield* SynchronizedRef.get(where.pool), input.sessionID, yield* Clock.currentTimeMillis)
       })
 
+      /**
+       * The sessions busy on this host, by id: the provider of the newest step
+       * each started and when. A session is busy from a step's start until it
+       * goes idle; one not heard of for BUSY_MS lost its idle event and runs
+       * no more. Kept in memory: after a restart a session counts again at its
+       * next step. Every copy of the plugin on the host hears every session's
+       * events, so each holds the host's whole.
+       */
+      const busySessions = new Map<string, { readonly providerID: string; readonly at: number }>()
+
+      const stepStarted = (sessionID: string, providerID: string) =>
+        Effect.map(Clock.currentTimeMillis, (at) => {
+          busySessions.set(sessionID, { providerID, at })
+        })
+
+      /** The provider of each session busy on this host now. */
+      const busyNow = (now: number): ReadonlyArray<string> => {
+        for (const [sessionID, entry] of busySessions) if (entry.at <= now - BUSY_MS) busySessions.delete(sessionID)
+        return [...busySessions.values()].map((entry) => entry.providerID)
+      }
+
       const release = (sessionID: string) =>
-        Effect.forEach(every, ({ id, pool }) => apply(pool, id, ReleaseRun.make({ sessionID })), { discard: true })
+        Effect.suspend(() => {
+          busySessions.delete(sessionID)
+          return Effect.forEach(every, ({ id, pool }) => apply(pool, id, ReleaseRun.make({ sessionID })), { discard: true })
+        })
 
       /** The pool that placed the session's newest request, if any did. */
       const newest = Effect.fn("Pool.newest")(function* (sessionID: string) {
@@ -514,27 +544,47 @@ export const layer = (config: Config) =>
        */
       const askers = new Map<string, { readonly at: number; readonly sessionID: string }>()
 
-      /** Every pool whose resets are worked, as the review reads it: its accounts now, each with its label. */
+      /**
+       * Each account's readings of the last BURN_MS, oldest first, by pool and
+       * credential: what its burn is measured over (burn.ts). Kept in memory:
+       * a restart forgets them, and the burn is the period's average until
+       * two readings far enough apart are in hand again.
+       */
+      const samples = new Map<string, ReadonlyArray<Burn.Sample>>()
+
+      /** Every pool whose resets are worked, as the review reads it: its accounts now, each with its label and burn, and the agents running on it. */
       const resetViews = Effect.gen(function* () {
         const views: Array<ResetsModel.PoolView> = []
         const now = yield* Clock.currentTimeMillis
         const tally = limits === undefined ? undefined : yield* limits.tally
         const fleet = yield* fleetStore.read
-        const inflight = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
+        const running = FleetModel.running(fleet, busyNow(now), now)
         for (const [id, provider] of Object.entries(config.resets ?? {})) {
           const where = poolOf(PoolId.make(id))
           if (where === undefined) continue
           const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
           const labels: Record<string, string> = {}
-          for (const account of accounts) labels[account.credentialID] = yield* logins.label(where.id, account.credentialID)
+          const burns: Record<string, Readonly<Record<string, number>>> = {}
+          const averaged: Record<string, ReadonlyArray<string>> = {}
+          for (const account of accounts) {
+            labels[account.credentialID] = yield* logins.label(where.id, account.credentialID)
+            const key = `${id}/${account.credentialID}`
+            const kept = Burn.remember(samples.get(key) ?? [], Option.fromUndefinedOr(account.reading), now)
+            samples.set(key, kept)
+            burns[account.credentialID] = Burn.burnsOf(kept, now)
+            averaged[account.credentialID] = Burn.averagedOf(kept)
+          }
           views.push({
             id,
             provider,
             accounts,
             labels,
             ...(tally === undefined ? {} : { ratios: weeklyRatios(tally, id) }),
-            // The fleet's demand on the pool: every start of a provider it paces not settled yet, on any host.
-            inflight: inflight.filter((start) => measuredBy(config, start.providerID) === id).length,
+            burns,
+            averaged,
+            // The fleet's agents on the pool: every session busy now on a provider it paces, on any host.
+            running: running.busy.filter((providerID) => measuredBy(config, providerID) === id).length,
+            hosts: running.hosts,
           })
         }
         return views
@@ -1047,7 +1097,8 @@ export const layer = (config: Config) =>
             if (reading !== undefined) readings.push({ pool: id, credentialID, reading })
           }
         }
-        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, yield* Clock.currentTimeMillis, fleetConfig.settleMs, readings)
+        const now = yield* Clock.currentTimeMillis
+        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, now, fleetConfig.settleMs, readings, busyNow(now))
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))
@@ -1156,6 +1207,7 @@ export const layer = (config: Config) =>
         alerts,
         logins: sessionLogins,
         started,
+        stepStarted,
         report,
         poll,
         fleet: fleetStatus,

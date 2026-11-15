@@ -5,8 +5,8 @@
 // world's Anthropic (sim/provider.ts: its usage endpoint lists each account's
 // grants, its claim endpoint takes them). The pool's RPC is called as the pane
 // calls it, on the world's clock.
-import { Data, Effect, Option, Schema } from "effect"
-import { claimEffect, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
+import { Array as Arr, Data, Effect, Option, Schema } from "effect"
+import { claimEffect, type FakeAnswer, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
 import { spentAccount } from "../../tests/fake-chatgpt.ts"
 import * as ChatGPT from "../../sim/chatgpt.ts"
 import * as Plugins from "../../sim/plugins.ts"
@@ -41,7 +41,7 @@ const serve = (seed: number, names: ReadonlyArray<string>, anthropic: Omit<Provi
     const world = World.make({
       seed,
       script: () => World.say(""),
-      anthropic: { accounts, ...anthropic },
+      anthropic: { accounts, script: working, ...anthropic },
       integrations: {
         anthropic: names.map((name) => ({ id: `cred_${name}`, label: `Claude ${name}`, ...accounts[name], expires: World.START + 8 * HOUR })),
         openai: Option.match(chatgpt, {
@@ -92,8 +92,46 @@ const serve = (seed: number, names: ReadonlyArray<string>, anthropic: Omit<Provi
           yield* world.advance(SECOND)
         }
       })
-    return { world, accounts, pool, questions, open, pace, until }
+    /**
+     * `count` agents put to work in sessions of their own: each runs a long command (`working`), busy until it ends,
+     * with no start recorded. Fails when one is not busy once prompted.
+     */
+    const work = (count: number) =>
+      Effect.gen(function* () {
+        const ids: Array<string> = []
+        for (let agent = 0; agent < count; agent++) {
+          const id = yield* world.session(WORK, { id: `ses_agent_${agent}` })
+          yield* world.prompt(id, "work")
+          ids.push(id)
+        }
+        yield* world.advance(SECOND)
+        const idle = ids.filter((id) => world.sessions.get(id)?.running !== true)
+        if (idle.length > 0) return yield* Effect.fail(new Waited({ message: `not busy once prompted: ${idle.join(", ")} ${line(idle.map((id) => world.messages(id)))}` }))
+        return ids
+      })
+    return { world, accounts, pool, questions, open, pace, until, work }
   })
+
+/** How long an agent's command runs: the sessions it runs in stay busy for hours. */
+const WORK_COMMAND = "sleep 10800"
+
+/** The shell tool's name as a request offers it: as is, or as the auth plugin encodes it (`mcp_T` and its base64). */
+const SHELL_NAMES = ["shell", `mcp_T${Buffer.from("shell").toString("base64").replace(/=+$/, "")}`]
+
+const ToolNames = Schema.Array(Schema.Struct({ name: Schema.String }))
+
+/** The model's answers: a request offering the shell, with no tool result yet, runs WORK_COMMAND; any other is answered in text. */
+const working = (request: Provider.RequestInfo): FakeAnswer => {
+  const answered = line(request.body["messages"] ?? []).includes('"tool_result"')
+  const names = Option.getOrElse(Schema.decodeUnknownOption(ToolNames)(request.body["tools"] ?? []), () => [])
+  return Option.match(
+    Option.filter(Arr.findFirst(names, (tool) => SHELL_NAMES.includes(tool.name)), () => !answered),
+    {
+      onNone: (): FakeAnswer => ({ kind: "ok" }),
+      onSome: (shell): FakeAnswer => ({ kind: "ok", tool: { name: shell.name, input: { command: WORK_COMMAND } } }),
+    },
+  )
+}
 
 const QUESTIONS = "dotfiles-opencode.questions"
 
@@ -132,7 +170,7 @@ const resetsOf = (answer: Schema.Json) => Schema.decodeUnknownEffect(Resets)(ans
 const leftOf = (claimed: ReadonlySet<string>, id: string) => Number(!claimed.has(id))
 
 seeded(
-  "with work held and running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with too little work, nothing is claimed and nothing asked",
+  "with agents running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with no agent running and no start held, nothing is claimed and nothing asked",
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const now = World.START
@@ -146,7 +184,7 @@ seeded(
       const quotaOf = (account: string): FakeQuota => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
       // The world's clock, once the world is made.
       const clock = { now: () => now }
-      const { world, accounts, pool, open, until } = yield* serve(seed, ["a", "b"], {
+      const { world, accounts, pool, open, until, work } = yield* serve(seed, ["a", "b"], {
         chatgpt: backend,
         quota: quotaOf,
         // Two resets in hand on each account: not the last one, kept in reserve.
@@ -160,10 +198,8 @@ seeded(
       backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 40, 2 * DAY))
       const claims = () => world.provider().claims()
 
-      // ── Too little work: a held start alone, nothing running ──
-      yield* until(() => false, "a minute of held starts", 30 * SECOND).pipe(Effect.ignore)
-      yield* pool("pace", { providerID: "openai", sessionID: SESSION })
-      yield* world.advance(10 * SECOND)
+      // ── No work: nothing running and no start held, the pool sweeping on ──
+      yield* until(() => false, "half a minute of sweeps", 30 * SECOND, false).pipe(Effect.ignore)
       expect(claims()).toEqual([])
       expect(backend.consumes()).toEqual([])
       expect(yield* open).toEqual([])
@@ -179,8 +215,13 @@ seeded(
         { account: "acct-1", creditID: "credit-1", code: "reset" },
       ])
 
-      // ── Claude: three starts running, a start held: one grant claimed on its own, nothing asked ──
-      for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
+      // ── Claude: three agents put to work while the 5-hour windows had room, then the windows spent under them; busy, with no start recorded:
+      // the forecast runs the pool out before its reset, one grant claimed on its own, nothing asked ──
+      const spent = new Map(quotas)
+      for (const [account, quota] of spent) quotas.set(account, { ...quota, fiveHour: { ...quota.fiveHour, utilization: 0.5 } })
+      yield* world.advance(7 * SECOND)
+      yield* work(3)
+      for (const [account, quota] of spent) quotas.set(account, quota)
       yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, 250)
       // The claimed account takes the work: the other is not claimed.
       yield* until(() => false, "the pane pacing on", 20 * SECOND).pipe(Effect.ignore)
@@ -190,7 +231,7 @@ seeded(
       const rows = yield* open
       expect(rows.map((each) => each.header)).toEqual(["Pool reset claimed", "Pool reset claimed"])
       expect(rows.map((each) => each.question).join("\n")).toContain("Claimed the Codex reset on ChatGPT")
-      expect(rows.map((each) => each.question).join("\n")).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(held work no fresh account can take: /)
+      expect(rows.map((each) => each.question).join("\n")).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: (\d+ starts? held, )?3 agents running on 1 host, /)
       const settled = yield* resetsOf(yield* pool("resets"))
       expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
         ["claude", "reset"],
@@ -206,22 +247,22 @@ seeded(
 )
 
 seeded(
-  "a spent week is not claimed while a fresh account takes the work; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+  "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const now = World.START
-      // Day one of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used.
-      // d: its whole week spent on day one.
+      // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
+      // so at the pool's burn its room outlasts the reset. d: its whole week spent.
       const quotas = new Map<string, FakeQuota>([
         [
           "c",
           {
             fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR },
-            sevenDay: { utilization: 0.6, resetAt: now + 6 * DAY },
-            fable: { utilization: 1, resetAt: now + 6 * DAY, ofWeekly: 0.5 },
+            sevenDay: { utilization: 0.6, resetAt: now + 1.5 * DAY },
+            fable: { utilization: 1, resetAt: now + 1.5 * DAY, ofWeekly: 0.5 },
           },
         ],
-        ["d", { fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR }, sevenDay: { utilization: 1, resetAt: now + 6 * DAY } }],
+        ["d", { fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR }, sevenDay: { utilization: 1, resetAt: now + 1.5 * DAY } }],
       ])
       const quotaOf = (account: string) => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
       // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
@@ -241,7 +282,7 @@ seeded(
           },
         ]
       }
-      const { world, pool, questions, open, until } = yield* serve(seed, ["c", "d"], {
+      const { world, pool, questions, open, until, work } = yield* serve(seed, ["c", "d"], {
         quota: quotaOf,
         grants: grantsOf,
         claim: (account, grant) => {
@@ -252,8 +293,8 @@ seeded(
       })
       const claims = () => world.provider().claims()
 
-      // ── Demand: three starts in flight, the pane pacing a start each second: c has room, so d's week is left ──
-      for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
+      // ── Demand: three agents busy, the pane pacing a start each second: c's room outlasts the reset, so d's week is left ──
+      yield* work(3)
       yield* until(() => false, "a minute of starts", CLAIM_LIMIT_MS).pipe(Effect.ignore)
       expect(claims()).toEqual([])
       expect(yield* open).toEqual([])

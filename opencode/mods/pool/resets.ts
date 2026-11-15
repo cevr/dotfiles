@@ -12,10 +12,13 @@
 // of the weekly use off the weekly window, whose reset stays. Capacity is
 // taken in the rule's order: a reset about to expire unused first (one that
 // expires within a day is just used, timed onto a spent window), then a fresh
-// account (no claim while one can take the work), then a reset not about to
-// expire, for held work, when the work would spend at least half of what it
-// gives back before the window resets by itself and it is not the last one in
-// hand. Never for a window that resets by itself soon anyway.
+// account (no claim while the forecast keeps room to the pool's first natural
+// reset), then a reset not about to expire, when the forecast of the work on
+// the pool (its burn, burn.ts; the agents running across the fleet; any start
+// held) runs it out before that reset, on the most-used account near its
+// limit, when the work would spend at least half of what it gives back before
+// the window resets by itself. Never for a window that resets by itself soon
+// anyway.
 //
 // Spending is guarded at three levels:
 // - Here, the decision: a claim rests only on the account's fields read
@@ -51,7 +54,8 @@
 // them now and records what is due. The model (model.ts) carries it out.
 import { Array as Arr, Effect, Match, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
-import { type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
+import { periodBurn } from "./burn.ts"
+import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
 import { type PacePlan, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
@@ -118,12 +122,12 @@ export const retryable = (outcome: ClaimOutcome): boolean =>
   outcome === "cooldown" || outcome === "rate-limited" || outcome === "unconfirmed" || outcome === "failed"
 
 /**
- * Why a reset is worked: held work no fresh account can take, a reset about
- * to expire unused, or a push the owner approved spends one of its resets on
- * a start held for lack of quota (push.ts). `offer` is an older pool's,
- * read back only.
+ * Why a reset is worked: the forecast runs the pool out before its reset, a
+ * reset about to expire unused, or a push the owner approved spends one of
+ * its resets on a start held for lack of quota (push.ts). `held` (held work
+ * no fresh account could take) and `offer` are older pools', read back only.
  */
-export const ResetWhy = Schema.Literals(["held", "expiring", "offer", "push"])
+export const ResetWhy = Schema.Literals(["held", "expiring", "forecast", "offer", "push"])
 export type ResetWhy = typeof ResetWhy.Type
 
 /** A reset's stage. `asked`, `declined` and `withdrawn` are an older pool's questions, read back only: none is worked, and each is forgotten in time. */
@@ -468,9 +472,43 @@ export interface PoolView {
   readonly labels: Readonly<Record<string, string>>
   /** Points of the weekly window per point of a model's own week, by that window's name (`7d:Fable`); `weeklyRatios`. */
   readonly ratios?: Readonly<Record<string, Ratio>>
-  /** The starts of the pool's provider in flight across the fleet (this host's and its peers'), not settled into a reading yet. */
-  readonly inflight?: number
+  /** The agents of the pool's provider running across the fleet (its sessions busy now, this host's and its peers'), and the hosts they run on. */
+  readonly running?: number
+  readonly hosts?: number
+  /** Each account's burn per window now, by credential and window name (burn.ts `burnsOf`); a window left out burns its period's average. */
+  readonly burns?: Readonly<Record<string, Readonly<Record<string, number>>>>
+  /** Each account's open windows whose burn is the period's average, not measured (burn.ts `averagedOf`): after a restart, say. */
+  readonly averaged?: Readonly<Record<string, ReadonlyArray<string>>>
 }
+
+/** A window's burn on an account now: as measured, else its period's average. */
+const burnOn = (view: PoolView, account: AccountStatus, window: QuotaWindow, now: number): number =>
+  view.burns?.[account.credentialID]?.[window.name] ?? periodBurn(window, now)
+
+/** Whether a window's burn on an account is its period's average for want of a measure. */
+const averagedOn = (view: PoolView, account: AccountStatus, window: QuotaWindow): boolean =>
+  (view.averaged?.[account.credentialID] ?? []).includes(window.name)
+
+/** Each account of the pool as the forecast reads it: its windows still running, and until when a spent window or a usage-limit hold keeps it. */
+const loadsOf = (view: PoolView, now: number): ReadonlyArray<AccountLoad> =>
+  view.accounts.map((account) => ({
+    credentialID: account.credentialID,
+    windows: (account.reading?.windows ?? []).flatMap((window) =>
+      Option.toArray(
+        Option.map(
+          Option.filter(Option.fromUndefinedOr(window.resetAt), (at) => at > now),
+          (resetAt) => ({
+            name: window.name,
+            used: window.utilization,
+            resetAt,
+            burn: burnOn(view, account, window, now),
+            averaged: averagedOn(view, account, window),
+          }),
+        ),
+      ),
+    ),
+    freeAt: Option.fromUndefinedOr(spentUntil(account, now)),
+  }))
 
 /**
  * A start on the pool was held by its pace, from the session `sessionID` when
@@ -672,8 +710,8 @@ const settling = (state: ResetsState, current: ReadonlySet<string>, account: Acc
 /**
  * Whether a claim on the account may yet free it: one is in flight, or the
  * account was read only before its last claim. Such an account may take the
- * held work once its reading shows the claim, so no other is claimed for that
- * work meanwhile.
+ * work once its reading shows the claim, so the pool's forecast waits for it
+ * and no other is claimed meanwhile.
  */
 const freeing = (state: ResetsState, account: AccountStatus, now: number): boolean => {
   const inFlight = Object.values(state.resets).some((reset) => onAccount(reset, account.credentialID) && reset.stage === "claiming" && now - reset.at < RETRY_MS)
@@ -763,9 +801,6 @@ const heldWork = (state: ResetsState, view: PoolView, pools: ReadonlyArray<PoolV
   return claude === undefined ? undefined : { wait: claude }
 }
 
-/** Whether an account can take a start of `model` now: read, no hold on it, and no window holding the start. */
-const takes = (account: AccountStatus, now: number, model?: string): boolean =>
-  account.reading !== undefined && account.hold === undefined && spentUntil(account, now) === undefined && blockingOf(account, now, model).length === 0
 
 /** One reset the rule may claim, with what the claim is made of. */
 interface Candidate {
@@ -796,9 +831,8 @@ const candidatesOf = (
     const account = freshView(state, held, now)
     if (account === undefined || claiming.has(account.credentialID) || settling(state, current, account, now)) return []
     const credits = usableCredits(account, now)
-    const inHand = credits.reduce((total, credit) => total + credit.count, 0)
     const week = weekly(account)
-    const frees = new Set(pushOptions(view, account, {}, now, model).map((option) => option.credit.id))
+    const blocking = blockingOf(account, now, model)
     return credits.flatMap((credit) => {
       const gives = effectOf(view.provider, account, credit, view.ratios)
       const best = gives
@@ -808,19 +842,20 @@ const candidatesOf = (
       const key = expiringKey(view.provider, account.credentialID, best.window, best.resetAt)
       if (state.resets[key] !== undefined) return []
       const length = windowMs(best.window) ?? LONG_WINDOW_MS
+      const judged = (account.reading?.windows ?? []).find((window) => window.name === best.window)
       const option: ClaimOption = {
         credentialID: account.credentialID,
         creditID: credit.id,
         label: view.labels[account.credentialID] ?? account.credentialID,
         window: windowLabel(best.window),
         long: length >= LONG_WINDOW_MS,
+        forecast: best.window,
         from: best.from,
         restored: restoredOf(best),
         resetAt: best.resetAt,
-        elapsed: Math.max(0, length - (best.resetAt - now)),
+        burn: Option.match(Option.fromUndefinedOr(judged), { onNone: () => 0, onSome: (read) => burnOn(view, account, read, now) }),
         expiresAt: Option.fromUndefinedOr(credit.expiresAt),
-        frees: frees.has(credit.id),
-        inHand,
+        frees: blocking.every((held) => !stillBlocks(held.name, gives.find((give) => give.window === held.name)?.to ?? held.utilization)),
         weekUsed: week?.utilization ?? 0,
         weekResetAt: Option.fromUndefinedOr(week?.resetAt),
       }
@@ -838,7 +873,7 @@ const leftAfter = (account: AccountStatus, credit: ResetCredit, now: number): Pi
 
 /** The claim the rule chose, as the model sends it. */
 const ruleClaim = (view: PoolView, chosen: Candidate, step: ClaimStep, reason: string, now: number): ClaimDue => {
-  const reset = resetOf(view, chosen.account, chosen.credit, chosen.key, step === "expiring" ? "expiring" : "held", "claiming", now)
+  const reset = resetOf(view, chosen.account, chosen.credit, chosen.key, step === "expiring" ? "expiring" : "forecast", "claiming", now)
   return ClaimDue.make({
     reset: { ...reset, buys: buysOf(chosen.gives), reason: `${STEP_TEXT[step]}: ${reason}`, ...leftAfter(chosen.account, chosen.credit, now) },
   })
@@ -847,9 +882,9 @@ const ruleClaim = (view: PoolView, chosen: Candidate, step: ClaimStep, reason: s
 /**
  * What the standing allowance decides on a pool (claim-rule.ts
  * `decideClaim`): a reset about to expire goes before a push's, a push's
- * approved reset covers the work it scopes, and only then a reset for held
- * work no fresh account can take. A pool weighed with work held and no claim
- * says why (`ClaimWeighed`).
+ * approved reset covers the work it scopes, and only then a reset for the
+ * forecast. A pool weighed with the forecast running out, or a start held,
+ * and no claim says why (`ClaimWeighed`).
  */
 const poolDue = (
   state: ResetsState,
@@ -866,8 +901,10 @@ const poolDue = (
   const situation: ClaimSituation = {
     now,
     held: work === undefined ? 0 : 1,
-    running: view.inflight ?? 0,
-    freeAccount: view.accounts.some((account) => takes(account, now, work?.model) || freeing(state, account, now)),
+    running: view.running ?? 0,
+    hosts: view.hosts ?? 1,
+    accounts: loadsOf(view, now),
+    settling: view.accounts.some((account) => freeing(state, account, now)),
     pushed: work !== undefined && pushFor(state, work.wait, pushes) !== undefined,
   }
   const verdict = decideClaim(situation, candidates.map((candidate) => candidate.option))
@@ -876,7 +913,9 @@ const poolDue = (
   const pushed = pushDue(state, view, pushes, current, now, claiming)
   if (pushed.length > 0) return pushed
   if (verdict._tag === "Claim" && chosen !== undefined) return [ruleClaim(view, chosen, verdict.step, verdict.reason, now)]
-  if (!auto || work === undefined || verdict._tag === "Claim") return []
+  // Weighed aloud only when there is work to weigh: the pool runs out, or a start is held.
+  const weighs = work !== undefined || (verdict._tag === "NoClaim" && Option.contains(verdict.step, "reset"))
+  if (!auto || !weighs || verdict._tag === "Claim") return []
   return [ClaimWeighed.make({ pool: view.id, ...Option.match(verdict.step, { onNone: () => ({}), onSome: (step) => ({ step }) }), reasons: verdict.reasons })]
 }
 
@@ -1265,7 +1304,7 @@ const leftText = (reset: Pick<Reset, "left" | "nextExpires">) =>
 /**
  * What the owner is told of a reset the pool claimed on its own, in the
  * usage wording: `Claimed the 5h reset on Max 1: 5h 100% used of 100% → 0%
- * used (held work no fresh account can take: …). 2 resets left this week;
+ * used (the pool runs out before its reset: …). 2 resets left this week;
  * next expires 2026-11-18 12:00Z.`
  */
 export const toldText = (reset: Pick<Reset, "kind" | "label" | "buys" | "reason" | "left" | "nextExpires">): string =>
@@ -1280,11 +1319,18 @@ export const toldText = (reset: Pick<Reset, "kind" | "label" | "buys" | "reason"
  * since on the account, from any pool or host, shows in it. The reset must
  * still be listed and claimable; one for held work needs a window still
  * holding the account; and any must still give back at least MIN_RESTORE of
- * a window.
+ * a window, but a reset claimed in its last EXPIRING_MS: it is lost otherwise,
+ * so it goes on anything it gives back. A claim for the forecast needs no
+ * window holding the account: it goes before the account runs out.
  */
 export const staleReason = (view: PoolView, account: AccountStatus, reset: Pick<Reset, "creditID" | "why" | "provider">, now: number): string | undefined => {
   const credit = usableCredits(account, now).find((item) => item.id === reset.creditID)
   if (credit === undefined) return "the reset is no longer listed as claimable"
+  const lastDay = Option.exists(Option.fromUndefinedOr(credit.expiresAt), (at) => at - now <= EXPIRING_MS)
+  const floor = Match.value(reset.why === "expiring" && lastDay).pipe(
+    Match.when(true, () => Number.MIN_VALUE),
+    Match.orElse(() => MIN_RESTORE),
+  )
   const holding =
     spentUntil(account, now) !== undefined ||
     blockingOf(account, now).length > 0 ||
@@ -1293,7 +1339,7 @@ export const staleReason = (view: PoolView, account: AccountStatus, reset: Pick<
   // A grant that does not say what it clears is judged by the hold it was claimed for.
   if (reset.provider === "claude" && credit.clears === undefined)
     return spentUntil(account, now) === undefined ? "no spent window holds the account any more" : undefined
-  const restores = effectOf(view.provider, account, credit, view.ratios).some((give) => give.from - give.to >= MIN_RESTORE)
+  const restores = effectOf(view.provider, account, credit, view.ratios).some((give) => give.from - give.to >= floor)
   return restores ? undefined : "it would give nothing back now"
 }
 
