@@ -15,8 +15,16 @@
 // once it and all it started have stopped: opencode-drive makes
 // `$TMPDIR/opencode-drive` and the driven OpenCode `$TMPDIR/opencode`, and
 // neither removes its folder. A TMPDIR the test chose for the child is kept.
+//
+// Each child runs outside the multiplexer pane the test started in: the pane's variables (herdr's,
+// Rex's, `TERM_PROGRAM`; scripts/pane-env.ts) it inherited leave the environment it is given, and
+// the ones the test set for it stay (the herdr test's `HERDR_FAKE_SOCKET`). A scenario's TUI then
+// draws the same whether the test ran from a herdr pane, a Rex pane or a plain shell (tui-cpu passed
+// or failed by an inherited HERDR_ENV); a scenario that wants a pane sets it in its driver's
+// `opencode.env` (scenarios/herdr.ts).
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
-import { type ChildTemp, childTemp } from "./scratch.ts"
+import { outsidePanes } from "../scripts/pane-env.ts"
+import { type ChildTemp, childTemp, parentEnv } from "./scratch.ts"
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
@@ -76,7 +84,7 @@ export const owned = <
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
   const temp = childTemp(options?.env)
-  const child = Bun.spawn([...command], { ...options, env: temp.env, detached: true })
+  const child = Bun.spawn([...command], { ...options, env: outsidePanes(temp.env, parentEnv), detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)

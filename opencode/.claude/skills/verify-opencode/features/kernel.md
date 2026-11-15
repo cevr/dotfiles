@@ -21,7 +21,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 - **Preconditions:** none.
 - **States:** default, error (a cell that throws), refused (a tool not offered). Loading and empty are `n/a`.
 - **World suites:** none yet. A cell runs in a real Bun worker process, which the world's virtual time cannot host, so a drive of this feature runs its real checks with --real.
-- **Code:** `mods/kernel/`, `cmd/kernel/`, `tests/kernel.test.ts`, `tests/kernel/` (its real check)
+- **Code:** `mods/kernel/`, `cmd/kernel/`, `tests/kernel.test.ts`, `tests/kernel/` (its real check); `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/kernel/worker/workers.test.ts` (a real worker: bindings, restarts, handles, calls in parallel and their overlap), `mods/kernel/operations.test.ts` (the journal and its overlap count), `mods/kernel/description.test.ts` (the words the model reads), `cmd/kernel/server.test.ts` (the plugin's seam).
 
 1. **Bindings.** Run the cell `let n = 2` and then `n * 21` in one worker. The second call shows `42`.

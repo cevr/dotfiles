@@ -73,11 +73,6 @@ ln -sfn "$DOTFILES_DIR/codex/agents" ~/.codex/agents
 "$DOTFILES_DIR/claude/mods/fx-ui/install.sh"
 
 # Personal commands
-mkdir -p ~/.local/bin
-ln -sf "$DOTFILES_DIR/skills/track-work-hours/scripts/hours" ~/.local/bin/hours
-# The daemon the codex mod drives Codex threads through.
-ln -sf "$DOTFILES_DIR/claude/mods/codex/bridge/bridge.ts" ~/.local/bin/codex-bridge
-# Shows work in a Rex pane beside the caller's (opencode/mods/rex).
-ln -sf "$DOTFILES_DIR/opencode/cmd/rex/show.ts" ~/.local/bin/rex-show
+"$DOTFILES_DIR/local-bin.sh"
 
 echo "Done! Run 'source ~/.zshrc' to reload."

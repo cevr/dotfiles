@@ -5,7 +5,7 @@ import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import { EXIT_CODES, GATE_POLL, handoff, HEALTH_DEADLINE, HEALTH_POLL, intervalChecks, Updater, updaterLayer } from "./model.ts"
 import { type Build, proven, type Record, stagedRecord } from "./record.ts"
-import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
+import { Builder, Builds, CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
 import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
@@ -51,6 +51,8 @@ interface World {
   pruneFails: boolean
   /** The commits whose advance fails. */
   advanceFails: ReadonlyArray<string>
+  /** Commits git refuses to move the checkout to (an untracked file in the way). */
+  advanceStuck: ReadonlyArray<string>
   /** The providers the service had a login for before the restart; none when that read fails. */
   before: Option.Option<ReadonlyArray<string>>
   /** How many reads of the verified target still die (a defect, not a failed step). */
@@ -76,6 +78,7 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   reinstallFails: false,
   pruneFails: false,
   advanceFails: [],
+  advanceStuck: [],
   before: Option.some([]),
   ...at,
 })
@@ -105,8 +108,9 @@ const fakes = (host: World) =>
         }),
         head: Effect.succeed(PRIOR),
         advance: (commit) =>
-          Effect.suspend(() => {
+          Effect.suspend((): Effect.Effect<void, UpdateFailed | CheckoutStuck> => {
             host.calls.push(`advance ${commit.slice(0, 1)}`)
+            if (host.advanceStuck.includes(commit)) return Effect.fail(new CheckoutStuck({ step: "fast-forward the checkout", message: "untracked files the target tracks with other content: docs/x.md" }))
             if (host.advanceFails.includes(commit)) return failure("install the dependencies")
             return Effect.void
           }),
@@ -309,6 +313,45 @@ describe("the updater on its seams", () => {
         yield* check("interval")
         expect(host.calls).toEqual([])
         expect(Option.map(host.rejected, (rejected) => rejected.step)).toEqual(Option.some("advance"))
+      }),
+    )
+  })
+
+  test("A1: a checkout git refuses to move is no rejection: each check tries again, the notice shows once, and a move that goes through clears it and builds", () => {
+    const host = world({ record: onGood(), advanceStuck: [TARGET.dotfiles] })
+    const held = `update ${SHORT} is held: the dotfiles checkout could not move: untracked files the target tracks with other content: docs/x.md`
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        expect(host.calls).toEqual(["advance d", `notice ${held}`])
+        expect(host.rejected).toEqual(Option.none())
+        expect(host.lines.at(-1)).toContain("the dotfiles checkout could not move (fast-forward the checkout: untracked files the target tracks with other content: docs/x.md); nothing changed, the next check tries again")
+        host.calls.length = 0
+        yield* check("interval")
+        yield* check("asked")
+        expect(host.calls).toEqual(["advance d", "advance d"])
+        expect(host.rejected).toEqual(Option.none())
+        host.calls.length = 0
+        host.advanceStuck = []
+        yield* check("interval")
+        expect(host.calls.slice(0, 4)).toEqual(["advance d", "notice cleared", "keep config", "stage batch-7"])
+      }),
+    )
+  })
+
+  test("A2: a failed build after a stuck check still rejects the target", () => {
+    const host = world({ record: onGood(), advanceStuck: [TARGET.dotfiles], stageFails: true })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        host.advanceStuck = []
+        yield* check("interval")
+        expect(Option.map(host.rejected, (rejected) => rejected.step)).toEqual(Option.some("build"))
+        host.calls.length = 0
+        yield* check("interval")
+        expect(host.calls).toEqual([])
       }),
     )
   })

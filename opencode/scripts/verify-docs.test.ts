@@ -5,7 +5,7 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, PlatformError, Schema } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { FEATURES_DIR, INDEX, noDrive, parseFeature, SHARED, SKILL_DIR, uncovered, undriven } from "./verify-map.ts"
+import { FEATURES_DIR, INDEX, noDrive, parseFeature, SHARED, SKILL_DIR, touched, uncovered, undriven } from "./verify-map.ts"
 
 /** The H2s of a feature file, in order. */
 const CONTRACT = ["Sub-features", "How to get to it (user POV)", "Driving it with the world", "Driving it with real OpenCode", "Gotchas"]
@@ -142,7 +142,44 @@ describe("the verify-opencode skill names only what the tree has", () => {
         "tests/orchestrate/run.ts",
         "tests/orchestrate/sim.ts",
       ]
-      expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({ exempt: ["scripts/", "formal/", "lint/"], uncovered: [] })
+      expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({ exempt: ["scripts/", "formal/", "lint/", "tests/accept-clock.test.ts"], uncovered: [] })
+    }),
+  )
+
+  live("every source file batch 2026-11-15cl's drive found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const at = yield* root
+      const features = (yield* docs)
+        .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
+        .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
+      const exempt = noDrive(yield* fs.readFileString(path.join(at, INDEX)))
+      const found = [
+        "cmd/rex/server.ts",
+        "cmd/rex/show.ts",
+        "cmd/rex/tui.tsx",
+        "mods/rex/model.ts",
+        "mods/rex/pane.ts",
+        "scenarios/tui-paint.ts",
+        "testbeds/busy-agents.ts",
+        "tests/accept-clock.test.ts",
+      ]
+      expect(uncovered(features, found, exempt)).toEqual([])
+    }),
+  )
+
+  live("the spawn helper and the scratch folders every real check runs through make the features that spawn through them due (batch 2026-11-15cm)", () =>
+    Effect.gen(function* () {
+      const features = (yield* docs)
+        .filter(({ file }) => file.startsWith(`${FEATURES_DIR}/`) && !file.endsWith("/README.md"))
+        .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
+      const due = (path: string) => touched(features, [path]).map((feature) => feature.id).toSorted()
+      // A change to owned.ts went to main with neither the herdr test nor the TUI tests run (cl-fu, M1).
+      expect(due("tests/owned.ts")).toEqual(["guard", "kernel", "mail", "orchestrate", "pool", "prime-panel", "queue", "wake-latch"])
+      expect(due("tests/scratch.ts")).toEqual(due("tests/owned.ts"))
+      const real = Option.getOrElse(Option.map(Arr.findFirst(features, (feature) => feature.id === "prime-panel"), (feature) => feature.real), (): ReadonlyArray<string> => [])
+      expect(["tests/herdr.test.ts", "tests/tui-cpu.test.ts", "tests/tui-paint.test.ts"].filter((test) => !real.includes(test))).toEqual([])
     }),
   )
 

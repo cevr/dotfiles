@@ -25,6 +25,9 @@ export const scratch = (prefix: string): Scratch => {
 /** A child process's environment, as `Bun.spawn` takes it. */
 export type ChildEnv = typeof processEnv
 
+/** This test process's own environment, as it started: what a child inherits unless told otherwise. */
+export const parentEnv: ChildEnv = processEnv
+
 /** A child's own temp folder (`path`, "" when the caller chose one) and its environment pointing at it. */
 export interface ChildTemp extends Scratch {
   readonly env: ChildEnv

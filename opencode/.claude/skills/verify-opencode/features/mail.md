@@ -24,7 +24,7 @@ An agent lists the sessions it can write to with `sessions` and puts a message i
 - **Preconditions:** two or three sessions in one location; for peers, a second host (`sim/hosts.ts`) on the memory network.
 - **States:** default, a woken idle receiver, a running receiver, refused (an unknown `to`), error (the faults suite). Loading is `n/a`.
 - **World suites:** `cmd/mail/mail.sim.test.ts`, `cmd/mail/mail-faults.sim.test.ts`, `cmd/mail/mail-peer.sim.test.ts`, `cmd/mail/mail-start.sim.test.ts`
-- **Code:** `mods/mail/`, `cmd/mail/`, `sim/`
+- **Code:** `mods/mail/`, `cmd/mail/`, `sim/`; `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/mail/*.test.ts`.
 
 1. **List and wake.** Session A prompts `verify: call sessions {}` then `verify: call message {"to":"Mail B","text":"mail-ping: answer me"}`. A's `sessions` answer lists B by id and title; the `message` answer is `Delivered to session "Mail B" (<id>). It was idle and is now reading it.`; B's first request carries the letter under `✉ Message from session "Mail A"`.
