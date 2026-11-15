@@ -4,7 +4,8 @@
 // the newest verdict.
 //
 // Usage: bun status.ts <run dir> [--repo <checkout>] [--all]
-//   A unit is a directory of the run dir holding log.md. Its state:
+//   A unit is a directory of the run dir holding log.md, except a verify's `verify-*` dir (its
+//   batch file, findings and the fleet's log lines; no unit). Its state:
 //   - `dropped` when its log's last state is `dropped`;
 //   - `merged` when its log says so, or when the head its newest `round-N-request.md` names
 //     (request.ts `headOf`) is an ancestor of the repository's default branch, whatever its log
@@ -96,7 +97,7 @@ const CLOSED = (state: string) => state === 'dropped' || /^merged\b/.test(state)
 export function rows(dir: string, repo: string | undefined): Row[] {
   let main: string | undefined | null = null; // read once, on the first unit that needs it
   return readdirSync(dir, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && existsSync(join(dir, d.name, 'log.md')))
+    .filter((d) => d.isDirectory() && !d.name.startsWith('verify-') && existsSync(join(dir, d.name, 'log.md')))
     .map((d): Row => {
       const unitDir = join(dir, d.name);
       const row = logRow(d.name, readFileSync(join(unitDir, 'log.md'), 'utf8'));
