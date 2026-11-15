@@ -36,10 +36,11 @@ const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST 
 
 /**
  * The revoked mode's seeds a sweep of 1 to 1000 found failing (pool-faults-bias), replayed on every run: a 401 held a
- * revoked store login for the host's refresh (181 and on), then a restart between a 401 and its retry (60 and on).
+ * revoked store login for the host's refresh (181 and on), then a restart between a 401 and its retry (60 and on);
+ * a plan limit whose reset fell between two seconds, announced up to a second early (452011062).
  */
 const REVOKED_PAST: ReadonlyArray<number> = [
-  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994,
+  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994, 452011062,
 ]
 
 const HOUR = 3_600_000
@@ -181,7 +182,9 @@ const run = (
     const sessions: Array<string> = []
     /** What the world's Anthropic and the store are told; the host's own commands are the loop's. */
     const tell = (command: Command, before: number) => {
-      if (command.type === "limit") script.limits.set(LOGINS[command.login], before + command.hours * HOUR)
+      // The reset on a whole second: the provider names it in whole seconds (the unified reset headers), so a reset
+      // between two seconds would be announced up to a second before the script stops refusing.
+      if (command.type === "limit") script.limits.set(LOGINS[command.login], Math.ceil((before + command.hours * HOUR) / 1000) * 1000)
       if (command.type === "expire") {
         // The login's token as the store holds it, its expiry now past: the next read refreshes it.
         const login = LOGINS[command.login]
