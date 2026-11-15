@@ -127,10 +127,11 @@ export const repositoryOf = (url: string): string =>
     .join("/")
     .toLowerCase()
 
-/** Whether `directory`'s origin is the repository `checkout`'s origin names; false when either does not read. */
-export const sameOrigin = (program: string, checkout: string, directory: string): Effect.Effect<boolean> =>
+/** Whether `directory`'s origin is the repository `checkout`'s origin names; none when `directory`'s does not read. */
+export const sameOrigin = (program: string, checkout: string, directory: string): Effect.Effect<Option.Option<boolean>> =>
   Effect.all([git(program, checkout, ["remote", "get-url", "origin"]), git(program, directory, ["remote", "get-url", "origin"])]).pipe(
-    Effect.map(([ours, theirs]) => Option.exists(Option.zipWith(ours, theirs, (a, b) => repositoryOf(a) === repositoryOf(b)), Boolean)),
+    // None when `directory`'s origin does not read; false when ours does not (nothing to compare with).
+    Effect.map(([ours, theirs]) => Option.map(theirs, (url) => Option.exists(ours, (mine) => repositoryOf(mine) === repositoryOf(url)))),
   )
 
 /** Records the target one accepted batch names, and answers the outcome; `program` is the git it runs (a test's may stand in another host). */
@@ -153,7 +154,7 @@ export const layer = (checkouts: Option.Option<Checkouts>) =>
         return yield* recordOnce(checkouts.value, input.report.value, input.batch)
       })
       const covers = Effect.fn("Fleet.covers")(function* (directory: string) {
-        if (Option.isNone(checkouts)) return false
+        if (Option.isNone(checkouts)) return Option.some(false)
         return yield* sameOrigin("git", checkouts.value.dotfiles, directory)
       })
       return Fleet.of({ record: (input) => record(input).pipe(one.withPermits(1)), covers })

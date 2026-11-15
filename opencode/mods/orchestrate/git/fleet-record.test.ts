@@ -241,7 +241,7 @@ describe("which checkouts the fleet covers", () => {
   })
 
   test(
-    "a clone of the dotfiles origin (a verifier's checkout) is covered; another repository's checkout, or a folder that is none, is not",
+    "a clone of the dotfiles origin (a verifier's checkout) is covered; another repository's checkout is not; a folder that is no checkout, or none, answers nothing, so the next folder decides",
     () =>
       onRepositories(1, (root) =>
         Effect.gen(function* () {
@@ -249,7 +249,7 @@ describe("which checkouts the fleet covers", () => {
           repository(root, "maitred", 1)
           sh(root, ["mkdir", `${root}/plain`])
           const covered = (directory: string) => sameOrigin("git", `${root}/dotfiles`, directory)
-          expect(yield* Effect.all([covered(`${root}/verify-batch-1`), covered(`${root}/maitred`), covered(`${root}/plain`), covered(`${root}/missing`)])).toEqual([true, false, false, false])
+          expect(yield* Effect.all([covered(`${root}/verify-batch-1`), covered(`${root}/maitred`), covered(`${root}/plain`), covered(`${root}/missing`)])).toEqual([Option.some(true), Option.some(false), Option.none(), Option.none()])
         }),
       ),
     60_000,

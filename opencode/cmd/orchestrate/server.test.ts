@@ -89,7 +89,7 @@ interface World {
   /** What recording each of them answers; `Off` (nothing said) when not named. */
   readonly fleetOutcome?: (asked: FleetTest.Asked) => FleetOutcome
   /** The directories that are checkouts of the fleet's repository; every one when not named. */
-  readonly fleetCovers?: (directory: string) => boolean
+  readonly fleetCovers?: (directory: string) => Option.Option<boolean>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -2017,7 +2017,7 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
           if (asked.batch === "batch-1") return FleetOutcome.Recorded({ target })
           return FleetOutcome.Refused({ reason: `the batch file ${asked.batch}.md has no heads line; write one` })
         }
-        const fleetCovers = (directory: string) => directory.startsWith("/checkouts/dotfiles")
+        const fleetCovers = (directory: string) => Option.some(directory.startsWith("/checkouts/dotfiles"))
         const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetOutcome, fleetCovers, records: { seen: new Map(), logged } })
         yield* begin(plugin, verifier("batch-288"), "ses_b")
         yield* plugin.idle("ses_b")
@@ -2046,6 +2046,32 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         yield* begin(plugin, verifier("batch-2026-11-15cj"), "ses_v")
         yield* plugin.idle("ses_v")
         yield* eventually(() => expect(fleet).toEqual([{ report: findings, batch: "batch-2026-11-15cj" }]))
+      }),
+    ))
+
+  test("M1, M2: a verifier whose folder is no git checkout falls back to its root's folder: a dotfiles root publishes, another repository's root stays silent", () =>
+    scenario(
+      Effect.gen(function* () {
+        // The plain folder's origin does not read; a checkout answers whether it is the dotfiles.
+        const fleetCovers = (directory: string) =>
+          Option.liftPredicate(directory.startsWith("/checkouts/dotfiles"), () => directory.startsWith("/checkouts/"))
+        const run = (rootDirectory: string) =>
+          Effect.gen(function* () {
+            const fleet: Array<FleetTest.Asked> = []
+            const sessions = {
+              ...steps({ ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/tmp/run" } }),
+              root: { directory: rootDirectory },
+            }
+            const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetCovers })
+            yield* begin(plugin, verifier("batch-1"), "ses_v")
+            yield* plugin.idle("ses_v")
+            return fleet
+          })
+        const dotfiles = yield* run("/checkouts/dotfiles")
+        yield* eventually(() => expect(dotfiles).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }]))
+        const bite = yield* run("/checkouts/bite")
+        yield* settle
+        expect(bite).toEqual([])
       }),
     ))
 })
