@@ -179,7 +179,7 @@ describe("the advance step over real git and bun", () => {
           const moved = yield* advanceTo(c)
           expect(Exit.match(moved, { onSuccess: () => "installed", onFailure: String })).toBe("installed")
           expect(yield* Effect.promise(() => file(`${home}/.local/bin/apply-agent-settings`).text())).toBe(settings)
-          expect(sh(home, ["readlink", ".local/bin/rexm"]).out).toBe(`${home}/Developer/personal/dotfiles/rex-migrate/rexm.ts`)
+          expect(sh(home, ["readlink", ".local/bin/codex-bridge"]).out).toBe(`${home}/Developer/personal/dotfiles/claude/mods/codex/bridge/bridge.ts`)
           expect(yield* Effect.promise(() => file(`${home}/.local/bin/gone-script`).exists())).toBe(true)
           // A commit older than the install script (a rollback's) moves with nothing to install.
           expect(Exit.isSuccess(yield* advanceTo(a))).toBe(true)

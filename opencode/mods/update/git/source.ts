@@ -37,8 +37,8 @@ export interface Checkout {
 
 /**
  * The workbox's script install, as bootstrap runs it, then the fresh `apply-agent-settings`. Without
- * it, `~/.local/bin` kept the copies bootstrap made, missing what the checkout added since (the rexm
- * link, 2026-11-15). A commit older than the script has none, and its move installs nothing.
+ * it, `~/.local/bin` kept the copies bootstrap made, missing what the checkout added since (a link
+ * apply-agent-settings had gained, 2026-11-15). A commit older than the script has none, and its move installs nothing.
  */
 export const WORKBOX_BIN = "workbox/install-bin.sh"
 
