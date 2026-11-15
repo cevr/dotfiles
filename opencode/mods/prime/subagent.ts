@@ -75,8 +75,11 @@ export function neighbour(
   return cycle[(at + step + cycle.length) % cycle.length]
 }
 
-/** Where a click on a part of the navigation hint goes: the parent, as ↑ does, or the subagent ← / → moves to. */
-export type HintMove = "parent" | "previous" | "next"
+/**
+ * Where a click on a part of the navigation hint goes: the parent, as ↑ does, the subagent ← / → moves to, or,
+ * in a session, down to its subagents as ↓ does.
+ */
+export type HintMove = "parent" | "previous" | "next" | "subagents"
 
 /** A run of the navigation hint; one with a move is pressable. */
 export type HintPart = { readonly text: string; readonly move?: HintMove }
@@ -88,7 +91,7 @@ export type HintPart = { readonly text: string; readonly move?: HintMove }
  * subagents running, the way down to them. None otherwise.
  */
 export function navigationHint(input: { readonly child: boolean; readonly others: number }): ReadonlyArray<HintPart> {
-  if (!input.child) return input.others > 0 ? [{ text: "↓ subagents" }] : []
+  if (!input.child) return input.others > 0 ? [{ text: "↓ subagents", move: "subagents" }] : []
   const back: HintPart = { text: "↑ back to parent", move: "parent" }
   if (input.others === 0) return [back]
   return [back, { text: " · " }, { text: "←", move: "previous" }, { text: "/" }, { text: "→", move: "next" }, { text: " other subagents" }]

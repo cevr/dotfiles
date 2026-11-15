@@ -4,9 +4,10 @@
 // run, the money worker with a subagent of its own. In that grandchild a click
 // on the top bar's parent segment goes to its direct parent, the money worker;
 // there a click on the dock's → moves to another subagent and ← back, as the
-// keys do, and a click on the dock's way back goes to the session. Entered
-// again, the dates worker's top bar parent segment goes back to the session
-// too. The pointer over the way back brightens it, in place.
+// keys do, and a click on the dock's way back goes to the session. There a
+// click on the way down opens the Subagents panel, as ↓ does. Entered again,
+// the dates worker's top bar parent segment goes back to the session too. The
+// pointer over the way back or the way down brightens it, in place.
 import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import { MODEL_REF, type Model, stall, subagent, text } from "../../sim-tui/server.ts"
@@ -25,7 +26,8 @@ const MONEY = { id: "call_money", title: "Fix money parsing", brief: "Worker bri
 const DATES = { id: "call_dates", title: "Fix date parsing", brief: "Worker brief: fix date parsing.", working: "Reading the calendar" }
 const CENTS = { id: "call_cents", title: "Check the cents", brief: "Worker brief: check the cents.", working: "Counting cents" }
 const BACK = "↑ back to parent"
-const NAMES = ["grandchild", "grandchild-up", "next", "previous", "hover", "parent", "dates", "dates-up"] as const
+const DOWN = "↓ subagents"
+const NAMES = ["grandchild", "grandchild-up", "next", "previous", "hover", "parent", "down-rest", "down-hover", "down", "dates", "dates-up"] as const
 type Name = (typeof NAMES)[number]
 type Shot = { readonly text: ReadonlyArray<string>; readonly frame: App.Frame }
 
@@ -48,10 +50,10 @@ const cellOf = (frame: ReadonlyArray<string>, shown: string) => {
   const line = frame[y] ?? ""
   return { x: Array.from(line.slice(0, line.indexOf(shown))).length, y }
 }
-/** The colour the way back is drawn in. */
-const backColor = (shot: Shot) => {
-  const { y } = cellOf(shot.text, BACK)
-  return (shot.frame.lines[y]?.spans ?? []).find((span) => span.text.includes("back to parent"))?.fg ?? "none"
+/** The colour a hint (the way back, the way down) is drawn in. */
+const colorOf = (shot: Shot, shown: string) => {
+  const { y } = cellOf(shot.text, shown)
+  return (shot.frame.lines[y]?.spans ?? []).find((span) => span.text.includes(shown.slice(2)))?.fg ?? "none"
 }
 
 const play = (seed: number) => {
@@ -120,6 +122,21 @@ const play = (seed: number) => {
       yield* tui.until("parent", (frame) => !inside(frame) && has(ASK)(frame), 10_000)
       yield* tui.advance(1_000)
       yield* save("parent")
+      // In the session, the pointer off the way down and then over it brightens it; a click opens the Subagents
+      // panel, as ↓ does there. Escape puts it away.
+      yield* tui.mouse({ action: "move", x: 0, y: 3 })
+      yield* tui.advance(200)
+      yield* save("down-rest")
+      const down = cellOf(tui.text(), DOWN)
+      yield* tui.mouse({ action: "move", x: down.x + 3, y: down.y })
+      yield* tui.advance(200)
+      yield* save("down-hover")
+      yield* click({ x: down.x + 3, y: down.y })
+      yield* tui.until("down", (frame) => isPanel(frame) && listed(frame).every((each) => each.row >= 0), 10_000)
+      yield* tui.advance(500)
+      yield* save("down")
+      yield* tui.press({ name: "escape" })
+      yield* tui.until("panel away", (frame) => !isPanel(frame))
       // From the dates worker, the parent segment goes to the session.
       yield* enter(DATES)
       yield* save("dates")
@@ -134,6 +151,9 @@ const play = (seed: number) => {
         previous: shot("previous"),
         hover: shot("hover"),
         parent: shot("parent"),
+        "down-rest": shot("down-rest"),
+        "down-hover": shot("down-hover"),
+        down: shot("down"),
         dates: shot("dates"),
         "dates-up": shot("dates-up"),
       } satisfies Record<Name, Shot>
@@ -175,11 +195,23 @@ seeded("a click on → in the dock moves to another running subagent, and ← ba
 seeded("a click on the dock's way back goes to the session, the pointer over it brightening it in place", ({ seed, expect }) =>
   Effect.gen(function* () {
     const shots = yield* scenario(seed)
-    expect(backColor(shots.hover)).not.toBe(backColor(shots.previous))
+    expect(colorOf(shots.hover, BACK)).not.toBe(colorOf(shots.previous, BACK))
     expect(cellOf(shots.hover.text, BACK)).toEqual(cellOf(shots.previous.text, BACK))
     expect(inside(shots.parent.text)).toBe(false)
     expect(has(STARTED)(shots.parent.text)).toBe(true)
     expect(has(BACK)(shots.parent.text)).toBe(false)
+  }),
+)
+
+seeded("a click on the session's way down opens its Subagents panel, as ↓ does, the pointer over it brightening it in place", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const shots = yield* scenario(seed)
+    expect(has(DOWN)(shots["down-rest"].text)).toBe(true)
+    expect(colorOf(shots["down-hover"], DOWN)).not.toBe(colorOf(shots["down-rest"], DOWN))
+    expect(cellOf(shots["down-hover"].text, DOWN)).toEqual(cellOf(shots["down-rest"].text, DOWN))
+    expect(isPanel(shots["down-rest"].text)).toBe(false)
+    expect(isPanel(shots.down.text)).toBe(true)
+    expect(inside(shots.down.text)).toBe(false)
   }),
 )
 
