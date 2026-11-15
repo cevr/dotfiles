@@ -26,13 +26,14 @@ import { basename, resolve } from "node:path"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import * as FileSpool from "@dotfiles/opencode-rex/filestore/spool"
 import { Content, frame } from "@dotfiles/opencode-rex/frame"
-import type { Cells } from "@dotfiles/opencode-rex/graphics"
+import { type Cells, type CellPixels, DEFAULT_CELL } from "@dotfiles/opencode-rex/graphics"
 import { setTally, showFile } from "@dotfiles/opencode-rex/model"
 import { type Pane, paneOf } from "@dotfiles/opencode-rex/pane"
 import * as ProcessRex from "@dotfiles/opencode-rex/process/rex"
 import { Spool } from "@dotfiles/opencode-rex/service"
 import { empty, Page, Picture, type Shown } from "@dotfiles/opencode-rex/spool"
 import { TallyState } from "@dotfiles/opencode-rex/status"
+import { answered, CELL_QUERIES, cellOf } from "@dotfiles/opencode-rex/terminal"
 import { Array as Arr, Config, Console, Data, Effect, Exit, Layer, Option, Schema } from "effect"
 
 /** A refusal with its exit code: 2 for a usage error or no pane, 1 for a failed call. */
@@ -140,28 +141,34 @@ const contentOf = (shown: Shown) =>
     }),
   )
 
-/** The pane the viewer draws in: its size, and the text it writes. */
+/** The pane the viewer draws in: its size, its cells' size in pixels (asked when its size changes), and the text it writes. */
 export interface Screen {
   readonly size: Effect.Effect<Cells>
+  readonly cell: (size: Cells) => Effect.Effect<CellPixels>
   readonly display: (text: string) => Effect.Effect<void>
 }
 
 /** The showcase pane's program: draws the session's spool again whenever it or the pane's size changes. */
 export const viewer = Effect.fn("RexShow.view")(function* (session: string, screen: Screen) {
   const spool = yield* Spool
-  const drawn = { key: "" }
+  const drawn = { key: "", sized: "", cell: DEFAULT_CELL }
   const look = Effect.gen(function* () {
     // A spool not written yet, or unreadable for a moment, is drawn as nothing shown; the next look reads it again.
     const spooled = yield* spool.read(session).pipe(Effect.catchTag("SpoolFailed", () => Effect.succeed(empty)))
     const size = yield* screen.size
-    const key = `${spooled.seq}:${size.cols}x${size.rows}`
+    const sized = `${size.cols}x${size.rows}`
+    if (sized !== drawn.sized) {
+      drawn.sized = sized
+      drawn.cell = yield* screen.cell(size)
+    }
+    const key = `${spooled.seq}:${sized}`
     if (key === drawn.key) return
     drawn.key = key
     const content = yield* Option.match(Option.fromUndefinedOr(spooled.shown), {
       onNone: () => Effect.succeed(Option.none<Content>()),
       onSome: (shown) => Effect.map(contentOf(shown), Option.some),
     })
-    yield* screen.display(frame(spooled, content, size))
+    yield* screen.display(frame(spooled, content, size, drawn.cell))
   })
   return yield* Effect.forever(Effect.andThen(look, Effect.sleep(LOOK_EVERY)))
 })
@@ -241,9 +248,43 @@ export const finish = (exit: Exit.Exit<string, unknown>): Effect.Effect<number> 
       }),
   })
 
+/** How long the viewer waits for its terminal to say its cells' size. */
+const CELL_WAIT_MS = 500
+
+/**
+ * This terminal's cell size: the queries written, the replies read from
+ * input in raw mode until they are in or the wait is over; the default cell
+ * when input is no terminal or nothing came.
+ */
+const askCell = (size: Cells) =>
+  Effect.callback<CellPixels>((resume) => {
+    const input = process.stdin
+    if (!input.isTTY) return resume(Effect.succeed(DEFAULT_CELL))
+    const heard = { text: "", done: false }
+    const finish = () => {
+      if (heard.done) return
+      heard.done = true
+      clearTimeout(timer)
+      input.off("data", onData)
+      input.setRawMode(false)
+      input.pause()
+      resume(Effect.succeed(Option.getOrElse(cellOf(heard.text, size), () => DEFAULT_CELL)))
+    }
+    const onData = (chunk: Buffer) => {
+      heard.text += chunk.toString("latin1")
+      if (answered(heard.text)) finish()
+    }
+    const timer = setTimeout(finish, CELL_WAIT_MS)
+    input.setRawMode(true)
+    input.resume()
+    input.on("data", onData)
+    process.stdout.write(CELL_QUERIES)
+  })
+
 /** This process's terminal as the viewer's screen. */
 const terminal: Screen = {
   size: Effect.sync(() => ({ cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 })),
+  cell: askCell,
   display: (text) => Effect.sync(() => void process.stdout.write(text)),
 }
 

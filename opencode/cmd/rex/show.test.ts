@@ -2,16 +2,18 @@
 // caller's pane (one showcase split off beside it, the viewer told the
 // spool), the refusal outside a pane, and the command's exit outside one.
 import { describe, expect } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySpool from "@dotfiles/opencode-rex/memory/spool"
 import { Page, Picture, type Spooled } from "@dotfiles/opencode-rex/spool"
-import { ConfigProvider, Effect, Exit, Layer, Option, Ref, Schema } from "effect"
+import { ConfigProvider, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
-import { parse, Refused, Request, run, type Screen } from "./show.ts"
+import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
-const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), display: () => Effect.void }
+const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void }
 const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
 const SHOW = fileURLToPath(new URL("./show.ts", import.meta.url))
 
@@ -79,6 +81,48 @@ describe("a run from a caller's pane", () => {
     5_000,
   )
 })
+
+/** A PNG's first 24 bytes: the signature and an IHDR chunk of `width` × `height`. */
+const png = (width: number, height: number) => {
+  const bytes = new Uint8Array(24)
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
+  const view = new DataView(bytes.buffer)
+  view.setUint32(16, width)
+  view.setUint32(20, height)
+  return bytes
+}
+
+/** A screen of `size` cells of Rex's 12 × 38 px that hands each frame to `frames`, asked for its cell size once per size. */
+const recording = (frames: Queue.Queue<string>, asked: Ref.Ref<number>): Screen => ({
+  size: Effect.succeed({ cols: 82, rows: 35 }),
+  cell: () => Effect.as(Ref.update(asked, (count) => count + 1), { width: 12, height: 38 }),
+  display: (text) => Queue.offer(frames, text),
+})
+
+const viewed = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
+
+effectTest(
+  "the viewer places a square PNG square in the terminal's own cells, asking their size once",
+  Effect.acquireUseRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), "rex-viewer-"))),
+    (dir) =>
+      Effect.gen(function* () {
+        const file = join(dir, "x.png")
+        yield* Effect.sync(() => writeFileSync(file, png(600, 600)))
+        yield* Ref.set(viewed, new Map([["session:a", { seq: 1, shown: Picture.make({ file, name: "x.png" }) }]]))
+        const frames = yield* Queue.unbounded<string>()
+        const asked = yield* Ref.make(0)
+        const running = yield* Effect.forkChild(viewer("session:a", recording(frames, asked)))
+        const first = yield* Queue.take(frames)
+        yield* Fiber.interrupt(running)
+        // 33 rows under the header: 82 × 12 px wide binds, so 600 × 600 px takes 82 × round(82 × 12 / 38) = 26 cells.
+        expect(first).toContain("a=T,f=100,q=2,c=82,r=26,")
+        expect(yield* Ref.get(asked)).toBe(1)
+      }),
+    (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+  ).pipe(Effect.provide(MemorySpool.layer(viewed))),
+  10_000,
+)
 
 effectTest(
   "the command outside a pane prints why on stderr and exits 2",

@@ -1,7 +1,9 @@
 // A PNG drawn in a terminal with the Kitty graphics protocol, which Rex's
 // terminal speaks: the file's bytes in base64, sent in chunks of 4096
 // characters, placed over a number of cells that keeps the picture's shape
-// and fits the pane. https://sw.kovidgoyal.net/kitty/graphics-protocol/
+// and fits the pane. The shape needs the cell's own shape in pixels, which
+// the terminal reports (terminal.ts); Rex's cells are about 12 × 38.
+// https://sw.kovidgoyal.net/kitty/graphics-protocol/
 import { Array as Arr, Option } from "effect"
 import { Base64 } from "effect/encoding"
 
@@ -19,8 +21,14 @@ export interface Cells {
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
-/** How much taller a terminal cell is than wide, near enough for any common font. */
-const CELL_ASPECT = 2
+/** A terminal cell's size in pixels, as the terminal reports it (CSI 16 t). */
+export interface CellPixels {
+  readonly width: number
+  readonly height: number
+}
+
+/** The cell assumed when the terminal does not say: twice as tall as wide. */
+export const DEFAULT_CELL: CellPixels = { width: 1, height: 2 }
 
 /** The protocol's largest chunk of base64. */
 const CHUNK = 4096
@@ -40,13 +48,18 @@ export const pngSize = (bytes: Uint8Array): Option.Option<Size> =>
     (size) => size.width > 0 && size.height > 0,
   )
 
-/** The cells a picture of `size` takes in a space of `space` cells: as wide as fits, its shape kept, never more than one cell less than the space. */
-export const fit = (size: Size, space: Cells): Cells => {
+const within = (value: number, most: number) => Math.min(most, Math.max(1, Math.round(value)))
+
+/**
+ * The cells a picture of `size` takes in a space of `space` cells of `cell`
+ * pixels: as large as fits, its shape kept. Each side is a whole number of
+ * cells, so the shape is kept to within half a cell on each side.
+ */
+export const fit = (size: Size, space: Cells, cell: CellPixels = DEFAULT_CELL): Cells => {
   const cols = Math.max(1, space.cols)
   const rows = Math.max(1, space.rows)
-  const rowsAtFullWidth = Math.max(1, Math.ceil((cols * size.height) / size.width / CELL_ASPECT))
-  if (rowsAtFullWidth <= rows) return { cols, rows: rowsAtFullWidth }
-  return { cols: Math.max(1, Math.min(cols, Math.floor((rows * size.width * CELL_ASPECT) / size.height))), rows }
+  const scale = Math.min((cols * cell.width) / size.width, (rows * cell.height) / size.height)
+  return { cols: within((size.width * scale) / cell.width, cols), rows: within((size.height * scale) / cell.height, rows) }
 }
 
 /** The escape sequences that draw `png` at the cursor over `cells`, with replies off (`q=2`). */

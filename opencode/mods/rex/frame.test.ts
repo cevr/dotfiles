@@ -6,7 +6,7 @@ import { Option, Result } from "effect"
 import { Base64 } from "effect/encoding"
 import { Content, frame } from "./frame.ts"
 import { Picture } from "./spool.ts"
-import { drawPng, fit, pngSize } from "./graphics.ts"
+import { drawPng, pngSize } from "./graphics.ts"
 import { render, visibleWidth } from "./markdown.ts"
 import { oneLine, report } from "./status.ts"
 
@@ -46,11 +46,6 @@ describe("a picture in Kitty graphics", () => {
   test("reads a PNG's size and refuses anything else", () => {
     expect(pngSize(png(600, 300))).toEqual(Option.some({ width: 600, height: 300 }))
     expect(pngSize(new TextEncoder().encode("GIF89a not a png at all"))).toEqual(Option.none())
-  })
-
-  test("fits the pane, its shape kept with cells twice as tall as wide", () => {
-    expect(fit({ width: 600, height: 300 }, { cols: 80, rows: 40 })).toEqual({ cols: 80, rows: 20 })
-    expect(fit({ width: 300, height: 600 }, { cols: 80, rows: 20 })).toEqual({ cols: 20, rows: 20 })
   })
 
   test("sends the bytes in chunks of at most 4096 characters, placed once, the last chunk ending the transfer", () => {
