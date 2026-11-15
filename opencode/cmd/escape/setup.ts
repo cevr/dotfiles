@@ -8,7 +8,7 @@
  * `session.undo`, which interrupts, waits, reverts and puts the prompt back in
  * the composer; a pending prompt comes back with every other waiting one
  * through the fork's `ui.composer.takeBack` (`take.ts`), the run it waited
- * behind interrupted beside it; an interrupt goes through the client. A refused
+ * behind interrupted once the take-back is answered; an interrupt goes through the client. A refused
  * interrupt, or a turn not stopped (or a prompt still queued) STOP_MS after
  * the press, is a toast, so a press the server never answers is never
  * silent; the next turn a resume or a sent prompt starts is not the stopped
@@ -231,15 +231,17 @@ export const setup = (host: Host, clock: Clock = realClock) => {
         const { sessionID } = action
         // A pending prompt comes back with every other waiting one, as Up takes them (takeAll). The host's undo puts a
         // sent one back: it interrupts, waits, and reverts. Its own failures are its toasts; a hang is ours below.
-        if (action.pending) takeAll(sessionID)
-        else host.keymap.dispatch(UNDO)
-        // A pending prompt waited behind a run: stop that too, without resuming the inbox ahead of the cancel.
-        if (action.stop) void interrupt(sessionID, false)
-        else if (action.pending)
+        if (!action.pending) host.keymap.dispatch(UNDO)
+        if (action.pending) {
+          // A pending prompt waited behind a run: stop that too, without resuming the inbox, and only once the
+          // take-back is answered. A stop ahead of it settles the turn while a prompt sent just before the press is
+          // still on its way; its admission then rings for a new turn, which delivers it before its cancel.
+          const taken = takeAll(sessionID)
+          if (action.stop) void taken.then(() => interrupt(sessionID, false))
           clock.after(STOP_MS, () => {
             if (pending(sessionID, action.messageID)) toast(NOT_TAKEN, "error")
           })
-        else watch(sessionID, () => toast(NOT_STOPPED, "error"))
+        } else watch(sessionID, () => toast(NOT_STOPPED, "error"))
         // A revert restores files, not what a shell command did outside them.
         if (action.ranShell && !action.pending) toast("Cancelled; shell commands it ran are not undone", "warning")
         return

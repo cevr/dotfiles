@@ -273,6 +273,24 @@ describe("escape plugin", () => {
     expect(run.toasts).toEqual([])
   })
 
+  test("the turn stops only once the take-back is answered: a prompt sent just before the press reaches the inbox ahead of the stop", async () => {
+    const run = start()
+    run.sessions.ses_root!.messages.push({ id: "msg_3", type: "user", text: "Then tag it.", time: { created: SENT + 6_000 } })
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_3", "queue", SENT + 6_000)]
+    run.state.now = SENT + 60_000
+    const answer = Promise.withResolvers<{ left: ReadonlyArray<string> }>()
+    run.host.ui.composer.takeBack = (input) => {
+      run.calls.push(`take ${input.inboxIDs.join(",")}`)
+      return answer.promise
+    }
+    run.press()
+    await run.flush()
+    expect(run.calls).toEqual(["take msg_3"])
+    answer.resolve({ left: [] })
+    await run.flush()
+    expect(run.calls).toEqual(["take msg_3", "interrupt false"])
+  })
+
   test("an idle session's parked prompt comes back alone, and nothing is interrupted", async () => {
     const run = start()
     run.sessions.ses_root!.status = "idle"
