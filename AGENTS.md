@@ -26,11 +26,12 @@
 - New deps: quick health check (recent releases, adoption).
 - Bite PRs: assign and request review from `andrewgoupil`, `antwandaher` and `narminmolina` unless told otherwise.
 - "Undo" reverts only your own last edit to that file. Uncommitted work stays.
+- Orchestration freeze: Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill.
 
 ## Isolated workspaces
 
 - Work happens in a Rift made from the repository's warm source, never in a Git worktree: a worktree is a full copy, a Rift a copy-on-write one. The folder you start in does not decide this: a checkout on a file system Rift cannot clone (the workbox's ext4 `~/Developer`) still has its warm source on one that can (`/workspaces`). The guard refuses `git worktree add` wherever Rift serves the checkout; `git worktree list`, `remove` and `prune` still run, to clean up old worktrees.
-- In OpenCode, use the `rift` tool (`create`, `list`, `remove`, `land`, and on the workbox its `workrift` actions): it runs the commands below for you, `remove` refuses a Rift with unsaved work, and `land` merges Rifts onto the default branch as one batch, gates, pushes and removes them.
+- In OpenCode, use the `rift` tool (`create`, `list`, `remove`, `land`, and on the workbox its `workrift` actions): it runs the commands below for you, `remove` refuses a Rift with unsaved work, and `land` merges the Rifts it is given onto the default branch by their receipts and one merge check (`rift.mergeCheck`; else the repo's `rift.gate`), pushes and removes them. A run's root uses the `orchestrate` tool's `lane` and `land` instead of `rift create` and `rift land`.
 - Keep one clean warm source for each repository.
 - Do not make feature changes in a warm source.
 - Create a Rift from the warm source with `rift create --name <name> --copy-all .` to keep installed packages and generated output. The positional argument is the source path, not a branch name. Create the branch inside the Rift afterwards.
