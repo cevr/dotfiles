@@ -108,7 +108,7 @@ const fakes = (host: World) =>
         }),
         head: Effect.succeed(PRIOR),
         advance: (commit) =>
-          Effect.suspend(() => {
+          Effect.suspend((): Effect.Effect<void, UpdateFailed | CheckoutStuck> => {
             host.calls.push(`advance ${commit.slice(0, 1)}`)
             if (host.advanceStuck.includes(commit)) return Effect.fail(new CheckoutStuck({ step: "fast-forward the checkout", message: "untracked files the target tracks with other content: docs/x.md" }))
             if (host.advanceFails.includes(commit)) return failure("install the dependencies")

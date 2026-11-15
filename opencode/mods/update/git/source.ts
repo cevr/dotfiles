@@ -1,5 +1,5 @@
 import { file } from "bun"
-import { Effect, Layer, Option } from "effect"
+import { Array as Arr, Effect, Layer, Option } from "effect"
 import { run, spawned, type Place } from "../process/run.ts"
 import { CheckoutStuck, Source, UpdateFailed } from "../service.ts"
 import { targetOfTag, VERIFIED_REF } from "../target.ts"
@@ -153,7 +153,7 @@ export const layer = (checkout: Checkout) => {
           Effect.mapError((failed) =>
             new CheckoutStuck({
               step: failed.step,
-              message: [failed.message, ...(differing.length > 0 ? [`untracked files the target tracks with other content: ${differing.join(", ")}`] : [])].join("\n"),
+              message: [failed.message, ...Arr.match(differing, { onEmpty: () => [], onNonEmpty: (some) => [`untracked files the target tracks with other content: ${some.join(", ")}`] })].join("\n"),
             }),
           ),
         ),
