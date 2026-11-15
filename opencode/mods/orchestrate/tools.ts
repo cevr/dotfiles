@@ -529,8 +529,8 @@ export const changesWarnings = (files: ReadonlyArray<UnitFiles>): ReadonlyArray<
 
 // ── A verify of main ──
 
-/** The name a verify of main at `head` takes: `main-<short head>`. */
-export const mainVerifyName = (head: string): string => `main-${head.slice(0, 7)}`
+/** The batch a verify of main at `head` is: `batch-main-<short head>`, its verifier `verifier batch-main-<short> r1`. */
+export const mainVerifyName = (head: string): string => `batch-main-${head.slice(0, 7)}`
 
 /** A unit a verify's range holds: its dir, the round of its request, its spec and its request. */
 export interface RangeUnit {
@@ -553,8 +553,11 @@ export interface MainBatch {
   readonly heads: Option.Option<{ readonly dotfiles: string; readonly fork: string }>
 }
 
-/** The batch file a verify of main writes: `<run dir>/verify-<name>/batch-<name>.md`. */
-export const mainBatchPathOf = (runDir: string, name: string): string => `${runDir.replace(/\/+$/, "")}/${verifyLaneOf(name)}/batch-${name}.md`
+/**
+ * The batch file a verify of main writes: `<run dir>/verify-main-<short>/batch-main-<short>.md`, the `<batch>.md` beside its
+ * findings that git/fleet.ts `batchFileOf` reads when the verdict is accepted.
+ */
+export const mainBatchPathOf = (runDir: string, name: string): string => `${runDir.replace(/\/+$/, "")}/verify-${name.replace(/^batch-/, "")}/${name}.md`
 
 /** The findings its verifier writes beside it. */
 export const mainFindingsPathOf = (batchFile: string): string => batchFile.replace(/\.md$/, "-findings.md")

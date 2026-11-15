@@ -3,7 +3,9 @@
 // domain, the rule that names a unit's Rift, a land's resolution from the run tables and the Rift list, and
 // status. The tool on a simulated host runs in cmd/orchestrate/orch-tools.sim.test.ts.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Match, Option, Predicate, Schema } from "effect"
+import { Array as Arr, Match, Option, Predicate, Result, Schema } from "effect"
+import { headOf } from "../../../skills/orchestrate/scripts/request.ts"
+import { batchFileOf, headsOf } from "./git/fleet.ts"
 import type { Run } from "./idle.ts"
 import {
   ACTIONS,
@@ -24,6 +26,7 @@ import {
   type MainSince,
   mainBatchPathOf,
   mainBatchText,
+  mainFindingsPathOf,
   mainRunDirOf,
   mainVerifyAnswer,
   mainVerifyName,
@@ -47,6 +50,7 @@ import {
   readyWithLane,
   lanesRefusal,
   nameRefusal,
+  UNIT_NAME,
   nextLine,
   NO_UNITS,
   nothingToLand,
@@ -603,7 +607,22 @@ describe("a verify of main", () => {
     expect(text).toContain("- u1 r2: unit dir /run/u1, spec /run/u1/spec.md, request /run/u1/round-2-request.md")
     expect(batchHeadOf(text)).toEqual(Option.some(shaOf(1000)))
     expect(mainBatchText({ ...batch, heads: Option.none() })).not.toMatch(/^heads:/im)
-    expect(mainBatchPathOf("/run/", batch.name)).toBe(`/run/verify-${batch.name}/batch-${batch.name}.md`)
+    expect(mainBatchPathOf("/run/", batch.name)).toBe(`/run/verify-main-${shaOf(1000).slice(0, 7)}/batch-main-${shaOf(1000).slice(0, 7)}.md`)
+  })
+
+  test("the request's head is the skill's request.ts headOf", () => {
+    for (const text of [`Head: ${shaOf(9)}\n`, "- base 1234567, head commit abcdef01.", "Range 1234567..89abcde, 3 files", "no head here", `head ${shaOf(3).slice(0, 12)} and ${shaOf(4)}`, "base..head: 1111111..2222222"])
+      expect({ text, head: requestHeadOf(text) }).toEqual({ text, head: Option.fromNullishOr(headOf(text)) })
+  })
+
+  test("a verify of main's batch file is the one the fleet reads when its verifier's findings are accepted", () => {
+    const name = mainVerifyName(shaOf(1000))
+    const file = mainBatchPathOf("/run", name)
+    // The verifier is `verifier <name> r1`; its findings sit beside the batch file, and batchFileOf reads `<dir>/<batch>.md`.
+    expect(batchFileOf(mainFindingsPathOf(file), name)).toBe(file)
+    expect(UNIT_NAME.test(name)).toBe(true)
+    const text = mainBatchText({ name, base: shaOf(7), head: shaOf(1000), last: Option.none(), merges: [], units: [], heads: Option.some({ dotfiles: shaOf(1000), fork: shaOf(77) }) })
+    expect(headsOf(text)).toEqual(Result.succeed({ dotfiles: shaOf(1000), fork: shaOf(77) }))
   })
 
   test("writes into the run dir holding a unit in its range; with none or several, the first orchestrate.dir, else the first run", () => {

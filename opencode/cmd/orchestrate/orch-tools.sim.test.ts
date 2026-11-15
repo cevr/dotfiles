@@ -301,14 +301,14 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
       }
       // A verify of main: named for the head, its batch file written (with a run dir) from the base the model names.
       const head = Option.getOrElse(Option.map(Arr.last(run.memory.main.line()), (entry) => entry.sha), () => "")
-      const name = `main-${head.slice(0, 7)}`
+      const name = `batch-main-${head.slice(0, 7)}`
       expect(answer.text).toContain(`subagent({ agent: "verifier", description: "verifier ${name} r1"`)
       const file = batchFileIn(answer.text)
       if (model.logs.size === 0) {
         expect(answer.text).toContain("No run dir is known, so no batch file was written")
         return
       }
-      expect(file).toEqual(Option.some(`${RUN_DIR}/verify-${name}/batch-${name}.md`))
+      expect(file).toEqual(Option.some(`${RUN_DIR}/verify-main-${head.slice(0, 7)}/${name}.md`))
       const text = Option.getOrElse(Option.map(Option.flatMap(file, (path) => Option.fromUndefinedOr(run.files.get(path))), (written) => written.text), () => "")
       const lines = text.split("\n")
       expect(lines).toContain(`Base: ${baseIn(run, model)}`)
@@ -389,9 +389,9 @@ seeded("B3: after the fifth land since a verify, land and status start with the 
     const line = run.memory.main.line()
     const head = Option.getOrElse(Option.map(Arr.last(line), (entry) => entry.sha), () => "")
     const verified = yield* run.probe(root(), ORCHESTRATE, { action: "verify" })
-    const name = `main-${head.slice(0, 7)}`
+    const name = `batch-main-${head.slice(0, 7)}`
     expect([verified.error, verified.text]).toEqual([false, expect.stringContaining(`subagent({ agent: "verifier", description: "verifier ${name} r1"`)])
-    const file = `${RUN_DIR}/verify-${name}/batch-${name}.md`
+    const file = `${RUN_DIR}/verify-main-${head.slice(0, 7)}/${name}.md`
     const text = run.files.get(file)?.text ?? ""
     expect(text.split("\n")).toContain(`Base: ${Option.getOrElse(Option.map(Arr.get(line.toReversed(), VERIFY_EVERY), (entry) => entry.sha), () => "")}`)
     expect(text.split("\n")).toContain(`Head: ${head}`)

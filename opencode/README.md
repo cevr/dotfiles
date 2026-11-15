@@ -667,17 +667,19 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   answer, since `status.ts` reads git. `departs` still decodes and means
   nothing.
 - `orchestrate({ action: "verify", head? })`: a verify of main, named
-  `main-<short head>` (`head`, else origin's default branch head, read
+  `batch-main-<short head>` (`head`, else origin's default branch head, read
   then). Its base is the `Head:` of the newest `<run dir>/verify-*/batch-*.md`
   whose findings beside it hold a verdict line; with none, the fifth
   first-parent merge before the head, and the answer says so. It writes
-  `<run dir>/verify-<name>/batch-<name>.md` (`Base:` and `Head:` in full, the
+  `<run dir>/verify-main-<short>/batch-main-<short>.md` (`Base:` and `Head:` in full, the
   first-parent merges between them, each unit whose request's head is in the
   range with its dir, round, spec and request, and with the `fleet` option
   the one `Heads: dotfiles=<sha> fork=<sha>` line), into the run dir that
   holds a unit of the range, else the first `orchestrate.dir`, else the first
   run. Then the Rift `verify-<name>` at the head, and the one `subagent` call,
-  `verifier main-<short head> r1`, its prompt naming the batch file.
+  `verifier batch-main-<short head> r1`, its prompt naming the batch file;
+  its findings beside it make the batch file the `<batch>.md` an accepted
+  verdict publishes the fleet target from (git/fleet.ts `batchFileOf`).
 - `orchestrate({ action: "verify", batch, head? })`: the verifier's clean
   checkout, the Rift `verify-<batch>` detached at `head` (default: origin's
   default branch head, read then), and the `subagent` call that starts it.
