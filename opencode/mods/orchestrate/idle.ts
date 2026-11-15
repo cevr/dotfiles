@@ -41,11 +41,16 @@ export interface MovingUnit extends Schema.Schema.Type<typeof MovingUnit> {}
 export const ReadyUnit = Schema.Struct({ run: Schema.String, unit: Schema.String })
 export interface ReadyUnit extends Schema.Schema.Type<typeof ReadyUnit> {}
 
-/** One unit of an orchestrate run, as the status script derives it: `since` is its log.md time for that state. */
+/**
+ * One unit of an orchestrate run, as the status script derives it from its files and git: `since` is its log.md time
+ * for that state, `round` its log's round, `verdict` its newest findings' (`changes r1`).
+ */
 export interface RunUnit {
   readonly unit: string
   readonly state: string
   readonly since?: string
+  readonly round?: string
+  readonly verdict?: string
 }
 
 /** One orchestrate run: its directory's name, its path when the status plugin gives it, and its units. */

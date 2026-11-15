@@ -659,14 +659,51 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   every unit the run tables show `ready` that has a lane, and with none it
   says what to name. A named unit in another state than `ready` lands, its
   answer starting `orchestrate: warning: <unit> is <state>, not ready; landed
-  as asked.` `departs` still decodes and means nothing.
+  as asked.` A unit whose newest findings say `changes` and are not older
+  than its newest request lands too, after `orchestrate: warning: <unit>
+  lands with r<N>'s changes verdict open (<findings>).` After a land that
+  pushed, each landed unit the run tables hold moves to `merged <pushed
+  commit>` in its log.md (log.ts `--current`); a missed line changes no
+  answer, since `status.ts` reads git. `departs` still decodes and means
+  nothing.
+- `orchestrate({ action: "verify", head? })`: a verify of main, named
+  `main-<short head>` (`head`, else origin's default branch head, read
+  then). Its base is the `Head:` of the newest `<run dir>/verify-*/batch-*.md`
+  whose findings beside it hold a verdict line; with none, the fifth
+  first-parent merge before the head, and the answer says so. It writes
+  `<run dir>/verify-<name>/batch-<name>.md` (`Base:` and `Head:` in full, the
+  first-parent merges between them, each unit whose request's head is in the
+  range with its dir, round, spec and request, and with the `fleet` option
+  the one `Heads: dotfiles=<sha> fork=<sha>` line), into the run dir that
+  holds a unit of the range, else the first `orchestrate.dir`, else the first
+  run. Then the Rift `verify-<name>` at the head, and the one `subagent` call,
+  `verifier main-<short head> r1`, its prompt naming the batch file.
 - `orchestrate({ action: "verify", batch, head? })`: the verifier's clean
   checkout, the Rift `verify-<batch>` detached at `head` (default: origin's
   default branch head, read then), and the `subagent` call that starts it.
   Any unit-name-shaped batch (`batch-<k>`, a unit, `main-<sha>`) is taken.
-- `orchestrate({ action: "status" })`: each run's units with their states,
-  each open unit's lane, and one `next:` line: the land call when a unit is
-  ready with a lane, else a wait for the implementors' hand-backs, else none.
+- `orchestrate({ action: "status" })`: each run's open units with their
+  states, each one's lane, and one `next:` line: the land call when a unit is
+  ready with a lane, else the verify of main when it is due, else a wait for
+  the implementors' hand-backs, else none.
+
+A land's and a status's answer start with one line, never a refusal, when a
+verify of main is due: `orchestrate: <N> merges on <branch> since the last
+verify (<short sha>, <H> h ago): orchestrate({ action: "verify" }).`, at
+`VERIFY_EVERY` (5) first-parent merges since the last verified head, or one
+merge once the last verify is `VERIFY_MAX_AGE_MS` (24 h) old (`tools.ts`).
+The count is of lands, not commits: `git log --first-parent --merges` on the
+default branch (origin's `origin/HEAD`, else `main`, else `master`), read by
+`MainLine` (`git/main-line.ts`); the run dirs' files by `RunFiles`
+(`filestore/run-files.ts`). No ledger, cache or ref keeps any of it.
+
+A unit's state is the skill's `status.ts <run dir> --repo <checkout>`: its
+log's last state, except `merged` when the head its newest
+`round-N-request.md` names is an ancestor of the default branch, whatever its
+log says; merged and dropped units are left out of its table unless `--all`.
+Its `Verdict` column is the newest findings' verdict with its round
+(`changes r1`). The status mod reads each run of `tmp/orchestrate/*` and of
+each directory `git config --get-all orchestrate.dir` names in the checkout.
 
 A subagent is refused `lane`, `land` and `verify` (the root lands); `status`
 answers it. A call carrying another action's field (a `land` with `unit`, a

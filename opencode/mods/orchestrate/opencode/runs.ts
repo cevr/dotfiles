@@ -1,10 +1,11 @@
 // The runs over the status plugin's RPC (mods/status status.ts `STATUS`),
 // which answers the runs of the repository its copy serves, each unit's state
-// derived by the orchestrate skill's status script, as the /pool pane reads
-// them, with the log.md time each unit entered its state (`since`, kept when
-// it has one) and its batch cadence (`cadence`, kept when it has one), and
-// each run's dir (`dir`, kept when given). Only the runs are read, with this mod's own schema. No status plugin,
-// a failure, a timeout or an answer that is not one is no runs.
+// derived by the orchestrate skill's status script from its files and git, as
+// the /pool pane reads them, with the log.md time each unit entered its state
+// (`since`), its round (`round`), its newest verdict (`verdict`) and its batch
+// cadence (`cadence`), each kept when it has one, and each run's dir (`dir`,
+// kept when given). Only the runs are read, with this mod's own schema. No
+// status plugin, a failure, a timeout or an answer that is not one is no runs.
 import { Effect, Layer, Option, Schema } from "effect"
 import { Runs } from "../service.ts"
 
@@ -20,19 +21,29 @@ const Answer = Schema.Struct({
       name: Schema.String,
       dir: Schema.optional(Schema.String),
       units: Schema.Array(
-        Schema.Struct({ unit: Schema.String, state: Schema.String, since: Schema.optional(Schema.String), cadence: Schema.optional(Schema.String) }),
+        Schema.Struct({
+          unit: Schema.String,
+          state: Schema.String,
+          since: Schema.optional(Schema.String),
+          round: Schema.optional(Schema.String),
+          verdict: Schema.optional(Schema.String),
+          cadence: Schema.optional(Schema.String),
+        }),
       ),
     }),
   ),
 })
 
-/** A unit as the runs keep it: `since` and `cadence` only when the status plugin gave them. */
-const unitOf = ({ unit, state, since, cadence }: { unit: string; state: string; since?: string; cadence?: string }) => ({
-  unit,
-  state,
-  ...(since === undefined || since === "" ? {} : { since }),
-  ...(cadence === undefined || cadence === "" ? {} : { cadence }),
-})
+/** The optional fields a unit keeps only when the status plugin gave them, not empty. */
+const OPTIONAL = ["since", "round", "verdict", "cadence"] as const
+type Optional = (typeof OPTIONAL)[number]
+
+/** A unit as the runs keep it: `since`, `round`, `verdict` and `cadence` only when the status plugin gave them. */
+const unitOf = (given: { unit: string; state: string } & { readonly [K in Optional]?: string }) => {
+  const unit: { unit: string; state: string } & { [K in Optional]?: string } = { unit: given.unit, state: given.state }
+  for (const key of OPTIONAL) Option.map(Option.filter(Option.fromUndefinedOr(given[key]), (value) => value !== ""), (value) => (unit[key] = value))
+  return unit
+}
 const decode = Schema.decodeUnknownOption(Answer)
 
 export const layer = (status: Status) =>

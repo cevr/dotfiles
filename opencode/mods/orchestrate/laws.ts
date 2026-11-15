@@ -593,7 +593,7 @@ export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<
         units: [
           { unit: "alpha", state: "implement" },
           { unit: "beta", state: "merged 1234567" },
-          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z" },
+          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z", round: "2", verdict: "changes r1" },
         ],
       },
       { name: "p2", units: [] },

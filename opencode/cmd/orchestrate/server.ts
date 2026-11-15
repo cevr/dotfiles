@@ -121,7 +121,7 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -137,9 +137,11 @@ import * as HeavyHostLive from "@dotfiles/opencode-orchestrate/node/heavy-host"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
+import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
+import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
-import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
+import { Draft, IDLE, MARK, type Run as RunTable } from "@dotfiles/opencode-orchestrate/idle"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
@@ -161,11 +163,13 @@ import {
   HeavyHost,
   type Latches,
   type LatchStart,
+  MainLine,
   type Models,
   type PoolPace,
   Remind,
   type RootHolds,
   type RunRecords,
+  RunFiles,
   type Fleet,
   Runs,
   Sessions,
@@ -173,7 +177,7 @@ import {
   type Steer,
   StepLog,
   type Tell,
-  type UnitLogs,
+  UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
@@ -186,6 +190,9 @@ export const UNIT_LOG = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/sc
 export const SKILL_DIR = join(TuiDirs.dirs().home, ".claude/skills/orchestrate")
 
 const SUBAGENT = "subagent"
+
+/** How many merges on the default branch a verify reads at most. */
+const MERGES_READ = 1_000
 
 /**
  * An option that takes `fallback` when absent. A present value must decode.
@@ -249,6 +256,8 @@ export type Externals =
   | Tell
   | Remind
   | Fleet
+  | MainLine
+  | RunFiles
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
@@ -273,7 +282,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
 })
 
 /** The outside systems the filesystem and processes provide: the files the plugin keeps, git, the scripts it runs. */
-export type Kept = CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet
+export type Kept = CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet | MainLine | RunFiles
 
 /**
  * Whether a session works: it runs a turn (its newest start is after its last end) or keeps background work of its
@@ -313,6 +322,8 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
       SkillLive.layer(options.skill),
       RunRecordsLive.layer,
       GitFleet.layer(Option.fromNullishOr(options.fleet)),
+      GitMainLine.layer,
+      RunFilesLive.layer,
     ),
   )
 
@@ -615,13 +626,51 @@ export const make = (
       /** The Rifts as status reads them: none when the rift plugin does not answer, so status still answers the tables. */
       const lanesNow = (sessionID: string): Effect.Effect<{ readonly rifts: ReadonlyArray<Tools.Lane>; readonly workrift: boolean }> =>
         Effect.suspend(() => listLanes(sessionID, Option.none())).pipe(Effect.catchCause(() => Effect.succeed({ rifts: [], workrift: false })))
-      /** Status: the run tables, each open unit's lane and the next call. */
+      // The default branch and the runs' files (tools.ts `MainSince`, `UnitFiles`), read at each call in this
+      // location's checkout: nothing of them is kept between calls.
+      const mainLine = Context.get(services, MainLine)
+      const runFiles = Context.get(services, RunFiles)
+      const unitLogs = Context.get(services, UnitLogs)
+      const checkout = ctx.location.directory
+      /** The run dirs the run tables name, once each. */
+      const runDirsOf = (tables: ReadonlyArray<RunTable>): ReadonlyArray<string> => Arr.dedupe(tables.flatMap((run) => Option.toArray(Option.fromUndefinedOr(run.dir))))
+      /**
+       * The last verify the run dirs record, the base a verify of main at `head` takes from it (with none, from the
+       * newest merges), and the first-parent merges since that base.
+       */
+      const rangeOf = (dirs: ReadonlyArray<string>, head: string) =>
+        Effect.gen(function* () {
+          const last = yield* runFiles.verified(dirs)
+          const newest = yield* Option.match(last, {
+            onNone: () => mainLine.merges(checkout, head, Option.none(), Tools.FIRST_VERIFY_BACK + 1),
+            onSome: () => Effect.succeed<ReadonlyArray<Tools.Merge>>([]),
+          })
+          const base = Tools.verifyBaseOf(head, last, newest)
+          const merges = yield* mainLine.merges(checkout, head, Option.some(base), MERGES_READ)
+          return { last, base, merges }
+        })
+      /** The default branch since the last verify the run dirs record, with its merges; none with no run dir or no default branch. */
+      const mainSince = (tables: ReadonlyArray<RunTable>, at: Option.Option<string>) =>
+        Effect.gen(function* () {
+          const dirs = runDirsOf(tables)
+          if (dirs.length === 0) return Option.none<{ readonly since: Tools.MainSince; readonly merges: ReadonlyArray<Tools.Merge> }>()
+          const tip = yield* mainLine.tip(checkout, at)
+          if (Option.isNone(tip)) return Option.none()
+          const { last, base, merges } = yield* rangeOf(dirs, tip.value.head)
+          return Option.some({ since: { branch: tip.value.branch, head: tip.value.head, base, merges: merges.length, last }, merges })
+        })
+      /** The unit's dir: the one a run dir of the tables holds, else the one the unit logs find under the checkout. */
+      const unitDirOf = (unit: string, tables: ReadonlyArray<RunTable>) =>
+        unitLogs.find({ unit, named: runDirsOf(tables).map((dir) => `${dir}/${unit}`), directory: checkout }).pipe(Effect.map(Option.fromUndefinedOr))
+      /** Status: the verify-due line, the run tables, each open unit's lane and the next call. */
       const status = (sessionID: string) =>
         Effect.gen(function* () {
           const tables = yield* runs.list
-          if (!tables.some((run) => run.units.length > 0)) return Tools.NO_UNITS
+          const since = Option.map(yield* mainSince(tables, Option.none()), (read) => read.since)
+          const now = yield* Clock.currentTimeMillis
+          if (!tables.some((run) => run.units.length > 0)) return Tools.statusAnswer([], [], false, since, now)
           const listed = yield* lanesNow(sessionID)
-          return Tools.statusAnswer(tables, listed.rifts, listed.workrift)
+          return Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)
         })
 
       // A root that compacted is told its status and the re-read, once per compaction, by this location's copy only,
@@ -824,18 +873,85 @@ export const make = (
           return Tools.laneAnswer(unit, created.rift, true)
         })
 
-      /** A verify: the verifier's clean checkout at the head, and the subagent call that starts it. */
-      const verify = (input: Tools.OrchestrateInput, sessionID: string) =>
+      /** A verify's clean checkout: the Rift `verify-<batch>` detached at `at`, answered when it exists, else made. */
+      const verifyLane = (sessionID: string, batch: string, at: string) =>
         Effect.gen(function* () {
-          const batch = input.batch ?? ""
           const name = Tools.verifyLaneOf(batch)
-          const chosen = Option.match(Option.fromUndefinedOr(input.head), { onNone: () => "origin" as const, onSome: () => "given" as const })
           const listed = yield* listLanes(sessionID, Option.none())
           const found = Tools.laneNamed(name, listed.rifts)
-          if (Option.isSome(found)) return Tools.verifyAnswer(batch, found.value, false, chosen)
-          const created = yield* createRift({ sessionID, branch: name, name, at: input.head ?? "origin/HEAD" })
-          return Tools.verifyAnswer(batch, created.rift, true, chosen)
+          if (Option.isSome(found)) return { lane: found.value, made: false }
+          const created = yield* createRift({ sessionID, branch: name, name, at })
+          return { lane: created.rift, made: true }
         })
+
+      /** A verify of a batch the root names: the verifier's clean checkout at the head, and the subagent call that starts it. */
+      const verifyBatch = (batch: string, input: Tools.OrchestrateInput, sessionID: string) =>
+        Effect.gen(function* () {
+          const chosen = Option.match(Option.fromUndefinedOr(input.head), { onNone: () => "origin" as const, onSome: () => "given" as const })
+          const { lane, made } = yield* verifyLane(sessionID, batch, input.head ?? "origin/HEAD")
+          return Tools.verifyAnswer(batch, lane, made, chosen)
+        })
+
+      /** The units of the run dirs whose newest request's head `head` holds and `base` does not: what a verify of main covers. */
+      const unitsBetween = (dirs: ReadonlyArray<string>, base: string, head: string) =>
+        Effect.forEach(dirs, (dir) => runFiles.units(dir)).pipe(
+          Effect.map((each) => each.flat()),
+          Effect.flatMap((files) =>
+            Effect.forEach(files, (unit) =>
+              Option.match(Option.flatMap(unit.request, (request) => Option.map(request.head, (commit) => ({ request, commit }))), {
+                onNone: () => Effect.succeed(Option.none<Tools.RangeUnit>()),
+                onSome: ({ request, commit }) =>
+                  Effect.all([mainLine.holds(checkout, commit, head), mainLine.holds(checkout, commit, base)]).pipe(
+                    Effect.map(([inHead, inBase]) =>
+                      Option.liftPredicate({ unit: unit.unit, dir: unit.dir, round: request.round, spec: `${unit.dir}/spec.md`, request: request.path }, () => inHead && !inBase),
+                    ),
+                  ),
+              }),
+            ).pipe(Effect.map(Arr.getSomes)),
+          ),
+        )
+
+      /** The fleet's heads for a verify at `head`: the dotfiles commit of `head` and the fork's checked-out commit, each by `git rev-parse`; none unless both resolve. */
+      const fleetHeads = (head: string) =>
+        Option.match(Option.fromNullishOr(options.fleet), {
+          onNone: () => Effect.succeedNone,
+          onSome: (fleet) =>
+            Effect.all([mainLine.commitOf(fleet.dotfiles, head), mainLine.commitOf(fleet.fork, "HEAD")]).pipe(
+              Effect.map(([dotfiles, fork]) => Option.zipWith(dotfiles, fork, (d, f) => ({ dotfiles: d, fork: f }))),
+            ),
+        })
+
+      /**
+       * A verify of main (no batch): named `main-<short head>`, from the last verified head (else the fifth merge back) to
+       * `head` (else origin's default branch head, read now); its batch file written into the run dir, its clean
+       * checkout, and the subagent call that starts its verifier.
+       */
+      const verifyMain = (input: Tools.OrchestrateInput, sessionID: string) =>
+        Effect.gen(function* () {
+          const asked = Option.fromUndefinedOr(input.head)
+          const tables = yield* runs.list
+          const tip = yield* mainLine.tip(checkout, asked)
+          if (Option.isNone(tip))
+            return yield* failWith(
+              `orchestrate: verify: ${Option.match(asked, { onNone: () => "no default branch (origin/HEAD, main or master) reads here", onSome: (head) => `${head} is no commit here` })}, so main cannot be verified. Name a batch you wrote: ${Tools.verifyCallOf("batch-<k>")}.`,
+            )
+          const head = tip.value.head
+          const name = Tools.mainVerifyName(head)
+          const dirs = runDirsOf(tables)
+          const { last, base, merges } = yield* rangeOf(dirs, head)
+          const units = yield* unitsBetween(dirs, base, head)
+          const batch: Tools.MainBatch = { name, base, head, last, merges, units, heads: yield* fleetHeads(head) }
+          const file = Option.map(Tools.mainRunDirOf(dirs, units), (dir) => Tools.mainBatchPathOf(dir, name))
+          yield* Effect.forEach(Option.toArray(file), (path) => runFiles.write(path, Tools.mainBatchText(batch)), { discard: true }).pipe(
+            Effect.catchTag("RunFileUnwritten", (unwritten) => failWith(`orchestrate: verify ${name}: the batch file ${unwritten.path} could not be written: ${unwritten.message}`)),
+          )
+          const { lane, made } = yield* verifyLane(sessionID, name, head)
+          return Tools.mainVerifyAnswer(batch, file, lane, made, Option.match(asked, { onNone: () => "origin" as const, onSome: () => "given" as const }))
+        })
+
+      /** A verify: of the batch named, else of main since the last verify. */
+      const verify = (input: Tools.OrchestrateInput, sessionID: string) =>
+        Option.match(Option.fromUndefinedOr(input.batch), { onNone: () => verifyMain(input, sessionID), onSome: (batch) => verifyBatch(batch, input, sessionID) })
 
       /** A land: the units resolved to their Rifts from the run tables and the Rift list, landed by the rift plugin's land. */
       const land = (input: Tools.OrchestrateInput, sessionID: string) =>
@@ -846,10 +962,26 @@ export const make = (
           if ("refused" in resolved) return yield* failWith(resolved.refused)
           if ("nothing" in resolved) return resolved.nothing
           const rifts = resolved.rifts.map((rift) => ({ path: rift.path, unit: rift.unit }))
+          // The warnings, read before the land: a verify due on main, each unit's open `changes` verdict, each unit not ready.
+          const [since, dirs] = yield* Effect.all([mainSince(tables, Option.none()), Effect.forEach(rifts, (rift) => unitDirOf(rift.unit, tables))])
+          const files = yield* Effect.forEach(Arr.getSomes(dirs), (dir) => runFiles.unit(dir))
+          const now = yield* Clock.currentTimeMillis
+          const due = Option.toArray(Option.flatMap(since, (read) => Tools.dueWarning(read.since, now)))
           const landed = yield* riftRpc()
             .land({ sessionID, rifts })
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(LandAnswered)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
-          return Tools.landAnswer(resolved.warnings, landed.text)
+          // The log follows the land: each unit the land pushed, whose dir is known and whose run table holds it, moves to
+          // `merged <pushed commit>`. A missed line changes no answer: status.ts reads git.
+          yield* Effect.forEach(Option.toArray(Tools.pushedOf(landed.text)), (pushed) =>
+            Effect.forEach(
+              rifts.flatMap((rift, at) =>
+                Option.toArray(Option.zipWith(Option.flatten(Arr.get(dirs, at)), Tools.roundIn(rift.unit, tables), (dir, round) => ({ dir, unit: rift.unit, round }))),
+              ),
+              (move) => unitLogs.append(move.dir, { unit: move.unit, to: "merged", round: move.round, note: pushed }),
+              { discard: true },
+            ),
+          { discard: true })
+          return Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text)
         })
 
       yield* ctx.tool.transform((editor) =>

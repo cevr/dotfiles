@@ -20,6 +20,8 @@ import { NO_HOLDS } from "@dotfiles/opencode-orchestrate/idle"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
+import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
+import * as RunFilesTest from "@dotfiles/opencode-orchestrate/memory/run-files"
 import * as HeavyHostTest from "@dotfiles/opencode-orchestrate/memory/heavy-host"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
@@ -157,6 +159,8 @@ const start = (world: World) =>
         SkillTest.skill({ history: [] }),
         SkillTest.records({ seen: new Map() }),
         FleetTest.layer([]),
+        MainLineTest.layer(() => Option.none()),
+        RunFilesTest.layer(new Map()),
       )
     yield* make(
       (_ctx, _options, latchStart) => externals(latchStart),

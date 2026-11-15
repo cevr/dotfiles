@@ -284,6 +284,7 @@
     },
     {
       "files": [
+        "mods/orchestrate/filestore/run-files.ts",
         "mods/stall/filestore/captures.ts",
         "mods/update/filestore/builds.ts",
         "mods/update/filestore/stage.ts"
@@ -366,6 +367,17 @@
       ],
       "rules": {
         "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/orchestrate/filestore/run-files.test.ts",
+        "mods/orchestrate/git/main-line.test.ts",
+        "mods/status/process/run-tables.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
       }
     },
     {
