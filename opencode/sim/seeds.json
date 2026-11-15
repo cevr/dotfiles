@@ -3,5 +3,6 @@
   "cmd/orchestrate/orch-tools.sim.test.ts": [1640407, 254407219],
   "cmd/orchestrate/orchestrate-fallback.sim.test.ts": [121414084],
   "cmd/prime/own-tabs.sim.test.tsx": [160097066],
+  "cmd/prime/single-tab.sim.test.tsx": [68188629],
   "sim/fixtures/seeds-json.fixture.ts": [77777]
 }
