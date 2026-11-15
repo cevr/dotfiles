@@ -188,8 +188,8 @@ export default Plugin.define({
 
     // In a subagent's view ↑ goes back to the parent (as Escape does there) and
     // ←/→ move to the other running subagents; with none running, ←/→ fall
-    // through. With the composer panel open (Down), above its tabs, whose
-    // ←/→ switch tabs then.
+    // through. With the composer panel open (Down), ←/→ stay above its tabs,
+    // whose ←/→ switch tabs then; ↑ is the panel's.
     const family = useFamily(h, h.route)
     const go = (sessionID: string | undefined) => {
       if (!sessionID) return false
@@ -231,18 +231,12 @@ export default Plugin.define({
         },
       ],
     }))
+    // ↑ stays the panel's: it moves up its list and, at the top, closes the panel back to the prompt.
     context.keymap.layer(() => ({
       mode: "composer",
       priority: 2,
       enabled: family.child,
       commands: [
-        {
-          id: "prime.subagent.parent",
-          title: "Go to parent session",
-          group: "Session",
-          bind: "up",
-          run: () => go(family.parentID()),
-        },
         {
           id: "prime.subagent.next",
           title: "Go to next subagent",
