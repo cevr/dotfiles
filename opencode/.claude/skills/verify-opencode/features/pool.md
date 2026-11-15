@@ -23,7 +23,7 @@ The pool chooses the login each request of a pooled provider (Claude) goes out o
 - **Preconditions:** a world made with `anthropic` (sim/provider.ts, the fake's wire) and two or more logins; the Anthropic auth plugin and the pool loaded as the real run loads them.
 - **States:** default, refused (a 429), a reset, error (the faults suite: failed store writes, a refresh outage). Loading is `n/a`.
 - **World suites:** `cmd/pool/pool-failover.sim.test.ts`, `cmd/pool/pool-resets.sim.test.ts`, `cmd/pool/pool-faults.sim.test.ts`, `cmd/pool/pool-store.sim.test.ts`, `cmd/pool/pool-store-refresh.sim.test.ts`, `cmd/pool/pool-store-opencode.sim.test.ts`
-- **Code:** `mods/pool/`, `cmd/pool/`, `mods/anthropic-auth/`, `cmd/anthropic-auth/`, `sim/`, `tests/pool-resets.test.ts`, `testbeds/busy-agents.ts` (the resets' real check and the busy agents it runs)
+- **Code:** `mods/pool/`, `cmd/pool/`, `mods/anthropic-auth/`, `cmd/anthropic-auth/`, `sim/`, `tests/pool-resets.test.ts`, `testbeds/busy-agents.ts` (the resets' real check and the busy agents it runs); `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/pool/*.test.ts`.
 
 1. **Failover.** The first login answers an agent turn with a plan-limit 429; the run finishes on the second, and the world's provider saw exactly those two requests in that order.
