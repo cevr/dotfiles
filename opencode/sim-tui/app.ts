@@ -277,9 +277,11 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"])
  * heartbeat (`hold`) also writes to, counted when the client opens it and when it drops it (aborts
  * its request), so `settle` fails on a reconnect no seed asked for.
  */
-const stream = (request: Request, response: Response) => {
-  if (response.body === null) return response
-  const reader = response.body.getReader()
+const stream = (request: Request, response: Response) =>
+  Option.match(Option.fromNullOr(response.body), { onNone: () => response, onSome: (body) => relay(request, response, body) })
+
+const relay = (request: Request, response: Response, body: ReadableStream<Uint8Array>) => {
+  const reader = body.getReader()
   const streams = harness.streams
   streams.opened += 1
   const live = { controller: Option.none<ReadableStreamDefaultController<Uint8Array>>() }
@@ -410,9 +412,10 @@ const hold = (clock: TuiClock.Clock, host: string) => {
   }
   jest.useFakeTimers()
   // On the fake timers, as the real server's heartbeat runs on its clock: every open stream, written to as one.
-  const heartbeat = setInterval(() => {
+  // The system clock's timer, not the TUI clock's (`simClock`), so no trace records it.
+  const unbeat = TuiClock.system.every(HEARTBEAT_MS, () => {
     for (const controller of harness.streams.live) controller.enqueue(new TextEncoder().encode(HEARTBEAT))
-  }, HEARTBEAT_MS)
+  })
   const untimed = wrap(globalThis, "setTimeout", capped)
   const unclock = TuiClock.install(clock)
   const undirs = TuiDirs.install(ConfigProvider.fromEnv({ env: hostEnv(host) }))
@@ -423,7 +426,7 @@ const hold = (clock: TuiClock.Clock, host: string) => {
     unfetch()
     harness.local = Option.none()
     untimed()
-    clearInterval(heartbeat)
+    unbeat()
     unclock()
     undirs()
     jest.useRealTimers()
