@@ -39,8 +39,9 @@ interface PanelWant {
 
 /** Each kept frame of the open panel: its tab bar, its rows and its hint line, where the test asserts them. */
 export const PANEL = {
-  // Prime's tab bar: the names between faint dots, with how many each lists; the alarm and the monitor are pending.
-  panel: { tabs: /^Subagents {2}· {2}Shell {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 +esc$/, rows: [exact("No active subagents")], hints: ANY },
+  // Prime's tab bar: the names between faint dots, with how many each lists; the alarm and the monitor are pending,
+  // and no job runs.
+  panel: { tabs: /^Subagents {2}· {2}Shell {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 {2}· {2}Jobs +esc$/, rows: [exact("No active subagents")], hints: ANY },
   wakes: {
     tabs: ANY,
     rows: [/^◇ ALPHA: check the deploy {2}wake · once +pending {2}in (9m \d\ds|10m)$/],

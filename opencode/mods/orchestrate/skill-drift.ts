@@ -76,11 +76,7 @@ const listed = (lines: ReadonlyArray<string>) => [
   ...(lines.length > LISTED ? [`- and ${lines.length - LISTED} more`] : []),
 ]
 
-/** What the reconcile asks, the same for every run. */
-export const RECONCILE =
-  "Reconcile the run's rules files (common.md and the like) with the skill now: delete what the skill now covers, keep project facts (commands, paths, flags, thread shares), and write each remaining departure from a skill default as `Departs from <rule>: <why>`; a departure is offered upstream as a skill change at close. A worker hears of a change only at its next round boundary, in one message. This note comes once per skill version."
-
-/** The one note the root gets for its drifted runs. */
+/** The one note the root gets for its runs that saw an older skill; how to reconcile is the skill's (references/run-rules.md), not restated here. */
 export const noteOf = (drifts: ReadonlyArray<Drift>): string =>
   [
     ...drifts.flatMap((drift) => [
@@ -89,10 +85,10 @@ export const noteOf = (drifts: ReadonlyArray<Drift>): string =>
         : `The orchestrate skill changed since run ${drift.run} saw it (${short(drift.seen)}..${short(drift.installed)}, ${drift.subjects.length} commit${drift.subjects.length === 1 ? "" : "s"}):`,
       ...listed(drift.subjects),
       ...(drift.departures.length === 0
-        ? [`Run ${drift.run}'s rules files mark no departure ("${DEPARTS} <rule>: <why>"); any rule in them that differs from the skill is drift.`]
+        ? [`Run ${drift.run}'s rules files mark no departure ("${DEPARTS} <rule>: <why>").`]
         : [`Run ${drift.run}'s departures, to check against these changes:`, ...listed(drift.departures)]),
     ]),
-    RECONCILE,
+    "Reconcile the run's rules file once, as the orchestrate skill's references/run-rules.md says (When the skill changes). This note comes once per skill version.",
   ].join("\n")
 
 /** The note's one-line description, the TUI's notice row. */

@@ -87,9 +87,10 @@ export const requestHeadFor = (unit: string, round: number): string => shaFor(`r
 /**
  * The default branch of the run's warm source, as its lands made it (memory/main-line.ts): a root commit, then one
  * merge per branch each pushed land merged, oldest first. A merge takes in the head of its unit's newest request, as
- * the run's files hold it when the land ran; the landing's push answers the push's last merge.
+ * the run's files hold it when the land ran; the landing's push answers the push's last merge. A unit in `fastForward`
+ * lands as `rift land` fast-forwards: its branch's commits go onto the line, its request head last, and no merge.
  */
-const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number) => {
+const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number, fastForward: ReadonlyArray<string>) => {
   const line: Array<MemoryMainLine.Entry> = [{ sha: shaFor("root"), subject: "root", merged: [] }]
   // The merges main held before the run: no unit of the run is in them.
   for (let n = 1; n <= earlier; n += 1) line.push({ sha: shaFor(`earlier ${n}`), subject: `Merge branch 'feat/earlier-${n}'`, merged: [shaFor(`earlier tip ${n}`)] })
@@ -106,7 +107,12 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
       if (step.startsWith("start ")) read.pending = []
       if (step.startsWith("merge ")) read.pending.push(step.slice("merge ".length))
       if (step.startsWith("push ") && read.pending.length > 0) {
-        for (const branch of read.pending) line.push({ sha: shaFor(`merge ${line.length} ${branch}`), subject: `Merge branch '${branch}'`, merged: Arr.match(headOf(branch), { onEmpty: () => [shaFor(`tip ${branch} ${line.length}`)], onNonEmpty: (heads) => heads }) })
+        for (const branch of read.pending) {
+          const heads = headOf(branch)
+          const fast = fastForward.includes(branch.split("/").at(-1) ?? branch) && heads.length > 0
+          if (fast) line.push({ sha: shaFor(`commit ${line.length} ${branch}`), subject: `feat: ${branch}`, merged: [] }, ...heads.map((sha) => ({ sha, subject: `test: ${branch}`, merged: [] })))
+          else line.push({ sha: shaFor(`merge ${line.length} ${branch}`), subject: `Merge branch '${branch}'`, merged: Arr.match(heads, { onEmpty: () => [shaFor(`tip ${branch} ${line.length}`)], onNonEmpty: (each) => each }) })
+        }
         pushes.push(line.at(-1)?.sha ?? "")
         read.pending = []
       }
@@ -118,12 +124,12 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
 }
 
 /** The memory world under every rift plugin copy: the two warm sources, their Rifts, the landing, the debts. */
-const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number) => {
+const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number, fastForward: ReadonlyArray<string>) => {
   const landing = MemoryLanding.world({
     [WORK]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
     [PLAIN]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
   })
-  const main = mainLineOf(landing, files, earlier)
+  const main = mainLineOf(landing, files, earlier, fastForward)
   // A push answers its last merge's commit, as the line holds it.
   landing.headOf = (push) => {
     main.line()
@@ -180,6 +186,8 @@ export interface BootOptions {
   readonly models?: ReadonlyArray<World.CatalogModel>
   /** The merges the default branch holds before the run (none by default). */
   readonly merges?: number
+  /** The units whose land fast-forwards main (no merge commit); every other land merges. */
+  readonly fastForward?: ReadonlyArray<string>
 }
 
 /** The rift plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the rift plugin alone). */
@@ -190,7 +198,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   const fleet: Array<Asked> = []
   // The runs' files (requests, findings, batch files), outside every plugin copy: a restart keeps them, as a disk does.
   const files: MemoryRunFiles.Files = new Map()
-  const memory = riftWorldOf(files, options.merges ?? 0)
+  const memory = riftWorldOf(files, options.merges ?? 0, options.fastForward ?? [])
   const calls = { count: 0 }
   /** The tool names the last request offered, as the registry listed them. */
   const offered: Array<string> = []

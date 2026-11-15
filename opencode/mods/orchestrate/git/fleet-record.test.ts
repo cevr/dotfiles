@@ -3,7 +3,7 @@ import { tagObject, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/
 import { spawnSync, write } from "bun"
 import { Effect, Option } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
-import { FleetOutcome } from "../fleet.ts"
+import { FleetOutcome, fleetLineOf } from "../fleet.ts"
 import { recordOnce } from "./fleet.ts"
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
@@ -68,6 +68,25 @@ describe("the fleet's record over real git", () => {
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f2, batch: "batch-7" }))
           expect(yield* record(root, "batch-8", both(d2, f2))).toEqual(FleetOutcome.Unchanged({ target: { dotfiles: d2, fork: f2, batch: "batch-8" } }))
           expect(sh(`${root}/dotfiles`, ["git", "rev-parse", "HEAD"])).toBe(d1)
+        }),
+      ),
+    60_000,
+  )
+
+  test(
+    "a server restart that reads the same accepted verdict again publishes nothing: the record answers Unchanged and origin's ref stays the same tag object",
+    () =>
+      onRepositories(2, (root, [, d2], [, f2]) =>
+        Effect.gen(function* () {
+          const oid = () => sh(root, ["git", "--git-dir", `${root}/dotfiles.git`, "rev-parse", VERIFIED_REF])
+          expect(yield* record(root, "batch-9", both(d2, f2))).toEqual(FleetOutcome.Recorded({ target: { dotfiles: d2, fork: f2, batch: "batch-9" } }))
+          const first = oid()
+          // The restart keeps nothing in memory: the record runs again from the batch file alone.
+          expect(yield* record(root, "batch-9", both(d2, f2))).toEqual(FleetOutcome.Unchanged({ target: { dotfiles: d2, fork: f2, batch: "batch-9" } }))
+          expect(oid()).toBe(first)
+          expect(fleetLineOf("batch-9", FleetOutcome.Unchanged({ target: { dotfiles: d2, fork: f2, batch: "batch-9" } }), 0)).toEqual([
+            `1970-01-01T00:00Z fleet: batch-9 accepted; the verified target is already dotfiles ${d2.slice(0, 10)}, fork ${f2.slice(0, 10)}`,
+          ])
         }),
       ),
     60_000,

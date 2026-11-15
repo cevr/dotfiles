@@ -16,8 +16,10 @@ export type Files = Map<string, File>
 const under = (dir: string) => `${dir.replace(/\/+$/, "")}/`
 
 /** The files directly in `dir`, by name. */
-const namesIn = (files: Files, dir: string): ReadonlyArray<string> =>
-  [...files.keys()].flatMap((path) => Option.toArray(Option.filter(Option.liftPredicate(path.slice(under(dir).length), () => path.startsWith(under(dir))), (name) => !name.includes("/"))))
+const namesIn = (files: Files, dir: string): ReadonlyArray<string> => {
+  const prefix = under(dir)
+  return [...files.keys()].flatMap((path) => Option.toArray(Option.filter(Option.liftPredicate(path.slice(prefix.length), () => path.startsWith(prefix)), (name) => !name.includes("/"))))
+}
 
 const fileAt = (files: Files, path: string) => Option.fromUndefinedOr(files.get(path))
 const textOf = (files: Files, path: string) => Option.map(fileAt(files, path), (file) => file.text)
@@ -47,14 +49,15 @@ export const layer = (files: Files) =>
     RunFiles.of({
       verified: (runDirs) => Effect.sync(() => newestVerified([...files.keys()].flatMap((path) => Option.toArray(verifiedAt(files, runDirs, path))))),
       units: (runDir) =>
-        Effect.sync(() =>
+        Effect.sync(() => {
+          const prefix = under(runDir)
           // A unit dir holds log.md; the world of a test that keeps its logs apart has its requests instead.
-          Arr.dedupe(
+          return Arr.dedupe(
             [...files.keys()].flatMap((path) =>
-              Option.toArray(Option.liftPredicate(path.slice(0, path.lastIndexOf("/")), () => path.startsWith(under(runDir)) && /\/(?:log|round-\d+-request)\.md$/.test(path))),
+              Option.toArray(Option.liftPredicate(path.slice(0, path.lastIndexOf("/")), () => path.startsWith(prefix) && /\/(?:log|round-\d+-request)\.md$/.test(path))),
             ),
-          ).flatMap((dir) => Option.toArray(Option.liftPredicate(dir, () => !dir.slice(under(runDir).length).includes("/"))).map((found) => unitFilesOf(files, found))),
-        ),
+          ).flatMap((dir) => Option.toArray(Option.liftPredicate(dir, () => !dir.slice(prefix.length).includes("/"))).map((found) => unitFilesOf(files, found)))
+        }),
       unit: (unitDir) => Effect.sync(() => unitFilesOf(files, unitDir)),
       write: (path, text) => Effect.map(Clock.currentTimeMillis, (at) => void files.set(path, { text, at })),
     }),

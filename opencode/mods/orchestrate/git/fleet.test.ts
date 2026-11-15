@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option, Result } from "effect"
-import { FleetOutcome, fleetLineOf } from "../fleet.ts"
-import { batchFileOf, headsOf, sameAs } from "./fleet.ts"
+import { FleetOutcome, fleetLineOf, headsOf } from "../fleet.ts"
+import { batchFileOf, sameAs } from "./fleet.ts"
 
 const D1 = "1".repeat(40)
 const D2 = "2".repeat(40)

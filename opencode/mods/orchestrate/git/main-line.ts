@@ -1,4 +1,4 @@
-// The default branch of a checkout, read by git: its name and head, its first-parent merges, and ancestry. Every
+// The default branch of a checkout, read by git: its name and head, its first-parent merges, and a range's commits. Every
 // read is a git command at the call, local refs as they are; one that fails reads as none.
 import { readableStreamToText, spawn } from "bun"
 import { Effect, Layer, Option } from "effect"
@@ -53,9 +53,11 @@ export const layer = Layer.succeed(
           return Option.toArray(Option.liftPredicate({ sha, parent, subject }, () => FULL.test(sha)))
         })
     }),
-    holds: Effect.fn("MainLine.holds")(function* (checkout: string, commit: string, head: string) {
-      const ran = yield* run(checkout, ["merge-base", "--is-ancestor", commit, head])
-      return Option.exists(ran, (each) => each.code === 0)
+    between: Effect.fn("MainLine.between")(function* (checkout: string, base: string, head: string) {
+      const listed = yield* git(checkout, ["rev-list", `${base}..${head}`, "--"])
+      return Option.getOrElse(listed, () => "")
+        .split("\n")
+        .filter((sha) => FULL.test(sha))
     }),
     commitOf: (checkout, rev) => commitAt(checkout, rev),
   }),

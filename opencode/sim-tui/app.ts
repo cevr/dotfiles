@@ -167,8 +167,11 @@ interface Harness {
   recorded: Option.Option<Array<ReadonlyArray<string>>>
   /** The file's host dirs (`hold`), made when its app starts and removed by the file's last test (`shutdown`, `dropHost`) or the next start. */
   host: Option.Option<string>
-  /** The client's event streams (`stream`): how many it opened and dropped since its app started, and the open ones the heartbeat reaches. */
-  streams: { opened: number; dropped: number; readonly live: Set<ReadableStreamDefaultController<Uint8Array>> }
+  /**
+   * The client's event streams (`stream`): how many it opened and dropped since its app started, why the client dropped
+   * each (its abort's reason, at the virtual time it fell), and the open ones the heartbeat reaches.
+   */
+  streams: { opened: number; dropped: number; readonly reasons: Array<string>; readonly live: Set<ReadableStreamDefaultController<Uint8Array>> }
   release: () => void
 }
 const harness: Harness = {
@@ -182,7 +185,7 @@ const harness: Harness = {
   key: "",
   recorded: Option.none(),
   host: Option.none(),
-  streams: { opened: 0, dropped: 0, live: new Set() },
+  streams: { opened: 0, dropped: 0, reasons: [], live: new Set() },
   release: () => {},
 }
 
@@ -290,6 +293,9 @@ const relay = (request: Request, response: Response, body: ReadableStream<Uint8A
     "abort",
     () => {
       streams.dropped += 1
+      // Why: `Error: Event stream stalled` is the client's idle watchdog; a bare AbortError its own close of a stream
+      // that ended or threw (an event it could not read).
+      streams.reasons.push(`${String(request.signal.reason)} at +${TuiClock.system.now() - EPOCH} ms`)
       forget()
     },
     { once: true },
@@ -482,8 +488,9 @@ const settleOn = (app: Booted) =>
       if (unserved.length > 0) return yield* fail(`the TUI asked the double for what it does not serve: ${unserved.join(", ")}`)
       const broken = app.current.broken()
       if (broken.length > 0) return yield* fail(`the double sent what the fork's schemas refuse: ${broken.join("; ")}`)
-      const { opened, dropped } = harness.streams
-      if (dropped > 0 || opened > 1) return yield* fail(`the client's event stream dropped and reconnected, which no seed asked for (opened ${opened}, dropped ${dropped} since the app started)`)
+      const { opened, dropped, reasons } = harness.streams
+      if (dropped > 0 || opened > 1)
+        return yield* fail(`the client's event stream dropped and reconnected, which no seed asked for (opened ${opened}, dropped ${dropped} since the app started: ${reasons.join("; ")})`)
       harness.frame = capture(app.fixture)
       harness.key = styleKey(harness.frame)
       const busy = waiting(app)
@@ -555,7 +562,7 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
   yield* dropHost
   const host = yield* fs.makeTempDirectory({ prefix: "sim-tui-host-" })
   harness.host = Option.some(host)
-  harness.streams = { opened: 0, dropped: 0, live: new Set() }
+  harness.streams = { opened: 0, dropped: 0, reasons: [], live: new Set() }
   hold(simClock((entry) => traced.trace.push(entry), () => traced.started), host)
   jest.setSystemTime(EPOCH)
   const lobby = Server.make({ draw: () => 0, now: TuiClock.system.now, model: lobbyModel })

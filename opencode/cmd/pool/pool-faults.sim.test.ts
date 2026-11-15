@@ -25,21 +25,22 @@ import * as World from "../../sim/world.ts"
 
 /**
  * Seeds a wider sweep found failing (pool-seeds), replayed on every run: 1 to 500 in round 1; 1 to 1000 in round 2,
- * every login refused (522 and on).
+ * every login refused (522 and on); a refused login whose last trade, another holder's, met a 429 (39066929).
  */
 const PAST = [
   27, 50, 126, 130, 137, 141, 150, 160, 174, 216, 220, 223, 225, 241, 245, 251, 296, 300, 318, 327, 332, 346, 353, 388, 393, 437, 452, 483, 492,
-  522, 582, 677, 956, 981, 994,
+  522, 582, 677, 956, 981, 994, 39066929,
 ]
 
 const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
 
 /**
  * The revoked mode's seeds a sweep of 1 to 1000 found failing (pool-faults-bias), replayed on every run: a 401 held a
- * revoked store login for the host's refresh (181 and on), then a restart between a 401 and its retry (60 and on).
+ * revoked store login for the host's refresh (181 and on), then a restart between a 401 and its retry (60 and on);
+ * a plan limit whose reset fell between two seconds, announced up to a second early (452011062).
  */
 const REVOKED_PAST: ReadonlyArray<number> = [
-  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994,
+  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994, 452011062,
 ]
 
 const HOUR = 3_600_000
@@ -181,7 +182,9 @@ const run = (
     const sessions: Array<string> = []
     /** What the world's Anthropic and the store are told; the host's own commands are the loop's. */
     const tell = (command: Command, before: number) => {
-      if (command.type === "limit") script.limits.set(LOGINS[command.login], before + command.hours * HOUR)
+      // The reset on a whole second: the provider names it in whole seconds (the unified reset headers), so a reset
+      // between two seconds would be announced up to a second before the script stops refusing.
+      if (command.type === "limit") script.limits.set(LOGINS[command.login], Math.ceil((before + command.hours * HOUR) / 1000) * 1000)
       if (command.type === "expire") {
         // The login's token as the store holds it, its expiry now past: the next read refreshes it.
         const login = LOGINS[command.login]
@@ -280,10 +283,14 @@ const property = (seed: number, expect: Seed.Seeded["expect"], commands: Readonl
       }
     }
     // The final turn, every limit past and the token endpoint answering, is answered in every session. Only when the
-    // endpoint refused the refresh token of every login (its last trade a 400: it rotated none since) may it end in
-    // the store's sign-in instead.
+    // endpoint refused the refresh token of every login (a 400, and no rotation since) may it end in the store's
+    // sign-in instead. A trade after the 400 that rotated nothing (a 429 or 503 another holder met) leaves it refused.
     const tokenTrades = world.provider().received().filter((request) => request.path === "/v1/oauth/token")
-    const lost = LOGINS.every((login) => tokenTrades.findLast((request) => request.account === login)?.status === 400)
+    const lost = LOGINS.every((login) => {
+      const own = tokenTrades.filter((request) => request.account === login)
+      const refused = own.findLastIndex((request) => request.status === 400)
+      return refused >= 0 && !own.slice(refused + 1).some((request) => request.status === 200)
+    })
     for (const session of sessions) {
       const messages = world.messages(session)
       const final = messages.slice(messages.findLastIndex((message) => message.type === "user") + 1)

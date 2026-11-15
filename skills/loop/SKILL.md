@@ -73,7 +73,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 5. **Triage.** Group findings into batches by the files they touch. Every report's P3s and "not worth a pass" lines go to the batch that owns their file; that batch fixes each or rejects it with a reason. Write the pass section of the ledger: verdict, decisions, the triage table (batch, workspace, items), and the open `Carried` rows of the last pass, each in a batch or carried on. Done when every finding is in a batch or rejected with a receipt.
 
-6. **Apply and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, ready, land, verify. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's Fresh implementor).
+6. **Apply and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, in its [batch mode](../orchestrate/SKILL.md#batch): plan, implement, receipt, land, verify. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's [Rounds](../orchestrate/SKILL.md#rounds)).
    - **Spec.** Fill each batch's spec from [`spec-template.md`](../orchestrate/spec-template.md). The apply prompt ([`prompts/apply.md`](prompts/apply.md)) supplies it:
      - its slots go to Goal, Workspace, Owns and Decided;
      - its work rules go to Work rules;

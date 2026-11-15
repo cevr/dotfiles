@@ -105,7 +105,8 @@
  *   nothing.
  * - Fleet: a verifier's `accepted` hand-back records the verified target its
  *   batch file names (`fleet`), once per verdict, however often its session
- *   goes idle after.
+ *   goes idle after. After a restart the same verdict may be read again: the
+ *   ref already names its heads, so nothing is pushed (`Unchanged`).
  *
  * - Heavy footer: every implementor and verifier prompt the plugin starts (a
  *   new start, a follow-up, a latched start as it opens) ends with one footer
@@ -635,6 +636,25 @@ export const make = (
       /** The run dirs the run tables name, once each. */
       const runDirsOf = (tables: ReadonlyArray<RunTable>): ReadonlyArray<string> => Arr.dedupe(tables.flatMap((run) => Option.toArray(Option.fromUndefinedOr(run.dir))))
       /**
+       * The units of the run dirs whose newest request's head `head` holds and `base` does not, by one read of the
+       * range's commits: what a verify of main covers, landed by a merge or a fast-forward alike.
+       */
+      const unitsBetween = (dirs: ReadonlyArray<string>, base: string, head: string) =>
+        Effect.all([Effect.forEach(dirs, (dir) => runFiles.units(dir)), mainLine.between(checkout, base, head)]).pipe(
+          Effect.map(([each, commits]) =>
+            each.flat().flatMap((unit): ReadonlyArray<Tools.RangeUnit> =>
+              Option.toArray(
+                Option.flatMap(unit.request, (request) =>
+                  Option.map(
+                    Option.filter(request.head, (commit) => Tools.inRange(commits, commit)),
+                    () => ({ unit: unit.unit, dir: unit.dir, round: request.round, spec: `${unit.dir}/spec.md`, request: request.path }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      /**
        * The last verify the run dirs record, the base a verify of main at `head` takes from it (with none, from the
        * newest merges), and the first-parent merges since that base.
        */
@@ -649,15 +669,16 @@ export const make = (
           const merges = yield* mainLine.merges(checkout, head, Option.some(base), MERGES_READ)
           return { last, base, merges }
         })
-      /** The default branch since the last verify the run dirs record, with its merges; none with no run dir or no default branch. */
+      /** The default branch since the last verify the run dirs record, its lands counted (`landsOf`); none with no run dir or no default branch. */
       const mainSince = (tables: ReadonlyArray<RunTable>, at: Option.Option<string>) =>
         Effect.gen(function* () {
           const dirs = runDirsOf(tables)
-          if (dirs.length === 0) return Option.none<{ readonly since: Tools.MainSince; readonly merges: ReadonlyArray<Tools.Merge> }>()
+          if (dirs.length === 0) return Option.none<Tools.MainSince>()
           const tip = yield* mainLine.tip(checkout, at)
           if (Option.isNone(tip)) return Option.none()
           const { last, base, merges } = yield* rangeOf(dirs, tip.value.head)
-          return Option.some({ since: { branch: tip.value.branch, head: tip.value.head, base, merges: merges.length, last }, merges })
+          const units = yield* unitsBetween(dirs, base, tip.value.head)
+          return Option.some({ branch: tip.value.branch, head: tip.value.head, base, lands: Tools.landsOf(merges.length, units.length), last })
         })
       /** The unit's dir: the one a run dir of the tables holds, else the one the unit logs find under the checkout. */
       const unitDirOf = (unit: string, tables: ReadonlyArray<RunTable>) =>
@@ -666,7 +687,7 @@ export const make = (
       const status = (sessionID: string) =>
         Effect.gen(function* () {
           const tables = yield* runs.list
-          const since = Option.map(yield* mainSince(tables, Option.none()), (read) => read.since)
+          const since = yield* mainSince(tables, Option.none())
           const now = yield* Clock.currentTimeMillis
           if (!tables.some((run) => run.units.length > 0)) return Tools.statusAnswer([], [], false, since, now)
           const listed = yield* lanesNow(sessionID)
@@ -892,24 +913,7 @@ export const make = (
           return Tools.verifyAnswer(batch, lane, made, chosen)
         })
 
-      /** The units of the run dirs whose newest request's head `head` holds and `base` does not: what a verify of main covers. */
-      const unitsBetween = (dirs: ReadonlyArray<string>, base: string, head: string) =>
-        Effect.forEach(dirs, (dir) => runFiles.units(dir)).pipe(
-          Effect.map((each) => each.flat()),
-          Effect.flatMap((files) =>
-            Effect.forEach(files, (unit) =>
-              Option.match(Option.flatMap(unit.request, (request) => Option.map(request.head, (commit) => ({ request, commit }))), {
-                onNone: () => Effect.succeed(Option.none<Tools.RangeUnit>()),
-                onSome: ({ request, commit }) =>
-                  Effect.all([mainLine.holds(checkout, commit, head), mainLine.holds(checkout, commit, base)]).pipe(
-                    Effect.map(([inHead, inBase]) =>
-                      Option.liftPredicate({ unit: unit.unit, dir: unit.dir, round: request.round, spec: `${unit.dir}/spec.md`, request: request.path }, () => inHead && !inBase),
-                    ),
-                  ),
-              }),
-            ).pipe(Effect.map(Arr.getSomes)),
-          ),
-        )
+
 
       /** The fleet's heads for a verify at `head`: the dotfiles commit of `head` and the fork's checked-out commit, each by `git rev-parse`; none unless both resolve. */
       const fleetHeads = (head: string) =>
@@ -966,7 +970,7 @@ export const make = (
           const [since, dirs] = yield* Effect.all([mainSince(tables, Option.none()), Effect.forEach(rifts, (rift) => unitDirOf(rift.unit, tables))])
           const files = yield* Effect.forEach(Arr.getSomes(dirs), (dir) => runFiles.unit(dir))
           const now = yield* Clock.currentTimeMillis
-          const due = Option.toArray(Option.flatMap(since, (read) => Tools.dueWarning(read.since, now)))
+          const due = Option.toArray(Option.flatMap(since, (read) => Tools.dueWarning(read, now)))
           const landed = yield* riftRpc()
             .land({ sessionID, rifts })
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(LandAnswered)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))

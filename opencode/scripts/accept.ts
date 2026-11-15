@@ -48,7 +48,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import os from "node:os"
 import path from "node:path"
 import { $, type Subprocess } from "bun"
-import { Console, Deferred, Effect, Fiber, Option } from "effect"
+import { Array as Arr, Console, Deferred, Effect, Fiber, Option, Stream } from "effect"
 import { holdingIfFree } from "../mods/rift/process/flock.ts"
 import { descendants, listing, type Proc, servers, stop, survivors, table, watch, type Watch } from "./leaks.ts"
 import { readyFork } from "./fork.ts"
@@ -341,7 +341,9 @@ const runFile = Effect.fn("Accept.runFile")(function* (run: Run, file: string, s
  * under sim/seed.ts's swarm mode, from the head's first seed, on its slot of `boxMs`; a suite still running past
  * the box (with SWARM_GRACE_MS) is stopped, the seeds it passed still counted, and none starts after the box. A
  * signal or a land run's mark stops it too. Each suite with a failing seed is a failed outcome naming the replay
- * line, kept in `run.swarmed`. True when it ran to its end (no signal, no yield).
+ * line, kept in `run.swarmed`; a suite stopped, or not started, with none is owed (timed out at the box, or
+ * stopped by the signal or the yield), what failed only as it was stopped named in its detail. True when it ran
+ * to its end (no signal, no yield).
  */
 const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "daily", suites: ReadonlyArray<string>, boxMs: number, width: number) {
   if (suites.length === 0) return true
@@ -351,11 +353,15 @@ const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "dai
   const began = elapsed()
   const endsAt = began + boxMs + SWARM_GRACE_MS
   yield* say(`accept: swarm (${what}): ${suites.length} simulated suites, ${Math.min(width, suites.length)} at a time, ${seconds(slot)} each in a ${seconds(boxMs)} box, from seed ${first}`)
+  const unstarted = (file: string): Swarmed => {
+    const why = (Deferred.isDoneUnsafe(run.signalled) && "signal") || (Deferred.isDoneUnsafe(run.wanted) && "yielded") || "budget"
+    return { file, passed: 0, failing: [], stopped: [], code: 0, cut: Option.some(why), detail: "not started" }
+  }
   const ran = yield* Effect.forEach(
     suites,
     (file) =>
       Effect.suspend(() => {
-        if (Deferred.isDoneUnsafe(run.signalled) || Deferred.isDoneUnsafe(run.wanted) || elapsed() >= began + boxMs) return Effect.succeed({ file, passed: 0, failing: [], code: 0, cut: true })
+        if (Deferred.isDoneUnsafe(run.signalled) || Deferred.isDoneUnsafe(run.wanted) || elapsed() >= began + boxMs) return Effect.succeed(unstarted(file))
         return swarmSuite(run, file, first, slot, endsAt)
       }),
     { concurrency: Math.max(1, width) },
@@ -366,33 +372,67 @@ const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "dai
     if (each.failing.length > 0) {
       yield* say(...each.failing.map((seed) => `accept: swarm: a failing seed: ${Swarm.replayLine(each.file, seed)}`))
       run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `a swarm seed failed: ${each.failing.map((seed) => Swarm.replayLine(each.file, seed)).join("; ")}` })
-    } else if (each.code !== 0 && !each.cut) run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `its swarm exited ${each.code} with no failing seed named (log ${logOf(run, each.file)})` })
+    } else if (Option.isSome(each.cut)) run.swarmed.push(Accept.owe(each.file, each.cut.value, `its swarm ${timedOut(each.cut.value)}: ${each.detail}`))
+    else if (each.code !== 0) run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `its swarm exited ${each.code} with no failing seed named (log ${logOf(run, each.file)})` })
   }
   return !Deferred.isDoneUnsafe(run.signalled) && !Deferred.isDoneUnsafe(run.wanted)
 })
 
-/** One suite's swarm: its `bun test` under SIM_SWARM, stopped at `endsAt`, a signal or a yield; the seeds it passed and those that failed. */
+/** How a cut swarm's owed line says what cut it. */
+const timedOut = (why: Accept.Why) => (why === "budget" && "timed out at its box") || `was cut (${Accept.whyWords(why)})`
+
+/** A stream read to its end chunk by chunk into `into`, so what it printed so far can be read at any moment. */
+const hear = (stream: ReadableStream<Uint8Array>, into: Array<string>) =>
+  Stream.fromReadableStream({ evaluate: () => stream, onError: (error) => error }).pipe(
+    Stream.decodeText,
+    Stream.runForEach((chunk) => Effect.sync(() => into.push(chunk))),
+    Effect.ignore,
+  )
+
+/** What one suite's swarm did: the seeds it passed, those that failed, those that failed only as it was stopped, its exit code, and why it was stopped, if it was. */
+interface Swarmed {
+  readonly file: string
+  readonly passed: number
+  readonly failing: ReadonlyArray<number>
+  readonly stopped: ReadonlyArray<number>
+  readonly code: number
+  readonly cut: Option.Option<Accept.Why>
+  readonly detail: string
+}
+
+/**
+ * One suite's swarm: its `bun test` under SIM_SWARM, stopped at `endsAt`, a signal or a yield; the seeds it passed and
+ * those that failed. A seed that fails only after the stop was decided is the stop's (its teardown runs the tests
+ * left, a TUI torn down under them): named, never a failing seed.
+ */
 const swarmSuite = Effect.fn("Accept.swarmSuite")(function* (run: Run, file: string, first: number, slot: number, endsAt: number) {
   const running = spawnTest(file, [], { SIM_SWARM: String(first), SIM_SWARM_MS: String(slot) })
   const child = running.child
-  // Read from the start, so a suite stopped at the box still says which seeds it passed.
-  const output = yield* Effect.forkChild(
-    Effect.map(Effect.all([Effect.promise(() => new Response(child.stdout).text()), Effect.promise(() => new Response(child.stderr).text())], { concurrency: 2 }), ([out, err]) => `${out}${err}`),
-  )
+  // Read from the start and as it comes, so a suite stopped at the box still says which seeds it passed, and what it printed before the stop.
+  const out: Array<string> = []
+  const err: Array<string> = []
+  const reading = yield* Effect.forkChild(Effect.all([hear(child.stdout, out), hear(child.stderr, err)], { concurrency: 2 }))
   const box = Effect.as(Effect.suspend(() => Effect.sleep(Math.max(0, endsAt - elapsed()))), stopped("budget"))
   const ended = yield* Effect.raceFirst(
     Effect.map(Effect.promise(() => child.exited), (code): Ended => ({ why: Option.none(), code, output: "" })),
     Effect.raceAll([box, Effect.as(Deferred.await(run.signalled), stopped("signal")), Effect.as(Deferred.await(run.wanted), stopped("yielded"))]),
   )
+  const atStop = [out.join("").length, err.join("").length]
   if (Option.isSome(ended.why)) yield* stopRun(running)
-  const text = yield* Fiber.join(output)
+  yield* Fiber.join(reading)
   running.watching.stop()
+  const streams = [out.join(""), err.join("")]
+  const text = streams.join("")
   writeLog(run, file, text, false)
-  const read = Swarm.swarmRead(text, file)
-  const cut = Option.isSome(ended.why)
-  if (cut) yield* say(`accept: swarm: stopped ${file} (${Accept.whyWords(Option.getOrElse(ended.why, () => "budget" as const))}) after ${read.passed} seeds`)
-  if (read.failing.length > 0 || (!cut && ended.code !== 0)) yield* say(text)
-  return { file, passed: read.passed, failing: read.failing, code: Number(!cut) * ended.code, cut }
+  const read = Option.match(ended.why, {
+    onNone: () => ({ ...Swarm.swarmRead(text, file), stopped: [] }),
+    onSome: () => Swarm.swarmCut(streams.map((each, index) => ({ text: each, atStop: atStop[index] ?? each.length })), file),
+  })
+  const detail = `stopped after ${read.passed} seeds${Arr.filter([`; seeds that failed only as it was stopped, not judged: ${read.stopped.join(", ")}`], () => read.stopped.length > 0).join("")} (log ${logOf(run, file)})`
+  if (Option.isSome(ended.why)) yield* say(`accept: swarm: stopped ${file} (${Accept.whyWords(ended.why.value)}) ${detail}`)
+  if (read.failing.length > 0 || (Option.isNone(ended.why) && ended.code !== 0)) yield* say(text)
+  const swarmed: Swarmed = { file, passed: read.passed, failing: read.failing, stopped: read.stopped, code: Number(Option.isNone(ended.why)) * ended.code, cut: ended.why, detail }
+  return swarmed
 })
 
 /** Writes a file's output to its log; a second run's goes after the first's. */

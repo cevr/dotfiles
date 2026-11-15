@@ -603,7 +603,7 @@ export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<
       },
       { name: "p2", units: [] },
     ]
-    test("the runs, each with its dir when given, its units' states, the time each entered it and its batch cadence, in order", () =>
+    test("the runs, each with its dir when given, its units' states, the time each entered it, its round and verdict, in order", () =>
       check(
         layer(runs),
         Effect.gen(function* () {
@@ -707,7 +707,7 @@ const at = (list: ReadonlyArray<string>, index: number) => Option.getOrElse(Arr.
 /** `make` gives a fresh probe within the test's scope. */
 export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, never, Scope.Scope>) =>
   describe(`${name} keeps the MainLine laws`, () => {
-    test("one history answers its tip, first-parent merges, ancestry and commits", () =>
+    test("one history answers its tip, first-parent merges, a range's commits and commits", () =>
       scenario(make, (probe) => probe.layer, (probe) =>
         Effect.gen(function* () {
           const main = yield* MainLine
@@ -721,7 +721,10 @@ export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, ne
           expect(Option.map(Arr.head(all), (merge) => merge.subject)).toEqual(Option.some("Merge branch 'feat/u6'"))
           expect(yield* main.merges(checkout, head, Option.none(), 6)).toHaveLength(6)
           expect((yield* main.merges(checkout, head, Option.some(at(line, 4)), 100)).map((merge) => merge.sha)).toEqual(line.slice(5).toReversed())
-          expect([yield* main.holds(checkout, at(tips, 2), head), yield* main.holds(checkout, at(tips, 5), at(line, 3))]).toEqual([true, false])
+          // A range's commits: the first-parent ones (a fast-forward land's own) and each merge's side tip, none of the base's.
+          const sorted = (shas: ReadonlyArray<string>) => shas.toSorted()
+          expect(sorted(yield* main.between(checkout, at(line, 3), head))).toEqual(sorted([...line.slice(4), ...tips.slice(3)]))
+          expect([yield* main.between(checkout, head, head), yield* main.between(checkout, "f".repeat(40), head)]).toEqual([[], []])
           expect(yield* main.commitOf(checkout, head)).toEqual(Option.some(head))
         }),
       ))
@@ -740,7 +743,7 @@ export const mainLineLaws = (name: string, make: Effect.Effect<MainLineProbe, ne
           expect(yield* main.tip(both.checkout, Option.none())).toEqual(Option.some({ branch: "main", head: at(both.line, 1) }))
           expect(yield* main.tip(both.checkout, Option.some("f".repeat(40)))).toEqual(Option.none())
           const plain = yield* probe.plain
-          expect([yield* main.tip(plain, Option.none()), yield* main.merges(plain, "HEAD", Option.none(), 5), yield* main.holds(plain, "a", "b")]).toEqual([Option.none(), [], false])
+          expect([yield* main.tip(plain, Option.none()), yield* main.merges(plain, "HEAD", Option.none(), 5), yield* main.between(plain, "a", "b")]).toEqual([Option.none(), [], []])
         }),
       ))
   })

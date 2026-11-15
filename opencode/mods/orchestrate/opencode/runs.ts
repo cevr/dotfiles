@@ -2,10 +2,11 @@
 // which answers the runs of the repository its copy serves, each unit's state
 // derived by the orchestrate skill's status script from its files and git, as
 // the /pool pane reads them, with the log.md time each unit entered its state
-// (`since`), its round (`round`), its newest verdict (`verdict`) and its batch
-// cadence (`cadence`), each kept when it has one, and each run's dir (`dir`,
-// kept when given). Only the runs are read, with this mod's own schema. No
-// status plugin, a failure, a timeout or an answer that is not one is no runs.
+// (`since`), its round (`round`) and its newest verdict (`verdict`), each kept
+// when it has one, and each run's dir (`dir`, kept when given). Only the runs
+// are read, with this mod's own schema; a field it does not name (an older
+// table's `cadence`) is passed over. No status plugin, a failure, a timeout or
+// an answer that is not one is no runs.
 import { Effect, Layer, Option, Schema } from "effect"
 import { Runs } from "../service.ts"
 
@@ -27,7 +28,6 @@ const Answer = Schema.Struct({
           since: Schema.optional(Schema.String),
           round: Schema.optional(Schema.String),
           verdict: Schema.optional(Schema.String),
-          cadence: Schema.optional(Schema.String),
         }),
       ),
     }),
@@ -35,10 +35,10 @@ const Answer = Schema.Struct({
 })
 
 /** The optional fields a unit keeps only when the status plugin gave them, not empty. */
-const OPTIONAL = ["since", "round", "verdict", "cadence"] as const
+const OPTIONAL = ["since", "round", "verdict"] as const
 type Optional = (typeof OPTIONAL)[number]
 
-/** A unit as the runs keep it: `since`, `round`, `verdict` and `cadence` only when the status plugin gave them. */
+/** A unit as the runs keep it: `since`, `round` and `verdict` only when the status plugin gave them. */
 const unitOf = (given: { unit: string; state: string } & { readonly [K in Optional]?: string }) => {
   const unit: { unit: string; state: string } & { [K in Optional]?: string } = { unit: given.unit, state: given.state }
   for (const key of OPTIONAL) Option.map(Option.filter(Option.fromUndefinedOr(given[key]), (value) => value !== ""), (value) => (unit[key] = value))

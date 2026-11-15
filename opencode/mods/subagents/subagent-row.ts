@@ -127,14 +127,15 @@ const launches = once((parent: ReadonlyArray<Message>): ReadonlyMap<string, Laun
     if (message.type === "assistant")
       for (const part of message.parts) {
         const child = part.type === "call" && canonical(part.tool) === "subagent" ? part.metadata.sessionID : undefined
-        if (part.type === "call" && typeof child === "string") of(child).call ??= part
+        // The newest call wins: a reused child works on its latest description.
+        if (part.type === "call" && typeof child === "string") of(child).call = part
       }
     if (message.type === "notice") of(message.childID).notice = message
   }
   return by
 })
 
-/** The parent's subagent call that runs `child`, and the parent's stop notice for it. */
+/** The parent's newest subagent call that runs `child`, and the parent's stop notice for it. */
 const launch = (parent: ReadonlyArray<Message>, child: string): Launch => launches(parent).get(child) ?? {}
 
 /** The agent its newest step that names one ran as. */

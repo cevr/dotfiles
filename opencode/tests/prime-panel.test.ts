@@ -127,8 +127,8 @@ describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DE
       const dir = kept.dir("prime-panel-")
       const { wide, narrow } = await scenario(dir)
       for (const cols of [160, 80]) expectDownUnder(readFileSync(join(dir, `panel-${cols}-dock.txt`), "utf8"))
-      for (const shown of [wide, narrow]) {
-        expect(shown.subagents?.bar).toMatch(BAR)
+      for (const [cols, shown] of [[160, wide], [80, narrow]] as const) {
+        expect(shown.subagents?.bar).toMatch(BAR[cols])
         expect(shown.subagents?.footer).toBe(FOOTERS.subagents)
         expect(shown.subagents?.rows).toHaveLength(SUBAGENTS)
         expectOtherTabs(shown)

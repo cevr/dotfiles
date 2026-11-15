@@ -691,19 +691,24 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   the implementors' hand-backs, else none.
 
 A land's and a status's answer start with one line, never a refusal, when a
-verify of main is due: `orchestrate: <N> merges on <branch> since the last
+verify of main is due: `orchestrate: <N> lands on <branch> since the last
 verify (<short sha>, <H> h ago): orchestrate({ action: "verify" }).`, at
-`VERIFY_EVERY` (5) first-parent merges since the last verified head, or one
-merge once the last verify is `VERIFY_MAX_AGE_MS` (24 h) old (`tools.ts`).
-The count is of lands, not commits: `git log --first-parent --merges` on the
-default branch (origin's `origin/HEAD`, else `main`, else `master`), read by
-`MainLine` (`git/main-line.ts`); the run dirs' files by `RunFiles`
+`VERIFY_EVERY` (5) lands since the last verified head, or one land once the
+last verify is `VERIFY_MAX_AGE_MS` (24 h) old (`tools.ts`). The count is of
+lands, not commits (`landsOf`): the run dirs' units whose newest request's
+head is in the range (`git rev-list <base>..<head>`, one read), so a unit
+that `rift land` fast-forwarded counts as one that it merged; or the
+first-parent merges (`git log --first-parent --merges`) when they are more, a
+land with no unit dir. Both are read on the default branch (origin's
+`origin/HEAD`, else `main`, else `master`) by `MainLine`
+(`git/main-line.ts`); the run dirs' files by `RunFiles`
 (`filestore/run-files.ts`). No ledger, cache or ref keeps any of it.
 
 A unit's state is the skill's `status.ts <run dir> --repo <checkout>`: its
 log's last state, except `merged` when the head its newest
 `round-N-request.md` names is an ancestor of the default branch, whatever its
-log says; merged and dropped units are left out of its table unless `--all`.
+log says; merged and dropped units are left out of its table unless `--all`. A
+verify's `verify-*` dir (its batch file, findings and fleet lines) is no unit.
 Its `Verdict` column is the newest findings' verdict with its round
 (`changes r1`). The status mod reads each run of `tmp/orchestrate/*` and of
 each directory `git config --get-all orchestrate.dir` names in the checkout.
@@ -884,8 +889,11 @@ The orchestrate skill changed since run p5 saw it (0a1b2c3..4d5e6f7, 2 commits):
 - test(orchestrate): log moves follow the batch machine: implement → ready → verify → merged or waiting(pr)
 Run p5's departures, to check against these changes:
 - common.md:12: Departs from Heavy checks fit the machine: benchmarks need the whole box for a minute
-Reconcile the run's rules files (common.md and the like) with the skill now: delete what the skill now covers, keep project facts (commands, paths, flags, thread shares), and write each remaining departure from a skill default as `Departs from <rule>: <why>`; a departure is offered upstream as a skill change at close. A worker hears of a change only at its next round boundary, in one message. This note comes once per skill version.
+Reconcile the run's rules file once, as the orchestrate skill's references/run-rules.md says (When the skill changes). This note comes once per skill version.
 ```
+
+The note restates none of the reconcile: the skill's `run-rules.md` is its
+one home.
 
 The departures are the lines holding `Departs from` in the run dir's own
 top-level Markdown files (not its unit dirs). The run records the new version
@@ -917,7 +925,11 @@ What stays, none of it kept between calls:
 - **The compaction note**: a root that compacts while it runs units gets one
   message (no new turn): its `status` answer and the re-read.
 - **The fleet target**: a verifier's `accepted` hand-back publishes the
-  verified target once per verdict (`fleet.ts`, the `Verdicts` handler).
+  verified target once per verdict (`fleet.ts`, the `Verdicts` handler). A
+  server restart forgets which verdicts it published, so it may read the same
+  one again: the record then finds `refs/fleet/verified` already naming those
+  heads, pushes nothing, and the run's log says `the verified target is
+  already …` (`git/fleet-record.test.ts`).
 
 Still refused: a subagent's `lane`, `land` or `verify`; a malformed input;
 the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
