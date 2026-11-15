@@ -853,9 +853,11 @@ input reaches it (the owner's prompt, a wake, a worker's notice). The nudge
 is held while any of these stands:
 
 - a subagent or shell still runs under it;
-- input it heard during the turn still waits in its inbox (enqueued, not yet
-  `session.inbox.delivered`): the session goes on with it, and that turn's
-  idle, with its own background, decides;
+- input it heard during the turn still waits in its inbox (enqueued, and
+  neither `session.inbox.delivered` nor `session.inbox.cancelled`): the
+  session goes on with it, and that turn's idle, with its own background,
+  decides. A prompt the owner takes back, or queued prompts a merge replaces,
+  are cancelled and no longer wait;
 - the owner drafts a prompt to it: the orchestrate TUI plugin
   (`cmd/orchestrate/tui.ts`) reports a composer holding text over the
   `IDLE.draft` RPC, again every 10 s while it stays; the server forgets a

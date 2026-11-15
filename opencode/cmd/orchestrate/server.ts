@@ -732,12 +732,13 @@ export const make = (
         )
       }
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.inbox.delivered", "session.deleted", "session.compaction.ended"] }).pipe(
+        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.inbox.delivered", "session.inbox.cancelled", "session.deleted", "session.compaction.ended"] }).pipe(
           Stream.runForEach((event) => {
             if (event.type === "session.compaction.ended") return compacted(event.id, event.data.sessionID)
             if (event.type === "session.deleted")
               return Effect.sync(() => void backgrounds.delete(event.data.sessionID)).pipe(Effect.andThen(idleRoots.forget(event.data.sessionID)))
-            if (event.type === "session.inbox.delivered") return idleRoots.delivered(event.data.sessionID, event.data.inboxID)
+            // Delivered or cancelled, the item no longer waits in the inbox.
+            if (event.type === "session.inbox.delivered" || event.type === "session.inbox.cancelled") return idleRoots.ended(event.data.sessionID, event.data.inboxID)
             const item = event.data.item
             // New input: the owner's prompt or another plugin's message; never the nudge or the brief.
             const heard =

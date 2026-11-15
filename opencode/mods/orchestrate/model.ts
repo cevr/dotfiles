@@ -701,8 +701,11 @@ export class IdleRoots extends Context.Service<
     readonly idle: (sessionID: string, background: number) => Effect.Effect<Effect.Effect<IdleOutcome | undefined>>
     /** New input (inbox item `inboxID`, not the nudge) reached the session: its idle period, if any, ends. */
     readonly heard: (sessionID: string, inboxID: string) => Effect.Effect<void>
-    /** A turn of the session took inbox item `inboxID`. */
-    readonly delivered: (sessionID: string, inboxID: string) => Effect.Effect<void>
+    /**
+     * Inbox item `inboxID` left the session's inbox: a turn took it (`session.inbox.delivered`) or it was cancelled
+     * (`session.inbox.cancelled`: the owner took it back, a queue merge replaced it, a move). It no longer waits.
+     */
+    readonly ended: (sessionID: string, inboxID: string) => Effect.Effect<void>
     /**
      * An owner's TUI says whether its composer holds a draft to the session.
      * A draft that ends while the root is idle decides it again `RECHECK_MS` later.
@@ -757,7 +760,7 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
           )
         }).pipe(one.withPermits(1))
 
-      // Each session's heard input its turns have not taken yet: the inbox items enqueued and not delivered.
+      // Each session's heard input still in its inbox: the items enqueued and neither delivered nor cancelled.
       const waiting = new Map<string, ReadonlySet<string>>()
       const waitingOf = (sessionID: string) => waiting.get(sessionID) ?? new Set<string>()
 
@@ -787,12 +790,12 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
         return yield* consider(input.sessionID)
       })
 
-      const delivered = (sessionID: string, inboxID: string) =>
+      const ended = (sessionID: string, inboxID: string) =>
         Effect.sync(() => {
           const left = [...waitingOf(sessionID)].filter((id) => id !== inboxID)
           if (left.length === 0) waiting.delete(sessionID)
           else waiting.set(sessionID, new Set(left))
-        }).pipe(Effect.withSpan("IdleRoots.delivered"))
+        }).pipe(Effect.withSpan("IdleRoots.ended"))
 
       const forget = (sessionID: string) =>
         Effect.sync(() => {
@@ -800,7 +803,7 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
           waiting.delete(sessionID)
         }).pipe(Effect.withSpan("IdleRoots.forget"))
 
-      return { idle, heard, delivered, draft, forget }
+      return { idle, heard, ended, draft, forget }
     }),
   )
 

@@ -268,6 +268,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     })
     /** A turn of the session took inbox item `inboxID`. */
     const deliver = (sessionID: string, inboxID: string) => Queue.offer(published, { type: "session.inbox.delivered", data: { sessionID, inboxID } })
+    /** Inbox item `inboxID` is cancelled: the owner took it back, or a queue merge replaced it. */
+    const cancel = (sessionID: string, inboxID: string) => Queue.offer(published, { type: "session.inbox.cancelled", data: { sessionID, inboxID } })
     /** An owner's TUI reporting a draft over the idle RPC. */
     const draft = (input: unknown) => {
       const handler = rpc["dotfiles-opencode.orchestrate.idle"]?.draft
@@ -279,7 +281,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const modelRequest = Effect.fn("OrchestrateServerTest.modelRequest")(function* (sessionID: string) {
       for (const hook of hooks["model.request"] || []) yield* hook({ sessionID, agent: "build", kind: "primary", headers: {} })
     })
-    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, deliver, draft, nudges, notes, briefs, compacted }
+    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, deliver, cancel, draft, nudges, notes, briefs, compacted }
   })
 
 /** Waits for the plugin's background work, in real time, until `check` passes (tests/wait.ts); one that never does fails with its own expectation. */
@@ -1610,6 +1612,34 @@ describe("an idle root with units to move or to land", () => {
         expect(plugin.nudges).toEqual([])
         // The next turn takes it and ends with nothing running: that idle nudges.
         yield* plugin.deliver("root", prompt)
+        yield* settle
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
+      }),
+    ))
+
+  test("a queued prompt the owner takes back (inbox cancelled) no longer waits: the next idle nudges", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        const prompt = yield* plugin.enqueue("root", { type: "user" }, false)
+        yield* plugin.cancel("root", prompt)
+        yield* settle
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
+      }),
+    ))
+
+  test("queued prompts merged into one (the originals cancelled, the merged one delivered) no longer wait: the next idle nudges", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        const first = yield* plugin.enqueue("root", { type: "user" }, false)
+        const second = yield* plugin.enqueue("root", { type: "user" }, false)
+        // The host enqueues the merged prompt, cancels the originals, and the turn takes the merged one.
+        yield* plugin.enqueue("root", { type: "user" })
+        yield* plugin.cancel("root", first)
+        yield* plugin.cancel("root", second)
         yield* settle
         yield* plugin.idle("root")
         yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
