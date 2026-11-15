@@ -218,7 +218,7 @@ describe("a row's state", () => {
 describe("a latched subagent", () => {
   // 13:00 UTC on Wednesday 4 November 2026; the pace opens at 14:30.
   const AT = Date.parse("2026-11-04T13:00:00Z")
-  const pace = { hold: "pace", reason: "anthropic is at 92% of its 5h window", opensAt: Date.parse("2026-11-04T14:30:00Z"), at: AT }
+  const pace = { hold: "pace", reason: "anthropic's 5h window is at 92% used of 100%", opensAt: Date.parse("2026-11-04T14:30:00Z"), at: AT }
   const latched = (latch: Session["latch"], over: Partial<Session> = {}, root: Partial<Session> = {}) =>
     subagents(
       family(

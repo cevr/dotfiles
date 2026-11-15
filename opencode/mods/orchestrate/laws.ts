@@ -403,7 +403,7 @@ const request: LatchRequest = {
   prompt: "Add the CSV export.",
   model: "anthropic/claude-opus#high",
   hold: "pace",
-  why: "anthropic is at 92% of its 5h window",
+  why: "anthropic's 5h window is at 92% used of 100%",
   opensAt: 9_000,
   recheckAt: 5_000,
   context: { reason: "kept" },

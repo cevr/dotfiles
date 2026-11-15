@@ -75,7 +75,7 @@ export const latch: Latch = {
     callID: "call_1",
   },
   hold: "pace",
-  reason: "anthropic is at 92% of its 5h window",
+  reason: "anthropic's 5h window is at 92% used of 100%",
   opensAt: SET + 600_000,
   recheckAt: SET + 120_000,
   context: { whose: "pool", background: false },
@@ -190,7 +190,7 @@ export interface CourierProbe {
   readonly inspect: (sessionID: string) => Effect.Effect<Inspected | undefined>
 }
 
-const mark: Mark = { hold: "pace", reason: "anthropic is at 92% of its 5h window", opensAt: SET + 600_000, at: SET }
+const mark: Mark = { hold: "pace", reason: "anthropic's 5h window is at 92% used of 100%", opensAt: SET + 600_000, at: SET }
 
 const letter: Letter = { text: "⏰ Wake w000001 fired.\nNote: Check CI.", description: "wake w000001 · Check CI.", metadata: { source: "wake", id: "w000001", lateMs: 0 } }
 

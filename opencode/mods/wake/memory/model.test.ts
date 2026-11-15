@@ -605,7 +605,7 @@ describe("a latch", () => {
     sessionID: "ses_a",
     subagent: latchFixture.subagent,
     hold: "pace",
-    reason: "anthropic is at 92% of its 5h window",
+    reason: "anthropic's 5h window is at 92% used of 100%",
     opensAt: 10 * MINUTE,
     recheckAt: 2 * MINUTE,
     context: { background: false },
