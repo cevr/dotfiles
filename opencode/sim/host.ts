@@ -1722,6 +1722,37 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return publish({ type: "session.moved", data: { sessionID: session.id, location: { directory } } }, void 0, from)
     })
 
+  /** Inbox item `inboxID` ends undelivered (`session.inbox.cancelled`); an item already taken is not in the inbox. */
+  const cancel = (session: Session, inboxID: string) =>
+    Effect.suspend(() => {
+      const at = session.inbox.findIndex((item) => item.id === inboxID)
+      if (at === -1) return Effect.sync(() => record("cancel-missed", { sessionID: session.id, id: inboxID }))
+      session.inbox.splice(at, 1)
+      touch(session)
+      record("cancelled", { sessionID: session.id, id: inboxID })
+      return publish({ type: "session.inbox.cancelled", data: { sessionID: session.id, inboxID } })
+    })
+
+  /** The owner takes the newest queued prompt back into the composer (the TUI's take-back: `session.inbox.cancel`). */
+  const takeBack = (session: Session) =>
+    Option.match(Option.fromUndefinedOr(session.inbox.findLast((item) => item.type === "prompt")), {
+      onNone: () => Effect.void,
+      onSome: (item) => cancel(session, item.id),
+    })
+
+  /**
+   * The queued prompts delivered as one (packages/core/src/session/inbox.ts, `experimental.queue.deliver` with a take
+   * of 2 or more, as the escape plugin answers): one prompt of their texts joined by a newline is enqueued, then each
+   * original is cancelled. Fewer than two queued prompts merge into nothing.
+   */
+  const merge = (session: Session) =>
+    Effect.gen(function* () {
+      const queued = session.inbox.filter((item) => item.type === "prompt")
+      if (queued.length < 2) return
+      yield* admit(session, { id: mint("msg_"), type: "prompt", text: queued.map((item) => item.text).join("\n"), resume: true })
+      for (const item of queued) yield* cancel(session, item.id)
+    })
+
   /** Stops every host fiber: the server is gone. */
   const stop = () => {
     state.up = false
@@ -1778,6 +1809,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     providers,
     callRpc,
     move,
+    takeBack,
+    merge,
     stop,
     resume,
     agentTransforms,
