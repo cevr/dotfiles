@@ -38,12 +38,11 @@ describe.skipIf(!fork)("/pool in the Prime look", () => {
     // The sidebar shares its rows with the transcript, so match its lines in order.
     const rows = sidebar.split("\n")
     const at = (line: RegExp) => rows.findIndex((row) => line.test(row))
-    const section = [/\sPool$/, /\salpha$/, /\sweek 44%\/100% used · in 1d 0h(?: · .*)?$/, /\s5h 23%\/100% used · in 1h 2\dm · (?:\w{3} )?\d\d:\d\dZ$/].map(at)
+    const section = [/\sPool$/, /\salpha$/, /\sweek 44%\/100% used · in 1d 0h$/, /\s5h 23%\/100% used · in 1h 2\dm · \d\d:\d\dZ$/].map(at)
     const [first = -1] = section
     expect(first).toBeGreaterThan(-1)
-    // The week row is wider than the sidebar, so its reset time may wrap onto one more row.
-    expect(section.slice(0, 3)).toEqual([first, first + 1, first + 2])
-    expect([first + 3, first + 4]).toContain(section[3] ?? -1)
+    // Each row fits the sidebar, so the four are adjacent: none wraps.
+    expect(section).toEqual([first, first + 1, first + 2, first + 3])
     expect(JSON.parse(readFileSync(join(out, "pool-session-query.json"), "utf8"))).toMatchObject({ sessionID: expect.stringMatching(/^ses_/), providerID: "simulation" })
   }), 150_000)
 })

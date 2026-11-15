@@ -66,17 +66,35 @@ export const until = (at: number, now: number) => {
  * minute): relative, then `HH:MMZ` today, `Thu HH:MMZ` within the week, else
  * `MM-DD HH:MMZ`.
  */
-export const when = (at: number, now: number) => {
+export const when = (at: number, now: number) => `${until(at, now)} · ${date(at, now)}`
+
+const date = (at: number, now: number) => {
   const full = stamp(at)
-  const day = full.slice(0, 10)
   const time = full.slice(11)
-  const date =
-    day === stamp(now).slice(0, 10)
-      ? time
-      : at - now < 6 * DAY
-        ? `${WEEKDAYS[new Date(at).getUTCDay()] ?? ""} ${time}`
-        : `${full.slice(5, 10)} ${time}`
-  return `${until(at, now)} · ${date}`
+  return full.slice(0, 10) === stamp(now).slice(0, 10)
+    ? time
+    : at - now < 6 * DAY
+      ? `${WEEKDAYS[new Date(at).getUTCDay()] ?? ""} ${time}`
+      : `${full.slice(5, 10)} ${time}`
+}
+
+/**
+ * The columns a sidebar line has: the Prime look's sidebar is 42 wide, less
+ * its padding of 2 on each side and the 1 kept for its scrollbar.
+ */
+export const SIDEBAR_COLUMNS = 37
+
+/**
+ * `head · <when>`, fitted to the sidebar's columns: the full stamp when it
+ * fits, else its time alone (the relative time still says which day), else
+ * the relative time alone. The status pane keeps the full stamp.
+ */
+export const fitted = (head: string, at: number, now: number) => {
+  const relative = `${head} · ${until(at, now)}`
+  const full = `${relative} · ${date(at, now)}`
+  if (full.length <= SIDEBAR_COLUMNS) return full
+  const timed = `${relative} · ${stamp(at).slice(11)}`
+  return timed.length <= SIDEBAR_COLUMNS ? timed : relative
 }
 
 const toneOf = (utilization: number): Tone => (utilization >= ERROR_AT ? "error" : utilization >= WARNING_AT ? "warning" : "muted")
@@ -95,7 +113,7 @@ export const sidebarLines = (answer: SidebarAnswer, now: number): ReadonlyArray<
     tone: held ? "warning" : "base",
   }
   const hold: ReadonlyArray<SidebarLine> =
-    held && account.hold !== undefined ? [{ text: `held · ${when(account.hold.until, now)}`, tone: "warning" }] : []
+    held && account.hold !== undefined ? [{ text: fitted("held", account.hold.until, now), tone: "warning" }] : []
   // Each model's own week (`7d:Fable`) follows the account's, as `Fable week`.
   const scoped = (account.reading?.windows ?? []).flatMap((window): ReadonlyArray<readonly [string, string]> => {
     const [length, model] = window.name.split(":", 2)
@@ -108,7 +126,7 @@ export const sidebarLines = (answer: SidebarAnswer, now: number): ReadonlyArray<
     const reset = window.resetAt !== undefined && window.resetAt > now ? window.resetAt : undefined
     const utilization = window.resetAt !== undefined && reset === undefined ? 0 : window.utilization
     const percent = `${shown} ${usedShort(utilization)}`
-    return [{ text: reset === undefined ? percent : `${percent} · ${when(reset, now)}`, tone: toneOf(utilization) }]
+    return [{ text: reset === undefined ? percent : fitted(percent, reset, now), tone: toneOf(utilization) }]
   })
   return [title, ...hold, ...(windows.length === 0 ? [{ text: "no reading yet", tone: "muted" as const }] : windows)]
 }

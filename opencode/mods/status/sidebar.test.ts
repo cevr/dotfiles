@@ -3,7 +3,7 @@
 // each line takes; nothing when the pool names no account.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { SidebarAnswer, sidebarLines, until, when } from "./sidebar.ts"
+import { SIDEBAR_COLUMNS, SidebarAnswer, sidebarLines, until, when } from "./sidebar.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -43,7 +43,7 @@ describe("sidebarLines", () => {
     }
     expect(sidebarLines(answer, now)).toEqual([
       { text: "claude-max-2", tone: "base" },
-      { text: "week 41%/100% used · in 1d 23h · Fri 14:00Z", tone: "muted" },
+      { text: "week 41%/100% used · in 1d 23h", tone: "muted" },
       { text: "5h 12%/100% used · in 6h 40m · 21:40Z", tone: "muted" },
     ])
   })
@@ -63,8 +63,8 @@ describe("sidebarLines", () => {
     }
     expect(sidebarLines(answer, now)).toEqual([
       { text: "claude-max-2", tone: "base" },
-      { text: "week 41%/100% used · in 1d 23h · Fri 14:00Z", tone: "muted" },
-      { text: "Fable week 100%/100% used · in 1d 23h · Fri 14:00Z", tone: "error" },
+      { text: "week 41%/100% used · in 1d 23h", tone: "muted" },
+      { text: "Fable week 100%/100% used · in 1d 23h", tone: "error" },
     ])
   })
 
@@ -110,6 +110,59 @@ describe("sidebarLines", () => {
       { text: "alpha", tone: "base" },
       { text: "5h 0%/100% used", tone: "muted" },
     ])
+  })
+
+  test("each row fits the sidebar: the stamp shortens to its time, then goes, keeping X%/100% used and the relative time", () => {
+    // Sunday 22:45Z: the 5h window resets after midnight, on Monday.
+    const late = Date.parse("2026-11-15T22:45:00Z")
+    const answer = {
+      account: {
+        label: "alpha",
+        on: "placed" as const,
+        hold: { kind: "usage-limit", until: late + 3 * 24 * HOUR },
+        reading: {
+          windows: [
+            { name: "5h", utilization: 0.23, resetAt: late + HOUR + 29 * MINUTE },
+            { name: "7d", utilization: 0.44, resetAt: late + 24 * HOUR },
+            { name: "7d:Fable", utilization: 1, resetAt: late + 6 * 24 * HOUR + 23 * HOUR },
+          ],
+        },
+      },
+    }
+    const lines = sidebarLines(answer, late).map((line) => line.text)
+    expect(lines).toEqual([
+      "alpha",
+      "held · in 3d 0h · Wed 22:45Z",
+      "week 44%/100% used · in 1d 0h",
+      "5h 23%/100% used · in 1h 29m · 00:14Z",
+      "Fable week 100%/100% used · in 6d 23h",
+    ])
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(SIDEBAR_COLUMNS)
+  })
+
+  test("over a whole day of clocks, every window's row stays within the sidebar's columns", () => {
+    const start = Date.parse("2026-11-15T00:00:00Z")
+    for (let minute = 0; minute < 24 * 60; minute += 7) {
+      const at = start + minute * MINUTE
+      const answer = {
+        account: {
+          label: "alpha",
+          on: "placed" as const,
+          hold: { kind: "usage-limit", until: at + 5 * 24 * HOUR + 23 * HOUR + 59 * MINUTE },
+          reading: {
+            windows: [
+              { name: "5h", utilization: 1, resetAt: at + 4 * HOUR + 59 * MINUTE },
+              { name: "7d", utilization: 1, resetAt: at + 6 * 24 * HOUR + 23 * HOUR + 59 * MINUTE },
+              { name: "7d:Fable", utilization: 1, resetAt: at + 6 * 24 * HOUR + 23 * HOUR + 59 * MINUTE },
+            ],
+          },
+        },
+      }
+      for (const line of sidebarLines(answer, at)) {
+        expect(line.text.length).toBeLessThanOrEqual(SIDEBAR_COLUMNS)
+        if (line.text.includes("used")) expect(line.text).toMatch(/\d+%\/100% used · in \d+[dhm]/)
+      }
+    }
   })
 
   test("nothing when the pool names no account", () => {
