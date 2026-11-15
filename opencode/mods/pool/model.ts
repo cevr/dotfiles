@@ -85,7 +85,7 @@ export interface Config extends Rules {
   readonly resets?: Readonly<Record<string, ResetProvider>>
   /** Whether resets are claimed with no one asked (resets.ts `Review.auto`); default true. False: only on the owner's yes. */
   readonly autoClaims?: boolean
-  /** What one queued orchestrate unit is taken to cost, as a share of one account's week, for the proactive push question; default push.ts `UNIT_COST`. */
+  /** What one queued orchestrate unit is taken to cost, as a share of one account's week, for a push plan's need; default push.ts `UNIT_COST`. */
   readonly unitCost?: number
 }
 
@@ -218,9 +218,11 @@ export class Pool extends Context.Service<
     /** This host's starts and each peer, for the pane. */
     readonly fleet: Effect.Effect<FleetStatus>
     /**
-     * Work the resets: read the owner's answers, then have the Resets
-     * aggregate review every pool, and carry out what it decides (claims,
-     * questions, withdrawals). The sweep and a held pace run it.
+     * Work the resets: clear the notices the owner read (and any older
+     * question under the pool), then have the Resets aggregate review every
+     * pool, and carry out what it decides: it claims a due reset by itself
+     * (unless `autoClaims` is false), asking nothing, and notes or withdraws
+     * its notices. The sweep and a held pace run it.
      */
     readonly reviewResets: Effect.Effect<void>
     /** Read the owner's answers each time the questions change, until interrupted. */
@@ -236,10 +238,9 @@ export class Pool extends Context.Service<
      */
     readonly push: (request: PushRequest) => Effect.Effect<PushAnswer>
     /**
-     * Work the pushes: end those past their end or whose run closed, take the
-     * owner's answers to the push questions, and ask once per scope per week
-     * whether to start one when a run's queued units need more than the pool
-     * can spend before its windows reset by themselves. The sweep runs it.
+     * Work the pushes: end those past their end or whose run closed. It asks
+     * nothing; a push starts only when the owner's session asks for one
+     * (`push`). The sweep runs it.
      */
     readonly reviewPushes: Effect.Effect<void>
   }
