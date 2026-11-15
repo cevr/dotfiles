@@ -634,6 +634,26 @@ describe("process Landing", () => {
     expect(refused.message).toBe("origin/main moved while the gate ran; land the batch again to merge it first.")
   })
 
+  test("push and pushBranch go to origin's fetch URL when its push URL refuses every push (a workspace work made), and move origin's tracking refs", () => {
+    const made = bench()
+    for (const path of [made.integration, made.x]) sh(path, "git", "remote", "set-url", "--push", "origin", "no-push:workspaces-never-push-origin")
+    // The setting holds: a push by the remote's name is refused.
+    expect(spawned(made.x, ["git", "push", "-q", "origin", "HEAD:refs/heads/probe"]).exitCode).not.toBe(0)
+    addPackage(made.x, "b")
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        expect(yield* landing.pushBranch({ path: made.x, branch: "feat/x" })).toEndWith(" add b")
+        expect(sh(made.origin, "git", "rev-parse", "feat/x")).toBe(sh(made.x, "git", "rev-parse", "HEAD"))
+        expect(sh(made.x, "git", "rev-parse", "origin/feat/x")).toBe(sh(made.x, "git", "rev-parse", "HEAD"))
+        yield* landing.start(made.integration, "main")
+        yield* landing.merge(made.integration, { path: made.x, branch: "feat/x" }, made.settings)
+        expect(yield* landing.push(made.integration, "main")).toEndWith(" add b")
+        expect(sh(made.origin, "git", "rev-parse", "main")).toBe(sh(made.integration, "git", "rev-parse", "HEAD"))
+        expect(sh(made.integration, "git", "rev-parse", "origin/main")).toBe(sh(made.integration, "git", "rev-parse", "HEAD"))
+      }),
+    )
+  })
+
   test("ownChanges leaves out a change the warm source holds too, and sync makes a landed branch read as pushed", async () => {
     const made = bench()
     write(made.source, "private.toml", "mine\n")

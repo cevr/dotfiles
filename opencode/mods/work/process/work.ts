@@ -1,0 +1,305 @@
+// Rifts over Ergo's `work` binary and Git, run as child processes: the contract's second provider,
+// beside process/rifts.ts. A workspace is a record in its base's registry (`work --json list`);
+// the bases are the ones `work init` registered (`work --json bases`). Every call that reads or
+// writes a registry names its base with WORK_BASE: inside an adopted copy `work` would otherwise
+// take the copy for a base and read an empty registry. With `workrift: true` (the workbox) a
+// workspace is made and removed by `workrift`, as process/rifts.ts does; the rest asks `work`.
+// Unsaved work is read with Git exactly as process/rifts.ts reads it. A removal is
+// `work rm -abandon -expect <id>`: the tool's removal rule (workspace.ts) has judged it already,
+// and the id is the one the caller's inspect saw, so a workspace replaced since is refused.
+import { Effect, Layer, Option, Schema } from "effect"
+import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
+import { holds, ownStashes, type Workspace } from "../workspace.ts"
+import { commands, lines, type Ran } from "./command.ts"
+
+export interface Options {
+  /** The `work` binary, a path or a name on PATH; `work` when absent. */
+  readonly work?: string
+  /** Make and remove workspaces with `workrift` (the workbox). */
+  readonly workrift: boolean
+  /** Variables added to every command's environment (a test's scratch HOME). */
+  readonly env?: Readonly<Record<string, string>>
+}
+
+/** One registry record, as `work --json list` prints it; other fields are left out. */
+const Rec = Schema.Struct({
+  name: Schema.String,
+  id: Schema.String,
+  path: Schema.String,
+  parent: Schema.String,
+  branch: Schema.String,
+  state: Schema.Struct({ _tag: Schema.String }),
+})
+type Rec = typeof Rec.Type
+
+const Records = Schema.fromJsonString(Schema.Array(Rec))
+const Bases = Schema.fromJsonString(Schema.Array(Schema.String))
+const Created = Schema.fromJsonString(Schema.Struct({ name: Schema.String, id: Schema.String, path: Schema.String, branch: Schema.String }))
+const Removed = Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String, id: Schema.String, trash: Schema.String, already: Schema.Boolean })))
+const Failure = Schema.fromJsonString(Schema.Struct({ _tag: Schema.String }))
+
+/** What a failed `work --json` call said: its tag and JSON (status 1), else a usage error (status 2) or its stderr. */
+export const failureOf = (ran: Ran): string => {
+  const said = ran.stderr.trim()
+  if (ran.code === 2) return `usage (exit 2): ${said}`
+  return Option.match(Schema.decodeUnknownOption(Failure)(ran.stdout.trim()), {
+    onNone: () => `exit ${ran.code}: ${said || ran.stdout.trim()}`,
+    onSome: (failure) => `${failure._tag}: ${ran.stdout.trim()}`,
+  })
+}
+
+/** Where a workspace is: its base, the base's live records, and its own record (none for the base itself). */
+interface Place {
+  readonly base: string
+  readonly records: ReadonlyArray<Rec>
+  readonly record: Option.Option<Rec>
+}
+
+/** What a removal names: the base, the workspace's name and the id it had when last read. */
+interface Known {
+  readonly base: string
+  readonly name: string
+  readonly id: string
+}
+
+/** A record that still names a workspace: anything but trashed. */
+const isLive = (record: Rec): boolean => record.state._tag !== "Trashed"
+
+/** A record `list` shows: live and made (a clone in progress is not listed yet). */
+const isMade = (record: Rec): boolean => isLive(record) && record.state._tag !== "Creating"
+
+/**
+ * `bases` in the order to search for `path`: a path under `<dir>/.work/<name>/` or `<dir>/.rifts/<name>/`
+ * tries the base `<dir>/<name>` first.
+ */
+export const searchOrder = (bases: ReadonlyArray<string>, path: string): ReadonlyArray<string> => {
+  const hinted = Option.fromNullishOr(/^(.*?)\/\.(?:work|rifts)\/([^/]+)\//.exec(`${path}/`)).pipe(
+    Option.map((match) => `${match[1]}/${match[2]}`),
+    Option.filter((base) => bases.includes(base)),
+  )
+  return Option.match(hinted, { onNone: () => bases, onSome: (base) => [base, ...bases.filter((each) => each !== base)] })
+}
+
+/** The deepest of `records` whose folder holds `path`. */
+const deepest = (records: ReadonlyArray<Rec>, path: string): Option.Option<Rec> =>
+  Option.fromUndefinedOr([...records].filter((record) => holds(record.path, path)).sort((a, b) => b.path.length - a.path.length)[0])
+
+/** The workspaces between `record` and its base, nearest first, the base last. */
+const above = (records: ReadonlyArray<Rec>, base: string, record: Rec): ReadonlyArray<string> => {
+  const out: Array<string> = []
+  let at = record.parent
+  while (at !== base && out.length <= records.length) {
+    out.push(at)
+    const here = at
+    at = Option.match(Option.fromUndefinedOr(records.find((each) => each.path === here)), { onNone: () => base, onSome: (parent) => parent.parent })
+  }
+  return [...out, base]
+}
+
+export const layer = (options: Options) => {
+  const { spawn, run } = commands(options.env)
+  const bin = options.work ?? "work"
+  /** The id each workspace path had when last read: what `rm -expect` names. */
+  const seen = new Map<string, Known>()
+
+  const git = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path)
+
+  /** Runs `work --json <args>` (on `base` when given) and reads its answer with `schema`. */
+  const call = <A>(schema: Schema.Codec<A, string>, base: Option.Option<string>, args: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const operation = `work ${args[0] ?? ""}`
+      const where = Option.getOrElse(base, () => "/")
+      const env = Option.match(base, { onNone: () => ({}), onSome: (named) => ({ WORK_BASE: named }) })
+      const ran = yield* spawn([bin, "--json", ...args], where, env)
+      if (ran.code !== 0) return yield* new RiftFailed({ operation, message: failureOf(ran) })
+      return yield* Schema.decodeUnknownEffect(schema)(ran.stdout.trim()).pipe(
+        Effect.mapError((error) => new RiftFailed({ operation, message: `its answer does not read: ${error.message}` })),
+      )
+    })
+
+  const bases = call(Bases, Option.none(), ["bases"])
+  const live = (base: string) => call(Records, Option.some(base), ["list"]).pipe(Effect.map((records) => records.filter(isLive)))
+  /** A base's live records, none when its registry cannot be read (a base folder gone): it holds nothing known. */
+  const liveOrNone = (base: string) => live(base).pipe(Effect.catchTag("RiftFailed", () => Effect.succeed<ReadonlyArray<Rec>>([])))
+
+  /** `directory` as the file system names it (symbolic links resolved); as given when it does not exist. */
+  const physical = (directory: string) =>
+    run(["pwd", "-P"], directory).pipe(
+      Effect.map((out) => out.trim()),
+      Effect.orElseSucceed(() => directory),
+    )
+
+  /** The checkout `directory` is in: its Git top level, else the directory itself. */
+  const checkoutOf = (directory: string) =>
+    git(directory, "rev-parse", "--show-toplevel").pipe(
+      Effect.map((out) => out.trim()),
+      Effect.catch(() => physical(directory)),
+    )
+
+  const remember = (place: Place) => {
+    Option.map(place.record, (record) => seen.set(record.path, { base: place.base, name: record.name, id: record.id }))
+    return place
+  }
+
+  /** The base or live workspace whose folder is `path` exactly. */
+  const placeOf = Effect.fn("WorkRifts.placeOf")(function* (path: string) {
+    const all = yield* bases
+    for (const base of searchOrder(all, path)) {
+      const records = yield* liveOrNone(base)
+      if (base === path) return { base, records, record: Option.none() } satisfies Place
+      const record = Option.fromUndefinedOr(records.find((each) => each.path === path))
+      if (Option.isSome(record)) return remember({ base, records, record })
+    }
+    return yield* new RiftFailed({ operation: "work list", message: `${path} is no work base and no workspace of one (bases: ${all.join(", ") || "none"})` })
+  })
+
+  const source = Effect.fn("WorkRifts.source")(function* (directory: string) {
+    const top = yield* checkoutOf(directory)
+    const all = yield* bases
+    for (const base of searchOrder(all, top)) {
+      if (base === top) return base
+      const hit = deepest(yield* liveOrNone(base), top)
+      if (Option.isSome(hit)) return base
+    }
+    const holding = [...all].filter((base) => holds(base, top)).sort((a, b) => b.length - a.length)
+    return yield* Option.match(Option.fromUndefinedOr(holding[0]), {
+      onNone: () =>
+        Effect.fail(
+          new RiftFailed({
+            operation: "work bases",
+            message: `${top} is in no work base (bases: ${all.join(", ") || "none"}). The owner makes a repository a base with \`work init\` in it.`,
+          }),
+        ),
+      onSome: (base) => Effect.succeed(base),
+    })
+  })
+
+  const list = Effect.fn("WorkRifts.list")(function* (from: string) {
+    const place = yield* placeOf(from)
+    return place.records
+      .filter((record) => isMade(record) && record.parent === from)
+      .map((record) => record.path)
+      .sort()
+  })
+
+  const inspect = Effect.fn("WorkRifts.inspect")(function* (path: string) {
+    const place = yield* placeOf(path)
+    const children = place.records
+      .filter((record) => record.parent === path)
+      .map((record) => record.path)
+      .sort()
+    const chain = Option.match(place.record, { onNone: () => [], onSome: (record) => above(place.records, place.base, record) })
+    const base = { path, source: Option.isNone(place.record), children }
+    const isGit = (yield* spawn(["git", "-C", path, "rev-parse", "--is-inside-work-tree"], path)).code === 0
+    // Outside Git there is no branch to read, and nothing more.
+    const branch = (yield* Effect.when(git(path, "branch", "--show-current"), Effect.succeed(isGit))).pipe(
+      Option.map((out) => out.trim()),
+      Option.filter((name) => name !== ""),
+    )
+    if (!isGit) return { ...base, git: false, branch: Option.getOrUndefined(branch), head: "", uncommitted: [], unpushed: [], stashes: 0 } satisfies Workspace
+    const head = yield* git(path, "rev-parse", "--short", "HEAD").pipe(
+      Effect.map((out) => out.trim()),
+      Effect.orElseSucceed(() => "(no commits)"),
+    )
+    const uncommitted = lines(yield* git(path, "status", "--porcelain", "--", ".", ":(exclude).rift"))
+    // Commits found only here: on no remote, and in no branch of the base it was cloned from.
+    const root = Option.fromUndefinedOr(chain.at(-1))
+    const sourceTips = yield* Option.match(root, {
+      onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
+      onSome: (at) => git(at, "for-each-ref", "--format=%(objectname)", "refs/heads").pipe(Effect.map(lines)),
+    })
+    const tip = ["HEAD"].filter(() => head !== "(no commits)")
+    const unpushed = lines(yield* git(path, "log", "--format=%h %s", ...tip, "--branches", "--ignore-missing", "--not", "--remotes", ...sourceTips))
+    // Stash entries found only here: a clone carries the stash of the workspaces it was made from.
+    const stashOf = (at: string) => git(at, "stash", "list", "--format=%H").pipe(Effect.map(lines))
+    const inherited = yield* Effect.forEach(chain, stashOf).pipe(Effect.map((each) => each.flat()))
+    const stashes = ownStashes(yield* stashOf(path), inherited)
+    return { ...base, git: true, branch: Option.getOrUndefined(branch), head, uncommitted, unpushed, stashes } satisfies Workspace
+  })
+
+  /** Whether the checkout at `path` has `ref`. */
+  const has = (path: string, ref: string) => spawn(["git", "-C", path, "show-ref", "--verify", "--quiet", ref], path).pipe(Effect.map((ran) => ran.code === 0))
+
+  /** Whether `at` names a commit in the checkout at `path`. */
+  const hasCommit = (path: string, at: string) =>
+    spawn(["git", "-C", path, "rev-parse", "--verify", "--quiet", `${at}^{commit}`], path).pipe(Effect.map((ran) => ran.code === 0))
+
+  /** Trashes the workspace `known` names, that id only; a retry answers what the first did. */
+  const trash = (known: Known, withChildren: boolean) =>
+    call(Removed, Option.some(known.base), ["rm", "-abandon", "-expect", known.id, ...["-tree"].filter(() => withChildren), known.name])
+
+  /**
+   * Detaches a fresh workspace at `at`, fetching origin first when it lacks the commit (and asking origin
+   * for its default branch when `at` is `origin/HEAD`). A detach that fails trashes the workspace, so no
+   * half-made one is left.
+   */
+  const detach = (path: string, at: string, made: Option.Option<Known>) =>
+    Effect.gen(function* () {
+      if (!(yield* hasCommit(path, at))) {
+        yield* spawn(["git", "-C", path, "fetch", "--quiet", "origin"], path)
+        if (at === "origin/HEAD") yield* spawn(["git", "-C", path, "remote", "set-head", "origin", "--auto"], path)
+      }
+      if (!(yield* hasCommit(path, at))) return yield* new RiftFailed({ operation: "git switch", message: `no commit ${at} here or on origin` })
+      yield* git(path, "switch", "--quiet", "--detach", at)
+    }).pipe(
+      Effect.catch((error: RiftFailed) =>
+        Option.match(made, { onNone: () => remove(path), onSome: (known) => trash(known, false) }).pipe(
+          Effect.ignore,
+          Effect.andThen(Effect.fail(new RiftFailed({ operation: error.operation, message: `the workspace ${path} was removed: ${error.message}` }))),
+        ),
+      ),
+    )
+
+  /** The `work new` arguments that start `branch` as the checkout at `from` holds it: its local branch, else origin's, else new at its head. */
+  const branchArgs = Effect.fn("WorkRifts.branchArgs")(function* (from: string, branch: string) {
+    if (yield* has(from, `refs/heads/${branch}`)) return { args: [], track: false }
+    if (yield* has(from, `refs/remotes/origin/${branch}`)) return { args: ["-from", `origin/${branch}`], track: true }
+    return { args: [], track: false }
+  })
+
+  const create = Effect.fn("WorkRifts.create")(function* (request: CreateRequest) {
+    if (options.workrift) {
+      // From the caller's checkout, so workrift imports its gh stack metadata; the source is named outright.
+      const out = yield* run(["workrift", "create", request.branch], request.from, { WORKRIFT_SOURCE: request.source })
+      const path = yield* Option.match(Option.fromUndefinedOr(lines(out).at(-1)), {
+        onNone: () => Effect.fail(new RiftFailed({ operation: "workrift create", message: "it printed no workspace path" })),
+        onSome: Effect.succeed,
+      })
+      yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.void, onSome: (at) => detach(path, at, Option.none()) })
+      return path
+    }
+    const parent = yield* placeOf(request.source)
+    const on = Option.match(parent.record, { onNone: () => [], onSome: (record) => ["-on", record.name] })
+    const start = yield* branchArgs(request.source, request.branch)
+    const made = yield* call(Created, Option.some(parent.base), ["new", "-branch", request.branch, ...on, ...start.args, request.name])
+    const known = { base: parent.base, name: made.name, id: made.id }
+    seen.set(made.path, known)
+    const tracked = Effect.when(git(made.path, "branch", "--quiet", `--set-upstream-to=origin/${request.branch}`, request.branch), Effect.succeed(start.track))
+    yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.asVoid(tracked), onSome: (at) => detach(made.path, at, Option.some(known)) })
+    return made.path
+  })
+
+  const remove = Effect.fn("WorkRifts.remove")(function* (path: string, removeOptions?: { readonly withChildren?: boolean }) {
+    const withChildren = removeOptions?.withChildren === true
+    if (options.workrift) {
+      yield* run(["workrift", "remove", ...["--with-children"].filter(() => withChildren), path], path.slice(0, path.lastIndexOf("/")) || "/")
+      return
+    }
+    // The id the caller's inspect saw: a workspace that has since been replaced under the name is refused.
+    const known = yield* Option.match(Option.fromUndefinedOr(seen.get(path)), {
+      onSome: Effect.succeed,
+      onNone: () =>
+        placeOf(path).pipe(
+          Effect.flatMap((place) =>
+            Option.match(place.record, {
+              onNone: () => Effect.fail(new RiftFailed({ operation: "work rm", message: `${path} is a base; the tool never removes one` })),
+              onSome: (record) => Effect.succeed({ base: place.base, name: record.name, id: record.id }),
+            }),
+          ),
+        ),
+    })
+    yield* trash(known, withChildren)
+  })
+
+  return Layer.succeed(Rifts, Rifts.of({ source, create, list, inspect, remove }))
+}

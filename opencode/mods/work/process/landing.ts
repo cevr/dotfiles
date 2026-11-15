@@ -501,17 +501,28 @@ export const layer = (options: Options) => {
 
   const hostLoad = Effect.sync((): HostLoad => ({ load: loadavg()[0] ?? 0, cores: availableParallelism() }))
 
+  /**
+   * Pushes HEAD to `branch` on origin by origin's fetch URL, never forced, and moves `origin/<branch>` there
+   * as a push by the remote's name would. By the URL, not the name: a workspace `work new` made has a push
+   * URL that refuses every push, and the land is the one owner of pushes to origin.
+   */
+  const pushToOrigin = Effect.fn("Landing.pushToOrigin")(function* (path: string, branch: string) {
+    const url = yield* trimmed(path, "remote", "get-url", "origin")
+    yield* git(path, "push", "-q", url, `HEAD:refs/heads/${branch}`)
+    yield* git(path, "update-ref", `refs/remotes/origin/${branch}`, "HEAD")
+  })
+
   const push = Effect.fn("Landing.push")(function* (path: string, main: string) {
     yield* git(path, "fetch", "-q", "origin")
     const holds = yield* spawn(["git", "-C", path, "merge-base", "--is-ancestor", `origin/${main}`, "HEAD"], path)
     if (holds.code !== 0)
       return yield* new RiftFailed({ operation: "git push", message: `origin/${main} moved while the gate ran; land the batch again to merge it first.` })
-    yield* git(path, "push", "-q", "origin", `HEAD:${main}`)
+    yield* pushToOrigin(path, main)
     return yield* trimmed(path, "log", "-1", "--format=%h %s")
   })
 
   const pushBranch = Effect.fn("Landing.pushBranch")(function* (unit: Unit) {
-    yield* git(unit.path, "push", "-q", "origin", `HEAD:refs/heads/${unit.branch}`)
+    yield* pushToOrigin(unit.path, unit.branch)
     return yield* trimmed(unit.path, "log", "-1", "--format=%h %s")
   })
 
