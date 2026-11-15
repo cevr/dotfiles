@@ -91,7 +91,7 @@ describe("the rift plugin", () => {
       Effect.gen(function* () {
         const { call, state } = yield* start()
         expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the Rift /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
-        expect(yield* call({ action: "list" })).toBe("Rifts of /code/app:\n- /code/.rifts/app/feat-x · branch feat/x · clean")
+        expect(yield* call({ action: "list" })).toBe("Workspaces of /code/app:\n- /code/.rifts/app/feat-x · branch feat/x · clean")
         MemoryRifts.change(state, "/code/.rifts/app/feat-x", (workspace) => ({ ...workspace, unpushed: ["d85f04d only here"] }))
         expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith(
           "error: /code/.rifts/app/feat-x holds work found nowhere else:\n1 commit(s) on no remote and in no branch of its source:\n  d85f04d only here",
@@ -110,7 +110,7 @@ describe("the rift plugin", () => {
         expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).")
         yield* Effect.sleep("20 millis")
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
-        expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The warm source /code/app has no Rift named nope.")
+        expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The warm source /code/app has no workspace named nope.")
         // An orchestrate run names each Rift with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
         const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
         state.rifts.set(named.path, named)
@@ -119,7 +119,7 @@ describe("the rift plugin", () => {
         state.rifts.set(named.path, named)
         expect(yield* call({ action: "land", rifts: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 Rift(s) as one push")
         expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2" }] })).toStartWith("refused input:")
-        expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here the rift tool offers create, list, remove and land.")
+        expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.")
       }),
     ))
 

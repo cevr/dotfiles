@@ -41,6 +41,7 @@ import {
   NoSuchRift,
   RepositoryMissing,
   RiftsMissing,
+  TargetsTwice,
   TargetMissing,
   baseName,
   created,
@@ -53,7 +54,7 @@ import {
   type InputRefused,
   type RiftInput,
 } from "./rift.ts"
-import { Landing, Notices, PostLandClaim, PostLandDebts, Rifts, SessionDirectories, Workbox, type NotOnWorkbox, type RiftFailed, type SessionUnreadable, type WorkboxCommand } from "./service.ts"
+import { Landing, Notices, PostLandClaim, PostLandDebts, Rifts, SessionDirectories, Workbox, type NotOnWorkbox, RiftFailed, type SessionUnreadable, type WorkboxCommand } from "./service.ts"
 import { explainRefusal, removal, StepRunning, type RemoveRefused, type Workspace } from "./workspace.ts"
 
 export { resolvePath }
@@ -119,7 +120,7 @@ const WHY: Readonly<Record<Standing["_tag"], string>> = {
 
 /** Why a land by receipts cannot cover a Rift with no focused gate to run. */
 const uncoveredDetail = (now: Standing): string =>
-  `${WHY[now._tag]}, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a Rift. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`
+  `${WHY[now._tag]}, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a workspace. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`
 
 /** The first line of a reason, when there is one. */
 const firstLine = (text: Option.Option<string>): string => Option.match(text, { onNone: () => "", onSome: (some) => some.split("\n")[0]! })
@@ -141,6 +142,29 @@ const commandLine = (command: WorkboxCommand): string => {
       return `workrift ${command._tag}`
   }
 }
+
+/** Whether `failure` is work's refusal of a name a workspace holds, live or removed (in the trash until a gc). */
+const isNameTaken = (failure: RiftFailed): boolean => failure.message.startsWith("NameTaken")
+
+/** The suffixes a name a removed workspace still holds is tried with, in order. */
+const SUFFIXES = [2, 3, 4, 5, 6, 7, 8, 9]
+
+/** Whether the workspace at `path` is the kept one named `name` (INTEGRATION, POST_LAND, ACCEPT), as named or under a suffix. */
+const keptAs = (path: string, name: string): boolean => [name, ...SUFFIXES.map((n) => `${name}-${n}`)].includes(baseName(path))
+
+/**
+ * A workspace `make` makes under `name`, else under the first suffix (`<name>-2` …) work does not answer taken:
+ * a removed workspace holds its name until a gc, and no gc runs while its trash may be wanted back. Answers the
+ * name it went under and its path; any other failure, or every name taken, fails.
+ */
+const freshly = Effect.fn("RiftTool.freshly")(function* (name: string, make: (name: string) => Effect.Effect<string, RiftFailed>) {
+  for (const each of [name, ...SUFFIXES.map((n) => `${name}-${n}`)]) {
+    const made = yield* Effect.result(make(each))
+    if (Result.isSuccess(made)) return { name: each, path: made.success }
+    if (!isNameTaken(made.failure)) return yield* Effect.fail(made.failure)
+  }
+  return yield* new RiftFailed({ operation: "work new", message: `${name} and every suffix up to ${name}-${SUFFIXES.length + 1} are taken; pick another name` })
+})
 
 export const layer = Layer.effect(
   RiftTool,
@@ -172,6 +196,17 @@ export const layer = Layer.effect(
       return match
     })
 
+    /**
+     * Succeeds when `failure` is work's refusal of `name` while no live workspace of `source` holds it: a removed
+     * one still does, in the trash until a gc. Fails with `failure` otherwise: a second workspace of one name is refused.
+     */
+    const heldByTrash = (source: string, name: string, failure: RiftFailed) =>
+      Effect.filterOrFail(
+        Effect.map(rifts.list(source), (paths) => isNameTaken(failure) && !paths.some((path) => baseName(path) === name)),
+        Boolean,
+        () => failure,
+      )
+
     /** The Rift at `path` and every Rift below it, deepest last. */
     const subtree = (workspace: Workspace): Effect.Effect<ReadonlyArray<Workspace>, RiftFailed> =>
       Effect.forEach(workspace.children, (child) => rifts.inspect(child).pipe(Effect.flatMap(subtree)), { concurrency: 4 }).pipe(
@@ -182,11 +217,16 @@ export const layer = Layer.effect(
       const branch = input.branch ?? input.name
       if (branch === undefined || branch.trim() === "") return yield* new BranchMissing()
       const name = input.name ?? workspaceName(branch)
-      const request = { source, from: directory, name, branch }
-      const path = yield* rifts.create(Option.match(at, { onNone: () => request, onSome: (commit) => ({ ...request, at: commit }) }))
+      const request = (each: string) => Option.match(at, { onNone: () => ({ source, from: directory, name: each, branch }), onSome: (commit) => ({ source, from: directory, name: each, branch, at: commit }) })
+      const made = yield* rifts.create(request(name)).pipe(
+        Effect.map((path) => ({ name, path })),
+        Effect.catch((failure: RiftFailed) => Effect.andThen(heldByTrash(source, name, failure), freshly(name, (each) => rifts.create(request(each))))),
+      )
+      const path = made.path
       const workspace = yield* rifts.inspect(path)
+      const renamed = [`The name ${name} is still held by a removed workspace (in the trash until a gc), so this one is ${made.name}.`].filter(() => made.name !== name)
       return {
-        text: created(workspace, source),
+        text: [created(workspace, source), ...renamed].join("\n"),
         metadata: { action: "create" as const, source, path, ...(workspace.branch === undefined ? {} : { branch: workspace.branch }) },
       }
     })
@@ -422,23 +462,28 @@ export const layer = Layer.effect(
     /** The Rift at `path` as a unit of the batch, or why it cannot be one. */
     const unitOf = Effect.fn("RiftTool.unitOf")(function* (path: string, source: string) {
       const workspace = yield* rifts.inspect(path)
-      if (workspace.source) return yield* new LandRefused({ path, reason: "is a warm source; land a Rift made from one." })
-      if (baseName(path) === INTEGRATION) return yield* new LandRefused({ path, reason: "is the integration Rift land merges in; land the Rifts it merged." })
-      if (baseName(path) === POST_LAND) return yield* new LandRefused({ path, reason: "is the Rift the post-land step runs in; it holds no work to land." })
-      if (baseName(path) === ACCEPT) return yield* new LandRefused({ path, reason: "is the Rift a land's accept check runs in; it holds no work to land." })
+      if (workspace.source) return yield* new LandRefused({ path, reason: "is a warm source; land a workspace made from one." })
+      if (keptAs(path, INTEGRATION)) return yield* new LandRefused({ path, reason: "is the integration workspace land merges in; land the workspaces it merged." })
+      if (keptAs(path, POST_LAND)) return yield* new LandRefused({ path, reason: "is the workspace the post-land step runs in; it holds no work to land." })
+      if (keptAs(path, ACCEPT)) return yield* new LandRefused({ path, reason: "is the workspace a land's accept check runs in; it holds no work to land." })
       if (!workspace.git || workspace.branch === undefined) return yield* new LandRefused({ path, reason: "is not on a Git branch." })
       const own = yield* landing.ownChanges(path, source)
       if (own.length > 0) return yield* new LandRefused({ path, reason: `holds uncommitted changes; commit them first:\n${some(own)}` })
       return { path, branch: workspace.branch } satisfies Unit
     })
 
-    /** The source's Rift named `name` on its own branch (INTEGRATION, POST_LAND), made on first use and kept. */
+    /**
+     * The source's Rift named `name` on its own branch (INTEGRATION, POST_LAND, ACCEPT), made on first use and
+     * kept; one a removed workspace's name still holds is made under the first free suffix (`keptAs`).
+     */
     const keptRift = (source: string, name: string) =>
       rifts.list(source).pipe(
-        Effect.flatMap((paths) => {
-          const found = paths.find((path) => baseName(path) === name)
-          return found === undefined ? rifts.create({ source, from: source, name, branch: name }) : Effect.succeed(found)
-        }),
+        Effect.flatMap((paths) =>
+          Option.match(Option.fromUndefinedOr(paths.find((path) => baseName(path) === name) ?? paths.find((path) => keptAs(path, name))), {
+            onNone: () => Effect.map(freshly(name, (each) => rifts.create({ source, from: source, name: each, branch: each })), (made) => made.path),
+            onSome: Effect.succeed,
+          }),
+        ),
       )
 
     /**
@@ -469,7 +514,7 @@ export const layer = Layer.effect(
 
     /** The full gate's run on the batch, as the land by `rift.gate` takes it: none merged or red stops the land. */
     const fullGate = Effect.fn("RiftTool.fullGate")(function* (integration: string, ran: Option.Option<Ran>) {
-      if (Option.isNone(ran)) return yield* new LandStopped({ path: integration, step: "gate", detail: "no Rift merged" })
+      if (Option.isNone(ran)) return yield* new LandStopped({ path: integration, step: "gate", detail: "no workspace merged" })
       const gate = ran.value
       if (gate.code !== 0) return yield* new LandStopped({ path: integration, step: "gate", detail: ranDetail(gate) })
       return Gated.Gate({ ran: gate })
@@ -541,7 +586,8 @@ export const layer = Layer.effect(
 
     const land = Effect.fn("RiftTool.land")(function* (sessionID: string, directory: string, source: string, input: RiftInput) {
       // A `{ path, unit }` entry is its path here: the unit is the orchestrate plugin's.
-      const targets = (input.rifts ?? []).map((target) => (typeof target === "string" ? target : target.path))
+      if (Predicate.isNotUndefined(input.workspaces) && Predicate.isNotUndefined(input.rifts)) return yield* new TargetsTwice()
+      const targets = (input.workspaces ?? input.rifts ?? []).map((target) => (typeof target === "string" ? target : target.path))
       if (targets.length === 0) return yield* new RiftsMissing()
       // Every Rift is found and checked before any is touched.
       const paths = yield* Effect.forEach(targets, (target) => findRift(directory, source, target).pipe(Effect.provideService(Rifts, rifts)))
@@ -720,6 +766,7 @@ export const explain = (failure: Failure): string => {
     case "NoSuchRift":
     case "AmbiguousRift":
     case "RiftsMissing":
+    case "TargetsTwice":
     case "RepositoryMissing":
       return explainInput(failure)
     case "SourceKept":

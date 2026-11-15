@@ -5,10 +5,14 @@
 // reads for each answer and each refusal are here.
 import { Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
+import { RIFT_ALIAS_REMOVAL } from "./tool.ts"
 import type { Workspace } from "./workspace.ts"
 
 /** The actions that run the workbox's own scripts as they are. */
 export const WORKBOX_ACTIONS = ["init", "refresh", "deps", "check", "sources", "prune", "storage"] as const
+
+/** A land's targets: each a path, a name or a branch, or an orchestrate run's `{ path, unit }`. */
+const LandTargets = Schema.Array(Schema.Union([Schema.String, Schema.Struct({ path: Schema.String, unit: Schema.String })]))
 
 export const RiftInput = toolInput(Schema.Struct({
   action: Schema.Literals(["create", "list", "remove", "land", ...WORKBOX_ACTIONS]).annotate({
@@ -27,9 +31,12 @@ export const RiftInput = toolInput(Schema.Struct({
   path: Schema.optional(Schema.String).annotate({
     description: "remove and deps: the Rift's directory, in place of its name. init: where to clone (default: /workspaces/<repository>).",
   }),
-  rifts: Schema.optional(Schema.Array(Schema.Union([Schema.String, Schema.Struct({ path: Schema.String, unit: Schema.String })]))).annotate({
+  workspaces: Schema.optional(LandTargets).annotate({
     description:
-      "land: the Rifts to land, in order, each by path (a path starts with / or .), by name, or by its branch (exact, else with / as -); a name two Rifts answer to is refused, naming both. An orchestrate run may give one as { path, unit }: the land lands its path, and the orchestrate plugin records it as that unit's.",
+      "land: the workspaces to land, in order, each by path (a path starts with / or .), by name, or by its branch (exact, else with / as -); a name two workspaces answer to is refused, naming both. An orchestrate run may give one as { path, unit }: the land lands its path, and the orchestrate plugin records it as that unit's.",
+  }),
+  rifts: Schema.optional(LandTargets).annotate({
+    description: `land: the same as workspaces, by its old name (accepted until ${RIFT_ALIAS_REMOVAL}). Give one of the two.`,
   }),
   departs: Schema.optional(Schema.String).annotate({
     description: "land: why this land goes against the orchestrate skill's batch rules; the orchestrate plugin records it as the reason. The land does nothing else with it.",
@@ -77,11 +84,14 @@ export class AmbiguousRift extends Schema.TaggedError<AmbiguousRift>()("Ambiguou
 /** A land that names no Rift. */
 export class RiftsMissing extends Schema.TaggedError<RiftsMissing>()("RiftsMissing", {}) {}
 
+/** A land that names its targets twice: as `workspaces` and as `rifts`. */
+export class TargetsTwice extends Schema.TaggedError<TargetsTwice>()("TargetsTwice", {}) {}
+
 /** An init that names no repository. */
 export class RepositoryMissing extends Schema.TaggedError<RepositoryMissing>()("RepositoryMissing", {}) {}
 
 /** Why the tool did not act on its input, before asking Rift. */
-export type InputRefused = BranchMissing | TargetMissing | NoSuchRift | AmbiguousRift | RiftsMissing | RepositoryMissing
+export type InputRefused = BranchMissing | TargetMissing | NoSuchRift | AmbiguousRift | RiftsMissing | TargetsTwice | RepositoryMissing
 
 /** The directory name a branch makes, as `workrift` names it: `/` and spaces become `-`, other punctuation goes. */
 export const workspaceName = (branch: string): string =>
@@ -103,7 +113,7 @@ export const stateOf = (workspace: Workspace): string => {
     ...(workspace.uncommitted.length > 0 ? [`${workspace.uncommitted.length} uncommitted`] : []),
     ...(workspace.unpushed.length > 0 ? [`${workspace.unpushed.length} unpushed`] : []),
     ...(workspace.stashes > 0 ? [`${workspace.stashes} stashed`] : []),
-    ...(workspace.children.length > 0 ? [`${workspace.children.length} Rift(s) of its own`] : []),
+    ...(workspace.children.length > 0 ? [`${workspace.children.length} workspace(s) of its own`] : []),
   ]
   return parts.length === 0 ? "clean" : parts.join(", ")
 }
@@ -112,14 +122,14 @@ export const stateOf = (workspace: Workspace): string => {
 export const created = (workspace: Workspace, source: string): string =>
   [
     `Created the Rift ${workspace.path} from ${source}, on ${at(workspace)}.`,
-    `This session still runs in its own directory. To work in the Rift, move the session there with the session_move tool (directory: "${workspace.path}"), or give each shell call workdir "${workspace.path}".`,
+    `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${workspace.path}"), or give each shell call workdir "${workspace.path}".`,
   ].join("\n")
 
 /** The answer to a list. */
 export const listed = (source: string, workspaces: ReadonlyArray<Workspace>): string =>
   workspaces.length === 0
-    ? `The warm source ${source} has no Rifts.`
-    : [`Rifts of ${source}:`, ...workspaces.map((workspace) => `- ${workspace.path} · ${at(workspace)} · ${stateOf(workspace)}`)].join("\n")
+    ? `The warm source ${source} has no workspaces.`
+    : [`Workspaces of ${source}:`, ...workspaces.map((workspace) => `- ${workspace.path} · ${at(workspace)} · ${stateOf(workspace)}`)].join("\n")
 
 /** The answer to a remove. */
 export const removed = (workspace: Workspace): string =>
@@ -133,7 +143,7 @@ export const ranOnWorkbox = (command: string, output: string): string => {
 
 /** What the model reads when a workbox command runs where there is no workrift. */
 export const notOnWorkbox = (command: string): string =>
-  `${command} runs the workbox's workrift, which this machine does not have. Here the rift tool offers create, list, remove and land.`
+  `${command} runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.`
 
 /** What the model reads when its input names too little. */
 export const explainInput = (refusal: InputRefused): string => {
@@ -141,16 +151,18 @@ export const explainInput = (refusal: InputRefused): string => {
     case "BranchMissing":
       return 'create needs a branch (or a name, which becomes the branch): { action: "create", branch: "feat/x" }.'
     case "TargetMissing":
-      return 'remove needs the Rift: { action: "remove", name: "feat-x" } or { action: "remove", path: "/…/.rifts/repo/feat-x" }.'
+      return 'remove needs the workspace: { action: "remove", name: "feat-x" } or { action: "remove", path: "/…/.rifts/repo/feat-x" }.'
     case "RiftsMissing":
-      return 'land needs the Rifts to land, in order: { action: "land", rifts: ["feat-x"] }.'
+      return 'land needs the workspaces to land, in order: { action: "land", workspaces: ["feat-x"] }.'
+    case "TargetsTwice":
+      return `land takes its targets once: as workspaces, or as rifts (the old name, accepted until ${RIFT_ALIAS_REMOVAL}); this call gave both.`
     case "RepositoryMissing":
       return 'init needs the repository to clone: { action: "init", repository: "git@github.com:owner/repo.git", path? }.'
     case "NoSuchRift":
       return refusal.rifts.length === 0
-        ? `The warm source ${refusal.source} has no Rift named ${refusal.name}; it has no Rifts.`
-        : `The warm source ${refusal.source} has no Rift named ${refusal.name}. Its Rifts:\n${refusal.rifts.map((path) => `  ${path}`).join("\n")}`
+        ? `The warm source ${refusal.source} has no workspace named ${refusal.name}; it has no workspaces.`
+        : `The warm source ${refusal.source} has no workspace named ${refusal.name}. Its workspaces:\n${refusal.rifts.map((path) => `  ${path}`).join("\n")}`
     case "AmbiguousRift":
-      return `${refusal.name} names more than one Rift of ${refusal.source}; name one by its path:\n${refusal.matches.map((match) => `  ${match}`).join("\n")}`
+      return `${refusal.name} names more than one workspace of ${refusal.source}; name one by its path:\n${refusal.matches.map((match) => `  ${match}`).join("\n")}`
   }
 }

@@ -150,7 +150,7 @@ describe("a land by receipts", () => {
     made.landing.standings.set(Y, Standing.Red({ receipt: MemoryLanding.receiptOf(Y, "head-feat-y", "round", 1) }))
     return landOnce(made, ["feat-x", "feat-y"], (answer) => {
       expect(answer).toBe(
-        `refused: The focused gate of ${Y} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the Rift and land again:\nits receipt is red, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a Rift. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`,
+        `refused: The focused gate of ${Y} failed (it held no current receipt, so the land ran it); nothing was pushed. Fix it in the Rift and land again:\nits receipt is red, and the repository names no focused gate (rift.focus) for the land to run; the full gate never runs for a workspace. Write the receipt of its round's proof at its head (${RECEIPT_CLI}), or set rift.focus.`,
       )
       expect(made.landing.steps.some((step) => step.startsWith("focus ") || step.startsWith("gate ") || step.startsWith("merge "))).toBe(false)
     })
@@ -293,7 +293,7 @@ describe("a land by receipts", () => {
     const made = bench()
     made.rifts.rifts.set(ACCEPT, MemoryRifts.clean(ACCEPT, "land-accept"))
     return expecting(made, (tool) => answerOf(tool, { action: "land", rifts: [ACCEPT] }), (answer) => {
-      expect(answer).toBe(`refused: Did not land anything: ${ACCEPT} is the Rift a land's accept check runs in; it holds no work to land.`)
+      expect(answer).toBe(`refused: Did not land anything: ${ACCEPT} is the workspace a land's accept check runs in; it holds no work to land.`)
     })
   })
 })
