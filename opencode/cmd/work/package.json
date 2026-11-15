@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-work",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The work tool's OpenCode server plugin (and its alias rift): the composition root of @dotfiles/opencode-work over Ergo's work binary.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-cmd-rift": "workspace:*",
+    "@dotfiles/opencode-work": "workspace:*"
+  }
+}
