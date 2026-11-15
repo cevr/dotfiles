@@ -5,6 +5,7 @@ In Rex, an agent shows its work in a pane beside the user's: `rex-show image FIL
 ## Sub-features
 
 - `rex-show`: `image`, `md` and `tally` draw in the session's showcase pane; a usage error or no pane exits 2, a failed Rex call 1.
+- `rex-browse`: `rex-show browse URL` opens a live tab in a headless browser on the caller's host; its frames draw in the showcase, clicks, scrolls and keys in the pane reach the page, the header follows navigations, Ctrl-C (or `q` outside a field) quits and the browser goes with it.
 - `rex-showcase`: one showcase per session, split off beside the caller, made again when its viewer exited; never the caller's own pane.
 - `rex-family`: each subagent of the family on screen gets the TUI's pane when it appears and each time it starts to run again.
 - `rex-server`: the server drops `REX_SESSION` and `REX_BLOCK` it inherited, so a shell no TUI set names no pane.
@@ -20,7 +21,7 @@ In Rex, an agent shows its work in a pane beside the user's: `rex-show image FIL
 - **States:** default (a picture, a page, a tally), refused (outside a pane, a usage error), error (a failing Rex tool). Loading and empty are `n/a`.
 - **World suites:** none yet. Rex is an outside app with its own tool, which the world does not host, so a drive of this feature runs its real checks with --real: the command and the Rex adapter against a stand-in tool.
 - **Code:** `mods/rex/`, `cmd/rex/`
-- **Regression:** `mods/rex/memory/model.test.ts` (the showcase rule over interleaved calls), `mods/rex/pane.test.ts` (the pane's variables, the family's due rule), `mods/rex/opencode/family.test.ts` (the family the TUI hands its pane to), `mods/rex/frame.test.ts` (the pane's frame, the tally's OSC 7501 report), `cmd/rex/server.test.ts` (the server's seam).
+- **Regression:** `mods/rex/memory/model.test.ts` (the showcase rule over interleaved calls), `mods/rex/pane.test.ts` (the pane's variables, the family's due rule), `mods/rex/opencode/family.test.ts` (the family the TUI hands its pane to), `mods/rex/frame.test.ts` (the pane's frame, the tally's OSC 7501 report), `cmd/rex/server.test.ts` (the server's seam), `mods/rex/live.test.ts` (a click lands in its cell's part of the page; SGR mouse reports and keys), `mods/rex/process/cdp.test.ts` (the DevTools client against a stand-in debugger), `cmd/rex/browse.test.ts` (the live tab's viewer over a stand-in tab).
 
 1. **Show.** Run `cmd/rex/show.test.ts`: from a caller's pane, one showcase splits off beside it and the viewer is told the spool; outside a pane the command exits 2.
 2. **Rex's tool.** Run `mods/rex/process/rex.test.ts`: each call names the session, a split asks for the showcase beside the caller, a failing tool is a failure with what it said.
