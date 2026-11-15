@@ -730,17 +730,18 @@ export const make = (
         )
       }
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.deleted", "session.compaction.ended"] }).pipe(
+        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.inbox.delivered", "session.deleted", "session.compaction.ended"] }).pipe(
           Stream.runForEach((event) => {
             if (event.type === "session.compaction.ended") return compacted(event.id, event.data.sessionID)
             if (event.type === "session.deleted")
               return Effect.sync(() => void backgrounds.delete(event.data.sessionID)).pipe(Effect.andThen(idleRoots.forget(event.data.sessionID)))
+            if (event.type === "session.inbox.delivered") return idleRoots.delivered(event.data.sessionID, event.data.inboxID)
             const item = event.data.item
             // New input: the owner's prompt or another plugin's message; never the nudge or the brief.
             const heard =
               item.type === "user" ||
               (item.type === "synthetic" && item.payload.metadata?.[MARK] === undefined && item.payload.metadata?.[SteerLive.BRIEF_MARK] === undefined)
-            return heard ? idleRoots.heard(event.data.sessionID) : Effect.void
+            return heard ? idleRoots.heard(event.data.sessionID, event.data.inboxID) : Effect.void
           }),
           Effect.ignoreCause,
         ),

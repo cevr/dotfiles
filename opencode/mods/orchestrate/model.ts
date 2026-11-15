@@ -690,10 +690,15 @@ export type IdleOutcome =
 export class IdleRoots extends Context.Service<
   IdleRoots,
   {
-    /** The session ended its turn with nothing pending; `background` still runs for it. A root's idle period is decided now. */
+    /**
+     * The session ended its turn; `background` still runs for it. A root's idle period is decided now, unless input it
+     * heard waits in its inbox: then the session goes on with it, and that turn's idle decides.
+     */
     readonly idle: (sessionID: string, background: number) => Effect.Effect<IdleOutcome | undefined>
-    /** New input reached the session (not the nudge): its idle period, if any, ends. */
-    readonly heard: (sessionID: string) => Effect.Effect<void>
+    /** New input (inbox item `inboxID`, not the nudge) reached the session: its idle period, if any, ends. */
+    readonly heard: (sessionID: string, inboxID: string) => Effect.Effect<void>
+    /** A turn of the session took inbox item `inboxID`. */
+    readonly delivered: (sessionID: string, inboxID: string) => Effect.Effect<void>
     /**
      * An owner's TUI says whether its composer holds a draft to the session.
      * A draft that ends while the root is idle decides it again `RECHECK_MS` later.
@@ -748,13 +753,21 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
           )
         }).pipe(one.withPermits(1))
 
+      // Each session's heard input its turns have not taken yet: the inbox items enqueued and not delivered.
+      const waiting = new Map<string, ReadonlySet<string>>()
+      const waitingOf = (sessionID: string) => waiting.get(sessionID) ?? new Set<string>()
+
       const idle = Effect.fn("IdleRoots.idle")(function* (sessionID: string, background: number) {
         if ((yield* sessions.parentOf(sessionID)) !== undefined) return undefined
+        // Input that came during the turn waits in its inbox: the session goes on with it, and that turn's idle,
+        // with its own background, is the one that counts. This one opens no idle period.
+        if (waitingOf(sessionID).size > 0) return { _tag: "NotNudged", why: "working", detail: "new input waits in its inbox" } as const
         yield* apply(sessionID, GoIdle.make({ background })).pipe(Effect.orDie)
         return yield* consider(sessionID)
       })
 
-      const heard = Effect.fn("IdleRoots.heard")(function* (sessionID: string) {
+      const heard = Effect.fn("IdleRoots.heard")(function* (sessionID: string, inboxID: string) {
+        waiting.set(sessionID, new Set([...waitingOf(sessionID), inboxID]))
         if (!roots.has(sessionID)) return
         yield* apply(sessionID, Hear.make({})).pipe(Effect.orDie)
       })
@@ -767,9 +780,20 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
         return yield* consider(input.sessionID)
       })
 
-      const forget = (sessionID: string) => Effect.sync(() => void roots.delete(sessionID)).pipe(Effect.withSpan("IdleRoots.forget"))
+      const delivered = (sessionID: string, inboxID: string) =>
+        Effect.sync(() => {
+          const left = [...waitingOf(sessionID)].filter((id) => id !== inboxID)
+          if (left.length === 0) waiting.delete(sessionID)
+          else waiting.set(sessionID, new Set(left))
+        }).pipe(Effect.withSpan("IdleRoots.delivered"))
 
-      return { idle, heard, draft, forget }
+      const forget = (sessionID: string) =>
+        Effect.sync(() => {
+          roots.delete(sessionID)
+          waiting.delete(sessionID)
+        }).pipe(Effect.withSpan("IdleRoots.forget"))
+
+      return { idle, heard, delivered, draft, forget }
     }),
   )
 
