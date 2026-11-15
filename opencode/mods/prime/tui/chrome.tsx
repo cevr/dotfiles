@@ -255,9 +255,11 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))
   // A subagent's view keeps the session's layout: its way back and across, and its family's rows, sit where a session's way down and rows do.
   const child = createMemo(() => Boolean(props.sessionID && props.host.session(props.sessionID)?.parentID))
-  // Where a click on the hint goes: the parent, as ↑ and Escape do there, or the subagent ← / → moves to.
+  // Where a click on the hint goes: the parent, as ↑ and Escape do there, or the subagent ← / → moves to; in a
+  // session, what ↓ does there (the host's Subagents picker).
   const family = useFamily(props.host, () => props.sessionID)
   const move = (to: HintMove) => {
+    if (to === "subagents") return props.host.openSubagents()
     const target = { parent: family.parentID, previous: () => family.step(-1), next: () => family.step(1) }[to]()
     if (target) props.host.open(target)
   }
