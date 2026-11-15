@@ -378,6 +378,7 @@ const FENCES = [
   "mods/herdr/*.ts",
   "mods/escape/*.ts",
   "mods/recover/*.ts",
+  "mods/rex/*.ts",
   "mods/guard/*.ts",
   "mods/work/*.ts",
   "mods/tool-names/*.ts",
