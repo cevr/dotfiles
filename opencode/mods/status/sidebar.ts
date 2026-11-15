@@ -94,7 +94,8 @@ export const fitted = (head: string, at: number, now: number) => {
   const full = `${relative} · ${date(at, now)}`
   if (full.length <= SIDEBAR_COLUMNS) return full
   const timed = `${relative} · ${stamp(at).slice(11)}`
-  return timed.length <= SIDEBAR_COLUMNS ? timed : relative
+  if (timed.length <= SIDEBAR_COLUMNS) return timed
+  return relative
 }
 
 const toneOf = (utilization: number): Tone => (utilization >= ERROR_AT ? "error" : utilization >= WARNING_AT ? "warning" : "muted")
