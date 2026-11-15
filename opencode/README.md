@@ -1054,35 +1054,50 @@ stopped. A ledger from before caches were kept restores none. Decisions read Eff
 The pool spends the usage-limit resets its accounts hold on its own: the
 owner approved every reset in hand ahead of time (2026-11-15), so it never
 asks whether to claim one. One pure rule decides (`claim-rule.ts`
-`decideClaim`), on each review of a pool with fresh readings (`resets.ts`),
-and takes capacity in this order:
+`decideClaim`), on each review of a pool with fresh readings (`resets.ts`).
+
+Demand is a forecast of what runs now (2026-11-15: a start is almost never
+held any more). Each account's burn per window is measured over its readings
+of the last two hours in one window period (`burn.ts`, kept in memory; a
+restart, or a spent window, falls back to the period's average). The pool's
+burn on a window is its open accounts' (with none open, the rate it spent the
+others at), a start held adding its share of the agents running across the
+fleet (every start of the last hour on this host and in its peers' reports).
+That burn, run against the room left on the accounts not spent, says when
+the pool runs out, and the pool's first natural reset says whether that
+matters. With no agent running and no start held there is no forecast. The
+readings decide which windows exist: the 5-hour one is optional (on
+2026-11-15 four of the seven Claude logins read none), and the forecast
+stands on the weekly window and Fable's own week alone.
+
+Capacity is taken in this order:
 
 1. A reset about to expire unused, soonest expiry first. One that expires
-   within a day is just used: at once on a spent window, else at its last
-   call (6 hours before it expires, more than one 5-hour period) on the
-   window it gives back most of, as long as it gives back at least 10% of
-   it. One that expires later but before that window resets by itself is
-   used once the window is spent and the work would use it.
-2. A fresh account: while one can take the held work, the work goes there
-   and no other reset is spent.
-3. Only then a reset for held work it frees, when the work would use at
-   least half of what it gives back before the window resets by itself
-   (the burn of the agents running, scaled to the work held and running, a
-   single held start counting a third of three agents), and not the last one
-   in hand while more than a day of the week remains, unless it expires
-   before the week resets: the account whose week is freshest first.
+   within a day is just used, on anything it gives back: at once on a spent
+   window, else at its last call (6 hours before it expires, more than one
+   5-hour period) on the window it gives back most of. One that expires
+   later but before that window resets by itself is used once the window is
+   spent and the work would use it.
+2. A fresh account: while the forecast keeps room on the pool's accounts to
+   its first natural reset, the work goes there and no other reset is spent.
+3. Only when the pool is forecast to run out before that reset: a reset on
+   the most-used account near its limit (85% used, or its own run-out within
+   an hour), that frees the account (no other spent window still holds it),
+   when the work would use at least half of what it gives back before the
+   window resets by itself: the account whose week is freshest on a tie.
 
 No claim lands inside 30 minutes of the window's own reset, nor a week-long
 window's under a day before it resets (but in a reset's last day), and an
 account takes one claim per window period, each judged again right before
-it is sent. A pool weighed with work held and no claim logs the reason for
-each no (`pool resets: no claim on <pool>: …`), only when it changes.
-After a claim the owner is told once, in the waiting session's tray, in one
-clause: `Claimed the 5h reset on <account>: 5h 100% used of 100% → 0% used
-(held work no fresh account can take: 1 start held, 3 running, ~89% of the
-5h window would be used before its reset in 2 h). 1 reset left this week;
-next expires 2026-12-15 12:00Z.` The notice has one choice, `OK`, and asks
-nothing. A question an older pool left open is withdrawn.
+it is sent. A pool weighed with the forecast running out, or a start held,
+and no claim logs the reason for each no (`pool resets: no claim on <pool>:
+…`), only when it changes. After a claim the owner is told once, in the
+waiting session's tray, in one clause: `Claimed the weekly reset on
+<account>: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z
+(the pool runs out before its reset: 7 agents running on 2 hosts, weekly
+88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this
+week; next expires 2026-12-15 12:00Z.` The notice has one choice, `OK`, and
+asks nothing. A question an older pool left open is withdrawn.
 
 `resets: { auto: false }` claims nothing on its own; `resets: false` works
 none. `pool_push` still caps or shapes spending: a push's approved resets
@@ -1090,7 +1105,8 @@ go for the work it scopes. A claim the pool decided on its own is sent
 only once every fleet peer granted the provider's lease; while a peer cannot
 be reached it is recorded unsent (`not sent: no agreement, <peer>
 unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
-its properties over generated weeks.
+its properties over generated weeks of steady burn, and against the same
+weeks with no reset spent.
 
 ## Status
 
