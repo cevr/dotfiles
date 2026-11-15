@@ -265,7 +265,7 @@ describe("Claude", () => {
     if (asked?._tag !== "OwnerAsked") throw new Error("not asked")
     expect(asked.reset).toMatchObject({ credentialID: "cred-4", creditID: "grant-4", sessionID: "ses_root", stage: "asked", label: "4" })
     expect(asked.reset.question).toBe(
-      "Claude reset on account 4 now: buys the 5h window back and 4.5 days remain before the weekly reset (2026-11-14). The grant ends 2027-03-09. Claim it?",
+      "Claude reset on account 4 now: takes the 5h window from 100% used of 100% to 0% used and 4.5 days remain before the weekly reset (2026-11-14). The grant ends 2027-03-09. Claim it?",
     )
     expect(Object.values(state.resets).filter((reset) => reset.stage === "asked")).toHaveLength(1)
   })
@@ -289,7 +289,7 @@ describe("Claude", () => {
     ])
     const asked = events[1]
     if (asked?._tag !== "OwnerAsked") throw new Error("not asked")
-    expect(asked.reset.question).toContain("its weekly window is spent too and the grant clears five_hour, seven_day_overage_included, not seven_day: it may not lift the hold")
+    expect(asked.reset.question).toContain("its weekly window is at 100% used of 100% too and the grant clears five_hour, seven_day_overage_included, not seven_day: it may not lift the hold")
   })
 
   test("a yes claims under the request id the question was asked with; a no, or a dismissal, declines and never asks again for that hold", () => {

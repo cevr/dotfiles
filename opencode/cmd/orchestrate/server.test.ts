@@ -36,6 +36,7 @@ import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
+import { iso } from "@dotfiles/opencode-pool/usage-text"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
@@ -517,7 +518,7 @@ describe("the pace", () => {
           asked.push(`${model} ${role}`)
           return { ok: true, measured: true, reason: "room" }
         }
-        const reason = "the pool's weekly pace is over (80.0% spent across 1 accounts)"
+        const reason = "the pool's weekly pace is over: its 1 account's week is at 80.0% used of 100%; the spend-evenly line is 54.5% used of 100% now, and the start holds past it"
         const held = yield* start(
           { now: WEDNESDAY, codex: { pool: true } },
           { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } }, refuse: "no wakes" },
@@ -982,7 +983,7 @@ describe("Opus first, Codex second", () => {
     scenario(
       Effect.gen(function* () {
         const asked: Array<string> = []
-        const paced = { anthropic: { ok: false, measured: true, soft: true, reason: "the pool's weekly pace is over (457.0% spent across 6 accounts)", retryAt: Date.parse(WEDNESDAY) + 86_400_000 } }
+        const paced = { anthropic: { ok: false, measured: true, soft: true, reason: "the pool's weekly pace is over: its 6 accounts' weeks are at 76.2% used of 100% on average; the spend-evenly line averages 54.5% used of 100% now, and the start holds past it", retryAt: Date.parse(WEDNESDAY) + 86_400_000 } }
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: paced })
         expect((yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })).input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus#medium" })
         expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toMatchObject({ model: "openai/gpt-6.1-sol#medium" })
@@ -1111,7 +1112,9 @@ describe("the planner's first model", () => {
         return poolPace([account], now, NO_INFLIGHT, input.model)
       })
   }
-  const FABLE_SPENT = "anthropic/claude-fable#medium held: every pool account has spent claude-fable's own weekly window"
+  const FABLE_SPENT =
+    "anthropic/claude-fable#medium held: every pool account is held or has claude-fable's own weekly window (7d:Fable) at 100% used of 100%: " +
+    `a claude-fable start holds at 100% used of 100% there; the first resets ${iso(now + 2 * day)}`
 
   test("every new planner start runs on the first model at the planner's effort, whatever its description, and its line names it", () =>
     scenario(

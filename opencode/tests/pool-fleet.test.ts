@@ -284,12 +284,13 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
             "measured" in value &&
             value.measured === true &&
             "reason" in value &&
-            String(value.reason).includes("across 2 accounts"),
+            String(value.reason).includes("its 2 accounts'"),
           () => "B's pace with both accounts read",
         )) as { ok: boolean; reason: string; retryAt?: number }
         expect(pace.ok).toBe(false)
         expect(pace.reason).toBe(
-          "the pool's weekly pace is over (100.0% spent across 2 accounts, +10.0% for 2 agents started in the last 10 min)",
+          "the pool's weekly pace is over: its 2 accounts' weeks are at 50.0% used of 100% on average, plus 5.0% of the week counted for 2 agents started in the last 10 min; " +
+            "the spend-evenly line averages 54.5% used of 100% now, and the start holds past it",
         )
         expect(pace.retryAt).toBeGreaterThan(Date.now())
         expect(pace.retryAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000 + 1)

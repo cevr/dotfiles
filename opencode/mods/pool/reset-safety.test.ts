@@ -467,7 +467,7 @@ describe("no agreement: a claim no one asked for becomes the owner's question", 
     const [question] = asksOf(asked.events)
     expect(question).toMatchObject({ key, stage: "asked", why: "expiring", header: "Reset now? · a" })
     expect(question?.question).toBe(
-      "Full reset on account a now? It would expire unused otherwise. It gives back 5h 100% → 0%, weekly 100% → 0%. mac is unreachable, so I can't rule out it claiming too. Claim it?",
+      "Full reset on account a now? It would expire unused otherwise. Claiming it takes 5h 100% used of 100% → 0% used, weekly 100% used of 100% → 0% used, next reset 2026-11-14 12:00Z. mac is unreachable, so I can't rule out it claiming too. Claim it?",
     )
     expect(assumeOf(question!)).toBe(UNAGREED_ASSUME)
     for (const auto of [true, false]) expect(claimsOf(review([spent], T0 + RETRY_MS + 1, asked.state, auto).events)).toEqual([])

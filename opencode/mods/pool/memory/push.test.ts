@@ -153,8 +153,8 @@ describe("asked push", () => {
         expect(started.pushes).toHaveLength(1)
         expect(started.text).toContain('"ergo" (asked): host workbox; until 2026-11-11 14:00Z')
         expect(started.text).toContain("up to 1 reset, 0 spent")
-        expect(started.text).toContain("Pool anthropic: 2 accounts can spend 100% of one account's week before their weeks reset by themselves")
-        expect(started.text).toContain("1. full reset on Max A (anthropic): +50% of a week")
+        expect(started.text).toContain("Pool anthropic: 2 accounts, their weeks at 50% used of 100% on average, the first resetting by itself 2026-11-14 12:00Z; together they use 1.04% of a week per hour")
+        expect(started.text).toContain("1. full reset on Max A (anthropic): gives back 50% of a week")
         expect(started.text).toContain("Host load 42.0 on 16 cores (over its cores): a push raises no CPU gate")
 
         // A planner the spend-evenly target held starts now: it stays on Opus.
@@ -242,7 +242,7 @@ describe("proactive push", () => {
         expect(asked).toHaveLength(1)
         expect(asked[0]).toMatchObject({ sessionID: "ses_owner", key: "push:workbox:*:ergo", options: [{ label: START }, { label: NOT_NOW }] })
         expect(asked[0]!.question).toContain("Start a push for run ergo using the weekly reset on Max A?")
-        expect(asked[0]!.question).toContain("Queued work: 6 units ≈ 60% of one account's week; room 10%")
+        expect(asked[0]!.question).toContain("Queued work: 6 units ≈ 60% of one account's week: it would take the pool's weeks from 95% used of 100% on average to 125% used of 100% (past the limit), or to 78% used of 100% with the approved resets.")
         expect(asked[0]!.question).toContain("Host load 42.0 on 16 cores")
         // Asked once: the next sweep asks nothing more.
         yield* pool.reviewPushes
@@ -414,7 +414,7 @@ describe("use it or lose it", () => {
         yield* pool.pace("anthropic", "claude-opus-5-5", "ses_owner")
         yield* pool.reviewPushes
         const status = yield* pool.resets
-        expect(status.forecast).toEqual([expect.stringContaining("4 of its 4 resets (weekly reset; ≈99% of a week each) expire unused by 2026-11-21 12:00Z")])
+        expect(status.forecast).toEqual([expect.stringContaining("4 of its 4 resets (weekly reset; each gives back ≈99% of a week) expire unused by 2026-11-21 12:00Z")])
         const asked = w.owner.asked.filter((question) => question.key === "push:workbox:*:*#anthropic")
         expect(asked).toHaveLength(1)
         expect(asked[0]!.question).toContain("Start a push to spend the anthropic resets that would go unused?")

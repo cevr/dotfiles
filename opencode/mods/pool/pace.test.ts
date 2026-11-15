@@ -55,7 +55,10 @@ test("agents started in the fleet count until they settle, so a wave holds the n
   expect(poolPace([account(0.54)], now, inflight([now - minute])).ok).toBe(true)
   const held = poolPace([account(0.54)], now, inflight([now - 3 * minute, now - minute]))
   expect(held).toMatchObject({ ok: false, measured: true })
-  expect(held.reason).toBe("the pool's weekly pace is over (54.0% spent across 1 accounts, +1.0% for 2 agents started in the last 10 min)")
+  expect(held.reason).toBe(
+    "the pool's weekly pace is over: its 1 account's week is at 54.0% used of 100%, plus 1.0% of the week counted for 2 agents started in the last 10 min; " +
+      "the spend-evenly line is 54.5% used of 100% now, and the start holds past it",
+  )
   // It opens when the older start settles, not later: by then its spend is in the readings.
   expect(held.retryAt).toBe(now + 7 * minute + 1)
   // Without readings the starts cannot be weighed: the pace stays unmeasured and open.

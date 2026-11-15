@@ -277,7 +277,7 @@ seeded(
       for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
       const offered = yield* row(yield* until((rows) => rows.some((each) => each.header === "Reset now · Claude d"), "an offer for d"), "Reset now · Claude d")
       expect(offered.question).toContain("weekly reset on account Claude d now? Demand: 3 starts are in flight across the fleet.")
-      expect(offered.question).toContain("It gives back weekly 100% → 0%.")
+      expect(offered.question).toContain("Claiming it takes weekly 100% used of 100% → 0% used, next reset ")
       expect(offered.question).toMatch(/6\.0 days remain before the weekly window resets by itself/)
       expect(claims()).toEqual([])
       expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: offered.id, answer: "Claim it" }] })).toMatchObject({ ok: true })
@@ -289,7 +289,7 @@ seeded(
       const notice = yield* row(yield* until((rows) => rows.some((each) => each.header === "Pool reset claimed"), "the notice of c's claim"), "Pool reset claimed")
       expect(notice.question).toContain("The pool claimed the Fable reset on account Claude c before it expired unused")
       // Fable's part of the week, as the usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
-      expect(notice.question).toContain("weekly 60% → ~10% (Fable's part 50% as the usage endpoint reports it)")
+      expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset \S+ \S+ \(Fable's part 50% of the week as the usage endpoint reports it\)/)
       expect(claims().map(({ account, grant }) => [account, grant])).toEqual([
         ["d", "weekly-d"],
         ["c", "fable-c"],

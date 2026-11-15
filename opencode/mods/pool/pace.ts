@@ -13,6 +13,10 @@
 import { Schema } from "effect"
 import { limitsModel, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
+import { byCount, holdsAt, iso, used } from "./usage-text.ts"
+
+/** A share to a tenth of a percent: `0.567` → `56.7%`. */
+const tenth = (share: number) => `${(100 * share).toFixed(1)}%`
 
 const WEEK = 7 * 86400000
 /** The share of a week the spend-evenly line reaches by its reset; a weekly window used this much has no room. */
@@ -56,17 +60,21 @@ export const NO_INFLIGHT: Inflight = { starts: [], cost: 0, settleMs: 0 }
 const blockedUntil = (account: AccountStatus, now: number, model: string | undefined): number | undefined => {
   const untils = [
     ...(account.hold !== undefined && account.hold.until > now ? [account.hold.until] : []),
-    ...(model === undefined
-      ? []
-      : (account.reading?.windows ?? []).flatMap((w) => {
-          const scope = scopeOf(w.name)
-          return scope !== undefined && limitsModel(scope, model) && w.utilization >= 1 && w.resetAt !== undefined && w.resetAt > now
-            ? [w.resetAt]
-            : []
-        })),
+    ...spentOwn(account, now, model).map((w) => w.resetAt),
   ]
   return untils.length ? Math.max(...untils) : undefined
 }
+
+/** The windows of `model`'s own on an account (`7d:Fable`) that are spent now, by name, with when each resets. */
+const spentOwn = (account: AccountStatus, now: number, model?: string): ReadonlyArray<{ readonly name: string; readonly resetAt: number }> =>
+  model === undefined
+    ? []
+    : (account.reading?.windows ?? []).flatMap((w) => {
+        const scope = scopeOf(w.name)
+        return scope !== undefined && limitsModel(scope, model) && w.utilization >= 1 && w.resetAt !== undefined && w.resetAt > now
+          ? [{ name: w.name, resetAt: w.resetAt }]
+          : []
+      })
 
 /**
  * What an account's resets do to its spend-evenly line (resets.ts
@@ -115,11 +123,15 @@ export function poolPace(
       return until === undefined ? [] : [until]
     })
     const scoped = accounts.some((a) => a.hold === undefined || a.hold.until <= now)
+    const retryAt = Math.min(...untils)
+    const names = [...new Set(accounts.flatMap((a) => spentOwn(a, now, model).map((w) => w.name)))]
     return {
       ok: false,
       measured: true,
-      reason: scoped ? `every pool account has spent ${model}'s own weekly window` : "all pool accounts are held",
-      retryAt: Math.min(...untils),
+      reason: scoped
+        ? `every pool account is held or has ${model}'s own weekly window (${names.join(", ")}) at ${used(1)}: a ${model} start ${holdsAt(1)} there; the first resets ${iso(retryAt)}`
+        : "all pool accounts are held",
+      retryAt,
     }
   }
   const known = accounts.flatMap((a) => {
@@ -136,7 +148,13 @@ export function poolPace(
     )
     return resets.length ? [Math.max(...resets)] : []
   })
-  if (short.length === available.length) return { ok: false, measured: true, reason: "the pool's quota windows have no room", retryAt: Math.min(...short) }
+  if (short.length === available.length)
+    return {
+      ok: false,
+      measured: true,
+      reason: `every pool account is at a hold line: its 5-hour window at ${used(SHORT_5H)} or more, or its week at ${used(TARGET)} or more; the first resets ${iso(Math.min(...short))}`,
+      retryAt: Math.min(...short),
+    }
   if (!known.length) return { ok: true, measured: false, reason: "weekly pace unmeasured" }
   const read = known.reduce((n, a) => n + a.used, 0)
   const charged = inflight.starts.length * inflight.cost
@@ -145,14 +163,18 @@ export function poolPace(
   if (spent <= allowance + 1e-9) return { ok: true, measured: true, reason: "the pool is within its weekly pace" }
   const catchesUp = now + ((spent - allowance) * WEEK) / (known.length * TARGET)
   const settles = inflight.starts.length ? [Math.min(...inflight.starts) + inflight.settleMs + 1] : []
+  // Pool-wide figures read per account, on average, so each stays out of 100%.
+  const n = known.length
   const starting = inflight.starts.length
-    ? `, +${(100 * charged).toFixed(1)}% for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
+    ? `, plus ${tenth(charged / n)} of the week counted for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
     : ""
   return {
     ok: false,
     measured: true,
     soft: true,
-    reason: `the pool's weekly pace is over (${(100 * read).toFixed(1)}% spent across ${known.length} accounts${starting})`,
+    reason:
+      `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}; ` +
+      `the spend-evenly line ${byCount(n, "is", "averages")} ${tenth(allowance / n)} used of 100% now, and the start holds past it`,
     retryAt: Math.min(Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)),
   }
 }
