@@ -75,15 +75,23 @@ export function neighbour(
   return cycle[(at + step + cycle.length) % cycle.length]
 }
 
+/** Where a click on a part of the navigation hint goes: the parent, as ↑ does, or the subagent ← / → moves to. */
+export type HintMove = "parent" | "previous" | "next"
+
+/** A run of the navigation hint; one with a move is pressable. */
+export type HintPart = { readonly text: string; readonly move?: HintMove }
+
 /**
  * The hint that says how to move, on the dock's first line under the
- * composer: in a subagent, the way back and, when another subagent runs, the
- * way across; in a session with subagents running, the way down to them.
- * Empty otherwise.
+ * composer, in parts: in a subagent, the way back and, when another subagent
+ * runs, the way across, each arrow its own pressable part; in a session with
+ * subagents running, the way down to them. None otherwise.
  */
-export function navigationHint(input: { readonly child: boolean; readonly others: number }): string {
-  if (input.child) return input.others > 0 ? "↑ back to parent · ←/→ other subagents" : "↑ back to parent"
-  return input.others > 0 ? "↓ subagents" : ""
+export function navigationHint(input: { readonly child: boolean; readonly others: number }): ReadonlyArray<HintPart> {
+  if (!input.child) return input.others > 0 ? [{ text: "↓ subagents" }] : []
+  const back: HintPart = { text: "↑ back to parent", move: "parent" }
+  if (input.others === 0) return [back]
+  return [back, { text: " · " }, { text: "←", move: "previous" }, { text: "/" }, { text: "→", move: "next" }, { text: " other subagents" }]
 }
 
 /**
