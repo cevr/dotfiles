@@ -4,16 +4,17 @@
 // state of a run: every answer is computed at the call from the run tables (the skill's status script, through the
 // status plugin) and the warm source's Rift list (the rift plugin's RPC), so a restart or another root session gets
 // the same answer. The rift plugin makes and lands the Rifts; nothing here refuses a land for a batch rule.
-import { Array as Arr, Match, Option, Predicate, Schema } from "effect"
+import { Array as Arr, Match, Option, Predicate, Result, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
+import { headsOf } from "./fleet.ts"
 import type { Run, RunUnit } from "./idle.ts"
 
 /** The tool's name: a direct tool, its policy in the plugin's hooks. */
 export const ORCHESTRATE = "orchestrate"
 
-/** A verify of main is due after this many merges on it since the last one… */
+/** A verify of main is due after this many lands on it since the last one (`landsOf`)… */
 export const VERIFY_EVERY = 5
-/** …or once the last one is this old, with at least one merge since. */
+/** …or once the last one is this old, with at least one land since. */
 export const VERIFY_MAX_AGE_MS = 24 * 3_600_000
 
 export const ACTIONS = ["status", "lane", "land", "verify"] as const
@@ -116,7 +117,7 @@ export const ORCHESTRATE_DESCRIPTION = [
   'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)", prompt, background: true }). Its start and its hand-back move the unit in its log.md.',
   "ready: the implementor's hand-back, `implementor <unit> r<N>: ready <request path>`, which the plugin writes to the unit's log.md when the implementor goes idle.",
   `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their Rifts merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a Rift the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you.`,
-  `verify: ${VERIFY_CALL} verifies main since the last verify, every ${VERIFY_EVERY} merges or ${VERIFY_MAX_AGE_MS / 3_600_000} h: it writes the batch file (base, head, the merges and units between them) into the run dir, makes the verifier's clean checkout, the Rift verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier <batch> r1", prompt, background: true }). ${verifyCallOf("batch-7")} names a batch you wrote yourself.`,
+  `verify: ${VERIFY_CALL} verifies main since the last verify, every ${VERIFY_EVERY} lands or ${VERIFY_MAX_AGE_MS / 3_600_000} h: it writes the batch file (base, head, the merges and units between them) into the run dir, makes the verifier's clean checkout, the Rift verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier <batch> r1", prompt, background: true }). ${verifyCallOf("batch-7")} names a batch you wrote yourself.`,
   `status: ${STATUS_CALL} answers the run tables, each open unit's lane, and one next: line naming the call to make. Call it after a compaction, or whenever the next step is unclear. A land's and a status's answer start with a warning line when a verify is due.`,
   "A subagent never lanes, lands or verifies: the root does. The rift tool is for a session that runs no units; in a root that runs units, lane replaces rift create and land replaces rift land.",
 ].join("\n\n")
@@ -315,7 +316,7 @@ export const roundIn = (unit: string, runs: ReadonlyArray<Run>): Option.Option<n
 export const landAnswer = (warnings: ReadonlyArray<string>, text: string): string => [...warnings, text, LAND_NEXT].join("\n")
 
 /** A land's last line: the verify of main, when it is due. */
-export const LAND_NEXT = `orchestrate: next: ${VERIFY_CALL} once a verify of main is due, at ${VERIFY_EVERY} merges or ${VERIFY_MAX_AGE_MS / 3_600_000} h after the last one (a warning line says when), then the subagent call it answers.`
+export const LAND_NEXT = `orchestrate: next: ${VERIFY_CALL} once a verify of main is due, at ${VERIFY_EVERY} lands or ${VERIFY_MAX_AGE_MS / 3_600_000} h after the last one (a warning line says when), then the subagent call it answers.`
 
 /** How a verify's head was chosen. */
 export type HeadChosen = "given" | "origin"
@@ -351,7 +352,7 @@ export const nextOf = (runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane>, wor
   const ready = readyWithLane(runs, lanes, workrift)
   if (ready.length > 0) return { line: `next: ${landCallOf([])} (ready with a lane: ${ready.join(", ")}).`, input: Option.some({ action: "land" }) }
   const due = Option.filter(since, (each) => isDue(each, now))
-  if (Option.isSome(due)) return { line: `next: ${VERIFY_CALL} (${mergesWords(due.value.merges)} on ${due.value.branch} since the last verify).`, input: Option.some({ action: "verify" }) }
+  if (Option.isSome(due)) return { line: `next: ${VERIFY_CALL} (${landsWords(due.value.lands)} on ${due.value.branch} since the last verify).`, input: Option.some({ action: "verify" }) }
   const implementing = unitsIn(runs, "implement")
   if (implementing.length > 0) return { line: `next: wait for the hand-backs of ${implementing.join(", ")} (implementing).`, input: Option.none() }
   return { line: "next: none (no unit is ready with a lane or implementing, and no verify is due).", input: Option.none() }
@@ -407,12 +408,12 @@ export interface Merge {
   readonly subject: string
 }
 
-/** The default branch since the last verify: its name, the merges on it since (newest first), and the base they count from. */
+/** The default branch since the last verify: its name, the lands on it since (`landsOf`), and the base they count from. */
 export interface MainSince {
   readonly branch: string
   readonly head: string
   readonly base: string
-  readonly merges: number
+  readonly lands: number
   /** The last verify; none: none is recorded, and the base is the fifth first-parent merge before the head. */
   readonly last: Option.Option<Verified>
 }
@@ -438,21 +439,32 @@ export const verifyBaseOf = (head: string, last: Option.Option<Verified>, newest
       ),
   })
 
-/** Whether a verify of main is due: `VERIFY_EVERY` merges since the last one, or one merge and the last is `VERIFY_MAX_AGE_MS` old. */
+/** Whether a request's head (7 to 40 hex) is one of a range's commits (full names, `MainLine.between`). */
+export const inRange = (commits: ReadonlyArray<string>, head: string): boolean => commits.some((commit) => commit.startsWith(head))
+
+/**
+ * The lands on the default branch since the last verify: the units whose request head the range holds, which counts a
+ * fast-forward land (no merge commit) like a merge, or the first-parent merges when they are more (a land with no unit dir).
+ */
+export const landsOf = (merges: number, units: number): number => Math.max(merges, units)
+
+/** Whether a verify of main is due: `VERIFY_EVERY` lands since the last one, or one land and the last is `VERIFY_MAX_AGE_MS` old. */
 export const isDue = (since: MainSince, now: number): boolean =>
-  since.merges >= VERIFY_EVERY || (since.merges >= 1 && Option.exists(since.last, (last) => now - last.at >= VERIFY_MAX_AGE_MS))
+  since.lands >= VERIFY_EVERY || (since.lands >= 1 && Option.exists(since.last, (last) => now - last.at >= VERIFY_MAX_AGE_MS))
 
 /** `count` and its noun, singular for one. */
 const counted = (count: number, noun: string): string => `${count} ${noun}${"s".repeat(Number(count !== 1))}`
 
 const mergesWords = (count: number): string => counted(count, "merge")
 
+const landsWords = (count: number): string => counted(count, "land")
+
 /** The line a land's and a status's answer start with when a verify is due; none when it is not. */
 export const dueWarning = (since: MainSince, now: number): Option.Option<string> =>
   Option.liftPredicate(since, (each) => isDue(each, now)).pipe(
     Option.map(
       (due) =>
-        `orchestrate: ${mergesWords(due.merges)} on ${due.branch} since the last verify (${Option.match(due.last, {
+        `orchestrate: ${landsWords(due.lands)} on ${due.branch} since the last verify (${Option.match(due.last, {
           onNone: () => `none recorded; counted from ${due.base.slice(0, 7)}, the fifth merge back`,
           onSome: (last) => `${last.head.slice(0, 7)}, ${Math.floor(Math.max(0, now - last.at) / 3_600_000)} h ago`,
         })}): ${VERIFY_CALL}.`,
@@ -482,12 +494,9 @@ export const findingsVerdictOf = (text: string): Option.Option<string> =>
 /** Whether a verifier's findings hold a verdict line: `verifier <batch> r<N>: <verdict>`, `Verdict: <verdict>`, or the verdict alone. */
 export const holdsVerdict = (text: string): boolean => /^[\s>*#`_-]*(?:verifier\s+\S+\s+r\d+:\s*|verdict:\s*)?[*`_]*(accepted|changes|stuck)\b/im.test(text)
 
-/** The heads line's dotfiles commit, as git/fleet.ts `headsOf` reads that line: exactly `Heads: dotfiles=<40-hex> fork=<40-hex>`. */
-const HEADS_DOTFILES = /^Heads: dotfiles=([0-9a-f]{40}) fork=[0-9a-f]{40}\r?$/m
-
-/** The head a batch file names: its `Head: <sha>`, else the dotfiles commit of its `Heads:` line (the protocol's batch head). */
+/** The head a batch file names: its `Head: <sha>`, else the dotfiles commit of its `Heads:` line as the fleet reads it (fleet.ts `headsOf`). */
 export const batchHeadOf = (text: string): Option.Option<string> =>
-  Option.orElse(Option.fromNullishOr(/\bHead: ([0-9a-f]{7,40})\b/.exec(text)?.[1]), () => Option.fromNullishOr(HEADS_DOTFILES.exec(text)?.[1]))
+  Option.orElse(Option.fromNullishOr(/\bHead: ([0-9a-f]{7,40})\b/.exec(text)?.[1]), () => Option.map(Result.getSuccess(headsOf(text)), (heads) => heads.dotfiles))
 
 /** The newest `round-N-<kind>.md` among a unit dir's file names: its round and name. */
 export const newestRound = (names: ReadonlyArray<string>, kind: "request" | "findings"): Option.Option<{ readonly round: number; readonly name: string }> => {

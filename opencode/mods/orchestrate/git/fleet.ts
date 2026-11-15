@@ -1,7 +1,7 @@
 import { tagObject, type Target, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
 import { file, readableStreamToText, spawn } from "bun"
-import { Array as Arr, Clock, Effect, Layer, Option, Result, Semaphore } from "effect"
-import { type Commits, FleetOutcome } from "../fleet.ts"
+import { Clock, Effect, Layer, Option, Result, Semaphore } from "effect"
+import { type Commits, FleetOutcome, headsOf } from "../fleet.ts"
 import { Fleet } from "../service.ts"
 
 /** The checkouts daily installs from: the dotfiles and the OpenCode fork. */
@@ -12,31 +12,6 @@ export interface Checkouts {
 
 /** Who the tag names as its tagger. */
 const TAGGER = { name: "orchestrate", email: "orchestrate@dotfiles.invalid" }
-
-/** The form of the one machine line a batch file names its verified heads with, as a refusal quotes it. */
-export const HEADS_FORM = "`Heads: dotfiles=<40-hex sha> fork=<40-hex sha>`"
-
-/** The heads line, exactly: both full commit names, lowercase, in this order, nothing else on the line. */
-const HEADS_LINE = /^Heads: dotfiles=([0-9a-f]{40}) fork=([0-9a-f]{40})$/
-
-/** A line that means to be the heads line: it starts with `Heads:` in any case, after any indent, bullet, quote or backtick. */
-const HEADS_START = /^\W*heads:/i
-
-/**
- * The heads a batch file names: its one line `Heads: dotfiles=<sha> fork=<sha>`, both full
- * commit names, which the orchestrator writes after resolving them. No prose is read. A file with
- * no such line, two or more, or one not exactly in that form (a short or uppercase hash, a missing
- * repository, extra words) fails with why, and the publish refuses rather than guess.
- */
-export const headsOf = (text: string): Result.Result<Commits, string> => {
-  const lines = text.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => HEADS_START.test(line))
-  const line = Arr.head(lines)
-  if (Option.isNone(line)) return Result.fail(`has no heads line; write one, exactly ${HEADS_FORM}`)
-  if (lines.length > 1) return Result.fail(`has ${lines.length} heads lines; write one, exactly ${HEADS_FORM}`)
-  const match = Option.fromNullishOr(HEADS_LINE.exec(line.value))
-  if (Option.isNone(match)) return Result.fail(`has a malformed heads line (<${line.value.slice(0, 160)}>); write it exactly ${HEADS_FORM}, both full commit names`)
-  return Result.succeed({ dotfiles: match.value[1], fork: match.value[2] })
-}
 
 /** Whether `target` names the commits `current` names: recording them again moves nothing. */
 export const sameAs = (target: Commits, current: Option.Option<Commits>): boolean => Option.exists(current, (each) => each.dotfiles === target.dotfiles && each.fork === target.fork)

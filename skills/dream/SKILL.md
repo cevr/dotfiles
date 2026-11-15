@@ -4,7 +4,7 @@ description: "Weekly retro across every session, machine and orchestrate run: wh
 disable-model-invocation: true
 ---
 
-The owner has asked you to **dream**: take stock of the past week of agent work on every machine, and find the changes that make next week's work cost less for the same accepted result. [`retro`](../retro/SKILL.md) looks at one session's mistakes. A dream looks at the **process**: which states of the machine took the time, which ceremony found nothing, and what the owner kept saying.
+The owner has asked you to **dream**: take stock of the past week of agent work on every machine, and find the changes that make next week's work cost less for the same accepted result. [`retro`](../retro/SKILL.md) looks at one session's mistakes. A dream looks at the **process**: which unit states and modes took the time, which ceremony found nothing, and what the owner kept saying.
 
 The window is the last 7 days unless the owner names another. Work only from measured records. Label each claim measured, inferred or guess.
 
@@ -31,7 +31,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It reads OpenCode sessions and the orchestrate mod's call log (`~/.cache/orchestrate/opencode-agents.jsonl`), and Claude Code and Codex transcripts, and prints the tables: per role and model, the count, the API-priced cost, minutes, tokens and compaction share; per orchestrate phase and model, what the phase produced (round-1 accepts, review changes, units merged); and OpenCode's rounds per role and `model@effort`. Compare models within a phase, never across phases. A model swap is judged on both tables: cost alone does not justify one.
 
-4. **Classify every bounce in the longest tails.** Read the Major headings in each tail unit's `round-*-findings.md` and `verify-*.md`, not the whole files. Put each Major in one class:
+4. **Classify every bounce in the longest tails.** Read the Major headings in each tail unit's `round-*-findings.md` and its batch's `batch-*-findings.md` (in the run dir or a `verify-*` dir), not the whole files. Put each Major in one class:
    - **defect**: a bug a user would hit.
    - **test strength**: the generator, oracle or mutant suite is weaker than the rule.
    - **spec**: the spec was ambiguous or wrong, so a decide or a rewrite fixed it.

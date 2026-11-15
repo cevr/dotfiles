@@ -20,7 +20,7 @@ import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
-import { DRIFT_MARK, RECONCILE } from "@dotfiles/opencode-orchestrate/skill-drift"
+import { DRIFT_MARK } from "@dotfiles/opencode-orchestrate/skill-drift"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
@@ -1689,7 +1689,7 @@ describe("a root whose run saw an older skill", () => {
             "- feat(orchestrate): change 1",
             "Run p5's departures, to check against these changes:",
             "- common.md:12: Departs from Heavy checks fit the machine: benchmarks need the whole box",
-            RECONCILE,
+            "Reconcile the run's rules file once, as the orchestrate skill's references/run-rules.md says (When the skill changes). This note comes once per skill version.",
           ].join("\n"),
         )
         expect(note?.description).toBe("orchestrate skill changed since p5 saw it: reconcile the run's rules files")

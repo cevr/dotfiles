@@ -1,5 +1,6 @@
 // The default branch held in memory, for the plugin's tests: per checkout, its name and its first-parent line, oldest
-// first. A line entry is a commit on the branch; a merge names the tips it merged (`merged`), which the branch then holds.
+// first. A line entry is a commit on the branch (a fast-forward land puts the unit's own commits there); a merge names
+// the tips it merged (`merged`), which the branch then holds.
 import { Array as Arr, Effect, Layer, Option } from "effect"
 import { MainLine } from "../service.ts"
 import type { Merge } from "../tools.ts"
@@ -59,9 +60,17 @@ export const layer = (world: World, refs: Refs = () => Option.none()) =>
             },
           }),
         ),
-      holds: (checkout, commit, head) =>
+      between: (checkout, base, head) =>
         Effect.sync(() =>
-          Option.exists(world(checkout), (branch) => branch.line.slice(0, indexOf(branch, head) + 1).some((entry) => entry.sha === commit || entry.merged.includes(commit))),
+          Option.getOrElse(
+            Option.flatMap(world(checkout), (branch) =>
+              Option.map(
+                Option.liftPredicate([indexOf(branch, base), indexOf(branch, head)] as const, ([from, to]) => from >= 0 && to >= 0),
+                ([from, to]) => branch.line.slice(from + 1, to + 1).flatMap((entry) => [entry.sha, ...entry.merged]),
+              ),
+            ),
+            (): ReadonlyArray<string> => [],
+          ),
         ),
       commitOf: (checkout, rev) =>
         Effect.sync(() =>

@@ -1,9 +1,35 @@
-import { Data, DateTime } from "effect"
+import { Array as Arr, Data, DateTime, Option, Result } from "effect"
 
 /** The commits a target names, as the fleet records them. */
 export interface Commits {
   readonly dotfiles: string
   readonly fork: string
+}
+
+/** The form of the one machine line a batch file names its verified heads with, as a refusal quotes it. */
+export const HEADS_FORM = "`Heads: dotfiles=<40-hex sha> fork=<40-hex sha>`"
+
+/** The heads line, exactly: both full commit names, lowercase, in this order, nothing else on the line. */
+const HEADS_LINE = /^Heads: dotfiles=([0-9a-f]{40}) fork=([0-9a-f]{40})$/
+
+/** A line that means to be the heads line: it starts with `Heads:` in any case, after any indent, bullet, quote or backtick. */
+const HEADS_START = /^\W*heads:/i
+
+/**
+ * The heads a batch file names: its one line `Heads: dotfiles=<sha> fork=<sha>`, both full
+ * commit names, which the orchestrator writes after resolving them. No prose is read. A file with
+ * no such line, two or more, or one not exactly in that form (a short or uppercase hash, a missing
+ * repository, extra words) fails with why, and the publish refuses rather than guess. The one
+ * reader of the line: the fleet's publish (git/fleet.ts) and a verify's head (tools.ts `batchHeadOf`).
+ */
+export const headsOf = (text: string): Result.Result<Commits, string> => {
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, "")).filter((line) => HEADS_START.test(line))
+  const line = Arr.head(lines)
+  if (Option.isNone(line)) return Result.fail(`has no heads line; write one, exactly ${HEADS_FORM}`)
+  if (lines.length > 1) return Result.fail(`has ${lines.length} heads lines; write one, exactly ${HEADS_FORM}`)
+  const match = Option.fromNullishOr(HEADS_LINE.exec(line.value))
+  if (Option.isNone(match)) return Result.fail(`has a malformed heads line (<${line.value.slice(0, 160)}>); write it exactly ${HEADS_FORM}, both full commit names`)
+  return Result.succeed({ dotfiles: match.value[1], fork: match.value[2] })
 }
 
 /** A target the fleet records: its commits and the batch that verified them. */

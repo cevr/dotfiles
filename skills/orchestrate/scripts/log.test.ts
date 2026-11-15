@@ -29,7 +29,8 @@ test('the lines log.ts writes are the transitions timing.ts and status.ts read',
 
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
   expect(u).toMatchObject({ unit: 'auth', final: 'merged', rounds: 2, verifyBounces: 1 });
-  expect(bun('status.ts', join(dir, '..')).out).toContain('| auth | merged abc1234 | 2 |');
+  // A merged unit is left out of the default table; --all shows it.
+  expect(bun('status.ts', join(dir, '..'), '--all').out).toContain('| auth | merged abc1234 | 2 |');
 });
 
 test('refuses an unknown state, a from that is not the current state, and a round below the last', () => {

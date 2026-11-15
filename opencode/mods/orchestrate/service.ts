@@ -212,7 +212,8 @@ export class Runs extends Context.Service<Runs, { readonly list: Effect.Effect<R
  * - `tip`: the default branch's name (origin's `origin/HEAD`, else `main`, else `master`) and the commit `at` names
  *   (default: that branch's head); none outside a repository, with no default branch, or for a commit git does not know.
  * - `merges`: the first-parent merges of `head`, newest first, back to `base` (excluded; none: from the start), at most `limit`.
- * - `holds`: whether `commit` is `head` or one of its ancestors.
+ * - `between`: every commit `head` holds and `base` does not (`git rev-list base..head`), full names: a merge's
+ *   side commits too, so a unit landed by a merge and one landed by a fast-forward are both in it.
  * - `commitOf`: the full commit `rev` names in `checkout`.
  */
 export class MainLine extends Context.Service<
@@ -220,7 +221,7 @@ export class MainLine extends Context.Service<
   {
     readonly tip: (checkout: string, at: Option.Option<string>) => Effect.Effect<Option.Option<{ readonly branch: string; readonly head: string }>>
     readonly merges: (checkout: string, head: string, base: Option.Option<string>, limit: number) => Effect.Effect<ReadonlyArray<Merge>>
-    readonly holds: (checkout: string, commit: string, head: string) => Effect.Effect<boolean>
+    readonly between: (checkout: string, base: string, head: string) => Effect.Effect<ReadonlyArray<string>>
     readonly commitOf: (checkout: string, rev: string) => Effect.Effect<Option.Option<string>>
   }
 >()("dotfiles-opencode/orchestrate/MainLine") {}

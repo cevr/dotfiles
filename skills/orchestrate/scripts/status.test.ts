@@ -95,6 +95,18 @@ test('no request, a request with no head, a head git does not know, and no repos
   expect([missing.code, statesOf(missing.out)]).toEqual([0, expected]);
 });
 
+test('a verify dir is no unit: its log.md of fleet lines gives no `?` row', () => {
+  const root = scratch();
+  const run = join(root, 'run');
+  unit(run, 'verify-1115ce', ['2026-11-15T05:44Z fleet: batch-2026-11-15ce accepted; published the verified target dotfiles a1b1c6be70, fork d6be49fb0b'], {
+    'batch-2026-11-15ce.md': 'Heads: dotfiles=a fork=b\n',
+  });
+  unit(run, 'verify-main-abc1234', ['2026-11-15T06:00Z fleet: batch-main-abc1234 accepted; the verified target is already dotfiles a1b1c6be70, fork d6be49fb0b']);
+  unit(run, 'lexer', ['2026-11-14T10:00Z implement → ready r1']);
+  const shown = status(run, '--all');
+  expect([shown.code, statesOf(shown.out)]).toEqual([0, { lexer: 'ready' }]);
+});
+
 test('a repository with no remote and no main or master keeps the log state', () => {
   const root = scratch();
   const repo = join(root, 'trunk');
