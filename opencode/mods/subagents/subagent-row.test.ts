@@ -45,6 +45,19 @@ describe("a row's role, unit and order", () => {
     ])
   })
 
+  test("a reused child shows the description of its newest call", () => {
+    const world = family(
+      session("root", {
+        messages: [
+          step([launch("i", { description: "implementor run-state r1" })]),
+          step([launch("i", { description: "implementor run-state r3" })]),
+        ],
+      }),
+      session("i", { parentID: "root", agent: "implementor", title: "implementor run-state r3", time: { created: 1 }, running: true }),
+    )
+    expect(subagents(world, "root").map((row) => row.unit)).toEqual(["run-state r3"])
+  })
+
   test("the role falls back to the child's own steps, then the call's agent; other agents tone as other", () => {
     const world = family(
       session("root", { messages: [step([launch("b", { agent: "planner", description: "Plan it" })])] }),
