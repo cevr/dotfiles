@@ -66,13 +66,10 @@ export const layer = (storage: Storage) =>
           switch (event._tag) {
             case "WaitNoted":
               return storage.set(`${WAITS}${encodeURIComponent(event.pool)}`, encodeWait(event.wait))
-            case "ClaimDue":
-            case "OwnerAsked": {
+            case "ClaimDue": {
               const reset = state.resets[event.reset.key]
               return reset === undefined ? Effect.void : storage.set(resetKey(reset.key), encodeReset(reset))
             }
-            case "AnswerDeclined":
-            case "AskWithdrawn":
             case "OwnerTold":
             case "ClaimSent": {
               const reset = state.resets[event.key]
@@ -92,6 +89,8 @@ export const layer = (storage: Storage) =>
             }
             case "ResetsForgotten":
               return Effect.forEach(event.keys, (key) => storage.remove(resetKey(key)), { discard: true })
+            case "ClaimWeighed":
+              return Effect.void
           }
         })()
         yield* write.pipe(Effect.ignoreCause)

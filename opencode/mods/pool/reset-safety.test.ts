@@ -3,22 +3,21 @@
 // M2, M3), each over the inputs it varied.
 //
 // - B1: one account takes one claim at a time. After a claim, nothing more is
-//   claimed, offered or asked on it until a reading newer than the claim shows
-//   what it did; one spent reading never spends two grants. The request id
-//   comes from the account, the window and its period, not the grant.
-// - M1: an automatic claim needs fresh evidence: a reading and a list of the
-//   grants read within FRESH_MS, and a known natural reset after the grant's
-//   expiry. Cached or unread data never authorizes spending.
-// - M2: a reset is worth what it restores: zero restored is never claimed.
-// - M3: a declined offer suppresses its account, kind and week, whichever
-//   window ranks first later.
-// - `auto: false` claims nothing on its own; offers and questions go on.
+//   claimed on it until a reading newer than the claim shows what it did; one
+//   spent reading never spends two grants, and a window period takes one
+//   claim. The request id comes from the account, the kind and its period,
+//   not the grant.
+// - M1: a claim the pool decides on its own needs fresh evidence: a reading
+//   and a list of the grants read within FRESH_MS, and a known natural reset.
+//   Cached or unread data never authorizes spending.
+// - M2: a reset is worth what it restores: less than MIN_RESTORE is never claimed.
+// - `auto: false` claims nothing on its own.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { carryOver, type QuotaWindow, type ResetCredit } from "./quota.ts"
+import { NATURAL_MS } from "./claim-rule.ts"
 import {
-  assumeOf,
   claimOut,
   type Command,
   effectOf,
@@ -27,10 +26,8 @@ import {
   expiringKey,
   FRESH_MS,
   MIN_RESTORE,
-  NoAgreement,
   NoteSend,
   NoteWait,
-  offerKey,
   type PoolView,
   type Ratio,
   RETRY_MS,
@@ -39,9 +36,8 @@ import {
   Review,
   SETTLE_MS,
   SettleClaim,
+  ResetsForgotten,
   staleReason,
-  TakeAnswer,
-  UNAGREED_ASSUME,
 } from "./resets.ts"
 import type { AccountStatus } from "./status.ts"
 
@@ -65,7 +61,6 @@ const run = (commands: ReadonlyArray<readonly [number, Command]>, state: ResetsS
   )
 
 const claimsOf = (events: ReadonlyArray<Event>) => events.flatMap((event) => (event._tag === "ClaimDue" ? [event.reset] : []))
-const asksOf = (events: ReadonlyArray<Event>) => events.flatMap((event) => (event._tag === "OwnerAsked" ? [event.reset] : []))
 
 const window = (name: string, utilization: number, resetAt?: number, more: Partial<QuotaWindow> = {}): QuotaWindow => ({
   name,
@@ -89,22 +84,23 @@ const SESSION: Partial<ResetCredit> = { clears: ["five_hour"], kind: "session" }
 const FULL: Partial<ResetCredit> = { clears: ["five_hour", "seven_day"], kind: "full" }
 const FABLE: Partial<ResetCredit> = { clears: ["five_hour", "seven_day_overage_included"], kind: "fable", givesBack: true }
 
-const view = (accounts: ReadonlyArray<AccountStatus>, ratios: Readonly<Record<string, Ratio>> = {}, provider: "claude" | "codex" = "claude"): PoolView => ({
+const view = (accounts: ReadonlyArray<AccountStatus>, ratios: Readonly<Record<string, Ratio>> = {}, provider: "claude" | "codex" = "claude", inflight = 0): PoolView => ({
   id: provider === "claude" ? "anthropic" : "openai",
   provider,
   accounts,
   labels: Object.fromEntries(accounts.map((item) => [item.credentialID, item.credentialID])),
   ratios,
+  inflight,
 })
 
-/** A second account with room, so the pool is never wholly held (that is the held start's question, not these rules). */
+/** A second account with room: held work goes there, so only an expiring reset is claimed. */
 const roomy: AccountStatus = { ...account([window("5h", 0.1, T0 + 3 * HOUR), window("7d", 0.1, T0 + 5 * DAY)], []), credentialID: "room" }
 
 const review = (accounts: ReadonlyArray<AccountStatus>, now = T0, state: ResetsState = Resets.initial, auto?: boolean, ratios: Readonly<Record<string, Ratio>> = {}) =>
   run([[now, Review.make({ pools: [view([...accounts, roomy], ratios)], ...(auto === undefined ? {} : { auto }) })]], state)
 
-describe("M1: an automatic claim needs fresh evidence", () => {
-  test("over the reading's age × the grants' listing × the natural reset × the use: claimed iff all are fresh and known, and the window outlives the grant", () => {
+describe("M1: a claim on its own needs fresh evidence", () => {
+  test("over the reading's age × the grants' listing × the natural reset × the use: claimed iff all are fresh and known", () => {
     const expiresAt = T0 + 2 * HOUR
     const ages = [0, 5 * MINUTE, FRESH_MS - 1, FRESH_MS, 2 * HOUR, 2 * DAY, 8 * DAY]
     // Grants listed with the reading (no `at` of their own), or carried over from an older reading (`carryOver` names its time).
@@ -118,7 +114,7 @@ describe("M1: an automatic claim needs fresh evidence", () => {
             const listed = listing === "with the reading" ? undefined : listing === "carried from FRESH_MS before" ? T0 - FRESH_MS : T0 - 2 * DAY
             const { events } = review([account([window("7d", used, resetAt)], [grant("g", expiresAt, WEEKLY)], at, listed)])
             // Carried from FRESH_MS before is at the edge: no longer fresh.
-            const due = age < FRESH_MS && listing === "with the reading" && resetAt !== undefined && resetAt > expiresAt
+            const due = age < FRESH_MS && listing === "with the reading" && resetAt !== undefined && resetAt - T0 > NATURAL_MS
             const label = `age ${age / MINUTE} min, grants ${listing}, natural reset ${resetAt === undefined ? "unread" : (resetAt - T0) / HOUR + " h"}, used ${used}`
             expect(claimsOf(events).length, label).toBe(due ? 1 : 0)
           }
@@ -138,7 +134,7 @@ describe("M1: an automatic claim needs fresh evidence", () => {
 })
 
 describe("M2: a reset is worth what it restores", () => {
-  test("over kinds × windows × Fable's share source × reset ordering: every automatic claim restores at least MIN_RESTORE of a window that outlives the grant", () => {
+  test("over kinds × windows × Fable's share source × reset ordering: every claim on its own restores at least MIN_RESTORE of a window not about to reset by itself", () => {
     const expiresAt = T0 + 2 * HOUR
     const credits = [WEEKLY, SESSION, FULL, FABLE]
     const shares = [{ weeklyUsed: 0 }, { weeklyUsed: 0.3 }, { ofWeekly: 0.5 }, {}] as const
@@ -157,7 +153,7 @@ describe("M2: a reset is worth what it restores", () => {
                   )
                   const due = claimsOf(review([item]).events)
                   const useful = effectOf("claude", item, credit).some(
-                    (give) => give.resetAt !== undefined && give.resetAt > expiresAt && give.from - give.to >= MIN_RESTORE,
+                    (give) => give.resetAt !== undefined && give.resetAt - T0 > NATURAL_MS && give.from - give.to >= MIN_RESTORE,
                   )
                   if (due.length > 0) claimed++
                   expect(due.length === 0 || useful, `${fields.kind} 5h ${five} week ${week} Fable ${own} share ${JSON.stringify(share)}`).toBe(true)
@@ -166,10 +162,13 @@ describe("M2: a reset is worth what it restores", () => {
     expect(claimed).toBeGreaterThan(0)
   })
 
-  test("the verifier's case: the shared week spent, Fable's reported part 0%, Fable's week and the 5-hour window resetting before the grant ends: nothing claimed", () => {
+  test("the verifier's case: the shared week spent, Fable's reported part 0%: in its last hours the grant goes on the 5-hour window it gives back most of, never on the week it gives nothing", () => {
     const credit = grant("g", T0 + 2 * HOUR, FABLE)
     const item = account([window("5h", 0.2, T0 + HOUR), window("7d:Fable", 0.12, T0 + HOUR, { weeklyUsed: 0 }), window("7d", 1, T0 + 3 * DAY)], [credit])
-    expect(claimsOf(review([item]).events)).toEqual([])
+    expect(claimsOf(review([item]).events).map((reset) => reset.key)).toEqual([expiringKey("claude", "a", "5h", T0 + HOUR)])
+    // Inside 30 minutes of that window's own reset: waited for.
+    const soon = account([window("5h", 0.2, T0 + 20 * MINUTE), window("7d:Fable", 0.05, T0 + 20 * MINUTE, { weeklyUsed: 0 }), window("7d", 1, T0 + 3 * DAY)], [credit])
+    expect(claimsOf(review([soon]).events)).toEqual([])
   })
 })
 
@@ -201,43 +200,19 @@ describe("B1: one claim at a time per account", () => {
     expect(retried.map((reset) => reset.requestID)).toEqual([one.requestID])
   })
 
-  test("an open offer on an account a claim is now due on is withdrawn, and its later yes spends nothing", () => {
-    const early = T0 - 2 * DAY
-    const item = (at: number) => account([window("5h", 0.2, at + 3 * HOUR), window("7d", 0.9, T0 + 4 * DAY)], [grant("g", T0 + 2 * HOUR, WEEKLY)], at)
-    const offered = run([
-      [early, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [early, Review.make({ pools: [view([item(early), roomy])] })],
-    ])
-    const ask = asksOf(offered.events)[0]
-    expect(ask?.why).toBe("offer")
-    const expiry = review([item(T0)], T0, offered.state)
-    expect(expiry.events.map((event) => event._tag)).toEqual(["AskWithdrawn", "ClaimDue"])
-    expect(expiry.events[0]).toMatchObject({ key: ask!.key })
-    expect(claimsOf(run([[T0 + 1, TakeAnswer.make({ key: ask!.key, answer: "Claim it" })]], expiry.state).events)).toEqual([])
-  })
-
-  test("a yes on an offer whose account was claimed on meanwhile withdraws instead of claiming", () => {
-    const early = T0 - 2 * DAY
-    const item = account([window("5h", 0.2, early + 3 * HOUR), window("7d", 0.95, T0 + 4 * DAY)], [grant("g", T0 + 60 * DAY, WEEKLY)], early)
-    const offered = run([
-      [early, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [early, Review.make({ pools: [view([item, roomy])] })],
-    ])
-    const ask = asksOf(offered.events)[0]!
-    // Another claim on the account is in flight (a Codex-like held claim, an expiring one): the yes waits for nothing and spends nothing.
-    const busy: ResetsState = {
-      ...offered.state,
-      resets: { ...offered.state.resets, other: { ...ask, key: "other", creditID: "g2", why: "expiring", stage: "claiming", at: T0, attempts: 1 } },
-    }
-    const answered = run([[T0 + 1, TakeAnswer.make({ key: ask.key, answer: "Claim it" })]], busy)
-    expect(claimsOf(answered.events)).toEqual([])
-    expect(answered.events.map((event) => event._tag)).toEqual(["AskWithdrawn"])
+  test("an older pool's question, still recorded, is never worked: nothing is claimed from it, and it is forgotten in time", () => {
+    const first = review([spent()])
+    const [due] = claimsOf(first.events)
+    const asked: ResetsState = { ...first.state, resets: { [due!.key]: { ...due!, stage: "asked", why: "offer" } } }
+    expect(claimsOf(review([spent(T0 + RETRY_MS)], T0 + RETRY_MS, asked).events)).toEqual([])
+    const later = T0 + 8 * DAY
+    expect(review([], later, asked).events).toEqual([ResetsForgotten.make({ keys: [due!.key] })])
   })
 })
 
 describe("B1 across pools and hosts: an account is its login, and a claim is judged again on the provider's reading", () => {
   /** A pool `id` listing `accounts`, the same logins as another pool may. */
-  const pool = (id: string, accounts: ReadonlyArray<AccountStatus>, provider: "claude" | "codex" = "claude"): PoolView => ({ ...view(accounts, {}, provider), id })
+  const pool = (id: string, accounts: ReadonlyArray<AccountStatus>, provider: "claude" | "codex" = "claude", inflight = 0): PoolView => ({ ...view(accounts, {}, provider, inflight), id })
 
   test("one login listed by two pools, in either order, Claude's expiring grant or Codex's held start: one claim", () => {
     const spent = account([window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 2 * HOUR, WEEKLY), grant("g2", T0 + 2 * HOUR, WEEKLY)])
@@ -250,36 +225,20 @@ describe("B1 across pools and hosts: an account is its login, and a claim is jud
       // Codex: every account spent and a start waiting in each pool.
       const codex = run([
         ...ids.map((id) => [T0, NoteWait.make({ pool: id, sessionID: "ses_root" })] as const),
-        [T0, Review.make({ pools: ids.map((id) => pool(id, [account([window("7d", 1, T0 + 3 * DAY)], [grant("c", T0 + 20 * DAY, {})])], "codex")) })],
+        [T0, Review.make({ pools: ids.map((id) => pool(id, [account([window("7d", 1, T0 + 3 * DAY)], [grant("c", T0 + 20 * DAY, { count: 2 })])], "codex", 6)) })],
       ])
       expect(claimsOf(codex.events), `codex ${ids.join(" then ")}`).toHaveLength(1)
     }
   })
 
-  test("one login listed by two pools with a start waiting in each: one offer, not one per pool", () => {
-    const item = account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.95, T0 + 4 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)])
+  test("one login listed by two pools with a start waiting in each: one claim for the held work, not one per pool", () => {
+    const item = account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 1, T0 + 4 * DAY)], [grant("w", T0 + 60 * DAY, { ...WEEKLY, count: 2 })])
     const { events } = run([
       [T0, NoteWait.make({ pool: "pool-a", sessionID: "ses_a" })],
       [T0, NoteWait.make({ pool: "pool-b", sessionID: "ses_b" })],
-      [T0, Review.make({ pools: [pool("pool-a", [item, roomy]), pool("pool-b", [item, roomy])], auto: false })],
+      [T0, Review.make({ pools: [pool("pool-a", [item], "claude", 6), pool("pool-b", [item], "claude", 6)] })],
     ])
-    expect(asksOf(events)).toHaveLength(1)
-  })
-
-  test("a yes on an offer made in one pool, after the login was claimed on through another pool: withdrawn, nothing claimed", () => {
-    const offer = account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.95, T0 + 6 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)])
-    const offered = run([
-      [T0, NoteWait.make({ pool: "pool-a", sessionID: "ses_root" })],
-      [T0, Review.make({ pools: [pool("pool-a", [offer, roomy])], auto: false })],
-    ])
-    const ask = asksOf(offered.events)[0]!
-    const spent = account([window("7d", 1, T0 + 3 * DAY)], [grant("g", T0 + 2 * HOUR, WEEKLY)], T0 + 1)
-    const other = run([[T0 + 1, Review.make({ pools: [pool("pool-a", [offer, roomy]), pool("pool-b", [spent, roomy])] })]], offered.state)
-    expect(claimsOf(other.events)).toHaveLength(1)
-    // The claim through the other pool withdraws the question (its account is the login, not the pool); the yes after it spends nothing.
-    expect(other.events.filter((event) => event._tag === "AskWithdrawn")).toMatchObject([{ key: ask.key }])
-    const yes = run([[T0 + 2, TakeAnswer.make({ key: ask.key, answer: "Claim it" })]], other.state)
-    expect(claimsOf(yes.events)).toEqual([])
+    expect(claimsOf(events)).toHaveLength(1)
   })
 
   test("two hosts reading one account apart (windows ranked otherwise, the same grants listed in another order) decide one request id, per kind; not the guard: the spend authority is the fleet's lease (spend-authority.test.ts)", () => {
@@ -383,116 +342,21 @@ describe("M1 per field: each window and share is as fresh as its own read", () =
   })
 })
 
-describe("M3: a declined offer suppresses its account, kind and week", () => {
-  const credit = grant("g", T0 + 60 * DAY, { ...FABLE, clears: ["seven_day_overage_included"] })
-  const item = (own: number, week: number, weekResets = T0 + 6 * DAY) =>
-    account([window("7d:Fable", own, weekResets, { ofWeekly: 1 }), window("7d", week, weekResets)], [credit])
-
-  test("after a no, no reading of the same week asks again, whichever window ranks first; a new week or another kind may", () => {
-    const first = run([
-      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [T0, Review.make({ pools: [view([item(1, 0.95), roomy])] })],
-    ])
-    const ask = asksOf(first.events)[0]!
-    expect(ask.key).toBe(offerKey("claude", "a", "fable", T0 + 6 * DAY))
-    const declined = run([[T0 + 1, TakeAnswer.make({ key: ask.key, answer: "Don't claim" })]], first.state).state
-    for (const own of [0.3, 0.5, 0.9, 1])
-      for (const week of [0.9, 0.95, 1]) {
-        const next = run([
-          [T0 + MINUTE, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-          [T0 + MINUTE, Review.make({ pools: [view([item(own, week), roomy])] })],
-        ], declined)
-        expect(asksOf(next.events), `Fable ${own}, week ${week}`).toEqual([])
-      }
-    // The next week: offerable again.
-    const nextWeek = T0 + 7 * DAY
-    const later = run([
-      [nextWeek, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [nextWeek, Review.make({ pools: [view([account([window("7d:Fable", 1, nextWeek + 6 * DAY, { ofWeekly: 1 }), window("7d", 0.95, nextWeek + 6 * DAY)], [credit], nextWeek), roomy])] })],
-    ], declined)
-    expect(asksOf(later.events)).toHaveLength(1)
-    // Another kind the same week: offerable.
-    const weekly = run([
-      [T0 + MINUTE, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [T0 + MINUTE, Review.make({ pools: [view([account([window("7d", 0.95, T0 + 6 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)]), roomy])] })],
-    ], declined)
-    expect(asksOf(weekly.events).map((reset) => reset.kind)).toEqual(["weekly"])
-  })
-})
-
 describe("auto: false, the owner's kill switch", () => {
-  test("claims nothing on its own, Claude's or Codex's, fresh evidence or not; offers and a held start's question go on", () => {
+  test("claims nothing on its own, Claude's or Codex's, expiring or for held work (a push's approved resets still go: push.test.ts)", () => {
     const expiring = account([window("7d", 1, T0 + 3 * DAY)], [grant("g", T0 + 2 * HOUR, WEEKLY)])
     expect(claimsOf(review([expiring], T0, Resets.initial, false).events)).toEqual([])
     expect(claimsOf(review([expiring], T0, Resets.initial, true).events)).toHaveLength(1)
-    // Codex: every account held and a start waiting claims a credit unless auto is off.
-    const codex = view([{ ...account([window("7d", 1, T0 + 3 * DAY)], [{ id: "c", count: 1, usable: true, status: "available", expiresAt: T0 + 20 * DAY }]), credentialID: "x" }], {}, "codex")
+    // Codex: every account held and a start waiting, with work running, claims a credit unless auto is off.
+    const codex = view([{ ...account([window("7d", 1, T0 + 3 * DAY)], [{ id: "c", count: 2, usable: true, status: "available", expiresAt: T0 + 20 * DAY }]), credentialID: "x" }], {}, "codex", 6)
     for (const auto of [true, false]) {
       const { events } = run([
         [T0, NoteWait.make({ pool: "openai", sessionID: "ses_root" })],
         [T0, Review.make({ pools: [codex], auto })],
       ])
       expect(claimsOf(events).length, `auto ${auto}`).toBe(auto ? 1 : 0)
+      expect(events.filter((event) => event._tag === "ClaimWeighed"), `auto ${auto}`).toEqual([])
     }
-    // An offer is still asked.
-    const offer = run([
-      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [T0, Review.make({ pools: [view([account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.95, T0 + 6 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)]), roomy])], auto: false })],
-    ])
-    expect(asksOf(offer.events).map((reset) => reset.why)).toEqual(["offer"])
-  })
-
-  test("a yes still claims: the owner's answer is not automatic", () => {
-    const offer = run([
-      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
-      [T0, Review.make({ pools: [view([account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.95, T0 + 6 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)]), roomy])], auto: false })],
-    ])
-    const key = asksOf(offer.events)[0]!.key
-    expect(claimsOf(run([[T0 + 1, TakeAnswer.make({ key, answer: "Claim it" })]], offer.state).events)).toHaveLength(1)
-  })
-})
-
-describe("no agreement: a claim no one asked for becomes the owner's question", () => {
-  const expiresAt = T0 + 2 * HOUR
-  const spent = account([window("5h", 1, T0 + 4 * HOUR), window("7d", 1, T0 + 3 * DAY)], [grant("g1", expiresAt, FULL)])
-  const decided = () => {
-    const first = review([spent])
-    const [due] = claimsOf(first.events)
-    return { state: first.state, key: due!.key }
-  }
-
-  test("an expiring claim that found a peer unreachable is asked about, naming the peer; reviewed again, it is not claimed on its own, with automatic claims on or off", () => {
-    const { state, key } = decided()
-    const asked = run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac"] })]], state)
-    const [question] = asksOf(asked.events)
-    expect(question).toMatchObject({ key, stage: "asked", why: "expiring", header: "Reset now? · a" })
-    expect(question?.question).toBe(
-      "Full reset on account a now? It would expire unused otherwise. Claiming it takes 5h 100% used of 100% → 0% used, weekly 100% used of 100% → 0% used, next reset 2026-11-14 12:00Z. mac is unreachable, so I can't rule out it claiming too. Claim it?",
-    )
-    expect(assumeOf(question!)).toBe(UNAGREED_ASSUME)
-    for (const auto of [true, false]) expect(claimsOf(review([spent], T0 + RETRY_MS + 1, asked.state, auto).events)).toEqual([])
-    // Two peers unreachable are named both.
-    expect(asksOf(run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac", "spare"] })]], state).events)[0]?.question).toContain("mac, spare are unreachable, so I can't rule out them claiming too")
-  })
-
-  test("the owner's yes claims it, the claim marked the owner's: retried with automatic claims off and no fresh reading, and no notice after", () => {
-    const { state, key } = decided()
-    const asked = run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac"] })]], state)
-    const yes = run([[T0 + 2, TakeAnswer.make({ key, answer: "Claim it" })]], asked.state)
-    expect(claimsOf(yes.events)).toMatchObject([{ key, yes: true, stage: "claiming" }])
-    const failed = run([[T0 + 3, SettleClaim.make({ key, outcome: "failed", message: "backed off: mac refused", before: [] })]], yes.state)
-    const stale = account(spent.reading!.windows, spent.reading!.resets!.credits, T0 - 2 * HOUR)
-    expect(claimsOf(review([stale], T0 + 3 + RETRY_MS, failed.state, false).events)).toMatchObject([{ key, yes: true }])
-    const settled = run([[T0 + 4, SettleClaim.make({ key, outcome: "reset", before: [] })]], yes.state)
-    expect(settled.events.map((event) => event._tag)).toEqual(["ClaimSettled"])
-  })
-
-  test("a claim the owner was asked about, or one not claiming, takes no NoAgreement", () => {
-    const { state, key } = decided()
-    const asked = run([[T0 + 1, NoAgreement.make({ key, unreachable: ["mac"] })]], state)
-    expect(run([[T0 + 2, NoAgreement.make({ key, unreachable: ["mac"] })]], asked.state).events).toEqual([])
-    const yes = run([[T0 + 2, TakeAnswer.make({ key, answer: "Claim it" })]], asked.state)
-    expect(run([[T0 + 3, NoAgreement.make({ key, unreachable: ["mac"] })]], yes.state).events).toEqual([])
   })
 })
 

@@ -4,9 +4,11 @@
 // and a rate is the use per hour. Never a bare "X%", never room, left or
 // remaining as a percent. The pool's plugin root reaches the pool and the status mod both, so this table sees every kind.
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import { forecastText, planText } from "@dotfiles/opencode-pool/push"
-import { buysOf, claudeQuestion, toldText, unagreedQuestion } from "@dotfiles/opencode-pool/resets"
+import { type ClaimOption, ClaimVerdict, decideClaim, STEP_TEXT } from "@dotfiles/opencode-pool/claim-rule"
+import { buysOf, toldText } from "@dotfiles/opencode-pool/resets"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { accountRows } from "@dotfiles/opencode-status/pane"
 import { sidebarLines } from "@dotfiles/opencode-status/sidebar"
@@ -28,6 +30,27 @@ const fableReset = buysOf([
   { window: "7d:Fable", from: 1, to: 0, resetAt: now + 2 * DAY },
   { window: "7d", from: 0.6, to: 0.1, resetAt: now + 3.5 * DAY, share: { points: 0.5, low: 0.4, high: 0.6, source: "tally" } },
 ])
+
+/** A 5-hour window spent, a grant that gives it all back and does not expire soon, and the week a third used. */
+const spentFiveHour: ClaimOption = {
+  credentialID: "a",
+  creditID: "g",
+  label: "a",
+  window: "5h",
+  long: false,
+  from: 1,
+  restored: 1,
+  resetAt: now + 2 * HOUR,
+  elapsed: 3 * HOUR,
+  expiresAt: Option.none(),
+  frees: true,
+  inHand: 2,
+  weekUsed: 0.3,
+  weekResetAt: Option.some(now + 3.5 * DAY),
+}
+const busy = { now, held: 1, running: 3, freeAccount: false, pushed: false }
+const chosen = decideClaim(busy, [spentFiveHour])
+const weighed = decideClaim({ ...busy, running: 0 }, [spentFiveHour])
 
 const table: ReadonlyArray<readonly [string, string]> = [
   [
@@ -55,21 +78,20 @@ const table: ReadonlyArray<readonly [string, string]> = [
       "weekly 60% used of 100% → ~10% used, next reset 2026-11-19 00:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)",
   ],
   [
-    toldText({ kind: "session", label: "a", buys: fiveHourReset }),
-    "The pool claimed the 5-hour reset on account a before it expired unused: 5h 100% used of 100% → 0% used.",
+    toldText({
+      kind: "session",
+      label: "a",
+      buys: fiveHourReset,
+      reason: ClaimVerdict.$match(chosen, { Claim: ({ step, reason }) => `${STEP_TEXT[step]}: ${reason}`, NoClaim: () => "" }),
+      left: 1,
+      nextExpires: now + 30 * DAY,
+    }),
+    "Claimed the 5h reset on a: 5h 100% used of 100% → 0% used (held work no fresh account can take: 1 start held, 3 running, ~89% of the 5h window would be used before its reset in 2 h). 1 reset left this week; next expires 2026-12-15 12:00Z.",
   ],
+  [toldText({ kind: "weekly", label: "a", buys: fiveHourReset, left: 0 }), "Claimed the weekly reset on a: 5h 100% used of 100% → 0% used. No resets left this week."],
   [
-    claudeQuestion(
-      "a",
-      account([{ name: "5h", utilization: 1, resetAt: now + HOUR }, { name: "7d", utilization: 0.3, resetAt: now + 3.5 * DAY }]),
-      { id: "g", count: 1, usable: true, expiresAt: now + 30 * DAY, clears: ["five_hour"] },
-      now,
-    ),
-    "Claude reset on account a now: takes the 5h window from 100% used of 100% to 0% used and 3.5 days remain before the weekly reset (2026-11-19). The grant ends 2026-12-15. Claim it?",
-  ],
-  [
-    unagreedQuestion({ label: "a", kind: "session", why: "expiring", buys: fiveHourReset }, ["mac"]),
-    "5-hour reset on account a now? It would expire unused otherwise. Claiming it takes 5h 100% used of 100% → 0% used. mac is unreachable, so I can't rule out it claiming too. Claim it?",
+    ClaimVerdict.$match(weighed, { Claim: () => "", NoClaim: ({ reasons }) => reasons.join("; ") }),
+    "a: 1 start held, 0 running, ~22% of the 5h window would be used before its reset in 2 h, under 50% of the 100% it gives back",
   ],
   [
     forecastText({ pool: "anthropic", burn: 0.0085, inHand: 2, wasted: [{ pool: "anthropic", label: "a", kind: "weekly", spare: 0.99, expiresAt: now + 6 * DAY }] }) ?? "",

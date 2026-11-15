@@ -131,46 +131,45 @@ const resetsOf = (answer: Schema.Json) => Schema.decodeUnknownEffect(Resets)(ans
 /** A grant's resets left: one until it is claimed. */
 const leftOf = (claimed: ReadonlySet<string>, id: string) => Number(!claimed.has(id))
 
-/** How long account b's first 5-hour hold lasts from the pool's first reading of it: its question is withdrawn once it lifts. */
-const SHORT_HOLD_MS = 25 * SECOND
-
 seeded(
-  "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
+  "with work held and running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with too little work, nothing is claimed and nothing asked",
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const now = World.START
-      // ── The world's ChatGPT backend: one account, its 5-hour window spent, one credit ──
+      // ── The world's ChatGPT backend: one account, its 5-hour window spent, one credit that ends before its week resets ──
       const backend = ChatGPT.make()
-      // a: spent for two hours, its week resetting in three days (the most time left, so asked first).
-      // b: spent for SHORT_HOLD_MS from the pool's first reading of it, its week resetting in two days.
+      // a and b: both 5-hour windows spent for two hours, a's week resetting in three days, b's in two.
       const quotas = new Map<string, FakeQuota>([
         ["a", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 3 * DAY } }],
+        ["b", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } }],
       ])
-      // The world's clock, once the world is made: the provider reads quotas at its own time.
+      const quotaOf = (account: string): FakeQuota => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
+      // The world's clock, once the world is made.
       const clock = { now: () => now }
-      const quotaOf = (account: string): FakeQuota => {
-        if (account === "b" && !quotas.has("b"))
-          quotas.set("b", { fiveHour: { utilization: 1, resetAt: clock.now() + SHORT_HOLD_MS }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
-        const quota = Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
-        // A window past its reset reads empty, as the real one does.
-        if (clock.now() < quota.fiveHour.resetAt) return quota
-        return { ...quota, fiveHour: { utilization: 0, resetAt: clock.now() + 5 * HOUR } }
-      }
-      const { world, accounts, pool, questions, open, until } = yield* serve(seed, ["a", "b"], {
+      const { world, accounts, pool, open, until } = yield* serve(seed, ["a", "b"], {
         chatgpt: backend,
         quota: quotaOf,
-        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 1, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
+        // Two resets in hand on each account: not the last one, kept in reserve.
+        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 2, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
         claim: (account) => {
-          const quota = Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
-          quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: clock.now() + 5 * HOUR } })
+          quotas.set(account, { ...quotaOf(account), fiveHour: { utilization: 0, resetAt: clock.now() + 5 * HOUR } })
           return "reset"
         },
       })
       clock.now = world.now
-      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now))
+      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 40, 2 * DAY))
       const claims = () => world.provider().claims()
 
-      // ── Codex: claimed by itself, once ──
+      // ── Too little work: a held start alone, nothing running ──
+      yield* until(() => false, "a minute of held starts", 30 * SECOND).pipe(Effect.ignore)
+      yield* pool("pace", { providerID: "openai", sessionID: SESSION })
+      yield* world.advance(10 * SECOND)
+      expect(claims()).toEqual([])
+      expect(backend.consumes()).toEqual([])
+      expect(yield* open).toEqual([])
+
+      // ── Codex: three starts running, a start held: claimed on its own, once ──
+      for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "openai" })
       const codexPace = yield* Schema.decodeUnknownEffect(Paced)(yield* pool("pace", { providerID: "openai", sessionID: SESSION }))
       expect(codexPace.ok).toBe(false)
       yield* world.until(() => backend.consumes().length > 0, CLAIM_LIMIT_MS, 250)
@@ -179,46 +178,26 @@ seeded(
       expect(backend.consumes().map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
         { account: "acct-1", creditID: "credit-1", code: "reset" },
       ])
-      expect(yield* open).toEqual([])
 
-      // ── Claude: asked, never claimed unasked ──
-      const asked = (label: string) =>
-        until((rows) => rows.some((each) => each.header === `Claude reset · ${label}`), `a question about ${label}`).pipe(
-          Effect.flatMap((rows) => row(rows, `Claude reset · ${label}`)),
-        )
-      const first = yield* asked("Claude a")
-      expect(first.question).toContain("remain before the weekly reset")
-      expect(first.question).toContain("Claim it?")
-      expect(claims()).toEqual([])
-
-      // A no: nothing is claimed, and the next account is asked.
-      expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: first.id, answer: "Don't claim" }] })).toMatchObject({ ok: true })
-      const second = yield* asked("Claude b")
-      expect(claims()).toEqual([])
-
-      // b's hold lifts by itself: the sweep reads it, and its question goes unanswered.
-      yield* until((rows) => !rows.some((each) => each.id === second.id), "b's question withdrawn", SHORT_HOLD_MS + 30 * SECOND, false)
-      expect(claims()).toEqual([])
-      const lifted = yield* resetsOf(yield* pool("resets"))
-      expect(lifted.resets.filter((reset) => reset.label === "Claude b").map((reset) => [reset.stage, reset.message])).toEqual([
-        ["withdrawn", "the hold lifted"],
-      ])
-
-      // b is spent again: a new hold, asked again; on a yes its grant is claimed, once.
-      quotas.set("b", { fiveHour: { utilization: 1, resetAt: world.now() + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
-      const third = yield* asked("Claude b")
-      expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: third.id, answer: "Claim it" }] })).toMatchObject({ ok: true })
+      // ── Claude: three starts running, a start held: one grant claimed on its own, nothing asked ──
+      for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
       yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, 250)
-      yield* world.advance(2 * SECOND)
-      expect(claims().map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([{ account: "b", grant: "grant-b", result: "reset" }])
+      // The claimed account takes the work: the other is not claimed.
+      yield* until(() => false, "the pane pacing on", 20 * SECOND).pipe(Effect.ignore)
+      expect(claims().map(({ grant, result }) => ({ grant, result }))).toMatchObject([{ result: "reset" }])
       expect(String(claims()[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
+      // The tray holds the two notices and nothing else; each says why, in one clause.
+      const rows = yield* open
+      expect(rows.map((each) => each.header)).toEqual(["Pool reset claimed", "Pool reset claimed"])
+      expect(rows.map((each) => each.question).join("\n")).toContain("Claimed the Codex reset on ChatGPT")
+      expect(rows.map((each) => each.question).join("\n")).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(held work no fresh account can take: /)
       const settled = yield* resetsOf(yield* pool("resets"))
-      expect(settled.claims.map(({ provider, outcome }) => [provider, outcome])).toEqual([
+      expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
         ["claude", "reset"],
         ["codex", "reset"],
       ])
-      expect(settled.claims[0]?.weekly).toBe("kept")
-      expect(settled.claims[1]?.weekly).toBe("moved")
+      expect(settled.claims.find((claim) => claim.provider === "claude")?.weekly).toBe("kept")
+      expect(settled.claims.find((claim) => claim.provider === "codex")?.weekly).toBe("moved")
       // No token ever shows in what the pool answers or logs.
       const shown = line(settled) + line(world.logs())
       for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, accounts[CHATGPT].access, accounts[CHATGPT].refresh])
@@ -227,7 +206,7 @@ seeded(
 )
 
 seeded(
-  "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+  "a spent week is not claimed while a fresh account takes the work; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const now = World.START
@@ -249,7 +228,7 @@ seeded(
       let fableListed = false
       const claimed = new Set<string>()
       const grantsOf = (account: string): ReadonlyArray<FakeGrant> => {
-        if (account !== "c") return [{ id: "weekly-d", resetsLeft: leftOf(claimed, "weekly-d"), endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
+        if (account !== "c") return [{ id: "weekly-d", resetsLeft: 2 - Number(claimed.has("weekly-d")), endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
         if (!fableListed) return []
         return [
           {
@@ -273,27 +252,20 @@ seeded(
       })
       const claims = () => world.provider().claims()
 
-      // ── Demand: three starts in flight across the fleet, from this session ──
+      // ── Demand: three starts in flight, the pane pacing a start each second: c has room, so d's week is left ──
       for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "anthropic" })
-      const offered = yield* row(yield* until((rows) => rows.some((each) => each.header === "Reset now · Claude d"), "an offer for d"), "Reset now · Claude d")
-      expect(offered.question).toContain("weekly reset on account Claude d now? Demand: 3 starts are in flight across the fleet.")
-      expect(offered.question).toContain("Claiming it takes weekly 100% used of 100% → 0% used, next reset ")
-      expect(offered.question).toMatch(/6\.0 days remain before the weekly window resets by itself/)
+      yield* until(() => false, "a minute of starts", CLAIM_LIMIT_MS).pipe(Effect.ignore)
       expect(claims()).toEqual([])
-      expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: offered.id, answer: "Claim it" }] })).toMatchObject({ ok: true })
-      yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, SECOND)
-      expect(claims().map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([{ account: "d", grant: "weekly-d", result: "reset" }])
+      expect(yield* open).toEqual([])
 
       // ── Use it or lose it: c's Fable reset, listed now, is claimed by itself and the owner told ──
       fableListed = true
       const notice = yield* row(yield* until((rows) => rows.some((each) => each.header === "Pool reset claimed"), "the notice of c's claim"), "Pool reset claimed")
-      expect(notice.question).toContain("The pool claimed the Fable reset on account Claude c before it expired unused")
+      expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
+      expect(notice.question).toContain("(about to expire unused: ")
       // Fable's part of the week, as the usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
       expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset \S+ \S+ \(Fable's part 50% of the week as the usage endpoint reports it\)/)
-      expect(claims().map(({ account, grant }) => [account, grant])).toEqual([
-        ["d", "weekly-d"],
-        ["c", "fable-c"],
-      ])
+      expect(claims().map(({ account, grant }) => [account, grant])).toEqual([["c", "fable-c"]])
       const settled = yield* resetsOf(yield* pool("resets"))
       const fable = settled.claims.find((claim) => claim.label === "Claude c")
       expect(fable).toMatchObject({ outcome: "reset", weekly: "kept" })
@@ -301,14 +273,13 @@ seeded(
       expect(fable?.after?.find((window) => window.name === "7d:Fable")?.utilization).toBe(0)
       expect(fable?.after?.find((window) => window.name === "7d")?.utilization).toBeCloseTo(0.1)
       expect(settled.resets.find((reset) => reset.label === "Claude c")).toMatchObject({ why: "expiring", kind: "fable", stage: "settled" })
-      expect(settled.resets.find((reset) => reset.label === "Claude d")).toMatchObject({ why: "offer", kind: "weekly" })
 
       // The owner reads the notice: it leaves the tray.
       expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: notice.id, answer: "OK" }] })).toMatchObject({ ok: true })
       yield* until((rows) => !rows.some((each) => each.id === notice.id), "the notice withdrawn", CLAIM_LIMIT_MS, false)
       // Each claim once.
       yield* world.advance(7 * SECOND)
-      expect(claims()).toHaveLength(2)
+      expect(claims()).toHaveLength(1)
       expect(yield* open).toEqual([])
     }),
 )

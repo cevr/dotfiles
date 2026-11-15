@@ -61,41 +61,38 @@
  *   until its spend shows in a reading. Default no peers. No host is the
  *   master of the resets: before a claim, a host asks each peer for the
  *   provider's lease over SSH (`@dotfiles/opencode-pool/ssh/lease`, the
- *   peer's `lease`). A claim no one asked for is sent only once every peer
- *   granted it; with a peer that does not answer in 10 s, it is not sent and
- *   the owner is asked instead ("<peer> is unreachable, so I can't rule out
- *   it claiming too"), and a yes claims past it (the claim's record says
- *   so). A host just started lends nothing for 5 minutes, and none claims on
+ *   peer's `lease`). A claim the pool decided on its own is sent only once
+ *   every peer granted it; with a peer that does not answer in 10 s, it is
+ *   not sent (the claim's record says so) and goes again later, as any claim
+ *   that did not go through. A push's claim passes over such a peer: the
+ *   owner approved it with the push. A host just started lends nothing for 5 minutes, and none claims on
  *   a reading taken less than 5 minutes after a claim it sent or was told of.
  * - `resets`: work the accounts' rate-limit resets (`@dotfiles/opencode-pool/resets`).
- *   Default true. When a start is held and every account of a ChatGPT pool is
- *   held by a spent window, the pool claims one Codex reset credit (and one
- *   about to expire unused on a half-spent week); for the `anthropic` pool it
- *   never claims unasked: it asks the owner once per hold in the waiting
- *   session's root (the questions plugin's `askFor`), with the days left before
- *   the account's weekly reset, and claims only on a yes. After a claim it reads
- *   the account again and records whether the weekly reset moved. `resets`
- *   answers what is being worked and the claims made, for the /pool pane.
- *   A reset about to expire unused (Claude's too) is claimed on its own once
- *   the window it gives back cannot reset by itself first, and the owner is
- *   told after in the tray of the session that waited last. While a start
- *   waits, a reset is offered for a week-long window an account has (nearly)
- *   spent when, at its burn this period, the use given back would mostly be
- *   spent before the natural reset (early in the week, not late), with the
- *   fleet's starts in flight. The pace raises an account's line by what a
- *   reset in hand gives back, and starts it again from a claim. A claim no one
- *   asked for is made only on the account's fields read in the last 15
+ *   Default true. The owner approved every reset in hand ahead of time: the
+ *   pool spends them on its own, Claude's and Codex's alike, and never asks
+ *   (`@dotfiles/opencode-pool/claim-rule`): first a reset about to expire
+ *   unused (one expiring within a day is just used, on a spent window or at
+ *   its last call), then the work goes to a fresh account while one can take
+ *   it, and only then a reset for held work, when the work would spend at
+ *   least half of what it gives back before the window resets by itself;
+ *   never for a window that resets by itself soon anyway (5-hour within 30
+ *   minutes, a week within a day), at most one claim per window period per
+ *   account. After a claim it reads the account again, records whether the
+ *   weekly reset moved, and tells the owner once in the tray of the session
+ *   that waited last (`Claimed the 5h reset on …`). `resets` answers what is
+ *   being worked and the claims made, for the /pool pane. The pace raises an
+ *   account's line by what a reset in hand gives back, and starts it again
+ *   from a claim. A claim the pool decides on its own is made only on the account's fields read in the last 15
  *   minutes and after its last claim (a window carried over from an older
  *   reading counts as unread), one at a time per account (its login, in any
- *   pool). Every claim, a yes's too, is sent under one lock per provider
+ *   pool). Every claim, a push's too, is sent under one lock per provider
  *   after reading the account again, and only if that reading still finds it
  *   worth it; else it is recorded as not sent.
- *   `{ "auto": false }` works resets but claims none no one asked for (no
- *   expiring claim, no Codex credit for a held start): offers and questions
- *   go on, and a yes still claims. `true` is `{ "auto": true }`.
+ *   `{ "auto": false }` works resets but claims none on its own; a push's
+ *   approved resets still go. `true` is `{ "auto": true }`.
  *
  * - `unitCost`: what one queued orchestrate unit is taken to cost, as a share
- *   of one account's week, for the push question (`@dotfiles/opencode-pool/push`).
+ *   of one account's week, for a push's plan (`@dotfiles/opencode-pool/push`).
  *   Default 0.1.
  *
  * A push (`@dotfiles/opencode-pool/push`) is an owner-approved, time-boxed
@@ -105,13 +102,11 @@
  * While one is active in its scope (a host, and a session's tree or a run),
  * the spend-evenly hold does not hold a start there until its approved resets
  * are spent; an account whose week is spent, or a start held for lack of
- * quota, has one of its resets claimed (an asked claim: the fleet's lease and
- * the read before the send still apply). The sweep ends pushes past their end
- * or whose run closed (the status plugin's runs), and asks the owner once a
- * week per scope to start one when a run's queued units need more than the
- * pool can spend before its windows reset by themselves, and once a week per
- * pool when resets in hand would expire unused at the current burn. `resets`
- * answers that forecast and the pushes on, for the /pool pane.
+ * quota, has one of its resets claimed (the owner's approval: the fleet's
+ * lease and the read before the send still apply). The sweep ends pushes past
+ * their end or whose run closed (the status plugin's runs). The pool never
+ * asks to start one. `resets` answers the forecast and the pushes on, for
+ * the /pool pane.
  *
  * `started` records a new agent (orchestrate calls it once a subagent starts),
  * `report` answers a peer with this host's starts and its readings (never a
@@ -236,8 +231,8 @@ export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsSto
 
 /**
  * Whose rate-limit resets each pool holds, when `resets` is on: the pool of
- * the `anthropic` provider holds Claude grants, which are asked about; a
- * ChatGPT pool holds Codex credits, which are claimed.
+ * the `anthropic` provider holds Claude grants; a ChatGPT pool holds Codex
+ * credits. The pool claims both on its own.
  */
 export const resetsOf = (options: Options): Readonly<Record<string, ResetProvider>> => {
   if (!options.resets) return {}
@@ -370,7 +365,7 @@ export const liveWith =
 /** The outside systems as OpenCode provides them, the peers over SSH. */
 export const live = liveWith(PeersLive.layer)
 
-/** The questions plugin's RPC and the host's sessions, as the pool asks the owner through them. */
+/** The questions plugin's RPC and the host's sessions, as the pool tells the owner through them. */
 const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
   // Reached at each call, not at setup: the questions plugin may start after the pool.
   const client = () => ctx.rpc(QUESTIONS)
@@ -609,7 +604,7 @@ export const make = (
 
       yield* Effect.forkScoped(pool.follow)
 
-      // The owner's answer to a reset's question is read as soon as the questions change.
+      // A notice read leaves the tray as soon as the questions change.
       if (Object.keys(resetsOf(options)).length > 0) yield* Effect.forkScoped(pool.followAnswers)
 
       if (options.sweepMinutes > 0)
