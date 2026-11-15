@@ -168,6 +168,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-herdr": "workspace:*",
+        "@dotfiles/opencode-questions": "workspace:*",
         "@dotfiles/opencode-rex": "workspace:*",
       },
     },
@@ -375,6 +377,9 @@
     "mods/rex": {
       "name": "@dotfiles/opencode-rex",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-herdr": "workspace:*",
+      },
     },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
