@@ -175,10 +175,12 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
     const random = rng(seed)
     const pick = <A,>(list: ReadonlyArray<A>, fallback: A): A => Option.getOrElse(Arr.get(list, Math.floor(random() * list.length)), () => fallback)
     const coin = () => random() < 0.5
-    const run = yield* boot(seed, true)
+    // Main holds zero to six merges from before the run, so a seed's lands reach a due verify of main.
+    const earlier = Math.floor(random() * 7)
+    const run = yield* boot(seed, true, { merges: earlier })
     const roots = [yield* run.world.session(WORK)]
     const root = () => roots.at(-1) ?? ""
-    const model: Model = { logs: new Map(), lanes: new Map(), main: { total: 0, verified: Option.none(), made: new Map() } }
+    const model: Model = { logs: new Map(), lanes: new Map(), main: { total: earlier, verified: Option.none(), made: new Map() } }
     const batches = { count: 0 }
 
     /** A call's answer, checked: it fails only when the model says it must, and never in the machine's words. */
@@ -360,7 +362,8 @@ const dueStart = (n: number) => `orchestrate: ${n} merges on main since the last
 
 seeded("B3: after the fifth land since a verify, land and status start with the due line; a verify with a verdict ends it; restarts and new roots change no answer", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const run = yield* boot(seed, true)
+    // Main holds three merges from before the run: the run's second land is the fifth.
+    const run = yield* boot(seed, true, { merges: 3 })
     const roots = [yield* run.world.session(WORK)]
     const root = () => roots.at(-1) ?? ""
     const random = rng(seed)
@@ -369,7 +372,7 @@ seeded("B3: after the fifth land since a verify, land and status start with the 
       if (random() < 0.4) yield* run.world.restart
       if (random() < 0.4) roots.push(yield* run.world.session(WORK))
     })
-    for (const n of [1, 2, 3, 4, 5]) {
+    for (const n of [1, 2]) {
       const landed = yield* landOne(run, root(), `u${n}`, n === 1)
       expect([n, landed.error, landed.text.split("\n")[0]]).toEqual([n, false, expect.not.stringContaining("since the last verify")])
       yield* shuffle()
@@ -379,7 +382,7 @@ seeded("B3: after the fifth land since a verify, land and status start with the 
     expect(status.text.split("\n")[0]).toStartWith(`${dueStart(5)}none recorded`)
     expect(status.text).toContain('next: orchestrate({ action: "verify" }) (5 merges on main since the last verify).')
     yield* shuffle()
-    const sixth = yield* landOne(run, root(), "u6", false)
+    const sixth = yield* landOne(run, root(), "u3", false)
     expect([sixth.error, sixth.text.split("\n")[0]]).toEqual([false, expect.stringContaining(dueStart(5))])
     yield* shuffle()
     // The verify of main: its batch file's base is the fifth merge back, its head main's head, its Heads line the fleet's.
@@ -393,9 +396,9 @@ seeded("B3: after the fifth land since a verify, land and status start with the 
     expect(text.split("\n")).toContain(`Base: ${Option.getOrElse(Option.map(Arr.get(line.toReversed(), VERIFY_EVERY), (entry) => entry.sha), () => "")}`)
     expect(text.split("\n")).toContain(`Head: ${head}`)
     expect(headsOf(text)).toEqual(Result.succeed({ dotfiles: head, fork: FORK_HEAD }))
-    // Its units: those whose request head the range holds (u2 to u6; u1's merge is the base's own).
-    for (const unit of ["u2", "u3", "u4", "u5", "u6"]) expect(text).toContain(`- ${unit} r1: unit dir ${RUN_DIR}/${unit}`)
-    expect(text).not.toContain(`- u1 r1:`)
+    // Its units: those whose request head the range holds (u1 to u3); the earlier merges hold no unit's.
+    for (const unit of ["u1", "u2", "u3"]) expect(text).toContain(`- ${unit} r1: unit dir ${RUN_DIR}/${unit}`)
+    expect(text.split("\n").filter((each) => / r\d+: unit dir /.test(each))).toHaveLength(3)
     yield* shuffle()
     // The verifier hands back a verdict, its findings beside the batch file: no due line after it.
     const verdict = Option.getOrElse(Arr.get(["accepted", "changes"], Math.floor(random() * 2)), () => "accepted")
@@ -406,7 +409,7 @@ seeded("B3: after the fifth land since a verify, land and status start with the 
     yield* shuffle()
     const after = yield* run.probe(root(), ORCHESTRATE, { action: "status" })
     expect(after.text).not.toContain("since the last verify (")
-    const seventh = yield* landOne(run, root(), "u7", false)
+    const seventh = yield* landOne(run, root(), "u4", false)
     expect([seventh.error, seventh.text]).toEqual([false, expect.not.stringContaining("since the last verify (")])
     // The next verify counts from the head the last one verified.
     const next = yield* run.probe(root(), ORCHESTRATE, { action: "verify" })

@@ -89,8 +89,10 @@ export const requestHeadFor = (unit: string, round: number): string => shaFor(`r
  * merge per branch each pushed land merged, oldest first. A merge takes in the head of its unit's newest request, as
  * the run's files hold it when the land ran; the landing's push answers the push's last merge.
  */
-const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files) => {
+const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, earlier: number) => {
   const line: Array<MemoryMainLine.Entry> = [{ sha: shaFor("root"), subject: "root", merged: [] }]
+  // The merges main held before the run: no unit of the run is in them.
+  for (let n = 1; n <= earlier; n += 1) line.push({ sha: shaFor(`earlier ${n}`), subject: `Merge branch 'feat/earlier-${n}'`, merged: [shaFor(`earlier tip ${n}`)] })
   const pushes: Array<string> = []
   const read = { steps: 0, pending: Arr.empty<string>() }
   /** The newest request head of the unit a branch is named for (its last segment). */
@@ -116,12 +118,12 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files) =
 }
 
 /** The memory world under every rift plugin copy: the two warm sources, their Rifts, the landing, the debts. */
-const riftWorldOf = (files: MemoryRunFiles.Files) => {
+const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number) => {
   const landing = MemoryLanding.world({
     [WORK]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
     [PLAIN]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
   })
-  const main = mainLineOf(landing, files)
+  const main = mainLineOf(landing, files, earlier)
   // A push answers its last merge's commit, as the line holds it.
   landing.headOf = (push) => {
     main.line()
@@ -176,6 +178,8 @@ export const tableOf = (logs: ReadonlyMap<string, UnitLog>): string =>
 export interface BootOptions {
   readonly now?: string
   readonly models?: ReadonlyArray<World.CatalogModel>
+  /** The merges the default branch holds before the run (none by default). */
+  readonly merges?: number
 }
 
 /** The rift plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the rift plugin alone). */
@@ -186,7 +190,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   const fleet: Array<Asked> = []
   // The runs' files (requests, findings, batch files), outside every plugin copy: a restart keeps them, as a disk does.
   const files: MemoryRunFiles.Files = new Map()
-  const memory = riftWorldOf(files)
+  const memory = riftWorldOf(files, options.merges ?? 0)
   const calls = { count: 0 }
   /** The tool names the last request offered, as the registry listed them. */
   const offered: Array<string> = []
