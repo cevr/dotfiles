@@ -7,7 +7,6 @@
     "mods/*",
     "cmd/*",
     "decider",
-    "formal",
     "lint",
     "sim",
     "sim-tui"
