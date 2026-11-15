@@ -39,8 +39,18 @@ export const ROWS = {
 
 export type Tab = keyof typeof ROWS
 
-/** The tab bar on the Subagents tab: each tab with how many it lists (Terminals shows none). */
-export const BAR = /^Subagents 5 {2}· {2}Shell 2 {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 +esc$/
+/**
+ * The tab bar on the Subagents tab at each width: at 160 each tab with how many it lists (Terminals shows none; Jobs
+ * none, with no job running); at 80 the six names alone, as Prime's bar drops the counts when they do not fit
+ * (mods/prime/panel.ts `tabBar`).
+ */
+export const BAR = {
+  160: /^Subagents 5 {2}· {2}Shell 2 {2}· {2}Terminals {2}· {2}Wakes 1 {2}· {2}Monitors 1 {2}· {2}Jobs +esc$/,
+  80: /^Subagents {2}· {2}Shell {2}· {2}Terminals {2}· {2}Wakes {2}· {2}Monitors {2}· {2}Jobs +esc$/,
+} as const
+
+/** A width the scenario walks the panel at. */
+export type Cols = keyof typeof BAR
 
 /** The hint line under the Subagents and the Shell tabs, in Prime's words for their keys. */
 export const FOOTERS = { subagents: "Ctrl+D interrupt · Ctrl+A show inactive · ←/→ tabs", shell: "Enter output · Ctrl+D kill · ←/→ tabs" } as const
@@ -48,10 +58,10 @@ export const FOOTERS = { subagents: "Ctrl+D interrupt · Ctrl+A show inactive ·
 /** The five subagent lanes the scenario starts. */
 export const SUBAGENTS = 5
 
-/** Whether a frame's panel is the Subagents tab as the test asserts it: the bar counting every tab, the footer, five rows. */
-export function subagentsShow(frame: string) {
+/** Whether a frame's panel at `cols` is the Subagents tab as the test asserts it: the width's bar, the footer, five rows. */
+export function subagentsShow(frame: string, cols: Cols) {
   const shown = panelOf(frame)
-  return BAR.test(shown.bar) && shown.footer === FOOTERS.subagents && shown.rows.length === SUBAGENTS
+  return BAR[cols].test(shown.bar) && shown.footer === FOOTERS.subagents && shown.rows.length === SUBAGENTS
 }
 
 /** Whether a frame's panel lists exactly the tab's rows. */

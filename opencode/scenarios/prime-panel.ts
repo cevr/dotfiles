@@ -21,7 +21,7 @@
 import { Deferred, Effect, Option, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
-import { FOOTERS, panelOf, shows as listed, subagentsShow, type Tab } from "./prime-panel-rows.ts"
+import { type Cols, FOOTERS, panelOf, shows as listed, subagentsShow, type Tab } from "./prime-panel-rows.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT || "out"
@@ -125,16 +125,17 @@ export default OpenCodeDriver.use(
         (before && shows(needles)(frame)) || (!before && listed(tab, frame))
 
       /** Opens the panel at `cols` columns and keeps each tab. */
-      const walk = (cols: number) =>
+      const walk = (cols: Cols) =>
         Effect.gen(function* () {
           yield* ui.resize({ cols, rows: 40 })
           yield* until(`${cols}-resized`, (frame) => frame.split("\n").every((line) => Array.from(line).length <= cols) && !frame.includes("Subagents"))
           yield* until(`${cols}-dock`, (frame) => frame.includes("↓ subagents") && frame.includes("5 subagents"))
           yield* keep(`${cols}-dock`)
           yield* ui.press("down")
-          // Kept once the bar counts every tab (the wake and the monitor reach it after the subagents) and all five rows are in.
+          // Kept once the bar is the width's (at 160 it counts every tab: the wake and the monitor reach it after the
+          // subagents) and all five rows are in.
           const lanes = shows(["Monitors", ...LANES.map((lane) => lane.unit.slice(0, 6))])
-          yield* until(`${cols}-subagents`, (frame) => lanes(frame) && (before || subagentsShow(frame)))
+          yield* until(`${cols}-subagents`, (frame) => lanes(frame) && (before || subagentsShow(frame, cols)))
           const first = yield* keep(`${cols}-subagents`)
           // The rows' times move on with the clock, the rows redrawn in place.
           if (cols === 160 && !before) {
