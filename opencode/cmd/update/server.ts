@@ -26,7 +26,7 @@ export const canonical = (directory: string): string => directory.replace(/(.)\/
 /** Every implementation the updater runs on, for these options and step variables. */
 export const live = (ctx: Plugin.Context, options: Options, env: Readonly<globalThis.Record<string, string>>) =>
   Layer.mergeAll(
-    Source.layer({ root: options.checkout, mode: options.mode, bun: options.bun, fork: options.fork, env, workbox: process.platform === "linux" }),
+    Source.layer({ root: options.checkout, mode: options.mode, bun: options.bun, fork: options.fork, env, bin: Source.binScript(process.platform) }),
     Builder.layer(options, env),
     Sessions.layer(ctx),
     Handoff.layer(options, env),

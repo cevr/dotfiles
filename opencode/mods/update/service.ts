@@ -25,8 +25,8 @@ export class Source extends Context.Service<
     /** The commit the checkout is on. */
     readonly head: Effect.Effect<string, UpdateFailed>
     /**
-     * Moves the checkout to `commit` and installs its dependencies as its lockfile pins them, and on
-     * the workbox its `workbox/bin` scripts (`git/source.ts` `WORKBOX_BIN`). A failed install moves
+     * Moves the checkout to `commit` and installs its dependencies as its lockfile pins them, then the
+     * host's commands into `~/.local/bin` (`git/source.ts` `binScript`). A failed install moves
      * the checkout back to where it was, so no plugin ever loads from a tree whose dependencies are
      * missing.
      */

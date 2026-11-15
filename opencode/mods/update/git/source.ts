@@ -28,19 +28,39 @@ export interface Checkout {
   readonly fork: string
   /** Variables every command gets (PATH with bun's directory first). */
   readonly env: Readonly<globalThis.Record<string, string>>
-  /**
-   * Whether this host is the workbox (Linux), whose `~/.local/bin` holds copies of the checkout's
-   * `workbox/bin` scripts: each move installs them again (`WORKBOX_BIN`).
-   */
-  readonly workbox: boolean
+  /** The script that puts this host's commands into `~/.local/bin` after each move (`binScript`). */
+  readonly bin: Option.Option<BinScript>
+}
+
+/** A script of the checkout, with its arguments, run through `sh` after the dependencies install. */
+export interface BinScript {
+  /** Its path from the checkout's root. */
+  readonly path: string
+  readonly args: ReadonlyArray<string>
 }
 
 /**
  * The workbox's script install, as bootstrap runs it, then the fresh `apply-agent-settings`. Without
  * it, `~/.local/bin` kept the copies bootstrap made, missing what the checkout added since (a link
- * apply-agent-settings had gained, 2026-11-15). A commit older than the script has none, and its move installs nothing.
+ * apply-agent-settings had gained, 2026-11-15).
  */
-export const WORKBOX_BIN = "workbox/install-bin.sh"
+export const WORKBOX_BIN: BinScript = { path: "workbox/install-bin.sh", args: ["--apply"] }
+
+/**
+ * The Mac's command links, as install.sh makes them. Without it, a link added since the last
+ * install.sh never came (rex-show, 2026-11-15).
+ */
+export const MAC_BIN: BinScript = { path: "local-bin.sh", args: [] }
+
+/**
+ * The script a host runs after each move: the workbox's on Linux, the Mac's on macOS. A commit
+ * older than its script has none, and its move installs nothing there.
+ */
+export const binScript = (platform: string): Option.Option<BinScript> => {
+  if (platform === "linux") return Option.some(WORKBOX_BIN)
+  if (platform === "darwin") return Option.some(MAC_BIN)
+  return Option.none()
+}
 
 /** Whether `path` is a file a reset leaves as the host has it. */
 export const kept = (path: string): boolean => KEPT.some((each) => path === each || (each.endsWith("/") && path.startsWith(each)))
@@ -95,13 +115,13 @@ export const layer = (checkout: Checkout) => {
   )
 
   const scripts = Effect.gen(function* () {
-    if (!checkout.workbox) return
-    const script = `${checkout.root}/${WORKBOX_BIN}`
-    const exists = yield* Effect.tryPromise({ try: () => file(script).exists(), catch: (cause) => new UpdateFailed({ step: "find the workbox's scripts", message: String(cause) }) })
-    if (exists) yield* run("install the workbox's scripts", ["sh", script, "--apply"], here)
+    if (Option.isNone(checkout.bin)) return
+    const script = `${checkout.root}/${checkout.bin.value.path}`
+    const exists = yield* Effect.tryPromise({ try: () => file(script).exists(), catch: (cause) => new UpdateFailed({ step: "find the host's commands script", message: String(cause) }) })
+    if (exists) yield* run("install the host's commands", ["sh", script, ...checkout.bin.value.args], here)
   })
 
-  /** The dependencies, then on the workbox its scripts: what a move of the checkout installs. */
+  /** The dependencies, then the host's commands: what a move of the checkout installs. */
   const installMoved = install.pipe(Effect.andThen(scripts))
 
   const advance = Effect.fn("Source.advance")(function* (commit: string) {
