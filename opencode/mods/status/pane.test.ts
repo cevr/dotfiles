@@ -234,8 +234,7 @@ describe("resetRows", () => {
 })
 
 describe("runLine", () => {
-  test("a run with its drift from the machine, and one no verdict scored yet", () => {
-    expect(runLine({ name: "p5", drift: "0 after batch-1 accepted (2026-11-12T01:35Z)" })).toBe("p5 · drift 0 after batch-1 accepted (2026-11-12T01:35Z)")
+  test("a run is its name", () => {
     expect(runLine({ name: "fresh" })).toBe("fresh")
   })
 })

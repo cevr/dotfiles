@@ -32,7 +32,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
+import { Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -48,46 +48,14 @@ import {
   ReportDraft,
   unitsOf,
 } from "./idle.ts"
-import {
-  briefOf,
-  type Cadence,
-  type Command as MachineCommand,
-  type Event as MachineEvent,
-  Drop,
-  HandBack,
-  handBackOf as stepHandBackOf,
-  Land,
-  Landed,
-  entryOf,
-  type LandEntry,
-  type LandTarget,
-  machine,
-  type MachineState,
-  notesOf,
-  type Refused,
-  ReportRead,
-  reportOf,
-  Spawned,
-  type Start,
-  startOf as stepOfCall,
-  unresolvedOf,
-  verifierPromptOf,
-} from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
-import { codexFallback, effort, IMPLEMENTOR, isCodexModel, isRole, onCodex, OPUS, Reason, route, unspecific, WORKER } from "./role.ts"
+import { codexFallback, effort, IMPLEMENTOR, isCodexModel, isRole, onCodex, OPUS, Reason, WORKER } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import {
-  Branches,
   CallLog,
   CodexAdmission,
-  type Decided,
-  type GuardMode,
   Latches,
-  Findings,
   Fleet,
-  Ledger,
-  Liveness,
-  type LoggedDrop,
   Models,
   Remind,
   PoolPace,
@@ -102,7 +70,6 @@ import {
   UnitLogs,
 } from "./service.ts"
 import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
-import { departureLines, driftLine, logLineOf, scoreOf } from "./drift.ts"
 import { FLEET_DESCRIPTION, type FleetOutcome, fleetLineOf } from "./fleet.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
@@ -806,411 +773,58 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
     }),
   )
 
-// ── The batch machine (machine.ts) ──
+// ── A verifier's verdict (fleet.ts) ──
 
-/** The machine's settings, from the plugin's options. */
-export interface MachineConfig {
-  readonly cadence: Cadence
-  readonly mode: GuardMode
-  /** An untyped or general call runs as asked (Config `fullAgent`). */
-  readonly fullAgent: boolean
-  /** The machine block a compacted root is told: SKILL.md's "The machine" section (agents.json `machine`). */
-  readonly block: string
-}
-
-/** A role's start the machine let through, still in its call: alive though its session is not known yet. */
-interface InFlight {
-  readonly root: string
-  readonly role: Start["role"]
-  readonly name: string
-}
-
-/** What telling a compacted root came to, for the plugin's log. */
-export type BriefOutcome =
-  | { readonly _tag: "Told"; readonly brief: string }
-  | { readonly _tag: "Quiet"; readonly why: string }
-  | { readonly _tag: "Refused"; readonly message: string }
-
-/** The notice row the brief draws. */
-export const BRIEF_DESCRIPTION = "orchestrate: the machine and your run, after the compaction"
-
-/** The message a compacted root reads: the machine (SKILL.md's section), its run from the ledger, and the re-read. */
-export const briefText = (block: string, brief: string): string =>
-  [
-    block.trim(),
-    `Your run now, from the plugin's ledger:\n${brief}`,
-    "Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.",
-  ].join("\n\n")
-
-/** What a call the machine let through answers with first: its notes, and under `warn` the rule it broke. */
-export interface Passed {
-  readonly notes: ReadonlyArray<string>
-  /** What the call's prompt gains at its end: a batch verifier's findings to check as folded. */
-  readonly prompt?: string
-}
-
-export class Machines extends Context.Service<
-  Machines,
+export class Verdicts extends Context.Service<
+  Verdicts,
   {
     /**
-     * A subagent call of `root`, about to start (`key` names the call: a kernel cell's calls share one id).
-     * A role's step is decided on the root's ledger: refused, the call fails with the rule's words; let
-     * through, it answers with the notes. Any other call passes with none.
+     * A session went idle. When it is a verifier whose last words hand back `accepted`, the fleet records the
+     * target its batch file names (Fleet), once per verdict however often the session goes idle after; what that
+     * did goes to the run's log.md and, when nothing was published, the root's context. Anything else does nothing.
      */
-    readonly start: (input: { readonly root: string; readonly key: string; readonly input: unknown }) => Effect.Effect<Passed, Refused>
-    /** The call `key` answered: its child's session, or none when it did not start. */
-    readonly started: (input: { readonly root: string; readonly key: string; readonly child?: string }) => Effect.Effect<void>
-    /**
-     * A land's Rifts as the machine knows them: each entry by path (`/…`, `~/…`) with the branch checked
-     * out there, when it reads. Read once, before the land: a pushed land trashes its Rifts.
-     */
-    readonly resolve: (rifts: ReadonlyArray<LandTarget>) => Effect.Effect<ReadonlyArray<LandEntry>>
-    /** A `rift` land of `root`, about to run. */
-    readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
-    /** The Rifts a land of `root` answered green. */
-    readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) => Effect.Effect<void>
-    /**
-     * `root` ran a shell call: each unit its shell calls moved to `dropped` by log.ts (`UnitLogs.drops`, what
-     * log.ts wrote) ends, and the findings it held go with it (machine.ts `Drop`). A start, a land and a
-     * hand-back read the drops too, so one written after its call returned (backgrounded, timed out) ends there.
-     */
-    readonly dropped: (root: string) => Effect.Effect<void>
-    /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
-    /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
-    readonly brief: (root: string) => Effect.Effect<string>
-    /**
-     * A session's compaction ended: a root whose brief is not empty is told the machine and its run, in one
-     * message that rides on its next request. The plugin calls it once per compaction.
-     */
-    readonly compacted: (sessionID: string) => Effect.Effect<BriefOutcome>
-    /** The root's state as its ledger holds it now: what the `orchestrate` tool's status, next call and lanes read. */
-    readonly state: (root: string) => Effect.Effect<MachineState>
   }
->()("dotfiles-opencode/orchestrate/Machines") {}
+>()("dotfiles-opencode/orchestrate/Verdicts") {}
 
-/**
- * The `Drop` of each unit the root's log.md files say it dropped, unless the state holds that unit at a later round
- * (started again since: revived). The machine decides a drop of a unit already gone to nothing, so a drop read again
- * at every call ends its unit once.
- */
-export const dropsOf = (logged: ReadonlyArray<LoggedDrop>, state: MachineState): ReadonlyArray<Drop> =>
-  logged.flatMap((drop) => {
-    const revived = Option.exists(Option.fromNullishOr(state.units[drop.unit]), (unit) => unit.round > drop.round)
-    return Option.toArray(Option.liftPredicate(Drop.make({ unit: drop.unit }), () => !revived))
-  })
+/** The verdicts' handler. It remembers only which verdicts it published, so a verdict read again publishes nothing. */
+export const verdictLayer = Layer.effect(
+  Verdicts,
+  Effect.gen(function* () {
+    const sessions = yield* Sessions
+    const fleet = yield* Fleet
+    const records = yield* RunRecords
+    const remind = yield* Remind
+    const published = new Set<string>()
+    const one = yield* Semaphore.make(1)
 
-/** The machine's handlers: the plugin feeds each call it sees, and the ledger decides it. */
-export const machineLayer = (config: MachineConfig) =>
-  Layer.effect(
-    Machines,
-    Effect.gen(function* () {
-      const ledger = yield* Ledger
-      const sessions = yield* Sessions
-      const liveness = yield* Liveness
-      const remind = yield* Remind
-      const findings = yield* Findings
-      const branches = yield* Branches
-      const records = yield* RunRecords
-      const fleet = yield* Fleet
-      const unitLogs = yield* UnitLogs
-      const inFlight = new Map<string, InFlight>()
-
-      const flying = (root: string, role: Start["role"], name: string) =>
-        [...inFlight.values()].some((step) => step.root === root && step.role === role && step.name === name)
-
-      /** Whether a step still works: its call is in flight, or its session runs, is latched, or keeps work of its own. */
-      const working = (root: string, role: Start["role"], name: string, child: string | undefined) =>
-        Effect.gen(function* () {
-          if (flying(root, role, name)) return true
-          if (child === undefined) return false
-          return (yield* liveness.alive(child)) || (yield* sessions.latchOf(child)) !== undefined
-        })
-
-      /** Whether the step's session was stopped: its last words are then an earlier turn's, never its hand-back. */
-      const stoppedChild = (child: Option.Option<string>) =>
-        Effect.map(Effect.forEach(Option.toArray(child), (id) => sessions.stoppedOf(id)), (stopped) => stopped.includes(true))
-
-      /**
-       * The verdict an implementor's session hands `name` back with in its last words; `none` when they hand back no
-       * such step, `stopped` when its turn was stopped.
-       */
-      const lastVerdictOf = (name: string, child: Option.Option<string>) =>
-        Effect.flatMap(stoppedChild(child), (stopped) => {
-          if (stopped) return Effect.succeed<HandBack["verdict"]>("stopped")
-          return Effect.map(Effect.forEach(Option.toArray(child), (id) => sessions.lastWordsOf(id)), (words) =>
-            Option.fromNullishOr(stepHandBackOf("implementor", words.join("\n"))).pipe(
-              Option.filter((back) => back.name === name),
-              Option.map((back) => back.verdict),
-              Option.getOrElse((): HandBack["verdict"] => "none"),
-            ),
-          )
-        })
-
-      /** A `changes` hand-back's findings as its report gives them, or why they are not known. */
-      const readReport = (report: string | undefined) =>
-        Effect.gen(function* () {
-          if (report === undefined) return { unread: { why: "its hand-back names no findings report" } }
-          const read = yield* findings.read(report)
-          return read._tag === "Read" ? { findings: read.findings } : { unread: { report, why: read.why } }
-        })
-
-      /** The findings a verdict's report marks closed by another batch; none when it names no report. */
-      const closedBy = (report: Option.Option<string>) =>
-        Effect.map(Effect.forEach(Option.toArray(report), findings.closed), (read) =>
-          Arr.match(read.flat(), { onEmpty: () => ({}), onNonEmpty: (closed) => ({ closed }) }),
-        )
-
-      /**
-       * The hand-back a step's session's last words say, as the machine takes it: a verifier's verdict with the
-       * findings its report marks closed, and a `changes` with its report read.
-       */
-      const saidBy = (agent: string, sessionID: string) =>
-        Effect.gen(function* () {
-          const words = yield* sessions.lastWordsOf(sessionID)
-          const back = Option.fromNullishOr(stepHandBackOf(agent, words))
-          if (Option.isNone(back) || back.value.role !== "verifier" || back.value.verdict === "none" || back.value.verdict === "stopped") return back
-          const closed = yield* closedBy(Option.fromUndefinedOr(reportOf(words)))
-          if (back.value.verdict !== "changes") return Option.some(HandBack.make({ ...back.value, ...closed }))
-          return Option.some(HandBack.make({ ...back.value, ...(yield* readReport(reportOf(words))), ...closed }))
-        })
-
-      /** A verifier whose verdict a reconcile read from its last words, before its idle was seen: its batch, session and verdict. */
-      interface Heard {
-        readonly batch: string
-        readonly child: string
-        readonly verdict: HandBack["verdict"]
+    /** Says what recording the fleet target did where the orchestrator reads it: the run's log.md, the server's log, and, when nothing was published, the root's context. */
+    const told = Effect.fn("Verdicts.told")(function* (root: Option.Option<string>, batch: string, report: Option.Option<string>, directory: Option.Option<string>, outcome: FleetOutcome) {
+      for (const line of fleetLineOf(batch, outcome, yield* Clock.currentTimeMillis)) {
+        if (outcome._tag === "Refused") yield* Effect.logWarning(line)
+        else yield* Effect.logInfo(line)
+        const entries = Option.toArray(report).map((near) => Option.match(directory, { onNone: () => ({ near, line }), onSome: (dir) => ({ near, line, directory: dir }) }))
+        yield* Effect.forEach(entries, (entry) => records.log(entry), { discard: true })
+        if (outcome._tag === "Refused") yield* Effect.forEach(Option.toArray(root), (id) => remind.remind(id, { text: line, description: FLEET_DESCRIPTION }).pipe(Effect.ignore), { discard: true })
       }
+    })
 
-      /**
-       * The ledger can miss an end (a restart, a cancelled latch, a child that never handed back): each
-       * implementor and the verifier that no longer works is handed back before a decision reads them, with the
-       * hand-back its session's last words say, else `none`. A land made the moment a step handed back would
-       * otherwise end it ahead of its own hand-back (the ledger of 2026-11-12, batch af, for an implementor; the
-       * same race lost a verifier's verdict). Each verifier verdict read so goes into `heard`, to be concluded.
-       */
-      const reconcile = (root: string, state: MachineState, heard: Array<Heard>) =>
-        Effect.gen(function* () {
-          const dead: Array<MachineCommand> = []
-          for (const [name, unit] of Object.entries(state.units)) {
-            if (unit.state !== "implement" || (yield* working(root, "implementor", name, unit.child))) continue
-            dead.push(HandBack.make({ role: "implementor", name, verdict: yield* lastVerdictOf(name, Option.fromNullishOr(unit.child)) }))
-          }
-          const verifier = state.verifier
-          if (verifier === undefined || (yield* working(root, "verifier", verifier.batch, verifier.child))) return dead
-          // A stopped verifier's last words are an earlier turn's: it gave no verdict.
-          if (yield* stoppedChild(Option.fromNullishOr(verifier.child))) return [...dead, HandBack.make({ role: "verifier", name: verifier.batch, verdict: "stopped" })]
-          const said = yield* Effect.forEach(Option.toArray(Option.fromNullishOr(verifier.child)), (child) =>
-            Effect.map(saidBy("verifier", child), Option.map((back) => ({ back, child }))),
-          )
-          const own = Option.filter(Option.flatten(Option.fromIterable(said)), ({ back }) => back.name === verifier.batch)
-          if (Option.isNone(own)) return [...dead, HandBack.make({ role: "verifier", name: verifier.batch, verdict: "none" })]
-          heard.push({ batch: verifier.batch, child: own.value.child, verdict: own.value.back.verdict })
-          return [...dead, own.value.back]
-        })
+    const handBack = Effect.fn("Verdicts.handBack")(function* (sessionID: string) {
+      if ((yield* sessions.agentOf(sessionID)) !== "verifier") return
+      const words = yield* sessions.lastWordsOf(sessionID)
+      const said = handBackOf("verifier", words)
+      if (said === undefined || said.verdict !== "accepted") return
+      const key = `${sessionID}\n${words ?? ""}`
+      if (published.has(key)) return
+      published.add(key)
+      const report = Option.fromUndefinedOr(said.file)
+      const outcome = yield* fleet.record({ report, batch: said.unit })
+      yield* told(Option.fromUndefinedOr(yield* sessions.parentOf(sessionID)), said.unit, report, Option.fromUndefinedOr(yield* sessions.directoryOf(sessionID)), outcome)
+    }, one.withPermits(1))
 
-      /** Each unresolved verdict whose report reads now: its findings, read again before a decision. */
-      const reread = (state: MachineState) =>
-        Effect.gen(function* () {
-          const read: Array<MachineCommand> = []
-          for (const [batch, debt] of unresolvedOf(state)) {
-            if (debt.report === undefined) continue
-            const again = yield* findings.read(debt.report)
-            if (again._tag === "Read") read.push(ReportRead.make({ batch, findings: again.findings }))
-          }
-          return read
-        })
-
-      /** `state` after `commands` that never refuse (a report read again), as the ledger will decide them. */
-      const decider = machine(config.cadence)
-      const advance = (state: MachineState, commands: ReadonlyArray<MachineCommand>, at: number) =>
-        Effect.gen(function* () {
-          let current = state
-          for (const command of commands) {
-            const events = yield* decider.decide(current, command, at).pipe(Effect.orElseSucceed((): ReadonlyArray<MachineEvent> => []))
-            current = events.reduce(decider.evolve, current)
-          }
-          return current
-        })
-
-      const now = Clock.currentTimeMillis
-      const warnedNote = (decided: Decided) => (decided.warned === undefined ? [] : [decided.warned.message])
-
-      /**
-       * Says what recording the fleet target did where the orchestrator reads it: the run's log.md,
-       * the server's log, and, when nothing was published, the root's context for its next turn.
-       */
-      const toldFleet = Effect.fn("Machines.toldFleet")(function* (root: string, batch: string, report: Option.Option<string>, directory: Option.Option<string>, outcome: FleetOutcome) {
-        for (const line of fleetLineOf(batch, outcome, yield* now)) {
-          if (outcome._tag === "Refused") yield* Effect.logWarning(line)
-          else yield* Effect.logInfo(line)
-          const entries = Option.toArray(report).map((near) => Option.match(directory, { onNone: () => ({ near, line }), onSome: (dir) => ({ near, line, directory: dir }) }))
-          yield* Effect.forEach(entries, (entry) => records.log(entry), { discard: true })
-          if (outcome._tag === "Refused") yield* remind.remind(root, { text: line, description: FLEET_DESCRIPTION }).pipe(Effect.ignore)
-        }
-      })
-
-      /**
-       * A verifier's verdict the ledger recorded, once: it adds the root's drift to its run's log.md (its report's
-       * run), and an accepted one records the fleet target its batch file names, apart from the hand-back. The
-       * ledger records a verdict once (it ends the verifier), so whichever reads it first, the idle hand-back or a
-       * reconcile, concludes it.
-       */
-      const conclude = Effect.fn("Machines.conclude")(function* (root: string, at: number, ended: Heard) {
-        const words = yield* sessions.lastWordsOf(ended.child)
-        const report = reportOf(words)
-        const directory = yield* sessions.directoryOf(ended.child)
-        if (ended.verdict === "accepted")
-          yield* fleet.record({ report: Option.fromNullishOr(report), batch: ended.batch }).pipe(
-            Effect.flatMap((outcome) => toldFleet(root, ended.batch, Option.fromNullishOr(report), Option.fromNullishOr(directory), outcome)),
-            Effect.forkDetach,
-          )
-        if (ended.verdict === "none" || report === undefined) return
-        const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
-        yield* records.log({ near: report, line, ...(directory === undefined ? {} : { directory }) })
-      })
-
-      /**
-       * `decide`, on a fresh record of the verdicts its reconcile reads from verifiers' last words, each concluded
-       * once `decide` ends, whatever it came to: the hand-backs come first in its commands and never refuse, so a
-       * call the machine refuses after them has still recorded them.
-       */
-      const reconciled = <A, E, R>(root: string, at: number, decide: (heard: Array<Heard>) => Effect.Effect<A, E, R>) =>
-        Effect.suspend(() => {
-          const heard: Array<Heard> = []
-          return decide(heard).pipe(Effect.ensuring(Effect.suspend(() => Effect.forEach(heard, (each) => conclude(root, at, each), { discard: true }))))
-        })
-
-      const start = Effect.fn("Machines.start")(function* (input: { readonly root: string; readonly key: string; readonly input: unknown }) {
-        if (typeof input.input !== "object" || input.input === null) return { notes: [] }
-        const fields = input.input as Record<string, unknown>
-        const description = typeof fields.description === "string" ? fields.description : undefined
-        // The role it runs as, as the guard routes it: a follow-up naming no agent keeps its child's.
-        const child = typeof fields.sessionID === "string" && fields.sessionID !== "" ? fields.sessionID : undefined
-        const routed = route(fields.agent, config.fullAgent, description).agent
-        const agent = child !== undefined && unspecific(fields.agent) ? ((yield* sessions.agentOf(child)) ?? routed) : routed
-        // The step is its description's alone: no prompt is read (a land knows a unit by its Rift's branch, unitOfEntry).
-        const command = stepOfCall(agent, description)
-        if (command === undefined) return { notes: [] }
-        const at = yield* now
-        let notes: ReadonlyArray<string> = []
-        let prompt: string | undefined
-        const logged = yield* unitLogs.drops(input.root)
-        const decided = yield* reconciled(input.root, at, (heard) =>
-          ledger.decide(
-            input.root,
-            at,
-            (state) =>
-              Effect.gen(function* () {
-                // A unit the root logged dropped since the last call it made ends first, as its drop's own call would.
-                const drops = dropsOf(logged, state)
-                const dead = command.role === "verifier" ? yield* reconcile(input.root, state, heard) : []
-                // An unresolved verdict's report that reads now opens its findings first: this start may fold them.
-                const read = yield* reread(state)
-                const seen = yield* advance(state, [...drops, ...read], at)
-                notes = notesOf(seen, command, at, config.cadence)
-                prompt = verifierPromptOf(seen, command)
-                return [...drops, ...dead, ...read, command]
-              }),
-            config.mode,
-          ),
-        )
-        inFlight.set(input.key, { root: input.root, role: command.role, name: command.name })
-        return { notes: [...warnedNote(decided), ...notes], ...(prompt === undefined ? {} : { prompt }) }
-      })
-
-      const started = Effect.fn("Machines.started")(function* (input: { readonly root: string; readonly key: string; readonly child?: string }) {
-        const step = inFlight.get(input.key)
-        if (step === undefined) return
-        inFlight.delete(input.key)
-        const child = input.child
-        if (child === undefined || step.role === "planner") return
-        yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Spawned.make({ role: step.role, name: step.name, child })])).pipe(Effect.ignore)
-      })
-
-      const resolve = Effect.fn("Machines.resolve")(function* (rifts: ReadonlyArray<LandTarget>) {
-        return yield* Effect.forEach(
-          rifts,
-          (target) => {
-            const entry = entryOf(target)
-            if (entry.unit !== undefined || entry.branch !== undefined || !/^(?:\/|~\/)/.test(entry.rift)) return Effect.succeed(entry)
-            return branches.of(entry.rift).pipe(Effect.map((branch): LandEntry => (branch === undefined ? entry : { ...entry, branch })))
-          },
-          { concurrency: 4 },
-        )
-      })
-
-      const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) {
-        const command = Land.make({ rifts: input.rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
-        const at = yield* now
-        const logged = yield* unitLogs.drops(input.root)
-        const decided = yield* reconciled(input.root, at, (heard) =>
-          ledger.decide(
-            input.root,
-            at,
-            (state) =>
-              Effect.all([reconcile(input.root, state, heard), reread(state)]).pipe(Effect.map(([dead, read]) => [...dropsOf(logged, state), ...dead, ...read, command])),
-            config.mode,
-          ),
-        )
-        return { notes: warnedNote(decided) }
-      })
-
-      const landed = Effect.fn("Machines.landed")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) {
-        yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
-      })
-
-      const dropped = Effect.fn("Machines.dropped")(function* (root: string) {
-        const logged = yield* unitLogs.drops(root)
-        if (logged.length > 0) yield* ledger.decide(root, yield* now, (state) => Effect.succeed(dropsOf(logged, state))).pipe(Effect.ignore)
-      })
-
-      const handBack = Effect.fn("Machines.handBack")(function* (sessionID: string) {
-        const agent = yield* sessions.agentOf(sessionID)
-        if (agent === undefined || !isStep(agent)) return
-        const root = yield* sessions.parentOf(sessionID)
-        if (root === undefined) return
-        // A verifier's `changes` opens the findings its report holds: each folds into the next batch. A report that
-        // does not read, or none named, leaves the verdict unresolved: never an empty set of findings.
-        const back = yield* saidBy(agent, sessionID)
-        if (Option.isNone(back)) return
-        const said = back.value
-        // The session that handed back is the step's: a step started before its session was known gets it here.
-        const at = yield* now
-        const logged = yield* unitLogs.drops(root)
-        const decided = yield* ledger.decide(root, at, (state) => Effect.succeed([...dropsOf(logged, state), said])).pipe(Effect.orElseSucceed(() => undefined))
-        // A verdict a reconcile read first was concluded there: the ledger then decides this hand-back to nothing.
-        const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
-        if (ended !== undefined) yield* conclude(root, at, { batch: ended.batch, child: sessionID, verdict: ended.verdict })
-      })
-
-      const brief = Effect.fn("Machines.brief")(function* (root: string) {
-        const at = yield* now
-        const decided = yield* reconciled(root, at, (heard) =>
-          ledger.decide(root, at, (state) => Effect.all([reconcile(root, state, heard), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read]))),
-        ).pipe(Effect.orElseSucceed(() => undefined))
-        const state = decided?.state ?? (yield* ledger.state(root))
-        const run = briefOf(state, at, config.cadence)
-        if (run === "") return run
-        // How far the run drifted from the machine so far, with its newest departures and why.
-        const drift = yield* ledger.drift(root)
-        const departures = departureLines(drift)
-        return [run, scoreOf(drift) === 0 ? driftLine(drift) : `${driftLine(drift)} (0 is a clean run)`, ...(departures.length === 0 ? [] : ["last departures:", ...departures.map((line) => `  ${line}`)])].join("\n")
-      })
-
-      const compacted = Effect.fn("Machines.compacted")(function* (sessionID: string) {
-        if ((yield* sessions.parentOf(sessionID)) !== undefined) return { _tag: "Quiet", why: "a subagent" } as const
-        const state = yield* brief(sessionID)
-        if (state === "") return { _tag: "Quiet", why: "runs no unit" } as const
-        return yield* remind.remind(sessionID, { text: briefText(config.block, state), description: BRIEF_DESCRIPTION }).pipe(
-          Effect.as<BriefOutcome>({ _tag: "Told", brief: state }),
-          Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<BriefOutcome>({ _tag: "Refused", message: refused.message })),
-        )
-      })
-
-      return { start, started, resolve, land, landed, dropped, handBack, brief, compacted, state: ledger.state }
-    }),
-  )
+    return { handBack }
+  }),
+)
 
 // ── A run's skill drift (skill-drift.ts) ──
 

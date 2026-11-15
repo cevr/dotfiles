@@ -3,11 +3,9 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
-import type { Drift } from "./drift.ts"
 import type { FleetOutcome } from "./fleet.ts"
 import type { HeavyReading } from "./heavy.ts"
 import type { Holds, Run } from "./idle.ts"
-import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
@@ -18,12 +16,6 @@ export class CallLog extends Context.Service<
   CallLog,
   { readonly append: (line: CallLine) => Effect.Effect<void> }
 >()("dotfiles-opencode/orchestrate/CallLog") {}
-
-/** A unit whose log.md ends in a move to `dropped`: its name (its dir's last segment) and that move's round. */
-export interface LoggedDrop {
-  readonly unit: string
-  readonly round: number
-}
 
 /**
  * The units' logs (each `<run dir>/<unit>/log.md`), written through the orchestrate skill's log.ts.
@@ -40,14 +32,6 @@ export class UnitLogs extends Context.Service<
   {
     readonly find: (input: { readonly unit: string; readonly named: ReadonlyArray<string>; readonly directory?: string }) => Effect.Effect<string | undefined>
     readonly append: (unitDir: string, transition: Transition) => Effect.Effect<void>
-    /**
-     * The units `session`'s shell calls moved to `dropped` and that are there still: each unit dir the drops journal
-     * names for it (log.ts writes a line there with each written drop, `journalDrop`), once, whose log.md's last move
-     * is to `dropped`, with that move's round. What log.ts wrote decides, never a command's text, so a dir named
-     * through a variable or after a `cd`, or a drop written after its call returned, counts the same; a refused
-     * move writes no line, and a unit moved on since (revived) is not there still. None when the journal does not read.
-     */
-    readonly drops: (session: string) => Effect.Effect<ReadonlyArray<LoggedDrop>>
   }
 >()("dotfiles-opencode/orchestrate/UnitLogs") {}
 
@@ -238,47 +222,6 @@ export class Steer extends Context.Service<Steer, { readonly nudge: (sessionID: 
   "dotfiles-opencode/orchestrate/Steer",
 ) {}
 
-// ── The batch machine (machine.ts) ──
-
-/**
- * What a call against the machine gets: `refuse` fails it with the rule's
- * words; `warn` lets it pass, records the departure, and its answer carries
- * the words.
- */
-export type GuardMode = "refuse" | "warn"
-
-/** What one decision recorded: every event, in order, the root's state after them, and the refusal a `warn` let pass. */
-export interface Decided {
-  readonly events: ReadonlyArray<MachineEvent>
-  readonly state: MachineState
-  readonly warned?: Refused
-}
-
-/**
- * Each root's batch machine, kept as lines (`{ at, sessionID, kind, ... }`,
- * one per event or refusal), its state the fold of its lines.
- * - `state`: the root's state now; the initial state for a root with no line.
- * - `drift`: how far the root drifted from the machine, scored from its lines (drift.ts); clean for a root with no line.
- * - `decide`: under the store's one lock (every ledger on the store shares it), `plan` reads the state and gives the
- *   commands to decide, each on the state the last left; each one's events
- *   are lines. A refused command is a `Refused` line, changes nothing, and
- *   stops the rest; under `warn` it is decided again with a departure and
- *   passes. Decisions of one root apply in the order asked.
- */
-export class Ledger extends Context.Service<
-  Ledger,
-  {
-    readonly state: (sessionID: string) => Effect.Effect<MachineState>
-    readonly drift: (sessionID: string) => Effect.Effect<Drift>
-    readonly decide: <E, R>(
-      sessionID: string,
-      now: number,
-      plan: (state: MachineState) => Effect.Effect<ReadonlyArray<MachineCommand>, E, R>,
-      mode?: GuardMode,
-    ) => Effect.Effect<Decided, Refused | E, R>
-  }
->()("dotfiles-opencode/orchestrate/Ledger") {}
-
 /**
  * Puts one message in a session's context for its next request, marked
  * `BRIEF_MARK`, without starting a turn: an idle session reads it with its
@@ -288,38 +231,6 @@ export class Remind extends Context.Service<
   Remind,
   { readonly remind: (sessionID: string, note: { readonly text: string; readonly description: string }) => Effect.Effect<void, NudgeRefused> }
 >()("dotfiles-opencode/orchestrate/Remind") {}
-
-/**
- * A verifier's findings, read from the report its hand-back names (a batch's
- * `batch-<k>-findings.md` or a unit's `round-N-findings.md`): each Blocker and
- * Major of a unit whose verdict is `changes`, as `<unit>/<id>` (the unit
- * alone when its file names no id). A report that cannot be read in full
- * (it, or a unit's findings file it names, is missing, or it names none) is
- * `Unread`, with why: never an empty set of findings.
- */
-export type FindingsRead = { readonly _tag: "Read"; readonly findings: ReadonlyArray<string> } | { readonly _tag: "Unread"; readonly why: string }
-
-export class Findings extends Context.Service<
-  Findings,
-  {
-    readonly read: (report: string) => Effect.Effect<FindingsRead>
-    /** The earlier verdicts' findings a verdict's report marks closed by another batch (`closed by batch-<k>`, `folded and closed`). */
-    readonly closed: (report: string) => Effect.Effect<ReadonlyArray<string>>
-  }
->()("dotfiles-opencode/orchestrate/Findings") {}
-
-/**
- * The branch checked out in a Rift (a land's entry by path, `~/` for home): what names its unit
- * (`feat/<unit>`). None when it cannot be read: no checkout there, a detached HEAD, no git.
- */
-export class Branches extends Context.Service<Branches, { readonly of: (path: string) => Effect.Effect<string | undefined> }>()(
-  "dotfiles-opencode/orchestrate/Branches",
-) {}
-
-/** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
-export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(
-  "dotfiles-opencode/orchestrate/Liveness",
-) {}
 
 // ── A run's skill drift (skill-drift.ts) ──
 

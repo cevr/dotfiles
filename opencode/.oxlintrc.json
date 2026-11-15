@@ -1035,14 +1035,6 @@
     },
     {
       "files": [
-        "mods/orchestrate/machine.ts"
-      ],
-      "rules": {
-        "effect/maxHalsteadDifficulty": "off"
-      }
-    },
-    {
-      "files": [
         "mods/pool/memory/fleet-claims.test.ts"
       ],
       "rules": {

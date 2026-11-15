@@ -1,57 +1,54 @@
-# Orchestrate's machine and the land
+# Orchestrate's tool and the land
 
-A root that runs the orchestrate skill starts role agents (planner, implementor, verifier, worker) with the `subagent` tool, named in the skill's form (`<role> <unit> r<N>`), and the plugin holds it to the skill's batch machine at the point of action: a verifier not named `batch-<k>`, a second verifier while one runs, a land or verifier before the cadence, a land while a batch has no verdict, a land with a finding folded into no unit, and a land that leaves a ready unit out are refused in the skill's own words, with what to do instead. A batch lands through the rift tool's `land` (merge each Rift, one gate or the Rifts' receipts, one push), and its one verifier starts after. After a compaction the root is told the machine and its run's state.
+A root that runs the orchestrate skill starts role agents (planner, implementor, verifier, worker) with the `subagent` tool, named in the skill's form (`<role> <unit> r<N>`), and moves its units with the `orchestrate` tool. The plugin keeps no batch machine: no call is refused for a batch rule, and every `orchestrate` answer is computed at the call from the run tables (the skill's `status.ts`, over the status RPC) and the warm source's Rift list, so a restart or another root gets the same answer. A land goes through the rift tool's `land` (merge each Rift, one gate or the Rifts' receipts, one push). After a compaction the root is told its status and the re-read.
 
 ## Sub-features
 
 - `role-start`: a role call starts the role's agent on its model, its start and hand-back logged to the unit's `log.md`.
-- `machine-refuse`: each of the six rules refuses in the skill's words (`VerifierPerUnit`, `VerifierRunning`, `BatchNotDue`, `VerdictPending`, `FindingUnfolded`, `LandPartial`).
-- `machine-depart`: `(departs: <why>)` passes a refused call and records the departure.
-- `machine-pipeline`: batch N+1's implementors start while batch N's verifier runs; its findings fold into the next starts.
-- `machine-brief`: after a compaction, one steered brief of the machine and the run.
-- `machine-move`: a root that moves between locations keeps one ledger.
+- `no-batch-refusal`: no call is refused for a batch rule: a verifier named for a unit, a second verifier while one runs, a land of one unit that just handed back, a land while a verifier runs, `(departs: …)` and `(folds: …)` all pass; only a subagent's `lane`/`land`/`verify`, a malformed input, the Sabbath, a latched child and a Codex implementor are refused.
+- `stateless-restart`: after a restart, and from a new root session, `status` gives the same answer and a land of a unit the old root laned lands its Rift.
+- `land-warn`: a land naming a unit the run tables show in another state than `ready` lands it, its answer starting `orchestrate: warning: <unit> is <state>, not ready; landed as asked.`
+- `machine-brief`: after a compaction, a root that runs units gets one message: its `status` answer and the re-read.
 - `land`: the rift tool's `land` merges a batch's Rifts, takes their receipts or runs one gate, pushes once, and trashes the Rifts. A gate its systemd scope stopped for memory is answered as out of memory at the scope's MemoryMax, not as a bare `exit 143`.
-- `land-adopt`: a land (either tool) naming `{ unit, path }` of a unit the machine does not hold (its implementor started before a restart) adopts it as ready on that Rift, checks it as one of the batch, and records it for the verifier; a bare unknown name is refused with the `{ unit, path }` call to make, and every refusal's suggested call passes when made as written.
-- `findings-closed`: a verdict's report line marking findings `closed by batch-<k>` (or `folded and closed`) closes them in the ledger; the next land no longer counts them.
 - `orchestrate-tool`: the root's `orchestrate` tool. It has four actions:
-  - `lane` makes a unit's Rift, or answers the one that exists, ending `(rift: <path>)`;
-  - `land` with no units lands every ready unit, decided by the same machine as a rift land;
-  - `verify` makes the batch verifier's clean checkout and answers the one subagent call that starts it;
+  - `lane` makes a unit's Rift, or answers the one that exists, ending `(rift: <path>)`; a Rift is never answered to another unit (`y`'s `feat-y` is not unit `feat-y`'s);
+  - `land` lands the named units' Rifts (`{ unit, path }` as given), or with no units every unit the run tables show `ready` with a lane;
+  - `verify` makes the verifier's clean checkout and answers the one subagent call that starts it;
   - `status` names each unit's state, its lane and one `next:` call.
-- `idle-root`: a root that ends its turn with nothing of its own going while units are in plan, implement or verify (or a batch is due) is steered once per idle period, with `idle with units in plan, implement or verify: …` or `… batch due …`. It is never steered while the owner drafts, while a question to him is open, or once it has a `waiting` queue item.
+- `idle-root`: a root that ends its turn with nothing of its own going while units are in plan, implement or verify, or in `ready`, is steered once per idle period, with `idle with units in plan, implement or verify: …` or `… ready to land: …`. It is never steered while the owner drafts, while a question to him is open, or once it has a `waiting` queue item.
 
 ## How to get to it (user POV)
 
 - The root agent's `subagent` call with a role and a description in the skill's form.
 - The rift tool's `{ "action": "land", "rifts": [...] }` (on the owner's machines only).
 - The root's `orchestrate` tool: `{ "action": "lane", "unit": "billing" }`, `{ "action": "land" }`, `{ "action": "verify", "batch": "batch-7" }`, `{ "action": "status" }`.
-- A compaction of a root that runs units (the brief).
+- A compaction of a root that runs units (the note).
 
 ## Driving it with the world
 
-- **Preconditions:** orchestrate loaded for one or two locations over one ledger; the roles' models answer as `machine-world.ts`'s steps say; the verifiers' reports are files the plugin's own reader reads, held in memory.
-- **States:** default (a run that keeps the machine), refused (each rule), a compaction, a move between locations. Error is `cmd/orchestrate/orchestrate-faults.sim.test.ts`. Loading is `n/a`.
-- **World suites:** `cmd/orchestrate/orchestrate-machine.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`, `cmd/orchestrate/idle-root-property.sim.test.ts`, `cmd/orchestrate/orch-tools.sim.test.ts`, `cmd/orchestrate/orchestrate-latch.sim.test.ts`
+- **Preconditions:** orchestrate, the real rift plugin on its memory layers and the status plugin loaded over one memory world of warm sources, Rifts and unit logs (`orch-tools-world.ts`); the status script prints the logs as its table.
+- **States:** default (a run of lanes, starts, hand-backs and lands), a restart, a new root, a compaction. Error is `cmd/orchestrate/orchestrate-faults.sim.test.ts`. Loading is `n/a`.
+- **World suites:** `cmd/orchestrate/orch-tools.sim.test.ts`, `cmd/orchestrate/orchestrate.sim.test.ts`, `cmd/orchestrate/orchestrate-faults.sim.test.ts`, `cmd/orchestrate/orchestrate-fallback.sim.test.ts`, `cmd/orchestrate/idle-root.sim.test.ts`, `cmd/orchestrate/idle-root-property.sim.test.ts`, `cmd/orchestrate/orchestrate-latch.sim.test.ts`
 - **Code:** `mods/orchestrate/`, `cmd/orchestrate/`, `mods/rift/`, `cmd/rift/`, `sim/`
-- **Regression:** `mods/orchestrate/machine.test.ts`, `mods/orchestrate/git/machine-words.test.ts` (the refusals held to SKILL.md), `cmd/rift/rpc.test.ts` (the rift plugin's RPC, which the `orchestrate` tool's lanes and lands go through).
+- **Regression:** `mods/orchestrate/tools.test.ts` (the lane name rule, status and land resolution), `cmd/orchestrate/server.test.ts`, `cmd/rift/rpc.test.ts` (the rift plugin's RPC, which the `orchestrate` tool's lanes and lands go through).
 
-1. **Drift after a compaction.** A root runs three implementors in the background, compacts while the third runs, asks for a verifier of one unit and a land of one Rift: both are refused in the skill's words; then it lands the batch and starts its one verifier, which passes.
-2. **The pipeline.** Batch 2's implementors start while batch 1's verifier runs; its `changes` report opens findings that the next starts fold.
-3. **Moves.** The root moves between two locations between its steps; each copy reads the other's ledger lines, and no keeping run is ever refused.
+1. **Nothing refused.** A1 of `orch-tools.sim.test.ts`: up to 16 seeded commands (lanes, starts with `(rift: …)`, `(folds: …)`, `(departs: …)`, verifiers named for a batch, a unit or `main-<sha>`, lands, restarts, new roots); no call fails but the model's own, each land reaches the rift plugin with the Rifts the model resolves, and `status` equals the model's rendering after every command.
+2. **A restart and a new root.** A2: lane `a`, `a` hands back ready, a restart, a new root lands `a`.
+3. **A warning, not a refusal.** A3: a land of a blocked and an implementing unit lands both, each warned first.
 
 ## Driving it with real OpenCode
 
-- **Real:** `tests/orchestrate-machine.test.ts`, `tests/orchestrate.test.ts`, `tests/rift.test.ts`
+- **Real:** `tests/orchestrate.test.ts`, `tests/rift.test.ts`
 
-1. **Hold a root to the machine.** Type `verify: call subagent {"agent":"implementor","description":"implementor alpha r1","prompt":"verify: say alpha ready","background":true}`, Enter. Wait for the call's answer; the implementor's row shows under the composer.
-2. **A refused verifier.** Type `verify: call subagent {"agent":"verifier","description":"verifier alpha r1","prompt":"verify: say accepted"}`, Enter. Wait for `One verifier per batch`. The call is refused in the skill's words and names the `batch-<k>` form; no verifier session starts.
-3. **A departure.** The same call with ` (departs: verify drive)` at the end of the description passes and starts the verifier.
-4. **Proof.** Snapshot after steps 2 and 3 into `$EVIDENCE/orchestrate/`; the ledger is `$ROOT/home/.cache/orchestrate/machine.jsonl`, and its `Departed` line is the second view of step 3.
+1. **A verifier named for a unit.** Type `verify: call subagent {"agent":"implementor","description":"implementor alpha r1","prompt":"verify: say alpha ready","background":true}`, Enter. Wait for the call's answer; the implementor's row shows under the composer.
+2. **It starts.** Type `verify: call subagent {"agent":"verifier","description":"verifier alpha r1","prompt":"verify: say accepted"}`, Enter. Wait for `accepted`. The verifier session starts; no answer says a batch rule.
+3. **Status.** Type `verify: call orchestrate {"action":"status"}`, Enter. Wait for `orchestrate:`. The scratch checkout has no `tmp/orchestrate` run, so the answer is `orchestrate: no run of this repository holds a unit; …`, the same after a restart; it is not an error.
+4. **Proof.** Snapshot after steps 2 and 3 into `$EVIDENCE/orchestrate/`; `$ROOT/home/.cache/orchestrate/` holds no `machine.jsonl`.
 
-The land itself is never driven on a scratch server (`verify:seed` refuses the rift plugin, which lands real repositories): its proof is `tests/rift.test.ts` and the world's machine suites.
+The land itself is never driven on a scratch server (`verify:seed` refuses the rift plugin, which lands real repositories): its proof is `tests/rift.test.ts` and the world's `orch-tools` suite.
 
 ## Gotchas
 
-- The machine holds a root only once it starts `implementor <unit> rN` agents, or a land adopts a `{ unit, path }`; a root that runs no unit is never refused, so step 2 without step 1 passes and proves nothing.
-- The refusal's words are SKILL.md's, through `bun run agents`; after a skill edit, `bun run agents --check` tells whether `agents.json` is stale.
+- The run tables come from the status plugin of the repository's location; with no status plugin, or no `tmp/orchestrate/<run>`, `status` says no run holds a unit and a land with no units has nothing to land.
+- `(departs: …)` and `(folds: …)` still parse in a description and mean nothing; `departs` still decodes in a land's input.
 - A Codex fallback never implements: a held implementor start latches and waits.

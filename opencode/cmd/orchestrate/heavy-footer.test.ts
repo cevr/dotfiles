@@ -2,7 +2,7 @@
 // stand-in host whose cores, load and heavy agents working the test fixes
 // (memory/heavy-host.ts), with every other outside system a test layer. It
 // checks the prompt the host's subagent tool receives: a new implementor's,
-// a follow-up's, a batch verifier's after its folds, and a latched
+// a follow-up's, a verifier's, and a latched
 // implementor's as its latch opens, each ending with exactly one footer at
 // the share of the moment it is sent; a planner's and a worker's untouched.
 // A kernel cell's `tools.subagent` call reaches the same `execute.before` hook
@@ -14,26 +14,23 @@ import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer, Option, Predicate, Queue, Stream } from "effect"
 import { type Latch, type LatchAsk, OPENER } from "@dotfiles/opencode-wake/latch"
 import { working } from "@dotfiles/opencode-orchestrate/filestore/heavy-agents"
-import { closedIn, findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import { FOOTER_MARK, footerOf, shareOf, withFooter } from "@dotfiles/opencode-orchestrate/heavy"
 import { NO_HOLDS } from "@dotfiles/opencode-orchestrate/idle"
-import { DEFAULT_CADENCE } from "@dotfiles/opencode-orchestrate/machine"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as HeavyHostTest from "@dotfiles/opencode-orchestrate/memory/heavy-host"
-import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
-import { Branches, Findings, HostUnread, Liveness, Remind, RootHolds, Runs, Steer, Tell } from "@dotfiles/opencode-orchestrate/service"
+import { HostUnread, Remind, RootHolds, Runs, Steer, Tell } from "@dotfiles/opencode-orchestrate/service"
 import { TestClock } from "effect/testing"
 import { effectTest } from "../../sim-tui/effect-test.ts"
-import Orchestrate, { type Background, make } from "./server.ts"
+import Orchestrate, { make } from "./server.ts"
 
 /** Wednesday 4 November 2026, 10:00 in Knowlton: no Sabbath. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
@@ -94,8 +91,6 @@ interface World {
   /** The pool's pace on each provider; none named is not pooled. */
   readonly pool?: typeof HELD
   readonly kept?: Array<LatchAsk & { readonly child: string }>
-  /** The files a verifier's report names, by path. */
-  readonly files?: ReadonlyMap<string, string>
 }
 
 /** The plugin started on a stand-in host, with the hooks a test drives. */
@@ -144,19 +139,8 @@ const start = (world: World) =>
         kept.push({ ...ask, child })
         return { outcome: "latched" as const, id: `w00000${kept.length}`, child }
       })
-    const files = world.files || new Map<string, string>()
-    const externals = (latchStart: OpenCodeLatches.Start, background: Background) =>
+    const externals = (latchStart: OpenCodeLatches.Start) =>
       Layer.mergeAll(
-        MemoryLedger.layer(DEFAULT_CADENCE),
-        Layer.succeed(
-          Findings,
-          Findings.of({
-            read: (report) => Effect.sync(() => findingsIn(report, (path) => files.get(path))),
-            closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr(files.get(path)))),
-          }),
-        ),
-        Layer.succeed(Liveness, Liveness.of({ alive: (sessionID) => Effect.succeed(background(sessionID) > 0) })),
-        Layer.succeed(Branches, Branches.of({ of: (path) => Effect.sync(() => new Map<string, string>().get(path)) })),
         Layer.succeed(Remind, Remind.of({ remind: () => Effect.void })),
         CallLogTest.layer([]),
         SessionsTest.layer(world.sessions || {}),
@@ -164,7 +148,7 @@ const start = (world: World) =>
         PoolPaceTest.layer(world.pool || {}),
         CodexAdmissionTest.layer(() => ({ ok: true, measured: false, reason: "not asked here" })),
         OpenCodeLatches.layer(keep, latchStart),
-        FileUnitLogs.layer(LOG_SCRIPT, { journal: "/nonexistent/loop-probe-x/drops.jsonl" }),
+        FileUnitLogs.layer(LOG_SCRIPT),
         StepLogTest.layer({}),
         Layer.succeed(Runs, Runs.of({ list: Effect.succeed([]) })),
         Layer.succeed(RootHolds, RootHolds.of({ of: () => Effect.succeed(NO_HOLDS) })),
@@ -175,7 +159,7 @@ const start = (world: World) =>
         FleetTest.layer([]),
       )
     yield* make(
-      (_ctx, _options, latchStart, background) => externals(latchStart, background),
+      (_ctx, _options, latchStart) => externals(latchStart),
       () => HeavyHostTest.layer(world.heavy),
     ).effect(stub)
 
@@ -271,34 +255,25 @@ describe("the heavy footer", () => {
   )
 
   scenario(
-    "(c) a batch verifier's prompt ends with one footer, after its (folds: …) addition",
+    "(c) a verifier's prompt ends with one footer, its prompt otherwise as sent: a second verifier while one runs is let through",
     Effect.gen(function* () {
-      const report = "/run/alpha/round-1-findings.md"
       const sessions = {
         root: {},
         ses_a: { parentID: "root", agent: "implementor", lastWords: "implementor alpha r1: ready x" },
-        ses_v: { parentID: "root", agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
-        ses_f: { parentID: "root", agent: "implementor", lastWords: "implementor alpha-fix1 r1: ready x" },
+        ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: changes /run/alpha/round-1-findings.md" },
       }
       const heavy = HeavyHostTest.host(12, 0)
-      const plugin = yield* start({ heavy, sessions, files: new Map([[report, "changes\n\n## Major\n\n### M1 — the footer\n"]]) })
-      yield* plugin.begin({ agent: "implementor", description: "implementor alpha r1", prompt: "go", background: true }, "ses_a")
+      const plugin = yield* start({ heavy, sessions })
+      yield* plugin.begin({ agent: "implementor", description: "implementor alpha r1 (folds: beta/M1)", prompt: "go", background: true }, "ses_a")
       yield* plugin.idle("ses_a")
       yield* plugin.land(["alpha"])
       const first = yield* plugin.begin({ agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
-      endsWithOne(first, footerOf("verifier", 6, 12))
-      yield* plugin.idle("ses_v")
-      yield* plugin.begin({ agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M1)", prompt: "fix alpha/M1", background: true }, "ses_f")
-      yield* plugin.idle("ses_f")
-      yield* plugin.land(["alpha-fix1"])
+      expect(first).toBe(`verify batch-1\n\n${footerOf("verifier", 6, 12)}`)
       heavy.working = 2
-      const two = yield* plugin.call("subagent", { agent: "verifier", description: "verifier batch-2 r1", prompt: "verify batch-2", background: true })
+      const two = yield* plugin.call("subagent", { agent: "verifier", description: "verifier alpha r1", prompt: "verify alpha", background: true })
       expect(two.refused).toBe(false)
-      const prompt = String(two.input.prompt)
-      expect(prompt).toStartWith("verify batch-2\n\nFindings of the batch before, folded into this batch")
-      expect(prompt).toContain("- batch-1 alpha/M1 → alpha-fix1")
-      endsWithOne(prompt, footerOf("verifier", 4, 12))
-      expect(prompt.indexOf("- batch-1 alpha/M1 → alpha-fix1")).toBeLessThan(prompt.indexOf(FOOTER_MARK))
+      endsWithOne(String(two.input.prompt), footerOf("verifier", 4, 12))
+      expect(String(two.input.prompt)).toStartWith("verify alpha\n\n")
     }),
   )
 

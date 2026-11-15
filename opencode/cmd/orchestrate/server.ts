@@ -40,10 +40,6 @@
  *   the pool cannot. Without it the script alone answers.
  * - `unitLog`: the orchestrate skill's log.ts that writes each unit's moves,
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
- * - `drops`: the drops journal log.ts writes a line to for each move to
- *   `dropped` an OpenCode session's shell ran (the session and the unit dir),
- *   default `~/.cache/orchestrate/drops.jsonl`; every shell the host spawns
- *   gets it as `ORCHESTRATE_DROPS`, which log.ts reads.
  * - `skill`: the orchestrate skill's dir, whose git history versions it,
  *   default `~/.claude/skills/orchestrate`.
  * - `fleet`: `{ dotfiles, fork }`, the checkouts `bun run daily` installs from.
@@ -72,10 +68,7 @@
  *   `<run dir>/<unit>/log.md` through log.ts `--current`. The unit dir is the
  *   one a path in the prompt or the hand-back names, else the one
  *   `tmp/orchestrate/<run>/<unit>` in the session's checkout; none found, or a
- *   move already logged, writes nothing. A unit the root drops by log.ts ends on
- *   its machine: log.ts journals each drop it writes (`drops`), and the plugin
- *   reads the root's after each of its shell calls and before each start, land
- *   and hand-back, each confirmed by the unit's log.md's last line.
+ *   move already logged, writes nothing.
  *
  * - Latch: a new subagent the Sabbath or the pace holds latches instead of
  *   being refused. The call answers at once, as a background subagent's
@@ -97,31 +90,22 @@
  *   first in the subagent call's result. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
  *
- * - Batch machine: the plugin keeps each root's machine (mods/orchestrate/
- *   machine.ts) in a ledger, one JSONL line per event or refusal (keyed by
- *   the root session alone, read afresh by every location's copy, compacted
- *   past 256 KiB), from the
- *   role starts, hand-backs and `rift` lands it sees, and refuses a call
- *   against its six rules in the skill's words: a verifier not named for a
- *   batch, a second verifier, a land or verifier before the cadence while an
- *   implementor runs, a land before the last batch's verdict, a land with a
- *   finding of it folded into no unit (one folded into a running implementor
- *   rides with that unit's later land), a land that leaves a ready
- *   unit out. The machine is a pipeline: implementors start while a verifier
- *   runs; a verifier's findings (read from its report) fold into the next
- *   batch by an implementor's start, and the next batch verifier's prompt
- *   lists them. `(departs: <why>)` in a description, or `departs` in a
- *   land's input, lets the call through and records it. A step whose session
- *   no longer works is handed back as `none` first. After a root's
- *   compaction, it gets one message (no new turn): SKILL.md's machine section
- *   and its run from the ledger (the brief), with its drift from the machine
- *   (mods/orchestrate/drift.ts: 0 is a clean run). Each verdict adds that
- *   drift as a line to its run's log.md (the run its report is in), which the
- *   skill's status.ts reads for the /pool pane's run row and the runs' trend.
- *   Options: `ledger` (default `~/.cache/orchestrate/machine.jsonl`),
- *   `cadence: { ready, waitMs }` (default 3 and 30 minutes), `guard`:
- *   `refuse` (default) or `warn` (the call passes, its answer carries the
- *   rule's words, the ledger records the departure).
+ * - The `orchestrate` tool (mods/orchestrate/tools.ts): lane, land, verify
+ *   and status for a root that runs units. The plugin keeps no state of a run:
+ *   every answer is computed at the call from the run tables (the status
+ *   plugin's RPC over the skill's status.ts) and the warm source's Rift list
+ *   (the rift plugin's RPC), so a restart or another root session gets the
+ *   same answer. No batch rule refuses a call; a land of a unit the run tables
+ *   show in another state than `ready` lands with a warning. What still
+ *   refuses: a subagent's lane, land or verify (merge and push are the
+ *   root's), a malformed input, and what the rift plugin refuses. After a
+ *   root's compaction it gets one message (no new turn): its status and the
+ *   re-read. An older config's `ledger`, `cadence`, `guard` and `drops`, and a
+ *   call's `departs`, `(departs: …)` and `(folds: …)`, still decode and mean
+ *   nothing.
+ * - Fleet: a verifier's `accepted` hand-back records the verified target its
+ *   batch file names (`fleet`), once per verdict, however often its session
+ *   goes idle after.
  *
  * - Heavy footer: every implementor and verifier prompt the plugin starts (a
  *   new start, a follow-up, a latched start as it opens) ends with one footer
@@ -137,7 +121,7 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -150,8 +134,6 @@ import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as HeavyAgentsLive from "@dotfiles/opencode-orchestrate/filestore/heavy-agents"
 import { footerFor, isHeavy, withFooter } from "@dotfiles/opencode-orchestrate/heavy"
 import * as HeavyHostLive from "@dotfiles/opencode-orchestrate/node/heavy-host"
-import * as LedgerLive from "@dotfiles/opencode-orchestrate/filestore/ledger"
-import * as FindingsLive from "@dotfiles/opencode-orchestrate/filestore/findings"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
@@ -167,44 +149,35 @@ import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
-import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused, refusalOf, Start, verdictPending } from "@dotfiles/opencode-orchestrate/machine"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
 import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-rift/rpc"
-import * as GitBranches from "@dotfiles/opencode-orchestrate/git/branches"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
-import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
+import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
-  type Branches,
   type CallLog,
   type CodexAdmission,
-  type GuardMode,
   HeavyHost,
   type Latches,
-  type Findings,
-  type Ledger,
-  Liveness,
   type LatchStart,
   type Models,
   type PoolPace,
-  type Remind,
+  Remind,
   type RootHolds,
   type RunRecords,
   type Fleet,
-  type Runs,
+  Runs,
   Sessions,
   type Skill,
   type Steer,
-  type StepLog,
+  StepLog,
   type Tell,
   type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
 export const DEFAULT_LOG = join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl")
-/** The batch machine's ledger: one line per event or refusal, of every root. */
-export const DEFAULT_LEDGER = join(TuiDirs.dirs().home, ".cache/orchestrate/machine.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
 export const CODEX_BUDGET = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/scripts/budget.ts")
 /** The orchestrate skill's log.ts, the units' logs' one writer. */
@@ -244,23 +217,15 @@ const Planner = Schema.Struct({
   model: Schema.String.check(Schema.isPattern(/^[^/#\s]+\/[^#\s]+$/)),
 })
 
-const Cadence = Schema.Struct({
-  ready: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  waitMs: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
-})
-
+/** The options. An older config's `ledger`, `cadence`, `guard` and `drops` are extra keys, ignored as any is. */
 export const Options = Schema.Struct({
   log: Schema.String.pipe(withDefault(DEFAULT_LOG)),
-  ledger: Schema.String.pipe(withDefault(DEFAULT_LEDGER)),
-  cadence: Cadence.pipe(withDefault<typeof Cadence.Type>(DEFAULT_CADENCE)),
-  guard: Schema.Literals(["refuse", "warn"]).pipe(withDefault<GuardMode>("refuse")),
   planner: Schema.optional(Planner),
   now: Schema.optional(Instant),
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
-  drops: Schema.String.pipe(withDefault(UnitLogsLive.DROPS_JOURNAL)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
   fleet: Schema.optional(Schema.Struct({ dotfiles: Schema.String, fork: Schema.String })),
 })
@@ -282,11 +247,7 @@ export type Externals =
   | Skill
   | RunRecords
   | Tell
-  | Ledger
-  | Liveness
   | Remind
-  | Findings
-  | Branches
   | Fleet
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
@@ -312,7 +273,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
 })
 
 /** The outside systems the filesystem and processes provide: the files the plugin keeps, git, the scripts it runs. */
-export type Kept = Ledger | Findings | Branches | CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet
+export type Kept = CallLog | UnitLogs | CodexAdmission | StepLog | Skill | RunRecords | Fleet
 
 /**
  * Whether a session works: it runs a turn (its newest start is after its last end) or keeps background work of its
@@ -345,11 +306,8 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
   Layer.merge(
     hosted(ctx, start, background),
     Layer.mergeAll(
-      LedgerLive.layer(options.ledger, options.cadence),
-      FindingsLive.layer,
-      GitBranches.layer,
       CallLogLive.layer(options.log),
-      UnitLogsLive.layer(options.unitLog, { journal: options.drops }),
+      UnitLogsLive.layer(options.unitLog),
       CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
       StepLogLive.layer(options.log),
       SkillLive.layer(options.skill),
@@ -366,7 +324,6 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
 export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background: Background): Layer.Layer<Exclude<Externals, Kept>> =>
   Layer.mergeAll(
     SteerLive.remindLayer(synthetic(ctx)),
-    Layer.succeed(Liveness, { alive: aliveOf(ctx, background) }),
     SessionsLive.layer(
       (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
@@ -499,91 +456,12 @@ const SPAWNED = "You are a subagent spawned by another session."
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
-/** The rift tool, whose `land` the machine decides. */
-const RIFT = "rift"
-
-/** A land input's Rift: its entry (path, name or branch), or `{ path, unit }` naming the unit it is for. */
-const targetOf = (rift: unknown): ReadonlyArray<LandTarget> => {
-  if (typeof rift === "string") return [rift]
-  if (isObject(rift) && typeof rift.path === "string") return [typeof rift.unit === "string" && rift.unit.trim() !== "" ? { rift: rift.path, unit: rift.unit.trim() } : rift.path]
-  return []
-}
-
-/** A `rift` land's Rifts and its stated departure; none for any other call. */
-const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string } | undefined => {
-  if ((tool !== RIFT && tool !== Tools.ORCHESTRATE) || !isObject(input) || input.action !== "land" || !Array.isArray(input.rifts)) return undefined
-  const rifts = input.rifts.flatMap(targetOf)
-  return typeof input.departs === "string" && input.departs.trim() !== "" ? { rifts, departs: input.departs.trim() } : { rifts }
-}
-
 /** A rift RPC call that did not act, in the rift tool's words. */
 interface RiftFailed {
   readonly outcome: "failed"
   readonly message: string
 }
 const isRiftFailed = (answer: { readonly outcome: string }): answer is RiftFailed => answer.outcome === "failed"
-
-/** A `rift` create or land: the calls whose answer, in a root that runs units, names the `orchestrate` call first. */
-const decodeAliased = Schema.decodeUnknownOption(Schema.Struct({ action: Schema.Literals(["create", "land"]) }))
-
-/** The shell tool, by its name and its former one. */
-const SHELLS = new Set(["shell", "bash"])
-
-const callKey = (sessionID: string, callID: string) => `${sessionID}/${callID}`
-
-/** What the root reads when the machine refuses its call: the refusal's own message. */
-const refusedError = (refused: Refused) => new Tool.Error({ message: refused.message, error: refused })
-
-/** The text a tool's result shows the model. */
-const textOf = (result: Tool.Result): string =>
-  typeof result.content === "string"
-    ? result.content
-    : Array.isArray(result.content)
-      ? result.content.map((part: unknown) => (isObject(part) && typeof part.text === "string" ? part.text : "")).join("\n")
-      : ""
-
-/** `result` with `note` first in what the model reads. */
-const prepend = (result: Tool.Result, note: string): Tool.Result => ({
-  ...result,
-  content:
-    typeof result.content === "string"
-      ? `${note}\n${result.content}`
-      : Array.isArray(result.content)
-        ? [{ type: "text" as const, text: note }, ...result.content]
-        : result.content,
-})
-
-/** A latched call's answer with the machine's notes first. */
-const withNotes = (answer: ReturnType<typeof latchedResult>, said: ReadonlyArray<string>): ReturnType<typeof latchedResult> => {
-  if (said.length === 0) return answer
-  const output = `${said.join("\n")}\n${answer.output.output}`
-  return { ...answer, output: { ...answer.output, output }, content: output }
-}
-
-/** One Rift's line in a checked land's answer (mods/rift land.ts `checkedText`): `- <branch> (<path>): green|red|pending`. */
-const OUTCOME = /^- (\S+) \((.+)\): (green|red|pending)\b/
-
-/**
- * The Rifts a completed land landed: in a checked land (`rift.push` false), each Rift answered green or
- * pending (its gate passed), by its path and the branch the land merged, with the unit the input named
- * for that path; in a pushed one, every Rift it was asked to land.
- */
-export const greenOf = (rifts: ReadonlyArray<LandEntry>, text: string): ReadonlyArray<LandEntry> => {
-  const outcomes = text.split("\n").flatMap((line) => {
-    const match = OUTCOME.exec(line.trim())
-    return match === null ? [] : [{ branch: match[1]!, path: match[2]!, verdict: match[3]! }]
-  })
-  if (outcomes.length === 0) return rifts
-  return outcomes
-    .filter((outcome) => outcome.verdict !== "red")
-    .map((outcome): LandEntry => {
-      const unit = rifts.find((rift) => {
-        const named = rift.rift.replace(/\/+$/, "")
-        return rift.unit !== undefined && (named === outcome.path || outcome.path.endsWith(`/${named}`))
-      })?.unit
-      return { rift: outcome.path, branch: outcome.branch, ...(unit === undefined ? {} : { unit }) }
-    })
-}
 
 type Execute = Tool.Info["execute"]
 type ToolContext = Parameters<Execute>[1]
@@ -677,13 +555,13 @@ export const make = (
       const services = yield* Layer.build(
         Layer.mergeAll(
           Model.layer(config),
-          Model.machineLayer({ cadence: options.cadence, mode: options.guard, fullAgent: options.fullAgent, block: MACHINE_BLOCK }),
+          Model.verdictLayer,
           Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
           Model.driftLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
         ).pipe(Layer.provideMerge(externals(ctx, options, start, ownBackground))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
-      const machines = Context.get(services, Model.Machines)
+      const verdicts = Context.get(services, Model.Verdicts)
       const idleRoots = Context.get(services, Model.IdleRoots)
       const scope = yield* Effect.scope
 
@@ -712,14 +590,58 @@ export const make = (
       yield* ctx.session.hook("experimental.idle", (event) =>
         drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid),
       )
-      // A root that compacted is told the machine and its run, once per compaction, by this location's copy only.
+      // The `orchestrate` tool's reads (mods/orchestrate/tools.ts), at each call: the run tables (the status plugin's
+      // RPC, through `Runs`) and the warm source's Rifts (the rift plugin's RPC). Its lanes, its verify checkout and
+      // its land go to this location's rift plugin over the rift RPC (`@dotfiles/opencode-rift/rpc`). Nothing of a
+      // run is kept between calls.
+      const riftRpc = () => ctx.rpc(RIFT_RPC)
+      const sessions = Context.get(services, Sessions)
+      const runs = Context.get(services, Runs)
+      const remind = Context.get(services, Remind)
+      const failWith = (message: string) => Effect.fail(new Tool.Error({ message }))
+      const unanswered = () => new Tool.Error({ message: "orchestrate: the rift plugin did not answer over its RPC; it is loaded with this plugin in every location." })
+      /** A rift RPC answer, or its failure's words. */
+      const answeredOr = <A extends { readonly outcome: string }>(answer: A | RiftFailed): Effect.Effect<A, Tool.Error> => {
+        if (isRiftFailed(answer)) return failWith(answer.message)
+        return Effect.succeed(answer)
+      }
+      /** The warm source's Rifts, as the rift plugin lists them for the session. */
+      const listLanes = (sessionID: string, source: Option.Option<string>) =>
+        riftRpc().list(Option.match(source, { onNone: () => ({ sessionID }), onSome: (directory) => ({ sessionID, source: directory }) })).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Listed)),
+          Effect.mapError(unanswered),
+          Effect.flatMap(answeredOr),
+        )
+      /** The Rifts as status reads them: none when the rift plugin does not answer, so status still answers the tables. */
+      const lanesNow = (sessionID: string): Effect.Effect<{ readonly rifts: ReadonlyArray<Tools.Lane>; readonly workrift: boolean }> =>
+        Effect.suspend(() => listLanes(sessionID, Option.none())).pipe(Effect.catchCause(() => Effect.succeed({ rifts: [], workrift: false })))
+      /** Status: the run tables, each open unit's lane and the next call. */
+      const status = (sessionID: string) =>
+        Effect.gen(function* () {
+          const tables = yield* runs.list
+          if (!tables.some((run) => run.units.length > 0)) return Tools.NO_UNITS
+          const listed = yield* lanesNow(sessionID)
+          return Tools.statusAnswer(tables, listed.rifts, listed.workrift)
+        })
+
+      // A root that compacted is told its status and the re-read, once per compaction, by this location's copy only,
+      // when it runs units: it started a step of a unit the run tables hold (the call log's steps, as the idle steer
+      // reads them). A subagent, and a root that runs none, are told nothing.
       const told = new Set<string>()
-      const briefLogged = (sessionID: string) => (outcome: Model.BriefOutcome) =>
-        outcome._tag === "Told"
-          ? Effect.logInfo("orchestrate: told a compacted root its machine and run").pipe(Effect.annotateLogs({ sessionID }))
-          : outcome._tag === "Refused"
-            ? Effect.logWarning("orchestrate: the brief did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
-            : Effect.logDebug("orchestrate: no brief").pipe(Effect.annotateLogs({ sessionID, why: outcome.why }))
+      const stepLog = Context.get(services, StepLog)
+      const tellCompacted = Effect.fn("Orchestrate.compacted")(function* (sessionID: string) {
+        const quiet = (why: string) => Effect.logDebug(`orchestrate: no compaction note: ${why}`).pipe(Effect.annotateLogs({ sessionID }))
+        if (Predicate.isNotUndefined(yield* sessions.parentOf(sessionID))) return yield* quiet("a subagent")
+        const started = yield* stepLog.units(sessionID)
+        const tables = yield* runs.list
+        if (!tables.some((run) => run.units.some((unit) => started.includes(unit.unit)))) return yield* quiet("it runs no unit")
+        const listed = yield* lanesNow(sessionID)
+        const text = Tools.statusAnswer(tables, listed.rifts, listed.workrift)
+        yield* remind.remind(sessionID, { text: Tools.compactedNote(text), description: Tools.COMPACTED_DESCRIPTION }).pipe(
+          Effect.andThen(Effect.logInfo("orchestrate: told a compacted root its status").pipe(Effect.annotateLogs({ sessionID }))),
+          Effect.catch((refused) => Effect.logWarning("orchestrate: the compaction note did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: refused.message }))),
+        )
+      })
       const compacted = (id: string, sessionID: string) => {
         if (told.has(id)) return Effect.void
         told.add(id)
@@ -729,7 +651,7 @@ export const make = (
               { directory: session.location.directory, workspaceID: session.location.workspaceID },
               { directory: ctx.location.directory, workspaceID: ctx.location.workspaceID },
             )
-              ? machines.compacted(sessionID).pipe(Effect.flatMap(briefLogged(sessionID)))
+              ? tellCompacted(sessionID)
               : Effect.void,
           ),
           Effect.ignoreCause,
@@ -822,10 +744,6 @@ export const make = (
       const latched = new Map<string, ReturnType<typeof latchedResult>>()
       // A fallback agent's note, by its call (noteKey), put first in the subagent tool's answer.
       const notes = new Map<string, string>()
-      // A land's note under `warn` (the rule it broke), by its call, put first in the rift tool's answer.
-      const landNotes = new Map<string, string>()
-      // A land's Rifts as read before it ran (their branches), by its call, for its answer.
-      const landRifts = new Map<string, ReadonlyArray<LandEntry>>()
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -879,61 +797,15 @@ export const make = (
         .pipe(Effect.orDie)
 
       // The `orchestrate` tool (mods/orchestrate/tools.ts): the run's steps for a root that runs units, one direct
-      // tool. Its lanes, its verify checkout and its land go to this location's rift plugin over the rift RPC
-      // (`@dotfiles/opencode-rift/rpc`), on the model the `rift` tool runs on. A land is decided on the root's machine
-      // by the land hooks, as a `rift` land is: the first below resolves its units to their Rifts and writes them into
-      // the call's input, where the next one reads and decides them, once. The host decodes a call's input after its
-      // hooks, which drops what the tool's schema lacks, so the Rifts a call resolved are kept by its call for its
-      // execute; one with none kept (no hook ran, or a refused one) lands nothing.
-      const riftRpc = () => ctx.rpc(RIFT_RPC)
-      const sessions = Context.get(services, Sessions)
-      const resolvedLands = new Map<string, { readonly rifts: ReadonlyArray<Tools.UnitRift>; readonly departs: Option.Option<string> }>()
-      const failWith = (message: string) => Effect.fail(new Tool.Error({ message }))
-      const unanswered = () => new Tool.Error({ message: "orchestrate: the rift plugin did not answer over its RPC; it is loaded with this plugin in every location." })
-      /** A rift RPC answer, or its failure's words. */
-      const answeredOr = <A extends { readonly outcome: string }>(answer: A | RiftFailed): Effect.Effect<A, Tool.Error> => {
-        if (isRiftFailed(answer)) return failWith(answer.message)
-        return Effect.succeed(answer)
-      }
-      /** Whether a session is a subagent's: the root lanes, lands and verifies. */
-      const isChild = (sessionID: string) => Effect.map(sessions.parentOf(sessionID), Predicate.isNotUndefined)
-      /** The warm source's Rifts, as the rift plugin lists them for the session. */
-      const listLanes = (sessionID: string, source: Option.Option<string>) =>
-        riftRpc().list(Option.match(source, { onNone: () => ({ sessionID }), onSome: (directory) => ({ sessionID, source: directory }) })).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Listed)),
-          Effect.mapError(unanswered),
-          Effect.flatMap(answeredOr),
-        )
+      // tool, every answer computed at the call (above). No batch rule refuses it: a land of a unit the run tables show
+      // in another state than `ready` lands with a warning first.
       /** A new Rift, made by the rift plugin's create. */
       const createRift = (ask: { readonly sessionID: string; readonly branch: string; readonly name: string; readonly source?: string; readonly at?: string }) =>
         riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+      /** Whether a session is a subagent's: the root lanes, lands and verifies. */
+      const isChild = (sessionID: string) => Effect.map(sessions.parentOf(sessionID), Predicate.isNotUndefined)
       /** Why a call does not run: the input rule, then its names. */
       const refusedInput = (input: Tools.OrchestrateInput) => Option.orElse(Tools.inputRefusal(input), () => Tools.nameRefusal(input))
-
-      // A land's units, resolved to their Rifts before the machine decides it (the next hook): refused here, nothing
-      // is decided. Registered before that hook, so it reads the Rifts this one wrote.
-      yield* ctx.tool.hook("execute.before", (event) =>
-        Option.match(
-          Option.filter(Schema.decodeUnknownOption(Tools.OrchestrateInput)(event.input), (input) => event.tool === Tools.ORCHESTRATE && input.action === "land"),
-          {
-            onNone: () => Effect.void,
-            onSome: (input) =>
-              Effect.gen(function* () {
-                const key = callKey(event.sessionID, event.id)
-                resolvedLands.delete(key)
-                if (yield* isChild(event.sessionID)) return yield* failWith(Tools.parentRefusal("land"))
-                const refused = refusedInput(input)
-                if (Option.isSome(refused)) return yield* failWith(refused.value)
-                const state = yield* machines.state(event.sessionID)
-                const listed = yield* listLanes(event.sessionID, Option.none())
-                const resolved = Tools.resolveLand(input, listed.rifts, state, Tools.nextOf(state, yield* Clock.currentTimeMillis, options.cadence))
-                if ("refused" in resolved) return yield* failWith(resolved.refused)
-                resolvedLands.set(key, { rifts: resolved.rifts, departs: Option.fromUndefinedOr(input.departs) })
-                event.input = { ...input, rifts: resolved.rifts.map((rift) => ({ path: rift.path, unit: rift.unit })) }
-              }),
-          },
-        ),
-      )
 
       /** A lane: the unit's Rift, answered when one is its own, else made. */
       const lane = (input: Tools.OrchestrateInput, sessionID: string) =>
@@ -944,7 +816,7 @@ export const make = (
           const listed = yield* listLanes(sessionID, source)
           // On the workbox, workrift names a Rift after its branch; elsewhere it is the unit's.
           const name = Option.getOrElse(Option.liftPredicate(workriftName(branch), () => listed.workrift), () => unit)
-          const decided = Tools.laneDecision(unit, branch, name, listed.workrift, listed.rifts, yield* machines.state(sessionID))
+          const decided = Tools.laneDecision(unit, branch, name, listed.workrift, listed.rifts)
           if ("refused" in decided) return yield* failWith(decided.refused)
           if ("found" in decided) return Tools.laneAnswer(unit, decided.found, false)
           const ask = { sessionID, branch, name: decided.make }
@@ -952,17 +824,10 @@ export const make = (
           return Tools.laneAnswer(unit, created.rift, true)
         })
 
-      /** A verify: the batch verifier's checkout at the batch head, and the subagent call that starts it. */
+      /** A verify: the verifier's clean checkout at the head, and the subagent call that starts it. */
       const verify = (input: Tools.OrchestrateInput, sessionID: string) =>
         Effect.gen(function* () {
           const batch = input.batch ?? ""
-          const now = yield* Clock.currentTimeMillis
-          // Its dead steps handed back first, as a start's decision reads them.
-          yield* machines.brief(sessionID)
-          const state = yield* machines.state(sessionID)
-          if (Predicate.isNotUndefined(state.verifier))
-            return yield* failWith(refusalOf(state, "VerifierRunning", Start.make({ role: "verifier", name: batch, round: 1, direct: false }), now, options.cadence))
-          if (!verdictPending(state)) return yield* failWith(Tools.nothingToVerify(state, Tools.nextOf(state, now, options.cadence)))
           const name = Tools.verifyLaneOf(batch)
           const chosen = Option.match(Option.fromUndefinedOr(input.head), { onNone: () => "origin" as const, onSome: () => "given" as const })
           const listed = yield* listLanes(sessionID, Option.none())
@@ -972,27 +837,19 @@ export const make = (
           return Tools.verifyAnswer(batch, created.rift, true, chosen)
         })
 
-      /** A land the machine decided (the land hooks): the Rifts it resolved, landed by the rift plugin's land. */
-      const land = (key: string, sessionID: string) =>
+      /** A land: the units resolved to their Rifts from the run tables and the Rift list, landed by the rift plugin's land. */
+      const land = (input: Tools.OrchestrateInput, sessionID: string) =>
         Effect.gen(function* () {
-          const decided = Option.fromUndefinedOr(resolvedLands.get(key))
-          resolvedLands.delete(key)
-          if (Option.isNone(decided)) return yield* failWith(Tools.UNDECIDED)
-          const rifts = decided.value.rifts.map((rift) => ({ path: rift.path, unit: rift.unit }))
-          const ask = Option.match(decided.value.departs, { onNone: () => ({ sessionID, rifts }), onSome: (departs) => ({ sessionID, rifts, departs }) })
-          const landed = yield* riftRpc().land(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(LandAnswered)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
-          return Tools.landAnswer(landed.text)
-        })
-
-      /** Status: the run from the ledger, each unit's lane and the next call. */
-      const status = (sessionID: string) =>
-        Effect.gen(function* () {
-          const brief = yield* machines.brief(sessionID)
-          const state = yield* machines.state(sessionID)
-          if (!Tools.runsUnits(state) && brief === "") return Tools.NO_UNITS
-          const rifts = Option.getOrElse(Option.map(yield* Effect.option(listLanes(sessionID, Option.none())), (listed) => listed.rifts), () => [])
-          const lanes = Object.keys(state.units).map((unit) => [unit, Arr.head(Tools.lanesOf(unit, rifts, state))] as const)
-          return Tools.statusAnswer(brief, lanes, Tools.nextOf(state, yield* Clock.currentTimeMillis, options.cadence))
+          const tables = yield* runs.list
+          const listed = yield* listLanes(sessionID, Option.none())
+          const resolved = Tools.resolveLand(input, tables, listed.rifts, listed.workrift)
+          if ("refused" in resolved) return yield* failWith(resolved.refused)
+          if ("nothing" in resolved) return resolved.nothing
+          const rifts = resolved.rifts.map((rift) => ({ path: rift.path, unit: rift.unit }))
+          const landed = yield* riftRpc()
+            .land({ sessionID, rifts })
+            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(LandAnswered)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+          return Tools.landAnswer(resolved.warnings, landed.text)
         })
 
       yield* ctx.tool.transform((editor) =>
@@ -1003,14 +860,14 @@ export const make = (
           options: { codemode: false },
           execute: (input, context) =>
             Effect.gen(function* () {
+              if (input.action !== "status" && (yield* isChild(context.sessionID))) return yield* failWith(Tools.parentRefusal(input.action))
               const refused = refusedInput(input)
               if (Option.isSome(refused)) return yield* failWith(refused.value)
-              if (input.action !== "status" && (yield* isChild(context.sessionID))) return yield* failWith(Tools.parentRefusal(input.action))
               const text = yield* Match.value(input.action).pipe(
                 Match.when("status", () => status(context.sessionID)),
                 Match.when("lane", () => lane(input, context.sessionID)),
                 Match.when("verify", () => verify(input, context.sessionID)),
-                Match.when("land", () => land(callKey(context.sessionID, context.id), context.sessionID)),
+                Match.when("land", () => land(input, context.sessionID)),
                 Match.exhaustive,
               )
               return { content: [{ type: "text" as const, text }], metadata: { action: input.action } }
@@ -1020,43 +877,11 @@ export const make = (
 
       yield* ctx.tool.hook("execute.before", (event) => {
         const call = { sessionID: event.sessionID, callID: event.id }
-        if (event.tool !== SUBAGENT) {
-          const used = orchestrate.useTool({ call, tool: event.tool }).pipe(Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)))
-          const land = landOf(event.tool, event.input)
-          if (land === undefined) return used
-          // A land is decided on the root's machine before it runs; a refused one never reaches the rift tool.
-          // Its Rifts' branches are read now, for its answer too: a pushed land trashes them. A `{ path, unit }` of a
-          // unit the machine does not hold, by either tool, is adopted there as ready, then checked (machine.ts `Land`).
-          return used.pipe(
-            Effect.andThen(machines.resolve(land.rifts)),
-            Effect.tap((rifts) => Effect.sync(() => landRifts.set(callKey(event.sessionID, event.id), rifts))),
-            Effect.flatMap((rifts) => machines.land({ root: event.sessionID, ...land, rifts }).pipe(Effect.mapError(refusedError))),
-            Effect.map((passed) => {
-              if (passed.notes.length > 0) landNotes.set(callKey(event.sessionID, event.id), passed.notes.join("\n"))
-            }),
-          )
-        }
+        if (event.tool !== SUBAGENT) return orchestrate.useTool({ call, tool: event.tool }).pipe(Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)))
         const key = noteKey(event.sessionID, event.id, event.input)
-        // The machine decides first: a refused step starts, latches and counts nothing.
-        return machines.start({ root: event.sessionID, key, input: event.input }).pipe(
-          Effect.mapError(refusedError),
-          Effect.flatMap((passed) =>
-            orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
-              Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
-              // Refused by the Sabbath or the pace: the step did not start.
-              Effect.tapError(() => machines.started({ root: event.sessionID, key })),
-              Effect.map((outcome) => ({ outcome, passed })),
-            ),
-          ),
-          Effect.flatMap(({ outcome, passed }) => {
-            if (Option.isSome(outcome) && outcome.value._tag === "LatchedStart")
-              return machines.started({ root: event.sessionID, key, child: outcome.value.child }).pipe(Effect.as({ outcome, passed }))
-            return Effect.succeed({ outcome, passed })
-          }),
-          Effect.map(({ outcome, passed }) => {
-            // A batch verifier's prompt ends with the findings it checks as folded.
-            if (passed.prompt !== undefined && isObject(event.input) && typeof event.input.prompt === "string")
-              event.input = { ...event.input, prompt: `${event.input.prompt}\n\n${passed.prompt}` }
+        return orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
+          Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
+          Effect.map((outcome) => {
             if (Option.isNone(outcome) || !isObject(event.input)) return outcome
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
@@ -1066,10 +891,8 @@ export const make = (
             // the role runs on its own model, a follow-up on its child's.
             else if (routed.reason === "model-dropped" || routed.dropped !== undefined) delete input.model
             // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why.
-            // The machine's notes go first.
             if (outcome.value._tag === "SubagentStarted") {
               const said = [
-                ...passed.notes,
                 ...(outcome.value.fallback === undefined ? [] : [fallbackNote(outcome.value)]),
                 ...(outcome.value.lowered === undefined ? [] : [effortNote(outcome.value)]),
               ]
@@ -1077,14 +900,14 @@ export const make = (
             }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
-              latched.set(outcome.value.child, withNotes(latchedResult(outcome.value, options.place), passed.notes))
+              latched.set(outcome.value.child, latchedResult(outcome.value, options.place))
               input.sessionID = outcome.value.child
             }
             event.input = input
             return outcome
           }),
-          // A heavy role's started prompt ends with its footer, after the verifier's findings: a new start's and a
-          // follow-up's alike. A latched start's gets its own when it opens (`start`).
+          // A heavy role's started prompt ends with its footer: a new start's and a follow-up's alike. A latched
+          // start's gets its own when it opens (`start`).
           Effect.flatMap((outcome) => {
             const input = event.input
             const asked = decodePrompted(input)
@@ -1098,41 +921,18 @@ export const make = (
         )
       })
 
-      // A role's subagent that goes idle may have handed back: its unit moves in the run's log.
+      // A role's subagent that goes idle may have handed back: its unit moves in the run's log, and a verifier's
+      // `accepted` records the fleet target (once per verdict, off the idle path: the record reads git).
       yield* ctx.session.hook("experimental.idle", (event) =>
         Effect.gen(function* () {
           // What still runs of its own: a step idle with its shell or subagent running has not ended.
           backgrounds.set(event.sessionID, event.background.filter((work) => work.sessionID === event.sessionID).length)
           yield* orchestrate.handBack({ sessionID: event.sessionID })
-          // Its hand-back moves its unit, or ends its verifier, on its root's machine.
-          yield* machines.handBack(event.sessionID)
-        }),
-      )
-      // A unit the root logged `dropped` ends on its machine, and the findings it held go with it: after each of its
-      // shell calls, each unit log.ts journaled a written drop of for the session (whatever the command's text), whose
-      // log.md still ends there. A start, a land and a hand-back read them too, for a drop that lands later.
-      yield* ctx.tool.hook("execute.after", (event) => Effect.asVoid(Effect.when(machines.dropped(event.sessionID), Effect.sync(() => SHELLS.has(event.tool)))))
-      // Every command OpenCode spawns writes its drops to the journal this plugin reads (log.ts `ORCHESTRATE_DROPS`).
-      yield* ctx.shell.hook("create.before", (invocation) =>
-        Effect.sync(() => {
-          invocation.env.ORCHESTRATE_DROPS = options.drops
+          yield* verdicts.handBack(event.sessionID).pipe(Effect.ignoreCause, Effect.forkIn(scope))
         }),
       )
       yield* ctx.tool.hook("execute.after", (event) => {
-        if (event.tool !== SUBAGENT) {
-          const land = landOf(event.tool, event.input)
-          if (land === undefined) return Effect.void
-          const said = landNotes.get(callKey(event.sessionID, event.id))
-          landNotes.delete(callKey(event.sessionID, event.id))
-          const resolved = landRifts.get(callKey(event.sessionID, event.id))
-          landRifts.delete(callKey(event.sessionID, event.id))
-          if (event.status !== "completed") return Effect.void
-          if (said !== undefined) event.result = prepend(event.result, said)
-          const result = event.result
-          return (resolved === undefined ? machines.resolve(land.rifts) : Effect.succeed(resolved)).pipe(
-            Effect.flatMap((rifts) => machines.landed({ root: event.sessionID, rifts: greenOf(rifts, textOf(result)) })),
-          )
-        }
+        if (event.tool !== SUBAGENT) return Effect.void
         const metadata = event.status === "completed" ? event.result.metadata : undefined
         const child = isObject(metadata) && typeof metadata.sessionID === "string" ? metadata.sessionID : undefined
         const status: Status =
@@ -1141,30 +941,10 @@ export const make = (
             : isObject(metadata) && (metadata.status === "running" || metadata.status === "latched")
               ? metadata.status
               : "completed"
-        return Effect.all(
-          [
-            orchestrate.finishSubagent({
-              call: { sessionID: event.sessionID, callID: event.id },
-              ...(child === undefined ? {} : { child }),
-              status,
-            }),
-            machines.started({ root: event.sessionID, key: noteKey(event.sessionID, event.id, event.input), ...(child === undefined ? {} : { child }) }),
-          ],
-          { discard: true },
-        )
-      })
-      // A `rift` create or land in a root that runs units runs as before, and its answer starts with the `orchestrate`
-      // call to use (an alias for one release). After the land's own after-hook, so the line comes first; any other
-      // session's answer, and every other action's, is left as the rift plugin gave it.
-      yield* ctx.tool.hook("execute.after", (event) => {
-        if (event.tool !== RIFT || event.status !== "completed") return Effect.void
-        const done = event
-        return Option.match(decodeAliased(done.input), {
-          onNone: () => Effect.void,
-          onSome: (aliased) =>
-            Effect.map(machines.state(done.sessionID), (state) => {
-              if (Tools.runsUnits(state)) done.result = prepend(done.result, Tools.aliasLine(aliased.action))
-            }),
+        return orchestrate.finishSubagent({
+          call: { sessionID: event.sessionID, callID: event.id },
+          ...(child === undefined ? {} : { child }),
+          status,
         })
       })
     }),

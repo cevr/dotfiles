@@ -1,8 +1,11 @@
 // The `orchestrate` tool's runs on the simulated host (sim/world.ts): the real orchestrate plugin (sim/plugins.ts
-// `orchestrate`, its ledger in memory) and the real rift plugin (cmd/rift/server.ts `make`) on the rift mod's memory
-// layers, one copy of each per location, over one memory world of warm sources and Rifts. Each root turn is one
-// `probe:` call; a subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts drives it.
-import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+// `orchestrate`), the real rift plugin (cmd/rift/server.ts `make`) on the rift mod's memory layers and the real status
+// plugin (sim/plugins.ts `status`, in the units' location), one copy of the others per location, over one memory world of warm sources, Rifts and
+// unit logs. The units' logs are the world's files: the orchestrate plugin writes a unit's moves there, as log.ts does,
+// and the status script prints them as its table, as status.ts does on disk. Each root turn is one `probe:` call; a
+// subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts drives it.
+import { Array as Arr, Effect, Layer, Option, Order, Schema } from "effect"
+import type { Asked } from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MemoryDebts from "@dotfiles/opencode-rift/memory/debts"
 import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
@@ -25,21 +28,14 @@ export const HAND_BACK = "handback:"
 export const PROBE = "probe:"
 /** The commit origin's default branch names as the push left it: the memory landing's head of its last push. */
 export const ORIGIN = "origin/HEAD"
-
-/** One line of the machine's ledger, of the fields the tests read. */
-export const LedgerLine = Schema.Struct({
-  kind: Schema.String,
-  sessionID: Schema.optional(Schema.String),
-  rule: Schema.optional(Schema.String),
-  unit: Schema.optional(Schema.String),
-  units: Schema.optional(Schema.Array(Schema.String)),
-  batch: Schema.optional(Schema.String),
-  verdict: Schema.optional(Schema.String),
-  departs: Schema.optional(Schema.String),
-  ready: Schema.optional(Schema.Boolean),
-})
-export type LedgerLine = typeof LedgerLine.Type
-const decodeLine = Schema.decodeUnknownOption(LedgerLine)
+/** The run the units' logs are in: `<WORK>/tmp/orchestrate/<RUN>/<unit>/log.md`. */
+export const RUN = "lane"
+const RUNS = `${WORK}/tmp/orchestrate`
+export const RUN_DIR = `${RUNS}/${RUN}`
+/** Where the status plugin finds the orchestrate skill's status script. */
+const STATUS_SCRIPT = "/skills/orchestrate/scripts/status.ts"
+/** When every log line was written: the pinned clock's minute. */
+const SINCE = "2026-11-04T15:00Z"
 
 const ProbeCall = Schema.fromJsonString(Schema.Struct({ name: Schema.String, input: Schema.Record(Schema.String, Schema.Json) }))
 const decodeProbe = Schema.decodeUnknownOption(ProbeCall)
@@ -47,6 +43,12 @@ const encodeProbe = Schema.encodeSync(ProbeCall)
 
 /** A call's input, as a probe sends it. */
 export type Input = { readonly [key: string]: Schema.Json }
+
+/** A unit's log as the world keeps it: the state its last move went to, and that move's round. */
+export interface UnitLog {
+  readonly state: string
+  readonly round: number
+}
 
 /** A message's text as the model reads it. */
 export const said = (message: World.Message): string => {
@@ -100,12 +102,27 @@ const answerAfter = (messages: ReadonlyArray<World.Message>, from: number): Answ
     (): Answer => ({ text: "", error: true }),
   )
 
+/** The status script's table for the logs, as status.ts prints it: one row per unit, by name. */
+export const tableOf = (logs: ReadonlyMap<string, UnitLog>): string =>
+  [
+    "| Unit | State | Round | Since | Cause |",
+    "| --- | --- | --- | --- | --- |",
+    ...[...logs].toSorted(([a], [b]) => Order.String(a, b)).map(([unit, log]) => `| ${unit} | ${log.state} | ${log.round} | ${SINCE} | log.md |`),
+    "",
+  ].join("\n")
+
+/** How the world boots: its clock and the models its host offers, and a root's model. */
+export interface BootOptions {
+  readonly now?: string
+  readonly models?: ReadonlyArray<World.CatalogModel>
+}
+
 /** The rift plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the rift plugin alone). */
-export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchestrate: boolean) {
-  const ledger: Array<Schema.Json> = []
+export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchestrate: boolean, options: BootOptions = {}) {
   const woken: Array<MemoryNotices.Woken> = []
-  // The files a verifier's report and its unit findings are read from, by absolute path.
-  const files = new Map<string, string>()
+  // The units' logs: written by the orchestrate plugin, as log.ts writes log.md; read by the status script.
+  const logs = new Map<string, UnitLog>()
+  const fleet: Array<Asked> = []
   const memory = riftWorldOf()
   const calls = { count: 0 }
   /** The tool names the last request offered, as the registry listed them. */
@@ -124,7 +141,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       calls.count += 1
       return World.call(`call_${calls.count}`, asked.value.name, asked.value.input)
     }
-    // A subagent: the hand-back line of its task, once.
+    // A subagent: the hand-back line of its task.
     const task = Option.getOrElse(Option.map(Arr.findFirst(world.messages(request.sessionID), (message) => message.type === "user"), said), () => "")
     const handBack = Arr.findFirst(task.split("\n"), (line) => Option.liftPredicate(line.trim(), (trimmed) => trimmed.startsWith(HAND_BACK)))
     return Option.match(handBack, {
@@ -132,7 +149,16 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       onSome: (line) => World.say(`${line.slice(HAND_BACK.length).trim()}\nThe gate is green.`),
     })
   }
-  const world = World.make({ seed, start: Date.parse(PIN), script })
+  /** The run's folder and the status script over it, in the world's shell. */
+  const processes = (command: string): World.Process => {
+    // No run folder until a unit has a log: `ls` fails, as on a repository with none.
+    if (command === `ls -1 ${RUNS}` && logs.size === 0) return { exitCode: 1, stdout: "", ms: 5 }
+    if (command === `ls -1 ${RUNS}`) return { exitCode: 0, stdout: `${RUN}\n`, ms: 5 }
+    if (command === `bun ${STATUS_SCRIPT} ${RUN_DIR}`) return { exitCode: 0, stdout: tableOf(logs), ms: 50 }
+    return World.PROCESSES(command)
+  }
+  const made = { seed, start: Date.parse(options.now ?? PIN), script, processes }
+  const world = World.make(Option.match(Option.fromUndefinedOr(options.models), { onNone: () => made, onSome: (models) => ({ ...made, models }) }))
   // A session's location, as OpenCode's `session.get` reports it.
   const directories = Layer.succeed(
     SessionDirectories,
@@ -154,12 +180,23 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       MemoryDebts.layer(memory.debts),
     ),
   )
-  const plugin = Plugins.orchestrate({ ledger, files })
+  const plugin = Plugins.orchestrate({
+    fleet,
+    unitLogs: {
+      find: ({ unit }) => Effect.succeed(`${RUN_DIR}/${unit}`),
+      append: (dir, transition) => Effect.sync(() => void logs.set(dir.split("/").at(-1) ?? transition.unit, { state: transition.to, round: transition.round })),
+    },
+  })
   for (const directory of [WORK, PLAIN]) {
-    if (orchestrate) yield* world.load(plugin, { directory, options: { now: PIN } })
+    if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: { dotfiles: "/scratch/dotfiles", fork: "/scratch/fork" } } })
     yield* world.load(rift, { directory, options: { workrift: false } })
   }
+  // The status plugin in the units' location only: the simulated host keeps one RPC per id, the last copy registered,
+  // and the status RPC answers the runs of its own copy's location.
+  yield* world.load(Plugins.status(world), { directory: WORK, options: { statusScript: STATUS_SCRIPT } })
   const idle = (sessionID: string) => Option.exists(Option.fromUndefinedOr(world.sessions.get(sessionID)), (session) => !session.running && session.inbox.length === 0)
+  /** Every session of the world is idle: no turn runs and none waits. */
+  const settled = () => [...world.sessions.keys()].every(idle)
   /** One probe turn: the session makes that one call; its answer's text. */
   const probe = Effect.fn("OrchTools.probe")(function* (sessionID: string, name: string, input: Input) {
     const from = world.messages(sessionID).length
@@ -167,15 +204,9 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
     yield* world.until(() => idle(sessionID), 120_000)
     return answerAfter(world.messages(sessionID), from)
   })
-  /** The ledger's lines of one root. */
-  const lines = (sessionID: string) => ledger.flatMap((line) => Option.toArray(decodeLine(line))).filter((line) => line.sessionID === sessionID)
-  /** The ledger's lines of one root as written, for the drift score. */
-  const written = (sessionID: string) => ledger.filter((line) => Option.exists(decodeLine(line), (decoded) => decoded.sessionID === sessionID))
-  /** Until the root's ledger holds a line that matches. */
-  const has = (sessionID: string, match: (line: LedgerLine) => boolean) => world.until(() => lines(sessionID).some(match), 30_000)
   /** The children of a session, in the order made. */
   const children = (parent: string) => [...world.sessions.values()].filter((session) => Option.contains(session.parentID, parent))
-  return { world, offered, ledger, files, memory, woken, probe, lines, written, has, idle, children }
+  return { world, offered, logs, fleet, memory, woken, probe, idle, settled, children }
 })
 
 export type Run = Effect.Success<ReturnType<typeof boot>>

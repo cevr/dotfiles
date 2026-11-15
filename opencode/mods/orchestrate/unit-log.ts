@@ -60,8 +60,10 @@ export const startOf = (agent: string, description: string | undefined): Transit
 /** The hand-back line: `<role> <unit> r<N>: <verdict> <path>`, maybe in backticks or bold. */
 const HAND_BACK = /^[`*\s]*(planner|implementor|verifier) ([a-z0-9][a-z0-9._-]*) r(\d+):\s*(ready|blocked|accepted|changes|stuck)\b[`*]*\s*([^\s`*]*)/i
 
-/** A role's hand-back: its move, and the file it names (as written, maybe relative). */
+/** A role's hand-back: the unit (a verifier's batch) and verdict it names, its move, and the file it names (as written, maybe relative). */
 export interface HandBack {
+  readonly unit: string
+  readonly verdict: string
   readonly transition: Transition | undefined
   readonly file: string | undefined
 }
@@ -91,7 +93,7 @@ export const handBackOf = (agent: string, text: string | undefined): HandBack | 
         : agent === "implementor" && verdict === "ready"
           ? move("ready")
           : undefined
-  return { transition, file }
+  return { unit, verdict, transition, file }
 }
 
 /** A path in prose: a word with a slash in it (absolute, `~/` or relative), up to a space, quote, backtick or bracket. */

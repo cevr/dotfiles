@@ -77,13 +77,10 @@ const toolParts = (messages: unknown): ToolPart[] =>
 
 const RUN_MS = 150_000
 
-/** The drop run's cell wrote alpha's move to dropped, and the root's ledger ended alpha once (its `UnitDropped`). */
-const droppedAlpha = (result: Result & { base: string }) => {
+/** The drop run's cell wrote alpha's move to dropped through the skill's log.ts, with the orchestrate plugin loaded. */
+const droppedAlpha = (result: Result) => {
   const [cell] = toolParts(result.messages)
   expect((cell!.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(/implement → dropped r1 superseded/)
-  const dropped = readFileSync(join(result.base, "machine.jsonl"), "utf8").split("\n").filter((entry) => entry.includes('"kind":"UnitDropped"'))
-  expect(dropped).toHaveLength(1)
-  expect(dropped[0]).toContain('"unit":"alpha"')
 }
 
 /** A message of the session's context that carries text, as a `<subagent>` notice is one. */
@@ -266,7 +263,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
-    "a cell's tools.shell that drops a unit by log.ts runs through the orchestrate after hook: the unit ends on the root's ledger",
+    "a cell's tools.shell that drops a unit by log.ts runs with the orchestrate plugin loaded: the unit's log moves to dropped",
     () => {
       // alpha's log made and moved to dropped by the skill's log.ts, relative to the root's directory.
       const log = `bun ${join(ROOT, "../skills/orchestrate/scripts/log.ts")}`

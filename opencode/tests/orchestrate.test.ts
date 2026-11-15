@@ -1,7 +1,7 @@
 // accept: deep (36.5 s alone on a quiet host: 1-minute load 5.3–6.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The orchestrate port: the role agents against the orchestrate skill they
 // come from, and a run of real OpenCode (the fork, through its SDK) on
-// the scripted model that moves a unit's log.md. The paces, the guard,
+// the scripted model that moves a unit's log.md and lands units as they hand back. The paces, the guard,
 // compaction per role and the Sabbath stop run on the simulated host:
 // cmd/orchestrate/orchestrate.sim.test.ts (tests/parity/orchestrate.json).
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
@@ -108,6 +108,20 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(result.children.map((child) => child.agent)).toEqual(["implementor"])
       expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → ready r1 round-1-request.md ready"])
     },
+    RUN_MS,
+  )
+
+  test(
+    "lane: three implementors, each landed as it hands back, a verifier named for a unit while another runs, and nothing refused",
+    () =>
+      expect(run("lane", { scenario: "lane", now: WEDNESDAY })).resolves.toMatchObject({
+        lane: {
+          riftLands: [["alpha"], ["beta"], ["gamma"]],
+          agents: ["implementor", "implementor", "implementor", "verifier", "verifier"],
+          // No call of the root was refused: none of its tool results is an error, and none says a batch rule.
+          said: expect.not.stringMatching(/refused by the\s+machine|the machine's rule|"status":"error"/),
+        },
+      }),
     RUN_MS,
   )
 })

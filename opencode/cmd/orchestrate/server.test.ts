@@ -4,7 +4,6 @@
 // opening, the call log's lines, the compaction prompt and the agents'
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
-import { spawnSync } from "bun"
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -37,11 +36,9 @@ import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
-import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
-import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
-import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
+import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { eventuallyPasses } from "../../tests/wait.ts"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, SKILL_DIR, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -84,22 +81,10 @@ interface World {
   readonly skill?: SkillTest.MemorySkill
   /** Each run dir's seen skill version and departures. */
   readonly records?: SkillTest.MemoryRecords
-  /** The machine's ledger lines, shared: a second plugin on the same array is the plugin after a restart. */
-  readonly ledger?: Array<unknown>
-  /** Which step sessions still run a turn; any other does not. */
-  readonly alive?: Readonly<Record<string, boolean>>
-  /** The findings each verifier report holds, by its path, read at each read (a test may add one later); a report not here does not read. */
-  readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
-  /** The findings each report marks closed by another batch, by its path. */
-  readonly closed?: Readonly<Record<string, ReadonlyArray<string>>>
-  /** The branch checked out at each Rift path; a path not here reads none. */
-  readonly branches?: Readonly<Record<string, string>>
   /** The verified targets the plugin asked to record. */
   readonly fleet?: Array<FleetTest.Asked>
   /** What recording each of them answers; `Off` (nothing said) when not named. */
   readonly fleetOutcome?: (asked: FleetTest.Asked) => FleetOutcome
-  /** The drops journal log.ts writes and the plugin reads; none by default. */
-  readonly drops?: string
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -187,20 +172,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         kept.push({ ...ask, child })
         return { outcome: "latched", id: `w00000${kept.length}`, child }
       })
-    const ledger = world.ledger ?? []
     const briefs: Array<OpenCodeSteer.Synthetic> = []
-    const externals = (start: OpenCodeLatches.Start, background: Background) => Layer.mergeAll(
-      MemoryLedger.layer(DEFAULT_CADENCE, ledger),
-      Layer.succeed(Findings, {
-        read: (report: string) =>
-          Effect.sync((): FindingsRead => {
-            const found = world.findings?.[report]
-            return found === undefined ? { _tag: "Unread", why: `the report ${report} does not read` } : { _tag: "Read", findings: found }
-          }),
-        closed: (report: string) => Effect.succeed(world.closed?.[report] ?? []),
-      }),
-      Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
-      Layer.succeed(Branches, { of: (path: string) => Effect.succeed(world.branches?.[path.replace(/\/+$/, "")]) }),
+    const externals = (start: OpenCodeLatches.Start) => Layer.mergeAll(
       OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
@@ -210,7 +183,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         : OpenCodePoolPace.layer(world.poolAsk, () => Effect.succeed({})),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       OpenCodeLatches.layer(keep, start),
-      FileUnitLogs.layer(LOG_SCRIPT, { journal: world.drops ?? "/nonexistent/loop-probe-x/drops.jsonl" }),
+      FileUnitLogs.layer(LOG_SCRIPT),
       StepLogTest.layer(world.steps ?? {}),
       OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
       Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
@@ -222,7 +195,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []
-    yield* make((_ctx, _options, start, background) => externals(start, background)).effect(host)
+    yield* make((_ctx, _options, start) => externals(start)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
     const ran: Array<Ran> = []
@@ -287,7 +260,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const modelRequest = Effect.fn("OrchestrateServerTest.modelRequest")(function* (sessionID: string) {
       for (const hook of hooks["model.request"] || []) yield* hook({ sessionID, agent: "build", kind: "primary", headers: {} })
     })
-    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
+    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, briefs, compacted }
   })
 
 /** Waits for the plugin's background work, in real time, until `check` passes (tests/wait.ts); one that never does fails with its own expectation. */
@@ -1561,7 +1534,7 @@ describe("the units' logs", () => {
     ))
 })
 
-describe("an idle root with units to move or a batch to land", () => {
+describe("an idle root with units to move or to land", () => {
   const LINE = "idle with units in plan, implement or verify: closure-flake, pkg-lower; start them or name what you wait on."
   const world = {
     sessions: { root: {}, child: { parentID: "root" } },
@@ -1604,37 +1577,21 @@ describe("an idle root with units to move or a batch to land", () => {
       }),
     ))
 
-  test("ready units from the status plugin: their batch, due by count or by the oldest's log time (each unit's own cadence when it has one), is landed by each unit's Rift; short of both, no nudge", () =>
+  test("ready units from the status plugin: each is ready to land at once, however few and however fresh; no cadence holds one", () =>
     scenario(
       Effect.gen(function* () {
         const ready = (units: ReadonlyArray<{ readonly unit: string; readonly since?: string; readonly cadence?: string }>) =>
           start({ now: WEDNESDAY }, { ...world, runs: [{ name: "p5", units: [{ unit: "closure-flake", state: "merged abc1234" }, ...units.map((unit) => ({ ...unit, state: "ready" }))] }] })
         const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
+        const one = yield* ready([{ unit: "hotfix", since: minutesAgo(1) }])
+        // An older run table's cadence is passed over: three wanted, one ready, it is still ready to land.
+        const slow = yield* ready([{ unit: "lexer", since: minutesAgo(5), cadence: "3 ready or 60 min" }])
         const three = yield* ready([{ unit: "lexer" }, { unit: "parser" }, { unit: "docs" }])
-        const old = yield* ready([{ unit: "lexer", since: minutesAgo(45) }])
-        const fresh = yield* ready([{ unit: "lexer", since: minutesAgo(5) }, { unit: "parser" }])
-        // A unit's own cadence, as the status script prints it from its spec: one ready lands at once; a longer wait holds.
-        const hot = yield* ready([{ unit: "hotfix", since: minutesAgo(5), cadence: "1 ready or 30 min" }])
-        const slow = yield* ready([{ unit: "lexer", since: minutesAgo(45), cadence: "3 ready or 60 min" }])
-        for (const plugin of [three, old, fresh, hot, slow]) yield* plugin.idle("root")
-        yield* eventually(() =>
-          expect(hot.nudges.map((nudge) => nudge.text)).toEqual([
-            'idle with a batch due (1 ready): hotfix; land it with orchestrate({ action: "land", units: ["hotfix"] }).',
-          ]),
-        )
-        yield* eventually(() =>
-          expect(three.nudges.map((nudge) => nudge.text)).toEqual([
-            'idle with a batch due (3 ready): lexer, parser, docs; land it with orchestrate({ action: "land", units: ["lexer", "parser", "docs"] }).',
-          ]),
-        )
-        // The log's time is to the minute, so the age is 45 or, across a minute's turn, 46.
-        yield* eventually(() =>
-          expect(old.nudges.map((nudge) => nudge.text)).toEqual([
-            expect.stringMatching(/^idle with a batch due \(lexer ready 4[56] min\): lexer; land it with orchestrate\(\{ action: "land", units: \["lexer"\] \}\)\.$/),
-          ]),
-        )
-        expect(fresh.nudges).toEqual([])
-        expect(slow.nudges).toEqual([])
+        for (const plugin of [one, slow, three]) yield* plugin.idle("root")
+        const LAND = 'land them with orchestrate({ action: "land" }).'
+        yield* eventually(() => expect(one.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: hotfix; ${LAND}`]))
+        yield* eventually(() => expect(slow.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: lexer; ${LAND}`]))
+        yield* eventually(() => expect(three.nudges.map((nudge) => nudge.text)).toEqual([`idle with units ready to land: lexer, parser, docs; ${LAND}`]))
       }),
     ))
 
@@ -1848,13 +1805,12 @@ describe("the agents", () => {
     ))
 })
 
-describe("the batch machine", () => {
+describe("a verifier's verdict and a root's compaction, with no machine", () => {
   /** A root's step sessions: each a role's child of `root`, with the hand-back it ends on. */
-  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string; readonly stopped?: boolean }>>) => ({
+  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string; readonly directory?: string }>>) => ({
     root: {},
     ...Object.fromEntries(Object.entries(said).map(([id, session]) => [id, { parentID: "root", ...session }])),
   })
-  const implementor = (unit: string) => ({ agent: "implementor", description: `implementor ${unit} r1`, prompt: "go", background: true })
   type Plugin = Effect.Success<ReturnType<typeof start>>
   /** A background step started and answered with its child, as the host does. */
   const begin = (plugin: Plugin, input: Record<string, unknown>, child: string) =>
@@ -1863,129 +1819,47 @@ describe("the batch machine", () => {
       expect(called.refused).toBeUndefined()
       yield* plugin.finish({ input, status: "completed", result: { metadata: { sessionID: child, status: "running" } } })
     })
-  const kinds = (plugin: Plugin) => plugin.ledger.map((line) => (line as { kind: string }).kind)
-  /** A seeded stream in [0, 1), so a failing trial names its seed. */
-  const rngOf = (seed: number) => () => {
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
+  const verifier = (batch: string) => ({ agent: "verifier", description: `verifier ${batch} r1`, prompt: "v", background: true })
 
-  /** A scratch run dir, removed with the test's scope. */
-  const scratchRun = Effect.acquireRelease(
-    Effect.sync(() => mkdtempSync(join(tmpdir(), "orchestrate-run-"))),
-    (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
-  )
-  /** A run's drops journal: where log.ts, run from the root's shell, writes each drop, and the plugin reads them. */
-  const journalOf = (run: string) => join(run, "drops.jsonl")
-  /**
-   * A shell line run for real in `cwd`: its output, both streams, as the shell tool answers with it. Run as the
-   * root's (`spawnRoot`), it has the session and the run's journal the host and the plugin give it; otherwise no
-   * session, so a test run from an OpenCode shell never writes the owner's journal.
-   */
-  const spawnShell = (line: string, cwd: string) => {
-    const ran = spawnSync(["/usr/bin/env", "-u", "OPENCODE_SESSION_ID", "/bin/zsh", "-c", line], { cwd })
-    return `${ran.stdout}${ran.stderr}`
-  }
-  const spawnRoot = (line: string, cwd: string, journal: string) => {
-    const ran = spawnSync(["/usr/bin/env", "OPENCODE_SESSION_ID=root", `ORCHESTRATE_DROPS=${journal}`, "/bin/zsh", "-c", line], { cwd })
-    return `${ran.stdout}${ran.stderr}`
-  }
-  /** `unit`'s dir in `run`, its log moved by the skill's log.ts (`new decide r1`). */
-  const logged = (run: string, unit: string, move: string) => {
-    mkdirSync(join(run, unit), { recursive: true })
-    spawnShell(`bun ${LOG_SCRIPT} ${join(run, unit)} ${move}`, run)
-  }
-  /** The root's shell call, run for real in `cwd` (the call's `workdir`, when its input names one), through the plugin's hooks. */
-  const shell = (plugin: Plugin, input: { readonly command: string; readonly workdir?: string }, cwd: string, journal: string) =>
-    plugin.finish({ tool: "shell", input, status: "completed", result: { content: [{ type: "text", text: spawnRoot(input.command, cwd, journal) }] } })
-
-  test("a verifier for one unit is refused in the skill's words before anything starts; the batch's starts", () =>
+  test("a root that runs units is told its status and the re-read once per compaction; a subagent and a root that runs none are not", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready /u/alpha/round-1-request.md" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        const lines = plugin.logged().length
-        const refused = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier alpha r1", prompt: "verify" })
-        expect(refused.refused?.message).toContain(RULES.VerifierPerUnit.words)
-        expect(refused.refused?.message).toContain("verifier batch-<k> r1")
-        expect(refused.refused?.message).toContain("(departs: <why>)")
-        // Nothing of the refused call: no line, no latch, no rewritten input.
-        expect(plugin.logged()).toHaveLength(lines)
-        expect(plugin.kept).toEqual([])
-        expect(kinds(plugin)).toEqual(["UnitStarted", "StepSpawned", "UnitHandedBack", "Refused"])
-        const batch = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify" })
-        expect(batch.refused).toBeUndefined()
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "VerifierStarted", batch: "batch-1", units: ["alpha"] })
-      }),
-    ))
-
-  test("a departure stated in the description passes and is recorded", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        const departed = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier alpha r1 (departs: the owner asked)", prompt: "v" })
-        expect(departed.refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerifierPerUnit", why: "the owner asked" }))
-      }),
-    ))
-
-  test("one kernel cell starting an implementor and landing at once: the land is decided after the start, and waits", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        const [started, landed] = yield* Effect.all(
-          [plugin.call("subagent", "root", implementor("beta")), plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })],
-          { concurrency: "unbounded" },
+        const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "alpha", state: "ready" }, { unit: "beta", state: "implement" }] }]
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          { sessions: { ...steps({ ses_a: { agent: "implementor" } }), quiet: {} }, runs, steps: { root: ["alpha"], ses_a: ["alpha"] } },
         )
-        expect(started.refused).toBeUndefined()
-        expect(landed.refused?.message).toContain(RULES.BatchNotDue.words)
-        expect(landed.refused?.message).toContain('departs: "<why>"')
+        yield* plugin.compacted("root", "evt_1")
+        yield* plugin.compacted("root", "evt_1")
+        yield* plugin.compacted("ses_a", "evt_2")
+        yield* plugin.compacted("quiet", "evt_3")
+        yield* eventually(() => expect(plugin.briefs).toHaveLength(1))
+        yield* settle
+        expect(plugin.briefs).toHaveLength(1)
+        const brief = plugin.briefs[0]!
+        expect(brief).toMatchObject({ sessionID: "root", delivery: "steer", resume: false, metadata: { [OpenCodeSteer.BRIEF_MARK]: true } })
+        expect(brief.text).toBe(
+          [
+            "orchestrate: run app:",
+            "- alpha: ready · no lane",
+            "- beta: implement · no lane",
+            "next: wait for the hand-backs of beta (implementing).",
+            "",
+            "Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.",
+          ].join("\n"),
+        )
       }),
     ))
 
-  test("land-adopt: a rift land in a root that runs units naming { path, unit } of a unit the machine does not hold adopts it and is checked as one of the batch; its record lands it", () =>
+  test("a second verifier while one runs, and a land of any Rift, are let through: no batch rule refuses", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        // A Rift by its path alone is the root's own, as before.
-        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["/r/zeta"] })).refused).toBeUndefined()
-        // zeta alone leaves alpha out: refused, adopting nothing, naming the land that takes both.
-        const partial = yield* plugin.call("rift", "root", { action: "land", rifts: [{ path: "/r/zeta", unit: "zeta" }] })
-        expect(partial.refused?.message).toContain(RULES.LandPartial.words)
-        expect(partial.refused?.message).toContain('orchestrate({ action: "land", units: ["alpha", { unit: "zeta", path: "/r/zeta" }] })')
-        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "UnitAdopted" }))
-        const rifts = ["alpha", { path: "/r/zeta", unit: "zeta" }]
-        expect((yield* plugin.call("rift", "root", { action: "land", rifts })).refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitAdopted", unit: "zeta", rift: "/r/zeta" }))
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed 2 Rift(s) as one push" }] } })
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["alpha", "zeta"] })
-      }),
-    ))
-
-  test("a dead implementor and a dead verifier hold nothing: each is handed back as none before the next decision", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_a")
-        // beta's session runs no turn and keeps nothing: it died. The land of alpha alone passes.
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" }, ses_v: { agent: "verifier" }, ses_w: { agent: "verifier" } }) })
+        yield* begin(plugin, { agent: "implementor", description: "implementor alpha r1 (folds: beta/M1) (departs: owner)", prompt: "go", background: true }, "ses_a")
         expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "beta", ready: false }))
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        // The verifier died with no hand-back: the next batch's verifier starts all the same.
-        expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "none" }))
+        yield* begin(plugin, verifier("batch-1"), "ses_v")
+        yield* begin(plugin, verifier("alpha"), "ses_w")
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })).refused).toBeUndefined()
       }),
     ))
 
@@ -1998,456 +1872,30 @@ describe("the batch machine", () => {
     expect(stepSessionOf(fresh)).toEqual({ started: false, stopped: false, directory: "/work" })
   })
 
-  // subagent-handle: a step its root stopped (the `subagents` tool's stop, the host's interrupt) ends with its last
-  // words an earlier turn's. They are no hand-back: the ledger sees it stopped.
-  test("subagent-handle: a stopped implementor is handed back as stopped, not as the ready an earlier turn wrote; a stopped verifier gave no verdict", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start(
-          { now: WEDNESDAY },
-          {
-            sessions: steps({
-              ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x", stopped: true },
-              ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
-              ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", stopped: true },
-            }),
-          },
-        )
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        // alpha was stopped: a stopped turn has no idle, and the next decision's reconcile reads it.
-        yield* plugin.idle("ses_b")
-        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })).refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: false, said: "stopped" }))
-        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: true }))
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["beta"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        // The verifier was stopped: its batch's units wait for a verdict again, and the next verifier starts.
-        expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "stopped" }))
-        expect(plugin.ledger).not.toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "accepted" }))
-      }),
-    ))
-
-  test("ledger-stale: a land made before an idle implementor's hand-back is read (no idle seen yet) takes the hand-back its last words say, not none", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready /u/alpha/round-1-request.md" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "alpha", ready: true }))
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "BatchLanded", units: ["alpha"] }))
-      }),
-    ))
-
-  test("an implementor idle with its own shell still running has not ended: the batch still waits for it", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_a")
-        yield* plugin.idle("ses_b", [{ kind: "shell", sessionID: "ses_b", shellID: "sh_1", command: "bun test" }])
-        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused?.message).toContain(RULES.BatchNotDue.words)
-      }),
-    ))
-
-  test("a foreground step is alive while its call is in flight, before its session is known", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        expect((yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor beta r1", prompt: "go" })).refused).toBeUndefined()
-        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["feat/alpha"] })).refused?.message).toContain(RULES.BatchNotDue.words)
-      }),
-    ))
-
-  test("after a restart the ledger is read back: the same land is refused by the new plugin", () =>
-    scenario(
-      Effect.gen(function* () {
-        const ledger: Array<unknown> = []
-        const sessions = steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } })
-        const before = yield* start({ now: WEDNESDAY }, { sessions, ledger, alive: { ses_b: true } })
-        yield* begin(before, implementor("alpha"), "ses_a")
-        yield* begin(before, implementor("beta"), "ses_b")
-        yield* before.idle("ses_a")
-        const after = yield* start({ now: WEDNESDAY }, { sessions, ledger, alive: { ses_b: true } })
-        expect((yield* after.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused?.message).toContain(RULES.BatchNotDue.words)
-      }),
-    ))
-
-  test("a root that compacted is told the machine and its run once, on its next request; a subagent and an idle root without units are not", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }), quiet: {} } })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* plugin.compacted("root", "evt_1")
-        yield* plugin.compacted("root", "evt_1")
-        yield* plugin.compacted("ses_a", "evt_2")
-        yield* plugin.compacted("quiet", "evt_3")
-        yield* eventually(() => expect(plugin.briefs).toHaveLength(1))
-        yield* settle
-        expect(plugin.briefs).toHaveLength(1)
-        const brief = plugin.briefs[0]!
-        expect(brief).toMatchObject({ sessionID: "root", delivery: "steer", resume: false, metadata: { [OpenCodeSteer.BRIEF_MARK]: true } })
-        expect(brief.text).toStartWith("## The machine")
-        expect(brief.text).toContain("ONE fresh verifier per batch")
-        expect(brief.text).toContain("Your run now, from the plugin's ledger:\nready: alpha")
-        // The run's drift from the machine so far: none yet.
-        expect(brief.text).toContain("\ndrift 0 (clean)\n\nRe-read")
-        expect(brief.text).toEndWith("Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.")
-      }),
-    ))
-
-  test("the brief arriving is not new input to an idle root", () =>
-    scenario(
-      Effect.gen(function* () {
-        const runs: ReadonlyArray<Run> = [{ name: "web", units: [{ unit: "auth", state: "implement" }] }]
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: {} }, steps: { root: ["auth"] }, runs })
-        yield* plugin.idle("root")
-        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
-        yield* plugin.enqueue("root", { type: "synthetic", metadata: { [OpenCodeSteer.BRIEF_MARK]: true } })
-        yield* settle
-        yield* plugin.idle("root")
-        yield* settle
-        expect(plugin.nudges).toHaveLength(1)
-      }),
-    ))
-
-  test("under guard warn the call passes, its answer carries the rule's words, and the departure is recorded", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY, guard: "warn" }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor" } }) })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        const input = { agent: "verifier", description: "verifier alpha r1", prompt: "v" }
-        const called = yield* plugin.call("subagent", "root", input)
-        expect(called.refused).toBeUndefined()
-        const answer = yield* plugin.runTool(called.input)
-        expect(String(answer.content)).toContain(RULES.VerifierPerUnit.words)
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerifierPerUnit" }))
-        expect(kinds(plugin)).not.toContain("Refused")
-      }),
-    ))
-
-  test("the pipeline through the plugin: the next batch fans out while batch-1 verifies; its findings fold into a running implementor and a fix unit; batch-2 lands and its verifier is told the folds", () =>
-    scenario(
-      Effect.gen(function* () {
-        const report = "/run/batch-1-findings.md"
-        const sessions = steps({
-          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready /run/alpha/round-1-request.md" },
-          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
-          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
-          ses_g: { agent: "implementor", lastWords: "implementor gamma r1: ready x" },
-          ses_f: { agent: "implementor", lastWords: "implementor alpha-fix1 r1: ready x" },
-        })
-        const logged: Array<{ readonly near: string; readonly line: string }> = []
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true, ses_g: true }, findings: { [report]: ["alpha/M1", "alpha/M2"] }, records: { seen: new Map(), logged } })
-        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
-        const landed = (rifts: ReadonlyArray<string>) =>
-          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        expect((yield* land(["alpha"])).refused).toBeUndefined()
-        yield* landed(["alpha"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
-        // While batch-1 verifies, batch-2 fans out, and its land waits for the verdict.
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* begin(plugin, implementor("gamma"), "ses_g")
-        yield* plugin.idle("ses_b")
-        const early = yield* land(["beta"])
-        expect(early.refused?.message).toContain(RULES.VerdictPending.words)
-        // The verdict is in: its findings are read from its report, and the land waits for them to be folded.
-        yield* plugin.idle("ses_v")
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", findings: ["alpha/M1", "alpha/M2"] }))
-        // The verdict adds the root's drift to its run's log.md, by its report: the early land's refusal.
-        expect(logged).toEqual([{ near: report, line: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\dZ drift 1 after batch-1 changes: 1 refused ×1$/) }])
-        const unfolded = yield* land(["beta"])
-        expect(unfolded.refused?.message).toContain(RULES.FindingUnfolded.words)
-        expect(unfolded.refused?.message).toContain("alpha/M1 (not folded)")
-        // alpha/M1 to gamma's running implementor, as a round message; alpha/M2 to a new fix unit.
-        const round = { agent: "implementor", description: "implementor gamma r1 (folds: alpha/M1)", prompt: "fold alpha/M1", sessionID: "ses_g", background: true }
-        expect((yield* plugin.call("subagent", "root", round)).refused).toBeUndefined()
-        yield* plugin.finish({ input: round, status: "completed", result: { metadata: { sessionID: "ses_g", status: "running" } } })
-        yield* begin(plugin, { agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M2)", prompt: "fix alpha/M2", background: true }, "ses_f")
-        yield* plugin.idle("ses_f")
-        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "FindingFolded")).toEqual([
-          expect.objectContaining({ finding: "alpha/M1", into: "gamma" }),
-          expect.objectContaining({ finding: "alpha/M2", into: "alpha-fix1" }),
-        ])
-        // Folded into gamma, which still implements: alpha/M1 rides with gamma and holds no land. Only the cadence holds
-        // this one (two ready while gamma runs), never the finding.
-        const riding = yield* land(["beta", "alpha-fix1"])
-        expect(riding.refused?.message).toContain(RULES.BatchNotDue.words)
-        expect(riding.refused?.message).not.toContain(RULES.FindingUnfolded.words)
-        yield* plugin.idle("ses_g")
-        expect((yield* land(["beta", "gamma", "alpha-fix1"])).refused).toBeUndefined()
-        yield* landed(["beta", "gamma", "alpha-fix1"])
-        // Batch-2's one verifier covers its units and is told batch-1's findings as folded.
-        const two = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "verify batch-2", background: true })
-        expect(two.refused).toBeUndefined()
-        expect(String((two.input as { prompt: string }).prompt)).toContain("verify batch-2\n\nFindings of the batch before, folded into this batch")
-        expect(String((two.input as { prompt: string }).prompt)).toContain("- batch-1 alpha/M1 → gamma\n- batch-1 alpha/M2 → alpha-fix1")
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "VerifierStarted", batch: "batch-2", units: ["beta", "gamma", "alpha-fix1"], findings: ["alpha/M1 → gamma", "alpha/M2 → alpha-fix1"] })
-        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Refused").map((line) => (line as { rule: string }).rule)).toEqual(["VerdictPending", "FindingUnfolded", "BatchNotDue"])
-      }),
-    ))
-
-  test("a unit's next round in a Rift of another name lands as the unit by its branch, its folded findings with it (orch-pipeline OB1)", () =>
-    scenario(
-      Effect.gen(function* () {
-        const report = "/run/batch-1-findings.md"
-        const sessions = steps({
-          ses_a: { agent: "implementor", lastWords: "implementor reset-use r1: ready x" },
-          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
-          ses_a2: { agent: "implementor", lastWords: "implementor reset-use r2: ready x" },
-        })
-        const branches = { "/u/.rifts/dotfiles/scratch-17": "feat/reset-use-2" }
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: { [report]: ["reset-use/B1", "reset-use/M1"] }, branches })
-        const land = (rifts: ReadonlyArray<unknown>) => plugin.call("rift", "root", { action: "land", rifts })
-        const landed = (rifts: ReadonlyArray<unknown>) =>
-          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
-        yield* begin(plugin, implementor("reset-use"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["reset-use"])
-        yield* landed(["reset-use"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
-        yield* plugin.idle("ses_v")
-        // Round 2 runs in a Rift named for no unit, on branch feat/reset-use-2: the land reads the branch.
-        yield* begin(plugin, { agent: "implementor", description: "implementor reset-use r2", prompt: "Round 2. You work in the Rift /u/.rifts/dotfiles/scratch-17.", background: true }, "ses_a2")
-        yield* plugin.idle("ses_a2")
-        expect((yield* land(["/u/.rifts/dotfiles/scratch-17"])).refused).toBeUndefined()
-        yield* landed(["/u/.rifts/dotfiles/scratch-17"])
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["reset-use"] })
-        expect(kinds(plugin)).not.toContain("Refused")
-        // No prompt is read: no line of the ledger holds a workspace.
-        expect(JSON.stringify(plugin.ledger)).not.toContain("scratch-17")
-      }),
-    ))
-
-  test("a brief that names another unit's Rift in any form is never read: a land is each unit's by its Rift's branch, or the unit it names (land-upstream r3 M1)", () =>
-    scenario(
-      Effect.gen(function* () {
-        const sessions = steps({
-          ses_api: { agent: "implementor", lastWords: "implementor api r2: ready x" },
-          ses_web: { agent: "implementor", lastWords: "implementor web r1: ready x" },
-        })
-        // The verifier's probe: brief A names web's Rift in a `Rift:` line under Do not touch; brief B in a negated phrase.
-        const briefA = "You work in the Rift /u/.rifts/app/api-2.\n\n## Do not touch\n- Rift: /u/.rifts/app/web-3 (web's, running)"
-        const briefB = "Do not work in the Rift /u/.rifts/app/api-2 (api's). You work in the Rift /u/.rifts/app/web-3."
-        const branches = { "/u/.rifts/app/api-2": "feat/api-2", "/u/.rifts/app/web-3": "feat/web-3", "/u/.rifts/app/wip": "wip" }
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, branches })
-        yield* begin(plugin, { agent: "implementor", description: "implementor api r2", prompt: briefA, background: true }, "ses_api")
-        yield* begin(plugin, { agent: "implementor", description: "implementor web r1", prompt: briefB, background: true }, "ses_web")
-        yield* plugin.idle("ses_api")
-        yield* plugin.idle("ses_web")
-        const land = (rifts: ReadonlyArray<unknown>, departs?: string) => plugin.call("rift", "root", { action: "land", rifts, ...(departs === undefined ? {} : { departs }) })
-        const landed = (rifts: ReadonlyArray<unknown>) =>
-          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed as one push" }] } })
-        // web's Rift alone is web's, so the land leaves api out; landed anyway, it is web that lands, never api.
-        expect((yield* land(["/u/.rifts/app/web-3"])).refused?.message).toContain(RULES.LandPartial.words)
-        expect((yield* land(["/u/.rifts/app/web-3"], "probe")).refused).toBeUndefined()
-        yield* landed(["/u/.rifts/app/web-3"])
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["web"] })
-        // A Rift of no unit's branch is none of the machine's: it passes, though web's verdict is pending.
-        expect((yield* land(["/u/.rifts/app/wip"])).refused).toBeUndefined()
-        // The same Rift named for api is api's: held by the pending verdict, and landed anyway, api lands.
-        const named = [{ path: "/u/.rifts/app/wip", unit: "api" }]
-        expect((yield* land(named)).refused?.message).toContain(RULES.VerdictPending.words)
-        expect((yield* land(named, "probe")).refused).toBeUndefined()
-        yield* landed(named)
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["api"] })
-      }),
-    ))
-
-  test("unit-map r1 M1 through the plugin: with units db and db-2, db's round-2 Rift db-2 on p5/db-2 lands as db when its start named it (rift: <path>), and as no unit by its branch alone", () =>
-    scenario(
-      Effect.gen(function* () {
-        const sessions = steps({
-          ses_d2: { agent: "implementor", lastWords: "implementor db-2 r1: ready x" },
-          ses_d: { agent: "implementor", lastWords: "implementor db r2: ready x" },
-        })
-        const branches = { "/u/.rifts/app/db-2-first": "p5/db-2", "/u/.rifts/app/db-2": "p5/db-2" }
-        const land = (plugin: Plugin, rifts: ReadonlyArray<unknown>, departs?: string) =>
-          plugin.call("rift", "root", { action: "land", rifts, ...(departs === undefined ? {} : { departs }) })
-        const landed = (plugin: Plugin, rifts: ReadonlyArray<unknown>) =>
-          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed as one push" }] } })
-        // The starts name their Rifts: db's round-2 Rift is db's, though its name and branch read as db-2.
-        const named = yield* start({ now: WEDNESDAY }, { sessions, branches })
-        yield* begin(named, { agent: "implementor", description: "implementor db-2 r1 (rift: /u/.rifts/app/db-2-first)", prompt: "go", background: true }, "ses_d2")
-        yield* begin(named, { agent: "implementor", description: "implementor db r2 (rift: /u/.rifts/app/db-2)", prompt: "go", background: true }, "ses_d")
-        yield* named.idle("ses_d2")
-        yield* named.idle("ses_d")
-        expect(named.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "db", round: 2, rift: "/u/.rifts/app/db-2" }))
-        const partial = yield* land(named, ["/u/.rifts/app/db-2"])
-        expect(partial.refused?.message).toContain('Land every ready unit in one call: orchestrate({ action: "land" }) lands db-2, db.')
-        expect((yield* land(named, ["/u/.rifts/app/db-2"], "probe")).refused).toBeUndefined()
-        yield* landed(named, ["/u/.rifts/app/db-2"])
-        expect(named.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["db"] })
-        // No start named them: the branch p5/db-2 reads as db-2 and as db's round 2, so the land is no unit's.
-        const unnamed = yield* start({ now: WEDNESDAY }, { sessions, branches })
-        yield* begin(unnamed, { agent: "implementor", description: "implementor db-2 r1", prompt: "go", background: true }, "ses_d2")
-        yield* begin(unnamed, { agent: "implementor", description: "implementor db r2", prompt: "go", background: true }, "ses_d")
-        yield* unnamed.idle("ses_d2")
-        yield* unnamed.idle("ses_d")
-        expect((yield* land(unnamed, ["/u/.rifts/app/db-2"])).refused).toBeUndefined()
-        yield* landed(unnamed, ["/u/.rifts/app/db-2"])
-        expect(kinds(unnamed)).not.toContain("BatchLanded")
-      }),
-    ))
-
-  test("property: over arbitrary units, numbered rounds and briefs naming other units' Rifts in every own-form, a land of every unit's Rift by path is exactly the batch", async () => {
-    const random = rngOf(1111)
-    const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
-    const word = () => Array.from({ length: 1 + Math.floor(random() * 5) }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(random() * 26)]).join("")
-    const ownForms = [(path: string) => `Rift: ${path}`, (path: string) => `- **Workspace:** ${path}`, (path: string) => `You work in the Rift ${path}.`, (path: string) => `## Workspace\n${path}`]
-    const mentions = [...ownForms, (path: string) => `Do not work in the Rift ${path}.`, (path: string) => `## Do not touch\n- Rift: ${path} (running)`]
-    for (let trial = 0; trial < 40; trial++) {
-      const units = [...new Set(Array.from({ length: 2 + Math.floor(random() * 3) }, () => Array.from({ length: 1 + Math.floor(random() * 2) }, word).join("-")))]
-      if (units.length < 2) continue
-      const rounds = Object.fromEntries(units.map((unit) => [unit, 1 + Math.floor(random() * 5)]))
-      // Each unit's Rift: called for another unit, or for nothing, on its own branch (a later round's numbered).
-      const paths = Object.fromEntries(units.map((unit, i) => [unit, random() < 0.5 ? `/h/.rifts/r/${pick(units)}-${i + 2}` : `/h/.rifts/r/${word()}-${i}`]))
-      const branches = Object.fromEntries(units.map((unit) => [paths[unit]!, rounds[unit]! > 1 && random() < 0.7 ? `feat/${unit}-${rounds[unit]}` : `feat/${unit}`]))
-      const brief = (unit: string) => {
-        const others = units.filter((other) => other !== unit).map((other) => pick(mentions)(paths[other]!))
-        const cut = Math.floor(random() * (others.length + 1))
-        return [...others.slice(0, cut), pick(ownForms)(paths[unit]!), ...others.slice(cut)].join("\n")
-      }
-      const sessions = steps(Object.fromEntries(units.map((unit, i) => [`ses_${i}`, { agent: "implementor", lastWords: `implementor ${unit} r${rounds[unit]}: ready x` }])))
-      await scenario(
-        Effect.gen(function* () {
-          const plugin = yield* start({ now: WEDNESDAY }, { sessions, branches })
-          for (const [i, unit] of units.entries())
-            yield* begin(plugin, { agent: "implementor", description: `implementor ${unit} r${rounds[unit]}`, prompt: brief(unit), background: true }, `ses_${i}`)
-          for (const i of units.keys()) yield* plugin.idle(`ses_${i}`)
-          const where = JSON.stringify({ trial, units, paths, branches })
-          // One unit's Rift alone is that unit's: the land leaves the others out.
-          const one = yield* plugin.call("rift", "root", { action: "land", rifts: [paths[units[0]!]] })
-          expect([where, one.refused?.message.includes(RULES.LandPartial.words)]).toEqual([where, true])
-          const all = [...units].sort(() => random() - 0.5).map((unit) => paths[unit]!)
-          expect([where, (yield* plugin.call("rift", "root", { action: "land", rifts: all })).refused]).toEqual([where, undefined])
-          yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: all }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-          const batch = plugin.ledger.at(-1) as { kind: string; units: ReadonlyArray<string> }
-          expect([where, batch.kind, [...batch.units].sort()]).toEqual([where, "BatchLanded", [...units].sort()])
-        }),
-      )
-    }
-  })
-
-  test("a land before the verdict passes when it departs, and the departure is recorded", () =>
-    scenario(
-      Effect.gen(function* () {
-        const sessions = steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true } })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        const departed = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"], departs: "the owner ships beta today" })
-        expect(departed.refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerdictPending", why: "the owner ships beta today" }))
-      }),
-    ))
-
-  // Round 1, M2 (the verifier's live probe, promoted): a covered unit's next round does not end its batch's wait.
-  test("a covered unit restarted while its batch's verifier runs cannot land until the verdict is in", () =>
-    scenario(
-      Effect.gen(function* () {
-        const sessions = steps({
-          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
-          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md" },
-          ses_a2: { agent: "implementor", lastWords: "implementor alpha r2: ready x" },
-        })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: {} })
-        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        // alpha's round 2 starts and hands back ready while batch-1's verifier still runs.
-        yield* begin(plugin, { agent: "implementor", description: "implementor alpha r2", prompt: "go", background: true }, "ses_a2")
-        yield* plugin.idle("ses_a2")
-        const early = yield* land(["alpha"])
-        expect(early.refused?.message).toContain(RULES.VerdictPending.words)
-        expect(early.refused?.message).toContain("Verifier batch-1 still runs over alpha")
-        // The verdict comes in: alpha's round 2 is kept, and lands.
-        yield* plugin.idle("ses_v")
-        expect((yield* land(["alpha"])).refused).toBeUndefined()
-        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Departed")).toEqual([])
-      }),
-    ))
-
   test("B3: an accepted verdict asks the fleet to record the target its batch file names, by the verifier's report, never its checkout; changes asks nothing", () =>
     scenario(
       Effect.gen(function* () {
         const fleet: Array<FleetTest.Asked> = []
-        const sessions = {
-          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
-          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: changes /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
-          ses_w: { parentID: "root", agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
-        }
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { "/run/batch-1-findings.md": ["alpha/M1"] }, fleet })
-        const land = (rifts: ReadonlyArray<string>) =>
-          Effect.gen(function* () {
-            yield* plugin.call("rift", "root", { action: "land", rifts })
-            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-          })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        const sessions = steps({
+          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: changes /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+          ses_w: { agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
+          ses_i: { agent: "implementor", lastWords: "verifier batch-3 r1: accepted /run/batch-3-findings.md" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet })
+        yield* begin(plugin, verifier("batch-1"), "ses_v")
         yield* plugin.idle("ses_v")
+        yield* begin(plugin, { agent: "implementor", description: "implementor alpha r1", prompt: "go", background: true }, "ses_i")
+        yield* plugin.idle("ses_i")
+        yield* settle
         expect(fleet).toEqual([])
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        yield* land(["beta"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        yield* begin(plugin, verifier("batch-2"), "ses_w")
         yield* plugin.idle("ses_w")
         yield* eventually(() => expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }]))
-      }),
-    ))
-
-  test("land-adopt: a verdict whose report marks findings closed by another batch closes them in the ledger; the next land no longer counts them", () =>
-    scenario(
-      Effect.gen(function* () {
-        const sessions = {
-          ...steps({
-            ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
-            ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
-            ses_c: { agent: "implementor", lastWords: "implementor gamma r1: ready x" },
-          }),
-          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: changes /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
-          ses_w: { parentID: "root", agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
-        }
-        const plugin = yield* start(
-          { now: WEDNESDAY },
-          { sessions, findings: { "/run/batch-1-findings.md": ["alpha/M1", "alpha/M2"] }, closed: { "/run/batch-2-findings.md": ["alpha/M1", "alpha/M2"] } },
-        )
-        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* plugin.idle("ses_v")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        expect((yield* land(["beta"])).refused?.message).toContain(RULES.FindingUnfolded.words)
-        // batch-2's verifier stands in for beta's land by hand, and its report marks alpha's findings closed.
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        // The verifier goes idle again on the same verdict: published once.
         yield* plugin.idle("ses_w")
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-2", verdict: "accepted", closed: ["alpha/M1", "alpha/M2"] }))
-        yield* begin(plugin, implementor("gamma"), "ses_c")
-        yield* plugin.idle("ses_c")
-        expect((yield* land(["gamma"])).refused).toBeUndefined()
+        yield* plugin.idle("ses_w")
+        yield* settle
+        expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }])
       }),
     ))
 
@@ -2456,11 +1904,10 @@ describe("the batch machine", () => {
       Effect.gen(function* () {
         const fleet: Array<FleetTest.Asked> = []
         const logged: Array<{ readonly near: string; readonly line: string }> = []
-        const sessions = {
-          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
-          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
-          ses_w: { parentID: "root", agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
-        }
+        const sessions = steps({
+          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+          ses_w: { agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
+        })
         const target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-1" }
         const outcomes = new Map<string, FleetOutcome>([
           ["batch-1", FleetOutcome.Recorded({ target })],
@@ -2468,22 +1915,11 @@ describe("the batch machine", () => {
         ])
         const fleetOutcome = (asked: FleetTest.Asked) => Option.getOrElse(Option.fromNullishOr(outcomes.get(asked.batch)), () => FleetOutcome.Off())
         const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetOutcome, records: { seen: new Map(), logged } })
-        const land = (rifts: ReadonlyArray<string>) =>
-          Effect.gen(function* () {
-            yield* plugin.call("rift", "root", { action: "land", rifts })
-            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-          })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* begin(plugin, verifier("batch-1"), "ses_v")
         yield* plugin.idle("ses_v")
         yield* eventually(() => expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true))
         expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toEqual([])
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        yield* land(["beta"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        yield* begin(plugin, verifier("batch-2"), "ses_w")
         yield* plugin.idle("ses_w")
         const said = "fleet: batch-2 accepted, but NOT published: the batch file /run/batch-2.md lacks the fork head. Every host stays on the last published target."
         yield* eventually(() => expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toHaveLength(1))
@@ -2493,406 +1929,6 @@ describe("the batch machine", () => {
         expect(refusals.map((each) => each.near)).toEqual(["/run/batch-2-findings.md"])
       }),
     ))
-
-  // Round 1, M1 (the verifier's live probe, promoted): a `changes` whose report does not read is never an empty set.
-  test("a changes whose report does not read holds the next land, naming it; once the report reads its findings open and fold, and the land passes", () =>
-    scenario(
-      Effect.gen(function* () {
-        const report = "/nonexistent/loop-probe-x/missing-findings.md"
-        const reports: Record<string, ReadonlyArray<string>> = {}
-        const sessions = steps({
-          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
-          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
-          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
-          ses_f: { agent: "implementor", lastWords: "implementor alpha-fix1 r1: ready x" },
-        })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: reports })
-        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        yield* plugin.idle("ses_v")
-        expect(plugin.ledger).toContainEqual(
-          expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", unresolved: { report, why: `the report ${report} does not read` } }),
-        )
-        const held = yield* land(["beta"])
-        expect(held.refused?.message).toContain(RULES.FindingUnfolded.words)
-        expect(held.refused?.message).toContain(`The findings of batch-1's \`changes\` are not known: the report ${report} does not read`)
-        // The report reads now: the next land reads it again, opens its finding, and waits for it to be folded.
-        reports[report] = ["alpha/M1"]
-        const unfolded = yield* land(["beta"])
-        expect(unfolded.refused?.message).toContain("alpha/M1 (not folded)")
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "ReportResolved", batch: "batch-1", findings: ["alpha/M1"] }))
-        yield* begin(plugin, { agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M1)", prompt: "fix", background: true }, "ses_f")
-        yield* plugin.idle("ses_f")
-        expect((yield* land(["beta", "alpha-fix1"])).refused).toBeUndefined()
-      }),
-    ))
-
-  test("a changes that names no report holds the next land until it departs", () =>
-    scenario(
-      Effect.gen(function* () {
-        const sessions = steps({
-          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
-          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: changes, see my notes" },
-          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
-        })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: {} })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        yield* plugin.idle("ses_v")
-        const held = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })
-        expect(held.refused?.message).toContain("its hand-back names no findings report")
-        const departed = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"], departs: "the owner read the verdict himself" })
-        expect(departed.refused).toBeUndefined()
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "FindingUnfolded", why: "the owner read the verdict himself" }))
-      }),
-    ))
-
-  // orch-followups 2: the race ledger-stale fixed for an implementor, on the verifier's path. A verifier that handed
-  // back and went quiet before its idle was seen was marked dead (`none`) by the next decision's reconcile: its
-  // verdict was lost, and its idle then found no verifier, so the fleet target and the run's log line never came.
-  test("orch-followups 2: a verifier's hand-back a land reads before its idle is its verdict, concluded once: the fleet asked and the run's log written once, its idle after adds nothing", () =>
-    scenario(
-      Effect.gen(function* () {
-        const fleet: Array<FleetTest.Asked> = []
-        const logged: Array<{ readonly near: string; readonly line: string }> = []
-        const sessions = {
-          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
-          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
-        }
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, records: { seen: new Map(), logged } })
-        const land = (rifts: ReadonlyArray<string>) =>
-          Effect.gen(function* () {
-            const called = yield* plugin.call("rift", "root", { action: "land", rifts })
-            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-            return called
-          })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        // The verifier handed back accepted and its session stopped; its idle is not seen yet. beta's land reads it.
-        expect((yield* land(["beta"])).refused).toBeUndefined()
-        const verdicts = () => kinds(plugin).filter((kind) => kind === "VerifierEnded")
-        expect(verdicts()).toHaveLength(1)
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "accepted" }))
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "BatchLanded", units: ["beta"] }))
-        yield* eventually(() => expect(fleet).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }]))
-        const driftLines = () => logged.filter((each) => / drift \d+ after batch-1 accepted/.test(each.line))
-        expect(driftLines().map((each) => each.near)).toEqual(["/run/batch-1-findings.md"])
-        // Its idle comes after: the ledger decides the hand-back to nothing, and nothing is told twice.
-        yield* plugin.idle("ses_v")
-        yield* settle
-        expect([verdicts().length, fleet.length, driftLines().length]).toEqual([1, 1, 1])
-      }),
-    ))
-
-  test("orch-followups 2: a verifier's changes a land reads before its idle opens its findings and holds that land, and its log line is still written once", () =>
-    scenario(
-      Effect.gen(function* () {
-        const logged: Array<{ readonly near: string; readonly line: string }> = []
-        const report = "/run/batch-1-findings.md"
-        const sessions = {
-          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
-          ses_v: { parentID: "root", agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}`, directory: "/checkouts/dotfiles" },
-        }
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1"] }, records: { seen: new Map(), logged } })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        const held = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })
-        expect(held.refused?.message).toContain("alpha/M1 (not folded)")
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", findings: ["alpha/M1"] }))
-        yield* plugin.idle("ses_v")
-        yield* settle
-        expect(logged).toEqual([{ near: report, line: expect.stringMatching(/ drift \d+ after batch-1 changes/) }])
-      }),
-    ))
-
-  // orch-followups 3: a unit the root drops ends on its machine and releases its findings. r1 M1: which unit log.ts
-  // dropped is its log.md's to say, never the command line's: a refused move drops nothing.
-  test("orch-followups 3, r1 M1: each unit whose log.md a root's log.ts call moved to dropped ends on the ledger and releases its finding; one whose move log.ts refused keeps its own; the next land needs no departs", () =>
-    scenario(
-      Effect.gen(function* () {
-        const run = yield* scratchRun
-        const report = "/run/batch-1-findings.md"
-        const sessions = steps({
-          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
-          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
-          ses_fa: { agent: "implementor" },
-          ses_fb: { agent: "implementor" },
-          ses_fg: { agent: "implementor" },
-          ses_d: { agent: "implementor", lastWords: "implementor delta r1: ready x" },
-        })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1", "alpha/M2", "alpha/M3"] }, drops: journalOf(run) })
-        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        yield* plugin.idle("ses_a")
-        yield* land(["alpha"])
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
-        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
-        yield* plugin.idle("ses_v")
-        // Each finding folds into a fix whose implementor dies and is never restarted; delta is ready.
-        yield* begin(plugin, { agent: "implementor", description: "implementor a-fix r1 (folds: alpha/M1)", prompt: "fix", background: true }, "ses_fa")
-        yield* begin(plugin, { agent: "implementor", description: "implementor b-fix r1 (folds: alpha/M2)", prompt: "fix", background: true }, "ses_fb")
-        yield* begin(plugin, { agent: "implementor", description: "implementor g-fix r1 (folds: alpha/M3)", prompt: "fix", background: true }, "ses_fg")
-        yield* begin(plugin, implementor("delta"), "ses_d")
-        yield* plugin.idle("ses_d")
-        for (const unit of ["a-fix", "b-fix", "g-fix"]) logged(run, unit, "new decide r1")
-        const dropped = () => plugin.ledger.filter((_, at) => kinds(plugin)[at] === "UnitDropped")
-        // The first move is refused (b-fix is in decide, not implement), the second written: a-fix alone is dropped.
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/b-fix implement dropped r1 x; bun ${LOG_SCRIPT} ${run}/a-fix decide dropped r1 x` }, tmpdir(), journalOf(run))
-        expect(dropped()).toEqual([expect.objectContaining({ unit: "a-fix", released: ["alpha/M1"] })])
-        // Another unit's move, and a move asked of no log, drop nothing.
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/g-fix decide implement r2 again` }, tmpdir(), journalOf(run))
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/nowhere decide dropped r1 x` }, tmpdir(), journalOf(run))
-        expect(dropped()).toHaveLength(1)
-        // Two moves in one line, both written, relative to the call's workdir: both are dropped.
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} --current b-fix dropped r1 x && bun ${LOG_SCRIPT} g-fix implement dropped r2 x`, workdir: run }, run, journalOf(run))
-        expect(dropped().slice(1)).toEqual([expect.objectContaining({ unit: "b-fix", released: ["alpha/M2"] }), expect.objectContaining({ unit: "g-fix", released: ["alpha/M3"] })])
-        expect((yield* land(["delta"])).refused).toBeUndefined()
-        expect(kinds(plugin)).not.toContain("Departed")
-      }),
-    ))
-
-  const DroppedLine = Schema.Struct({ kind: Schema.Literal("UnitDropped"), unit: Schema.String })
-  const decodeDropped = Schema.decodeUnknownOption(DroppedLine)
-  /** The units the ledger dropped, one entry per `UnitDropped`. */
-  const droppedUnits = (plugin: Plugin) => plugin.ledger.flatMap((line) => Option.toArray(Option.map(decodeDropped(line), (dropped) => dropped.unit)))
-  /** Whether `unit`'s log.md ends in a move to dropped: what log.ts wrote. */
-  const endsDropped = (run: string, unit: string) => / → dropped r\d+(?: [^\n]*)?$/.test(readFileSync(join(run, unit, "log.md"), "utf8").trim())
-
-  /**
-   * One way a root's shell call runs a log.ts move: its input, where it runs, how it ends, and whether it answers
-   * before log.ts writes (`hook-first`: a command it backgrounded, or one still running when the call timed out).
-   */
-  interface Call {
-    readonly input: { readonly command: string; readonly workdir?: string }
-    readonly cwd: string
-    readonly status: "completed" | "error"
-    readonly order: "run-first" | "hook-first"
-  }
-  type Move = (dir: string) => string
-  const FORMS = {
-    absolute: (run: string, unit: string, move: Move): Call => ({ input: { command: move(`${run}/${unit}`) }, cwd: "/", status: "completed", order: "run-first" }),
-    relative: (run: string, unit: string, move: Move): Call => ({ input: { command: move(unit), workdir: run }, cwd: run, status: "completed", order: "run-first" }),
-    variable: (run: string, unit: string, move: Move): Call => ({ input: { command: `RUN=${run}; ${move(`$RUN/${unit}`)}` }, cwd: "/", status: "completed", order: "run-first" }),
-    braced: (run: string, unit: string, move: Move): Call => ({ input: { command: `RUN=${run}; ${move(`"\${RUN}/${unit}"`)}` }, cwd: "/", status: "completed", order: "run-first" }),
-    cd: (run: string, unit: string, move: Move): Call => ({ input: { command: `cd ${run} && ${move(unit)}` }, cwd: "/", status: "completed", order: "run-first" }),
-    backgrounded: (run: string, unit: string, move: Move): Call => ({ input: { command: `${move(`${run}/${unit}`)} &` }, cwd: "/", status: "completed", order: "hook-first" }),
-    "timed out": (run: string, unit: string, move: Move): Call => ({ input: { command: `cd ${run}; ${move(unit)}` }, cwd: "/", status: "error", order: "hook-first" }),
-  }
-  const FORM_NAMES: ReadonlyArray<keyof typeof FORMS> = ["absolute", "relative", "variable", "braced", "cd", "backgrounded", "timed out"]
-  /** The call through the plugin's after hook, its command run for real by the root's shell: before the hook answers, or after. */
-  const RUNS = {
-    "run-first": (plugin: Plugin, call: Call, journal: string) =>
-      Effect.suspend(() => plugin.finish({ tool: "shell", input: call.input, status: call.status, result: { content: [{ type: "text", text: spawnRoot(call.input.command, call.cwd, journal) }] } })),
-    "hook-first": (plugin: Plugin, call: Call, journal: string) =>
-      plugin.finish({ tool: "shell", input: call.input, status: call.status, result: { content: [{ type: "text", text: "still running" }] } }).pipe(Effect.andThen(Effect.sync(() => spawnRoot(call.input.command, call.cwd, journal)))),
-  }
-
-  /** The reader trials run beside their units: `reader` hands back ready, `starter` starts when asked. */
-  const READER = { ses_reader: { agent: "implementor", lastWords: "implementor reader r1: ready x" }, ses_starter: { agent: "implementor" } }
-  /**
-   * Where a trial's late drop is first read: the root's next shell call, its next start, a step's hand-back, or its
-   * next land. Each is a call the plugin reads the root's drops at.
-   */
-  const READS = {
-    shell: (plugin: Plugin) => plugin.finish({ tool: "shell", input: { command: "true" }, status: "completed", result: { content: [{ type: "text", text: "" }] } }),
-    start: (plugin: Plugin) => begin(plugin, implementor("starter"), "ses_starter"),
-    "hand-back": (plugin: Plugin) => plugin.idle("ses_reader"),
-    land: (plugin: Plugin) => Effect.asVoid(plugin.call("rift", "root", { action: "land", rifts: ["reader"] })),
-  }
-  const READ_NAMES: ReadonlyArray<keyof typeof READS> = ["shell", "start", "hand-back", "land"]
-
-  /**
-   * One trial: up to three units, each moved by a call of the form `forms` gives it, the calls that answer before
-   * log.ts writes last, so the last one's drop is first seen at the `read` point. Then the first unit dropped is
-   * started again at r2, its log.md still ending in its r1 drop (no dir found to log the start in), and two lands
-   * follow. The counts of drops per unit right after the read and at the end, and what each log.md ends in.
-   */
-  const dropTrial = (trial: number, forms: (at: number) => keyof typeof FORMS, from: () => string, read: keyof typeof READS) =>
-    Effect.gen(function* () {
-      const run = yield* scratchRun
-      const journal = journalOf(run)
-      const units = Array.from({ length: 1 + (trial % 3) }, (_, at) => `t${trial}-u${at}`)
-      const sessions = Object.fromEntries(units.flatMap((unit) => [[`ses_${unit}`, { agent: "implementor" }], [`ses_${unit}_r2`, { agent: "implementor" }]]))
-      const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ...sessions, ...READER }), drops: journal })
-      yield* begin(plugin, implementor("reader"), "ses_reader")
-      for (const unit of units) {
-        yield* begin(plugin, implementor(unit), `ses_${unit}`)
-        logged(run, unit, "new decide r1")
-      }
-      // A move from decide is written, one from implement refused, by log.ts itself.
-      const named = units.map((unit, at) => ({ unit, form: forms(at) }))
-      const calls = named.map(({ unit, form }) => FORMS[form](run, unit, (dir) => `bun ${LOG_SCRIPT} ${dir} ${from()} dropped r1 x`))
-      for (const call of [...calls.filter((call) => call.order === "run-first"), ...calls.filter((call) => call.order === "hook-first")]) yield* RUNS[call.order](plugin, call, journal)
-      yield* READS[read](plugin)
-      const countsOf = () => units.map((unit) => [unit, droppedUnits(plugin).filter((each) => each === unit).length])
-      const atRead = countsOf()
-      const written = units.map((unit) => [unit, Number(endsDropped(run, unit))])
-      // A unit dropped and started again at r2 is live: the old drop its log.md still ends in drops nothing more.
-      const revived = units.filter((unit) => endsDropped(run, unit)).slice(0, 1)
-      for (const unit of revived) yield* begin(plugin, { ...implementor(unit), description: `implementor ${unit} r2` }, `ses_${unit}_r2`)
-      yield* READS.shell(plugin)
-      yield* plugin.call("rift", "root", { action: "land", rifts: units })
-      return { forms: named.map(({ form }) => form), atRead, atEnd: countsOf(), written }
-    })
-
-  // orch-followups r2 M1 (a repeat of r1 M1) and orch-late-drop item 1: the hook read the unit dir off the command's
-  // text, so a dir named through a variable or after a `cd` was missed, and so was a drop log.ts wrote after the
-  // call answered (backgrounded, or a call that timed out). What log.ts wrote decides now, through its drops journal.
-  // Over every form a root's line names the dir in, each move written or refused by log.ts itself, and every point a
-  // late drop is first read at (r1 M1: a shell call, a start, a hand-back, a land), the ledger drops each written drop
-  // exactly once by that point and a refused one never, and a unit started again at r2 is not dropped again.
-  test("property: whatever form names the unit dir, whenever log.ts writes and wherever it is read, each written drop ends its unit exactly once and a refused one none", () =>
-    scenario(
-      Effect.gen(function* () {
-        const rng = rngOf(11)
-        const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(rng() * list.length)]!
-        const formsSeen = new Set<string>()
-        const readsSeen = new Set<string>()
-        // Each trial's first unit takes the forms in turn, and the trials the read points in turn; the rest pick.
-        for (let trial = 0; trial < 4 * FORM_NAMES.length; trial++) {
-          const read = READ_NAMES[trial % READ_NAMES.length]!
-          const result = yield* dropTrial(trial, (at) => [FORM_NAMES[trial % FORM_NAMES.length]!, pick(FORM_NAMES), pick(FORM_NAMES)][at]!, () => pick(["decide", "implement"]), read)
-          for (const form of result.forms) formsSeen.add(form)
-          readsSeen.add(read)
-          expect([trial, read, result.forms, result.atRead, result.atEnd]).toEqual([trial, read, result.forms, result.written, result.written])
-        }
-        expect([[...formsSeen].toSorted(), [...readsSeen].toSorted()]).toEqual([[...FORM_NAMES].toSorted(), [...READ_NAMES].toSorted()])
-      }),
-    ), 240_000)
-
-  // orch-late-drop item 1's acceptance: a drop log.ts writes after the call's hook read the journal ends its unit at
-  // the next land, and only once.
-  test("orch-late-drop 1: a drop written after its shell call answered ends its unit at the next land, once", () =>
-    scenario(
-      Effect.gen(function* () {
-        const run = yield* scratchRun
-        const journal = journalOf(run)
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" } }), drops: journal })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        logged(run, "alpha", "new decide r1")
-        const call = FORMS.backgrounded(run, "alpha", (dir) => `bun ${LOG_SCRIPT} ${dir} decide dropped r1 superseded`)
-        yield* plugin.finish({ tool: "shell", input: call.input, status: "completed", result: { content: [{ type: "text", text: "backgrounded" }] } })
-        expect(droppedUnits(plugin)).toEqual([])
-        spawnRoot(call.input.command, call.cwd, journal)
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
-        expect(droppedUnits(plugin)).toEqual(["alpha"])
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
-        yield* begin(plugin, implementor("beta"), "ses_a")
-        expect(droppedUnits(plugin)).toEqual(["alpha"])
-      }),
-    ), 60_000)
-
-  /** A plugin whose root dropped alpha by a backgrounded log.ts call that wrote after the call's hook read the journal. */
-  const droppedLate = (sessions: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>, first: (plugin: Plugin) => Effect.Effect<void, unknown>) =>
-    Effect.gen(function* () {
-      const run = yield* scratchRun
-      const journal = journalOf(run)
-      const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" }, ...sessions }), drops: journal })
-      yield* begin(plugin, implementor("alpha"), "ses_a")
-      yield* first(plugin)
-      logged(run, "alpha", "new decide r1")
-      const call = FORMS.backgrounded(run, "alpha", (dir) => `bun ${LOG_SCRIPT} ${dir} decide dropped r1 superseded`)
-      yield* RUNS[call.order](plugin, call, journal)
-      expect(droppedUnits(plugin)).toEqual([])
-      return plugin
-    })
-
-  // orch-late-drop r1 M1: a late drop is read at the next start and the next hand-back too, not only at a land or a
-  // shell call (mutants V2 and V3 left every test green).
-  test("orch-late-drop r1 M1: a drop written after its shell call answered ends its unit at the root's next start", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* droppedLate({ ses_b: { agent: "implementor" } }, () => Effect.void)
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        expect(droppedUnits(plugin)).toEqual(["alpha"])
-      }),
-    ), 60_000)
-
-  test("orch-late-drop r1 M1: a drop written after its shell call answered ends its unit at a step's next hand-back", () =>
-    scenario(
-      Effect.gen(function* () {
-        const plugin = yield* droppedLate({ ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }, (plugin) => begin(plugin, implementor("beta"), "ses_b"))
-        yield* plugin.idle("ses_b")
-        expect(droppedUnits(plugin)).toEqual(["alpha"])
-      }),
-    ), 60_000)
-
-  // orch-late-drop r1 M1 (mutant V5): a unit started again at a later round is live, though its log.md still ends in
-  // its old drop when the plugin found no dir to log the start in.
-  test("orch-late-drop r1 M1: a unit started again at r2 whose log.md still ends in its r1 drop is not dropped again", () =>
-    scenario(
-      Effect.gen(function* () {
-        const run = yield* scratchRun
-        const journal = journalOf(run)
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" }, ses_a2: { agent: "implementor" } }), drops: journal })
-        yield* begin(plugin, implementor("alpha"), "ses_a")
-        logged(run, "alpha", "new decide r1")
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/alpha decide dropped r1 x` }, "/", journal)
-        expect(droppedUnits(plugin)).toEqual(["alpha"])
-        yield* begin(plugin, { ...implementor("alpha"), description: "implementor alpha r2" }, "ses_a2")
-        expect(endsDropped(run, "alpha")).toBe(true)
-        yield* shell(plugin, { command: "true" }, "/", journal)
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
-        expect(droppedUnits(plugin)).toEqual(["alpha"])
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "alpha", round: 2 }))
-      }),
-    ), 60_000)
-
-  // orch-followups r2 M2: only log.md's last line counts. A drop log.ts wrote and the root then undid (`dropped →
-  // decide`) is no drop; a unit revived (`dropped → implement r2`) whose later drop log.ts refused stays live.
-  test("orch-followups r2 M2: a drop undone in the same line, and a revived unit's refused drop, end nothing; only log.md's last line counts", () =>
-    scenario(
-      Effect.gen(function* () {
-        const run = yield* scratchRun
-        const journal = journalOf(run)
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_u: { agent: "implementor" }, ses_v: { agent: "implementor" }, ses_v2: { agent: "implementor" } }), drops: journal })
-        const root = (command: string) => shell(plugin, { command }, tmpdir(), journal)
-        yield* begin(plugin, implementor("undone"), "ses_u")
-        yield* begin(plugin, implementor("revived"), "ses_v")
-        logged(run, "undone", "new decide r1")
-        logged(run, "revived", "new decide r1")
-        // Dropped and undone in one line: log.ts journaled the drop, but the log's last line moves the unit on.
-        yield* root(`bun ${LOG_SCRIPT} ${run}/undone decide dropped r1 x; bun ${LOG_SCRIPT} ${run}/undone dropped decide r1 undo`)
-        // Dropped for real, then revived at r2; a later drop from the wrong state is refused.
-        yield* root(`bun ${LOG_SCRIPT} ${run}/revived decide dropped r1 x`)
-        expect(droppedUnits(plugin)).toEqual(["revived"])
-        yield* begin(plugin, { ...implementor("revived"), description: "implementor revived r2" }, "ses_v2")
-        yield* root(`bun ${LOG_SCRIPT} ${run}/revived dropped implement r2 again; bun ${LOG_SCRIPT} ${run}/revived decide dropped r2 x`)
-        expect(readFileSync(join(run, "revived", "log.md"), "utf8")).toContain("dropped → implement r2 again")
-        yield* plugin.call("rift", "root", { action: "land", rifts: ["undone", "revived"] })
-        expect(droppedUnits(plugin)).toEqual(["revived"])
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "revived", round: 2 }))
-      }),
-    ), 60_000)
-
-  test("a checked land lands only the Rifts it answered green or pending, by their paths and branches, each with the unit its input named", () => {
-    const text = ["Checked 2 Rift(s) as one batch", "- run/alpha (/r/run-alpha): green", "- run/beta (/r/run-beta): red; conflict", "- run/gamma (/r/scratch): pending"].join("\n")
-    expect(greenOf([{ rift: "alpha" }, { rift: "beta" }, { rift: "/r/scratch/", unit: "gamma" }], text)).toEqual([
-      { rift: "/r/run-alpha", branch: "run/alpha" },
-      { rift: "/r/scratch", branch: "run/gamma", unit: "gamma" },
-    ])
-    expect(greenOf([{ rift: "alpha" }], "Landed 1 Rift(s) as one push")).toEqual([{ rift: "alpha" }])
-  })
 })
 
 // orch-late-drop item 2: a restart in the Sabbath rest (a crash, a restart by hand) resumes the turns the old server
@@ -2942,14 +1978,10 @@ describe("the options", () => {
   const decode = Schema.decodeUnknownSync(Options)
   const defaults = {
     log: DEFAULT_LOG,
-    ledger: DEFAULT_LEDGER,
-    cadence: DEFAULT_CADENCE,
-    guard: "refuse" as const,
     place: KNOWLTON,
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
     unitLog: UNIT_LOG,
-    drops: FileUnitLogs.DROPS_JOURNAL,
     skill: SKILL_DIR,
   }
 
@@ -2965,25 +1997,21 @@ describe("the options", () => {
       decode({ log: "/l.jsonl", now: WEDNESDAY, place, fullAgent: true, codex: { providers: ["openai", "sim"] } }),
     ).toEqual({
       log: "/l.jsonl",
-      ledger: DEFAULT_LEDGER,
-      cadence: DEFAULT_CADENCE,
-      guard: "refuse",
       now: Date.parse(WEDNESDAY),
       place,
       fullAgent: true,
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
       unitLog: UNIT_LOG,
-      drops: FileUnitLogs.DROPS_JOURNAL,
       skill: SKILL_DIR,
     })
     expect(decode({ skill: "/s" }).skill).toBe("/s")
-    expect(decode({ drops: "/d.jsonl" }).drops).toBe("/d.jsonl")
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
     expect(decode({ planner: { model: "anthropic/claude-fable-5-2" } }).planner).toEqual({ model: "anthropic/claude-fable-5-2" })
     // The A/B's option an earlier install wrote is ignored: the planner has a first model only by `planner`.
     expect(decode({ experiment: { role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 } }).planner).toBeUndefined()
-    expect(decode({ ledger: "/m.jsonl", cadence: { ready: 2, waitMs: 60_000 }, guard: "warn" })).toMatchObject({ ledger: "/m.jsonl", cadence: { ready: 2, waitMs: 60_000 }, guard: "warn" })
+    // The batch machine's options an older install wrote are ignored: no ledger, cadence, guard or drops journal is kept.
+    expect(decode({ ledger: "/m.jsonl", cadence: { ready: 0, waitMs: 1 }, guard: "loud", drops: "/d.jsonl" })).toEqual(defaults)
   })
 
   test("a malformed option stops the plugin at setup, naming the option", async () => {
@@ -2996,8 +2024,6 @@ describe("the options", () => {
       [{ codex: true }, '["codex"]'],
       [{ codex: { providers: ["openai", 7] } }, '["codex"]["providers"][1]'],
       [{ skill: 7 }, '["skill"]'],
-      [{ guard: "loud" }, '["guard"]'],
-      [{ cadence: { ready: 0, waitMs: 1 } }, '["cadence"]["ready"]'],
       [{ planner: { model: "claude-fable" } }, '["planner"]["model"]'],
       [{ planner: { model: "anthropic/claude-fable#medium" } }, '["planner"]["model"]'],
       [{ planner: "anthropic/claude-fable" }, '["planner"]'],

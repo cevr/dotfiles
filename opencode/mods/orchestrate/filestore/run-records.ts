@@ -2,7 +2,7 @@
 // saw in `<run dir>/skill-version` (skill-drift.ts `SEEN_FILE`), the
 // "Departs from" lines of the run's own top-level Markdown files (common.md,
 // plan.md, rules files; unit dirs are the units', not the run's), and the
-// run's own log.md, where each verdict adds the root's drift (drift.ts).
+// run's own log.md, where a verdict's fleet line goes.
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs"
 import { readdir, readFile, writeFile } from "node:fs/promises"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"

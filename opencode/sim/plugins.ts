@@ -36,13 +36,11 @@ import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
-import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
-import { closedIn, findingsIn } from "@dotfiles/opencode-orchestrate/filestore/findings"
-import { Branches, Findings, StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
+import { StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
 import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
 import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
 import * as MemoryQueue from "@dotfiles/opencode-queue/memory/store"
@@ -156,13 +154,11 @@ export interface OrchestrateDoubles {
   readonly lines?: Array<CallLine>
   /** The Codex admission's answer for a model and role; none fails open, as the script with no admission line does. */
   readonly codex?: (model: string, role: string) => Option.Option<Pace>
-  /** The machine's ledger lines: one array is one ledger, shared by the copies (each location's, each restart's) given it. */
-  readonly ledger?: Array<unknown>
-  /** The files a verifier's report and its unit findings are read from, by absolute path; a path not in it does not read. */
-  readonly files?: ReadonlyMap<string, string>
+  /** The units' logs: where a unit's dir is and how a move is written; none found and nothing written by default. */
+  readonly unitLogs?: Parameters<typeof UnitLogs.of>[0]
+  /** The fleet records the plugin asked for, in order (memory/fleet.ts). */
+  readonly fleet?: Array<FleetTest.Asked>
 }
-
-const NO_FILES: ReadonlyMap<string, string> = new Map()
 
 /** A call log line as the file holds it: JSON. */
 const LineJson = Schema.fromJsonString(Schema.Unknown)
@@ -179,7 +175,7 @@ export const stepLogOf = (lines: ReadonlyArray<unknown>) =>
  * The orchestrate plugin (`cmd/orchestrate/server.ts`'s `make`) on the world: everything that goes through OpenCode
  * (sessions, models, steering, the pool's, the wakes', the status's, the questions' and the queue's RPC) on its own
  * adapters over the world's context (`hosted`), as the plugin OpenCode loads; what it keeps in files or asks of
- * processes (the call log and the step log it reads back, the ledger, the Codex admission script, git, the unit logs'
+ * processes (the call log and the step log it reads back, the Codex admission script, git, the unit logs'
  * script, the skill's files) its memory doubles, as `cmd/orchestrate/server.test.ts` holds them. The call log is one
  * for the plugin's life, its restarts too, as its file is.
  */
@@ -188,24 +184,14 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
   return makeOrchestrate((ctx, options, start, background) =>
     Layer.mergeAll(
       hosted(ctx, start, background),
-      MemoryLedger.layer(options.cadence, doubles.ledger ?? []),
-      // A report reads from the files the test holds, by the plugin's own reader; no Rift has a branch, no unit's log.md
-      // is found: the world runs no git or log.ts.
-      Layer.succeed(
-        Findings,
-        Findings.of({
-          read: (report) => Effect.sync(() => findingsIn(report, (path) => (doubles.files ?? NO_FILES).get(path))),
-          closed: (report) => Effect.sync(() => closedIn(report, (path) => Option.fromUndefinedOr((doubles.files ?? NO_FILES).get(path)))),
-        }),
-      ),
-      Layer.succeed(Branches, Branches.of({ of: () => Effect.succeed(void 0) })),
-      Layer.succeed(UnitLogs, UnitLogs.of({ find: () => Effect.succeed(void 0), append: () => Effect.void, drops: () => Effect.succeed([]) })),
+      // No unit's log.md is found by default: the world runs no log.ts.
+      Layer.succeed(UnitLogs, UnitLogs.of(doubles.unitLogs ?? { find: () => Effect.succeed(void 0), append: () => Effect.void })),
       CallLogTest.layer(lines),
       CodexAdmissionTest.layer((model, role) => Option.getOrUndefined((doubles.codex ?? (() => Option.none()))(model, role))),
       stepLogOf(lines),
       SkillTest.skill({ history: [] }),
       SkillTest.records({ seen: new Map() }),
-      FleetTest.layer([]),
+      FleetTest.layer(doubles.fleet ?? []),
     ),
   )
 }

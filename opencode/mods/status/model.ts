@@ -5,7 +5,7 @@
 import { Context, Effect, Layer, Option, Result } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { AgentCalls, live, runSession } from "./agent-calls.ts"
-import { driftOf, unitsOf } from "./run-table.ts"
+import { unitsOf } from "./run-table.ts"
 import { CallLog, RunTables } from "./service.ts"
 import type { Snapshot } from "./status.ts"
 
@@ -33,8 +33,7 @@ export const layer = Layer.effect(
         const runs = Result.map(tables, (list) =>
           list.map((run) => {
             const units = unitsOf(run.table)
-            const drift = driftOf(run.table)
-            const row = { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units, ...(drift === undefined ? {} : { drift }) }
+            const row = { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units }
             const session = Option.flatMap(Result.getSuccess(calls), (state) => runSession(state, units.map((unit) => unit.unit)))
             return Option.match(session, { onNone: () => row, onSome: (owner) => ({ ...row, session: owner }) })
           }),

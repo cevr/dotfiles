@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -159,23 +159,15 @@ test('--current moves from the current state, and writes nothing when the unit i
   expect(bun('log.ts', '--current', '/nonexistent/loop-probe-x', 'plan', 'r1').code).toBe(2);
 });
 
-test('a written drop from an OpenCode session is journaled with the session and the dir resolved; a refused one, or one from no session, is not', () => {
+test('a drop is a log.md line alone: no drops journal is written, even with the old ORCHESTRATE_DROPS set', () => {
   const dir = unitDir();
   const run = join(dir, '..');
   const journal = join(run, 'drops.jsonl');
   const { OPENCODE_SESSION_ID: _, ...clean } = process.env;
-  const logIn = (cwd: string, session: string | undefined, ...args: string[]) =>
-    Bun.spawnSync(['bun', join(here, 'log.ts'), ...args], { cwd, env: { ...clean, ORCHESTRATE_DROPS: journal, ...(session === undefined ? {} : { OPENCODE_SESSION_ID: session }) } }).exitCode;
-  const lines = () => (existsSync(journal) ? readFileSync(journal, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
-  expect(logIn(run, 'ses_root', 'auth', 'new', 'decide', 'r1')).toBe(0);
-  // Refused (the unit is in decide), then written, named relative to the shell's directory.
-  expect(logIn(run, 'ses_root', 'auth', 'implement', 'dropped', 'r1')).toBe(1);
-  expect(lines()).toEqual([]);
-  expect(logIn(run, 'ses_root', 'auth', 'decide', 'dropped', 'r1', 'superseded')).toBe(0);
-  expect(lines()).toEqual([{ session: 'ses_root', dir: realpathSync(dir), at: expect.any(Number) }]);
-  // Revived and dropped again from no OpenCode session (Claude Code): log.md alone says it.
-  expect(logIn(run, 'ses_root', 'auth', 'dropped', 'implement', 'r2')).toBe(0);
-  expect(logIn(run, undefined, '--current', 'auth', 'dropped', 'r2')).toBe(0);
-  expect(lines()).toHaveLength(1);
-  expect(readFileSync(join(dir, 'log.md'), 'utf8').trim().split('\n').at(-1)).toMatch(/implement → dropped r2$/);
+  const logIn = (...args: string[]) =>
+    Bun.spawnSync(['bun', join(here, 'log.ts'), ...args], { cwd: run, env: { ...clean, ORCHESTRATE_DROPS: journal, OPENCODE_SESSION_ID: 'ses_root' } }).exitCode;
+  expect(logIn('auth', 'new', 'decide', 'r1')).toBe(0);
+  expect(logIn('auth', 'decide', 'dropped', 'r1', 'superseded')).toBe(0);
+  expect(existsSync(journal)).toBe(false);
+  expect(readFileSync(join(dir, 'log.md'), 'utf8').trim().split('\n').at(-1)).toMatch(/decide → dropped r1 superseded$/);
 });

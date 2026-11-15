@@ -1,24 +1,13 @@
 // The `orchestrate` tool's domain (tools.ts), as the model reads it: the one description and its order, every
 // call an answer or a refusal names (each decodes and passes the input rule), the input rule over its whole
-// domain, and the rule that names a unit's Rift. The next call's property runs on the real decider in
-// cmd/orchestrate/orch-tools.sim.test.ts, which has an Effect test runner.
+// domain, the rule that names a unit's Rift, a land's resolution from the run tables and the Rift list, and
+// status. The tool on a simulated host runs in cmd/orchestrate/orch-tools.sim.test.ts.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Option, Predicate, Schema } from "effect"
-import {
-  BatchLanded,
-  FindingFolded,
-  type Event as MachineEvent,
-  type MachineState,
-  machine,
-  UnitHandedBack,
-  UnitStarted,
-  VerifierEnded,
-  VerifierStarted,
-} from "./machine.ts"
+import { Option, Schema } from "effect"
+import type { Run } from "./idle.ts"
 import {
   ACTIONS,
   type Action,
-  aliasLine,
   FIELDS,
   type Field,
   inputRefusal,
@@ -29,22 +18,24 @@ import {
   landCallOf,
   laneAnswer,
   laneBranchOf,
+  laneDecision,
+  lanesOf,
+  lanesRefusal,
   nameRefusal,
   nextLine,
-  nextOf,
   NO_UNITS,
-  nothingToVerify,
+  nothingToLand,
   ORCHESTRATE_DESCRIPTION,
   OrchestrateInput,
   ownerOf,
   parentRefusal,
   REQUIRED,
+  type Resolved,
   resolveLand,
-  riftOfUnit,
   STEP_ORDER,
   statusAnswer,
-  UNDECIDED,
   verifyAnswer,
+  warningOf,
 } from "./tools.ts"
 
 // ── The generator: a seeded stream, so a failure names its seed ──
@@ -73,34 +64,6 @@ const unitName = (random: () => number): string => {
 }
 
 const UNITS = ["alpha", "beta", "gamma", "db", "db-2", "feat-x"]
-
-/** A machine state, as a generated run of the machine's own events folds it (`evolve`: pure). */
-const stateOf = (random: () => number): MachineState => {
-  const pick = pickOf(random)
-  const decider = machine()
-  let state = decider.initial
-  let at = 0
-  for (const _ of Array.from({ length: Math.floor(random() * 14) })) {
-    at += Math.floor(random() * 20 * 60_000)
-    const unit = pick(UNITS, "alpha")
-    const roll = random()
-    const event: MachineEvent = pick(
-      [
-        UnitStarted.make({ unit, round: 1 + Math.floor(random() * 3), direct: false, rift: `/code/.rifts/app/${unit}`, at }),
-        UnitStarted.make({ unit, round: 1, direct: false, at }),
-        UnitHandedBack.make({ unit, ready: roll < 0.7, said: pick(["ready", "blocked"], "ready"), at }),
-        BatchLanded.make({ units: Object.keys(state.units).filter(() => random() < 0.6), at }),
-        VerifierStarted.make({ batch: `batch-${1 + Math.floor(random() * 4)}`, units: Object.keys(state.units).filter(() => random() < 0.5), at }),
-        VerifierEnded.make({ batch: Option.getOrElse(Option.map(Option.fromUndefinedOr(state.verifier), (verifier) => verifier.batch), () => "batch-1"), verdict: "changes", findings: [`${unit}/M1`], at }),
-        VerifierEnded.make({ batch: Option.getOrElse(Option.map(Option.fromUndefinedOr(state.verifier), (verifier) => verifier.batch), () => "batch-1"), verdict: "accepted", at }),
-        FindingFolded.make({ finding: `${pick(UNITS, "alpha")}/M1`, into: unit, at }),
-      ],
-      UnitStarted.make({ unit, round: 1, direct: false, at }),
-    )
-    state = decider.evolve(state, event)
-  }
-  return state
-}
 
 /** A Rift as the rift RPC answers it. */
 const laneAt = (path: string, branch: Option.Option<string>, head = "abc1234", state = "clean"): Lane =>
@@ -176,17 +139,18 @@ describe("the orchestrate tool's description", () => {
   const paragraphs = ORCHESTRATE_DESCRIPTION.split("\n\n")
   const headings = paragraphs.map((paragraph) => Option.getOrElse(Option.fromNullishOr(/^([a-z]+):/.exec(paragraph)?.[1]), () => ""))
 
-  test("tells the six steps in the loop's order, each action once as the heading of its paragraph", () => {
+  test("tells the five steps in the loop's order, each action once as the heading of its paragraph", () => {
     const steps = STEP_ORDER.map((step) => headings.indexOf(step))
     expect(steps.every((at) => at > 0)).toBe(true)
     expect([...steps].sort((a, b) => a - b)).toEqual(steps)
     expect(ACTIONS.map((action) => [action, headings.filter((heading) => heading === action).length])).toEqual(ACTIONS.map((action) => [action, 1]))
-    expect(paragraphs[0]).toContain("lane → implement → ready → land → verify → fold")
+    expect(paragraphs[0]).toContain("lane → implement → ready → land → verify")
+    expect(ORCHESTRATE_DESCRIPTION).not.toMatch(/machine|ledger|fold/)
   })
 
   test("names the two subagent calls with their description forms", () => {
     expect(paragraphs[headings.indexOf("implement")]).toContain('subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)"')
-    expect(paragraphs[headings.indexOf("verify")]).toContain('subagent({ agent: "verifier", description: "verifier batch-<k> r1"')
+    expect(paragraphs[headings.indexOf("verify")]).toContain('subagent({ agent: "verifier", description: "verifier <batch> r1"')
   })
 
   test("is at most 4,000 characters, with no line over 700", () => {
@@ -197,7 +161,7 @@ describe("the orchestrate tool's description", () => {
   test("says what a land takes and does not wait for, that a lane is never made twice, and whom rift is for", () => {
     const sentences = ORCHESTRATE_DESCRIPTION.split(/(?<=[.:;])\s+/)
     for (const sentence of [
-      "A land with no units lands every ready unit in one call.",
+      "A named unit that is not ready lands with a warning.",
       "A land does not wait for the deep run or the post-land step:",
       "A lane that exists is answered, never made again by hand.",
       "The rift tool is for a session that runs no units;",
@@ -215,60 +179,50 @@ describe("the orchestrate tool's description", () => {
 
 // ── The answers and refusals ──
 
-/** Every text tools.ts writes, over a generated state, lanes and input. */
+/** A run table of `units`, each in a generated state. */
+const runOf = (random: () => number, units: ReadonlyArray<string>): Run => {
+  const pick = pickOf(random)
+  return { name: "app", units: units.map((unit) => ({ unit, state: pick(["implement", "ready", "blocked", "verify", "merged abc1234", "plan"], "ready") })) }
+}
+
+/** Every text tools.ts writes, over generated run tables, lanes and input. */
 const textsOf = (random: () => number): ReadonlyArray<string> => {
   const pick = pickOf(random)
-  const state = stateOf(random)
+  const runs = [runOf(random, UNITS.filter(() => random() < 0.7))]
   const unit = pick([...UNITS, unitName(random)], "alpha")
-  const lanes = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(laneAt(`/code/.rifts/app/${name}`, Option.some(`feat/${name}`)), () => random() < 0.6)))
+  const workrift = random() < 0.5
+  const lanes = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(laneOf(name, workrift), () => random() < 0.6)))
   const lane = pick(lanes, laneAt(`/code/.rifts/app/${unit}`, Option.none()))
-  const next = nextOf(state, Math.floor(random() * 3_600_000), { ready: 3, waitMs: 30 * 60_000 })
   const input = inputOf(random)
-  const units = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(pick([name, { unit: name, path: `/x/${name}` }], name), () => random() < 0.4)))
-  const land = resolveLand({ action: "land", units }, lanes, state, next)
-  const defaulted = resolveLand({ action: "land" }, lanes, state, next)
+  const units = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(pick<LandUnit>([name, { unit: name, path: `/x/${name}` }], name), () => random() < 0.4)))
   return [
     ...Option.toArray(inputRefusal(input)),
     ...Option.toArray(nameRefusal(input)),
     ...ACTIONS.map(parentRefusal),
     laneAnswer(unit, lane, random() < 0.5),
-    landAnswer("Landed 1 Rift(s) as one push."),
+    landAnswer([warningOf(unit, "blocked")], "Landed 1 Rift(s) as one push."),
     verifyAnswer(`batch-${Math.floor(random() * 9)}`, lane, random() < 0.5, pick(["given", "origin"] as const, "origin")),
-    nothingToVerify(state, next),
     NO_UNITS,
-    statusAnswer("implement: alpha", [[unit, Option.some(lane)], ["beta", Option.none()]], next),
-    aliasLine("create"),
-    aliasLine("land"),
-    UNDECIDED,
+    statusAnswer(runs, lanes, workrift),
     LAND_NEXT,
-    nextLine(next),
-    landCallOf(units, Option.some("the owner asked")),
-    ...refusedOf(land),
-    ...refusedOf(defaulted),
-    riftOfUnitText(unit, lanes, state),
+    nextLine(runs, lanes, workrift),
+    nothingToLand(runs),
+    landCallOf(units),
+    lanesRefusal(unit, [laneOf(unit, false), laneOf(`${unit}-2`, false)]),
+    ...resolvedTexts(resolveLand({ action: "land", units }, runs, lanes, workrift)),
+    ...resolvedTexts(resolveLand({ action: "land" }, runs, lanes, workrift)),
   ]
 }
 
-/** A resolution's refusal, when it refused. */
-const refusedOf = (resolved: { readonly refused: string } | { readonly rifts: ReadonlyArray<unknown> }): ReadonlyArray<string> => {
+/** What a land's resolution says: its refusal, its nothing-to-land answer or its warnings. */
+const resolvedTexts = (resolved: Resolved): ReadonlyArray<string> => {
   if ("refused" in resolved) return [resolved.refused]
-  return []
-}
-
-/** A found Rift's path, when one was found. */
-const pathOf = (found: { readonly refused: string } | { readonly found: { readonly path: string } }): ReadonlyArray<string> => {
-  if ("found" in found) return [found.found.path]
-  return []
-}
-
-const riftOfUnitText = (unit: string, lanes: ReadonlyArray<Lane>, state: MachineState) => {
-  const found = riftOfUnit(unit, lanes, state)
-  if ("refused" in found) return found.refused
-  return landCallOf([found.found])
+  if ("nothing" in resolved) return [resolved.nothing]
+  return resolved.warnings
 }
 
 describe("every call an answer or a refusal names", () => {
-  test("decodes through OrchestrateInput and passes the input rule, over generated states, lanes and inputs", () => {
+  test("decodes through OrchestrateInput and passes the input rule, over generated run tables, lanes and inputs", () => {
     let calls = 0
     for (const seed of SEEDS) {
       const texts = textsOf(rng(seed))
@@ -276,9 +230,10 @@ describe("every call an answer or a refusal names", () => {
         calls += callsIn(text).length
         expectCallsDecode(text)
         expect(text).not.toContain('rift({ action: "land"')
+        expect(text).not.toContain("machine")
       }
     }
-    expect(calls).toBeGreaterThan(SEEDS.length * 10)
+    expect(calls).toBeGreaterThan(SEEDS.length * 8)
   })
 })
 
@@ -289,7 +244,7 @@ const valueOf = (field: Field, random: () => number) => {
   const pick = pickOf(random)
   const name = unitName(random)
   if (field === "units") return [name, { unit: pick(UNITS, "alpha"), path: `/code/.rifts/app/${name}` }].filter(() => random() < 0.7)
-  if (field === "batch") return `batch-${1 + Math.floor(random() * 20)}`
+  if (field === "batch") return pick([`batch-${1 + Math.floor(random() * 20)}`, name, "main-abc1234"], "batch-1")
   if (field === "head") return pick(["abc1234", "origin/HEAD", "f00dfeed"], "abc1234")
   if (field === "source") return pick(["/code/app", "../app", "."], ".")
   if (field === "departs") return "the owner asked for this one alone"
@@ -336,84 +291,60 @@ describe("the input rule", () => {
     expect(inputRefusal(decode({ action: "lane", units: ["billing"] }))).toEqual(Option.some(expect.stringContaining("lane takes no units: units belongs to land")))
     expect(inputRefusal(decode({ action: "lane" }))).toEqual(Option.some(expect.stringContaining("lane needs unit")))
     expect(inputRefusal(decode({ action: "land" }))).toEqual(Option.none())
+    expect(inputRefusal(decode({ action: "land", departs: "an old root's reason" }))).toEqual(Option.none())
     expect(inputRefusal(decode({ action: "verify" }))).toEqual(Option.some(expect.stringContaining("verify needs batch")))
     expect(inputRefusal(decode({ action: "status", head: "abc1234" }))).toEqual(Option.some(expect.stringContaining("status takes no head: head belongs to verify")))
     expect(nameRefusal(decode({ action: "lane", unit: "Bad Name" }))).toEqual(Option.some(expect.stringContaining("is no unit name")))
-    expect(nameRefusal(decode({ action: "verify", batch: "7" }))).toEqual(Option.some(expect.stringContaining("is no batch")))
+    expect(nameRefusal(decode({ action: "verify", batch: "Batch 7" }))).toEqual(Option.some(expect.stringContaining("is no batch")))
+    // A verifier is named for a batch, a unit or a commit of main: none is refused for its kind.
+    for (const batch of ["batch-7", "billing", "main-abc1234"]) expect(nameRefusal(decode({ action: "verify", batch }))).toEqual(Option.none())
   })
 })
 
 // ── The lane name rule ──
 
-/** The Rift a lane makes on the Mac: named for the unit, on its default branch. */
-const laneOf = (unit: string): Lane => laneAt(`/code/.rifts/app/${unit}`, Option.some(laneBranchOf({ unit })))
+/** A lane's Rift name for `unit`: the unit on the Mac, its branch with `-` for `/` on the workbox. */
+const riftNameOf = (unit: string, workrift: boolean): string =>
+  Option.getOrElse(Option.map(Option.liftPredicate(laneBranchOf({ unit }), () => workrift), (branch) => branch.replaceAll("/", "-")), () => unit)
 
-/** A state whose units implement, started on their lanes (`(rift: <path>)`) or with no Rift named. */
-const implementing = (units: ReadonlyArray<string>, started: boolean): MachineState =>
-  units.reduce(
-    (state, unit, at) =>
-      machine().evolve(
-        state,
-        Option.match(Option.liftPredicate(laneOf(unit).path, () => started), {
-          onNone: () => UnitStarted.make({ unit, round: 1, direct: false, at }),
-          onSome: (rift) => UnitStarted.make({ unit, round: 1, direct: false, rift, at }),
-        }),
-      ),
-    machine().initial,
-  )
+/** The Rift a lane makes for `unit` on its default branch: named for the unit on the Mac, for its branch (`feat-<unit>`) on the workbox. */
+const laneOf = (unit: string, workrift: boolean): Lane => {
+  const branch = laneBranchOf({ unit })
+  return laneAt(`/code/.rifts/app/${riftNameOf(unit, workrift)}`, Option.some(branch))
+}
 
 describe("the lane name rule", () => {
-  test("for any unit names, the Rift lane makes is the one land resolves its unit to, never another's; started on it, always", () => {
+  test("for any unit names, on either host, each unit's lanes are exactly the Rift its lane made, never another's", () => {
     for (const seed of SEEDS) {
       const random = rng(seed)
       const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 5) }, () => unitName(random)))]
-      const lanes = units.map(laneOf)
-      for (const started of [true, false]) {
-        const state = implementing(units, started)
-        const resolved = units.map((unit) => [unit, riftOfUnit(unit, lanes, state)] as const)
-        for (const [unit, found] of resolved) {
-          // Started on its lane, the ledger names it; else the name rule may find none or two, and then refuses.
-          if ("found" in found) expect({ seed, unit, path: found.found.path }).toEqual({ seed, unit, path: laneOf(unit).path })
-          else {
-            expect({ seed, unit, started }).toEqual({ seed, unit, started: false })
-            expect(found.refused).toContain(`{ unit: "${unit}", path:`)
-          }
+      for (const workrift of [false, true]) {
+        const lanes = units.map((unit) => laneOf(unit, workrift))
+        for (const unit of units) expect({ seed, workrift, unit, lanes: lanesOf(unit, lanes, workrift) }).toEqual({ seed, workrift, unit, lanes: [laneOf(unit, workrift)] })
+        // Lane again: the Rift is answered, never made twice.
+        for (const unit of units) {
+          const branch = laneBranchOf({ unit })
+          const name = riftNameOf(unit, workrift)
+          expect({ seed, workrift, unit, decided: laneDecision(unit, branch, name, workrift, lanes) }).toEqual({ seed, workrift, unit, decided: { found: laneOf(unit, workrift) } })
         }
-        // Two units never resolve to one Rift.
-        const paths = resolved.flatMap(([, found]) => pathOf(found))
-        expect(new Set(paths).size).toBe(paths.length)
       }
-      // A unit alone always resolves to its lane by the name rule.
-      const alone = units.slice(0, 1)
-      for (const unit of alone) expect(riftOfUnit(unit, lanes.slice(0, 1), implementing(alone, false))).toEqual({ found: { unit, path: laneOf(unit).path } })
     }
   })
 
-  test("land-adopt: a land naming a unit the machine does not hold by name alone is refused; the call it names instead adopts it with its Rift, and resolves when made literally", () => {
-    for (const seed of SEEDS) {
-      const random = rng(seed)
-      const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 4) }, () => unitName(random)))]
-      const held = units.filter(() => random() < 0.6)
-      const state = implementing(held, random() < 0.5)
-      const lanes = units.map(laneOf)
-      const asked = { action: "land", units } as const
-      const resolved = resolveLand(asked, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 }))
-      const first = Arr.findFirst(units, (unit) => !held.includes(unit))
-      expect({ seed, refused: "refused" in resolved }).toEqual({ seed, refused: Option.isSome(first) })
-      if (!("refused" in resolved) || Option.isNone(first)) continue
-      expect({ seed, said: resolved.refused }).toEqual({ seed, said: expect.stringContaining(`the machine holds no unit ${first.value}:`) })
-      // The call it names: the unknown unit as { unit, path } on the one Rift that reads as it, made literally.
-      const call = Option.getOrThrow(Option.fromNullishOr(/Adopt it and land it: orchestrate\((\{.*\})\)\.$/.exec(resolved.refused)?.[1]))
-      const input = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrateInput))(call.replace(/(\w+): /g, '"$1": '))
-      expect({ seed, adopts: (input.units ?? []).some((unit) => !Predicate.isString(unit) && unit.unit === first.value && unit.path === laneOf(first.value).path) }).toEqual({ seed, adopts: true })
-      const again = resolveLand(input, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 }))
-      // Each further unit not held is named alike in its own refusal; with them all named so, it resolves.
-      const unheld = units.filter((unit) => !held.includes(unit))
-      const adopting = (unit: LandUnit): LandUnit =>
-        Option.getOrElse(Option.map(Option.filter(Option.liftPredicate(unit, Predicate.isString), (name) => unheld.includes(name)), (name) => ({ unit: name, path: laneOf(name).path })), () => unit)
-      const all = { ...input, units: (input.units ?? []).map(adopting) }
-      expect({ seed, resolved: "rifts" in resolveLand(all, lanes, state, nextOf(state, 0, { ready: 3, waitMs: 30 * 60_000 })) }).toEqual({ seed, resolved: true })
-      if (unheld.length === 1) expect({ seed, again: "rifts" in again }).toEqual({ seed, again: true })
+  // orch-tools r4 M1: on the workbox, unit y's Rift is named feat-y (for its branch feat/y); unit feat-y must never be answered it.
+  test("units y and feat-y: neither is answered the other's Rift, on the workbox or the Mac", () => {
+    for (const workrift of [true, false]) {
+      const y = laneOf("y", workrift)
+      expect(lanesOf("feat-y", [y], workrift)).toEqual([])
+      const branch = laneBranchOf({ unit: "feat-y" })
+      const name = riftNameOf("feat-y", workrift)
+      expect(laneDecision("feat-y", branch, name, workrift, [y])).toEqual({ make: name })
+      const featY = laneOf("feat-y", workrift)
+      expect(lanesOf("y", [y, featY], workrift)).toEqual([y])
+      expect(lanesOf("feat-y", [y, featY], workrift)).toEqual([featY])
+      const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "y", state: "ready" }, { unit: "feat-y", state: "ready" }] }]
+      expect(resolveLand({ action: "land", units: ["feat-y"] }, runs, [y], workrift)).toEqual({ refused: expect.stringContaining("no Rift of the warm source reads as feat-y") })
+      expect(resolveLand({ action: "land" }, runs, [y], workrift)).toEqual({ rifts: [{ unit: "y", path: y.path }], warnings: [] })
     }
   })
 
@@ -422,20 +353,84 @@ describe("the lane name rule", () => {
     expect(laneBranchOf({ unit: "billing", run: "pc" })).toBe("pc/billing")
     expect(laneBranchOf({ unit: "billing", run: "pc", branch: "fix/bill" })).toBe("fix/bill")
   })
+})
 
-  test("a land with no units takes every ready unit, each with its Rift; one with no Rift is refused with the { unit, path } form", () => {
-    const decider = machine()
-    const started = implementing(["alpha", "beta"], true)
-    const ready = [UnitHandedBack.make({ unit: "alpha", ready: true, said: "ready", at: 5 }), UnitHandedBack.make({ unit: "beta", ready: true, said: "ready", at: 6 })].reduce(
-      decider.evolve,
-      started,
+// ── The land ──
+
+describe("a land", () => {
+  const alpha = laneOf("alpha", false)
+  const beta = laneOf("beta", false)
+  const runs: ReadonlyArray<Run> = [
+    {
+      name: "app",
+      units: [
+        { unit: "alpha", state: "ready" },
+        { unit: "beta", state: "blocked" },
+        { unit: "gamma", state: "ready" },
+      ],
+    },
+  ]
+
+  test("with no units takes every unit the run tables show ready with one lane; with none, it says what to name", () => {
+    expect(resolveLand({ action: "land" }, runs, [alpha, beta], false)).toEqual({ rifts: [{ unit: "alpha", path: alpha.path }], warnings: [] })
+    const nothing = resolveLand({ action: "land" }, runs, [beta], false)
+    expect(nothing).toEqual({ nothing: expect.stringContaining("no unit is ready with a lane, so nothing landed") })
+    expect(nothing).toEqual({ nothing: expect.stringContaining("Ready with no lane or two: alpha, gamma.") })
+  })
+
+  test("a named unit not ready lands with a warning; one the tables do not hold, or given as { unit, path }, lands with none", () => {
+    expect(resolveLand({ action: "land", units: ["alpha", "beta"] }, runs, [alpha, beta], false)).toEqual({
+      rifts: [
+        { unit: "alpha", path: alpha.path },
+        { unit: "beta", path: beta.path },
+      ],
+      warnings: [warningOf("beta", "blocked")],
+    })
+    expect(warningOf("beta", "blocked")).toBe("orchestrate: warning: beta is blocked, not ready; landed as asked.")
+    const delta = laneOf("delta", false)
+    expect(resolveLand({ action: "land", units: ["delta", { unit: "zeta", path: "/x/zeta" }] }, runs, [delta], false)).toEqual({
+      rifts: [
+        { unit: "delta", path: delta.path },
+        { unit: "zeta", path: "/x/zeta" },
+      ],
+      warnings: [],
+    })
+    expect(landAnswer([warningOf("beta", "blocked")], "Landed.").split("\n")[0]).toBe(warningOf("beta", "blocked"))
+  })
+
+  test("a name two Rifts read as is never picked: the refusal names both and the { unit, path } form", () => {
+    const other = laneAt("/code/.rifts/app/db-2", Option.some("p5/db"))
+    const db = laneOf("db", false)
+    const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], false)
+    expect(resolved).toEqual({ refused: expect.stringContaining(`2 Rifts read as db: ${db.path}, ${other.path}`) })
+    expect(resolved).toEqual({ refused: expect.stringContaining('{ unit: "db", path: "<its Rift>" }') })
+  })
+})
+
+describe("status", () => {
+  test("lists each run's units, an open one with its lane, and one next line", () => {
+    const alpha = laneOf("alpha", false)
+    const runs: ReadonlyArray<Run> = [
+      {
+        name: "app",
+        units: [
+          { unit: "alpha", state: "ready" },
+          { unit: "beta", state: "implement" },
+          { unit: "gamma", state: "merged abc1234" },
+        ],
+      },
+    ]
+    expect(statusAnswer(runs, [alpha], false)).toBe(
+      [
+        "orchestrate: run app:",
+        `- alpha: ready · lane ${alpha.path} (branch feat/alpha)`,
+        "- beta: implement · no lane",
+        "- gamma: merged abc1234",
+        'next: orchestrate({ action: "land" }) (ready with a lane: alpha).',
+      ].join("\n"),
     )
-    const next = nextOf(ready, 6, { ready: 3, waitMs: 30 * 60_000 })
-    expect(resolveLand({ action: "land" }, [], ready, next)).toEqual({ rifts: [{ unit: "alpha", path: laneOf("alpha").path }, { unit: "beta", path: laneOf("beta").path }] })
-    const bare = decider.evolve(implementing(["gamma"], false), UnitHandedBack.make({ unit: "gamma", ready: true, said: "ready", at: 7 }))
-    expect(resolveLand({ action: "land" }, [], bare, next)).toEqual({ refused: expect.stringContaining('Name its Rift: orchestrate({ action: "land", units: [{ unit: "gamma", path: "<its Rift>" }] })') })
-    expect(resolveLand({ action: "land" }, [], machine().initial, next)).toEqual({ refused: expect.stringContaining("no unit is ready to land") })
-    // A named unit the machine does not hold is refused, though a Rift reads as it: its land would decide nothing.
-    expect(resolveLand({ action: "land", units: ["alpha", "delta"] }, [laneOf("delta")], ready, next)).toEqual({ refused: expect.stringContaining("the machine holds no unit delta") })
+    expect(nextLine(runs, [], false)).toBe("next: wait for the hand-backs of beta (implementing).")
+    expect(nextLine([], [], false)).toBe("next: none (no unit is ready with a lane or implementing).")
+    expect(statusAnswer([{ name: "app", units: [] }], [alpha], false)).toBe(NO_UNITS)
   })
 })
