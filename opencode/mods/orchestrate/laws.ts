@@ -777,6 +777,24 @@ const RUN_FILES: ReadonlyArray<readonly [string, string, number]> = [
   ["verify-new/batch-new-findings.md", "verifier batch-new r1: changes /x\n", 9],
   ["verify-open/batch-open.md", `Head: ${lawSha(8)}\n`, 10],
   ["verify-open/batch-open-findings.md", "still verifying\n", 11],
+  // As this run's own verify dirs hold them: the head only on the heads line, the findings opening with the verdict.
+  [
+    "verify-1115cc/batch-2026-11-15cc.md",
+    `# batch-2026-11-15cc\nBase: ${lawSha(6)} (batch cb's head).\nHeads: dotfiles=${lawSha(10)} fork=${lawSha(11)}\nLand: on receipts.\n- machine-cut r1 (${lawSha(10).slice(0, 8)}: …).\n`,
+    7,
+  ],
+  ["verify-1115cc/batch-2026-11-15cc-findings.md", `Verdict: accepted\n\n# batch-2026-11-15cc: findings (base ${lawSha(6).slice(0, 8)}, head ${lawSha(10).slice(0, 8)})\n`, 10],
+]
+
+/** The skill's batch mode: `<run dir>/batch-<k>.md` with the heads line, its findings beside it; and two that are no verify. */
+const ROOT_BATCHES: ReadonlyArray<readonly [string, string, number]> = [
+  ["batch-3.md", `# batch-3\nBase: ${lawSha(10)}\nHeads: dotfiles=${lawSha(12)} fork=${lawSha(13)}\n`, 11],
+  ["batch-3-findings.md", "verifier batch-3 r1: accepted /run/batch-3-findings.md\n", 12],
+  // A malformed heads line (short commits) names no head.
+  ["batch-4.md", `# batch-4\nHeads: dotfiles=${lawSha(14).slice(0, 12)} fork=${lawSha(15).slice(0, 12)}\n`, 12],
+  ["batch-4-findings.md", "Verdict: accepted\n", 14],
+  // No findings yet.
+  ["batch-5.md", `Head: ${lawSha(16)}\n`, 15],
 ]
 
 /** `make` gives a fresh probe within the test's scope. */
@@ -795,9 +813,16 @@ export const runFilesLaws = (name: string, make: Effect.Effect<RunFilesProbe, ne
             request: Option.some({ round: 2, path: `${dir}/a/round-2-request.md`, head: Option.some(lawSha(2).slice(0, 9)) }),
             findings: Option.some({ round: 1, path: `${dir}/a/round-1-findings.md`, verdict: Option.some("changes") }),
           })
-          // The newest verify by its verdict's time; one whose findings hold no verdict line is none.
-          expect(yield* files.verified([dir, `${probe.root}/none`])).toEqual(Option.some({ file: `${dir}/verify-new/batch-new.md`, head: lawSha(7), at: LAW_T0 + 9 * 60_000 }))
+          // The newest verify by its verdict's time; one whose findings hold no verdict line is none. A batch file naming its
+          // head only on the heads line is a verify of that line's dotfiles commit.
+          expect(yield* files.verified([dir, `${probe.root}/none`])).toEqual(
+            Option.some({ file: `${dir}/verify-1115cc/batch-2026-11-15cc.md`, head: lawSha(10), at: LAW_T0 + 10 * 60_000 }),
+          )
           expect(yield* files.verified([`${probe.root}/none`])).toEqual(Option.none())
+          // A batch file in the run dir itself, as batch mode writes it, is a verify too; one with no head or no verdict is not.
+          yield* Effect.forEach(ROOT_BATCHES, ([path, text, minutes]) => probe.put(`${dir}/${path}`, text, LAW_T0 + minutes * 60_000), { discard: true })
+          expect(yield* files.verified([dir])).toEqual(Option.some({ file: `${dir}/batch-3.md`, head: lawSha(12), at: LAW_T0 + 12 * 60_000 }))
+          expect((yield* files.units(dir)).map((unit) => unit.unit).toSorted()).toEqual(["a", "b"])
         }),
       ))
 

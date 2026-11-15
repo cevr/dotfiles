@@ -3,7 +3,7 @@
 import { file, Glob, write } from "bun"
 import { Array as Arr, Effect, Layer, Option } from "effect"
 import { RunFiles, RunFileUnwritten } from "../service.ts"
-import { batchHeadOf, findingsBeside, findingsVerdictOf, holdsVerdict, isBatchFile, newestRound, newestVerified, requestHeadOf, type UnitFiles, type Verified } from "../tools.ts"
+import { batchHeadOf, findingsBeside, findingsVerdictOf, holdsVerdict, isBatchPlace, newestRound, newestVerified, requestHeadOf, type UnitFiles, type Verified } from "../tools.ts"
 
 /** `name` in `dir`. */
 const at = (dir: string, name: string) => `${dir.replace(/\/+$/, "")}/${name}`
@@ -42,10 +42,12 @@ const verifiedOf = Effect.fn("RunFiles.verifiedOf")(function* (batch: string) {
   return Option.flatMap(Option.all({ head, verdict, written }), (found) => Option.some<Verified>({ file: batch, head: found.head, at: found.written.mtimeMs }))
 })
 
-/** Each verify a run dir records: a `verify-*\/batch-*.md` naming a head, whose findings beside it hold a verdict line. */
+/** Each verify a run dir records: a batch file (`verify-*\/batch-*.md` or `batch-<k>.md`) naming a head, whose findings beside it hold a verdict line. */
 const verifiesIn = Effect.fn("RunFiles.verifiesIn")(function* (runDir: string) {
-  const dirs = (yield* namesIn(runDir)).filter((name) => name.startsWith("verify-")).map((name) => at(runDir, name))
-  const batches = (yield* Effect.forEach(dirs, (dir) => Effect.map(namesIn(dir), (names) => names.filter(isBatchFile).map((name) => at(dir, name))), { concurrency: 4 })).flat()
+  const names = yield* namesIn(runDir)
+  const dirs = names.filter((name) => name.startsWith("verify-"))
+  const nested = yield* Effect.forEach(dirs, (dir) => Effect.map(namesIn(at(runDir, dir)), (inner) => inner.map((name) => `${dir}/${name}`)), { concurrency: 4 })
+  const batches = [...names, ...nested.flat()].flatMap((relative) => Option.toArray(Option.map(Option.liftPredicate(relative, isBatchPlace), (place) => at(runDir, place))))
   return (yield* Effect.forEach(batches, verifiedOf, { concurrency: 4 })).flatMap(Option.toArray)
 })
 

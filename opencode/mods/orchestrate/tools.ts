@@ -482,8 +482,12 @@ export const findingsVerdictOf = (text: string): Option.Option<string> =>
 /** Whether a verifier's findings hold a verdict line: `verifier <batch> r<N>: <verdict>`, `Verdict: <verdict>`, or the verdict alone. */
 export const holdsVerdict = (text: string): boolean => /^[\s>*#`_-]*(?:verifier\s+\S+\s+r\d+:\s*|verdict:\s*)?[*`_]*(accepted|changes|stuck)\b/im.test(text)
 
-/** The head a batch file names: its `Head: <sha>`. */
-export const batchHeadOf = (text: string): Option.Option<string> => Option.fromNullishOr(/\bHead: ([0-9a-f]{7,40})\b/.exec(text)?.[1])
+/** The heads line's dotfiles commit, as git/fleet.ts `headsOf` reads that line: exactly `Heads: dotfiles=<40-hex> fork=<40-hex>`. */
+const HEADS_DOTFILES = /^Heads: dotfiles=([0-9a-f]{40}) fork=[0-9a-f]{40}\r?$/m
+
+/** The head a batch file names: its `Head: <sha>`, else the dotfiles commit of its `Heads:` line (the protocol's batch head). */
+export const batchHeadOf = (text: string): Option.Option<string> =>
+  Option.orElse(Option.fromNullishOr(/\bHead: ([0-9a-f]{7,40})\b/.exec(text)?.[1]), () => Option.fromNullishOr(HEADS_DOTFILES.exec(text)?.[1]))
 
 /** The newest `round-N-<kind>.md` among a unit dir's file names: its round and name. */
 export const newestRound = (names: ReadonlyArray<string>, kind: "request" | "findings"): Option.Option<{ readonly round: number; readonly name: string }> => {
@@ -496,8 +500,18 @@ export const newestRound = (names: ReadonlyArray<string>, kind: "request" | "fin
   )
 }
 
-/** Whether a file name in a `verify-*` dir is a batch file: `batch-*.md`, not its findings. */
+/** Whether a file name is a batch file: `batch-*.md`, not its findings. */
 export const isBatchFile = (name: string): boolean => /^batch-.+\.md$/.test(name) && !name.endsWith("-findings.md")
+
+/**
+ * Whether a path under a run dir (relative, `/`-separated) is where a batch file is written: `verify-*\/batch-*.md`, as a
+ * verify of main writes it, or `batch-<k>.md` in the run dir itself, as the skill's batch mode writes it.
+ */
+export const isBatchPlace = (relative: string): boolean => {
+  const parts = relative.split("/")
+  const name = Option.getOrElse(Arr.last(parts), () => "")
+  return isBatchFile(name) && (parts.length === 1 || (parts.length === 2 && Option.exists(Arr.head(parts), (dir) => dir.startsWith("verify-"))))
+}
 
 /** The findings file beside a batch file. */
 export const findingsBeside = (batch: string): string => batch.replace(/\.md$/, "-findings.md")

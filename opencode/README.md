@@ -668,8 +668,9 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   nothing.
 - `orchestrate({ action: "verify", head? })`: a verify of main, named
   `batch-main-<short head>` (`head`, else origin's default branch head, read
-  then). Its base is the `Head:` of the newest `<run dir>/verify-*/batch-*.md`
-  whose findings beside it hold a verdict line; with none, the fifth
+  then). Its base is the head of the newest batch file, `<run dir>/verify-*/batch-*.md`
+  or `<run dir>/batch-<k>.md`, whose findings beside it hold a verdict line (its
+  `Head:`, else the dotfiles commit of its `Heads:` line); with none, the fifth
   first-parent merge before the head, and the answer says so. It writes
   `<run dir>/verify-main-<short>/batch-main-<short>.md` (`Base:` and `Head:` in full, the
   first-parent merges between them, each unit whose request's head is in the

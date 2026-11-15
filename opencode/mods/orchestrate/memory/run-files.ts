@@ -2,7 +2,7 @@
 // readers are the ones the disk's adapter uses (tools.ts), over these files.
 import { Array as Arr, Clock, Effect, Layer, Option } from "effect"
 import { RunFiles } from "../service.ts"
-import { batchHeadOf, findingsBeside, findingsVerdictOf, holdsVerdict, isBatchFile, newestRound, newestVerified, requestHeadOf, type UnitFiles, type Verified } from "../tools.ts"
+import { batchHeadOf, findingsBeside, findingsVerdictOf, holdsVerdict, isBatchPlace, newestRound, newestVerified, requestHeadOf, type UnitFiles, type Verified } from "../tools.ts"
 
 /** A file: its text and when it was written (epoch ms). */
 export interface File {
@@ -33,11 +33,10 @@ const unitFilesOf = (files: Files, dir: string): UnitFiles => {
   }
 }
 
-/** The verify a batch file at `path` records, when it sits in a `verify-*` dir of one of the run dirs and its findings hold a verdict. */
+/** The verify a batch file at `path` records, when it sits where a run dir's batch files go and its findings hold a verdict. */
 const verifiedAt = (files: Files, runDirs: ReadonlyArray<string>, path: string): Option.Option<Verified> =>
   Option.flatMap(Arr.findFirst(runDirs, (dir) => path.startsWith(under(dir))), (run) => {
-    const [verify = "", file = "", ...deeper] = path.slice(under(run).length).split("/")
-    if (deeper.length > 0 || !verify.startsWith("verify-") || !isBatchFile(file)) return Option.none()
+    if (!isBatchPlace(path.slice(under(run).length))) return Option.none()
     const findings = Option.filter(fileAt(files, findingsBeside(path)), (found) => holdsVerdict(found.text))
     return Option.zipWith(Option.flatMap(textOf(files, path), batchHeadOf), findings, (head, found) => ({ file: path, head, at: found.at }))
   })
