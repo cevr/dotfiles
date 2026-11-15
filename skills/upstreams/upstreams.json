@@ -285,6 +285,24 @@
     }
   },
   {
+    "name": "pstack-proof",
+    "repo": "cursor/plugins",
+    "paths": [
+      "pstack/skills/interrogate",
+      "pstack/skills/blast-radius",
+      "pstack/skills/show-me-your-work"
+    ],
+    "into": [
+      "code-review",
+      "orchestrate"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "3dbd22ff12742fb28c9700b9760baa29ed41dc13",
+      "date": "2026-11-14"
+    }
+  },
+  {
     "name": "clean-copy",
     "url": "https://paste.rachel.systems/raw/ukogokijaz",
     "into": [
