@@ -16,8 +16,9 @@
  * It prints the showcase's block id. Exit 2: not in a Rex pane
  * (REX_SESSION and REX_BLOCK unset), or a usage error; exit 1: Rex or the
  * spool failed. The spool is `$XDG_STATE_HOME/rex-show/<session>/`, and the
- * viewer is told it; the viewer is started as `$REX_SHOW_BIN view …`
- * (default `rex-show`, the command on PATH), Rex's tool as
+ * viewer is told it; the viewer is started as this same program (Bun and
+ * this script, so a PATH without rex-show still finds it), or as
+ * `$REX_SHOW_BIN view …` when that is set; Rex's tool as
  * `$REX_BIN_DIR/rex` when Rex set it, else `rex`.
  */
 import { readFile } from "node:fs/promises"
@@ -47,6 +48,9 @@ const usage = (why: string) => new Refused({ message: `rex-show: ${why}\n${USAGE
 
 /** How often the viewer looks at the spool and the pane's size. */
 const LOOK_EVERY = "250 millis"
+
+/** This process as it was started: Bun and the script, before the arguments; the showcase's viewer is started the same way. */
+const SELF = process.argv.slice(0, 2)
 
 /** A request rex-show understood. */
 export type Request = Data.TaggedEnum<{
@@ -162,10 +166,11 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
   return yield* Effect.forever(Effect.andThen(look, Effect.sleep(LOOK_EVERY)))
 })
 
-/** Where a run finds Rex's tool and keeps the spool, unless the viewer is told its spool. */
+/** Where a run finds Rex's tool and keeps the spool (unless the viewer is told its spool), and how it starts itself again as the viewer. */
 export interface Settings {
   readonly rex: string
   readonly spool: string
+  readonly self: ReadonlyArray<string>
 }
 
 /** The spool a request uses: the viewer's own when it was told one, else the settings'. */
@@ -185,26 +190,33 @@ export const run = Effect.fn("RexShow.run")(
   function* (request: Request, screen: Screen, settings: Settings) {
     if (request._tag === "View") return yield* viewer(request.session, screen)
     const pane = yield* callerPane
-    const bin = yield* Config.String("REX_SHOW_BIN").pipe(Config.withDefault("rex-show"))
-    const program = [bin, "view", "--session", pane.session, "--spool", settings.spool]
+    const bin = yield* optional("REX_SHOW_BIN")
+    const start = Option.match(bin, { onNone: () => settings.self, onSome: (path) => [path] })
+    const program = [...start, "view", "--session", pane.session, "--spool", settings.spool]
     if (request._tag === "Show") return yield* showFile(pane, request.shown, program)
     return yield* setTally(pane, { msg: request.msg, state: request.state, progress: Option.getOrUndefined(request.progress) }, program)
   },
   Effect.catchTags({ RexFailed: (error) => Effect.fail(failed(error)), SpoolFailed: (error) => Effect.fail(failed(error)) }),
 )
 
-/** The settings from the environment: Rex's tool beside the Rex that opened this terminal (else `rex` on PATH), the spool under the state directory. */
-export const settingsOf = Effect.gen(function* () {
-  const dir = yield* optional("REX_BIN_DIR")
-  return {
-    rex: Option.match(dir, { onNone: () => "rex", onSome: (path) => `${path}/rex` }),
-    spool: `${TuiDirs.dirs().state}/rex-show`,
-  } satisfies Settings
-})
+/**
+ * The settings from the environment: Rex's tool beside the Rex that opened
+ * this terminal (else `rex` on PATH), the spool under the state directory,
+ * and `self`, how this process was started.
+ */
+export const settingsOf = (self: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const dir = yield* optional("REX_BIN_DIR")
+    return {
+      rex: Option.match(dir, { onNone: () => "rex", onSome: (path) => `${path}/rex` }),
+      spool: `${TuiDirs.dirs().state}/rex-show`,
+      self,
+    } satisfies Settings
+  })
 
 /** The settings `args` run with: the environment's, the spool the viewer was told in place of its own. */
 const settingsFor = Effect.fn("RexShow.settingsFor")(function* (args: ReadonlyArray<string>) {
-  const settings = yield* settingsOf
+  const settings = yield* settingsOf(SELF)
   const request = yield* parse(args)
   return { ...settings, spool: spoolOf(request, settings) } satisfies Settings
 })

@@ -12,7 +12,7 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen } from "./show.ts"
 
 const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), display: () => Effect.void }
-const settings = { rex: "rex", spool: "/state/rex-show" }
+const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
 const SHOW = fileURLToPath(new URL("./show.ts", import.meta.url))
 
 /** The exit code a refused run ends with; none when it was not refused. */
@@ -42,16 +42,29 @@ describe("a run from a caller's pane", () => {
   const systems = Layer.mergeAll(MemoryRex.layer(rex), MemorySpool.layer(spools))
   const env = (vars: Record<string, string>) => ConfigProvider.layer(ConfigProvider.fromEnvRecord(vars))
 
+  const inPane = { REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) }
+  const showcases = Effect.map(Ref.get(rex), (world) => world.blocks.filter((held) => held.label === "showcase").map((held) => [held.id, held.command]))
+  const closeShowcases = Ref.update(rex, (world) => ({ ...world, blocks: world.blocks.filter((held) => held.label !== "showcase") }))
+
   effectTest(
-    "splits off one showcase running the viewer on this spool, and a second call reuses it",
+    "splits off one showcase running this same program as the viewer on this spool, and a second call reuses it",
     Effect.gen(function* () {
       const tally = yield* parse(["tally", "2 of 5 done", "--progress", "40"])
       const block = yield* run(tally, screen, settings)
       expect(yield* run(tally, screen, settings)).toBe(block)
-      const showcases = (yield* Ref.get(rex)).blocks.filter((held) => held.label === "showcase")
-      expect(showcases.map((held) => [held.id, held.command])).toEqual([[block, ["/bin/rex-show", "view", "--session", "session:a", "--spool", "/state/rex-show"]]])
+      expect(yield* showcases).toEqual([[block, ["/opt/bun", "/dotfiles/rex/show.ts", "view", "--session", "session:a", "--spool", "/state/rex-show"]]])
       expect((yield* Ref.get(spools)).get("session:a")).toMatchObject({ tally: { msg: "2 of 5 done", progress: 40, state: "working" } })
-    }).pipe(Effect.provide(Layer.mergeAll(systems, env({ REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1), REX_SHOW_BIN: "/bin/rex-show" })))),
+      yield* closeShowcases
+    }).pipe(Effect.provide(Layer.mergeAll(systems, env(inPane)))),
+    5_000,
+  )
+
+  effectTest(
+    "starts the viewer as REX_SHOW_BIN when that is set",
+    Effect.gen(function* () {
+      const block = yield* run(yield* parse(["tally", "x"]), screen, settings)
+      expect(yield* showcases).toEqual([[block, ["/bin/rex-show", "view", "--session", "session:a", "--spool", "/state/rex-show"]]])
+    }).pipe(Effect.provide(Layer.mergeAll(systems, env({ ...inPane, REX_SHOW_BIN: "/bin/rex-show" })))),
     5_000,
   )
 
