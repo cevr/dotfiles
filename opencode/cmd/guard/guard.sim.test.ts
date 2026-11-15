@@ -41,7 +41,7 @@ const SPEC = "/scratch/guard/policy/spec.json"
 const REFUSAL = "guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
 const RUN_LIMIT_MS = 300_000
 
-/** The worktree task: checkouts on a file system Rift clones, on one it does not, with and without a warm source. */
+/** The worktree task: checkouts on a file system a workspace clones, on one it does not, with and without a warm source. */
 const WORKTREE_TASK = "guard worktree"
 /** A checkout on ext4 whose origin a warm source on btrfs shares (Ergo's on the workbox). */
 const ERGO = "/scratch/guard/ergo"
@@ -53,7 +53,7 @@ const WORKTREE_IN_ERGO = `cd ${ERGO} && env GIT_DIR=.git git worktree add ../erg
 const WORKTREE_IN_PLAIN = `git -C ${PLAIN} worktree add ../plain-feature`
 const WORKTREE_CLEANUP = "sh -c 'git worktree list && git worktree prune' && git worktree remove ../old"
 const WORKTREE_PREFIX = "guard-worktree: "
-const RIFT_CREATE = 'make a Rift instead with the rift tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox'
+const WORK_CREATE = 'make a workspace instead with the work tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox'
 
 /** The task whose checkouts cannot all be read: a checkout under LOCKED, and the warm sources. */
 const WORKTREE_UNREADABLE_TASK = "guard worktree unreadable"
@@ -110,7 +110,7 @@ const SCRIPTS = new Map<string, ReadonlyArray<{ readonly name: string; readonly 
     [
       { name: "shell", input: { command: WORKTREE_IN_WORK, description: "Worktree on btrfs" } },
       { name: "bash", input: { command: WORKTREE_IN_ERGO, description: "Worktree beside a warm source" } },
-      { name: "shell", input: { command: WORKTREE_IN_PLAIN, description: "Worktree Rift cannot serve" } },
+      { name: "shell", input: { command: WORKTREE_IN_PLAIN, description: "Worktree no workspace can copy" } },
       { name: "shell", input: { command: WORKTREE_CLEANUP, description: "Clean up old worktrees" } },
     ],
   ],
@@ -274,7 +274,7 @@ seeded(
 )
 
 seeded(
-  "git worktree add is refused where Rift serves the checkout (a cloning file system, or a warm source of it), naming the rift tool; elsewhere it runs, and list, prune and remove always run",
+  "git worktree add is refused where a workspace can copy the checkout (a cloning file system, or a base of it), naming the work tool; elsewhere it runs, and list, prune and remove always run",
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const { world, root, tools } = yield* run(seed, WORKTREE_TASK)
@@ -284,13 +284,13 @@ seeded(
       // On btrfs: refused in the guard's words, naming why and what to run instead.
       expect(onBtrfs?.error).toBe(true)
       expect(onBtrfs?.output).toContain(
-        `${WORKTREE_PREFIX}\`${WORKTREE_IN_WORK}\` makes a full copy of ${WORK}, and Rift makes a copy-on-write one here (its file system, btrfs, clones): ${RIFT_CREATE}`,
+        `${WORKTREE_PREFIX}\`${WORKTREE_IN_WORK}\` makes a full copy of ${WORK}, and a workspace is a copy-on-write one here (its file system, btrfs, clones): ${WORK_CREATE}`,
       )
       // On ext4 beside a warm source of the same origin (SSH against HTTPS), through a cd, an env prefix and the bash alias.
       expect(besideSource?.error).toBe(true)
       expect(besideSource?.output).toContain(`${WORKTREE_PREFIX}\`git worktree add ../ergo-feature\` makes a full copy of ${ERGO}`)
-      expect(besideSource?.output).toContain(`(its warm source is ${ERGO_SOURCE})`)
-      // On ext4 with no warm source, Rift cannot help: it runs.
+      expect(besideSource?.output).toContain(`(its base is ${ERGO_SOURCE})`)
+      // On ext4 with no base, no workspace can help: it runs.
       expect(plain?.error).toBe(false)
       expect(plain?.output).toContain("worktree ran")
       expect(cleanup?.error).toBe(false)
@@ -311,10 +311,10 @@ seeded(
       expect(onBtrfs?.output).toContain("(its file system, btrfs, clones)")
       expect(besideSource?.error).toBe(true)
       expect(besideSource?.output).toContain(
-        `${WORKTREE_PREFIX}cannot tell whether Rift serves the checkout at ${ERGO} (workrift sources: workrift sources exited 1), so the guard refuses \`git worktree add ../ergo-feature\` rather than guess`,
+        `${WORKTREE_PREFIX}cannot tell whether a workspace can copy the checkout at ${ERGO} (workrift sources: workrift sources exited 1), so the guard refuses \`git worktree add ../ergo-feature\` rather than guess`,
       )
       expect(locked?.error).toBe(true)
-      expect(locked?.output).toContain(`${WORKTREE_PREFIX}cannot tell whether Rift serves the checkout at ${LOCKED} (${LOCKED}: permission denied)`)
+      expect(locked?.output).toContain(`${WORKTREE_PREFIX}cannot tell whether a workspace can copy the checkout at ${LOCKED} (${LOCKED}: permission denied)`)
       expect(world.spawned()).toEqual([])
     }),
 )

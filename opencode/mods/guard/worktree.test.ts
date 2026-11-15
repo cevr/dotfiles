@@ -1,44 +1,46 @@
 // The worktree rule on its own: which lines add a worktree and where git runs
-// them, whatever the spelling; which checkouts Rift serves; and the words.
+// them, whatever the spelling; which checkouts a workspace can copy; and the words.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import type { Checkout } from "./service.ts"
-import { Clones, HasWarmSource, normalizedOrigin, riftHome, worktreeAdds, worktreeReason } from "./worktree.ts"
+import { Clones, HasWarmSource, type RiftHome, normalizedOrigin, riftHome, worktreeAdds, worktreeReason } from "./worktree.ts"
 
 const HOME = "/home/owner"
 const CWD = "/home/owner/work"
 const place = { cwd: CWD, home: HOME }
 const adds = (line: string) => worktreeAdds(line, place).map((add) => add.directory)
 
+/** Every spelling of a worktree add, with the directory git runs it in. */
+const SPELLINGS = [
+  ["git worktree add ../x", CWD],
+  ["git worktree add -b feature ../x main", CWD],
+  ["git worktree add --detach ../x", CWD],
+  ["git -C repo worktree add ../x", `${CWD}/repo`],
+  ["git -C repo -C sub worktree add ../x", `${CWD}/repo/sub`],
+  ["git -C ~/ergo worktree add ../x", `${HOME}/ergo`],
+  ["git -C=repo worktree add ../x", CWD],
+  ["git --no-pager -c core.hooksPath=/dev/null worktree add ../x", CWD],
+  ["git --git-dir repo/.git worktree add ../x", `${CWD}/repo`],
+  ["git -C repo --git-dir=.git worktree add ../x", `${CWD}/repo`],
+  ["git --git-dir=repo/.git --work-tree=wt worktree add ../x", `${CWD}/wt`],
+  ["/usr/bin/git worktree add ../x", CWD],
+  ["env GIT_DIR=.git git worktree add ../x", CWD],
+  ["FOO=1 git worktree add ../x", CWD],
+  ["sudo -u owner git worktree add ../x", CWD],
+  ["nohup git worktree add ../x", CWD],
+  ["cd ~/ergo && git worktree add ../x", `${HOME}/ergo`],
+  ["echo start; git worktree add ../x", CWD],
+  ["true || git worktree add ../x", CWD],
+  ["(cd repo; git worktree add ../x)", `${CWD}/repo`],
+  ["sh -c 'git worktree add ../x'", CWD],
+  ["bash -lc 'cd repo && git worktree add ../x'", `${CWD}/repo`],
+  ["cd repo && zsh -c \"git -C sub worktree add ../x\"", `${CWD}/repo/sub`],
+  ["eval git worktree add ../x", CWD],
+] as const
+
 describe("a worktree add is found", () => {
   test("in every spelling, with the directory git runs in", () => {
-    for (const [line, directory] of [
-      ["git worktree add ../x", CWD],
-      ["git worktree add -b feature ../x main", CWD],
-      ["git worktree add --detach ../x", CWD],
-      ["git -C repo worktree add ../x", `${CWD}/repo`],
-      ["git -C repo -C sub worktree add ../x", `${CWD}/repo/sub`],
-      ["git -C ~/ergo worktree add ../x", `${HOME}/ergo`],
-      ["git -C=repo worktree add ../x", CWD],
-      ["git --no-pager -c core.hooksPath=/dev/null worktree add ../x", CWD],
-      ["git --git-dir repo/.git worktree add ../x", `${CWD}/repo`],
-      ["git -C repo --git-dir=.git worktree add ../x", `${CWD}/repo`],
-      ["git --git-dir=repo/.git --work-tree=wt worktree add ../x", `${CWD}/wt`],
-      ["/usr/bin/git worktree add ../x", CWD],
-      ["env GIT_DIR=.git git worktree add ../x", CWD],
-      ["FOO=1 git worktree add ../x", CWD],
-      ["sudo -u owner git worktree add ../x", CWD],
-      ["nohup git worktree add ../x", CWD],
-      ["cd ~/ergo && git worktree add ../x", `${HOME}/ergo`],
-      ["echo start; git worktree add ../x", CWD],
-      ["true || git worktree add ../x", CWD],
-      ["(cd repo; git worktree add ../x)", `${CWD}/repo`],
-      ["sh -c 'git worktree add ../x'", CWD],
-      ["bash -lc 'cd repo && git worktree add ../x'", `${CWD}/repo`],
-      ["cd repo && zsh -c \"git -C sub worktree add ../x\"", `${CWD}/repo/sub`],
-      ["eval git worktree add ../x", CWD],
-    ] as const)
-      expect([line, adds(line)]).toEqual([line, [directory]])
+    for (const [line, directory] of SPELLINGS) expect([line, adds(line)]).toEqual([line, [directory]])
   })
 
   test("each add of a chained line, in order", () => {
@@ -65,7 +67,7 @@ describe("a worktree add is found", () => {
   })
 })
 
-describe("Rift serves a checkout", () => {
+describe("a workspace can copy a checkout", () => {
   const checkout = (filesystem: string, origin?: string): Checkout => ({ root: "/home/owner/ergo", filesystem, origin: Option.fromNullishOr(origin) })
 
   test("on a file system it clones: APFS, btrfs, XFS", () => {
@@ -99,10 +101,26 @@ describe("Rift serves a checkout", () => {
   })
 })
 
-test("the refusal names the copy, why Rift serves the checkout, and what to run instead", () => {
+test("the refusal names the copy, why a workspace can copy the checkout, and what to run instead", () => {
   const ergo: Checkout = { root: "/home/owner/ergo", filesystem: "ext4", origin: Option.none() }
   const add = { command: "git worktree add ../x", directory: "/home/owner/ergo/src" }
   expect(worktreeReason(add, ergo, HasWarmSource.make({ source: "/workspaces/ergo" }))).toBe(
-    '`git worktree add ../x` makes a full copy of /home/owner/ergo, and Rift makes a copy-on-write one here (its warm source is /workspaces/ergo): make a Rift instead with the rift tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox; `git worktree list`, `remove` and `prune` still run for the old worktrees',
+    '`git worktree add ../x` makes a full copy of /home/owner/ergo, and a workspace is a copy-on-write one here (its base is /workspaces/ergo): make a workspace instead with the work tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox; `git worktree list`, `remove` and `prune` still run for the old worktrees',
   )
+})
+
+test("for every spelling of a worktree add and every reason a workspace can copy, the refusal names the work tool's create and workrift create, and Rift nowhere else", () => {
+  const ergo: Checkout = { root: "/home/owner/ergo", filesystem: "apfs", origin: Option.none() }
+  const homes: ReadonlyArray<RiftHome> = [Clones.make({ filesystem: "apfs" }), HasWarmSource.make({ source: ergo.root }), HasWarmSource.make({ source: "/workspaces/ergo" })]
+  for (const [command] of SPELLINGS)
+    for (const home of homes)
+      for (const add of worktreeAdds(command, place)) {
+        const reason = worktreeReason(add, ergo, home)
+        expect([command, reason.includes('the work tool (`{ action: "create", branch }`)'), reason.includes("`workrift create <branch>`"), /rift/i.test(reason.replaceAll("workrift", ""))]).toEqual([
+          command,
+          true,
+          true,
+          false,
+        ])
+      }
 })

@@ -1,7 +1,7 @@
 // The contracts the guard needs from outside: whether a path is a
 // repository's root, the directory a session's shell runs in, whether a
 // session is a subagent, the processes running on the machine, a checkout's
-// file system and origin with Rift's warm sources, and where
+// file system and origin with the workspaces' bases, and where
 // launchers live and whether systemd scopes work. Each states its failure;
 // `laws.ts` states what every implementation owes.
 import { Context, type Effect, type Option, Schema } from "effect"
@@ -76,7 +76,7 @@ export class Scopes extends Context.Service<
   }
 >()("dotfiles-opencode/guard/Scopes") {}
 
-/** The guard could not read a checkout, or the warm sources Rift copies from. */
+/** The guard could not read a checkout, or the bases workspaces copy from. */
 export class CheckoutUnknown extends Schema.TaggedError<CheckoutUnknown>()("CheckoutUnknown", {
   path: Schema.String,
   message: Schema.String,
@@ -92,19 +92,19 @@ export interface Checkout {
   readonly origin: Option.Option<string>
 }
 
-/** A warm source Rift copies from: its directory and its `origin` remote's URL. */
+/** A base workspaces copy from: its directory and its `origin` remote's URL. */
 export interface WarmSource {
   readonly path: string
   readonly origin: Option.Option<string>
 }
 
-/** Git checkouts and Rift's warm sources on this machine, read when a call makes a git worktree. */
+/** Git checkouts and the workspaces' bases on this machine, read when a call makes a git worktree. */
 export class Checkouts extends Context.Service<
   Checkouts,
   {
     /** The checkout `directory` (absolute) is in; none when no Git checkout holds it, or it does not exist. */
     readonly of: (directory: string) => Effect.Effect<Option.Option<Checkout>, CheckoutUnknown>
-    /** The warm sources Rift copies from on this machine (`workrift sources`); none where no such list is kept. */
+    /** The bases workspaces copy from on this machine (`workrift sources`); none where no such list is kept. */
     readonly warmSources: Effect.Effect<ReadonlyArray<WarmSource>, CheckoutUnknown>
   }
 >()("dotfiles-opencode/guard/Checkouts") {}

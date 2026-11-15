@@ -6,7 +6,7 @@
 // pattern, what runs on the machine) and fails with `Destructive` when a
 // verdict denies the call; for a `git worktree add`, it reads the checkout
 // (and, off a cloning file system, the warm sources) and fails with
-// `FullCopy` when Rift serves it (worktree.ts); then, for a foreground call that opens with a long
+// `FullCopy` when a workspace can copy it (worktree.ts); then, for a foreground call that opens with a long
 // sleep (sleep.ts), it asks whether the session is a subagent and fails with
 // `Idle` when it is. The plugin calls this and nothing else.
 //
@@ -61,7 +61,7 @@ export const layer = (config: Config) =>
       const subagents = yield* Subagents
       const checkouts = yield* Checkouts
 
-      /** The warm sources that decide whether Rift serves `checkout`: none asked on a cloning file system, which decides alone. */
+      /** The bases that decide whether a workspace can copy `checkout`: none asked on a cloning file system, which decides alone. */
       const sourcesFor = (checkout: Checkout): Effect.Effect<ReadonlyArray<WarmSource>, CheckoutUnknown> => {
         if (clones(checkout.filesystem)) return Effect.succeed([])
         return checkouts.warmSources
@@ -98,7 +98,7 @@ export const layer = (config: Config) =>
             Effect.fail(
               new FullCopy({
                 command: call.command,
-                reason: `cannot tell whether Rift serves the checkout at ${add.directory} (${error.path}: ${error.message}), so the guard refuses \`${add.command}\` rather than guess; make a Rift with the rift tool (\`{ action: "create", branch }\`) or \`workrift create <branch>\` on the workbox`,
+                reason: `cannot tell whether a workspace can copy the checkout at ${add.directory} (${error.path}: ${error.message}), so the guard refuses \`${add.command}\` rather than guess; make a workspace with the work tool (\`{ action: "create", branch }\`) or \`workrift create <branch>\` on the workbox`,
               }),
             )
           const checkout = yield* checkouts.of(add.directory).pipe(Effect.catchTag("CheckoutUnknown", unknown))

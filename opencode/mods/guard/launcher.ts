@@ -18,7 +18,7 @@
 //   process group reaches it as before.
 //
 // `heavyArgv` is the same wrapping for a caller that spawns an argv itself
-// (the wakes' heavy job, rift land's gate and acceptance run); this file
+// (the wakes' heavy job, a land's gate and acceptance run); this file
 // imports nothing, so any mod's process implementation may import it
 // (`@dotfiles/opencode-guard/launcher`) without the guard plugin.
 

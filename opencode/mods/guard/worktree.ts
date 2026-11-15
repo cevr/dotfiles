@@ -1,11 +1,11 @@
-// The guard's worktree rule: `git worktree add` is refused in a checkout Rift
-// serves, since a worktree is a full copy of the checkout and a Rift is a
-// copy-on-write one (the owner, 2026-11-13: "we don't use git worktrees
-// because git worktrees actually copy and I want copy on write"). Rift serves
-// a checkout when its file system clones (APFS on the Mac; btrfs, or XFS with
-// its reflinks, on Linux), or when a warm source of it exists (the same
-// origin), as Ergo's checkouts on the workbox's ext4 home have in
-// /workspaces/ergo. The refusal names the replacement: the rift tool's
+// The guard's worktree rule: `git worktree add` is refused in a checkout a
+// workspace can copy, since a worktree is a full copy of the checkout and a
+// workspace is a copy-on-write one (the owner, 2026-11-13: "we don't use git
+// worktrees because git worktrees actually copy and I want copy on write"). A
+// workspace can copy a checkout when its file system clones (APFS on the Mac;
+// btrfs, or XFS with its reflinks, on Linux), or when a base of it exists (the
+// same origin), as Ergo's checkouts on the workbox's ext4 home have in
+// /workspaces/ergo. The refusal names the replacement: the work tool's
 // `create`, or `workrift create <branch>` on the workbox. `git worktree list`,
 // `remove` and `prune` run, so old worktrees can be cleaned up.
 //
@@ -81,10 +81,10 @@ export const worktreeAdds = (line: string, place: Place): ReadonlyArray<Worktree
     return [{ command, directory: gitDirectory(args, runsIn, place.home) }]
   })
 
-/** The file systems whose files Rift clones, as `mount` names them. */
+/** The file systems whose files a workspace clones, as `mount` names them. */
 export const CLONING_FILESYSTEMS: ReadonlySet<string> = new Set(["apfs", "btrfs", "xfs"])
 
-/** Whether Rift clones files on `filesystem`. */
+/** Whether a workspace clones files on `filesystem`. */
 export const clones = (filesystem: string): boolean => CLONING_FILESYSTEMS.has(filesystem.toLowerCase())
 
 /** An origin URL as host and path, so an SSH and an HTTPS URL of one repository match (workrift's `normalized_origin`). */
@@ -97,11 +97,11 @@ export const normalizedOrigin = (url: string): string =>
     .replace(/\.git$/, "")
     .replace(/\/+$/, "")
 
-/** Rift serves the checkout because its file system clones. */
+/** A workspace can copy the checkout because its file system clones. */
 export const Clones = Schema.TaggedStruct("Clones", { filesystem: Schema.String })
-/** Rift serves the checkout because a warm source of it exists: the checkout itself, or one of the same origin. */
+/** A workspace can copy the checkout because a base of it exists: the checkout itself, or one of the same origin. */
 export const HasWarmSource = Schema.TaggedStruct("HasWarmSource", { source: Schema.String })
-/** Why Rift serves a checkout. */
+/** Why a workspace can copy a checkout. */
 export const RiftHome = Schema.Union([Clones, HasWarmSource])
 export type RiftHome = typeof RiftHome.Type
 
@@ -119,7 +119,7 @@ export const warmSourceOf = (checkout: Checkout, sources: ReadonlyArray<WarmSour
     (source) => source.path,
   )
 
-/** Why Rift serves `checkout`, given the warm sources; none when it does not. */
+/** Why a workspace can copy `checkout`, given the bases; none when it cannot. */
 export const riftHome = (checkout: Checkout, sources: ReadonlyArray<WarmSource>): Option.Option<RiftHome> => {
   if (clones(checkout.filesystem)) return Option.some(Clones.make({ filesystem: checkout.filesystem }))
   return Option.map(warmSourceOf(checkout, sources), (source): RiftHome => HasWarmSource.make({ source }))
@@ -128,14 +128,14 @@ export const riftHome = (checkout: Checkout, sources: ReadonlyArray<WarmSource>)
 /** The reason, in the refusal's words. */
 const whyServed = (checkout: Checkout, home: RiftHome): string => {
   if (home._tag === "Clones") return `its file system, ${home.filesystem}, clones`
-  if (home.source === checkout.root) return "it is a Rift warm source"
-  return `its warm source is ${home.source}`
+  if (home.source === checkout.root) return "it is a base"
+  return `its base is ${home.source}`
 }
 
 /** Why the guard refuses a worktree in `checkout`, and what to run instead. */
 export const worktreeReason = (add: WorktreeAdd, checkout: Checkout, home: RiftHome): string =>
-  `\`${add.command}\` makes a full copy of ${checkout.root}, and Rift makes a copy-on-write one here (${whyServed(checkout, home)}): ` +
-  'make a Rift instead with the rift tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox; ' +
+  `\`${add.command}\` makes a full copy of ${checkout.root}, and a workspace is a copy-on-write one here (${whyServed(checkout, home)}): ` +
+  'make a workspace instead with the work tool (`{ action: "create", branch }`), or `workrift create <branch>` on the workbox; ' +
   "`git worktree list`, `remove` and `prune` still run for the old worktrees"
 
 /** A `git worktree add` the guard refuses, with the words the model reads. */

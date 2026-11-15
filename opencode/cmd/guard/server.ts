@@ -15,9 +15,9 @@
  * for such a call. A subagent's foreground call that opens by sleeping 30
  * seconds or more is refused too, naming a background shell and
  * `shell({ action: "wait", id, ms })` instead (`@dotfiles/opencode-guard/sleep`);
- * a root session's runs. So is `git worktree add` in a checkout Rift serves (its
- * file system clones, or a warm source has its origin): a worktree is a full
- * copy, and the refusal names the rift tool's `create` or `workrift create
+ * a root session's runs. So is `git worktree add` in a checkout a workspace can
+ * copy (its file system clones, or a base has its origin): a worktree is a full
+ * copy, and the refusal names the work tool's `create` or `workrift create
  * <branch>` (`@dotfiles/opencode-guard/worktree`); the checkout is read with
  * `git`, `df` and `mount` only for such a call. Everything else runs untouched.
  *
