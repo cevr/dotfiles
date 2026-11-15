@@ -82,7 +82,7 @@ noncurrent snapshot objects after 14 days.
   reports `/dev/shm` usage and its largest entries, which hold RAM that no
   process owns; the valve never deletes them.
 - `workbox-rift-storage` creates or checks the Btrfs workspace file system.
-- `workrift init <repository> [path]` clones a repository as a warm Rift source.
+- `workrift init <repository> [path]` clones a repository as a warm source (a base).
 - `workrift create <branch>` creates a complete isolated workspace from the warm
   source. It checks out the remote branch when one exists, and otherwise starts
   a new branch from the freshly fetched remote default branch.
@@ -90,12 +90,13 @@ noncurrent snapshot objects after 14 days.
   file or a dependency patch in `patches/` changed since the last install.
 - `workrift refresh` updates and warms the source from its default branch.
 - `workrift list` lists the source's workspaces; `workrift sources` lists sources.
-- `workrift remove [--with-children] [path]` moves a workspace to the Rift trash.
+- `workrift remove [--with-children] [path]` moves a workspace to the trash.
   It refuses a workspace with child workspaces unless you pass `--with-children`.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
-- In OpenCode, the `rift` tool runs these for an agent: `create`, `list`,
+- In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
-  `sources`, `prune` (only `--dry-run`) and `storage` here.
+  `sources`, `prune` (only `--dry-run`) and `storage` here. It answers to
+  `rift` as an alias until 2026-12-06; `workrift` keeps its name until then.
 - `workbox-port <port>` prints the private exe.dev URL for a running HTTP server.
 - `backup-state` creates and verifies an S3 state snapshot.
 - `check-updates` reports Ubuntu, Bun tool, and skill updates.
@@ -123,10 +124,16 @@ its terminal holders, Herdr, Sideshow, SSH,
 Tailscale, MongoDB, Redis, Syncthing, or system services. It returns a failure
 if a protected agent continues to start new workload groups.
 
-## Rift workspaces
+## Workspaces
+
+`workrift` makes workspaces with Rift or with Ergo's `work`: the file
+`~/.config/workrift/backend` holds `rift` or `work` (absent: `rift`). Under
+`work` a warm source is a work base, and its workspaces go to
+`.work/<source>/<branch>` next to it; the Rift details below hold for the `rift`
+backend, and for the older workspaces under `.rifts/`.
 
 The root file system stays on ext4. The workspace file system uses Btrfs inside
-`/var/lib/bite-workspaces.btrfs`. Its fixed size prevents Rift data from using
+`/var/lib/bite-workspaces.btrfs`. Its fixed size prevents workspace data from using
 all system storage. The image mounts through `/etc/fstab` at `/workspaces`.
 
 Each repository has one clean warm source, such as `/workspaces/bite`. Do not
@@ -145,7 +152,7 @@ command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,
 checkouts and installs yield to the OpenCode service.
-Run `gh stack checkout <PR>` in the Rift when imported metadata needs a refresh.
+Run `gh stack checkout <PR>` in the workspace when imported metadata needs a refresh.
 New workspaces go to `.rifts/<source>/<branch>` next to the source.
 
 A branch change inside a workspace can also change the lock file. For a
@@ -169,7 +176,7 @@ pinned, in-use and recently modified workspaces and every ancestor of a kept
 workspace, and archives the rest to `~/rift-archive/<date>` for 30 days before
 it removes them. Pin a workspace by adding its path to `~/.config/workrift/keep`.
 
-All Rift workspaces use the local cache at `/workspaces/.cache/turbo`.
+All workspaces use the local cache at `/workspaces/.cache/turbo`.
 `TURBO_CACHE=local:rw` disables remote cache reads and writes. Turbo 2.10 and later
 evicts the oldest entries at the start of a run once the cache passes
 `TURBO_CACHE_MAX_SIZE` (2 GB). Turbo uses two

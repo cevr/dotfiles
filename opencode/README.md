@@ -641,20 +641,20 @@ actions are the run's steps for the root session that runs its units. Its
 description tells the loop in order: lane → implement → ready → land →
 verify. It keeps nothing between calls: every answer is computed at the call
 from the run tables (the status mod's `STATUS` RPC over the skill's
-`status.ts`, through `Runs`) and the warm source's Rift list (the rift RPC's
+`status.ts`, through `Runs`) and the base's workspace list (the rift RPC's
 `list`), so a restart or another root session gets the same answer.
 
 - `orchestrate({ action: "lane", unit, run?, branch?, source? })`: the unit's
-  Rift, named for the unit (on the workbox as `workrift` names it, after the
+  workspace, named for the unit (on the workbox as `workrift` names it, after the
   branch) on `branch`, else `<run>/<unit>`, else `feat/<unit>`. A unit whose
-  Rift exists is answered that Rift, and nothing is made. A Rift is a unit's
+  workspace exists is answered that workspace, and nothing is made. A workspace is a unit's
   by its branch's last segment, and on the Mac also by its folder's name; on
   the workbox a folder name, which workrift derives from the branch, is never
   read as a unit (unit `feat-y` is never given unit `y`'s `feat-y`). The
   answer ends with the `(rift: <path>)` its implementor's description takes.
-- `orchestrate({ action: "land", units?, departs? })`: the rift plugin's land
-  of the named units. A name resolves to the one Rift that is that unit's;
-  `{ unit, path }` is taken as given; an unknown name, or one two Rifts read
+- `orchestrate({ action: "land", units?, departs? })`: the work plugin's land
+  of the named units. A name resolves to the one workspace that is that unit's;
+  `{ unit, path }` is taken as given; an unknown name, or one two workspaces read
   as, is refused with the `{ unit, path }` form. With no `units` it lands
   every unit the run tables show `ready` that has a lane, and with none it
   says what to name. A named unit in another state than `ready` lands, its
@@ -677,12 +677,12 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   range with its dir, round, spec and request, and with the `fleet` option
   the one `Heads: dotfiles=<sha> fork=<sha>` line), into the run dir that
   holds a unit of the range, else the first `orchestrate.dir`, else the first
-  run. Then the Rift `verify-<name>` at the head, and the one `subagent` call,
+  run. Then the workspace `verify-<name>` at the head, and the one `subagent` call,
   `verifier batch-main-<short head> r1`, its prompt naming the batch file;
   its findings beside it make the batch file the `<batch>.md` an accepted
   verdict publishes the fleet target from (git/fleet.ts `batchFileOf`).
 - `orchestrate({ action: "verify", batch, head? })`: the verifier's clean
-  checkout, the Rift `verify-<batch>` detached at `head` (default: origin's
+  checkout, the workspace `verify-<batch>` detached at `head` (default: origin's
   default branch head, read then), and the `subagent` call that starts it.
   Any unit-name-shaped batch (`batch-<k>`, a unit, `main-<sha>`) is taken.
 - `orchestrate({ action: "status" })`: each run's open units with their
@@ -697,7 +697,7 @@ verify (<short sha>, <H> h ago): orchestrate({ action: "verify" }).`, at
 last verify is `VERIFY_MAX_AGE_MS` (24 h) old (`tools.ts`). The count is of
 lands, not commits (`landsOf`): the run dirs' units whose newest request's
 head is in the range (`git rev-list <base>..<head>`, one read), so a unit
-that `rift land` fast-forwarded counts as one that it merged; or the
+that a land fast-forwarded counts as one that it merged; or the
 first-parent merges (`git log --first-parent --merges`) when they are more, a
 land with no unit dir. Both are read on the default branch (origin's
 `origin/HEAD`, else `main`, else `master`) by `MainLine`
@@ -715,10 +715,10 @@ each directory `git config --get-all orchestrate.dir` names in the checkout.
 
 A subagent is refused `lane`, `land` and `verify` (the root lands); `status`
 answers it. A call carrying another action's field (a `land` with `unit`, a
-`lane` with `units`) is refused with a call that decodes. Its Rifts and land
-go to this location's rift plugin over the rift RPC
-(`@dotfiles/opencode-work/rpc`), on the model the `rift` tool runs on; a
-`rift` land runs as it always does. `orchestrate` is in the kernel's
+`lane` with `units`) is refused with a call that decodes. Its workspaces and land
+go to this location's work plugin over the rift RPC
+(`@dotfiles/opencode-work/rpc`), on the model the `work` tool runs on; a
+`work` land runs as it always does. `orchestrate` is in the kernel's
 `HOOKED_TOOLS`, so a cell's call passes the same hooks.
 
 The model (the domain files at `mods/orchestrate/`):
@@ -1375,7 +1375,7 @@ any pane, so only the TUI can report.
 ## Recover
 
 `cmd/recover` is a TUI plugin that returns a session whose directory is gone
-(a removed rift or worktree) to where it was before. When the session on
+(a removed workspace or worktree) to where it was before. When the session on
 screen is idle and its directory no longer exists, it reads the session's
 location-switched messages (every applied move appends one, naming where the
 session went and where it left; the oldest one's previous location is where
@@ -1714,19 +1714,19 @@ cannot say whether the session is a subagent, the sleep runs: a sleep loses
 nothing. `sleep.ts` holds the rule; `Subagents` (`opencode/`: a session with
 a parent) is its contract.
 
-It refuses `git worktree add` in a checkout Rift serves, as
+It refuses `git worktree add` in a checkout a workspace can copy, as
 `guard-worktree: <reason>.`: a worktree is a full copy of the checkout, a
-Rift a copy-on-write one. Rift serves a checkout whose file system clones
-(`apfs`, `btrfs`, `xfs`, as `mount` names it), or one a warm source shares:
+workspace a copy-on-write one. A workspace can copy a checkout whose file system clones
+(`apfs`, `btrfs`, `xfs`, as `mount` names it), or one a base shares:
 the checkout itself, or a source with the same origin, SSH and HTTPS URLs
 alike (`workrift sources` on the workbox, so Ergo's checkout on the ext4
-home is served by `/workspaces/ergo`). The reason names the replacement: the
-rift tool's `create`, or `workrift create <branch>` on the workbox. It reads
+home is copied from `/workspaces/ergo`). The reason names the replacement: the
+work tool's `create`, or `workrift create <branch>` on the workbox. It reads
 the line as the destructive rule does, and `-C`, `--git-dir` and
 `--work-tree` move the checkout git works on. `git worktree list`, `remove`,
 `prune` and the rest run, so old worktrees can be cleaned up; a worktree in a
-checkout Rift cannot serve runs. It reads the checkout (`git`, `df -P`,
-`mount`) only for such a call, and the warm sources only off a cloning file
+checkout no workspace can copy runs. It reads the checkout (`git`, `df -P`,
+`mount`) only for such a call, and the bases only off a cloning file
 system; when it cannot read either, it refuses. `worktree.ts` holds the rule;
 `Checkouts` (`process/`) is its contract.
 
@@ -1798,101 +1798,104 @@ The guard does not strip secrets from a command's environment: the shell
 calls on record carry no API key to strip (the only `env -u` in them drops
 Claude Code's markers).
 
-## Rift
+## Work
 
-`cmd/rift` is a server plugin that adds the `rift` tool (a direct tool, so a
-kernel cell reaches it as `tools.rift`) and takes OpenCode's worktree tools
+The `work` tool makes, lists, removes and lands workspaces: copy-on-write
+copies of a repository's base. `cmd/work` and `cmd/rift` are one server plugin
+on two backends, Ergo's `work` and Rift: each adds the tool (a direct tool, so
+a kernel cell reaches it as `tools.work`) and takes OpenCode's worktree tools
 (`opencode_worktree_create`, `_list`, `_remove`) out of the registry: they
 make Git worktrees, and on Rifts they failed (10 times in 7 sessions on the
 workbox in a week). A root session that runs orchestrate units makes and
-lands its units' Rifts with the `orchestrate` tool's `lane` and `land`
+lands its units' workspaces with the `orchestrate` tool's `lane` and `land`
 instead (The orchestrate tool). `cmd/work`, not enabled yet, is the same tool over Ergo's `work` binary: it adds `work` and keeps `rift` as its alias (and the land's `rifts` beside `workspaces`) until 2026-12-06 (`RIFT_ALIAS_REMOVAL`), and never loads beside `cmd/rift`. One input, with an `action`:
 
-- `{ action: "create", branch, name?, source? }` makes a Rift of the warm
-  source the session's directory (or `source`) belongs to, on `branch` (the
+- `{ action: "create", branch, name?, source? }` makes a workspace of the base
+  the session's directory (or `source`) belongs to, on `branch` (the
   local branch, else `origin/<branch>`, else a new one from the source's
   HEAD; default: the name), named after the branch as `workrift` names it
-  (`feat/x` → `feat-x`). It answers the Rift's directory and branch and how
+  (`feat/x` → `feat-x`). It answers the workspace's directory and branch and how
   to move there (`session_move`); it never moves the session itself. On the
-  Mac it runs `rift create <source> --copy-all --name <name>` and switches the
-  branch; on the workbox, `workrift create <branch>` from the session's
+  Mac it runs `work new -branch <branch> <name>` in the base (the workspace
+  goes under `.work/<repo>/` beside it; on Rift, `rift create <source>
+  --copy-all --name <name>` and a branch switch); on the workbox, `workrift create <branch>` from the session's
   directory with `WORKRIFT_SOURCE` set, which refreshes the source, imports
-  gh stack metadata and names the Rift itself.
-- `{ action: "list" }` lists the source's Rifts with their branch and their
+  gh stack metadata and names the workspace itself.
+- `{ action: "list" }` lists the source's workspaces with their branch and their
   unsaved work (`clean`, or `2 uncommitted, 1 unpushed, 1 stashed`).
-- `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
-  (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
+- `{ action: "remove", name | path, force? }` moves a workspace to the trash
+  (`work rm`, or `rift remove` on Rift; `workrift remove` on the workbox). It refuses a workspace that
   holds work found nowhere else, and names it: uncommitted changes (untracked
-  files too), stash entries the warm source does not also hold (a Rift
+  files too), stash entries the base does not also hold (a workspace
   inherits its source's stash), and commits on no remote and in no branch of its
-  source, unless `force: true`. It always refuses a warm source, the Rift the
-  session runs in, and a Rift with Rifts of its own. `withChildren: true`
-  takes the Rift's own Rifts with it, each still refused while it holds
+  source, unless `force: true`. It always refuses a base, the workspace the
+  session runs in, and a workspace with workspaces of its own. `withChildren: true`
+  takes the workspace's own workspaces with it, each still refused while it holds
   unsaved work.
-- `{ action: "land", rifts: ["feat-x", "feat-y"] }` lands the Rifts as one
+- `{ action: "land", rifts: ["feat-x", "feat-y"] }` lands the workspaces as one
   batch, as the orchestrator's batch landing does by hand. Each entry names a
-  Rift by path (it starts with `/` or `.`), by name, or by its branch: exact
+  workspace by path (it starts with `/` or `.`), by name, or by its branch: exact
   first (the name, or the branch), then the branch with `/` as `-`
-  (`mods/work/find.ts`); an entry two Rifts answer to is refused, naming both
+  (`mods/work/find.ts`); an entry two workspaces answer to is refused, naming both
   with their branches. An entry may be `{ path, unit }`: the land lands its
-  path, and the orchestrate plugin records it as that unit's. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
-  uncommitted changes (a file the same as in the warm source does not count)
-  and a repository with no gate. Then, in the source's integration Rift
+  path, and the orchestrate plugin records it as that unit's. Before touching any, it refuses a base, a workspace off any branch, a workspace with its own
+  uncommitted changes (a file the same as in the base does not count)
+  and a repository with no gate. Then, in the source's integration workspace
   (`integrate`, made on first use and kept): repair a stale multi-pack index,
   check out origin's newest default branch (dropping any tracked change the
-  last gate left, such as a lint fix), merge each Rift's branch in order
+  last gate left, such as a lint fix), merge each workspace's branch in order
   (`git fetch <rift> <branch>`, `git merge FETCH_HEAD`). A conflict in lock
-  files and the repository's generated files alone is settled: the Rift's
+  files and the repository's generated files alone is settled: the workspace's
   side, installed again and regenerated, committed. Any other conflict aborts
-  the merge and stops the batch, naming the Rift and the files. Then install
+  the merge and stops the batch, naming the workspace and the files. Then install
   each lock file the batch changed (committed when rewritten), and, when
   `rift.regenerate` is set, run it once more after every batch, conflict or
-  not: a clean merge can still leave a generated file stale (one Rift
+  not: a clean merge can still leave a generated file stale (one workspace
   changed what another's generated file is written from). What it rewrote
   among the generated files and the lock files is committed as one `chore:
   regenerate generated files after landing` (nothing changed, no commit); a
   failing regenerate stops the batch before the gate. Then run the gate
   once, push to the default branch when it still holds origin's newest, fetch
-  in each landed Rift and trash it unless the removal rule keeps it (it says
+  in each landed workspace and trash it unless the removal rule keeps it (it says
   why). The accept check then runs once, in the background, one at a time
-  per plugin, in the integration Rift on everything since the batch's base,
+  per plugin, in the integration workspace on everything since the batch's base,
   and wakes the calling session (a steered `session.synthetic`) with its
-  counts and failures; a red one is fixed forward. The integration Rift takes
+  counts and failures; a red one is fixed forward. The integration workspace takes
   one batch at a time, its accept check included.
 
   A repository that lands through pull requests (a team repository, where CI
   on the PR is the merge gate) sets `rift.push` false. Land then merges,
   installs, regenerates and runs the gate (and the accept check, in the
-  background) in the integration Rift the same way, but never pushes the
-  default branch and never removes a Rift. A conflict reds only its own Rift
-  and the others merge on; a red gate or accept check reds every Rift it ran
-  on, with its log and failures, for the caller to route to the Rift whose
+  background) in the integration workspace the same way, but never pushes the
+  default branch and never removes a workspace. A conflict reds only its own workspace
+  and the others merge on; a red gate or accept check reds every workspace it ran
+  on, with its log and failures, for the caller to route to the workspace whose
   diff each failure touches. The answer (or, with an accept check, its wake)
-  lists each Rift `green`, `red` with why, or `pending`. With
-  `rift.pushBranches` true a green Rift's own branch is pushed to the same
+  lists each workspace `green`, `red` with why, or `pending`. With
+  `rift.pushBranches` true a green workspace's own branch is pushed to the same
   branch on origin, never forced, so its PR runs CI on the gated head; a
-  refused push is named and leaves the Rift green.
+  refused push is named and leaves the workspace green.
 - On the workbox, `{ action: "init", repository, path? }`, `"refresh"`,
-  `"check"` (of the session's or `source`'s warm source), `"deps"` (in the
-  named Rift, else the session's directory), `"sources"`, `"prune"` (always
+  `"check"` (of the session's or `source`'s base), `"deps"` (in the
+  named workspace, else the session's directory), `"sources"`, `"prune"` (always
   `--dry-run`) and `"storage"` (`workbox-rift-storage --check` and `df -h` of
   `WORKBOX_RIFT_MOUNT`, else `/workspaces`) run the workbox's own script as it
   is and answer what it printed. Elsewhere they say they need the workbox.
 
-A repository names its checks in its warm source's Git config, so the tool
+A repository names its checks in its base's Git config, so the tool
 knows no repository's commands:
 
 | Key | Meaning |
 | --- | --- |
 | `rift.gate` | the fast check run before the push; required; with `rift.mergeCheck` set it never runs on a batch |
 | `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
-| `rift.mergeCheck` | set, the land lands by receipts (below): the one quick check of the merged tree (typecheck, lint and Effect debt of the changed files), run in the integration Rift with `RIFT_LAND_BASE` set, in place of `rift.gate` |
-| `rift.focus` | with `rift.mergeCheck`, the focused gate a land runs in a Rift holding no current receipt: `{paths}` becomes the files the Rift changed since the default branch (absolute, quoted), `{threads}` a quarter of the host's cores; unset, such a Rift is not landed |
+| `rift.mergeCheck` | set, the land lands by receipts (below): the one quick check of the merged tree (typecheck, lint and Effect debt of the changed files), run in the integration workspace with `RIFT_LAND_BASE` set, in place of `rift.gate` |
+| `rift.focus` | with `rift.mergeCheck`, the focused gate a land runs in a workspace holding no current receipt: `{paths}` becomes the files the workspace changed since the default branch (absolute, quoted), `{threads}` a quarter of the host's cores; unset, such a workspace is not landed |
 | `rift.generated` | one value per generated file (repository-relative): its conflict is settled by writing it again, and its rewrite after every batch is committed |
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
-| `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
-| `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
-| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land Rift (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit), `RIFT_POST_LAND_LOAD` (`settled`, `forced` or `loaded`: what the host allows; the step decides what each word means) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines), and a `loaded` run that exits 0 with an empty report wakes no one. A step is owed from the push until it has run, one per warm source over every land since one last ran (`mods/work/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once (`settled`) when no reading in the last 5 minutes was at or past the cores, and else runs it `loaded`, which never pays it: it stays owed, and the wake says what ran and what still waits; the plugin itself reads the load every minute while one is owed, runs it `loaded` again 30 minutes after its last run ended (never while another run holds the claim), and runs it `settled` once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/work/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration Rift is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its Rift) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/work/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/work/process/landing.ts`). `remove` refuses the integration and post-land Rifts while a step runs there |
+| `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a workspace |
+| `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green workspace's own branch |
+| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the background after the accept check, heavy like it, in the source's post-land workspace (`post-land`, made on first use, kept, put at origin's newest default branch before each run) under the host's one post-land claim (`locks/post-land.lock` beside the land logs, a flock(2) lock every rift plugin instance on the host shares, held from reading the owed step through every Git step and the run, `PostLandClaim`), so two never overlap, whichever instance or land started them, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit), `RIFT_POST_LAND_LOAD` (`settled`, `forced` or `loaded`: what the host allows; the step decides what each word means) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines), and a `loaded` run that exits 0 with an empty report wakes no one. A step is owed from the push until it has run, one per base over every land since one last ran (`mods/work/owed.ts`): every load reading the tool takes (a land's, the minute check's) feeds one 5-minute settle window, which a reading at or past the host's cores restarts; a land runs the step at once (`settled`) when no reading in the last 5 minutes was at or past the cores, and else runs it `loaded`, which never pays it: it stays owed, and the wake says what ran and what still waits; the plugin itself reads the load every minute while one is owed, runs it `loaded` again 30 minutes after its last run ended (never while another run holds the claim), and runs it `settled` once its readings have stayed under the cores for 5 minutes (after a restart, 5 minutes of its own readings; the newest loaded reading is kept with the owed steps); a step owed 6 hours runs at the next land whatever the load (heavy, so nice'd), its report saying so. A later land's step replaces the one owed: one run, the newest land's head with the oldest owed base (`RIFT_LAND_BASE`), names every batch it covers, and a land waiting behind a running step finds it run for it. The owed steps are kept in `post-land-owed.json` beside the land logs, so a server restart keeps them (a run cut off by the restart runs again); every change of that file holds `locks/post-land-owed.lock` from its read to its write (`mods/work/filestore/debts.ts`). OpenCode loads one rift plugin per directory it serves, and the claim makes the owed step one run per host: a land waits for the claim and then finds the step it owed run or still owed, and the minute check leaves the step to whoever holds the claim (and heeds another instance's loaded reading). The integration workspace is free for the next land once the accept check ends: a post-land step that runs long (the dotfiles' merges upstream and runs the fork's checks from its workspace) never holds a land back. Where it must not overlap the checks, it takes the host's land locks, whose paths it gets in `RIFT_LAND_CHECKS_LOCK` and `RIFT_LAND_ACCEPT_LOCK` (`mods/work/process/flock.ts`): every gate and accept check holds the checks lock shared and each accept check holds the accept lock, so the dotfiles' step holds the checks lock only while it moves prime-look (the fast-forward and its install), and the accept lock while it runs the fork's tests. `bun run daily` (and the update plugin's `daily --stage`) takes the same locks outside any land, finding them where the rift tool does (`hostLocks` in `mods/work/process/landing.ts`). `remove` refuses the integration and post-land workspaces while a step runs there |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
 ### Landing by receipts
@@ -1902,21 +1905,21 @@ a repository can land on the proof its rounds already made instead. With
 `rift.mergeCheck` set, a land (pushed, or checked with `rift.push` false)
 never runs `rift.gate` on the batch:
 
-1. Before any merge, each Rift's receipt is read (`mods/work/receipt.ts`):
+1. Before any merge, each workspace's receipt is read (`mods/work/receipt.ts`):
    the newest one in its Git dir (`rift-receipt.json`). It is current when it
-   names the Rift's head and the tree of its tracked files as they are on
-   disk, and every check in it exited 0. A Rift without a current one (none,
-   red, or its head or files moved since) runs `rift.focus` in its own Rift,
+   names the workspace's head and the tree of its tracked files as they are on
+   disk, and every check in it exited 0. A workspace without a current one (none,
+   red, or its head or files moved since) runs `rift.focus` in its own workspace,
    and a green run is its receipt; with no `rift.focus`, or a red run, a
-   pushed land stops before any merge and a checked one reds that Rift alone.
-2. The Rifts merge as before; then `rift.mergeCheck` runs once on the merged
-   tree, unless the land fast-forwarded to one Rift's own receipted head. A
-   red one stops the push (a checked land reds the merged Rifts).
-3. After the push, its record (each Rift's receipt, how it was covered, the
+   pushed land stops before any merge and a checked one reds that workspace alone.
+2. The workspaces merge as before; then `rift.mergeCheck` runs once on the merged
+   tree, unless the land fast-forwarded to one workspace's own receipted head. A
+   red one stops the push (a checked land reds the merged workspaces).
+3. After the push, its record (each workspace's receipt, how it was covered, the
    merge check's receipt) goes to `receipts/<pushed sha>.land.json` beside
    the land logs, for the next batch's verifier. The accept check (the full
-   suite) then runs in the background in a Rift of its own (`land-accept`,
-   kept, never a land target), so the integration Rift is free at once and
+   suite) then runs in the background in a workspace of its own (`land-accept`,
+   kept, never a land target), so the integration workspace is free at once and
    the next land never waits for it; a red one is fixed forward as a fix
    unit. The post-land step follows it, and its deep run writes a `deep`
    receipt.
@@ -1924,7 +1927,7 @@ never runs `rift.gate` on the batch:
 A receipt is any proof a round made at its head: focused tests, mutants
 killed, a Quint or model run, real-host laws, the batch verifier's verdict.
 A repository names its receipt producers by running them through one script
-in the Rift, whatever the repository:
+in the workspace, whatever the repository:
 
 ```sh
 bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<command>' ['<command>' …]
@@ -1946,7 +1949,7 @@ accept check or a post-land deep run holds. A fork move (`bun run daily`, the
 post-land upstream merge) holds the checks lock and then the fork lock, so a
 land's check never reads a fork in mid-move.
 
-This repository's warm source would set:
+This repository's base would set:
 
 ```sh
 git config rift.mergeCheck 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'
@@ -1957,7 +1960,7 @@ launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
 `systemd-run --user --scope` works (Linux with a user systemd), a scope with
 `MemoryMax=12G` and `CPUWeight=20`. On the Mac they run niced alone.
 
-This repository's warm source sets:
+This repository's base sets:
 
 ```sh
 git config rift.gate 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun run gate'
@@ -1996,7 +1999,7 @@ A path in these values is written with `$HOME`, never `~`: `sh` leaves a
 hands the run a literal `~` directory (the first real land's accept run
 failed on it).
 
-The workbox's Bite warm source, `/workspaces/bite` (origin
+The workbox's Bite base, `/workspaces/bite` (origin
 `biteinc/maitred`, default branch `master` from origin's HEAD), lands
 through pull requests. Its batch gate is `bite gate` over the batch's diff
 against `origin/master` (`--branch`), with the DB-backed unit suites forced
@@ -2004,7 +2007,7 @@ on the workbox's local Mongo and Redis (`--require-db`, `--with-infra`
 starts what is missing); CI on the PR, triggered by a `/pipeline <suites>`
 comment on a stack's top PR, stays the thorough gate. `bite gate` lints with
 auto-fix, so the gate line fails when the gate rewrote a file: the branch
-still holds what CI's lint would reject. Set it once in the warm source:
+still holds what CI's lint would reject. Set it once in the base:
 
 ```sh
 git -C /workspaces/bite config rift.push false
@@ -2021,16 +2024,17 @@ There is no `gc` action: `rift gc` empties the trash of every repository at
 once, for good, and the workbox's nightly `workrift prune` already runs it.
 
 The model (the domain files at the root of `mods/work`): `rift.ts` is the
-tool's input and the words of each answer, `workspace.ts` what a Rift holds
+tool's input and the words of each answer, `workspace.ts` what a workspace holds
 and the rule for removing one (`removal`), `land.ts` a land's rules and
 words, and `model.ts` the handler. The contracts are in `service.ts`:
-`Rifts` (`process/`: the `rift`, `workrift` and `git` commands; `memory/`
+`Rifts` (`process/`: the `work`, `rift`, `workrift` and `git` commands; `memory/`
 for tests), `Landing` (`process/`: Git and the repository's checks),
 `Workbox` (`process/`: the workbox's scripts), `Notices` and
-`SessionDirectories` (`opencode/`), with the Rifts laws in `laws.ts`. The
-plugin's one option, `workrift`, defaults to whether `workrift` is on PATH.
-`tests/rift.test.ts` proves the flow and a land in real OpenCode on real
-Rift; `mods/work/process/landing.test.ts` runs Landing on real Git
+`SessionDirectories` (`opencode/`), with the `Rifts` laws in `laws.ts`. The
+plugin's option `workrift` defaults to whether `workrift` is on PATH, and
+`cmd/work`'s `work`, the binary, to `work`. `tests/work.test.ts` proves the
+flow in real OpenCode on the real `work` binary, and `tests/rift.test.ts` the
+flow and a land on real Rift; `mods/work/process/landing.test.ts` runs Landing on real Git
 repositories; `mods/work/process` runs the
 laws on `rift` and on the workbox's own `workrift` script (with a no-op
 `flock`), in a scratch HOME. Both need macOS.
@@ -2716,7 +2720,7 @@ OpenCode's own schedule tools (`schedule_create`, `_list`, `_pause`,
 by prompting its session with its whole action: a real user message each
 time, kilobytes for a watch that fires on every change. The wake plugin takes
 them out of the registry for every agent (`SCHEDULE_TOOLS` in
-`cmd/wake/server.ts`, as the rift plugin takes the worktree tools), so a wake
+`cmd/wake/server.ts`, as the work plugin takes the worktree tools), so a wake
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The
@@ -3271,7 +3275,7 @@ off its clock. A mark whose pid is dead is ignored. `scripts/accept-yield.ts`
 holds the rules; `notes/accept-lock.qnt` is their Quint model. A run from a
 checkout older than this lock takes the old directory lock
 (`$TMPDIR/opencode-accept.lock`) and does not exclude a new run: a land always
-runs in the new `integrate` checkout, so only a hand run from an old Rift is
+runs in the new `integrate` checkout, so only a hand run from an old workspace is
 the gap.
 
 A test starts what it runs (opencode-drive, an OpenCode server, a
