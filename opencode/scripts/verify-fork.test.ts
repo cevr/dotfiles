@@ -5,6 +5,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { gitInit, withProcessEnv } from "../tests/git-repo.ts"
 import { forkLag } from "./verify.ts"
 
 const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }
@@ -20,7 +21,7 @@ const git = (repo: string, ...args: ReadonlyArray<string>) =>
 /** A fork: `prime-look` two commits long, the worktree detached at the first; origin's branch where `origin` says. */
 const forkAt = (dir: string) =>
   Effect.gen(function* () {
-    yield* git(dir, "init", "-q", "-b", "prime-look")
+    yield* Effect.sync(() => gitInit(dir, ["-q", "-b", "prime-look"], withProcessEnv(IDENTITY)))
     yield* git(dir, "commit", "-q", "--allow-empty", "-m", "base")
     const base = yield* git(dir, "rev-parse", "HEAD")
     yield* git(dir, "commit", "-q", "--allow-empty", "-m", "upstream merge")
