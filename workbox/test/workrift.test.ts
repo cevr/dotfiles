@@ -517,6 +517,42 @@ describeWork("workrift with the work backend", () => {
     60_000,
   )
 
+  test(
+    "a base work still lists whose folder is gone is no base: create, remove, list, prune and sources skip it with no error (2026-11-16, the workbox's scratch bases)",
+    () => {
+      const w = workBench("stale", work)
+      // Registered before the real base, and in path order before it too: the loops reach it first.
+      const stale = w.base("aa-stale")
+      const real = w.base("zz-real")
+      rmSync(stale, { recursive: true, force: true })
+      expect(JSON.parse(w.inBase(real, "--json", "bases"))).toContain(stale)
+
+      const made = w.wr(real, "create", "feat/after-stale")
+      expect(made.code, made.err).toBe(0)
+      expect(made.err).not.toContain(stale)
+      const path = lines(made.out).at(-1) ?? ""
+      expect(w.active(real).map((each) => each.path)).toEqual([path])
+
+      const listed = w.wr(real, "list")
+      expect(listed.code, listed.err).toBe(0)
+      expect(lines(listed.out)).toEqual([path])
+
+      const sources = w.wr(real, "sources")
+      expect(sources.code, sources.err).toBe(0)
+      expect(lines(sources.out).sort()).toEqual([w.app, real].sort())
+
+      const dry = w.wr(real, "prune", "--dry-run")
+      expect(dry.code, dry.err).toBe(0)
+      expect(dry.out).not.toContain(stale)
+      expect(dry.err).toBe("")
+
+      const removed = w.wr(real, "remove", path)
+      expect(removed.code, removed.err).toBe(0)
+      expect(w.active(real)).toEqual([])
+    },
+    30_000,
+  )
+
   test("sources prints work bases, one path a line, and check finds the base of an adopted or plain checkout", () => {
     const w = workBench("sources", work)
     const lib = w.base("lib")
