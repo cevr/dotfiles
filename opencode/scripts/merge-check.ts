@@ -3,7 +3,8 @@
 // accept-parity went red on main). Beside the link, the typecheck, oxlint and the debt ratchet over the changed
 // files, it runs the tests a change can break and the full gate's unit leg would have caught:
 // - the docs guard, scripts/verify-docs.test.ts, when the change can turn it red (docs-guard.ts);
-// - for a changed scripts/<name>.ts its own scripts/<name>.test.ts, and a changed scripts/ test itself;
+// - for a changed scripts/<name>.ts its own scripts/<name>.test.ts and every scripts/ test whose imports reach it
+//   within scripts/, through any number of steps (fork.ts → daily.ts → daily.test), and a changed scripts/ test itself;
 // - scripts/accept.test.ts and scripts/accept-parity.test.ts when the acceptance tree changes (tests/, its parity
 //   baselines among them), the accept scripts change, or a simulated suite a parity manifest counts changes.
 import { Option } from "effect"
@@ -41,28 +42,44 @@ const SCRIPT = /^scripts\/([\w.-]+)\.tsx?$/
 const TEST = /^scripts\/[\w.-]+\.test\.tsx?$/
 const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/accept[\w-]*\.ts$/.test(path) || /\.sim\.test\.tsx?$/.test(path)
 
-/** The scripts/ tests and their texts the selection reads: which test imports which script. */
+/**
+ * The scripts/ tests and the import specifiers each scripts/ file holds (`import`, `export … from` and `import()`,
+ * as Bun's transpiler scans them), from which the selection walks the import graph within scripts/.
+ */
 export interface ScriptsTests {
   readonly files: ReadonlyArray<string>
-  readonly read: (file: string) => string
+  readonly imports: (file: string) => ReadonlyArray<string>
 }
 
-/** The tests a changed path selects: itself when it is a scripts/ test; for a script, its own test and every scripts/ test that imports it. */
-const testsOf = (path: string, scripts: ScriptsTests): ReadonlyArray<string> => {
-  if (TEST.test(path)) return [path]
-  return Option.match(Option.fromNullishOr(SCRIPT.exec(path)), {
-    onNone: () => [],
-    onSome: (match) => {
-      const name = String(match[1])
-      return [`scripts/${name}.test.ts`, ...scripts.files.filter((file) => scripts.read(file).includes(`"./${name}.ts"`))]
-    },
-  })
+/** The scripts/ file a relative specifier in the scripts/ file `from` names, if it exists. */
+const resolved = (from: string, specifier: string, exists: (file: string) => boolean): ReadonlyArray<string> => {
+  if (!specifier.startsWith("./")) return []
+  const base = `${from.slice(0, from.lastIndexOf("/") + 1)}${specifier.slice(2)}`
+  return [base, `${base}.ts`, `${base}.tsx`].filter((file) => SCRIPT.test(file) && exists(file)).slice(0, 1)
 }
+
+/** Every scripts/ file `test` loads through its imports, any number of steps deep, itself included. */
+export const reachedWithin = (test: string, scripts: ScriptsTests, exists: (file: string) => boolean): ReadonlySet<string> => {
+  const seen = new Set([test])
+  // A for-of over a Set visits what is added while it runs: each reached file once, breadth first.
+  for (const from of seen) for (const next of scripts.imports(from).flatMap((specifier) => resolved(from, specifier, exists))) seen.add(next)
+  return seen
+}
+
+/** The tests a changed path selects: itself when it is a scripts/ test, a script's own test, and every scripts/ test whose imports reach it. */
+const testsOf = (path: string, reached: ReadonlyArray<{ readonly test: string; readonly files: ReadonlySet<string> }>): ReadonlyArray<string> => {
+  if (TEST.test(path)) return [path]
+  const own = Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
+  return [...own, ...reached.flatMap((each) => (each.files.has(path) && [each.test]) || [])]
+}
+
+const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [] }
 
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
-export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = { files: [], read: () => "" }): ReadonlyArray<string> => {
+export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
   const paths = named(changes)
-  const due = new Set(paths.flatMap((path) => testsOf(path, scripts)))
+  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists) }))
+  const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
   if (docsGuardDue(changes)) due.add(DOCS_GUARD)
   return [...due].filter(exists).toSorted()

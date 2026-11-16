@@ -127,6 +127,9 @@ const scan = (file: string, source: string) => {
 
 export const codeOf = (file: string, source: string): string => scan(file, source).code
 
+/** The import specifiers a source holds (`import`, `export … from`, `import()`), through Bun's transpiler. */
+export const importsOf = (file: string, source: string): ReadonlyArray<string> => scan(file, source).imports
+
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))

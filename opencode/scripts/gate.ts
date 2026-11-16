@@ -34,17 +34,17 @@
 // break (scripts/merge-check.ts), no lock and no receipt (the land writes it).
 //
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
-//        bun scripts/gate.ts --merge <base>
+//        bun scripts/gate.ts --merge <base> [--dry-run]   (--dry-run prints each step it would start, runs nothing)
 // The cache is node_modules/.cache/gate/passed.json; deleting it is safe.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
 import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
-import { type Change, parseNameStatus } from "./docs-guard.ts"
+import { parseNameStatus } from "./docs-guard.ts"
 import { mergeLegs } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
+import { importsOf, keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -134,10 +134,10 @@ const summary = (name: string, started: number, legs: ReadonlyArray<Leg>): numbe
   return ok ? 0 : 1
 }
 
-/** The link, then `legs` at once, as `name`; answers its exit code. */
-const linked = async (name: string, legs: () => ReadonlyArray<Promise<Leg>>): Promise<number> => {
+/** The link, then `legs` at once, as `name`; answers its exit code. `runner` starts the link (a dry run's prints it). */
+const linked = async (name: string, legs: () => ReadonlyArray<Promise<Leg>>, runner: typeof run = run): Promise<number> => {
   const started = performance.now()
-  const link = await run("link", [process.execPath, "scripts/link-fork.ts"])
+  const link = await runner("link", [process.execPath, "scripts/link-fork.ts"])
   if (!link.ok) {
     process.stderr.write(link.output)
     return 1
@@ -171,23 +171,33 @@ const legEnv = () => {
  * since `base` (every project's typecheck, oxlint and the Effect debt ratchet over the changed files, and the
  * scripts/ tests and docs guard a change can break), at once.
  */
-const mergeCheck = (base: string) => changesSince(base).then((changes) => checkLegs(base, changes))
+const mergeCheck = (base: string, runner: typeof run) =>
+  planned(base).then((legs) => linked("merge check", () => legs.map((leg) => runner(leg.name, leg.argv, legEnv(), leg.note)), runner))
 
-/** The merge check over `changes` since `base`. */
-const checkLegs = (base: string, changes: ReadonlyArray<Change>) => {
-  const legs = mergeLegs(base, changes, {
-    bun: process.execPath,
-    oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
-    typecheck: checkCommand(),
-    projects: projects().length + 1,
-    exists: (file) => existsSync(path.join(ROOT, file)),
-    scripts: {
-      files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
-      read: (file) => readFileSync(path.join(ROOT, file), "utf8"),
-    },
-  })
-  return linked("merge check", () => legs.map((leg) => run(leg.name, leg.argv, legEnv(), leg.note)))
+/**
+ * `--dry-run`'s runner: it runs nothing, prints the leg (`step <name>: <command>`) and answers it passed. The merge
+ * check runs the same path with it, link and every leg, so scripts/merge-check.test.ts reads the steps it starts.
+ */
+const printed: typeof run = (name, argv, _env, note) => {
+  console.log(`step ${name}: ${argv.join(" ")}`)
+  return Promise.resolve({ name, ok: true, output: "", time: "0.00s", note: Option.getOrElse(Option.fromUndefinedOr(note), () => "") })
 }
+
+/** The merge check's legs over the changes since `base` (scripts/merge-check.ts), with each scripts/ file's imports. */
+const planned = (base: string) =>
+  changesSince(base).then((changes) =>
+    mergeLegs(base, changes, {
+      bun: process.execPath,
+      oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
+      typecheck: checkCommand(),
+      projects: projects().length + 1,
+      exists: (file) => existsSync(path.join(ROOT, file)),
+      scripts: {
+        files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
+        imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
+      },
+    }),
+  )
 
 /** The full gate: by hand, its `round` receipt written from where the repository stood; under a land (RIFT_LAND_CHECK set), the land writes its own. */
 const fullGate = () =>
@@ -196,10 +206,16 @@ const fullGate = () =>
     onNone: () => scriptReceipt(landLogs(ENV), path.resolve(ROOT, ".."), "round", "bun run gate", gate, (code) => code),
   })
 
+/** `--merge <base>`: the merge check, or with `--dry-run` its legs printed. */
+const mergeRun = (base: string) => {
+  if (ARGV.includes("--dry-run")) return mergeCheck(base, printed)
+  return mergeCheck(base, run)
+}
+
 const merging = Option.filter(Option.some(ARGV.indexOf("--merge")), (at) => at >= 0)
 process.exit(
   await Option.match(merging, {
-    onSome: (at) => mergeCheck(ARGV[at + 1] ?? "HEAD"),
+    onSome: (at) => mergeRun(ARGV[at + 1] ?? "HEAD"),
     onNone: () => hostLocks(ENV).gate(ROOT)(fullGate),
   }),
 )
