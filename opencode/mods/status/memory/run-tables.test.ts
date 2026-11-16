@@ -4,14 +4,16 @@ import * as MemoryRunTables from "./run-tables.ts"
 
 runTablesLaws("memory RunTables", (tables) =>
   Effect.sync(() => {
-    const runs: MemoryRunTables.MemoryRuns = { tables: new Map([["/repo", tables]]) }
+    const broken = new Map<string, string>()
+    const runs: MemoryRunTables.MemoryRuns = { tables: new Map([["/repo", tables]]), broken }
     return {
       layer: MemoryRunTables.layer(runs),
       repository: "/repo",
       outside: "/elsewhere",
-      spoil: Effect.sync(() => {
-        runs.failure = "bun failed: no such run"
-      }),
+      spoil: (name) =>
+        Effect.sync(() => {
+          broken.set(name, `bun failed: no such run ${name}`)
+        }),
     }
   }),
 )

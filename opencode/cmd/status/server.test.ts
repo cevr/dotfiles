@@ -291,9 +291,10 @@ describe("the live adapters", () => {
         expect(fromRepo.errors).toEqual([])
         expect(byName((yield* (yield* start(options, world(), live, tree)).status).runs)).toEqual(expected)
 
+        // One run the script fails on is an error of its own; the other run still shows.
         writeFileSync(join(repo, "tmp/orchestrate/fresh/broken"), "")
         const broken = yield* (yield* start(options, world(), live, repo)).status
-        expect(broken.runs).toEqual([])
+        expect(byName(broken.runs)).toEqual(expected.filter((run) => run.name === "port"))
         expect(broken.errors).toEqual([`Runs: ${process.execPath} failed: cannot read ${join(repo, "tmp/orchestrate/fresh")}`])
       }),
     ))

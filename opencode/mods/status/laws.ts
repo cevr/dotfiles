@@ -63,14 +63,14 @@ export const callLogLaws = (name: string, make: Effect.Effect<CallLogProbe, neve
 
 /**
  * The runs under test: their Layer, a repository directory holding the runs
- * `make` was given, a directory in no repository, and a way to make the
- * repository's runs unreadable.
+ * `make` was given, a directory in no repository, and a way to make one of
+ * those runs unreadable, by its name.
  */
 export interface RunTablesProbe {
   readonly layer: Layer.Layer<RunTables>
   readonly repository: string
   readonly outside: string
-  readonly spoil: Effect.Effect<void>
+  readonly spoil: (name: string) => Effect.Effect<void>
 }
 
 const tables: ReadonlyArray<RunTable> = [
@@ -87,7 +87,7 @@ export const runTablesLaws = (name: string, make: (runs: ReadonlyArray<RunTable>
       scenario(
         Effect.gen(function* () {
           const probe = yield* make(tables)
-          const runs = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
+          const { runs } = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
           expect(byName(runs).map(({ name, table }) => ({ name, table }))).toEqual([...tables])
         }),
       ))
@@ -97,19 +97,19 @@ export const runTablesLaws = (name: string, make: (runs: ReadonlyArray<RunTable>
         Effect.gen(function* () {
           const probe = yield* make([])
           const list = (directory: string) => RunTables.use((runs) => runs.list(directory)).pipe(Effect.provide(probe.layer))
-          expect(yield* list(probe.repository)).toEqual([])
-          expect(yield* list(probe.outside)).toEqual([])
+          expect(yield* list(probe.repository)).toEqual({ runs: [], unreadable: [] })
+          expect(yield* list(probe.outside)).toEqual({ runs: [], unreadable: [] })
         }),
       ))
 
-    test("runs that cannot be read fail with RunsUnreadable and say why", () =>
+    test("a run that cannot be read is left out with a RunsUnreadable that says why; the other runs still list", () =>
       scenario(
         Effect.gen(function* () {
           const probe = yield* make(tables)
-          yield* probe.spoil
-          const failure = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer), Effect.flip)
-          expect(failure._tag).toBe("RunsUnreadable")
-          expect(failure.message).not.toBe("")
+          yield* probe.spoil("fresh")
+          const listed = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
+          expect(listed.runs.map(({ name, table }) => ({ name, table }))).toEqual(tables.filter((run) => run.name !== "fresh"))
+          expect(listed.unreadable.map((each) => [each._tag, each.message.includes("fresh")])).toEqual([["RunsUnreadable", true]])
         }),
       ))
   })
