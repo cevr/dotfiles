@@ -53,6 +53,9 @@ export interface FeedRun {
 /** Whether two tallies say the same. */
 const sameTally = (one: Tally, other: Tally): boolean => one.msg === other.msg && one.state === other.state && one.progress === other.progress
 
+/** A surface's block while it is fetched. */
+const LOADING = Block.Markdown({ text: "_…_" })
+
 /** How often the pane looks whether the spool moved on and its size changed. */
 const LOOK_EVERY = "250 millis"
 
@@ -131,7 +134,7 @@ export const feedPane = Effect.fn("Feed.pane")(
         )
         yield* Effect.forkIn(fetch, scope)
       }
-      return surfaces.map(() => Block.Markdown({ text: "_…_" }))
+      return surfaces.map(() => LOADING)
     })
 
     const draw = Effect.gen(function* () {
@@ -144,8 +147,9 @@ export const feedPane = Effect.fn("Feed.pane")(
       const partial: Frame = { state, title: now.title, tally: now.tally, board, view: [], now: yield* Clock.currentTimeMillis, cell: now.cell }
       const layout = feedLayout(partial, now.size)
       now.layout = layout
+      // A board still loading has no height yet: sized from its placeholder, it would clamp a kept scroll to the top.
       const hidden = boardHiddenOf(partial, now.size)
-      if (hidden !== state.boardHidden) yield* offer(Event.BoardSized({ hidden }))
+      if (hidden !== state.boardHidden && !board.includes(LOADING)) yield* offer(Event.BoardSized({ hidden }))
       const view = yield* Option.match(shownOf(state), {
         onNone: () => Effect.succeed<ReadonlyArray<Block>>([]),
         onSome: (shown) => blocksFor("view", shown.post, shown.version, shown.surfaces, { cols: layout.view.cols, rows: Math.max(1, layout.view.rows - 1) }),
