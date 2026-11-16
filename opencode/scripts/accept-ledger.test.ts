@@ -611,4 +611,23 @@ describe("the acceptance ledger against its model", () => {
       ].map(Accept.declaredSkips),
     ).toEqual([1, 2, 0, 0, 0, 0])
   })
+
+  test("a file off until a variable is set is owed `off until enabled` by every run while it is unset, and runs once it is set", () => {
+    const off = "// accept: deep (8.2 s alone on a quiet host: why)\n// accept: off until WORK_BIN is set (work is not on PATH yet)\n"
+    expect([Accept.offUntil(off, {}), Accept.offUntil(off, { WORK_BIN: "" }), Accept.offUntil(off, { WORK_BIN: "/bin/work" })]).toEqual([Option.some("WORK_BIN"), Option.some("WORK_BIN"), Option.none()])
+    expect(["// accept: off until WORK_BIN is set\n", "// accept: off until work_bin is set (why)\n", "x\n"].map((text) => Accept.offUntil(text, {}))).toEqual([Option.none(), Option.none(), Option.none()])
+    const candidates: ReadonlyArray<Accept.Candidate> = [
+      { file: "tests/work.test.ts", tier: "deep", key: "k1", off: "WORK_BIN" },
+      { file: "tests/queue.test.ts", tier: "deep", key: "k2" },
+    ]
+    for (const mode of ["land", "owed", "all"] as const) {
+      const selection = Accept.select(mode, candidates, Accept.emptyLedger, 0)
+      expect(selection.settled.filter((outcome) => outcome.file === "tests/work.test.ts")).toEqual([Accept.owe("tests/work.test.ts", "off", "until WORK_BIN is set")])
+      expect(selection.run).not.toContain("tests/work.test.ts")
+    }
+    const lines = Accept.closing("owed", Accept.select("owed", candidates, Accept.emptyLedger, 0).settled, 1)
+    expect(lines).toContain("  owed: tests/work.test.ts (off until enabled: until WORK_BIN is set)")
+    expect(lines.at(-1)).toContain("1 off until enabled")
+    expect(Accept.select("owed", [{ file: "tests/work.test.ts", tier: "deep", key: "k1" }], Accept.emptyLedger, 0).run).toEqual(["tests/work.test.ts"])
+  })
 })
