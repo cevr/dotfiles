@@ -6,6 +6,7 @@
 // - for a changed scripts/<name>.ts its own scripts/<name>.test.ts, and a changed scripts/ test itself;
 // - scripts/accept.test.ts and scripts/accept-parity.test.ts when the acceptance tree changes (tests/, its parity
 //   baselines among them), the accept scripts change, or a simulated suite a parity manifest counts changes.
+import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
 
 /** A leg the merge check runs: its name, its command (from opencode/) and what its summary notes. */
@@ -49,10 +50,13 @@ export interface ScriptsTests {
 /** The tests a changed path selects: itself when it is a scripts/ test; for a script, its own test and every scripts/ test that imports it. */
 const testsOf = (path: string, scripts: ScriptsTests): ReadonlyArray<string> => {
   if (TEST.test(path)) return [path]
-  const match = SCRIPT.exec(path)
-  if (match === null) return []
-  const name = String(match[1])
-  return [`scripts/${name}.test.ts`, ...scripts.files.filter((file) => scripts.read(file).includes(`"./${name}.ts"`))]
+  return Option.match(Option.fromNullishOr(SCRIPT.exec(path)), {
+    onNone: () => [],
+    onSome: (match) => {
+      const name = String(match[1])
+      return [`scripts/${name}.test.ts`, ...scripts.files.filter((file) => scripts.read(file).includes(`"./${name}.ts"`))]
+    },
+  })
 }
 
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */

@@ -114,7 +114,7 @@ export const DEEP_MARKER = /^\/\/ accept: deep \(/m
 export const OFF_MARKER = /^\/\/ accept: off until ([A-Z_][A-Z0-9_]*) is set \((.+)\)$/m
 
 /** The variable a file waits for, when it says `// accept: off until <VAR> is set (…)` and `env` leaves it empty. */
-export const offUntil = (text: string, env: Readonly<Record<string, string | undefined>>): Option.Option<string> =>
+export const offUntil = (text: string, env: Readonly<Partial<Record<string, string>>>): Option.Option<string> =>
   Option.filter(
     Option.map(Option.fromNullishOr(OFF_MARKER.exec(text)), (match) => String(match[1])),
     (variable) => Option.isNone(Option.filter(Option.fromNullishOr(env[variable]), (value) => value !== "")),
@@ -167,7 +167,8 @@ export const select = (mode: Mode, candidates: ReadonlyArray<Candidate>, ledger:
   const settled: Array<Outcome> = []
   const run: Array<string> = []
   for (const candidate of candidates) {
-    if (candidate.off !== undefined) settled.push(owe(candidate.file, "off", `until ${candidate.off} is set`))
+    const off = Option.fromUndefinedOr(candidate.off)
+    if (Option.isSome(off)) settled.push(owe(candidate.file, "off", `until ${off.value} is set`))
     else if (mode !== "all" && !isDue(ledger, candidate.file, candidate.key, now)) settled.push({ file: candidate.file, status: "before" })
     else if (mode === "land" && candidate.tier === "deep") settled.push(owe(candidate.file, "deep"))
     else if (named.length > 0 && !named.includes(candidate.file)) settled.push(owe(candidate.file, "unnamed"))

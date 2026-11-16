@@ -41,7 +41,7 @@ import path from "node:path"
 import { $ } from "bun"
 import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
-import { parseNameStatus } from "./docs-guard.ts"
+import { type Change, parseNameStatus } from "./docs-guard.ts"
 import { mergeLegs } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
@@ -171,8 +171,11 @@ const legEnv = () => {
  * since `base` (every project's typecheck, oxlint and the Effect debt ratchet over the changed files, and the
  * scripts/ tests and docs guard a change can break), at once.
  */
-const mergeCheck = async (base: string) => {
-  const legs = mergeLegs(base, await changesSince(base), {
+const mergeCheck = (base: string) => changesSince(base).then((changes) => checkLegs(base, changes))
+
+/** The merge check over `changes` since `base`. */
+const checkLegs = (base: string, changes: ReadonlyArray<Change>) => {
+  const legs = mergeLegs(base, changes, {
     bun: process.execPath,
     oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
     typecheck: checkCommand(),
