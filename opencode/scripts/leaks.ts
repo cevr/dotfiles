@@ -86,20 +86,22 @@ export const watch = (root: number, everyMs = 1000, read: () => ReadonlyArray<Pr
   }
 }
 
+/** Signal each of `targets` still the process `survivors` found (the same pid, start time and arguments). */
+export const signal = (targets: ReadonlyArray<Proc>, name: NodeJS.Signals, read: () => ReadonlyArray<Proc> = table): void => {
+  for (const proc of survivors(targets, read()))
+    try {
+      process.kill(proc.pid, name)
+    } catch {
+      // Gone in between.
+    }
+}
+
 /** Stop `procs` (each still the process `survivors` found): SIGTERM, then SIGKILL after `graceMs` for any left. */
 export const stop = async (procs: ReadonlyArray<Proc>, graceMs = 3000, read: () => ReadonlyArray<Proc> = table): Promise<void> => {
-  const signal = (targets: ReadonlyArray<Proc>, name: NodeJS.Signals) => {
-    for (const proc of survivors(targets, read()))
-      try {
-        process.kill(proc.pid, name)
-      } catch {
-        // Gone in between.
-      }
-  }
-  signal(procs, "SIGTERM")
+  signal(procs, "SIGTERM", read)
   const deadline = Date.now() + graceMs
   while (survivors(procs, read()).length > 0 && Date.now() < deadline) await Bun.sleep(100)
-  signal(procs, "SIGKILL")
+  signal(procs, "SIGKILL", read)
 }
 
 /** One line per process, for a report. */

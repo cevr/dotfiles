@@ -7,6 +7,8 @@
 // `/api/info` answers 503 too (500 once the boot failed). A test that calls
 // the service on the file alone races the boot.
 import { readFileSync } from "node:fs"
+// The background service a test starts is stopped once the test process is gone, however it went (testbeds/reaper/start.ts).
+import "../testbeds/reaper/start.ts"
 
 export interface Service {
   readonly url: string

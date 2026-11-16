@@ -25,6 +25,8 @@
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
 import { type ChildTemp, childTemp, parentEnv } from "./scratch.ts"
+// What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
+import "../testbeds/reaper/start.ts"
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
