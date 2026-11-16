@@ -8,7 +8,10 @@
 // server started in. This plugin hands them the same environment the host
 // sends, when each appears and each time it starts to run again
 // (`@dotfiles/opencode-rex/opencode/family`), so `rex-show` from a subagent
-// draws beside the TUI that shows its family. Like the host, it does so only
+// draws beside the TUI that shows its family. A hand a server restart resets
+// is tried again on the real timers until the server answers, and what still
+// fails is one warning for the burst (`@dotfiles/opencode-rex/opencode/hand`),
+// not one toast per subagent. Like the host, it does so only
 // when the TUI runs on the server's machine: attached to another
 // (`--server`), its pane means nothing there.
 //
@@ -24,7 +27,8 @@
 import { followAsked, keptView } from "@dotfiles/opencode-herdr/opencode/asked"
 import { membersOf } from "@dotfiles/opencode-herdr/opencode/view"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
-import { followFamily } from "@dotfiles/opencode-rex/opencode/family"
+import { handFamily } from "@dotfiles/opencode-rex/opencode/family"
+import { type Clock, fromClient } from "@dotfiles/opencode-rex/opencode/hand"
 import { reportState, seenOf } from "@dotfiles/opencode-rex/opencode/state"
 import { sessionVariables } from "@dotfiles/opencode-rex/pane"
 import { inRex } from "@dotfiles/opencode-rex/state"
@@ -42,16 +46,26 @@ const attached = (argv: ReadonlyArray<string>) => argv.some((arg) => arg === "at
  */
 const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const
 
-/** Hands the TUI's environment to each subagent of the family on screen. */
-const handFamily = (context: Plugin.Context) => {
+/** The real timers the hand-off retries on. */
+const realClock: Clock = {
+  now: () => Date.now(),
+  after: (ms, run) => {
+    const timer = setTimeout(run, ms)
+    return () => clearTimeout(timer)
+  },
+}
+
+/** Hands the TUI's environment to each subagent of the family on screen; returns the stop of its retries. */
+const handTheFamily = (context: Plugin.Context) => {
   const variables = sessionVariables(process.env)
-  followFamily(
+  return handFamily(
     context.data,
     () => context.ui.router.current(),
-    (sessionID) =>
-      void context.client.session
-        .environment({ sessionID, variables })
-        .catch((error: unknown) => context.ui.toast.show({ title: "Rex pane not handed to a subagent", message: String(error), variant: "warning" })),
+    {
+      environment: (sessionID) => fromClient(() => context.client.session.environment({ sessionID, variables })),
+      warn: (title, message) => context.ui.toast.show({ title, message, variant: "warning" }),
+    },
+    realClock,
   )
 }
 
@@ -93,9 +107,10 @@ export default Plugin.define({
     const state = inRex(process.env) && "programStatus" in context.ui
     if (!family && !state) return
     return createRoot((dispose) => {
-      if (family) handFamily(context)
+      const stopHands = Option.map(Option.liftPredicate(context, () => family), handTheFamily)
       const stopState = Option.map(Option.liftPredicate(context, () => state), showState)
       return () => {
+        Option.map(stopHands, (stop) => stop())
         Option.map(stopState, (stop) => stop())
         dispose()
       }
