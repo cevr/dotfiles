@@ -24,6 +24,7 @@ import { DRIFT_MARK } from "@dotfiles/opencode-orchestrate/skill-drift"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
+import { NOTHING_HELD } from "@dotfiles/opencode-orchestrate/ledger"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
@@ -191,7 +192,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       FileUnitLogs.layer(LOG_SCRIPT),
       StepLogTest.layer(world.steps ?? {}),
       OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
-      Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
+      Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS), held: () => Effect.succeed(NOTHING_HELD) }),
       OpenCodeSteer.layer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void nudges.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       OpenCodeSteer.tellLayer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void notes.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       SkillTest.skill(world.skill ?? { history: [] }),
@@ -1892,7 +1893,7 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
     })
   const verifier = (batch: string) => ({ agent: "verifier", description: `verifier ${batch} r1`, prompt: "v", background: true })
 
-  test("a root that runs units is told its status and the re-read once per compaction; a subagent and a root that runs none are not", () =>
+  test("a root that runs units is told its status, its ledger and the re-read once per compaction; a subagent and a root that runs none are not", () =>
     scenario(
       Effect.gen(function* () {
         const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "alpha", state: "ready" }, { unit: "beta", state: "implement" }] }]
@@ -1915,6 +1916,11 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
             "- alpha: ready · no lane",
             "- beta: implement · no lane",
             "next: wait for the hand-backs of beta (implementing).",
+            "",
+            "Your ledger, as it stood at the compaction:",
+            "Queue: nothing open.",
+            "Subagents: none running, latched or waiting on you.",
+            "Wakes, monitors and jobs: none.",
             "",
             "Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.",
           ].join("\n"),

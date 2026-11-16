@@ -927,8 +927,13 @@ What stays, none of it kept between calls:
 - **The heavy footer** (`mods/orchestrate/heavy.ts`): every implementor and
   verifier prompt ends with its heavy-check thread share,
   `max(4, floor(cores / (working + 2)))`, and says the batch runs the full gate.
-- **The compaction note**: a root that compacts while it runs units gets one
-  message (no new turn): its `status` answer and the re-read.
+- **The compaction note**: a root that compacts after it started any unit's
+  step gets one message (no new turn): its `status` answer (or, when the run
+  tables cannot be read, the error and the units it started), its ledger
+  (`ledger.ts`: its queue items not done, its subagents now, each idle one
+  whose hand-back no later call answered flagged `not woken since`, and its
+  wakes, monitors and running jobs) and the re-read. A skipped note is logged
+  at INFO with why.
 - **The fleet target**: a verifier's `accepted` hand-back publishes the
   verified target once per verdict (`fleet.ts`, the `Verdicts` handler). A
   server restart forgets which verdicts it published, so it may read the same

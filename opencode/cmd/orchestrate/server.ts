@@ -99,8 +99,10 @@
  *   show in another state than `ready` lands with a warning. What still
  *   refuses: a subagent's lane, land or verify (merge and push are the
  *   root's), a malformed input, and what the rift plugin refuses. After a
- *   root's compaction it gets one message (no new turn): its status and the
- *   re-read. An older config's `ledger`, `cadence`, `guard` and `drops`, and a
+ *   root's compaction it gets one message (no new turn): its status (or, when
+ *   the run tables cannot be read, why and the units it started), its ledger
+ *   (mods/orchestrate/ledger.ts: its queue not done, its subagents now with any
+ *   unanswered hand-back, its wakes and jobs) and the re-read. An older config's `ledger`, `cadence`, `guard` and `drops`, and a
  *   call's `departs`, `(departs: …)` and `(folds: …)`, still decode and mean
  *   nothing.
  * - Fleet: a verifier's `accepted` hand-back records the verified target its
@@ -143,7 +145,9 @@ import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-file
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
 import { Draft, IDLE, MARK, type Run as RunTable } from "@dotfiles/opencode-orchestrate/idle"
+import * as Ledger from "@dotfiles/opencode-orchestrate/ledger"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
+import { handBackOf } from "@dotfiles/opencode-orchestrate/unit-log"
 import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
@@ -168,7 +172,7 @@ import {
   type Models,
   type PoolPace,
   Remind,
-  type RootHolds,
+  RootHolds,
   type RunRecords,
   RunFiles,
   type Fleet,
@@ -268,8 +272,14 @@ type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type HostSession = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 /** What the guard reads of the host's session record. */
 export type StepHostSession = Pick<HostSession, "parentID" | "agent" | "outcome" | "metadata"> & {
-  readonly time: Pick<HostSession["time"], "busy">
+  readonly time: Partial<Pick<HostSession["time"], "busy" | "idle">>
   readonly location: { readonly directory: string }
+}
+
+/** When the session went idle, while no turn runs: its `time.idle` at or after its `time.busy`. */
+const idleSinceOf = (time: StepHostSession["time"]): Option.Option<number> => {
+  const busy = Option.fromUndefinedOr(msOf(time.busy))
+  return Option.filter(Option.fromUndefinedOr(msOf(time.idle)), (idle) => Option.match(busy, { onNone: () => true, onSome: (at) => at <= idle }))
 }
 
 /** A step's session as the guard reads it (SessionsLive): a stopped one is a session whose last turn was interrupted. */
@@ -280,6 +290,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
   stopped: session.outcome === "interrupted",
   ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
   directory: session.location.directory,
+  ...Option.match(idleSinceOf(session.time), { onNone: () => ({}), onSome: (idleSince) => ({ idleSince }) }),
 })
 
 /** The outside systems the filesystem and processes provide: the files the plugin keeps, git, the scripts it runs. */
@@ -363,6 +374,7 @@ export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background
       pending: (input) => ctx.rpc(WAKES).pending({ sessionIDs: [...input.sessionIDs] }),
       open: (input) => ctx.rpc(QUESTIONS).open({ sessionIDs: [...input.sessionIDs] }),
       queue: (input) => ctx.rpc(QUEUE).get(input),
+      jobs: (input) => ctx.rpc(WAKES).jobs(input),
     }),
     SteerLive.layer(synthetic(ctx)),
     SteerLive.tellLayer(synthetic(ctx)),
@@ -696,20 +708,55 @@ export const make = (
           return Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)
         })
 
-      // A root that compacted is told its status and the re-read, once per compaction, by this location's copy only,
-      // when it runs units: it started a step of a unit the run tables hold (the call log's steps, as the idle steer
-      // reads them). A subagent, and a root that runs none, are told nothing.
+      // A root that compacted is told its status, its ledger and the re-read, once per compaction, by this location's
+      // copy only, when it runs units: it started a step of a unit (the call log's steps, as the idle steer reads
+      // them), whatever the run tables say. Tables that cannot be read give way to the error and the units it started
+      // (Ledger.unreadTables), never to silence. A subagent, and a root that started no step, are told nothing.
       const told = new Set<string>()
       const stepLog = Context.get(services, StepLog)
+      const holds = Context.get(services, RootHolds)
+      /** A subagent of the root as the ledger shows it, read from its session; none when it is neither running, latched nor waiting on the root. */
+      const subagentNow = (child: Ledger.Child, units: Ledger.Calls["units"], open: (unit: string) => boolean): Effect.Effect<Option.Option<Ledger.SubagentNow>> =>
+        Effect.gen(function* () {
+          const opensAt = Option.fromUndefinedOr(yield* sessions.latchOf(child.child))
+          if (Option.isSome(opensAt)) return Option.some(Ledger.SubagentNow.cases.Latched.make({ child, opensAt: opensAt.value }))
+          const idleSince = Option.filter(yield* sessions.idleSinceOf(child.child), () => ownBackground(child.child) === 0)
+          if (Option.isNone(idleSince)) {
+            const started = yield* sessions.startedOf(child.child)
+            return Option.map(Option.liftPredicate(child, () => started), (running) => Ledger.SubagentNow.cases.Running.make({ child: running }))
+          }
+          const said = Option.getOrElse(Option.fromUndefinedOr(yield* sessions.lastWordsOf(child.child)), () => "")
+          const handBack = Option.fromUndefinedOr(handBackOf(child.agent, said))
+          const first = Option.getOrElse(Arr.findFirst(said.split("\n"), (line) => line.trim() !== ""), () => "").trim()
+          return Option.map(
+            Option.liftPredicate(child, () => Ledger.unanswered(child, idleSince.value, handBack, units, open)),
+            (waiting) => Ledger.SubagentNow.cases.Unanswered.make({ child: waiting, idleSince: idleSince.value, said: first }),
+          )
+        })
+      const ledgerOf = (sessionID: string, tables: ReadonlyArray<RunTable>, unread: boolean) =>
+        Effect.gen(function* () {
+          const calls = yield* stepLog.calls(sessionID)
+          const open = (unit: string) => unread || tables.some((run) => run.units.some((each) => each.unit === unit && !Ledger.closed(each.state)))
+          const now = yield* Effect.forEach(calls.children.slice(0, Ledger.CHILDREN_READ), (child) => subagentNow(child, calls.units, open), { concurrency: 4 })
+          const held = yield* holds.held(sessionID)
+          return Ledger.ledgerText(held, now.flatMap(Option.toArray))
+        })
       const tellCompacted = Effect.fn("Orchestrate.compacted")(function* (sessionID: string) {
-        const quiet = (why: string) => Effect.logDebug(`orchestrate: no compaction note: ${why}`).pipe(Effect.annotateLogs({ sessionID }))
-        if (Predicate.isNotUndefined(yield* sessions.parentOf(sessionID))) return yield* quiet("a subagent")
+        const skipped = (why: string) => Effect.logInfo(`orchestrate: no compaction note: ${why}`).pipe(Effect.annotateLogs({ sessionID }))
+        if (Predicate.isNotUndefined(yield* sessions.parentOf(sessionID))) return yield* skipped("a subagent")
         const started = yield* stepLog.units(sessionID)
-        const tables = yield* runs.list
-        if (!tables.some((run) => run.units.some((unit) => started.includes(unit.unit)))) return yield* quiet("it runs no unit")
-        const listed = yield* lanesNow(sessionID)
-        const text = Tools.statusAnswer(tables, listed.rifts, listed.workrift)
-        yield* remind.remind(sessionID, { text: Tools.compactedNote(text), description: Tools.COMPACTED_DESCRIPTION }).pipe(
+        if (started.length === 0) return yield* skipped("it started no unit's step")
+        const read = yield* runs.read
+        const status = yield* Option.match(read.error, {
+          onSome: (error) =>
+            Effect.logWarning("orchestrate: the run tables did not read; the compaction note gives the error and the root's units").pipe(
+              Effect.annotateLogs({ sessionID, error }),
+              Effect.as(Ledger.unreadTables(error, started)),
+            ),
+          onNone: () => lanesNow(sessionID).pipe(Effect.map((listed) => Tools.statusAnswer(read.runs, listed.rifts, listed.workrift))),
+        })
+        const ledger = yield* ledgerOf(sessionID, read.runs, Option.isSome(read.error))
+        yield* remind.remind(sessionID, { text: Tools.compactedNote(`${status}\n\n${ledger}`), description: Tools.COMPACTED_DESCRIPTION }).pipe(
           Effect.andThen(Effect.logInfo("orchestrate: told a compacted root its status").pipe(Effect.annotateLogs({ sessionID }))),
           Effect.catch((refused) => Effect.logWarning("orchestrate: the compaction note did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: refused.message }))),
         )
