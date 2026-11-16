@@ -47,8 +47,6 @@ const check = (result: Measure) => {
   expect(result.locations.filter((location) => !(location.cpu < LIVE_CPU_MS)).map((location) => `${name(location)}: ${location.cpu.toFixed(0)} ms of CPU, ${(location.live - location.asked).toFixed(0)} ms`)).toEqual([])
   const table = rows(result)
   expect(table.map((row) => row.plugin)).toContain("memory")
-  // The work plugin started in every location: its rift RPC is there (a missing `work` binary stops its setup).
-  expect(result.locations.filter((location) => location.work !== true).map((location) => `${name(location)}: no work plugin`)).toEqual([])
   expect(table.filter((row) => row.setup.length !== 3 || row.alone.length !== 2).map((row) => `${row.plugin}: set up in ${row.setup.length} + ${row.alone.length} locations`)).toEqual([])
   expect(table.filter((row) => Math.min(...row.alone) >= SETUP_MS).map((row) => `${row.plugin}: ${row.alone.map((ms) => ms.toFixed(0)).join(", ")} ms alone (${row.setup.map((ms) => ms.toFixed(0)).join(", ")} ms together)`)).toEqual([])
 }

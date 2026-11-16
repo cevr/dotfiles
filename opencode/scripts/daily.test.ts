@@ -1,6 +1,6 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Array as Arr, Effect, Match, Schema } from "effect"
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
@@ -17,6 +17,9 @@ const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
 const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
+
+/** A written config's plugin entries: a path, or a path with options. */
+const decodeEntries = Schema.decodeUnknownSync(Schema.Struct({ plugins: Schema.Array(Schema.Union([Schema.String, Schema.Struct({ package: Schema.String })])) }))
 
 /** A config file's plugin list, as JSON. */
 const PluginsJson = Schema.fromJsonString(Schema.Struct({ plugins: Schema.Array(Schema.Unknown) }))
@@ -235,7 +238,7 @@ describe("the workspace plugin: work replaces rift", () => {
   }
   const UNRELATED: ReadonlyArray<PluginEntry> = ["/elsewhere/plugin", { package: "/elsewhere/configured", options: { keep: true } }, "/home/x/.cache/plugin/cmd/rift", "-opencode.other"]
   /** An entry of ours for `dir`, bare or with options, as an earlier install or a hand edit wrote it. */
-  const entryOf = (dir: string, next: () => number): PluginEntry => (next() < 0.5 ? dir : { package: dir, options: { work: "/old/work", n: Math.floor(next() * 9) } })
+  const entryOf = (dir: string, next: () => number): PluginEntry => Arr.unsafeGet([dir, { package: dir, options: { work: "/old/work", n: Math.floor(next() * 9) } }], Math.floor(next() * 2))
   /** A prior server config: `…/cmd/rift` and `…/cmd/work` each absent, once or twice, ours and unrelated entries, any order. */
   const priorPlugins = (seed: number): Array<PluginEntry> => {
     const next = random(seed)
@@ -256,10 +259,13 @@ describe("the workspace plugin: work replaces rift", () => {
   /** daily's server list around the workspace plugin, built with `name` as daily builds it (`pluginDir`). */
   const ours = (name: string): ReadonlyArray<PluginEntry> => [pluginDir("guard"), pluginDir(name), pluginDir("tool-names")]
   const owned = ownedDirs("/home/.local/share/opencode-prime")
-  const count = (plugins: unknown, dir: string) => (plugins as ReadonlyArray<PluginEntry>).filter((entry) => (typeof entry === "string" ? entry : entry.package) === dir).length
+  /** The written config's plugin paths, each entry bare or with options. */
+  const pathsOf = (config: ReturnType<typeof mergeServer>): ReadonlyArray<string> =>
+    decodeEntries(config).plugins.map((entry) => Match.value(entry).pipe(Match.when(Match.string, (path) => path), Match.orElse((configured) => configured.package)))
+  const count = (config: ReturnType<typeof mergeServer>, dir: string) => pathsOf(config).filter((path) => path === dir).length
 
   test("daily's server list names work, not rift", () => {
-    const source = readFileSync(resolve(import.meta.dir, "daily.ts"), "utf8")
+    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
     expect([source.split('pluginDir("work")').length - 1, source.split('pluginDir("rift")').length - 1]).toEqual([1, 0])
     expect(pluginDir("work").endsWith("/opencode/cmd/work")).toBe(true)
   })
@@ -267,16 +273,16 @@ describe("the workspace plugin: work replaces rift", () => {
   test("for any prior config, the install writes cmd/work exactly once, cmd/rift not at all, and every unrelated entry as it was", () => {
     for (let seed = 1; seed <= 300; seed++) {
       const prior = priorPlugins(seed)
-      const merged = mergeServer({ plugins: prior }, ours("work"), {}, owned).plugins
+      const merged = mergeServer({ plugins: prior }, ours("work"), {}, owned)
       const unrelated = prior.filter((entry) => UNRELATED.includes(entry))
-      expect([seed, count(merged, pluginDir("work")), count(merged, pluginDir("rift")), merged]).toEqual([seed, 1, 0, [...ours("work"), ...unrelated]])
+      expect([seed, count(merged, pluginDir("work")), count(merged, pluginDir("rift")), merged.plugins]).toEqual([seed, 1, 0, [...ours("work"), ...unrelated]])
     }
   })
 
   test("the rollback is the same function: built with rift, the install writes cmd/rift once and no cmd/work", () => {
     for (let seed = 1; seed <= 300; seed++) {
       const enabled = mergeServer({ plugins: priorPlugins(seed) }, ours("work"), {}, owned)
-      const rolledBack = mergeServer(enabled, ours("rift"), {}, owned).plugins
+      const rolledBack = mergeServer(enabled, ours("rift"), {}, owned)
       expect([seed, count(rolledBack, pluginDir("rift")), count(rolledBack, pluginDir("work"))]).toEqual([seed, 1, 0])
     }
   })
