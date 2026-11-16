@@ -479,11 +479,17 @@ describe("the scripted model", () => {
  * The environment of the e2e run's gamut commands: its own state file, and this test process as the run's owner, so a
  * runner killed mid-run (afterAll never run) leaves no host or model (testbeds/gamut/owner.ts).
  */
-const e2eEnv = (state: string) => ({ ...process.env, GAMUT_STATE: state, GAMUT_OWNER: String(process.pid) })
+const OWNER = String(process.pid)
+const e2eEnv = (state: string) => ({ ...process.env, GAMUT_STATE: state, GAMUT_OWNER: OWNER })
 
-test("the e2e run is owned by the test process: its gamut commands carry GAMUT_OWNER, this process's pid", () => {
-  expect(e2eEnv("/x/state.json")).toMatchObject({ GAMUT_STATE: "/x/state.json", GAMUT_OWNER: String(process.pid) })
-})
+/** Runs `argv` to its end in the e2e run's environment, its output read. */
+const runSync = (argv: ReadonlyArray<string>, env: ReturnType<typeof e2eEnv>) => {
+  const run = Bun.spawnSync([...argv], { env, stdout: "pipe", stderr: "pipe" })
+  return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() }
+}
+
+/** A JSON file's value. */
+const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"))
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/gamut.test.ts: the end-to-end run skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -494,14 +500,9 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
   beforeAll(() => {
     state = join(scratch("ocg-gamut-e2e-").path, "state.json")
   })
-  const gamut = (...args: string[]) => {
-    const run = Bun.spawnSync(["bun", join(root, "testbeds/gamut/gamut.ts"), ...args], {
-      env: e2eEnv(state),
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() }
-  }
+  const gamut = (...args: string[]) => runSync(["bun", join(root, "testbeds/gamut/gamut.ts"), ...args], e2eEnv(state))
+  /** The GAMUT_OWNER entries of a running process's environment, as `ps` lists it after its command (BSD and procps `e`). */
+  const ownerOf = (pid: number) => runSync(["ps", "eww", "-o", "command=", "-p", `${pid}`], e2eEnv(state)).out.trim().split(" ").filter((word) => word.startsWith("GAMUT_OWNER="))
   const workOf = (out: string) => /^work\s+(\S+)/m.exec(out)?.[1] ?? ""
   let work = ""
 
@@ -519,7 +520,10 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(up.code).toBe(0)
       work = workOf(up.out)
       expect(work).not.toBe("")
-      const config = JSON.parse(readFileSync(join(work, "opencode.json"), "utf8"))
+      // The detached host and sim model run with this process as their owner (batch cw): a runner killed here leaves neither.
+      const started = readJson(state)
+      expect([ownerOf(started.hostPid), ownerOf(started.simPid)]).toEqual([[`GAMUT_OWNER=${OWNER}`], [`GAMUT_OWNER=${OWNER}`]])
+      const config = readJson(join(work, "opencode.json"))
       const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
       for (const dir of ["cmd/orchestrate", "cmd/status", "cmd/pool"]) expect(packages).toContain(join(root, dir))
       expect(config.agents.worker.model).toBe(config.agents.general.model)
