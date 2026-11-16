@@ -33,7 +33,10 @@ export const SERVER_PLUGINS: ReadonlyArray<Entry> = [
   anthropicAuthPlugin,
   { package: pluginDir("pool"), options: { cacheLifeMs: 3_600_000, paced: { openai: "openai" }, fleet: { host: "scratch", peers: [] } } },
   { package: pluginDir("orchestrate"), options: { codex: { pool: true } } },
-  ...["guard", "kernel", "status", "queue", "git", "idle-compact", "mail", "questions", "wake", "skills", "rift", "tool-names", "cache", "memory", "stall"].map(pluginDir),
+  ...["guard", "kernel", "status", "queue", "git", "idle-compact", "mail", "questions", "wake", "skills"].map(pluginDir),
+  // The work plugin needs the `work` binary: `work` on PATH, as daily's entry has it, or WORK_BIN where it is not on PATH yet.
+  process.env.WORK_BIN ? { package: pluginDir("work"), options: { work: process.env.WORK_BIN } } : pluginDir("work"),
+  ...["tool-names", "cache", "memory", "stall"].map(pluginDir),
 ]
 export const nameOf = (entry: Entry): string => (typeof entry === "string" ? entry : entry.package).split("/").at(-1) ?? ""
 
@@ -83,6 +86,12 @@ export interface Location {
   readonly cpu: number
   /** Opened on its own (`Options.alone`), not with the others. */
   readonly alone: boolean
+  /**
+   * Whether the work plugin's rift RPC is there once the location is live: its handler answered `list` (even with
+   * a failure: a scratch directory is no base), never `rpc.unavailable`. The plugin registers it only after its setup
+   * ran `work --json bases`, so a missing binary leaves it out. Undefined without the work plugin or the skills plugin.
+   */
+  readonly work: boolean | undefined
 }
 
 export interface Measure {
@@ -271,12 +280,24 @@ export const measure = async (options: Options): Promise<Measure> => {
     const ready = since()
     const headers = (directory: string) => ({ ...auth, "x-opencode-directory": encodeURIComponent(directory), "content-type": "application/json" })
     const skills = plugins.some((entry) => nameOf(entry) === "skills")
+    const work = plugins.some((entry) => nameOf(entry) === "work")
+    /** Whether the work plugin's rift RPC is there (`Location.work`). */
+    const workAnswer = async (directory: string): Promise<boolean | undefined> => {
+      if (!work) return undefined
+      const response = await fetch(new URL("/api/rpc/dotfiles-opencode.rift/list", service.url), {
+        method: "POST",
+        headers: headers(directory),
+        body: JSON.stringify({ input: { sessionID: "plugin-start", source: directory } }),
+      }).catch(() => undefined)
+      const body = response === undefined ? "" : await response.text()
+      return response !== undefined && !body.includes('"rpc.unavailable"')
+    }
     const open = async (directory: string, alone: boolean): Promise<Location> => {
       const asked = since()
       const cpuAsked = groupCpu(child.pid)
       await (await fetch(new URL("/api/location", service.url), { headers: headers(directory) })).body?.cancel()
       const served = since()
-      if (!skills) return { directory, asked, served, live: Number.NaN, cpu: Number.NaN, alone }
+      if (!skills) return { directory, asked, served, live: Number.NaN, cpu: Number.NaN, alone, work: undefined }
       await until(
         async () => {
           const response = await fetch(new URL("/api/rpc/dotfiles-opencode.skills/catalog", service.url), { method: "POST", headers: headers(directory), body: JSON.stringify({ input: {} }) }).catch(() => undefined)
@@ -286,7 +307,8 @@ export const measure = async (options: Options): Promise<Measure> => {
         () => `the skills RPC in ${directory}`,
       )
       const live = since()
-      return { directory, asked, served, live, cpu: groupCpu(child.pid) - cpuAsked, alone }
+      const cpu = groupCpu(child.pid) - cpuAsked
+      return { directory, asked, served, live, cpu, alone, work: await workAnswer(directory) }
     }
     /** A location answers before the host's own plugins end its setups: the next opens once every `Plugin.activate` span is in. */
     const activated = (count: number) =>
