@@ -53,4 +53,5 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Prime's panel](prime-panel.md): the background-work panel and its tabs.
 - [Escape and waiting prompts](escape.md): Escape, Up and Ctrl+Enter on a busy session, prompts queued behind a turn.
 - [Kernel](kernel.md): the persistent TypeScript kernel, its tool calls, calls in parallel.
+- [Prompt cache](cache.md): a turn's priced miss row and its cause, the compaction's row, the sidebar sum, the keepalive.
 - [Rex panes](rex.md): `rex-show` in a showcase pane beside the caller's, the pane a subagent's shell names.

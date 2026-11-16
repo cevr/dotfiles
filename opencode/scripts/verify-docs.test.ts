@@ -176,7 +176,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
         .map(({ file, text }) => parseFeature(file.slice(FEATURES_DIR.length + 1), text))
       const due = (path: string) => touched(features, [path]).map((feature) => feature.id).toSorted()
       // A change to owned.ts went to main with neither the herdr test nor the TUI tests run (cl-fu, M1).
-      expect(due("tests/owned.ts")).toEqual(["escape", "guard", "kernel", "mail", "orchestrate", "pool", "prime-panel", "queue", "wake-latch"])
+      expect(due("tests/owned.ts")).toEqual(["cache", "escape", "guard", "kernel", "mail", "orchestrate", "pool", "prime-panel", "queue", "wake-latch"])
       expect(due("tests/scratch.ts")).toEqual(due("tests/owned.ts"))
       const real = Option.getOrElse(Option.map(Arr.findFirst(features, (feature) => feature.id === "prime-panel"), (feature) => feature.real), (): ReadonlyArray<string> => [])
       expect(["tests/herdr.test.ts", "tests/tui-cpu.test.ts", "tests/tui-paint.test.ts"].filter((test) => !real.includes(test))).toEqual([])
