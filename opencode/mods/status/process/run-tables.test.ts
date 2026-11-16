@@ -57,7 +57,7 @@ const repositoryOf = (tables: ReadonlyArray<RunTable>) =>
       repository,
       outside,
       dir,
-      spoil: put(tables.map(({ name }) => [join(runs, name, "broken"), ""] as const)),
+      spoil: (name: string) => put([[join(runs, name, "broken"), ""]]),
     }
   })
 
@@ -70,7 +70,7 @@ test("each run names its dir: tmp/orchestrate/<run> at the repository's main che
   scoped(
     Effect.gen(function* () {
         const probe = yield* repositoryOf([{ name: "p5", table: "| Unit | State |\n" }])
-        const runs = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
+        const { runs } = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
         expect(runs.map((run) => run.dir)).toEqual([join(probe.repository, "tmp/orchestrate/p5")])
     }),
   ))
@@ -89,7 +89,7 @@ test("each directory `git config --get-all orchestrate.dir` names is one run mor
         yield* put([[join(flat, "table.md"), "| Unit | State |\n| b | implement |\n"]])
         for (const named of [flat, join(probe.dir, "gone")]) git(probe.repository, ["config", "--add", "orchestrate.dir", named])
         const tables = Context.get(yield* Layer.build(probe.layer), RunTables)
-        const runs = yield* tables.list(probe.repository)
+        const { runs } = yield* tables.list(probe.repository)
         expect(runs.map((run) => ({ name: run.name, dir: run.dir, units: unitsOf(run.table).map((unit) => unit.unit) }))).toEqual([
           { name: "p5", dir: join(probe.repository, "tmp/orchestrate/p5"), units: ["a"] },
           { name: "flat", dir: flat, units: ["b"] },
@@ -129,7 +129,7 @@ test("an old run dir (no units, no plan) is read by the real status script throu
       spawnSync(["chmod", "+x", host])
       const tables = Context.get(yield* Layer.build(RunScript.layer(REAL_STATUS, host)), RunTables)
       const polls = yield* Effect.forEach(Arr.range(1, 5), () => tables.list(repository))
-      expect(polls.map((runs) => runs.map((run) => ({ name: run.name, units: unitsOf(run.table) })))).toEqual(Arr.replicate([{ name: "ftbbrand", units: [] }], 5))
+      expect(polls.map(({ runs }) => runs.map((run) => ({ name: run.name, units: unitsOf(run.table) })))).toEqual(Arr.replicate([{ name: "ftbbrand", units: [] }], 5))
       expect(yield* Effect.promise(() => file(log).exists())).toBe(false)
     }),
   ))

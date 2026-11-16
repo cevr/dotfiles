@@ -49,7 +49,7 @@ import * as MemoryQueue from "@dotfiles/opencode-queue/memory/store"
 import { make as makeStatus } from "@dotfiles/opencode-cmd-status/server"
 import * as StatusCallLog from "@dotfiles/opencode-status/memory/call-log"
 import { RunTables, RunsUnreadable } from "@dotfiles/opencode-status/service"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Result, Schema } from "effect"
 import { live as riftLive } from "../cmd/rift/server.ts"
 import { make as makeWork } from "../cmd/work/server.ts"
 import * as MemoryDebts from "../mods/work/memory/debts.ts"
@@ -226,7 +226,7 @@ export const STATUS_TIMEOUT_MS = 20_000
  * The runs of a repository through the orchestrate skill's status script, in the world's shell, as the process
  * adapter (`@dotfiles/opencode-status/process/run-tables`) reads them on disk: the run folders `ls -1
  * <directory>/tmp/orchestrate` lists (none when it fails: no runs, or no repository), then each one's table as `bun
- * <script> <run dir>` prints it; a script that fails or runs past its timeout makes the runs unreadable. The world has
+ * <script> <run dir>` prints it; a run whose script fails or runs past its timeout is left out, unreadable. The world has
  * no git, so a directory is its repository's top. Both adapters keep the RunTables laws (mods/status/laws.ts).
  */
 export const runTables = (world: World, script: string) =>
@@ -235,20 +235,22 @@ export const runTables = (world: World, script: string) =>
       Effect.gen(function* () {
         const root = `${directory}/tmp/orchestrate`
         const listed = yield* shellOf(world, `ls -1 ${root}`)
-        if (listed.exitCode !== 0) return []
+        if (listed.exitCode !== 0) return { runs: [], unreadable: [] }
         const names = listed.stdout
           .split("\n")
           .map((name) => name.trim())
           .filter((name) => name !== "")
-        return yield* Effect.forEach(names, (name) =>
+        const read = yield* Effect.forEach(names, (name) =>
           Effect.gen(function* () {
             const dir = `${root}/${name}`
             const printed = yield* shellOf(world, `bun ${script} ${dir}`)
             if (printed.ms > STATUS_TIMEOUT_MS) return yield* new RunsUnreadable({ message: `${script} timed out after ${STATUS_TIMEOUT_MS} ms` })
             if (printed.exitCode !== 0) return yield* new RunsUnreadable({ message: `${script} failed: ${printed.stdout.trim() || `exit ${printed.exitCode}`}` })
             return { name, dir, table: printed.stdout }
-          }),
+          }).pipe(Effect.result),
         )
+        // One run the script fails on is left out and says why; the others still list.
+        return { runs: read.flatMap((each) => Option.toArray(Result.getSuccess(each))), unreadable: read.flatMap((each) => Option.toArray(Result.getFailure(each))) }
       }),
   }))
 

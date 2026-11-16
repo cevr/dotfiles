@@ -18,7 +18,7 @@ import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
 import * as MemorySpool from "@dotfiles/opencode-rex/memory/spool"
 import type { Post, Shot } from "@dotfiles/opencode-rex/service"
 import { Feed, type Spooled, Url } from "@dotfiles/opencode-rex/spool"
-import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
+import { Array as Arr, ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
 import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
@@ -247,14 +247,26 @@ effectTest(
     yield* frameWith(frames, "comment sent")
     expect((yield* Ref.get(world)).comments).toEqual([{ post: "p1", text: "looks good" }])
 
-    // A page shown in its place ends the feed pane; q back from it, the feed goes on where it was: notes at v2.
+    // A board taller than its region, focused (B) and scrolled down five lines: its title scrolled out.
+    yield* holding([board(3, Arr.makeBy(30, (n) => `later step ${n + 1}`).join("\n- ")), notes, sketch, flow, later])
+    yield* frameWith(frames, "later step 1")
+    yield* Queue.offer(keys, "B")
+    yield* frameWith(frames, "board: j/k scroll")
+    yield* Queue.offer(keys, "jjjjj")
+    // Each j draws a frame; the fifth starts at step 4 (the title, its gap and steps 1 to 3 above it), 16 lines below.
+    const hiddenBelow = "… 16 more lines"
+    const scrolled = yield* frameWith(frames, "later step 4", hiddenBelow)
+    expect([scrolled.includes("Shipping the feed"), /later step 3\b/.test(scrolled)]).toEqual([false, false])
+
+    // A page shown in its place ends the feed pane; q back from it, the feed goes on where it was: notes at v2, the board scrolled as it was.
     const page = png(1280, 900, 4)
     const feed = Feed.make({ base: BASE, session: "s1", name: "s1", every: 0 })
     yield* Ref.update(pages, (now) => new Map([...now, ["http://localhost:3000/", page]]))
     yield* Ref.set(viewed, new Map([["session:a", { seq: 2, feed, shown: Url.make({ url: "http://localhost:3000/", name: "localhost:3000", every: 60, width: 1280 }) }]]))
     yield* frameWith(frames, "showcase · localhost:3000", Base64.encode(page))
     yield* Queue.offer(keys, "q")
-    yield* frameWith(frames, "feed · Plan", "v2/3", "second draft")
+    const back = yield* frameWith(frames, "feed · Plan", "v2/3", "second draft", "board: j/k scroll", "later step 6", hiddenBelow)
+    expect([back.includes("Shipping the feed"), /later step 3\b/.test(back)]).toEqual([false, false])
 
     yield* Queue.offer(keys, "q")
     expect(yield* Fiber.join(running)).toBe("")

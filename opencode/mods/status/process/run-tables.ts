@@ -8,9 +8,9 @@
 import { readdir, stat } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { env } from "bun"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option, Result } from "effect"
 import type { RunTable } from "../run-table.ts"
-import { RunTables, RunsUnreadable } from "../service.ts"
+import { type Listed, RunTables, RunsUnreadable } from "../service.ts"
 
 /** How long one command may run. */
 const TIMEOUT_MS = 20_000
@@ -55,12 +55,15 @@ const namedDirs = Effect.fn("RunTables.namedDirs")(function* (top: string) {
   return named.filter((_, index) => found[index] === true)
 })
 
+/** No runs: a directory in no repository. */
+const NONE: Listed = { runs: [], unreadable: [] }
+
 /** The runs `script` (the orchestrate skill's `scripts/status.ts`) reads, run by `runtime` (the host's binary). */
 export const layer = (script: string, runtime: string = process.execPath) =>
   Layer.succeed(RunTables, {
     list: Effect.fn("RunTables.list")(function* (directory: string) {
       const common = yield* command(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], directory).pipe(Effect.option)
-      if (Option.isNone(common)) return []
+      if (Option.isNone(common)) return NONE
       const top = basename(common.value.trim()) === ".git" ? dirname(common.value.trim()) : directory
       const root = join(top, "tmp/orchestrate")
       const entries = yield* Effect.tryPromise({ try: () => readdir(root, { withFileTypes: true }), catch: (cause) => cause }).pipe(
@@ -71,10 +74,12 @@ export const layer = (script: string, runtime: string = process.execPath) =>
       const inRepo = entries.filter((entry) => entry.isDirectory()).map((entry) => ({ name: entry.name, dir: join(root, entry.name) }))
       const named = (yield* namedDirs(top).pipe(Effect.orElseSucceed(() => []))).map((dir) => ({ name: basename(dir), dir }))
       const runs = [...inRepo, ...named.filter((run) => !inRepo.some((each) => each.dir === run.dir))]
-      return yield* Effect.forEach(
+      // Each run on its own: one the script fails on is left out and says why, the others still list.
+      const read = yield* Effect.forEach(
         runs,
-        (run) => command([runtime, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table }))),
+        (run) => command([runtime, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table })), Effect.result),
         { concurrency: "unbounded" },
       )
+      return { runs: read.flatMap((each) => Option.toArray(Result.getSuccess(each))), unreadable: read.flatMap((each) => Option.toArray(Result.getFailure(each))) }
     }),
   })
