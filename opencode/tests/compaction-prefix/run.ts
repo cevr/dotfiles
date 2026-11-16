@@ -104,6 +104,11 @@ try {
   const opencode = await OpenCode.create({
     events: { persist: true },
     database: { path: join(spec.base, "opencode.db") },
+    // The bundled catalog only. The embedded host reads no OPENCODE_DISABLE_MODELS_FETCH (the CLI's server does), and
+    // a live models.dev fetch landing mid-run turns on the tools its models enable: once models.dev listed a free
+    // image model (the `opencode` provider's grok-imagine-image-2.0), experimental_image_generate joined the idle
+    // compaction's request and not the turn's before it (deep run, dotfiles 1eb86342).
+    models: { fetch: false },
     config: { directory: config, project: false, content: JSON.stringify(content) },
   })
   try {
