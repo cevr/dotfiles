@@ -99,17 +99,25 @@ describe("the merge check's tests", () => {
 
   it.effect("the walk follows ./ imports within scripts/ any number of steps deep, once each, and stops outside it", () =>
     Effect.sync(() => {
+      // Every file below exists, those outside scripts/ too: only the walk's scripts/ bound keeps them out. A `./`
+      // specifier can still leave scripts/ (`./../mods/…`) or name a file under a scripts/ folder that is no script.
       const graph = new Map<string, ReadonlyArray<string>>([
-        ["scripts/a.test.ts", ["./b.ts", "bun:test", "../mods/x/y.ts"]],
-        ["scripts/b.ts", ["./c"]],
-        ["scripts/c.ts", ["./b.ts", "./gone.ts"]],
+        ["scripts/a.test.ts", ["./b.ts", "bun:test", "../mods/x/y.ts", "./../mods/x/y.ts"]],
+        ["scripts/b.ts", ["./c", "./fixtures/data.json"]],
+        ["scripts/c.ts", ["./b.ts", "./gone.ts", "./fixtures/helper.ts"]],
         ["scripts/d.ts", []],
+        ["scripts/../mods/x/y.ts", ["./z.ts"]],
+        ["mods/x/y.ts", []],
+        ["scripts/fixtures/data.json", []],
+        ["scripts/fixtures/helper.ts", []],
       ])
       const scripts = { files: ["scripts/a.test.ts"], imports: (file: string) => graph.get(file) ?? [] }
       const exists = (file: string) => graph.has(file)
       expect([...reachedWithin("scripts/a.test.ts", scripts, exists)].toSorted()).toEqual(["scripts/a.test.ts", "scripts/b.ts", "scripts/c.ts"])
       expect(scriptTests(parseNameStatus("M\tscripts/c.ts\n"), exists, scripts)).toEqual(["scripts/a.test.ts"])
       expect(scriptTests(parseNameStatus("M\tscripts/d.ts\n"), exists, scripts)).toEqual([])
+      // A change outside scripts/ that a ./ path reaches selects nothing through the walk.
+      expect(scriptTests(parseNameStatus("M\tscripts/fixtures/helper.ts\nM\tmods/x/y.ts\n"), exists, scripts)).toEqual([])
     }),
   )
 
