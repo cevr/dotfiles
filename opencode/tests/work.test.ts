@@ -5,7 +5,8 @@
 // nowhere else, and removes it with force; neither request offers OpenCode's worktree tools. In a second run it
 // commits in a workspace and lands it: one push to the bare origin's main from an integration workspace work
 // made, the workspace trashed, and the accept check's wake after the turn. A third run lists through the alias
-// `rift`. The plugin on its own is tested beside its code in cmd/work. Without a work binary (WORK_BIN, or
+// `rift`, with cmd/work listed bare (no options) as daily lists it, so it finds `work` on PATH (the binary's
+// folder first). The plugin on its own is tested beside its code in cmd/work. Without a work binary (WORK_BIN, or
 // `work` on PATH as the install puts it) and OPENCODE_DEV these do not run.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { describe, test } from "bun:test"
@@ -28,7 +29,7 @@ const RUN_MS = 150_000
 const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 
 /** One run of real OpenCode in a scratch home on `task`, waiting for `wake` after the turn; a failed run fails with its output. */
-const boot = (task: string, wake: Option.Option<string>) =>
+const boot = (task: string, wake: Option.Option<string>, bare = false) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -41,7 +42,8 @@ const boot = (task: string, wake: Option.Option<string>) =>
     const command = ChildProcess.make(process.execPath, [path.join(ROOT, "tests/work/run.ts")], {
       cwd: ROOT,
       env: {
-        PATH: PROCESS["PATH"] ?? "",
+        // The work binary's folder first: a bare entry finds `work` there, as the installed one finds ~/.local/bin/work.
+        PATH: [path.dirname(path.resolve(WORK_BIN)), PROCESS["PATH"] ?? ""].join(":"),
         HOME: home,
         TMPDIR: temp,
         XDG_CONFIG_HOME: path.join(home, ".config"),
@@ -53,6 +55,7 @@ const boot = (task: string, wake: Option.Option<string>) =>
         WORK_E2E_FORK: path.resolve(FORK),
         WORK_E2E_PLUGIN: path.join(ROOT, "cmd/work"),
         WORK_E2E_BIN: path.resolve(WORK_BIN),
+        WORK_E2E_BARE: String(bare),
         WORK_E2E_TASK: task,
         ...Option.match(wake, { onNone: () => ({}), onSome: (said) => ({ WORK_E2E_WAKE: said }) }),
       },
@@ -129,10 +132,10 @@ if (runnable)
     )
 
     it.live.layer(BunServices.layer)(
-      "an agent lists through the alias rift and gets the work tool's list",
+      "an agent lists through the alias rift and gets the work tool's list, from cmd/work listed bare as daily lists it, finding work on PATH",
       () =>
         Effect.gen(function* () {
-          const result = yield* boot(ALIAS, Option.none())
+          const result = yield* boot(ALIAS, Option.none(), true)
           const [list, ...rest] = result.calls
           expect(rest).toEqual([])
           expect([list?.name, list?.status]).toEqual(["rift", "completed"])

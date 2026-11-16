@@ -2,8 +2,8 @@
 // scripted model (tests/work/sim.ts) on a loopback port, with cmd/work loaded from config as the owner would load
 // it, on the real `work` binary. tests/work.test.ts starts it in a child process whose HOME and XDG dirs are a
 // scratch dir, so work's registry is the run's own, with `WORK_E2E_BASE`, `WORK_E2E_FORK`, `WORK_E2E_PLUGIN`,
-// `WORK_E2E_BIN`, `WORK_E2E_TASK` and, for a land, `WORK_E2E_WAKE`. The work dir is a base: a git repository with
-// one commit pushed to a bare origin, `work.toml` in its `.git/info/exclude`, registered with `work init`, with a
+// `WORK_E2E_BIN`, `WORK_E2E_BARE` (list cmd/work with no options, finding work on PATH), `WORK_E2E_TASK` and, for a
+// land, `WORK_E2E_WAKE`. The work dir is a base: a git repository with one commit pushed to a bare origin, `work.toml` in its `.git/info/exclude`, registered with `work init`, with a
 // gate and an accept check. It writes what the session's tool calls said, the model's requests and what is on
 // disk after the run to `<base>/result.json`. It imports nothing of the fork's at compile time.
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
@@ -89,6 +89,15 @@ interface Sdk {
 const loadSdk = (file: string): Promise<Partial<Sdk>> => import(file)
 const isSdk = (value: Partial<Sdk>): value is Sdk => Predicate.isFunction(value.OpenCode?.create)
 
+/**
+ * cmd/work as config lists it. Bare (`WORK_E2E_BARE`), as daily lists it: no options, so `work` is found on PATH and
+ * `workrift` is whether it is there. Else the work binary named outright, and no workrift (this machine's PATH may lack it).
+ */
+const entryOf = (plugin: string, bin: string, bare: boolean) => {
+  if (bare) return plugin
+  return { package: plugin, options: { workrift: false, work: bin } }
+}
+
 const run = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
@@ -96,6 +105,7 @@ const run = Effect.gen(function* () {
   const fork = yield* Config.String("WORK_E2E_FORK")
   const plugin = yield* Config.String("WORK_E2E_PLUGIN")
   const bin = yield* Config.String("WORK_E2E_BIN")
+  const bare = yield* Config.Boolean("WORK_E2E_BARE").pipe(Config.withDefault(false))
   const task = yield* Config.String("WORK_E2E_TASK")
   const wake = yield* Config.option(Config.String("WORK_E2E_WAKE"))
   const config = path.join(base, "config")
@@ -138,8 +148,7 @@ const run = Effect.gen(function* () {
         models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
       },
     },
-    // On this machine's PATH there may be no workrift; the run names the work binary outright.
-    plugins: [{ package: plugin, options: { workrift: false, work: bin } }],
+    plugins: [entryOf(plugin, bin, bare)],
   }
 
   const sdk: Partial<Sdk> = yield* Effect.tryPromise({
