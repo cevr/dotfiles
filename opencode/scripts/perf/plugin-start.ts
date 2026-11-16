@@ -45,6 +45,8 @@ export interface Span {
   readonly start: number
   readonly end: number
   readonly attributes: Record<string, string>
+  /** OTLP's status code: 2 when the span ended in a failure (a plugin's setup that died), else 0 or 1. */
+  readonly status: number
 }
 
 export interface Options {
@@ -127,6 +129,7 @@ interface OtlpSpan {
   readonly startTimeUnixNano: string
   readonly endTimeUnixNano: string
   readonly attributes?: ReadonlyArray<{ readonly key: string; readonly value: { readonly stringValue?: string; readonly intValue?: string | number; readonly boolValue?: boolean } }>
+  readonly status?: { readonly code?: number }
 }
 type OtlpTraces = { readonly resourceSpans?: ReadonlyArray<{ readonly scopeSpans?: ReadonlyArray<{ readonly spans?: ReadonlyArray<OtlpSpan> }> }> }
 const ms = (nanos: string) => Number(BigInt(nanos) / 1000n) / 1000
@@ -201,6 +204,7 @@ export const measure = async (options: Options): Promise<Measure> => {
                 start: ms(span.startTimeUnixNano),
                 end: ms(span.endTimeUnixNano),
                 attributes: Object.fromEntries((span.attributes ?? []).map((item) => [item.key, String(item.value.stringValue ?? item.value.intValue ?? item.value.boolValue ?? "")])),
+                status: Option.getOrElse(Option.fromUndefinedOr(span.status?.code), () => 0),
               })
       return Response.json({})
     },
@@ -330,6 +334,8 @@ export interface PluginRow {
   readonly setup: ReadonlyArray<number>
   /** In the locations opened one at a time (`Options.alone`). */
   readonly alone: ReadonlyArray<number>
+  /** The setups that failed (their span's status an error): a plugin that died at start, in any location. */
+  readonly failed: number
 }
 
 /** Per plugin of ours: its module load and its setup in each location. */
@@ -355,6 +361,7 @@ export const rows = (result: Measure): ReadonlyArray<PluginRow> => {
       load: loads.flatMap((location) => (location[index] ? [location[index].end - location[index].start] : [])),
       setup: setups.filter((span) => span.start < aloneFrom).map(took),
       alone: setups.filter((span) => span.start >= aloneFrom).map(took),
+      failed: setups.filter((span) => span.status === 2).length,
     }
   })
 }
@@ -390,7 +397,7 @@ if (import.meta.main) {
     console.log(`${name(location)}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)} (service CPU ${s(location.cpu)} meanwhile)`)
   console.log(`per location, ms: module loads (PluginSupervisor.resolve) ${list(perLocation(result, "PluginSupervisor.resolve"))}; setups (Plugin.activate) ${list(perLocation(result, "Plugin.activate"))}`)
   console.log(`\nplugin          module load ms per location     setup ms per location (together | alone: ${result.locations.filter((location) => location.alone).map(name).join(" ")})`)
-  for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)} | ${list(row.alone)}`)
+  for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)} | ${list(row.alone)}${[`  (${row.failed} failed)`].filter(() => row.failed > 0).join("")}`)
   const out = arg("json")
   if (out) writeFileSync(out, JSON.stringify(result))
 }

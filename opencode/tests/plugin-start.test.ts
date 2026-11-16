@@ -10,7 +10,9 @@
 // its own. Its span is wall time on one JS thread, so in locations opened together it
 // spans the others' work (pool's ~20 ms read 180-390 ms on a loaded host): each setup
 // is timed in two more locations opened one at a time, and the faster stays under
-// SETUP_MS (measured 0-15 ms), so one scheduling stall is no slow setup.
+// SETUP_MS (measured 0-15 ms), so one scheduling stall is no slow setup. Every setup
+// succeeds: a plugin that dies at start (the work plugin, its bare entry as daily loads
+// it, finding no `work` on the service's PATH) fails here, not only goes unseen.
 //
 // All along, the test holds the update's builds lock (mods/update/settings.ts `buildsLock`) in the
 // scratch HOME, as daily's stage or a handoff's prune would: only those two take it, never a
@@ -46,7 +48,9 @@ const check = (result: Measure) => {
   // Every location answered (else `measure` throws), each on a bounded amount of the service's CPU.
   expect(result.locations.filter((location) => !(location.cpu < LIVE_CPU_MS)).map((location) => `${name(location)}: ${location.cpu.toFixed(0)} ms of CPU, ${(location.live - location.asked).toFixed(0)} ms`)).toEqual([])
   const table = rows(result)
-  expect(table.map((row) => row.plugin)).toContain("memory")
+  expect(table.map((row) => row.plugin)).toEqual(expect.arrayContaining(["memory", "work"]))
+  // Every plugin started: a setup that died (the work plugin with no `work` on PATH, batch cx) still ends its span, on an error.
+  expect(table.filter((row) => row.failed > 0).map((row) => `${row.plugin}: ${row.failed} of ${row.setup.length + row.alone.length} setups failed`)).toEqual([])
   expect(table.filter((row) => row.setup.length !== 3 || row.alone.length !== 2).map((row) => `${row.plugin}: set up in ${row.setup.length} + ${row.alone.length} locations`)).toEqual([])
   expect(table.filter((row) => Math.min(...row.alone) >= SETUP_MS).map((row) => `${row.plugin}: ${row.alone.map((ms) => ms.toFixed(0)).join(", ")} ms alone (${row.setup.map((ms) => ms.toFixed(0)).join(", ")} ms together)`)).toEqual([])
 }
