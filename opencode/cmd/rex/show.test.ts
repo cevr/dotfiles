@@ -7,6 +7,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
+import * as MemoryDiagrams from "@dotfiles/opencode-rex/memory/diagrams"
+import * as MemoryOpener from "@dotfiles/opencode-rex/memory/opener"
 import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
@@ -17,7 +19,7 @@ import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
 
 const screen: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
-const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
+const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
 const SHOW = fileURLToPath(new URL("./show.ts", import.meta.url))
 
 /** The exit code a refused run ends with; none when it was not refused. */
@@ -44,7 +46,7 @@ describe("the arguments rex-show takes", () => {
 describe("a run from a caller's pane", () => {
   const rex = Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }]))
   const spools = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
-  const systems = Layer.mergeAll(MemoryRex.layer(rex), MemorySpool.layer(spools), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)))
+  const systems = Layer.mergeAll(MemoryRex.layer(rex), MemorySpool.layer(spools), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])))
   const env = (vars: Record<string, string>) => ConfigProvider.layer(ConfigProvider.fromEnvRecord(vars))
 
   const inPane = { REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) }
@@ -124,7 +126,7 @@ effectTest(
         expect(yield* Ref.get(asked)).toBe(1)
       }),
     (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
-  ).pipe(Effect.provide(Layer.mergeAll(MemorySpool.layer(viewed), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty))))),
+  ).pipe(Effect.provide(Layer.mergeAll(MemorySpool.layer(viewed), MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([]))))),
   10_000,
 )
 

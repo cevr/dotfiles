@@ -7,6 +7,8 @@
 // and a tab that cannot open said in the pane.
 import { describe, expect } from "bun:test"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
+import * as MemoryDiagrams from "@dotfiles/opencode-rex/memory/diagrams"
+import * as MemoryOpener from "@dotfiles/opencode-rex/memory/opener"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
 import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
@@ -41,7 +43,7 @@ describe("the arguments of rex-show browse", () => {
 describe("the caller of rex-show browse", () => {
   const rex = Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }]))
   const spools = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
-  const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
+  const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
   const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 
   effectTest(
@@ -58,7 +60,7 @@ describe("the caller of rex-show browse", () => {
           MemorySpool.layer(spools),
           MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map()), () => Effect.void, () => Effect.die("the caller opened a tab")),
           MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)),
-          MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+          MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) })),
         ),
       ),
@@ -117,7 +119,7 @@ const browsing = Layer.mergeAll(
   browser,
   MemorySpool.layer(viewed),
   MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)),
-  MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+  MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
 ).pipe(Layer.provideMerge(queues))
 
 /** A pane of 80 × 24 cells of 8 × 16 px, its frames to `frames`, its input what the test types. */
@@ -202,7 +204,7 @@ effectTest(
         MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())),
         MemorySpool.layer(viewed),
         MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)),
-        MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+        MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
       ).pipe(Layer.provideMerge(queues)),
     ),
   ),

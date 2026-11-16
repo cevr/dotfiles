@@ -1,17 +1,23 @@
-// `rex-show sideshow`: the arguments it takes, the caller (the named session
-// or the caller's own, one showcase, refused when there is none), and the
-// viewer, which follows the session: the latest post drawn by its kind
-// (Markdown as text, a page as a settled shot, an image as itself, the rest
-// flattened), the title in the header and the post count as the tally, no
-// redraw while nothing changed, and an error line while Sideshow is down.
+// `rex-show feed` (and `open`, `sideshow`): the arguments it takes; the
+// caller (the named session or the caller's own, one showcase, refused when
+// there is none; any call keeps the caller's own as the showcase's feed; md
+// and diff go to leaf beside when it is there); and the viewer, which runs
+// the feed pane: the board's newest version on top, the timeline newest
+// first with a dot on what came since, the newest post drawn by its kinds
+// (a page shot, a Mermaid diagram shot from its Pele page), `[`/`]` walking
+// a post's versions, `c` sending a comment as the user, an error line while
+// Sideshow is down, and `q` quitting. A still view goes back to the feed on
+// `q`, and leaves its first shot in the feed as a post.
 import { describe, expect } from "bun:test"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
+import * as MemoryDiagrams from "@dotfiles/opencode-rex/memory/diagrams"
+import * as MemoryOpener from "@dotfiles/opencode-rex/memory/opener"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
 import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
 import * as MemorySpool from "@dotfiles/opencode-rex/memory/spool"
 import type { Post, Shot } from "@dotfiles/opencode-rex/service"
-import { Feed, type Spooled } from "@dotfiles/opencode-rex/spool"
+import { Feed, type Spooled, Url } from "@dotfiles/opencode-rex/spool"
 import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
 import { Base64 } from "effect/encoding"
 import { effectTest } from "../../sim-tui/effect-test.ts"
@@ -32,24 +38,27 @@ const png = (width: number, height: number, mark: number) => {
 
 const refusalOf = <A>(exit: Exit.Exit<A, unknown>) => Option.map(Option.filter(Exit.findErrorOption(exit), Schema.is(Refused)), (refused) => refused.code)
 
-const post = (id: string, title: string, at: string, surfaces: Post["surfaces"]): Post => ({ id, title, version: 1, updatedAt: at, surfaces })
+const post = (id: string, title: string, at: string, surfaces: Post["surfaces"], version = 1): Post => ({ id, title, version, createdAt: at, updatedAt: at, surfaces })
 
-describe("the arguments of rex-show sideshow", () => {
+describe("the arguments of rex-show feed", () => {
   effectTest(
-    "an optional SESSION, asked every 3 s by default; --every; two sessions or a bad interval is a usage error",
+    "feed, open and sideshow are one command: an optional SESSION, asked every 3 s by default; --every; two sessions or a bad interval is a usage error; diff passes its arguments on",
     Effect.gen(function* () {
-      expect(yield* parse(["sideshow"])).toEqual(Request.Follow({ session: Option.none(), every: 3 }))
-      expect(yield* parse(["sideshow", "abc", "--every", "2"])).toEqual(Request.Follow({ session: Option.some("abc"), every: 2 }))
-      for (const bad of [["sideshow", "a", "b"], ["sideshow", "--every", "0"]]) {
-        expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
+      for (const command of ["feed", "open", "sideshow"]) {
+        expect(yield* parse([command])).toEqual(Request.Follow({ session: Option.none(), every: 3 }))
+        expect(yield* parse([command, "abc", "--every", "2"])).toEqual(Request.Follow({ session: Option.some("abc"), every: 2 }))
+        for (const bad of [[command, "a", "b"], [command, "--every", "0"]]) {
+          expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
+        }
       }
+      expect(yield* parse(["diff", "--staged"])).toEqual(Request.Diff({ args: ["--staged"] }))
     }),
     5_000,
   )
 })
 
-describe("the caller of rex-show sideshow", () => {
-  const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
+describe("the caller of rex-show feed", () => {
+  const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
   const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
   /** The systems of one call, from a pane of session:a, with `mine` as the caller's own Sideshow session. */
   const systems = (rex: Ref.Ref<MemoryRex.World>, spools: Ref.Ref<ReadonlyMap<string, Spooled>>, mine: Option.Option<string>) =>
@@ -59,19 +68,21 @@ describe("the caller of rex-show sideshow", () => {
       MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())),
       MemorySideshow.layer(Ref.makeUnsafe({ ...MemorySideshow.empty, mine })),
       MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+      MemoryDiagrams.layer,
+      MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
       ConfigProvider.layer(ConfigProvider.fromEnvRecord({ REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) })),
     )
-  const showcases = (rex: Ref.Ref<MemoryRex.World>) => Effect.map(Ref.get(rex), (world) => world.blocks.filter((held) => held.label === "showcase").length)
+  const labelled = (rex: Ref.Ref<MemoryRex.World>, label: string) => Effect.map(Ref.get(rex), (world) => world.blocks.filter((held) => held.label === label))
 
   const named = { rex: Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }])), spools: Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map()) }
   effectTest(
     "follows the session it is given, else the caller's own, in one showcase",
     Effect.gen(function* () {
-      yield* run(yield* parse(["sideshow", "s9", "--every", "4"]), quiet, settings)
+      yield* run(yield* parse(["feed", "s9", "--every", "4"]), quiet, settings)
       expect((yield* Ref.get(named.spools)).get("session:a")?.shown).toEqual(Feed.make({ base: BASE, session: "s9", name: "s9", every: 4 }))
-      yield* run(yield* parse(["sideshow"]), quiet, settings)
+      yield* run(yield* parse(["open"]), quiet, settings)
       expect((yield* Ref.get(named.spools)).get("session:a")?.shown).toEqual(Feed.make({ base: BASE, session: "own", name: "own", every: 3 }))
-      expect(yield* showcases(named.rex)).toBe(1)
+      expect((yield* labelled(named.rex, "showcase")).length).toBe(1)
     }).pipe(Effect.provide(systems(named.rex, named.spools, Option.some("own")))),
     5_000,
   )
@@ -80,86 +91,193 @@ describe("the caller of rex-show sideshow", () => {
   effectTest(
     "with no session named and none of its own, it is refused with exit 1 and makes no pane",
     Effect.gen(function* () {
-      expect(refusalOf(yield* Effect.exit(run(yield* parse(["sideshow"]), quiet, settings)))).toEqual(Option.some(1))
-      expect(yield* showcases(none.rex)).toBe(0)
+      expect(refusalOf(yield* Effect.exit(run(yield* parse(["feed"]), quiet, settings)))).toEqual(Option.some(1))
+      expect((yield* labelled(none.rex, "showcase")).length).toBe(0)
     }).pipe(Effect.provide(systems(none.rex, none.spools, Option.none()))),
+    5_000,
+  )
+
+  const kept = { rex: Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }])), spools: Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map()) }
+  effectTest(
+    "any call keeps the caller's own session as the showcase's feed, and never replaces one followed on purpose",
+    Effect.gen(function* () {
+      yield* run(yield* parse(["tally", "3 of 7"]), quiet, settings)
+      expect((yield* Ref.get(kept.spools)).get("session:a")?.feed).toEqual(Feed.make({ base: BASE, session: "own", name: "own", every: 3 }))
+      yield* run(yield* parse(["feed", "s9"]), quiet, settings)
+      yield* run(yield* parse(["url", "http://localhost:3000"]), quiet, settings)
+      expect((yield* Ref.get(kept.spools)).get("session:a")?.feed?.session).toBe("s9")
+    }).pipe(Effect.provide(systems(kept.rex, kept.spools, Option.some("own")))),
+    5_000,
+  )
+
+  const leafy = { rex: Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }])), spools: Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map()) }
+  effectTest(
+    "with leaf on the host, md opens leaf beside the caller and diff runs leaf diff there; without it diff is refused with exit 1",
+    Effect.gen(function* () {
+      const withLeaf = { ...settings, leaf: Option.some("/usr/bin/leaf") }
+      yield* run(yield* parse(["md", "/plans/plan.md"]), quiet, withLeaf)
+      yield* run(yield* parse(["diff", "--staged"]), quiet, withLeaf)
+      const leaves = yield* labelled(leafy.rex, "leaf")
+      expect(leaves.map((block) => block.command)).toEqual([["/usr/bin/leaf", "/plans/plan.md"], ["/usr/bin/leaf", "diff", "--staged"]])
+      expect((yield* labelled(leafy.rex, "showcase")).length).toBe(0)
+      expect(refusalOf(yield* Effect.exit(run(yield* parse(["diff"]), quiet, settings)))).toEqual(Option.some(1))
+    }).pipe(Effect.provide(systems(leafy.rex, leafy.spools, Option.none()))),
     5_000,
   )
 })
 
 /** Each ask for a session's posts, as the viewer makes it. */
-class Asks extends Context.Service<Asks, Queue.Queue<string>>()("test/RexSideAsks") {}
+class Asks extends Context.Service<Asks, Queue.Queue<string>>()("test/RexFeedAsks") {}
 /** The shots the memory browser takes. */
-class Shots extends Context.Service<Shots, Queue.Queue<Shot>>()("test/RexSideShots") {}
+class Shots extends Context.Service<Shots, Queue.Queue<Shot>>()("test/RexFeedShots") {}
 /** The frames the viewer draws. */
-class Frames extends Context.Service<Frames, Queue.Queue<string>>()("test/RexSideFrames") {}
+class Frames extends Context.Service<Frames, Queue.Queue<string>>()("test/RexFeedFrames") {}
+/** The keys the pane's user types. */
+class Keys extends Context.Service<Keys, Queue.Queue<string>>()("test/RexFeedKeys") {}
 
 const world = Ref.makeUnsafe<MemorySideshow.World>(MemorySideshow.empty)
 const pages = Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())
 const viewed = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map([["session:a", { seq: 1, shown: Feed.make({ base: BASE, session: "s1", name: "s1", every: 0 }) }]]))
-const queues = Layer.mergeAll(Layer.effect(Asks)(Queue.unbounded<string>()), Layer.effect(Shots)(Queue.unbounded<Shot>()), Layer.effect(Frames)(Queue.unbounded<string>()))
+const queues = Layer.mergeAll(
+  Layer.effect(Asks)(Queue.unbounded<string>()),
+  Layer.effect(Shots)(Queue.unbounded<Shot>()),
+  Layer.effect(Frames)(Queue.unbounded<string>()),
+  Layer.effect(Keys)(Queue.unbounded<string>()),
+)
 const sideshow = Layer.unwrap(Asks.use((asks) => Effect.succeed(MemorySideshow.layer(world, (session) => Queue.offer(asks, session)))))
 const browser = Layer.unwrap(Shots.use((shots) => Effect.succeed(MemoryBrowser.layer(pages, (shot) => Queue.offer(shots, shot)))))
-const following = Layer.mergeAll(sideshow, browser, MemorySpool.layer(viewed), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty))).pipe(Layer.provideMerge(queues))
+const following = Layer.mergeAll(
+  sideshow,
+  browser,
+  MemorySpool.layer(viewed),
+  MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+  MemoryDiagrams.layer,
+  MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
+).pipe(Layer.provideMerge(queues))
 
-/** A pane of 82 × 35 cells of Rex's 12 × 38 px, its frames to `frames`. */
-const pane = (frames: Queue.Queue<string>): Screen => ({
-  size: Effect.succeed({ cols: 82, rows: 35 }),
+/** A pane of 120 × 40 cells of Rex's 12 × 38 px, its frames to `frames`, its keys from `keys`. */
+const pane = (frames: Queue.Queue<string>, keys: Queue.Queue<string>): Screen => ({
+  size: Effect.succeed({ cols: 120, rows: 40 }),
   cell: () => Effect.succeed({ width: 12, height: 38 }),
   display: (text) => Queue.offer(frames, text),
-  input: Effect.succeed(Effect.never),
+  input: Effect.succeed(Queue.take(keys)),
 })
 
 /** The session s1, titled Plan, holding `posts`; with `more` besides. */
 const holding = (posts: ReadonlyArray<Post>, more: Partial<MemorySideshow.World> = {}) =>
-  Ref.set(world, { ...MemorySideshow.empty, sessions: new Map([["s1", { title: "Plan", posts }]]), ...more })
+  Ref.update(world, (now) => ({ ...now, sessions: new Map([["s1", { title: "Plan", posts }]]), ...more }))
+
+/** The next frame holding every one of `wanted`, the frames before it dropped; fails after 200 frames. */
+const frameWith = (frames: Queue.Queue<string>, ...wanted: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    for (let seen = 0; seen < 200; seen++) {
+      const frame = yield* Queue.take(frames)
+      if (wanted.every((text) => frame.includes(text))) return frame
+    }
+    return yield* Effect.fail(`no frame with ${wanted.join(", ")}`)
+  })
+
+const board = (version: number, step: string) => post("b", "Board", "2026-11-15T09:00:00Z", [{ kind: "markdown", index: 0, markdown: `# Shipping the feed\n\n- ${step}` }], version)
+const notes = post("p1", "notes", "2026-11-15T10:00:00Z", [{ kind: "markdown", index: 0, markdown: "# Notes\n\nthird draft" }], 3)
+const sketch = post("p2", "sketch", "2026-11-15T10:01:00Z", [{ kind: "html", index: 0 }])
+const flow = post("p3", "flow", "2026-11-15T10:02:00Z", [{ kind: "mermaid", index: 0, mermaid: "graph TD; A-->B" }])
 
 effectTest(
-  "the viewer draws the session's latest post by its kind, titled and counted, again only when it changes, and an error line while Sideshow is down",
+  "the feed: the board's newest version, the timeline newest first with a dot on what came, the newest drawn by kind, versions walked, a comment sent, Sideshow down, q",
   Effect.gen(function* () {
-    const asks = yield* Asks
     const shots = yield* Shots
     const frames = yield* Frames
-    const notes = post("p1", "notes", "2026-11-15T10:00:00Z", [{ kind: "markdown", index: 0, markdown: "# Notes\n\n- one point" }])
-    yield* holding([notes])
-    const running = yield* Effect.forkChild(viewer("session:a", pane(frames)))
-    const first = yield* Queue.take(frames)
-    expect(first).toContain("showcase · Plan")
-    expect(first).toContain("1 post · notes")
-    expect(first).toContain("one point")
-    // Nothing changed over two more asks: no frame.
-    yield* Queue.take(asks)
-    yield* Queue.take(asks)
-    expect(yield* Queue.size(frames)).toBe(0)
+    const keys = yield* Keys
+    const shot = png(1000, 800, 1)
+    const diagram = png(800, 400, 2)
+    yield* Ref.set(pages, new Map([[`${BASE}/p/p2?surface=0&ver=1`, shot], [MemoryDiagrams.pageOf("graph TD; A-->B"), diagram]]))
+    yield* Ref.set(world, {
+      ...MemorySideshow.empty,
+      history: new Map([["p1", [{ version: 1, title: "notes", at: "2026-11-15T10:00:00Z", surfaces: [{ kind: "markdown", index: 0, markdown: "first draft" }] }, { version: 2, title: "notes", at: "2026-11-15T10:00:30Z", surfaces: [{ kind: "markdown", index: 0, markdown: "second draft" }] }]]]),
+    })
+    yield* holding([board(1, "step one"), notes, sketch])
+    const running = yield* Effect.forkChild(viewer("session:a", pane(frames, keys)))
 
-    const sketch = post("p2", "sketch", "2026-11-15T10:01:00Z", [{ kind: "html", index: 0 }])
-    const shot = png(1000, 1239, 1)
-    yield* Ref.set(pages, new Map([[`${BASE}/p/p2?surface=0&ver=1`, shot]]))
-    yield* holding([notes, sketch])
-    const second = yield* Queue.take(frames)
-    // 32 rows under the header, the tally and a blank: 1000 px wide fills 82 × 12 px, so 32 × 38 px of height is 1000 × 1216 / 984 = 1236 px.
-    expect(yield* Queue.take(shots)).toEqual({ url: `${BASE}/p/p2?surface=0&ver=1`, width: 1000, height: 1236, settle: 5_000 })
-    expect(second).toContain(Base64.encode(shot))
-    expect(second).toContain("2 posts · sketch")
-    // The same post over two more asks: not shot again, not drawn again.
-    yield* Queue.take(asks)
-    yield* Queue.take(asks)
-    expect(yield* Queue.size(shots)).toBe(0)
-    expect(yield* Queue.size(frames)).toBe(0)
+    // The board on top, the timeline newest first, the newest (sketch) shot as its page.
+    const first = yield* frameWith(frames, "feed · Plan", "◆ Board", "step one", Base64.encode(shot))
+    expect(first.indexOf("sketch")).toBeLessThan(first.indexOf("notes"))
+    expect((yield* Queue.take(shots)).url).toBe(`${BASE}/p/p2?surface=0&ver=1`)
 
-    const picture = png(400, 300, 2)
-    const image = post("p3", "screenshot", "2026-11-15T10:02:00Z", [{ kind: "image", index: 0, assetId: "a1" }])
-    yield* holding([notes, sketch, image], { assets: new Map([["a1", picture]]) })
-    expect(yield* Queue.take(frames)).toContain(Base64.encode(picture))
-    expect(yield* Queue.size(shots)).toBe(0)
+    // A post comes: on top, dotted, and the view follows it; its Mermaid drawn from its Pele page.
+    yield* holding([board(1, "step one"), notes, sketch, flow])
+    const came = yield* frameWith(frames, "●", Base64.encode(diagram))
+    expect(came.indexOf("flow")).toBeLessThan(came.indexOf("sketch"))
 
-    const tree = post("p4", "data", "2026-11-15T10:03:00Z", [{ kind: "json", index: 0 }])
-    yield* holding([notes, sketch, image, tree], { flat: new Map([["p4", "## data\n\nflattened tree"]]) })
-    expect(yield* Queue.take(frames)).toContain("flattened tree")
+    // The board revised: its newest version shows.
+    yield* holding([board(2, "step two"), notes, sketch, flow])
+    yield* frameWith(frames, "v2 · updated", "step two")
 
+    // Sideshow down: the status line says so, the posts stay.
     yield* Ref.update(world, (now) => ({ ...now, down: true }))
-    expect(yield* Queue.take(frames)).toContain(`✗ Sideshow not reachable at ${BASE}: ECONNREFUSED`)
-    yield* Fiber.interrupt(running)
+    yield* frameWith(frames, `✗ Sideshow not reachable at ${BASE}: ECONNREFUSED`, "flow")
+    yield* Ref.update(world, (now) => ({ ...now, down: false }))
+
+    // Down twice from the newest: notes, at its third version; [ walks back, ] forward.
+    yield* Queue.offer(keys, "jj")
+    yield* frameWith(frames, "v3/3", "third draft")
+    yield* Queue.offer(keys, "[")
+    yield* frameWith(frames, "v2/3", "second draft")
+    yield* Queue.offer(keys, "[")
+    yield* frameWith(frames, "v1/3", "first draft")
+    yield* Queue.offer(keys, "[")
+    yield* Queue.offer(keys, "]")
+    yield* frameWith(frames, "v2/3", "second draft")
+
+    // c, a comment, Enter: sent as the user on notes.
+    yield* Queue.offer(keys, "c")
+    yield* Queue.offer(keys, "looks good")
+    yield* frameWith(frames, "comment:", "looks good")
+    yield* Queue.offer(keys, "\r")
+    yield* frameWith(frames, "comment sent")
+    expect((yield* Ref.get(world)).comments).toEqual([{ post: "p1", text: "looks good" }])
+
+    yield* Queue.offer(keys, "q")
+    expect(yield* Fiber.join(running)).toBe("")
   }).pipe(Effect.provide(following)),
   15_000,
+)
+
+const still = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
+const watched = Ref.makeUnsafe<MemorySideshow.World>(MemorySideshow.empty)
+const stillPages = Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())
+
+effectTest(
+  "a page shown leaves its first shot and its command in the feed, and q goes back to the feed",
+  Effect.gen(function* () {
+    const frames = yield* Frames
+    const keys = yield* Keys
+    const shot = png(1280, 900, 3)
+    const feed = Feed.make({ base: BASE, session: "s1", name: "s1", every: 0 })
+    yield* Ref.set(stillPages, new Map([["http://localhost:3000/", shot]]))
+    yield* Ref.set(watched, { ...MemorySideshow.empty, sessions: new Map([["s1", { title: "Plan", posts: [] }]]) })
+    yield* Ref.set(still, new Map([["session:a", { seq: 2, feed, shown: Url.make({ url: "http://localhost:3000/", name: "localhost:3000", every: 60, width: 1280 }) }]]))
+    const running = yield* Effect.forkChild(viewer("session:a", pane(frames, keys)))
+    yield* frameWith(frames, "showcase · localhost:3000", Base64.encode(shot))
+    // q: the feed again, where the entry shows once it is posted (in the background: its shot uploaded, then the post).
+    yield* Queue.offer(keys, "q")
+    yield* frameWith(frames, "feed · Plan", "url · localhost:3000")
+    expect((yield* Ref.get(still)).get("session:a")?.shown).toEqual(feed)
+    const entry = (yield* Ref.get(watched)).entries
+    expect(entry.map((each) => each.title)).toEqual(["url · localhost:3000"])
+    expect(entry[0]?.surfaces).toEqual([{ kind: "image", assetId: "asset-1" }, { kind: "terminal", text: "$ rex-show url http://localhost:3000/\n" }])
+    yield* Queue.offer(keys, "q")
+    expect(yield* Fiber.join(running)).toBe("")
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        MemorySideshow.layer(watched),
+        MemoryBrowser.layer(stillPages),
+        MemorySpool.layer(still),
+        MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+        MemoryDiagrams.layer,
+        MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
+      ).pipe(Layer.provideMerge(queues)),
+    ),
+  ),
+  10_000,
 )

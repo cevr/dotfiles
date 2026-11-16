@@ -5,6 +5,8 @@
 // does, and the pane's words when none is booted or the one named is not.
 import { describe, expect } from "bun:test"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
+import * as MemoryDiagrams from "@dotfiles/opencode-rex/memory/diagrams"
+import * as MemoryOpener from "@dotfiles/opencode-rex/memory/opener"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
 import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
@@ -49,7 +51,7 @@ describe("the arguments of rex-show sim", () => {
 describe("the caller of rex-show sim", () => {
   const rex = Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }]))
   const spools = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
-  const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
+  const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
   const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 
   effectTest(
@@ -68,6 +70,8 @@ describe("the caller of rex-show sim", () => {
           MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())),
           MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)),
           MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty), () => Effect.die("the caller screenshot the simulator")),
+          MemoryDiagrams.layer,
+          MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1), REX_SHOW_SIM_HOST: "cvr@mac" })),
         ),
       ),
@@ -90,6 +94,8 @@ const mirroring = Layer.mergeAll(
   MemorySpool.layer(viewed),
   MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())),
   MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)),
+  MemoryDiagrams.layer,
+  MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
 ).pipe(Layer.provideMerge(queues))
 
 /** A pane of 82 × 35 cells of Rex's 12 × 38 px, its frames to `frames`. */

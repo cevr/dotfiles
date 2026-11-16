@@ -5,6 +5,8 @@
 // an error line, and draws the page again once it answers again.
 import { describe, expect } from "bun:test"
 import * as MemoryBrowser from "@dotfiles/opencode-rex/memory/browser"
+import * as MemoryDiagrams from "@dotfiles/opencode-rex/memory/diagrams"
+import * as MemoryOpener from "@dotfiles/opencode-rex/memory/opener"
 import * as MemorySideshow from "@dotfiles/opencode-rex/memory/sideshow"
 import * as MemoryRex from "@dotfiles/opencode-rex/memory/rex"
 import * as MemorySimulators from "@dotfiles/opencode-rex/memory/simulators"
@@ -52,7 +54,7 @@ describe("the arguments of rex-show url", () => {
 describe("the caller of rex-show url", () => {
   const rex = Ref.makeUnsafe(MemoryRex.world([{ session: "session:a", label: "shell" }]))
   const spools = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map())
-  const settings = { rex: "rex", spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
+  const settings = { rex: Option.some("rex"), leaf: Option.none<string>(), spool: "/state/rex-show", self: ["/opt/bun", "/dotfiles/rex/show.ts"] }
   const quiet: Screen = { size: Effect.succeed({ cols: 80, rows: 24 }), cell: () => Effect.succeed({ width: 12, height: 38 }), display: () => Effect.void, input: Effect.succeed(Effect.never) }
 
   effectTest(
@@ -67,7 +69,7 @@ describe("the caller of rex-show url", () => {
           MemoryRex.layer(rex),
           MemorySpool.layer(spools),
           MemoryBrowser.layer(Ref.makeUnsafe<MemoryBrowser.Pages>(new Map()), () => Effect.die("the caller shot the page")),
-          MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)),
+          MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([])),
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ REX_SESSION: "session:a", REX_BLOCK: MemoryRex.blockId(1) })),
         ),
       ),
@@ -85,7 +87,7 @@ const pages = Ref.makeUnsafe<MemoryBrowser.Pages>(new Map())
 const viewed = Ref.makeUnsafe<ReadonlyMap<string, Spooled>>(new Map([["session:a", { seq: 1, shown: Url.make({ url: PAGE, name: "localhost:4321", every: 0, width: 1200 }) }]]))
 const queues = Layer.mergeAll(Layer.effect(Shots)(Queue.unbounded<Shot>()), Layer.effect(Frames)(Queue.unbounded<string>()))
 const browser = Layer.unwrap(Shots.use((shots) => Effect.succeed(MemoryBrowser.layer(pages, (shot) => Queue.offer(shots, shot)))))
-const watching = Layer.mergeAll(browser, MemorySpool.layer(viewed), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty))).pipe(Layer.provideMerge(queues))
+const watching = Layer.mergeAll(browser, MemorySpool.layer(viewed), MemorySideshow.layer(Ref.makeUnsafe(MemorySideshow.empty)), MemorySimulators.layer(Ref.makeUnsafe(MemorySimulators.empty)), MemoryDiagrams.layer, MemoryOpener.layer(Ref.makeUnsafe<ReadonlyArray<string>>([]))).pipe(Layer.provideMerge(queues))
 
 /** A pane of 82 × 35 cells of Rex's 12 × 38 px, its frames to `frames`. */
 const pane = (frames: Queue.Queue<string>): Screen => ({
