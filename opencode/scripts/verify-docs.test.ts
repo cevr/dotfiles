@@ -111,7 +111,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every source file batch 2026-11-15cc's and 2026-11-16cv's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+  live("every source file batch 2026-11-15cc's, 2026-11-16cv's and 2026-11-16cx's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -148,6 +148,10 @@ describe("the verify-opencode skill names only what the tree has", () => {
         "testbeds/gamut/sim-model.ts",
         "tests/gamut-owner.test.ts",
         "tests/gamut.test.ts",
+        // 2026-11-16cx: the rift plugin's real check (orchestrate's), changed by the work switch.
+        "tests/rift.test.ts",
+        "tests/rift/run.ts",
+        "tests/rift/sim.ts",
       ]
       expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({
         exempt: ["scripts/", "formal/", "lint/", "tests/accept-clock.test.ts", "testbeds/gamut/", "tests/gamut.test.ts", "tests/gamut-owner.test.ts"],
