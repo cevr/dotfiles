@@ -175,12 +175,13 @@ const frameWith = (frames: Queue.Queue<string>, ...wanted: ReadonlyArray<string>
       if (wanted.every((text) => frame.includes(text))) return frame
     }
     return yield* Effect.fail(`no frame with ${wanted.join(", ")}`)
-  })
+  }).pipe(Effect.timeoutOrElse({ duration: "4 seconds", orElse: () => Effect.fail(`no frame with ${wanted.join(", ")} in 4 s`) }))
 
 const board = (version: number, step: string) => post("b", "Board", "2026-11-15T09:00:00Z", [{ kind: "markdown", index: 0, markdown: `# Shipping the feed\n\n- ${step}` }], version)
 const notes = post("p1", "notes", "2026-11-15T10:00:00Z", [{ kind: "markdown", index: 0, markdown: "# Notes\n\nthird draft" }], 3)
 const sketch = post("p2", "sketch", "2026-11-15T10:01:00Z", [{ kind: "html", index: 0 }])
 const flow = post("p3", "flow", "2026-11-15T10:02:00Z", [{ kind: "mermaid", index: 0, mermaid: "graph TD; A-->B" }])
+const later = post("p4", "later", "2026-11-15T10:03:00Z", [{ kind: "markdown", index: 0, markdown: "seen at last" }])
 
 effectTest(
   "the feed: the board's newest version, the timeline newest first with a dot on what came, the newest drawn by kind, versions walked, a comment sent, Sideshow down, q",
@@ -203,13 +204,23 @@ effectTest(
     expect(first.indexOf("sketch")).toBeLessThan(first.indexOf("notes"))
     expect((yield* Queue.take(shots)).url).toBe(`${BASE}/p/p2?surface=0&ver=1`)
 
-    // A post comes: on top, dotted, and the view follows it; its Mermaid drawn from its Pele page.
+    // A post comes: on top, and the view follows it, so it is seen and has no dot; its Mermaid drawn from its Pele page.
     yield* holding([board(1, "step one"), notes, sketch, flow])
-    const came = yield* frameWith(frames, "●", Base64.encode(diagram))
+    const came = yield* frameWith(frames, Base64.encode(diagram))
     expect(came.indexOf("flow")).toBeLessThan(came.indexOf("sketch"))
+    expect(came).not.toContain("●")
+
+    // The board picked, a post that comes keeps its dot until the view shows it.
+    yield* Queue.offer(keys, "b")
+    // The view's header names the board (the board's own says "◆ Board").
+    yield* frameWith(frames, "\u001b[1mBoard\u001b[0m")
+    yield* holding([board(1, "step one"), notes, sketch, flow, later])
+    yield* frameWith(frames, "●", "later")
+    yield* Queue.offer(keys, "j")
+    expect(yield* frameWith(frames, "seen at last")).not.toContain("●")
 
     // The board revised: its newest version shows.
-    yield* holding([board(2, "step two"), notes, sketch, flow])
+    yield* holding([board(2, "step two"), notes, sketch, flow, later])
     yield* frameWith(frames, "v2 · updated", "step two")
 
     // Sideshow down: the status line says so, the posts stay.
@@ -217,8 +228,8 @@ effectTest(
     yield* frameWith(frames, `✗ Sideshow not reachable at ${BASE}: ECONNREFUSED`, "flow")
     yield* Ref.update(world, (now) => ({ ...now, down: false }))
 
-    // Down twice from the newest: notes, at its third version; [ walks back, ] forward.
-    yield* Queue.offer(keys, "jj")
+    // Down thrice from the newest: notes, at its third version; [ walks back, ] forward.
+    yield* Queue.offer(keys, "jjj")
     yield* frameWith(frames, "v3/3", "third draft")
     yield* Queue.offer(keys, "[")
     yield* frameWith(frames, "v2/3", "second draft")

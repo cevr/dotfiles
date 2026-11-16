@@ -9,7 +9,7 @@
 // post's Markdown or diff handed to leaf (by the caller, who writes files).
 import { Clock, Effect, Exit, Option, Queue } from "effect"
 import { FEED_WIDTH, SETTLE_MS } from "./feed.ts"
-import { actionsOf, drawFeed, Event, firstRow, initial, Job, layoutOf, shownOf, step } from "./feedview.ts"
+import { actionsOf, boardHiddenOf, boardMost, drawFeed, Event, feedLayout, firstRow, type Frame, initial, Job, layoutOf, shownOf, step } from "./feedview.ts"
 import { type Cells, type CellPixels, isPng } from "./graphics.ts"
 import { parseInput } from "./live.ts"
 import { Browser, Diagrams, Opener, type Post, Sideshow, type Surface } from "./service.ts"
@@ -90,6 +90,8 @@ export const feedPane = Effect.fn("Feed.pane")(
       cell: { width: 1, height: 2 },
       title: run.feed.name,
       drawn: "",
+      /** The regions as last drawn, where a click lands. */
+      layout: layoutOf(yield* run.screen.size),
     }
     now.cell = yield* run.screen.cell(now.size)
     /** What each region's post came to, by region, post, version and room; one fetch at a time each. */
@@ -116,17 +118,22 @@ export const feedPane = Effect.fn("Feed.pane")(
     })
 
     const draw = Effect.gen(function* () {
-      const layout = layoutOf(now.size)
       const state = now.state
+      // The board is fetched for the most room it may take; the regions then follow its lines.
       const board = yield* Option.match(boardOf(state.posts), {
         onNone: () => Effect.succeed<ReadonlyArray<Block>>([]),
-        onSome: (post) => blocksFor("board", post, post.version, post.surfaces, { cols: layout.board.cols, rows: Math.max(1, layout.board.rows - 1) }),
+        onSome: (post) => blocksFor("board", post, post.version, post.surfaces, { cols: now.size.cols, rows: boardMost(now.size) - 1 }),
       })
+      const partial: Frame = { state, title: now.title, board, view: [], now: yield* Clock.currentTimeMillis, cell: now.cell }
+      const layout = feedLayout(partial, now.size)
+      now.layout = layout
+      const hidden = boardHiddenOf(partial, now.size)
+      if (hidden !== state.boardHidden) yield* offer(Event.BoardSized({ hidden }))
       const view = yield* Option.match(shownOf(state), {
         onNone: () => Effect.succeed<ReadonlyArray<Block>>([]),
         onSome: (shown) => blocksFor("view", shown.post, shown.version, shown.surfaces, { cols: layout.view.cols, rows: Math.max(1, layout.view.rows - 1) }),
       })
-      const frame = drawFeed({ state, title: now.title, board, view, now: yield* Clock.currentTimeMillis, cell: now.cell }, now.size)
+      const frame = drawFeed({ ...partial, view }, now.size)
       if (frame === now.drawn) return
       now.drawn = frame
       yield* run.screen.display(frame)
@@ -180,7 +187,7 @@ export const feedPane = Effect.fn("Feed.pane")(
       Effect.gen(function* () {
         const parsed = parseInput(run.rest.value + (yield* run.read))
         run.rest.value = parsed.rest
-        const layout = layoutOf(now.size)
+        const layout = now.layout
         const first = firstRow(now.state, layout)
         for (const input of parsed.inputs) {
           for (const action of actionsOf(input, now.state.mode, layout, first)) yield* offer(Event.Key({ action }))

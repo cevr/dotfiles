@@ -3,8 +3,10 @@
 // when the case ends), its spool showing a feed of a stand-in Sideshow (a
 // Bun.serve on a free local port) whose posts the case adds and revises over
 // time. The case reads what the pane draws, its styles dropped, and types
-// into it as its user: a post that comes shows on top of the timeline with a
-// dot, the board shows its newest version, `j` then `[` walk a post's
+// into it as its user: a post that comes shows on top of the timeline (no dot,
+// as the view follows it), the board shows its newest version, cut at a third
+// of the pane with what is past it said and `B` then `j` scrolling it, `j`
+// then `[` walk a post's
 // versions back, `c` sends a comment Sideshow hears as the user's, and `q`
 // ends the program with exit 0.
 import { describe, expect } from "bun:test"
@@ -121,11 +123,22 @@ describe("the feed in a terminal", () => {
 
         yield* drawn(out, seen, "feed · Plan", "Board", "step one", "notes", "third draft")
         stage.posts = [boardPost(1, "step one"), notes, sketch]
-        const came = yield* drawn(out, seen, "Timeline · 2", "●¶ sketch", "new idea")
+        // The view follows the post that came, so it is seen: no dot.
+        const came = yield* drawn(out, seen, "Timeline · 2", "¶ sketch", "new idea")
         const timeline = came.slice(came.lastIndexOf("Timeline · 2"))
         expect(timeline.indexOf("sketch")).toBeLessThan(timeline.indexOf("notes"))
-        stage.posts = [boardPost(2, "step two"), notes, sketch]
-        yield* drawn(out, seen, "v2", "step two")
+        expect(timeline).not.toContain("●")
+        // A long board: cut at a third of the pane, saying what is past it; B then j scrolls it, ← goes back.
+        stage.posts = [boardPost(2, ["step two", ...Array.from({ length: 24 }, (_, at) => `done ${at + 1}`)].join("\n- ")), notes, sketch]
+        const long = yield* drawn(out, seen, "v2", "step two", "more lines (B then j/k scrolls")
+        const more = Number(/… (\d+) more lines/.exec(long.slice(long.lastIndexOf("v2 · updated")))?.[1] ?? "0")
+        expect(more).toBeGreaterThan(0)
+        yield* type("B")
+        yield* drawn(out, seen, "board: j/k scroll")
+        yield* type("j")
+        yield* drawn(out, seen, `… ${more - 1} more lines`)
+        yield* type("\u001b[D")
+        yield* drawn(out, seen, "j/k move")
         yield* type("j")
         yield* drawn(out, seen, "v3/3", "third draft")
         yield* type("[")

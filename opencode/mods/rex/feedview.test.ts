@@ -6,7 +6,8 @@
 // board gives.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { Action, actionsOf, boardLine, drawFeed, Event, type FeedState, feedTally, firstRow, initial, Job, layoutOf, Mode, rowAt, shownOf, step } from "./feedview.ts"
+import { Action, actionsOf, boardHiddenOf, boardLine, boardMost, drawFeed, Event, type FeedState, feedLayout, feedTally, firstRow, initial, Job, layoutOf, Mode, rowAt, shownOf, step } from "./feedview.ts"
+import { Block } from "./surface.ts"
 import { Input, Mouse, NO_MODS } from "./live.ts"
 import type { Post, Version } from "./service.ts"
 
@@ -51,16 +52,41 @@ describe("what the view shows", () => {
     expect(shownId(run([Event.Polled({ posts: [board, notes, sketch, post("x", "later", 3)] })], picked).state)).toEqual(Option.some("n"))
   })
 
-  test("a dot on each post that came after the first look, gone once it is picked; a pick that went away falls back to the newest", () => {
+  test("a dot on each post that came after the first look, gone once the view shows it, picked or followed; a pick that went away falls back to the newest", () => {
     const first = run([Event.Polled({ posts: [board, notes] })]).state
     expect([...first.fresh]).toEqual([])
-    const came = run([Event.Polled({ posts: [board, notes, sketch] })], first).state
-    expect([...came.fresh]).toEqual(["s"])
-    const seen = run([key(Action.Up())], came).state
-    expect(shownId(seen)).toEqual(Option.some("b"))
-    const back = run([key(Action.Down())], seen).state
-    expect([...back.fresh]).toEqual([])
-    expect(shownId(run([Event.Polled({ posts: [board, notes] })], back).state)).toEqual(Option.some("n"))
+    // Following the newest: the post that came is shown at once, so its dot is gone.
+    expect([...run([Event.Polled({ posts: [board, notes, sketch] })], first).state.fresh]).toEqual([])
+    // With the board picked, the post that came keeps its dot until the view shows it.
+    const pinned = run([key(Action.Board()), Event.Polled({ posts: [board, notes, sketch] })], first).state
+    expect(shownId(pinned)).toEqual(Option.some("b"))
+    expect([...pinned.fresh]).toEqual(["s"])
+    const shown = run([key(Action.Down())], pinned).state
+    expect(shownId(shown)).toEqual(Option.some("s"))
+    expect([...shown.fresh]).toEqual([])
+    const later = run([Event.Polled({ posts: [board, notes, sketch, post("x", "later", 3)] }), key(Action.Down())], pinned).state
+    expect(shownId(later)).toEqual(Option.some("x"))
+    expect([...later.fresh]).toEqual(["s"])
+    const picked = run([key(Action.Down())], first).state
+    expect(shownId(run([Event.Polled({ posts: [board] })], picked).state)).toEqual(Option.some("b"))
+  })
+
+  test("for any polls and keys, a dot is never on the post the view shows", () => {
+    const actions = [Action.Up(), Action.Down(), Action.Board(), Action.Older(), Action.Enter(), Action.Back()]
+    for (let seed = 1; seed <= 200; seed++) {
+      const draw = (n: number) => Math.floor(Math.abs(Math.sin(seed * 9301 + n * 49297)) * 10_000)
+      const posts: Array<Post> = [board]
+      const events: Array<Event> = []
+      for (let at = 0; at < 30; at++) {
+        if (draw(at) % 3 === 0) {
+          posts.push(post(`p${at}`, `post ${at}`, at % 60))
+          events.push(Event.Polled({ posts: [...posts] }))
+        } else events.push(key(actions[draw(at) % actions.length]))
+      }
+      const state = run(events).state
+      const shown = Option.getOrElse(shownId(state), () => "")
+      expect({ seed, dotted: state.fresh.has(shown) }).toEqual({ seed, dotted: false })
+    }
   })
 
   test("Up and Down walk the board, then the timeline newest first, held at both ends; b jumps to the board", () => {
@@ -151,6 +177,61 @@ describe("the pane's input", () => {
     const first = firstRow(deep, small)
     expect(first).toBeGreaterThan(0)
     expect(44 - first).toBeLessThan(small.timeline.rows - 1)
+  })
+})
+
+describe("the board's region", () => {
+  const size = { cols: 120, rows: 40 }
+  const cell = { width: 12, height: 38 }
+  const STYLE = new RegExp(String.raw`\u001b\[[0-9;]*[A-Za-z]`, "g")
+  /** A board of `count` checklist lines, as the pane draws it. */
+  const lines = (count: number) => Array.from({ length: count }, (_, at) => `- step ${at + 1}`).join("\n")
+  const frameOf = (state: FeedState, count: number) => ({ state, title: "Plan", board: [Block.Markdown({ text: lines(count) })], view: [], now: Date.UTC(2026, 10, 15, 10, 30), cell })
+
+  test("is as tall as the board's lines, up to a third of the pane, for any board", () => {
+    const state = run([Event.Polled({ posts: [board, notes] })]).state
+    for (let count = 0; count <= 40; count++) {
+      const layout = feedLayout(frameOf(state, count), size)
+      expect({ count, rows: layout.board.rows }).toEqual({ count, rows: Math.min(Math.max(2, 1 + count), boardMost(size)) })
+      expect({ count, hidden: boardHiddenOf(frameOf(state, count), size) }).toEqual({ count, hidden: Math.max(0, count - (boardMost(size) - 2)) * Number(count > boardMost(size) - 1) })
+    }
+    expect(feedLayout(frameOf(run([Event.Polled({ posts: [notes] })]).state, 0), size).board.rows).toBe(2)
+  })
+
+  test("a cut board says how many lines are past it; B then j/k scroll it, held at both ends; Enter shows it in the view; esc goes back", () => {
+    const polled = run([Event.Polled({ posts: [board, notes] })]).state
+    const hidden = boardHiddenOf(frameOf(polled, 30), size)
+    expect(hidden).toBe(30 - (boardMost(size) - 2))
+    const loaded = run([Event.BoardSized({ hidden })], polled).state
+    const plainOf = (state: FeedState) => drawFeed(frameOf(state, 30), size).replace(STYLE, "")
+    expect(plainOf(loaded)).toContain(`… ${hidden} more lines (B then j/k scrolls · b shows it all)`)
+    expect(plainOf(loaded)).toContain("step 1 ")
+    const focused = run([key(Action.FocusBoard())], loaded).state
+    expect(focused.focus).toBe("board")
+    const down = run([key(Action.Down()), key(Action.Down())], focused).state
+    expect(down.boardScroll).toBe(2)
+    expect(shownId(down)).toEqual(Option.some("n"))
+    expect(plainOf(down)).toContain(`… ${hidden - 2} more lines`)
+    expect(plainOf(down)).not.toContain("step 2 ")
+    const bottom = run(Array.from({ length: 60 }, () => key(Action.Down())), focused).state
+    expect(bottom.boardScroll).toBe(hidden)
+    expect(plainOf(bottom)).toContain("step 30")
+    expect(plainOf(bottom)).toContain(`↑ ${hidden} lines above`)
+    expect(run(Array.from({ length: 60 }, () => key(Action.Up())), bottom).state.boardScroll).toBe(0)
+    const viewed = run([key(Action.Enter())], focused).state
+    expect([viewed.focus, shownId(viewed)]).toEqual(["view", Option.some("b")])
+    expect(run([key(Action.Back())], focused).state.focus).toBe("timeline")
+    // A board that shrank pulls the scroll back to what is there.
+    expect(run([Event.BoardSized({ hidden: 1 })], bottom).state.boardScroll).toBe(1)
+  })
+
+  test("B with no board says so; the wheel over the board scrolls it, elsewhere the view", () => {
+    expect(run([Event.Polled({ posts: [notes] }), key(Action.FocusBoard())]).state.note).toEqual(Option.some("no post titled Board yet"))
+    const layout = layoutOf(size, 30)
+    expect(actionsOf(Input.Text({ text: "B" }), Mode.Browse(), layout, 0)).toEqual([Action.FocusBoard()])
+    expect(actionsOf(Input.Pointer({ mouse: Mouse.Wheel({ direction: "down", col: 10, row: layout.board.top + 1, mods: NO_MODS }) }), Mode.Browse(), layout, 0)).toEqual([Action.ScrollBoard({ lines: 3 })])
+    expect(actionsOf(Input.Pointer({ mouse: Mouse.Wheel({ direction: "up", col: 10, row: layout.board.top, mods: NO_MODS }) }), Mode.Browse(), layout, 0)).toEqual([Action.ScrollBoard({ lines: -3 })])
+    expect(actionsOf(Input.Pointer({ mouse: Mouse.Wheel({ direction: "down", col: 60, row: layout.view.top + 2, mods: NO_MODS }) }), Mode.Browse(), layout, 0)).toEqual([Action.ScrollDown({ lines: 3 })])
   })
 })
 

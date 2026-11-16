@@ -35,8 +35,8 @@ export type Mode = Data.TaggedEnum<{
 }>
 export const Mode = Data.taggedEnum<Mode>()
 
-/** Which region the arrows move in: the timeline's rows, or the view's lines. */
-export type Focus = "timeline" | "view"
+/** Which region the arrows move in: the timeline's rows, the view's lines, or the board's lines. */
+export type Focus = "timeline" | "view" | "board"
 
 /** A post's versions, once asked for. */
 export interface Versions {
@@ -55,13 +55,16 @@ export interface FeedState {
   /** The version shown of the picked post; none: its newest. */
   readonly version: Option.Option<number>
   readonly versions: Option.Option<Versions>
-  /** Posts that came since the pane first looked, not picked yet. */
+  /** Posts that came since the pane first looked, not shown in the view yet. */
   readonly fresh: ReadonlySet<string>
   readonly focus: Focus
   readonly mode: Mode
   readonly note: Option.Option<string>
   /** How many lines of the view are scrolled past. */
   readonly scroll: number
+  /** How many lines of the board are scrolled past, and how many it can be (its lines past its region, as last drawn). */
+  readonly boardScroll: number
+  readonly boardHidden: number
 }
 
 /** The pane before its first look at the session. */
@@ -77,6 +80,8 @@ export const initial: FeedState = {
   mode: Mode.Browse(),
   note: Option.none(),
   scroll: 0,
+  boardScroll: 0,
+  boardHidden: 0,
 }
 
 /** What the pane's user asked. */
@@ -89,6 +94,10 @@ export type Action = Data.TaggedEnum<{
   Leaf: {}
   Comment: {}
   Board: {}
+  /** `B`: the arrows scroll the board. */
+  FocusBoard: {}
+  /** The wheel over the board. */
+  ScrollBoard: { readonly lines: number }
   Help: {}
   Quit: {}
   Older: {}
@@ -110,6 +119,8 @@ export type Event = Data.TaggedEnum<{
   Noted: { readonly text: string }
   /** Something drawn came in (a surface's shot, the pane's new size): the state is as it was. */
   Redraw: {}
+  /** The board as last drawn: `hidden` of its lines did not fit its region. */
+  BoardSized: { readonly hidden: number }
 }>
 export const Event = Data.taggedEnum<Event>()
 
@@ -175,11 +186,9 @@ export const shownOf = (state: FeedState): Option.Option<Shown> =>
 /** The key the view's drawn surfaces are kept under: its post and version. */
 export const shownKey = (shown: Shown): string => `${shown.post.id}@${shown.version}`
 
-/** `id` picked: the view on its newest version from the top, its dot gone, its versions asked when it has more than one. */
+/** `id` picked: the view on its newest version from the top, its versions asked when it has more than one (its dot goes as it is shown: `seen`). */
 const pick = (state: FeedState, id: string): Stepped => {
-  const fresh = new Set(state.fresh)
-  fresh.delete(id)
-  const picked: FeedState = { ...state, selected: Option.some(id), version: Option.none(), scroll: 0, fresh, note: Option.none() }
+  const picked: FeedState = { ...state, selected: Option.some(id), version: Option.none(), scroll: 0, note: Option.none() }
   return only(picked, versionJobs(picked))
 }
 
@@ -206,6 +215,9 @@ const move = (state: FeedState, steps: number): Stepped => {
 }
 
 const scrolled = (state: FeedState, lines: number): Stepped => only({ ...state, scroll: Math.max(0, state.scroll + lines) })
+
+/** The board scrolled `lines`, held between its top and its last line. */
+const boardScrolled = (state: FeedState, lines: number): Stepped => only({ ...state, boardScroll: clamp(state.boardScroll + lines, 0, state.boardHidden) })
 
 /** `[` or `]`: the shown post's version `steps` away, once its versions are known. */
 const stepped = (state: FeedState, steps: number): Stepped =>
@@ -240,6 +252,8 @@ const commenting = (state: FeedState, text: string, action: Action): Stepped =>
     Leaf: () => only(state),
     Comment: () => only(state),
     Board: () => only(state),
+    FocusBoard: () => only(state),
+    ScrollBoard: () => only(state),
     Help: () => only(state),
     Older: () => only(state),
     Newer: () => only(state),
@@ -252,16 +266,35 @@ const commenting = (state: FeedState, text: string, action: Action): Stepped =>
 const onShown = (state: FeedState, job: (shown: Shown) => Job): Stepped =>
   Option.match(shownOf(state), { onNone: () => noted(state, "no post yet"), onSome: (shown) => ({ state: { ...state, note: Option.none() }, jobs: [job(shown)] }) })
 
-/** Up and Down: the timeline's rows, or the view's lines when it has the focus. */
-const vertical = (state: FeedState, steps: number): Stepped =>
-  Option.match(Option.liftPredicate(state.focus, (focus) => focus === "view"), { onSome: () => scrolled(state, steps), onNone: () => move(state, steps) })
+/** Up and Down: the timeline's rows, or the view's or the board's lines when it has the focus. */
+const vertical = (state: FeedState, steps: number): Stepped => {
+  if (state.focus === "view") return scrolled(state, steps)
+  if (state.focus === "board") return boardScrolled(state, steps)
+  return move(state, steps)
+}
+
+/** Enter: the view gets the focus; from the board, the board is picked into the view first. */
+const entered = (state: FeedState): Stepped =>
+  Option.match(Option.filter(boardOf(state.posts), () => state.focus === "board"), {
+    onNone: () => only({ ...state, focus: "view" }),
+    onSome: (board) => {
+      const picked = pick(state, board.id)
+      return { ...picked, state: { ...picked.state, focus: "view" } }
+    },
+  })
 
 /** An action while browsing. */
 const browsing = (state: FeedState, action: Action): Stepped =>
   Action.$match(action, {
     Up: () => vertical(state, -1),
     Down: () => vertical(state, 1),
-    Enter: () => only({ ...state, focus: "view" }),
+    Enter: () => entered(state),
+    FocusBoard: () =>
+      Option.match(boardOf(state.posts), {
+        onNone: () => noted(state, `no post titled ${BOARD_TITLE} yet`),
+        onSome: () => only({ ...state, focus: "board", note: Option.none() }),
+      }),
+    ScrollBoard: ({ lines }) => boardScrolled(state, lines),
     Back: () => only({ ...state, focus: "timeline", note: Option.none() }),
     Open: () => onShown(state, (shown) => Job.OpenPost({ id: shown.post.id })),
     Leaf: () => onShown(state, (shown) => Job.LeafPost({ title: shown.title, surfaces: shown.surfaces })),
@@ -288,14 +321,22 @@ const polled = (state: FeedState, posts: ReadonlyArray<Post>): Stepped => {
   return only(next, versionJobs(next))
 }
 
+/** `state` with the dot gone from the post the view shows: it has been seen, picked or followed. */
+const seen = (state: FeedState): FeedState =>
+  Option.match(Option.filter(shownPost(state), (post) => state.fresh.has(post.id)), {
+    onNone: () => state,
+    onSome: (post) => ({ ...state, fresh: new Set([...state.fresh].filter((id) => id !== post.id)) }),
+  })
+
 /** The pane after `event`, and the jobs it asks. */
-export const step = (state: FeedState, event: Event): Stepped =>
-  Event.$match(event, {
+export const step = (state: FeedState, event: Event): Stepped => {
+  const stepped = Event.$match(event, {
     Polled: ({ posts }) => polled(state, posts),
     PollFailed: ({ reason }) => only({ ...state, failure: Option.some(reason) }),
     Versions: ({ id, version, list }) => only({ ...state, versions: Option.some({ id, version, list }), note: Option.filter(state.note, (text) => text !== "asking for its versions…") }),
     Noted: ({ text }) => noted(state, text),
     Redraw: () => only(state),
+    BoardSized: ({ hidden }) => only({ ...state, boardHidden: Math.max(0, hidden), boardScroll: clamp(state.boardScroll, 0, Math.max(0, hidden)) }),
     Key: ({ action }) =>
       Mode.$match(state.mode, {
         Comment: ({ text }) => commenting(state, text, action),
@@ -303,6 +344,8 @@ export const step = (state: FeedState, event: Event): Stepped =>
         Browse: () => browsing(state, action),
       }),
   })
+  return { ...stepped, state: seen(stepped.state) }
+}
 
 /** The regions of the pane, in cells: `top` and `left` are 1-based. */
 export interface Box {
@@ -323,9 +366,17 @@ export interface FeedLayout {
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value))
 
-/** The regions of a pane of `size`: the header on the first row, the board under it, a rule, the timeline left of the view, the status line on the last row. */
-export const layoutOf = (size: Cells): FeedLayout => {
-  const boardRows = clamp(Math.floor(size.rows * 0.3), 2, 14)
+/** The most rows the board takes, its header among them: about a third of the pane. */
+export const boardMost = (size: Cells): number => Math.max(2, Math.floor(size.rows / 3))
+
+/**
+ * The regions of a pane of `size` whose board is `boardLines` lines long, its
+ * header among them: the header on the first row, the board under it as tall
+ * as its lines up to a third of the pane, a rule, the timeline left of the
+ * view, the status line on the last row.
+ */
+export const layoutOf = (size: Cells, boardLines: number = boardMost(size)): FeedLayout => {
+  const boardRows = clamp(boardLines, 2, boardMost(size))
   const bodyTop = 3 + boardRows
   const bodyRows = Math.max(1, size.rows - bodyTop)
   const timelineCols = clamp(Math.floor(size.cols * 0.34), Math.min(18, size.cols), 44)
@@ -353,6 +404,7 @@ const LETTERS = new Map<string, Action>([
   ["l", Action.Leaf()],
   ["c", Action.Comment()],
   ["b", Action.Board()],
+  ["B", Action.FocusBoard()],
   ["?", Action.Help()],
   ["q", Action.Quit()],
   ["[", Action.Older()],
@@ -375,7 +427,10 @@ const keyAction = (key: string, mode: Mode): Option.Option<Action> => {
 
 const mouseAction = (mouse: Mouse, layout: FeedLayout, first: number): ReadonlyArray<Action> => {
   if (mouse._tag === "Wheel" && (mouse.direction === "up" || mouse.direction === "down")) {
-    return [Option.match(Option.liftPredicate(mouse.direction, (direction) => direction === "up"), { onSome: () => Action.ScrollUp({ lines: 3 }), onNone: () => Action.ScrollDown({ lines: 3 }) })]
+    const lines = Option.match(Option.liftPredicate(mouse.direction, (direction) => direction === "up"), { onSome: () => -3, onNone: () => 3 })
+    const overBoard = mouse.row >= layout.board.top && mouse.row < layout.board.top + layout.board.rows
+    if (overBoard) return [Action.ScrollBoard({ lines })]
+    return [Option.match(Option.liftPredicate(lines, (n) => n < 0), { onSome: () => Action.ScrollUp({ lines: 3 }), onNone: () => Action.ScrollDown({ lines: 3 }) })]
   }
   if (mouse._tag !== "Press" || mouse.button !== "left") return []
   return Option.toArray(Option.map(rowAt(layout, mouse, first), (row) => Action.Pick({ row })))
@@ -464,8 +519,7 @@ const writeLines = (box: Box, from: number, lines: ReadonlyArray<string>): strin
 const writeBlocks = (box: Box, from: number, blocks: ReadonlyArray<Block>, skip: number, cell: CellPixels): string => {
   const out: Array<string> = []
   const place = { row: from, skip }
-  const separated = blocks.flatMap((block, index) => [...Option.toArray(Option.liftPredicate(Block.Markdown({ text: "" }), () => index > 0)), block])
-  for (const block of separated) {
+  for (const block of separatedOf(blocks)) {
     if (place.row >= box.rows) break
     const room = { cols: box.cols, rows: box.rows - place.row }
     const picture = Option.flatMap(Option.liftPredicate(block, Block.$is("Picture")), (shown) => Option.map(pngSize(shown.bytes), (size) => ({ bytes: shown.bytes, cells: fit(size, room, cell) })))
@@ -490,14 +544,63 @@ const writeBlocks = (box: Box, from: number, blocks: ReadonlyArray<Block>, skip:
   return out.join("")
 }
 
-const boardRegion = (frame: Frame, box: Box): string =>
-  Option.match(boardOf(frame.state.posts), {
+/** The blocks between separators, as `writeBlocks` draws them. */
+const separatedOf = (blocks: ReadonlyArray<Block>): ReadonlyArray<Block> =>
+  blocks.flatMap((block, index) => [...Option.toArray(Option.liftPredicate(Block.Markdown({ text: "" }), () => index > 0)), block])
+
+/** How many lines `blocks` take `cols` wide, a picture as tall as it is drawn in `rows`. */
+export const blocksLines = (blocks: ReadonlyArray<Block>, cols: number, rows: number, cell: CellPixels): number =>
+  separatedOf(blocks).reduce(
+    (total, block) =>
+      total +
+      Option.getOrElse(
+        Option.map(
+          Option.flatMap(Option.liftPredicate(block, Block.$is("Picture")), (shown) => pngSize(shown.bytes)),
+          (size) => fit(size, { cols, rows: Math.max(1, rows) }, cell).rows,
+        ),
+        () => Option.match(Option.liftPredicate(block, Block.$is("Picture")), { onNone: () => linesOf(block, cols).length, onSome: () => 1 }),
+      ),
+    0,
+  )
+
+/** The board's lines, its header among them, in a pane of `size`: one when there is no board. */
+const boardLinesOf = (frame: Frame, size: Cells): number =>
+  Option.match(boardOf(frame.state.posts), { onNone: () => 1, onSome: () => 1 + blocksLines(frame.board, size.cols, boardMost(size) - 1, frame.cell) })
+
+/** The regions of the pane of `size` this frame draws: the board as tall as its lines, up to a third. */
+export const feedLayout = (frame: Frame, size: Cells): FeedLayout => layoutOf(size, boardLinesOf(frame, size))
+
+/** How many of the board's lines do not fit its region in a pane of `size` (how far it scrolls): none when it all fits. */
+export const boardHiddenOf = (frame: Frame, size: Cells): number => {
+  const layout = feedLayout(frame, size)
+  const total = boardLinesOf(frame, size) - 1
+  const room = layout.board.rows - 1
+  return Option.getOrElse(Option.map(Option.liftPredicate(total, (lines) => lines > room), (lines) => lines - (room - 1)), () => 0)
+}
+
+const boardRegion = (frame: Frame, layout: FeedLayout): string => {
+  const box = layout.board
+  return Option.match(boardOf(frame.state.posts), {
     onNone: () => writeLines(box, 0, [`${DIM}No board yet: publish a post titled ${BOARD_TITLE} and keep it current with sideshow update${RESET}`]),
     onSome: (board) => {
-      const head = `${BOLD}◆ ${board.title}${RESET}${DIM} · v${board.version} · updated ${agoOf(millisOf(board.updatedAt, frame.now), frame.now)}${RESET}`
-      return `${writeLines(box, 0, [head])}${writeBlocks(box, 1, frame.board, 0, frame.cell)}`
+      const focus = Option.match(Option.liftPredicate(frame.state.focus, (focus) => focus === "board"), { onNone: () => "", onSome: () => `${CYAN}▍${RESET}` })
+      const head = `${focus}${BOLD}◆ ${board.title}${RESET}${DIM} · v${board.version} · updated ${agoOf(millisOf(board.updatedAt, frame.now), frame.now)}${RESET}`
+      const hidden = boardHiddenOf(frame, layout.size)
+      if (hidden === 0) return `${writeLines(box, 0, [head])}${writeBlocks(box, 1, frame.board, 0, frame.cell)}`
+      // Cut: the last row says what is past it, the rows between scroll.
+      const skip = clamp(frame.state.boardScroll, 0, hidden)
+      const room = box.rows - 2
+      const total = room + hidden
+      const after = total - skip - room
+      const marker = Option.match(Option.liftPredicate(after, (more) => more > 0), {
+        onSome: (more) => `${DIM}… ${more} more line${Option.match(Option.liftPredicate(more, (n) => n === 1), { onSome: () => "", onNone: () => "s" })} (B then j/k scrolls · b shows it all)${RESET}`,
+        onNone: () => `${DIM}↑ ${skip} lines above (k)${RESET}`,
+      })
+      const content = { ...box, rows: box.rows - 1 }
+      return `${writeLines(box, 0, [head])}${writeBlocks(content, 1, frame.board, skip, frame.cell)}${writeLines(box, box.rows - 1, [marker])}`
     },
   })
+}
 
 const rowLine = (row: Row, cols: number, picked: boolean): string => {
   const mark = Option.match(Option.liftPredicate(row.fresh, (fresh) => fresh), { onNone: () => " ", onSome: () => `${CYAN}●${RESET}` })
@@ -538,11 +641,12 @@ export const KEYS: ReadonlyArray<readonly [keys: string, what: string]> = [
   ["j k ↑ ↓", "move in the timeline (the view's lines once it has the focus)"],
   ["enter →", "focus the view; esc ← back to the timeline"],
   ["[ ]", "older and newer versions of the post"],
-  ["b", "the board"],
+  ["b", "the board in the view"],
+  ["B", "scroll the board with j/k (enter shows it in the view, esc goes back)"],
   ["c", "comment on the post (sideshow wait gets it)"],
   ["o", "open the post in the browser"],
   ["l", "open its Markdown or diff in leaf, beside"],
-  ["click", "a timeline row picks it; the wheel scrolls the view"],
+  ["click", "a timeline row picks it; the wheel scrolls the view, or the board over it"],
   ["q", "quit"],
 ]
 
@@ -553,7 +657,11 @@ const statusLine = (frame: Frame, cols: number): string =>
     Browse: () =>
       Option.match(Option.orElse(frame.state.note, () => Option.map(frame.state.failure, (reason) => `${RED}✗ ${reason}${RESET}`)), {
         onSome: (note) => clip(note, cols),
-        onNone: () => clip(`${DIM}j/k move · enter view · [ ] versions · b board · c comment · o open · l leaf · ? keys · q quit${RESET}`, cols),
+        onNone: () =>
+          Option.match(Option.liftPredicate(frame.state.focus, (focus) => focus === "board"), {
+            onSome: () => clip(`${DIM}board: j/k scroll · enter view · esc back${RESET}`, cols),
+            onNone: () => clip(`${DIM}j/k move · enter view · [ ] versions · b board · B scroll it · c comment · o open · l leaf · ? keys · q quit${RESET}`, cols),
+          }),
       }),
   })
 
@@ -563,14 +671,14 @@ const helpPage = (layout: FeedLayout): string =>
 
 /** The whole frame of the pane at `size`: the screen cleared, its regions drawn, the tally reported. */
 export const drawFeed = (frame: Frame, size: Cells): string => {
-  const layout = layoutOf(size)
+  const layout = feedLayout(frame, size)
   const header = `${at(1, 1)}${DIM}${clip(`feed · ${frame.title}`, size.cols)}${RESET}`
   const rule = `${at(layout.board.top + layout.board.rows, 1)}${DIM}${"─".repeat(size.cols)}${RESET}`
   const bar = Arr.makeBy(layout.view.rows, (row) => `${at(layout.view.top + row, layout.view.left - 1)}${DIM}│${RESET}`).join("")
   const regions = Mode.$match(frame.state.mode, {
     Help: () => helpPage(layout),
-    Comment: () => `${boardRegion(frame, layout.board)}${rule}${timelineRegion(frame, layout)}${bar}${viewRegion(frame, layout.view)}`,
-    Browse: () => `${boardRegion(frame, layout.board)}${rule}${timelineRegion(frame, layout)}${bar}${viewRegion(frame, layout.view)}`,
+    Comment: () => `${boardRegion(frame, layout)}${rule}${timelineRegion(frame, layout)}${bar}${viewRegion(frame, layout.view)}`,
+    Browse: () => `${boardRegion(frame, layout)}${rule}${timelineRegion(frame, layout)}${bar}${viewRegion(frame, layout.view)}`,
   })
   const tally = Option.match(Option.liftPredicate(frame.state.loaded, (loaded) => loaded), { onNone: () => clearReport, onSome: () => report(feedTally(frame.state.posts)) })
   return `${HIDE_CURSOR}${clearPictures}${CLEAR}${header}${regions}${at(layout.status, 1)}${statusLine(frame, size.cols)}${tally}`
