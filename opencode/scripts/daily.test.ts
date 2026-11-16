@@ -238,7 +238,7 @@ describe("the workspace plugin: work replaces rift", () => {
   }
   const UNRELATED: ReadonlyArray<PluginEntry> = ["/elsewhere/plugin", { package: "/elsewhere/configured", options: { keep: true } }, "/home/x/.cache/plugin/cmd/rift", "-opencode.other"]
   /** An entry of ours for `dir`, bare or with options, as an earlier install or a hand edit wrote it. */
-  const entryOf = (dir: string, next: () => number): PluginEntry => Arr.unsafeGet([dir, { package: dir, options: { work: "/old/work", n: Math.floor(next() * 9) } }], Math.floor(next() * 2))
+  const entryOf = (dir: string, next: () => number): PluginEntry => Arr.getUnsafe([dir, { package: dir, options: { work: "/old/work", n: Math.floor(next() * 9) } }], Math.floor(next() * 2))
   /** A prior server config: `…/cmd/rift` and `…/cmd/work` each absent, once or twice, ours and unrelated entries, any order. */
   const priorPlugins = (seed: number): Array<PluginEntry> => {
     const next = random(seed)
