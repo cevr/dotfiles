@@ -6,21 +6,13 @@
 // advances, through the follower the TUI runs (`handFamily`).
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Option } from "effect"
+// The fork's own class, so a rename of its name or reason upstream turns these tests red.
+import { ClientError } from "@opencode/client"
 import { createEffect, createRoot, createSignal } from "solid-js/dist/solid.js"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { handFamily, type HandHost, type Reads } from "./family.ts"
 import { type Clock, HandFailed, isTransport, QUIET_MS, RETRY_FOR_MS, RETRY_MAX_MS } from "./hand.ts"
 
-/** The shape of the client's `ClientError` (`@opencode/client`'s promise client): its name, its reason, the reason first in its message. */
-class ClientError extends Error {
-  override readonly name = "ClientError"
-  constructor(
-    readonly reason: "Transport" | "UnexpectedStatus",
-    detail: string,
-  ) {
-    super(`${reason}: ${detail}`)
-  }
-}
 
 /** Each test drives minutes of clock through hundreds of hands; bun's 5 s default is room enough, named here. */
 const TIMEOUT_MS = 5_000
@@ -209,11 +201,11 @@ describe("a server restart while 300 subagents ask for the pane", () => {
 
 describe("a client failure as a hand's", () => {
   test("the client failing to reach the server is a transport failure, tried again", () => {
-    expect(isTransport(new ClientError("Transport", RESET_TEXT))).toBe(true)
+    expect(isTransport(new ClientError("Transport", { detail: RESET_TEXT }))).toBe(true)
   })
 
   test("the server answering with an error, or any other failure, is a refusal, told", () => {
-    expect(isTransport(new ClientError("UnexpectedStatus", "500"))).toBe(false)
+    expect(isTransport(new ClientError("UnexpectedStatus", { detail: "500" }))).toBe(false)
     expect(isTransport({ name: "OtherError", reason: "Transport" })).toBe(false)
     expect(isTransport("ClientError: Transport: ECONNRESET")).toBe(false)
   })
