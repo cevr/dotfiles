@@ -17,7 +17,7 @@ verify: call <tool> <json object>   the next request calls that tool with that i
 verify: say <text>                  once every call has its answer, end the turn with this text
 ```
 
-With no `say`, the turn ends `verify: <n> call(s) done; the last answered: <its last line>`. A title request is answered `Verify run`.
+With no `say`, the turn ends `verify: <n> call(s) done; the last answered: <its last line>`. A title request is answered `Verify run`, and a compaction request (`/compact`, or one OpenCode starts) `## Objective` and a summary line, so a real compaction completes.
 
 Run every command from `opencode/`, with `OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look` (write `$HOME`, not `~`). Read `features/README.md` before the first drive.
 
