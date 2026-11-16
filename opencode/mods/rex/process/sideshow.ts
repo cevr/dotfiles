@@ -1,4 +1,6 @@
-// Sideshow over HTTP, as the Sideshow, read only: the CLI's server is
+// Sideshow over HTTP, as the Sideshow: it reads sessions and posts, and
+// writes only what the feed pane's user does (a comment) and what the pane
+// records (an entry for a live view, with its shot). The CLI's server is
 // `$SIDESHOW_URL` (else localhost:8228, the server on this host), and
 // `$SIDESHOW_TOKEN` goes to it alone as a bearer token when set (never
 // written anywhere). The caller's own session is found the way the
@@ -11,7 +13,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { byCwd, SessionRow } from "../feed.ts"
-import { Post, Sideshow, SideshowFailed, type SideshowServer } from "../service.ts"
+import { Post, PostDetail, Sideshow, SideshowFailed, type SideshowServer } from "../service.ts"
 
 /** How long one request may take. */
 const ASK_MS = 5_000
@@ -54,6 +56,8 @@ export const stateFile = (stateDir: string, agent: number, cwd: string) =>
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ session: Schema.String })))
 const decodeSessions = Schema.decodeUnknownEffect(Schema.Array(SessionRow))
 const decodePosts = Schema.decodeUnknownEffect(Schema.Array(Post))
+const decodeDetail = Schema.decodeUnknownEffect(PostDetail)
+const decodeMade = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ id: Schema.String })))
 
 /** A failed request's error code, as Bun's fetch gives it. */
 const decodeCode = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))
@@ -86,12 +90,33 @@ const server = (address: string, token: Option.Option<string>) => {
     decodeSessions(rows).pipe(Effect.mapError(() => failed(`Sideshow at ${base} listed sessions in a shape rex-show does not know`))),
   )
   const known = (session: string) => Effect.map(ask(`/api/sessions/${encodeURIComponent(session)}/posts`), Option.isSome)
+  /** The JSON answer to POST `path` with `body`, as `extra` headers say; any status but a 2xx fails with the server's words. */
+  const send = Effect.fn("ProcessSideshow.send")(function* (path: string, body: BodyInit, extra: Readonly<Record<string, string>>) {
+    const answer = yield* Effect.tryPromise({
+      try: () => fetch(`${base}${path}`, { method: "POST", headers: { ...headers, ...extra }, body, signal: AbortSignal.timeout(ASK_MS) }),
+      catch: (cause) => failed(`Sideshow not reachable at ${base}: ${why(cause)}`),
+    })
+    const text = yield* Effect.tryPromise({ try: () => answer.text(), catch: (cause) => failed(`${path}: ${why(cause)}`) })
+    if (!answer.ok) return yield* failed(`Sideshow at ${base} answered ${answer.status} to ${path}: ${text.slice(0, 200)}`)
+    return text
+  })
+  const madeId = (path: string) => (text: string) => decodeMade(text).pipe(Effect.map((made) => made.id), Effect.mapError(() => failed(`Sideshow at ${base} answered ${path} without an id`)))
+  const JSON_BODY = { "content-type": "application/json" }
   const at: SideshowServer = {
     title: (session) => Effect.map(sessions, (rows) => Option.flatMap(Arr.findFirst(rows, (row) => row.id === session), (row) => Option.fromNullishOr(row.title))),
     posts: (session) =>
       Effect.flatMap(json(`/api/sessions/${encodeURIComponent(session)}/posts`, `session ${session}`), (rows) =>
         decodePosts(rows).pipe(Effect.mapError(() => failed(`Sideshow at ${base} listed posts in a shape rex-show does not know`))),
       ),
+    post: (id) =>
+      Effect.flatMap(json(`/api/posts/${encodeURIComponent(id)}`, `post ${id}`), (row) =>
+        decodeDetail(row).pipe(Effect.mapError(() => failed(`Sideshow at ${base} sent post ${id} in a shape rex-show does not know`))),
+      ),
+    // The user's label is the viewer's alone: Sideshow gives it to a same-origin request, as its own page sends one.
+    comment: (post, text) => Effect.asVoid(send("/api/comments", JSON.stringify({ surface: post, text, author: "user" }), { ...JSON_BODY, "sec-fetch-site": "same-origin" })),
+    upload: (session, png) =>
+      Effect.flatMap(send(`/api/assets?session=${encodeURIComponent(session)}&filename=shot.png&kind=image`, new Blob([new Uint8Array(png)]), { "content-type": "image/png" }), madeId("/api/assets")),
+    publish: (entry) => Effect.flatMap(send("/api/posts", JSON.stringify(entry), JSON_BODY), madeId("/api/posts")),
     asset: (id) =>
       Effect.flatMap(must(`/a/${encodeURIComponent(id)}`, `asset ${id}`), (answer) =>
         Effect.map(Effect.tryPromise({ try: () => answer.arrayBuffer(), catch: (cause) => failed(`asset ${id}: ${why(cause)}`) }), (buffer) => new Uint8Array(buffer)),

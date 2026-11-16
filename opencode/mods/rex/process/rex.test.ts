@@ -2,12 +2,12 @@
 // arguments: each call names the session, a split asks for the showcase
 // beside the caller, and a failing or garbled tool is RexFailed with what it
 // said.
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Context, Effect, Exit, Layer } from "effect"
+import { Context, Effect, Exit, Layer, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Rex } from "../service.ts"
 import * as ProcessRex from "./rex.ts"
@@ -59,7 +59,19 @@ describe("Rex over its tool", () => {
       const rex = yield* Rex
       expect(yield* rex.split({ session: "session:a", beside: "block:1", label: "showcase", command: ["rex-show", "view"] })).toBe("block:new")
       expect(yield* called).toEqual(["split -s session:a -b block:1 --split=right --ratio=40 --label=showcase --focus=false --json -- rex-show view"])
+      yield* rex.split({ session: "session:a", beside: "block:1", label: "leaf", command: ["leaf", "diff"], cwd: "/work/repo" })
+      expect((yield* called)[1]).toBe("split -s session:a -b block:1 --split=right --ratio=40 --label=leaf --focus=false -c /work/repo --json -- leaf diff")
     }).pipe(Effect.provide(fake("ok"))),
+    10_000,
+  )
+
+  effectTest(
+    "with no tool anywhere, each call fails saying where it looked",
+    Effect.gen(function* () {
+      const rex = yield* Rex
+      const exit = yield* Effect.exit(rex.blocks("session:a"))
+      expect(String(exit)).toContain("rex not found: not in $REX_BIN_DIR, on $PATH or in /Applications/Rex Beta.app")
+    }).pipe(Effect.provide(ProcessRex.missing)),
     10_000,
   )
 
@@ -112,4 +124,18 @@ describe("Rex over its tool", () => {
     }).pipe(Effect.provide(fake("garbage"))),
     10_000,
   )
+})
+
+describe("where Rex's tool is found", () => {
+  const beta = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
+  const plain = "/Applications/Rex.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
+  const among = (files: ReadonlyArray<string>) => (file: string) => files.includes(file)
+  test("beside the Rex that opened the terminal first, then on PATH in order, then in the Rex Beta app, then the Rex app; none when nowhere", () => {
+    const all = ["/rex/bin/rex", "/usr/local/bin/rex", "/opt/bin/rex", beta, plain]
+    expect(ProcessRex.rexBin(Option.some("/rex/bin"), "/usr/local/bin:/opt/bin", among(all))).toEqual(Option.some("/rex/bin/rex"))
+    expect(ProcessRex.rexBin(Option.none(), "/nowhere::/opt/bin:/usr/local/bin", among(all))).toEqual(Option.some("/opt/bin/rex"))
+    expect(ProcessRex.rexBin(Option.some("/gone"), "/usr/bin", among([beta, plain]))).toEqual(Option.some(beta))
+    expect(ProcessRex.rexBin(Option.none(), "/usr/bin", among([plain]))).toEqual(Option.some(plain))
+    expect(ProcessRex.rexBin(Option.none(), "", among([]))).toEqual(Option.none())
+  })
 })

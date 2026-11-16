@@ -39,19 +39,42 @@ export type Browse = typeof Browse.Type
 export const Shown = Schema.Union([Picture, Page, Url, Feed, Sim, Browse]).pipe(Schema.toTaggedUnion("_tag"))
 export type Shown = typeof Shown.Type
 
-/** The spool of one session: a counter that grows with each change, what is shown, and the tally. */
+/**
+ * The spool of one session: a counter that grows with each change, what is
+ * shown, the tally, and the Sideshow session the pane's feed follows (the
+ * caller's own, found on a call): the pane shows the feed when nothing else
+ * is shown, goes back to it when a live view is closed, and records each
+ * live view in it.
+ */
 export const Spooled = Schema.Struct({
   seq: Schema.Int,
   shown: Schema.optional(Shown),
   tally: Schema.optional(Tally),
+  feed: Schema.optional(Feed),
 })
 export type Spooled = typeof Spooled.Type
 
 /** A session's spool before its first call. */
 export const empty: Spooled = { seq: 0 }
 
-/** `spooled` showing `shown` instead, its tally kept. */
-export const show = (spooled: Spooled, shown: Shown): Spooled => ({ ...spooled, seq: spooled.seq + 1, shown })
+/** `spooled` showing `shown` instead, its tally kept; a Sideshow session shown is the feed from now on. */
+export const show = (spooled: Spooled, shown: Shown): Spooled => ({
+  ...spooled,
+  seq: spooled.seq + 1,
+  shown,
+  feed: Option.getOrElse(Option.liftPredicate(shown, Shown.guards.Feed), () => spooled.feed),
+})
+
+/** `spooled` with `feed` as its feed when it has none yet: a feed followed on purpose is not replaced by the caller's own. What it shows is kept. */
+export const remember = (spooled: Spooled, feed: Feed): Spooled =>
+  Option.match(Option.fromUndefinedOr(spooled.feed), { onNone: () => ({ ...spooled, seq: spooled.seq + 1, feed }), onSome: () => spooled })
+
+/** The feed `spooled` shows: a Sideshow session shown, or its feed when nothing is shown. */
+export const feedShown = (spooled: Spooled): Option.Option<Feed> =>
+  Option.match(Option.fromUndefinedOr(spooled.shown), {
+    onNone: () => Option.fromUndefinedOr(spooled.feed),
+    onSome: (shown) => Option.liftPredicate(shown, Shown.guards.Feed),
+  })
 
 /** `spooled` with `tally` instead, what it shows kept. */
 export const count = (spooled: Spooled, tally: Tally): Spooled => ({ ...spooled, seq: spooled.seq + 1, tally })

@@ -1,12 +1,14 @@
 // The handlers of rex-show: spool what to draw, then make sure the caller's
 // session has exactly one showcase pane (`arrange`), made beside the caller's
 // pane when it has none. Two calls at once may each make one; each then
-// arranges again, so the older stays and the newer is closed.
+// arranges again, so the older stays and the newer is closed. A leaf pane
+// (`openBeside`) is split off beside the caller the same way, unlabelled as
+// a showcase, one per call.
 import { Effect, Option } from "effect"
 import type { Pane } from "./pane.ts"
 import { arrange, LABEL } from "./showcase.ts"
 import { Rex, Spool } from "./service.ts"
-import { type Browse, count, type Feed, type Page, type Picture, show, type Sim, type Url } from "./spool.ts"
+import { type Browse, count, type Feed, type Page, type Picture, remember, show, type Sim, type Url } from "./spool.ts"
 import type { Tally } from "./status.ts"
 
 /** The showcase panes `arrange` closes, closed. */
@@ -60,6 +62,20 @@ export const showLive = Effect.fn("Showcase.live")(function* (pane: Pane, live: 
   const spooled = yield* spool.read(pane.session)
   yield* spool.write(pane.session, show(spooled, live))
   return yield* ensureShowcase(pane, viewer)
+})
+
+/** A pane labelled `label` running `command` in `cwd`, split off beside `pane`; its block id. */
+export const openBeside = Effect.fn("Showcase.openBeside")(function* (pane: Pane, label: string, command: ReadonlyArray<string>, cwd: string) {
+  const rex = yield* Rex
+  return yield* rex.split({ session: pane.session, beside: pane.block, label, command, cwd })
+})
+
+/** Keeps `feed` as the Sideshow session `pane`'s showcase follows when it follows none yet, so the pane shows it when nothing else is shown. */
+export const rememberFeed = Effect.fn("Showcase.rememberFeed")(function* (pane: Pane, feed: Feed) {
+  const spool = yield* Spool
+  const spooled = yield* spool.read(pane.session)
+  const kept = remember(spooled, feed)
+  if (kept !== spooled) yield* spool.write(pane.session, kept)
 })
 
 /** Sets the tally `pane`'s showcase reports; the showcase's block id. */

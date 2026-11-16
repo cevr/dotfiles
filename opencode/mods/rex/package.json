@@ -8,6 +8,7 @@
     "./*": "./*.ts"
   },
   "dependencies": {
-    "@dotfiles/opencode-herdr": "workspace:*"
+    "@dotfiles/opencode-herdr": "workspace:*",
+    "pele": "1.13.0"
   }
 }

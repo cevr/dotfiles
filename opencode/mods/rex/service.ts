@@ -1,7 +1,8 @@
 // The contracts rex-show needs from outside: Rex, which holds the session's
 // panes; the spool, where a call leaves what the showcase pane draws; and a
 // headless browser, which shoots the web page the pane shows; and Sideshow,
-// whose session the pane follows; and the iOS simulators the pane mirrors.
+// whose session the pane follows; the iOS simulators the pane mirrors; the
+// Mermaid diagrams it draws; and the host's way to open a page for the owner.
 import { Context, type Effect, type Option, Schema, type Scope } from "effect"
 import type { Block } from "./showcase.ts"
 import type { Device } from "./sim.ts"
@@ -39,35 +40,79 @@ export class SideshowFailed extends Schema.TaggedError<SideshowFailed>()("Sidesh
   message: Schema.String,
 }) {}
 
-/** One surface of a post, as Sideshow lists it: its kind and place, a markdown surface's text, an image's asset. */
+/**
+ * One surface of a post, as Sideshow lists it: its kind and place, and its
+ * body by kind (Sideshow leaves an html surface's body out of a list): a
+ * markdown surface's text, a Mermaid diagram's source, a diff's patch, a
+ * terminal's text, code and its language, a json surface's data, an image's
+ * asset.
+ */
 export const Surface = Schema.Struct({
   kind: Schema.String,
   index: Schema.Int,
   markdown: Schema.optional(Schema.String),
+  mermaid: Schema.optional(Schema.String),
+  patch: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  code: Schema.optional(Schema.String),
+  language: Schema.optional(Schema.String),
+  data: Schema.optional(Schema.Json),
   assetId: Schema.optional(Schema.String),
 })
 export type Surface = typeof Surface.Type
 
-/** One post of a session, as Sideshow lists it. */
+/** One post of a session, as Sideshow lists it: `version` counts its versions (each `sideshow update` adds one). */
 export const Post = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   version: Schema.Int,
+  createdAt: Schema.optional(Schema.String),
   updatedAt: Schema.String,
   surfaces: Schema.Array(Surface),
 })
 export type Post = typeof Post.Type
 
-/** One Sideshow server, read only. */
+/** One earlier version of a post, as Sideshow keeps it (the last 20). */
+export const Version = Schema.Struct({
+  version: Schema.Int,
+  title: Schema.String,
+  surfaces: Schema.Array(Surface),
+  at: Schema.String,
+})
+export type Version = typeof Version.Type
+
+/** One post with its earlier versions, as Sideshow sends one post. */
+export const PostDetail = Schema.Struct({
+  ...Post.fields,
+  history: Schema.Array(Version),
+})
+export type PostDetail = typeof PostDetail.Type
+
+/** A post the viewer records in a session: its title and surfaces, as Sideshow takes them. */
+export interface Entry {
+  readonly session: string
+  readonly title: string
+  readonly surfaces: ReadonlyArray<{ readonly [key: string]: string }>
+}
+
+/** One Sideshow server. */
 export interface SideshowServer {
   /** The title of `session`; none when the server does not know it. */
   readonly title: (session: string) => Effect.Effect<Option.Option<string>, SideshowFailed>
   /** The posts of `session`, in the order Sideshow lists them. */
   readonly posts: (session: string) => Effect.Effect<ReadonlyArray<Post>, SideshowFailed>
+  /** One post with its earlier versions. */
+  readonly post: (id: string) => Effect.Effect<PostDetail, SideshowFailed>
   /** The bytes of an uploaded asset. */
   readonly asset: (id: string) => Effect.Effect<Uint8Array, SideshowFailed>
   /** A post flattened to Markdown, as Sideshow's share menu copies it. */
   readonly markdown: (post: string) => Effect.Effect<string, SideshowFailed>
+  /** A comment on `post` from the user, as Sideshow's own viewer sends one: an agent's `sideshow wait` or `watch` gets it. */
+  readonly comment: (post: string, text: string) => Effect.Effect<void, SideshowFailed>
+  /** A PNG uploaded to `session`; its asset id. */
+  readonly upload: (session: string, png: Uint8Array) => Effect.Effect<string, SideshowFailed>
+  /** A new post; its id. */
+  readonly publish: (entry: Entry) => Effect.Effect<string, SideshowFailed>
 }
 
 /** Sideshow as this host's `sideshow` CLI sees it (`$SIDESHOW_URL`, else localhost:8228), and any server by its address. */
@@ -154,7 +199,37 @@ export interface Split {
   readonly label: string
   /** The program the new pane runs, and its arguments. */
   readonly command: ReadonlyArray<string>
+  /** The folder it runs in (Rex's default when absent). */
+  readonly cwd?: string
 }
+
+/** A Mermaid diagram could not be drawn: its source does not parse, or its page could not be written; why, for the pane. */
+export class DiagramFailed extends Schema.TaggedError<DiagramFailed>()("DiagramFailed", {
+  message: Schema.String,
+}) {}
+
+/** Mermaid diagrams drawn on this host, as a page the headless browser shoots. */
+export class Diagrams extends Context.Service<
+  Diagrams,
+  {
+    /** A page holding `source` drawn `width` pixels wide, light on dark as the pane is: its address and its size in pixels, to shoot it whole. */
+    readonly page: (source: string, width: number) => Effect.Effect<{ readonly url: string; readonly width: number; readonly height: number }, DiagramFailed>
+  }
+>()("dotfiles-opencode/rex/Diagrams") {}
+
+/** A web address could not be opened on this host; why. */
+export class OpenFailed extends Schema.TaggedError<OpenFailed>()("OpenFailed", {
+  message: Schema.String,
+}) {}
+
+/** This host's way to open a web address in the owner's browser. */
+export class Opener extends Context.Service<
+  Opener,
+  {
+    /** `url` opened in this host's browser. */
+    readonly open: (url: string) => Effect.Effect<void, OpenFailed>
+  }
+>()("dotfiles-opencode/rex/Opener") {}
 
 /** One Rex server's sessions and panes, as far as rex-show uses them. */
 export class Rex extends Context.Service<

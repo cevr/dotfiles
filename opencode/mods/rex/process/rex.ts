@@ -2,8 +2,8 @@
 // and `rex block close`, each with the session named (`-s`), so the
 // caller's own REX_SESSION never picks it. A call that exits non-zero or
 // prints what does not decode is RexFailed with Rex's own words.
-import { Effect, Layer, Option, Schema } from "effect"
-import { Rex, RexFailed } from "../service.ts"
+import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { Rex, RexFailed, type Split } from "../service.ts"
 
 const Listing = Schema.Struct({
   blocks: Schema.Array(Schema.Struct({ block_id: Schema.String, label: Schema.optional(Schema.String) })),
@@ -27,21 +27,41 @@ export interface Ran {
   readonly err: string
 }
 
-/** The arguments of a split beside `beside`, its program after `--`. */
-export const splitArgs = (session: string, beside: string, label: string, command: ReadonlyArray<string>): ReadonlyArray<string> => [
+/** The arguments of a split beside `split.beside`, in its folder when it names one, its program after `--`. */
+export const splitArgs = (split: Split): ReadonlyArray<string> => [
   "split",
   "-s",
-  session,
+  split.session,
   "-b",
-  beside,
+  split.beside,
   "--split=right",
   `--ratio=${RATIO}`,
-  `--label=${label}`,
+  `--label=${split.label}`,
   "--focus=false",
+  ...Option.match(Option.fromUndefinedOr(split.cwd), { onNone: () => [], onSome: (cwd) => ["-c", cwd] }),
   "--json",
   "--",
-  ...command,
+  ...split.command,
 ]
+
+/** Rex's tool where a terminal finds it: beside the Rex that opened it (`$REX_BIN_DIR`), else on `$PATH`, else in the Rex Beta or Rex app; none when it is in none of them. */
+export const rexBin = (binDir: Option.Option<string>, path: string, exists: (file: string) => boolean): Option.Option<string> =>
+  Arr.findFirst(
+    [...Option.toArray(Option.map(binDir, (dir) => `${dir}/rex`)), ...path.split(":").filter((dir) => dir !== "").map((dir) => `${dir}/rex`), ...REX_APPS],
+    exists,
+  )
+
+/** Where the Rex apps keep their tool on a Mac. */
+export const REX_APPS: ReadonlyArray<string> = ["Rex Beta", "Rex"].map((app) => `/Applications/${app}.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex`)
+
+/** Why Rex's tool was not found, for a refusal. */
+export const NO_REX = `rex not found: not in $REX_BIN_DIR, on $PATH or in ${REX_APPS.join(" or ")}; set REX_BIN_DIR to the folder that holds it`
+
+/** Rex when its tool is nowhere: each call fails saying so. */
+export const missing = Layer.sync(Rex, () => {
+  const fail = (command: string) => Effect.fail(new RexFailed({ command, message: NO_REX }))
+  return Rex.of({ blocks: () => fail("block ls"), split: () => fail("split"), close: () => fail("block close"), running: () => fail("block call") })
+})
 
 const named = (args: ReadonlyArray<string>) => args.slice(0, 2).join(" ")
 
@@ -82,7 +102,7 @@ export const layer = (bin = "rex") =>
       return Rex.of({
         blocks,
         split: Effect.fn("ProcessRex.split")(function* (split) {
-          const out = yield* succeed(splitArgs(split.session, split.beside, split.label, split.command))
+          const out = yield* succeed(splitArgs(split))
           const made = yield* decodeMade(out).pipe(Effect.mapError(undecodable("split")))
           return made.block_ids[0]
         }),
