@@ -122,7 +122,8 @@ describe("the merge check's tests", () => {
       const [stdout, code] = yield* Effect.all([child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode], { concurrency: 2 })
       const steps = stdout.split("\n").flatMap((line) => Option.toArray(Option.map(Option.fromNullishOr(/^step (\w+): (.*)$/.exec(line)), (match) => [String(match[1]), String(match[2])] as const)))
       expect(Number(code)).toBe(0)
-      expect(steps.map(([name]) => name)).toEqual(["link", "lint", "debt", "types", "tests"])
+      // Each step prints from its own echo, so their order is not asserted.
+      expect(steps.map(([name]) => name).toSorted()).toEqual(["debt", "link", "lint", "tests", "types"])
       // HEAD against itself changes nothing: no file to lint, no test due.
       expect(steps.filter(([name]) => name === "tests" || name === "lint").map(([, command]) => command)).toEqual(["true", "true"])
     }).pipe(Effect.scoped),

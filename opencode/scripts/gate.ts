@@ -178,10 +178,8 @@ const mergeCheck = (base: string, runner: typeof run) =>
  * `--dry-run`'s runner: it runs nothing, prints the leg (`step <name>: <command>`) and answers it passed. The merge
  * check runs the same path with it, link and every leg, so scripts/merge-check.test.ts reads the steps it starts.
  */
-const printed: typeof run = (name, argv, _env, note) => {
-  console.log(`step ${name}: ${argv.join(" ")}`)
-  return Promise.resolve({ name, ok: true, output: "", time: "0.00s", note: Option.getOrElse(Option.fromUndefinedOr(note), () => "") })
-}
+const printed: typeof run = (name, argv, _env, note) =>
+  $`echo ${`step ${name}: ${argv.join(" ")}`}`.then(() => ({ name, ok: true, output: "", time: "0.00s", note: Option.getOrElse(Option.fromUndefinedOr(note), () => "") }))
 
 /** The merge check's legs over the changes since `base` (scripts/merge-check.ts), with each scripts/ file's imports. */
 const planned = (base: string) =>
