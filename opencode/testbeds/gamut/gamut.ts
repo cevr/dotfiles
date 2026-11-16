@@ -23,7 +23,9 @@
  * runs the fork from source in `OPENCODE_DEV` (default: the prime-look Rift
  * beside this checkout), or the installed `opencode2` with `--installed`.
  * Every later subcommand reaches the TUI through the host's socket and reads
- * the run's own database. Run state stays in the scratch directory.
+ * the run's own database. Run state stays in the scratch directory. With
+ * `GAMUT_OWNER` set to a pid (the e2e test sets its own), the host and the sim
+ * model end once that process is gone (owner.ts), `down` or not.
  *
  * A plain Bun script, a driver for a terminal program. Its pure parts are
  * covered by `tests/gamut.test.ts`.
