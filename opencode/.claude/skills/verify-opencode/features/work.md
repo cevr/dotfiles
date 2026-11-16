@@ -22,7 +22,7 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 - **Preconditions:** the work plugin loaded on its memory doubles (one base, a landing config with a gate and an accept check), never beside the rift plugin.
 - **States:** default (create, list by the alias, land) and the accept check's wake. Open, loading, empty, refused and error are `n/a` here: the refusals are in `cmd/work/server.test.ts`.
 - **World suites:** `cmd/work/work.sim.test.ts`
-- **Code:** `cmd/work/`
+- **Code:** `cmd/work/`, `tests/plugin-start.test.ts` (its real check that the bare entry starts with the work binary on PATH, among daily's server plugins)
 
 1. **Create.** Prompt `verify: call work {"action":"create","branch":"feat/x"}`. The answer starts `Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.`
 2. **List by the alias.** Prompt `verify: call rift {"action":"list"}`. The answer is `Workspaces of /code/app:` and the line `- /code/.rifts/app/feat-x · branch feat/x · clean`.
@@ -30,9 +30,9 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 
 ## Driving it with real OpenCode
 
-- **Real:** `tests/work.test.ts`
+- **Real:** `tests/work.test.ts`, `tests/plugin-start.test.ts`
 
-1. **Not on a scratch server.** `verify:seed` refuses the work plugin, which makes and trashes workspaces of real repositories. Its real proof is `tests/work.test.ts`, run with `WORK_BIN` naming the `work` binary and `OPENCODE_DEV` the fork: a workspace made under `.work/<base>/`, a commit in it, a refused remove and a forced one, a land with one push to the bare origin and the accept check's wake, and a list by the alias `rift`.
+1. **Not on a scratch server.** `verify:seed` refuses the work plugin, which makes and trashes workspaces of real repositories. Its real proof is `tests/work.test.ts`, run with `WORK_BIN` naming the `work` binary and `OPENCODE_DEV` the fork: a workspace made under `.work/<base>/`, a commit in it, a refused remove and a forced one, a land with one push to the bare origin and the accept check's wake, and a list by the alias `rift`. `tests/plugin-start.test.ts` starts daily's server plugins on a scratch service, the work plugin listed bare as daily lists it: a setup that fails (no `work` on the service's PATH) fails it.
 
 ## Gotchas
 

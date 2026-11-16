@@ -111,7 +111,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
     }),
   )
 
-  live("every source file batch 2026-11-15cc's, 2026-11-16cv's and 2026-11-16cx's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
+  live("every source file batch 2026-11-15cc's, 2026-11-16cv's, 2026-11-16cx's and 2026-11-16cy's drives found in no feature's Code is now in one, or set aside by the index's No drive", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -152,6 +152,9 @@ describe("the verify-opencode skill names only what the tree has", () => {
         "tests/rift.test.ts",
         "tests/rift/run.ts",
         "tests/rift/sim.ts",
+        // 2026-11-16cy: the plugin-start check (work's) and the scratch-service helper (mail's), changed by the reaper.
+        "tests/plugin-start.test.ts",
+        "tests/service.ts",
       ]
       expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({
         exempt: ["scripts/", "formal/", "lint/", "tests/accept-clock.test.ts", "testbeds/gamut/", "tests/gamut.test.ts", "tests/gamut-owner.test.ts", "testbeds/reaper/", "tests/reaper.test.ts", "tests/reaper/"],
