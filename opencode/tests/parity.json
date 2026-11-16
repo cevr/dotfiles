@@ -80,18 +80,6 @@
       "simulated": "cmd/pool/pool-resets.sim.test.ts",
       "tests": [
         {
-          "name": "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
-          "expects": 17,
-          "carried": "both",
-          "why": "real too: a ChatGPT login's metadata (its accountID) through integration.connection.resolve is no host law yet; the backend is under sim/chatgpt-laws.ts"
-        },
-        {
-          "name": "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
-          "expects": 16,
-          "carried": "both",
-          "why": "real too while the Codex name keeps the real file: the RPC and integration laws kept on real OpenCode at 2b837b55 and a provider law covers the claim endpoint"
-        },
-        {
           "name": "one spent week with two weekly resets about to expire spends one: the reading after it shows the week back, so the second is kept",
           "expects": 3,
           "carried": "both",
@@ -184,5 +172,16 @@
       ]
     }
   },
-  "retired": []
+  "retired": [
+    {
+      "file": "tests/pool-resets.test.ts",
+      "name": "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
+      "by": "with agents running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with no agent running and no start held, nothing is claimed and nothing asked"
+    },
+    {
+      "file": "tests/pool-resets.test.ts",
+      "name": "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+      "by": "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told"
+    }
+  ]
 }
