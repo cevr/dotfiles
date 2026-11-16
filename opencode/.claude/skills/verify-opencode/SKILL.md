@@ -43,8 +43,8 @@ pilotty wait-for -s verify-$PORT "Ask anything" -t 60000
 
 `bun run verify:doctor` (the world) or `bun run verify:doctor --root $ROOT [--commit <sha>]` (a launched server) is read-only and prints one JSON line: `ok`, the first check that `failed`, and each check. Run it before the first drive and again after any surprising result.
 
-- World: `fork` (the fork is at `OPENCODE_DEV`), `linked` (`sim/node_modules/@opencode/plugin`), `head`, `load`.
-- Real, in order: `seed` (`verify.json` parses), `config` (`work/opencode.json` parses), `launched` (`launch.json`; listed only when it is missing), `pid` (the port is held by the recorded server's process group), `head` (this checkout's HEAD is the launched one, and the commit under test with `--commit`), `fork` (the fork has not moved since the launch), `answers` (`GET /api/info`), `log` (`server.log` holds no failure line), `audio` (n/a: neither path opens a browser), `load`.
+- World: `fork` (the fork is at `OPENCODE_DEV`), `fork-branch` (its worktree is not behind `prime-look` or `origin/prime-look`), `linked` (`sim/node_modules/@opencode/plugin`), `head`, `load`.
+- Real, in order: `seed` (`verify.json` parses), `config` (`work/opencode.json` parses), `launched` (`launch.json`; listed only when it is missing), `pid` (the port is held by the recorded server's process group), `head` (this checkout's HEAD is the launched one, and the commit under test with `--commit`), `fork` (the fork has not moved since the launch), `fork-branch` (as in the world's), `answers` (`GET /api/info`), `log` (`server.log` holds no failure line), `audio` (n/a: neither path opens a browser), `load`.
 - `load` never fails: past the core count it says timings claim nothing (`explain-the-number`). The world reads no wall time; a loaded host only plays fewer fresh seeds in a swarm's box.
 
 ## Drive
