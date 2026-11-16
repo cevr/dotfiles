@@ -67,6 +67,7 @@ import { tmpdir, userInfo } from "node:os"
 import { basename, join, resolve } from "node:path"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { feedPane } from "@dotfiles/opencode-rex/feedpane"
+import type { FeedState } from "@dotfiles/opencode-rex/feedview"
 import { leafArgs, leafFile, leafHand } from "@dotfiles/opencode-rex/surface"
 import * as FileSpool from "@dotfiles/opencode-rex/filestore/spool"
 import { Content, frame, roomOf } from "@dotfiles/opencode-rex/frame"
@@ -584,9 +585,10 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
       }
     }
   })
-  /** The feed pane on `feed`, until the spool moves on from `seq`. */
-  const following = (feed: Feed, seq: number) =>
-    feedPane({ feed, screen, read, rest, moved: Effect.map(current, (now) => now.seq !== seq), leaf: leafOf(session, hands) })
+  /** Each feed's state as its pane last left it, so a pane on it again (back from a view) goes on where its user was. */
+  const kept = new Map<string, FeedState>()
+  /** The feed pane on `feed`, until the spool shows something else. */
+  const following = (feed: Feed) => feedPane({ feed, screen, read, rest, spooled: current, kept, leaf: leafOf(session, hands) })
   while (true) {
     const spooled = yield* current
     const kind = kindOf(spooled)
@@ -594,7 +596,7 @@ export const viewer = Effect.fn("RexShow.view")(function* (session: string, scre
     const viewing = Option.match(Option.liftPredicate(kind, (each) => each === "browse"), { onSome: () => looking(kind), onNone: () => Effect.raceFirst(looking(kind), stillKeys) }).pipe(
       Effect.catchTag("Quit", () => Effect.succeed<Ended>("quit")),
     )
-    const ended: Ended = yield* Option.match(feedShown(spooled), { onSome: (feed) => following(feed, spooled.seq), onNone: () => viewing })
+    const ended: Ended = yield* Option.match(feedShown(spooled), { onSome: following, onNone: () => viewing })
     if (ended === "quit") return ""
   }
 }, Effect.scoped)

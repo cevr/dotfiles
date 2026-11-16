@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import { Action, actionsOf, boardHiddenOf, boardLine, boardMost, drawFeed, Event, type FeedState, feedLayout, feedTally, firstRow, initial, Job, layoutOf, Mode, rowAt, shownOf, step } from "./feedview.ts"
+import { report, type Tally } from "./status.ts"
 import { Block } from "./surface.ts"
 import { Input, Mouse, NO_MODS } from "./live.ts"
 import type { Post, Version } from "./service.ts"
@@ -186,7 +187,7 @@ describe("the board's region", () => {
   const STYLE = new RegExp(String.raw`\u001b\[[0-9;]*[A-Za-z]`, "g")
   /** A board of `count` checklist lines, as the pane draws it. */
   const lines = (count: number) => Array.from({ length: count }, (_, at) => `- step ${at + 1}`).join("\n")
-  const frameOf = (state: FeedState, count: number) => ({ state, title: "Plan", board: [Block.Markdown({ text: lines(count) })], view: [], now: Date.UTC(2026, 10, 15, 10, 30), cell })
+  const frameOf = (state: FeedState, count: number) => ({ state, title: "Plan", tally: Option.none(), board: [Block.Markdown({ text: lines(count) })], view: [], now: Date.UTC(2026, 10, 15, 10, 30), cell })
 
   test("is as tall as the board's lines, up to a third of the pane, for any board", () => {
     const state = run([Event.Polled({ posts: [board, notes] })]).state
@@ -238,12 +239,22 @@ describe("the board's region", () => {
 describe("the frame and the tally", () => {
   test("draws the session's title, the board's version, the timeline newest first, the shown post, and the keys", () => {
     const state = run([Event.Polled({ posts: [board, notes, sketch] })]).state
-    const frame = drawFeed({ state, title: "Plan", board: [], view: [], now: Date.UTC(2026, 10, 15, 10, 30), cell: { width: 12, height: 38 } }, { cols: 120, rows: 40 })
+    const frame = drawFeed({ state, title: "Plan", tally: Option.none(), board: [], view: [], now: Date.UTC(2026, 10, 15, 10, 30), cell: { width: 12, height: 38 } }, { cols: 120, rows: 40 })
     expect(frame).toContain("feed · Plan")
     expect(frame).toContain("◆ Board")
     expect(frame).toContain("v2 · updated 30m ago")
     expect(frame.indexOf("sketch")).toBeLessThan(frame.indexOf("notes"))
     expect(frame).toContain("j/k move")
+    expect(frame).toContain(report(feedTally(state.posts)))
+  })
+
+  test("an agent's tally is the header's right part and Rex's tab header, in place of the feed's own", () => {
+    const state = run([Event.Polled({ posts: [board, notes] })]).state
+    const tally: Tally = { msg: "3 of 7 checks green", state: "working", progress: 43 }
+    const frame = drawFeed({ state, title: "Plan", tally: Option.some(tally), board: [], view: [], now: Date.UTC(2026, 10, 15, 10, 30), cell: { width: 12, height: 38 } }, { cols: 120, rows: 40 })
+    expect(frame.replace(new RegExp(String.raw`\u001b\[[0-9;]*m`, "g"), "")).toContain("feed · Plan   ◆ 3 of 7 checks green · 43%")
+    expect(frame).toContain(report(tally))
+    expect(frame).not.toContain(report(feedTally(state.posts)))
   })
 
   test("the tally is the board's headline and the post count, else the count and the newest's title", () => {

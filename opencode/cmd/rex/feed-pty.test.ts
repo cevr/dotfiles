@@ -6,8 +6,10 @@
 // into it as its user: a post that comes shows on top of the timeline (no dot,
 // as the view follows it), the board shows its newest version, cut at a third
 // of the pane with what is past it said and `B` then `j` scrolling it, `j`
-// then `[` walk a post's
-// versions back, `c` sends a comment Sideshow hears as the user's, and `q`
+// then `[` walk a post's versions back, a tally an agent writes to the
+// spool mid-comment shows in the header and keeps all of that and the
+// half-typed comment (the pane goes on, it does not start again), `c` sends
+// a comment Sideshow hears as the user's, and `q`
 // ends the program with exit 0.
 import { describe, expect } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
@@ -146,6 +148,18 @@ describe("the feed in a terminal", () => {
         yield* type("c")
         yield* type("looks good")
         yield* drawn(out, seen, "comment:", "looks good")
+        // An agent's tally mid-comment, written as `rex-show tally` writes it: the feed goes on in place, its
+        // tally in the header, the comment half typed, the pick, its version and the board's scroll all kept.
+        writeFileSync(
+          join(root, "session_pty", "spool.json"),
+          encodeSpooled({ seq: 2, shown: Feed.make({ base, session: "s1", name: "s1", every: 1 }), tally: { msg: "3 of 7 checks green", state: "working", progress: 43 } }),
+        )
+        const tallied = { text: yield* drawn(out, seen, "◆ 3 of 7 checks green · 43%") }
+        const latest = () => tallied.text.slice(tallied.text.lastIndexOf("feed · Plan"))
+        while (!latest().includes("esc drops")) tallied.text += yield* drawn(out, seen, "esc drops")
+        for (const kept of ["◆ 3 of 7 checks green · 43%", "comment: looks good", "notes · v2/3", "second draft", `… ${more - 1} more lines`]) {
+          expect({ kept, drawn: latest().includes(kept) }).toEqual({ kept, drawn: true })
+        }
         yield* type("\r")
         yield* drawn(out, seen, "comment sent")
         expect(stage.comments).toEqual([{ body: { surface: "n", text: "looks good", author: "user" }, sameOrigin: true }])

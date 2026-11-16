@@ -247,6 +247,15 @@ effectTest(
     yield* frameWith(frames, "comment sent")
     expect((yield* Ref.get(world)).comments).toEqual([{ post: "p1", text: "looks good" }])
 
+    // A page shown in its place ends the feed pane; q back from it, the feed goes on where it was: notes at v2.
+    const page = png(1280, 900, 4)
+    const feed = Feed.make({ base: BASE, session: "s1", name: "s1", every: 0 })
+    yield* Ref.update(pages, (now) => new Map([...now, ["http://localhost:3000/", page]]))
+    yield* Ref.set(viewed, new Map([["session:a", { seq: 2, feed, shown: Url.make({ url: "http://localhost:3000/", name: "localhost:3000", every: 60, width: 1280 }) }]]))
+    yield* frameWith(frames, "showcase · localhost:3000", Base64.encode(page))
+    yield* Queue.offer(keys, "q")
+    yield* frameWith(frames, "feed · Plan", "v2/3", "second draft")
+
     yield* Queue.offer(keys, "q")
     expect(yield* Fiber.join(running)).toBe("")
   }).pipe(Effect.provide(following)),

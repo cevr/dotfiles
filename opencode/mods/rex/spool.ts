@@ -76,6 +76,19 @@ export const feedShown = (spooled: Spooled): Option.Option<Feed> =>
     onSome: (shown) => Option.liftPredicate(shown, Shown.guards.Feed),
   })
 
+/** Whether two feeds are one: the same Sideshow session on the same server, asked as often. */
+export const sameFeed = (one: Feed, other: Feed): boolean => one.base === other.base && one.session === other.session && one.every === other.every
+
+/** The key a feed pane's state is kept under between its runs: its server and session. */
+export const feedKey = (feed: Feed): string => `${feed.base}|${feed.session}`
+
+/**
+ * Whether `spooled` still shows `feed`: a write that keeps it (a tally, the
+ * feed remembered, the same feed shown again) leaves its pane running; one
+ * that shows something else, or another feed, ends it.
+ */
+export const keepsFeed = (spooled: Spooled, feed: Feed): boolean => Option.exists(feedShown(spooled), (now) => sameFeed(now, feed))
+
 /** `spooled` with `tally` instead, what it shows kept. */
 export const count = (spooled: Spooled, tally: Tally): Spooled => ({ ...spooled, seq: spooled.seq + 1, tally })
 

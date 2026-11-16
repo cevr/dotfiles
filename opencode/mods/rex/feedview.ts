@@ -12,7 +12,7 @@ import { Input, type Mouse } from "./live.ts"
 import { visibleWidth } from "./markdown.ts"
 import type { Post, Surface, Version } from "./service.ts"
 import { Block, clip, linesOf, pad } from "./surface.ts"
-import { clearReport, report, type Tally } from "./status.ts"
+import { clearReport, oneLine, report, type Tally } from "./status.ts"
 import { agoOf, BOARD_TITLE, boardOf, millisOf, type Row, rowsOf, stepVersion, timelineOf } from "./timeline.ts"
 
 const ESC = "\u001b"
@@ -498,10 +498,11 @@ export const boardLine = (board: Post): string =>
     () => board.title,
   )
 
-/** What one frame draws: the state, the session's title, the board's and the view's surfaces as drawn so far, the time, and the cells' pixels. */
+/** What one frame draws: the state, the session's title, the tally an agent set (`rex-show tally`), the board's and the view's surfaces as drawn so far, the time, and the cells' pixels. */
 export interface Frame {
   readonly state: FeedState
   readonly title: string
+  readonly tally: Option.Option<Tally>
   readonly board: ReadonlyArray<Block>
   readonly view: ReadonlyArray<Block>
   readonly now: number
@@ -672,7 +673,12 @@ const helpPage = (layout: FeedLayout): string =>
 /** The whole frame of the pane at `size`: the screen cleared, its regions drawn, the tally reported. */
 export const drawFeed = (frame: Frame, size: Cells): string => {
   const layout = feedLayout(frame, size)
-  const header = `${at(1, 1)}${DIM}${clip(`feed · ${frame.title}`, size.cols)}${RESET}`
+  // An agent's tally is the header's right part and Rex's tab header; without one, the feed's own tally is.
+  const said = Option.match(frame.tally, {
+    onNone: () => "",
+    onSome: (tally) => `   ${BOLD}◆ ${oneLine(tally.msg)}${Option.match(Option.fromUndefinedOr(tally.progress), { onNone: () => "", onSome: (value) => ` · ${value}%` })}${RESET}`,
+  })
+  const header = `${at(1, 1)}${clip(`${DIM}feed · ${frame.title}${RESET}${said}`, size.cols)}${RESET}`
   const rule = `${at(layout.board.top + layout.board.rows, 1)}${DIM}${"─".repeat(size.cols)}${RESET}`
   const bar = Arr.makeBy(layout.view.rows, (row) => `${at(layout.view.top + row, layout.view.left - 1)}${DIM}│${RESET}`).join("")
   const regions = Mode.$match(frame.state.mode, {
@@ -680,6 +686,9 @@ export const drawFeed = (frame: Frame, size: Cells): string => {
     Comment: () => `${boardRegion(frame, layout)}${rule}${timelineRegion(frame, layout)}${bar}${viewRegion(frame, layout.view)}`,
     Browse: () => `${boardRegion(frame, layout)}${rule}${timelineRegion(frame, layout)}${bar}${viewRegion(frame, layout.view)}`,
   })
-  const tally = Option.match(Option.liftPredicate(frame.state.loaded, (loaded) => loaded), { onNone: () => clearReport, onSome: () => report(feedTally(frame.state.posts)) })
+  const tally = Option.match(frame.tally, {
+    onSome: report,
+    onNone: () => Option.match(Option.liftPredicate(frame.state.loaded, (loaded) => loaded), { onNone: () => clearReport, onSome: () => report(feedTally(frame.state.posts)) }),
+  })
   return `${HIDE_CURSOR}${clearPictures}${CLEAR}${header}${regions}${at(layout.status, 1)}${statusLine(frame, size.cols)}${tally}`
 }

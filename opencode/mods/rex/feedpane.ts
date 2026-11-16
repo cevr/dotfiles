@@ -9,12 +9,13 @@
 // post's Markdown or diff handed to leaf (by the caller, who writes files).
 import { Clock, Effect, Exit, Option, Queue } from "effect"
 import { FEED_WIDTH, SETTLE_MS } from "./feed.ts"
-import { actionsOf, boardHiddenOf, boardMost, drawFeed, Event, feedLayout, firstRow, type Frame, initial, Job, layoutOf, shownOf, step } from "./feedview.ts"
+import { actionsOf, boardHiddenOf, boardMost, drawFeed, Event, type FeedState, feedLayout, firstRow, type Frame, initial, Job, layoutOf, shownOf, step } from "./feedview.ts"
 import { type Cells, type CellPixels, isPng } from "./graphics.ts"
 import { parseInput } from "./live.ts"
 import { Browser, Diagrams, Opener, type Post, Sideshow, type Surface } from "./service.ts"
 import { viewport } from "./shots.ts"
-import type { Feed } from "./spool.ts"
+import { type Feed, feedKey, keepsFeed, type Spooled, tallyOf } from "./spool.ts"
+import type { Tally } from "./status.ts"
 import { Block, renderOf, Render, textBlock } from "./surface.ts"
 import { boardOf, versionsOf } from "./timeline.ts"
 
@@ -31,17 +32,26 @@ export type FeedEnded = "quit" | "left"
 const QUIT: FeedEnded = "quit"
 const LEFT: FeedEnded = "left"
 
-/** What the feed pane is given: its session, the pane, its input (and the start of a sequence read before), whether the spool moved on, and how to hand a post to leaf. */
+/**
+ * What the feed pane is given: its session, the pane, its input (and the
+ * start of a sequence read before), the spool as it is now, where its state
+ * is kept between its runs, and how to hand a post to leaf.
+ */
 export interface FeedRun {
   readonly feed: Feed
   readonly screen: FeedScreen
   readonly read: Effect.Effect<string>
   readonly rest: { value: string }
-  /** Whether the spool moved on from what it showed when the pane began. */
-  readonly moved: Effect.Effect<boolean>
+  /** The spool now: the pane leaves once it shows something else, and draws its tally. */
+  readonly spooled: Effect.Effect<Spooled>
+  /** Each feed's state as its pane last left it, by `feedKey`: a pane on the same feed again goes on from there. */
+  readonly kept: Map<string, FeedState>
   /** A post's surfaces handed to leaf in a pane beside; what the pane says it did. */
   readonly leaf: (title: string, surfaces: ReadonlyArray<Surface>) => Effect.Effect<string, { readonly message: string }>
 }
+
+/** Whether two tallies say the same. */
+const sameTally = (one: Tally, other: Tally): boolean => one.msg === other.msg && one.state === other.state && one.progress === other.progress
 
 /** How often the pane looks whether the spool moved on and its size changed. */
 const LOOK_EVERY = "250 millis"
@@ -76,7 +86,12 @@ const blockOf = Effect.fn("Feed.block")(function* (feed: Feed, render: Render, r
   return yield* Effect.catch(fetched, (error) => Effect.succeed(Block.Failed({ reason: error.message })))
 })
 
-/** The feed pane on `run.feed` until the spool moves on or its user quits. */
+/**
+ * The feed pane on `run.feed` until the spool shows something else or its
+ * user quits. It goes on from the state this feed's pane last left (the pick,
+ * the version, a comment half typed, the board's scroll, the dots), and
+ * leaves its own state for the next.
+ */
 export const feedPane = Effect.fn("Feed.pane")(
   function* (run: FeedRun) {
     const sideshow = yield* Sideshow
@@ -84,8 +99,10 @@ export const feedPane = Effect.fn("Feed.pane")(
     const server = sideshow.at(run.feed.base)
     const events = yield* Queue.unbounded<Event>()
     const offer = (event: Event) => Queue.offer(events, event)
+    const key = feedKey(run.feed)
     const now = {
-      state: initial,
+      state: Option.getOrElse(Option.fromUndefinedOr(run.kept.get(key)), () => initial),
+      tally: tallyOf(yield* run.spooled),
       size: yield* run.screen.size,
       cell: { width: 1, height: 2 },
       title: run.feed.name,
@@ -124,7 +141,7 @@ export const feedPane = Effect.fn("Feed.pane")(
         onNone: () => Effect.succeed<ReadonlyArray<Block>>([]),
         onSome: (post) => blocksFor("board", post, post.version, post.surfaces, { cols: now.size.cols, rows: boardMost(now.size) - 1 }),
       })
-      const partial: Frame = { state, title: now.title, board, view: [], now: yield* Clock.currentTimeMillis, cell: now.cell }
+      const partial: Frame = { state, title: now.title, tally: now.tally, board, view: [], now: yield* Clock.currentTimeMillis, cell: now.cell }
       const layout = feedLayout(partial, now.size)
       now.layout = layout
       const hidden = boardHiddenOf(partial, now.size)
@@ -165,6 +182,7 @@ export const feedPane = Effect.fn("Feed.pane")(
       Effect.gen(function* () {
         const stepped = step(now.state, event)
         now.state = stepped.state
+        run.kept.set(key, stepped.state)
         const quit = stepped.jobs.some((job) => job._tag === "Quit")
         yield* Effect.forEach(stepped.jobs, (job) => Effect.forkIn(runJob(job), scope), { discard: true })
         return quit
@@ -198,7 +216,14 @@ export const feedPane = Effect.fn("Feed.pane")(
     const watching = Effect.gen(function* () {
       while (true) {
         yield* Effect.sleep(LOOK_EVERY)
-        if (yield* run.moved) return LEFT
+        // A write that keeps this feed (a tally above all) is drawn in place; only another view or feed ends the pane.
+        const spooled = yield* run.spooled
+        if (!keepsFeed(spooled, run.feed)) return LEFT
+        const tally = tallyOf(spooled)
+        if (!Option.makeEquivalence(sameTally)(tally, now.tally)) {
+          now.tally = tally
+          yield* offer(Event.Redraw())
+        }
         const size = yield* run.screen.size
         if (size.cols !== now.size.cols || size.rows !== now.size.rows) {
           now.size = size
