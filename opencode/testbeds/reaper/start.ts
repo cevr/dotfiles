@@ -13,16 +13,18 @@ import { Effect, Path, Scope } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 /**
- * Starts the reaper for this process. `sh`'s `$PPID` is this process, the owner the reaper watches. The reaper
- * leads a process group of its own (`detached`), so a harness that stops this process's group leaves it to do
- * its work, and its scope is never closed: it outlives this process by design, and ends once it has reaped.
+ * Starts the reaper for this process. `sh`'s `$PPID` is this process, the owner the reaper watches. `sh` starts the
+ * reaper in the background and exits at once, so this process holds no handle that keeps it running (a plain
+ * `bun` script that imports this would otherwise wait on the reaper, which waits on it). The reaper is in `sh`'s
+ * process group (`detached`), not this process's, so a harness that stops this process's group leaves it to do its
+ * work; the scope is never closed, as a closed one would stop that group.
  */
 export const startReaper = Effect.gen(function* () {
   const path = yield* Path.Path
   const program = yield* path.fromFileUrl(new URL("./run.ts", import.meta.url))
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const scope = yield* Scope.make()
-  const command = ChildProcess.make("sh", ["-c", 'REAPER_OWNER=$PPID exec bun "$0"', program], { detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore", forceKillAfter: "1 second" })
+  const command = ChildProcess.make("sh", ["-c", 'REAPER_OWNER=$PPID bun "$0" </dev/null >/dev/null 2>&1 &', program], { detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore", forceKillAfter: "1 second" })
   yield* spawner.spawn(command).pipe(Scope.provide(scope))
 }).pipe(Effect.provide(BunServices.layer), Effect.ignore)
 

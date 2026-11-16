@@ -1,7 +1,7 @@
 // A test runner as tests/reaper.test.ts kills it: it imports testbeds/reaper/start.ts as a test file's helpers do, then
 // starts what outlived the batch-cx runs: a background process handed to pid 1 (as `service start` leaves the
-// service) and a child leading a process group of its own (as opencode-drive starts a TUI). It prints
-// `daemon <pid>` and `child <pid>`, then waits to be killed. Each sleeps two minutes at most, so a failed run
+// service) and a child leading a process group of its own (as opencode-drive starts a TUI), and one that starts a `sleep 122` on SIGTERM. It prints
+// `daemon <pid>`, `respawner <pid>` and `child <pid>`, then waits to be killed. Each sleeps two minutes at most, so a failed run
 // leaves nothing for longer.
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -22,6 +22,11 @@ const program = Effect.gen(function* () {
   const daemon = yield* sh.stdout.pipe(Stream.decodeText(), Stream.mkString)
   yield* Console.log(`daemon ${daemon.trim()}`)
   const child = yield* spawner.spawn(ChildProcess.make("sleep", ["121"], { ...QUIET, detached: true, stdout: "ignore" })).pipe(Scope.provide(scope))
+  // One that starts another when it is told to stop, as a TUI starts a service when its own ends: never asked, never started.
+  const respawner = yield* spawner
+    .spawn(ChildProcess.make("sh", ["-c", "trap 'sleep 122 & exit' TERM; while :; do sleep 1; done"], { ...QUIET, detached: true, stdout: "ignore" }))
+    .pipe(Scope.provide(scope))
+  yield* Console.log(`respawner ${respawner.pid}`)
   yield* Console.log(`child ${child.pid}`)
   yield* Effect.never
 })

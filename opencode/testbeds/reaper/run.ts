@@ -3,8 +3,8 @@
 // process), so it still knows one handed to pid 1: a background service `service start` made, an
 // opencode-drive TUI in a group of its own. Once the owner is gone (the same pid and start time no longer in
 // the table), whether it exited, timed out or was killed with SIGKILL and ran no cleanup of its own, it stops
-// each of them still running, frozen first with what they started since its last sample (`freeze`), then
-// SIGTERM, then SIGKILL (scripts/leaks.ts `stop`), and ends. Only the owner's
+// each of them still running, frozen first with what they started since its last sample (`freeze`), with
+// SIGKILL, and ends. Only the owner's
 // descendants are ever named, the reaper itself aside, so nothing the test did not start is touched.
 //
 // With `REAPER_SEEN` set to a file, it writes there the pids it has seen after each sample: tests/reaper.test.ts
@@ -12,15 +12,13 @@
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Config, Effect, FileSystem, Option, Schedule } from "effect"
-import { descendants, type Proc, signal, stop, survivors, table } from "../../scripts/leaks.ts"
+import { descendants, type Proc, signal, survivors, table } from "../../scripts/leaks.ts"
 
 /**
  * How often the table is sampled while the owner lives. A process handed to pid 1 sooner than this after its
  * start goes unseen; a service is its starter's child until it serves (the fork's client waits, ~1.6 s).
  */
 const EVERY = "500 millis"
-/** How long a survivor has between SIGTERM and SIGKILL. */
-const GRACE_MS = 3000
 /** The reaper's own command line: never one of the processes it stops. */
 const REAPER = /testbeds\/reaper\/run\.ts/
 
@@ -57,18 +55,16 @@ const freeze = (procs: ReadonlyArray<Proc>) =>
 const program = Effect.gen(function* () {
   const pid = yield* Config.Int("REAPER_OWNER")
   const report = yield* Config.option(Config.String("REAPER_SEEN"))
-  // An owner already gone has nothing of its own left to sample.
-  const owner = Arr.findFirst(table(), (row) => row.pid === pid)
+  // An owner already gone has nothing of its own left to sample: sh's $PPID is 1 when the test process ended
+  // before the reaper started, and pid 1 never goes.
+  const owner = Arr.findFirst(table(), (row) => row.pid === pid && pid > 1)
   if (Option.isNone(owner)) return
   const seen = new Map<string, Proc>()
   yield* Effect.repeat(sample(owner.value, seen, report), { while: (alive) => alive, schedule: Schedule.spaced(EVERY) })
   const doomed = yield* freeze(survivors([...seen.values()], table()))
-  // Each gets its SIGTERM while frozen and handles it once continued; stop's SIGKILL ends any left after the grace.
-  yield* Effect.sync(() => {
-    signal(doomed, "SIGTERM")
-    signal(doomed, "SIGCONT")
-  })
-  yield* Effect.promise(() => stop(doomed, GRACE_MS))
+  // SIGKILL, frozen: a process given a SIGTERM may start another first (a TUI whose service ends starts a new one,
+  // seen in a reconnect run), and the reaper is the last resort, after the test's own graceful cleanup could not run.
+  yield* Effect.sync(() => signal(doomed, "SIGKILL"))
 })
 
 BunRuntime.runMain(program.pipe(Effect.provide(BunServices.layer), Effect.orDie))
