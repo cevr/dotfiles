@@ -19,16 +19,24 @@ const tree = Effect.gen(function* () {
   // The git-repo guard lives in tests/, outside the folder read here.
   const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD
   const scripts = { files: sources.filter((file) => /\.test\.tsx?$/.test(file)), imports: (file: string) => imports.get(file) ?? [] }
-  const tools = { bun: "bun", oxlint: "oxlint", typecheck: ["bun", "check", "-b"], projects: 3, exists, scripts }
+  const tools = (workbox: string) => ({
+    bun: "bun",
+    oxlint: "oxlint",
+    typecheck: ["bun", "check", "-b"],
+    projects: 3,
+    exists,
+    scripts,
+    workbox: { changes: parseNameStatus(workbox), tests: ["../workbox/test/workrift.test.ts", "../workbox/test/hc.test.ts"] },
+  })
   return {
     exists,
     tests: (out: string) => scriptTests(parseNameStatus(out), exists, scripts),
-    /** The files the merge check's `tests` leg runs over `out`, from opencode/. */
-    ran: (out: string) =>
-      mergeLegs("base", parseNameStatus(out), tools)
+    /** The files the merge check's `tests` leg runs over `out` (and `workbox`, the workbox/ diff), from opencode/. */
+    ran: (out: string, workbox = "") =>
+      mergeLegs("base", parseNameStatus(out), tools(workbox))
         .filter((leg) => leg.name === "tests")
         .flatMap((leg) => leg.argv.filter((arg) => arg.startsWith("./")).map((arg) => arg.slice(2))),
-    legs: (out: string) => mergeLegs("base", parseNameStatus(out), tools),
+    legs: (out: string) => mergeLegs("base", parseNameStatus(out), tools("")),
   }
 })
 
@@ -86,6 +94,15 @@ describe("the merge check's tests", () => {
       expect(tests("M\tmods/update/git/source.ts\n")).toEqual([])
       expect(tests("M\tmods/update/git/source.ts\nM\tmods/update/git/source.test.ts\nA\tcmd/escape/setup.test.ts\n")).toEqual([GIT_REPO_GUARD])
       expect(tests("")).toEqual([])
+    }),
+  )
+
+  live("a change under the repository's workbox/ runs every workbox/test/ test, beside what opencode/'s diff selects; none without one (batch 2026-11-16cy)", () =>
+    Effect.gen(function* () {
+      const { ran } = yield* tree
+      expect(ran("", "M\tworkbox/bin/workrift\n")).toEqual(["../workbox/test/hc.test.ts", "../workbox/test/workrift.test.ts"])
+      expect(ran("M\tscripts/link-fork.ts\n", "M\tworkbox/test/workrift.test.ts\n")).toEqual(["scripts/link-fork.test.ts", "../workbox/test/hc.test.ts", "../workbox/test/workrift.test.ts"])
+      expect(ran("M\tscripts/link-fork.ts\n")).toEqual(["scripts/link-fork.test.ts"])
     }),
   )
 

@@ -10,6 +10,8 @@
 // - tests/git-repo.test.ts, the guard that every test and testbed file makes its repositories through gitInit or
 //   gitClone, when a test or testbed file it scans is added or changed: it reads their text, it imports none, so no
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
+// - every workbox/test/ test when anything under the repository's workbox/ changes: the diff from opencode/ never
+//   sees that folder, and no gate leg ran its tests (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
 
@@ -28,7 +30,17 @@ export interface Tools {
   readonly projects: number
   readonly exists: (file: string) => boolean
   readonly scripts: ScriptsTests
+  readonly workbox: Workbox
 }
+
+/** The repository's workbox/ folder, outside opencode/: its changes since the base and its tests, from opencode/ (`../workbox/test/…`). */
+export interface Workbox {
+  readonly changes: ReadonlyArray<Change>
+  readonly tests: ReadonlyArray<string>
+}
+
+/** The workbox/ tests due: all of them once anything under workbox/ changed, else none. */
+export const workboxTests = (workbox: Workbox): ReadonlyArray<string> => (workbox.changes.length > 0 && workbox.tests.toSorted()) || []
 
 export const DOCS_GUARD = "scripts/verify-docs.test.ts"
 export const ACCEPT_TESTS = ["scripts/accept.test.ts", "scripts/accept-parity.test.ts"] as const
@@ -111,7 +123,7 @@ const testLeg = (tests: ReadonlyArray<string>, tools: Tools): LegSpec => {
 /** The merge check's legs over `changes` since `base`. */
 export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: Tools): ReadonlyArray<LegSpec> => {
   const lint = lintFiles(changes, tools.exists)
-  const tests = scriptTests(changes, tools.exists, tools.scripts)
+  const tests = [...scriptTests(changes, tools.exists, tools.scripts), ...workboxTests(tools.workbox)]
   return [
     lintLeg(lint, tools),
     { name: "debt", argv: [tools.bun, "scripts/effect-debt.ts", "--check", "--since", base], note: "changed files" },

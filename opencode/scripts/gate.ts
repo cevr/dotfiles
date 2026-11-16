@@ -159,6 +159,13 @@ const gate = () =>
 const changesSince = (base: string) =>
   $`git -C ${ROOT} diff --name-status --relative ${base} HEAD -- .`.nothrow().quiet().text().then(parseNameStatus)
 
+/** The repository's workbox/ folder beside this one: its changes since `base` and its tests, from this folder. */
+const workboxSince = (base: string) => {
+  const folder = path.join(ROOT, "..", "workbox", "test")
+  const tests = (existsSync(folder) && readdirSync(folder).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `../workbox/test/${name}`)) || []
+  return $`git -C ${ROOT} diff --name-status ${base} HEAD -- ../workbox`.nothrow().quiet().text().then((out) => ({ changes: parseNameStatus(out), tests }))
+}
+
 /** The environment the merge check's legs run in: the unit leg's, without ANTHROPIC_BASE_URL, so its tests ask no model. */
 const legEnv = () => {
   const env = { ...ENV }
@@ -184,17 +191,20 @@ const printed: typeof run = (name, argv, _env, note) =>
 /** The merge check's legs over the changes since `base` (scripts/merge-check.ts), with each scripts/ file's imports. */
 const planned = (base: string) =>
   changesSince(base).then((changes) =>
-    mergeLegs(base, changes, {
-      bun: process.execPath,
-      oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
-      typecheck: checkCommand(),
-      projects: projects().length + 1,
-      exists: (file) => existsSync(path.join(ROOT, file)),
-      scripts: {
-        files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
-        imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
-      },
-    }),
+    workboxSince(base).then((workbox) =>
+      mergeLegs(base, changes, {
+        workbox,
+        bun: process.execPath,
+        oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
+        typecheck: checkCommand(),
+        projects: projects().length + 1,
+        exists: (file) => existsSync(path.join(ROOT, file)),
+        scripts: {
+          files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
+          imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
+        },
+      }),
+    ),
   )
 
 /** The full gate: by hand, its `round` receipt written from where the repository stood; under a land (RIFT_LAND_CHECK set), the land writes its own. */
