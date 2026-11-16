@@ -62,6 +62,9 @@ export const ageOf = (then: number, now: number): string => {
   return `${Math.floor(seconds / 86_400)}d`
 }
 
+/** How long ago `then` was, said in a header: `just now`, else `42s ago`, `3m ago`. */
+export const agoOf = (then: number, now: number): string => Option.getOrElse(Option.map(Option.liftPredicate(ageOf(then, now), (age) => age !== "now"), (age) => `${age} ago`), () => "just now")
+
 /** One letter-wide sign for each surface kind, so a timeline row says what a post holds. */
 const ICONS = new Map([["markdown", "¶"], ["mermaid", "◇"], ["diff", "±"], ["image", "▣"], ["html", "◧"], ["code", "ƒ"], ["terminal", "›"], ["json", "{"], ["trace", "≋"]])
 

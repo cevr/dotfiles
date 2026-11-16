@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import type { Post, PostDetail } from "./service.ts"
-import { ageOf, boardOf, iconsOf, millisOf, publishedAt, rowsOf, stepVersion, timelineOf, versionsOf } from "./timeline.ts"
+import { ageOf, agoOf, boardOf, iconsOf, millisOf, publishedAt, rowsOf, stepVersion, timelineOf, versionsOf } from "./timeline.ts"
 
 /** A seeded draw in [0, 1), so a failing case names its seed. */
 const drawsOf = (seed: number) => {
@@ -103,6 +103,7 @@ describe("a timeline row", () => {
   test("says its age shortest, its surfaces as signs, its versions, and whether it is new", () => {
     const now = millisOf(at(30), 0)
     expect([ageOf(now - 2_000, now), ageOf(now - 42_000, now), ageOf(now - 3 * 60_000, now), ageOf(now - 5 * 3_600_000, now), ageOf(now - 3 * 86_400_000, now)]).toEqual(["now", "42s", "3m", "5h", "3d"])
+    expect([agoOf(now - 2_000, now), agoOf(now - 42_000, now)]).toEqual(["just now", "42s ago"])
     expect(iconsOf([{ kind: "markdown", index: 0 }, { kind: "mermaid", index: 1 }, { kind: "diff", index: 2 }, { kind: "image", index: 3 }, { kind: "what", index: 4 }])).toBe("¶◇±▣·")
     const rows = rowsOf([post("a", "notes", 20, 25, 3)], now, new Set(["a"]))
     expect(rows).toEqual([{ id: "a", title: "notes", icons: "", age: "10m", versions: 3, fresh: true }])

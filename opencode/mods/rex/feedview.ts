@@ -13,7 +13,7 @@ import { visibleWidth } from "./markdown.ts"
 import type { Post, Surface, Version } from "./service.ts"
 import { Block, clip, linesOf, pad } from "./surface.ts"
 import { clearReport, report, type Tally } from "./status.ts"
-import { ageOf, BOARD_TITLE, boardOf, millisOf, type Row, rowsOf, stepVersion, timelineOf } from "./timeline.ts"
+import { agoOf, BOARD_TITLE, boardOf, millisOf, type Row, rowsOf, stepVersion, timelineOf } from "./timeline.ts"
 
 const ESC = "\u001b"
 const sgr = (codes: string) => `${ESC}[${codes}m`
@@ -494,7 +494,7 @@ const boardRegion = (frame: Frame, box: Box): string =>
   Option.match(boardOf(frame.state.posts), {
     onNone: () => writeLines(box, 0, [`${DIM}No board yet: publish a post titled ${BOARD_TITLE} and keep it current with sideshow update${RESET}`]),
     onSome: (board) => {
-      const head = `${BOLD}◆ ${board.title}${RESET}${DIM} · v${board.version} · updated ${ageOf(millisOf(board.updatedAt, frame.now), frame.now)} ago${RESET}`
+      const head = `${BOLD}◆ ${board.title}${RESET}${DIM} · v${board.version} · updated ${agoOf(millisOf(board.updatedAt, frame.now), frame.now)}${RESET}`
       return `${writeLines(box, 0, [head])}${writeBlocks(box, 1, frame.board, 0, frame.cell)}`
     },
   })
@@ -528,7 +528,7 @@ const viewRegion = (frame: Frame, box: Box): string =>
     onSome: (shown) => {
       const focus = Option.match(Option.liftPredicate(frame.state.focus, (focus) => focus === "view"), { onNone: () => "", onSome: () => `${CYAN}▍${RESET}` })
       const versions = Option.match(Option.liftPredicate(shown.count, (n) => n > 1), { onNone: () => "", onSome: (n) => ` · v${shown.version}/${n}` })
-      const head = `${focus}${BOLD}${shown.title}${RESET}${DIM}${versions} · ${ageOf(millisOf(shown.at, frame.now), frame.now)} ago${RESET}`
+      const head = `${focus}${BOLD}${shown.title}${RESET}${DIM}${versions} · ${agoOf(millisOf(shown.at, frame.now), frame.now)}${RESET}`
       return `${writeLines(box, 0, [head])}${writeBlocks(box, 1, frame.view, frame.state.scroll, frame.cell)}`
     },
   })
