@@ -6,6 +6,7 @@ import type { CallLine } from "./call-line.ts"
 import type { FleetOutcome } from "./fleet.ts"
 import type { HeavyReading } from "./heavy.ts"
 import type { Holds, Run } from "./idle.ts"
+import type { Calls, Held } from "./ledger.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
@@ -57,6 +58,8 @@ export class Sessions extends Context.Service<
     readonly directoryOf: (sessionID: string) => Effect.Effect<string | undefined>
     /** The text of the session's last answer: its newest assistant message's text parts, joined. */
     readonly lastWordsOf: (sessionID: string) => Effect.Effect<string | undefined>
+    /** When the session's last turn ended (epoch ms), while no turn runs; none while it works, before it ran, or unread. */
+    readonly idleSinceOf: (sessionID: string) => Effect.Effect<Option.Option<number>>
   }
 >()("dotfiles-opencode/orchestrate/Sessions") {}
 
@@ -192,19 +195,31 @@ export class Latches extends Context.Service<
  * The steps a session started, as the call log keeps them: the unit each
  * step's description names (`<role> <unit> r<N>`, described.ts), once each,
  * in the order first started. No log, a line that does not read, or a
- * description that names no step gives nothing.
+ * description that names no step gives nothing. `calls`: the session's
+ * subagents and when it last started a step of each unit (ledger.ts
+ * `callsIn`); none likewise.
  */
 export class StepLog extends Context.Service<
   StepLog,
-  { readonly units: (sessionID: string) => Effect.Effect<ReadonlyArray<string>> }
+  {
+    readonly units: (sessionID: string) => Effect.Effect<ReadonlyArray<string>>
+    readonly calls: (sessionID: string) => Effect.Effect<Calls>
+  }
 >()("dotfiles-opencode/orchestrate/StepLog") {}
 
 /**
  * The orchestrate runs of the repository this plugin serves, each with its
  * units' states as the skill's status script derives them. Runs that cannot
- * be read are none.
+ * be read are none: `list` answers them alone, `read` with why they could not
+ * be read (`error`), so a reader tells no runs from unread ones.
  */
-export class Runs extends Context.Service<Runs, { readonly list: Effect.Effect<ReadonlyArray<Run>> }>()("dotfiles-opencode/orchestrate/Runs") {}
+export class Runs extends Context.Service<
+  Runs,
+  {
+    readonly list: Effect.Effect<ReadonlyArray<Run>>
+    readonly read: Effect.Effect<{ readonly runs: ReadonlyArray<Run>; readonly error: Option.Option<string> }>
+  }
+>()("dotfiles-opencode/orchestrate/Runs") {}
 
 /**
  * The default branch of a checkout, as git reads it there (local refs as they are). Never fails: what cannot be
@@ -250,11 +265,14 @@ export class RunFiles extends Context.Service<
 /**
  * What the other plugins hold for a session: its wakes, its open questions
  * and its queue's `needs-you` and `waiting` items. A plugin that cannot be
- * asked holds nothing.
+ * asked holds nothing. `held`: the same plugins' items themselves, as a
+ * compacted root's ledger lists them (ledger.ts `Held`): its queue's items
+ * not done, its wakes, monitors and latches, and its jobs still running.
  */
-export class RootHolds extends Context.Service<RootHolds, { readonly of: (sessionID: string) => Effect.Effect<Holds> }>()(
-  "dotfiles-opencode/orchestrate/RootHolds",
-) {}
+export class RootHolds extends Context.Service<
+  RootHolds,
+  { readonly of: (sessionID: string) => Effect.Effect<Holds>; readonly held: (sessionID: string) => Effect.Effect<Held> }
+>()("dotfiles-opencode/orchestrate/RootHolds") {}
 
 /** The nudge could not reach the session. */
 export class NudgeRefused extends Schema.TaggedError<NudgeRefused>()("NudgeRefused", { message: Schema.String }) {}

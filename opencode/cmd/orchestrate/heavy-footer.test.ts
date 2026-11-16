@@ -17,6 +17,7 @@ import { working } from "@dotfiles/opencode-orchestrate/filestore/heavy-agents"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import { FOOTER_MARK, footerOf, shareOf, withFooter } from "@dotfiles/opencode-orchestrate/heavy"
 import { NO_HOLDS } from "@dotfiles/opencode-orchestrate/idle"
+import { NOTHING_HELD } from "@dotfiles/opencode-orchestrate/ledger"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
@@ -152,8 +153,8 @@ const start = (world: World) =>
         OpenCodeLatches.layer(keep, latchStart),
         FileUnitLogs.layer(LOG_SCRIPT),
         StepLogTest.layer({}),
-        Layer.succeed(Runs, Runs.of({ list: Effect.succeed([]) })),
-        Layer.succeed(RootHolds, RootHolds.of({ of: () => Effect.succeed(NO_HOLDS) })),
+        Layer.succeed(Runs, Runs.of({ list: Effect.succeed([]), read: Effect.succeed({ runs: [], error: Option.none() }) })),
+        Layer.succeed(RootHolds, RootHolds.of({ of: () => Effect.succeed(NO_HOLDS), held: () => Effect.succeed(NOTHING_HELD) })),
         Layer.succeed(Steer, Steer.of({ nudge: () => Effect.void })),
         Layer.succeed(Tell, Tell.of({ tell: () => Effect.void })),
         SkillTest.skill({ history: [] }),

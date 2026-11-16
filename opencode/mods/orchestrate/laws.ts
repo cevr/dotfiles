@@ -101,6 +101,8 @@ export type SessionsWorld = Readonly<
       readonly directory?: string
       /** The text its last answer wrote. */
       readonly lastWords?: string
+      /** When its last turn ended, while no turn runs. */
+      readonly idleSince?: number
     }
   >
 >
@@ -111,7 +113,7 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
       root: { agent: "build", directory: "/work" },
       child: { parentID: "root", agent: "verifier", lastWords: "verifier auth r1: accepted /work/tmp/orchestrate/web/auth/round-1-findings.md" },
       blank: { parentID: "", agent: "" },
-      ran: { parentID: "root", agent: "worker", started: true },
+      ran: { parentID: "root", agent: "worker", started: true, idleSince: 5_000 },
       stopped: { parentID: "root", agent: "implementor", started: true, stopped: true },
       latched: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000 } },
       cancelled: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000, cancelledAt: 2_000 } },
@@ -182,6 +184,17 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
           expect(yield* sessions.latchOf("missing")).toBeUndefined()
           expect(yield* sessions.directoryOf("missing")).toBeUndefined()
           expect(yield* sessions.lastWordsOf("missing")).toBeUndefined()
+          expect(yield* sessions.idleSinceOf("missing")).toEqual(Option.none())
+        }),
+      ))
+
+    test("a session idle since its last turn ended says when; one never run says none", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.idleSinceOf("ran")).toEqual(Option.some(5_000))
+          expect(yield* sessions.idleSinceOf("latched")).toEqual(Option.none())
         }),
       ))
 

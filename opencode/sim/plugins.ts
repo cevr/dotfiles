@@ -40,6 +40,7 @@ import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
 import * as RunFilesTest from "@dotfiles/opencode-orchestrate/memory/run-files"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
+import { callsIn } from "@dotfiles/opencode-orchestrate/ledger"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
@@ -181,8 +182,13 @@ const LineJson = Schema.fromJsonString(Schema.Unknown)
  * (`filestore/step-log.ts` `unitsIn`, over each line as JSON): one log, written by the plugin's CallLog, read by its
  * StepLog, as on disk.
  */
-export const stepLogOf = (lines: ReadonlyArray<unknown>) =>
-  Layer.succeed(StepLog, StepLog.of({ units: (sessionID) => Effect.sync(() => unitsIn(lines.map((line) => Schema.encodeSync(LineJson)(line)).join("\n"), sessionID)) }))
+export const stepLogOf = (lines: ReadonlyArray<unknown>) => {
+  const text = () => lines.map((line) => Schema.encodeSync(LineJson)(line)).join("\n")
+  return Layer.succeed(
+    StepLog,
+    StepLog.of({ units: (sessionID) => Effect.sync(() => unitsIn(text(), sessionID)), calls: (sessionID) => Effect.sync(() => callsIn(text(), sessionID)) }),
+  )
+}
 
 /**
  * The orchestrate plugin (`cmd/orchestrate/server.ts`'s `make`) on the world: everything that goes through OpenCode
