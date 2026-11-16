@@ -1721,7 +1721,7 @@ headers, login and body), in memory only, and while one of the session's tool
 calls runs (`session.tool.called` to its `success` or `failed`, a tool the
 provider runs aside) re-sends it with `max_tokens: 1` (`keepalive.ts`). The
 first ping goes 4.5 minutes after the request, each next one 4.5 minutes after
-the ping before, at most 4 a wait; none once the cache's lifetime since the
+the ping before, at most 8 a wait (about 41 minutes of a tool's run); none once the cache's lifetime since the
 last request or ping has passed. The ping goes straight to the network on the
 login the request went out on (`fetch/pinger.ts`): no hook, no event, never
 the session's history, and its answer is read for its usage and dropped. A

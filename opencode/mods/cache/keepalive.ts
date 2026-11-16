@@ -20,8 +20,13 @@ import { Effect, Option, Record, Result, Schema } from "effect"
 
 /** How long after the request or ping before a ping is due: under the five-minute cache, with room for its trip. */
 export const INTERVAL_MS = 270_000
-/** The most pings one wait sends. */
-export const MAX_PINGS = 4
+/**
+ * The most pings one wait sends: eight cover about 41 minutes of a tool's run.
+ * Four (about 23 minutes) lost the cache on most gates and deep runs: in the
+ * keepalive logs of both hosts (2026-11-16), most waits that used all four
+ * asked again 5 to 40 minutes after the fourth.
+ */
+export const MAX_PINGS = 8
 /** The longest cache lifetime a ping keeps warm: Anthropic's five minutes. Longer caches outlive most waits. */
 export const SHORT_CACHE_MS = 300_000
 
