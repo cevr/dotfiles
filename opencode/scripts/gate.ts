@@ -30,18 +30,19 @@
 // green or red; a land takes it instead of running the Rift's checks again (any other proof of a round
 // is written with scripts/receipt.ts). `--merge <base>` is a land's merge check (`rift.mergeCheck`): the link, every
 // project's typecheck, oxlint over the files changed since <base> and the debt ratchet over them
-// (`effect-debt.ts --check --since <base>`), the verify-opencode docs guard when the changes can turn it red
-// (scripts/docs-guard.ts), no lock and no receipt (the land writes it).
+// (`effect-debt.ts --check --since <base>`), and the scripts/ tests and the verify-opencode docs guard the changes can
+// break (scripts/merge-check.ts), no lock and no receipt (the land writes it).
 //
 // Usage: bun scripts/gate.ts [--all]   (--all ignores the cache)
 //        bun scripts/gate.ts --merge <base>
 // The cache is node_modules/.cache/gate/passed.json; deleting it is safe.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { $ } from "bun"
-import { Array as Arr, Option } from "effect"
+import { Option } from "effect"
 import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing.ts"
-import { docsGuardDue, parseNameStatus } from "./docs-guard.ts"
+import { parseNameStatus } from "./docs-guard.ts"
+import { mergeLegs } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
 import { keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
 
@@ -154,40 +155,36 @@ const gate = () =>
     unit(),
   ])
 
-/** The files oxlint reads among those changed since `base`, relative to this folder, that still exist. */
-const changedSince = (base: string): Promise<ReadonlyArray<string>> =>
-  $`git -C ${ROOT} diff --name-only --relative --diff-filter=d ${base} HEAD -- .`
-    .nothrow()
-    .quiet()
-    .text()
-    .then((out) => out.split("\n").filter((file) => /\.tsx?$/.test(file) && existsSync(path.join(ROOT, file))))
+/** The changes since `base`, from this folder. */
+const changesSince = (base: string) =>
+  $`git -C ${ROOT} diff --name-status --relative ${base} HEAD -- .`.nothrow().quiet().text().then(parseNameStatus)
 
-/** The docs guard (scripts/verify-docs.test.ts) when the changes since `base` can turn it red (scripts/docs-guard.ts); else a passed leg saying so. */
-const docsGuard = (base: string): Promise<Leg> =>
-  $`git -C ${ROOT} diff --name-status --relative ${base} HEAD -- .`
-    .nothrow()
-    .quiet()
-    .text()
-    .then((out) => {
-      if (!docsGuardDue(parseNameStatus(out))) return { name: "docs", ok: true, output: "", time: "0.00s", note: "not due" }
-      return run("docs", [process.execPath, "test", "scripts/verify-docs.test.ts"], ENV, "verify-opencode guard")
-    })
+/** The environment the merge check's legs run in: the unit leg's, without ANTHROPIC_BASE_URL, so its tests ask no model. */
+const legEnv = () => {
+  const env = { ...ENV }
+  delete env.ANTHROPIC_BASE_URL
+  return env
+}
 
 /**
- * A land's merge check of the merged tree: the link, every project's typecheck, oxlint over the files changed since
- * `base`, the Effect debt ratchet held over those files (`effect-debt.ts --check --since`), so new debt fails here,
- * and the verify-opencode docs guard when the changes can turn it red.
+ * A land's merge check of the merged tree: the link, then the legs scripts/merge-check.ts names over the changes
+ * since `base` (every project's typecheck, oxlint and the Effect debt ratchet over the changed files, and the
+ * scripts/ tests and docs guard a change can break), at once.
  */
-const mergeCheck = (base: string) =>
-  linked("merge check", () => [
-    changedSince(base).then((files) =>
-      // oxlint given no file lints the whole folder; with none changed there is nothing to lint.
-      run("lint", Arr.match(files, { onEmpty: () => ["true"], onNonEmpty: (some) => [path.join(ROOT, "node_modules/.bin/oxlint"), "--quiet", ...some] }), ENV, `${files.length} changed files`),
-    ),
-    run("debt", [process.execPath, "scripts/effect-debt.ts", "--check", "--since", base], ENV, "changed files"),
-    types(),
-    docsGuard(base),
-  ])
+const mergeCheck = async (base: string) => {
+  const legs = mergeLegs(base, await changesSince(base), {
+    bun: process.execPath,
+    oxlint: path.join(ROOT, "node_modules/.bin/oxlint"),
+    typecheck: checkCommand(),
+    projects: projects().length + 1,
+    exists: (file) => existsSync(path.join(ROOT, file)),
+    scripts: {
+      files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
+      read: (file) => readFileSync(path.join(ROOT, file), "utf8"),
+    },
+  })
+  return linked("merge check", () => legs.map((leg) => run(leg.name, leg.argv, legEnv(), leg.note)))
+}
 
 /** The full gate: by hand, its `round` receipt written from where the repository stood; under a land (RIFT_LAND_CHECK set), the land writes its own. */
 const fullGate = () =>
