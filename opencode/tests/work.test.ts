@@ -1,13 +1,12 @@
 // accept: deep (8.2 s alone on a quiet host: 1-minute load 7.8 on 12 cores; it boots real OpenCode three times on the real work binary)
-// accept: off until WORK_BIN is set (work is not on this host's PATH yet: WORK_BIN names a work binary)
 // The work tool in real OpenCode (the fork, through its SDK) on the scripted model and the real `work` binary
-// (WORK_BIN), in a scratch HOME: tests/work/run.ts, once per task. The model makes a workspace for a branch
+// (WORK_BIN, else `work` on PATH), in a scratch HOME: tests/work/run.ts, once per task. The model makes a workspace for a branch
 // with `work` (under `.work/<base>/`), commits in it, lists it, is refused removing it while the commit is found
 // nowhere else, and removes it with force; neither request offers OpenCode's worktree tools. In a second run it
 // commits in a workspace and lands it: one push to the bare origin's main from an integration workspace work
 // made, the workspace trashed, and the accept check's wake after the turn. A third run lists through the alias
-// `rift`. The plugin on its own is tested beside its code in cmd/work. Without WORK_BIN and OPENCODE_DEV these
-// do not run: `work` is not on this host's PATH yet.
+// `rift`. The plugin on its own is tested beside its code in cmd/work. Without a work binary (WORK_BIN, or
+// `work` on PATH as the install puts it) and OPENCODE_DEV these do not run.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { describe, test } from "bun:test"
 import { Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
@@ -19,7 +18,7 @@ import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result }
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
 const PROCESS = withProcessEnv({})
-const WORK_BIN = PROCESS["WORK_BIN"] ?? ""
+const WORK_BIN = PROCESS["WORK_BIN"] || Bun.which("work") || ""
 const FORK = PROCESS["OPENCODE_DEV"] ?? ""
 const runnable = WORK_BIN !== "" && FORK !== ""
 /** How long one real run may take before it is stopped. */
@@ -143,4 +142,4 @@ if (runnable)
       RUN_MS,
     )
   })
-else test.skip("the work tool in real OpenCode needs WORK_BIN, a work binary, and OPENCODE_DEV, the fork", () => {})
+else test.skip("the work tool in real OpenCode needs a work binary (WORK_BIN, or work on PATH) and OPENCODE_DEV, the fork", () => {})

@@ -319,8 +319,8 @@ describe("the acceptance tiers over the real tree", () => {
     const files = acceptance()
     const off = files.filter((file) => read(file).split("\n").some((line) => line.startsWith("// accept: off")))
     expect(off.filter((file) => Option.isNone(offUntil(read(file), {})))).toEqual([])
-    expect(off).toContain("tests/work.test.ts")
-    expect(offUntil(read("tests/work.test.ts"), {})).toEqual(Option.some("WORK_BIN"))
+    // tests/work.test.ts was off until WORK_BIN until the enable: it finds the installed `work` on PATH itself now.
+    expect(offUntil(read("tests/work.test.ts"), {})).toEqual(Option.none())
   })
 
   test(
