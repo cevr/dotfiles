@@ -7,6 +7,7 @@
 // (`--repo <main checkout>`).
 import { readdir, stat } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
+import { env } from "bun"
 import { Effect, Layer, Option } from "effect"
 import type { RunTable } from "../run-table.ts"
 import { RunTables, RunsUnreadable } from "../service.ts"
@@ -18,11 +19,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 const isNotFound = (cause: unknown) => isRecord(cause) && cause.code === "ENOENT"
 
+/**
+ * The environment every command runs in. The host's binary (`process.execPath`
+ * inside OpenCode) is Bun underneath: BUN_BE_BUN runs the status script as Bun,
+ * where without it the binary reads the script's path as an OpenCode command,
+ * shows its help and logs an ERROR on every poll.
+ */
+const ENV = { ...env, BUN_BE_BUN: "1" }
+
 /** A command's exit code and output. */
 const ran = Effect.fn("RunTables.ran")(function* (argv: ReadonlyArray<string>, cwd?: string) {
   const [out, err, code] = yield* Effect.tryPromise({
     try: () => {
-      const run = Bun.spawn([...argv], { cwd, stdout: "pipe", stderr: "pipe", signal: AbortSignal.timeout(TIMEOUT_MS) })
+      const run = Bun.spawn([...argv], { cwd, env: ENV, stdout: "pipe", stderr: "pipe", signal: AbortSignal.timeout(TIMEOUT_MS) })
       return Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])
     },
     catch: (cause) => new RunsUnreadable({ message: `${argv[0]} failed: ${messageOf(cause)}` }),
@@ -46,8 +55,8 @@ const namedDirs = Effect.fn("RunTables.namedDirs")(function* (top: string) {
   return named.filter((_, index) => found[index] === true)
 })
 
-/** The runs `script` (the orchestrate skill's `scripts/status.ts`) reads. */
-export const layer = (script: string) =>
+/** The runs `script` (the orchestrate skill's `scripts/status.ts`) reads, run by `runtime` (the host's binary). */
+export const layer = (script: string, runtime: string = process.execPath) =>
   Layer.succeed(RunTables, {
     list: Effect.fn("RunTables.list")(function* (directory: string) {
       const common = yield* command(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], directory).pipe(Effect.option)
@@ -64,7 +73,7 @@ export const layer = (script: string) =>
       const runs = [...inRepo, ...named.filter((run) => !inRepo.some((each) => each.dir === run.dir))]
       return yield* Effect.forEach(
         runs,
-        (run) => command([process.execPath, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table }))),
+        (run) => command([runtime, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table }))),
         { concurrency: "unbounded" },
       )
     }),
