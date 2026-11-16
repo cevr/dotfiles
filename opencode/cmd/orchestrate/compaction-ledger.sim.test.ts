@@ -13,7 +13,8 @@
 // - A subagent, and a root that started no unit's step, are told nothing.
 import { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
-import { Effect, Option, Schema } from "effect"
+import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
+import { DateTime, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -87,10 +88,11 @@ const compactor = Plugin.define({
 const NOTE_HEAD = "Re-read ~/.claude/skills/orchestrate/SKILL.md"
 
 /** One world: the root starts alpha's implementor, hears its hand-back, compacts, and is prompted again; a chatting root and the implementor compact too. */
-const boot = (seed: number, fails: boolean) =>
+const boot = (seed: number, fails: boolean, crowd = 0) =>
   Effect.gen(function* () {
     const world = World.make({ seed, start: Date.parse(PIN), script: model, processes: processes(fails) })
-    yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: PIN } })
+    const lines: Array<CallLine> = []
+    yield* world.load(Plugins.orchestrate({ lines }), { directory: WORK, options: { now: PIN } })
     yield* world.load(Plugins.status(world), { directory: WORK, options: { statusScript: STATUS_SCRIPT } })
     yield* world.load(Plugins.queue(), { directory: WORK })
     yield* world.load(Plugins.wake(world), { directory: WORK })
@@ -103,6 +105,11 @@ const boot = (seed: number, fails: boolean) =>
     yield* world.until(() => said(root, HEARD), 60_000)
     yield* world.advance(2_000)
     const child = [...world.sessions.values()].find((session) => Option.getOrUndefined(session.parentID) === root)?.id ?? ""
+    // `crowd` later calls of the root, each to a worker of its own after the hand-back: none answers alpha's.
+    for (const n of Array.from({ length: crowd }, (_, index) => index + 1)) {
+      const at = DateTime.formatIso(DateTime.makeUnsafe(world.now() + n))
+      lines.push({ kind: "call", at, sessionID: root, callID: `crowd_${n}`, from: "build", agent: "worker", reason: "kept", child: `ses_crowd${n}`, description: `check ${n}` })
+    }
 
     yield* world.prompt(chat, CHAT)
     yield* world.until(() => said(chat, "Hello."), 60_000)
@@ -152,5 +159,17 @@ seeded("the note is the ledger: the queue not done, and the implementor idle aft
     expect(note).toContain("Wakes, monitors and jobs: none.")
     expect(chat).toEqual([])
     expect(child).toEqual([])
+  }),
+)
+
+seeded("an unanswered hand-back older than 41 later subagent calls is still flagged; the answered and idle ones are not listed", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { root, childID } = yield* boot(seed, false, 41)
+    expect(root).toHaveLength(1)
+    const note = root[0] ?? ""
+    expect(note).toContain(`- ${childID} (implementor alpha r1): idle since `)
+    expect(note).toContain(`last said: ${HAND_BACK}, not woken since`)
+    // The 41 workers never ran (no session the host can read): no line of theirs.
+    expect(note).not.toContain("check 1")
   }),
 )

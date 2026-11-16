@@ -8,7 +8,7 @@
 // schema; a field it does not name (an older table's `cadence`) is passed over.
 // No status plugin, a failure, a timeout or an answer that is not one is no
 // runs, and says so as the read's error.
-import { Effect, Layer, Option, Schema } from "effect"
+import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { Runs } from "../service.ts"
 
 /** The status plugin's `status` method, as the plugin's RPC client calls it. */
@@ -62,9 +62,10 @@ export const layer = (status: Status) => {
             onNone: () => ({ runs: [], error: Option.some("the status plugin's answer did not read") }),
             onSome: (decoded) => ({
               runs: decoded.runs.map((run) => ({ name: run.name, ...(run.dir === undefined || run.dir === "" ? {} : { dir: run.dir }), units: run.units.map(unitOf) })),
+              // Each run the status script failed on is a line of its own: all of them, the others' runs still read.
               error: Option.map(
-                Option.fromUndefinedOr((decoded.errors ?? []).find((line) => line.startsWith(RUNS_ERROR))),
-                (line) => line.slice(RUNS_ERROR.length),
+                Arr.match((decoded.errors ?? []).filter((line) => line.startsWith(RUNS_ERROR)), { onEmpty: Option.none<ReadonlyArray<string>>, onNonEmpty: Option.some }),
+                (lines) => lines.map((line) => line.slice(RUNS_ERROR.length)).join("; "),
               ),
             }),
           }),

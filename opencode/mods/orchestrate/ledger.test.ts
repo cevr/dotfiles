@@ -1,7 +1,20 @@
 // The ledger's reading of the call log, its answered rule, and its lines.
 import { expect, test } from "bun:test"
 import { DateTime, Option } from "effect"
-import { callsIn, closed, ledgerText, LINES, unanswered, unreadTables, UNITS_NAMED } from "./ledger.ts"
+import {
+  callsIn,
+  childrenToRead,
+  closed,
+  ledgerText,
+  LINES,
+  NOTHING_HELD,
+  READ_WITHIN_MS,
+  SUBAGENT_LINES,
+  SubagentNow,
+  unanswered,
+  unreadTables,
+  UNITS_NAMED,
+} from "./ledger.ts"
 import { handBackOf } from "./unit-log.ts"
 
 const at = (second: number) => `2026-11-04T15:00:0${second}.000Z`
@@ -55,6 +68,25 @@ test("each part says none when empty, and a long part is counted past its lines"
   const text = ledgerText({ queue, wakes: [{ kind: "monitor", note: "CI", dueAt: ms(9) }], jobs: [{ note: "gate", state: "running" }] }, [])
   expect(text).toContain(`- [next] item ${LINES - 1}\n- and 2 more`)
   expect(text).toContain("Wakes, monitors and jobs:\n- monitor CI, due 2026-11-04T15:00:09Z\n- job gate: running")
+})
+
+test("subagents: running and latched first, then the unanswered newest first, past 15 lines `+N more unanswered`", () => {
+  const child = (n: number) => ({ child: `ses_${n}`, agent: "implementor", description: Option.some(`implementor u${n} r1`), startedAt: n, calledAt: n })
+  const idle = Array.from({ length: SUBAGENT_LINES + 3 }, (_, n) => SubagentNow.cases.Unanswered.make({ child: child(100 - n), idleSince: ms(1), said: "implementor u r1: ready" }))
+  const running = SubagentNow.cases.Running.make({ child: child(1) })
+  const lines = ledgerText(NOTHING_HELD, [...idle, running]).split("\n")
+  const shown = lines.slice(lines.indexOf("Subagents now:") + 1, lines.indexOf("Wakes, monitors and jobs: none."))
+  expect(shown).toHaveLength(SUBAGENT_LINES + 1)
+  expect(shown[0]).toBe("- ses_1 (implementor u1 r1): running")
+  expect(shown[1]).toStartWith("- ses_100 (implementor u100 r1): idle since 2026-11-04T15:00:01Z")
+  expect(shown.at(-1)).toBe("- +4 more unanswered")
+})
+
+test("only the subagents called within 72 h are read, however many", () => {
+  const now = ms(0) + READ_WITHIN_MS
+  const children = Array.from({ length: 900 }, (_, n) => ({ child: `ses_${n}`, agent: "worker", description: Option.none<string>(), startedAt: ms(0) + n, calledAt: ms(0) + n }))
+  expect(childrenToRead({ children, units: new Map() }, now)).toHaveLength(900)
+  expect(childrenToRead({ children, units: new Map() }, now + 450)).toHaveLength(450)
 })
 
 test("unread tables name the error and the newest units started, counting the earlier ones", () => {

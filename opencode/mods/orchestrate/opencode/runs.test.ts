@@ -35,6 +35,10 @@ effectTest(
       runs: [],
       error: Option.some("bun failed: no such run"),
     })
+    expect(yield* readOf(() => Effect.succeed({ agents: [], runs: [], errors: ["Runs: p1 failed", "Agents: EISDIR", "Runs: p2 timed out"] }))).toEqual({
+      runs: [],
+      error: Option.some("p1 failed; p2 timed out"),
+    })
     expect(yield* readOf(() => Effect.succeed({ agents: [], runs: [], errors: ["Agents: EISDIR"] }))).toEqual({ runs: [], error: Option.none() })
     expect(Option.isSome((yield* readOf(() => Effect.die("broken"))).error)).toBe(true)
     expect(Option.isSome((yield* readOf(() => Effect.succeed({ runs: "p1" }))).error)).toBe(true)

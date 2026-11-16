@@ -736,8 +736,19 @@ export const make = (
       const ledgerOf = (sessionID: string, tables: ReadonlyArray<RunTable>, unread: boolean) =>
         Effect.gen(function* () {
           const calls = yield* stepLog.calls(sessionID)
-          const open = (unit: string) => unread || tables.some((run) => run.units.some((each) => each.unit === unit && !Ledger.closed(each.state)))
-          const now = yield* Effect.forEach(calls.children.slice(0, Ledger.CHILDREN_READ), (child) => subagentNow(child, calls.units, open), { concurrency: 4 })
+          // A unit a table holds is open unless closed; one no table holds is open only while some run did not read.
+          const open = (unit: string) =>
+            Option.match(Arr.findFirst(tables.flatMap((run) => run.units), (each) => each.unit === unit), {
+              onNone: () => unread,
+              onSome: (each) => !Ledger.closed(each.state),
+            })
+          const started = yield* Clock.currentTimeMillis
+          const children = Ledger.childrenToRead(calls, started)
+          const now = yield* Effect.forEach(children, (child) => subagentNow(child, calls.units, open), { concurrency: 8 })
+          const ms = (yield* Clock.currentTimeMillis) - started
+          yield* Effect.logInfo("orchestrate: read a compacted root's subagents for its ledger").pipe(
+            Effect.annotateLogs({ sessionID, subagents: calls.children.length, read: children.length, ms }),
+          )
           const held = yield* holds.held(sessionID)
           return Ledger.ledgerText(held, now.flatMap(Option.toArray))
         })
@@ -747,13 +758,15 @@ export const make = (
         const started = yield* stepLog.units(sessionID)
         if (started.length === 0) return yield* skipped("it started no unit's step")
         const read = yield* runs.read
+        // The runs that read give their status; a run that did not adds the error and the root's units before it.
+        const answer = yield* lanesNow(sessionID).pipe(Effect.map((listed) => Tools.statusAnswer(read.runs, listed.rifts, listed.workrift)))
         const status = yield* Option.match(read.error, {
           onSome: (error) =>
-            Effect.logWarning("orchestrate: the run tables did not read; the compaction note gives the error and the root's units").pipe(
+            Effect.logWarning("orchestrate: run tables did not read; the compaction note gives the error and the root's units").pipe(
               Effect.annotateLogs({ sessionID, error }),
-              Effect.as(Ledger.unreadTables(error, started)),
+              Effect.as([Ledger.unreadTables(error, started), ...Arr.filter([answer], () => read.runs.length > 0)].join("\n\n")),
             ),
-          onNone: () => lanesNow(sessionID).pipe(Effect.map((listed) => Tools.statusAnswer(read.runs, listed.rifts, listed.workrift))),
+          onNone: () => Effect.succeed(answer),
         })
         const ledger = yield* ledgerOf(sessionID, read.runs, Option.isSome(read.error))
         yield* remind.remind(sessionID, { text: Tools.compactedNote(`${status}\n\n${ledger}`), description: Tools.COMPACTED_DESCRIPTION }).pipe(

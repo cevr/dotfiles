@@ -167,8 +167,14 @@ export const SubagentNow = Schema.TaggedUnion({
 })
 export type SubagentNow = typeof SubagentNow.Type
 
-/** At most this many of the root's newest-called subagents are read: an old one is either answered or long listed. */
-export const CHILDREN_READ = 40
+/**
+ * How far back the root's subagents are read, by their last call: every one called within it, however many. A
+ * forgotten hand-back is an old one, so no count bounds the read; only this age does (72 h).
+ */
+export const READ_WITHIN_MS = 72 * 60 * 60 * 1000
+
+/** The root's subagents called within `READ_WITHIN_MS` of `now`, newest called first. */
+export const childrenToRead = (calls: Calls, now: number): ReadonlyArray<Child> => calls.children.filter((child) => now - child.calledAt <= READ_WITHIN_MS)
 
 /**
  * Whether an idle child's hand-back waits on the root: it handed back (`handBack`), not a verifier's `accepted`, the
@@ -214,6 +220,26 @@ const subagentLine = (now: SubagentNow): string =>
     Unanswered: (idle) => `- ${named(idle.child)}: idle since ${iso(idle.idleSince)}, last said: ${idle.said}, not woken since`,
   })
 
+/** At most this many subagent lines; the rest are counted. */
+export const SUBAGENT_LINES = 15
+
+/** Running and latched subagents first, then the unanswered, each newest called first (the order given). */
+const byState = Order.mapInput(Order.Number, (now: SubagentNow) => Number(SubagentNow.guards.Unanswered(now)))
+
+/** What the subagent lines past `SUBAGENT_LINES` are: `+N more unanswered` when every one is unanswered. */
+const moreOf = (rest: ReadonlyArray<SubagentNow>): string => {
+  if (rest.every(SubagentNow.guards.Unanswered)) return `- +${rest.length} more unanswered`
+  return `- +${rest.length} more`
+}
+
+/** The subagent part's lines: running and latched first, then the unanswered newest first, the rest counted. */
+const subagentLines = (subagents: ReadonlyArray<SubagentNow>): ReadonlyArray<string> => {
+  const sorted = Arr.sort(subagents, byState)
+  const shown = sorted.slice(0, SUBAGENT_LINES).map(subagentLine)
+  if (sorted.length <= SUBAGENT_LINES) return shown
+  return [...shown, moreOf(sorted.slice(SUBAGENT_LINES))]
+}
+
 const queueLine = (item: QueueItem) => `- [${item.state}] ${item.text}${Option.match(item.detail, { onNone: () => "", onSome: (detail) => ` (${detail})` })}`
 
 /** The ledger's lines: the queue not done, the subagents now, the wakes and jobs; an empty part says none. */
@@ -221,7 +247,10 @@ export const ledgerText = (held: Held, subagents: ReadonlyArray<SubagentNow>): s
   [
     "Your ledger, as it stood at the compaction:",
     ...part(held.queue.map(queueLine), "Queue: nothing open.", "Queue, not done:"),
-    ...part(subagents.map(subagentLine), "Subagents: none running, latched or waiting on you.", "Subagents now:"),
+    ...Arr.match(subagents, {
+      onEmpty: () => ["Subagents: none running, latched or waiting on you."],
+      onNonEmpty: (some) => ["Subagents now:", ...subagentLines(some)],
+    }),
     ...part(
       [...held.wakes.map((wake) => `- ${wake.kind} ${wake.note}, due ${iso(wake.dueAt)}`), ...held.jobs.map((job) => `- job ${job.note}: ${job.state}`)],
       "Wakes, monitors and jobs: none.",
