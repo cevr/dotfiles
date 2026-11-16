@@ -257,21 +257,6 @@ export const layer = (options: Options) => {
     return { args: [], track: false }
   })
 
-  /** The text of the `.rift` marker in `directory`; none when it has none. */
-  const markerIn = (directory: string) => spawn(["cat", ".rift"], directory).pipe(Effect.map((ran) => Option.liftPredicate(ran.stdout, () => ran.code === 0)))
-
-  /**
-   * Drops the base's `.rift` marker `work new` copied into the new workspace at `path` (until WK-MARKER, when work
-   * stops copying it): its id is the base's, so a tool that reads it takes the workspace for the base. Only a marker
-   * that holds the base's own id goes. work.toml stays: work hides it and means it to be there.
-   */
-  const dropBaseMarker = (path: string, base: string) =>
-    Effect.gen(function* () {
-      const [copied, own] = yield* Effect.all([markerIn(path), markerIn(base)])
-      const same = Option.isSome(copied) && Option.isSome(own) && copied.value === own.value
-      if (same) yield* run(["rm", "-f", "--", `${path}/.rift`], path)
-    })
-
   const create = Effect.fn("WorkRifts.create")(function* (request: CreateRequest) {
     if (options.workrift) {
       // From the caller's checkout, so workrift imports its gh stack metadata; the source is named outright.
@@ -289,7 +274,6 @@ export const layer = (options: Options) => {
     const made = yield* call(Created, Option.some(parent.base), ["new", "-branch", request.branch, ...on, ...start.args, request.name])
     const known = { base: parent.base, name: made.name, id: made.id }
     seen.set(made.path, known)
-    yield* dropBaseMarker(made.path, parent.base)
     const tracked = Effect.when(git(made.path, "branch", "--quiet", `--set-upstream-to=origin/${request.branch}`, request.branch), Effect.succeed(start.track))
     yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.asVoid(tracked), onSome: (at) => detach(made.path, at, Option.some(known)) })
     return made.path
