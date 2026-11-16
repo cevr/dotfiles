@@ -105,6 +105,21 @@ export const estimate = (ledger: Ledger, file: string) => Option.getOrElse(Optio
 /** The marker of a file that leaves the land tier: `// accept: deep (<measured s> s alone on a quiet host: <why>)`. */
 export const DEEP_MARKER = /^\/\/ accept: deep \(/m
 
+/**
+ * The marker of a file that skips all it has until a variable names what it needs:
+ * `// accept: off until <VAR> is set (<why>)` (tests/work.test.ts until WORK_BIN names a work binary). With the
+ * variable unset no run takes it and it is owed as `off until enabled`, a known state: running it would only skip,
+ * record no pass and leave it owed as skipped, run after run.
+ */
+export const OFF_MARKER = /^\/\/ accept: off until ([A-Z_][A-Z0-9_]*) is set \((.+)\)$/m
+
+/** The variable a file waits for, when it says `// accept: off until <VAR> is set (…)` and `env` leaves it empty. */
+export const offUntil = (text: string, env: Readonly<Partial<Record<string, string>>>): Option.Option<string> =>
+  Option.filter(
+    Option.map(Option.fromNullishOr(OFF_MARKER.exec(text)), (match) => String(match[1])),
+    (variable) => Option.isNone(Option.filter(Option.fromNullishOr(env[variable]), (value) => value !== "")),
+  )
+
 export type Tier = "land" | "deep"
 
 /** A file's tier: deep when it says so, or runs one at a time (a file that bounds a time cannot share 60 s with a pool). */
@@ -121,7 +136,7 @@ export type Mode = "land" | "owed" | "all"
  * stopped by a signal, only listed, stopped to give the lock to a land run, or a file that bounds a time in a
  * deep run without `--settled`.
  */
-export type Why = "deep" | "budget" | "skipped" | "unnamed" | "signal" | "listed" | "yielded" | "unsettled"
+export type Why = "deep" | "budget" | "skipped" | "unnamed" | "signal" | "listed" | "yielded" | "unsettled" | "off"
 
 /** Where a file ended: run and passed (`second`: on its second run, after a failed first, at that 1-minute load), failed, owed (with why), or skipped because it passed before with its key unchanged. */
 export type Outcome =
@@ -134,6 +149,8 @@ export interface Candidate {
   readonly file: string
   readonly tier: Tier
   readonly key: string
+  /** The variable the file waits for (`offUntil`): no run takes it until it is set. */
+  readonly off?: string
 }
 
 export interface Selection {
@@ -150,7 +167,9 @@ export const select = (mode: Mode, candidates: ReadonlyArray<Candidate>, ledger:
   const settled: Array<Outcome> = []
   const run: Array<string> = []
   for (const candidate of candidates) {
-    if (mode !== "all" && !isDue(ledger, candidate.file, candidate.key, now)) settled.push({ file: candidate.file, status: "before" })
+    const off = Option.fromUndefinedOr(candidate.off)
+    if (Option.isSome(off)) settled.push(owe(candidate.file, "off", `until ${off.value} is set`))
+    else if (mode !== "all" && !isDue(ledger, candidate.file, candidate.key, now)) settled.push({ file: candidate.file, status: "before" })
     else if (mode === "land" && candidate.tier === "deep") settled.push(owe(candidate.file, "deep"))
     else if (named.length > 0 && !named.includes(candidate.file)) settled.push(owe(candidate.file, "unnamed"))
     else run.push(candidate.file)
@@ -317,6 +336,7 @@ const WHYS: ReadonlyArray<readonly [Why, string]> = [
   ["listed", "listed, not run"],
   ["yielded", "yielded to a land run"],
   ["unsettled", "waits for a settled host"],
+  ["off", "off until enabled"],
 ]
 
 /** How the closing line and the deep report say why a file is owed. */

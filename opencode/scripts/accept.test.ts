@@ -12,7 +12,7 @@ import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
 import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, timingSigns } from "./accept-plan.ts"
-import { parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
+import { offUntil, parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
 import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
 
@@ -203,7 +203,8 @@ describe("bun run accept", () => {
     const { code, lines } = await accept(["--list", "--parallel=3"], scratchEnv(dir.path))
     const pooled = lines.findIndex((line) => /^accept: \d+ files, \d+ at a time \(/.test(line))
     const serial = lines.findIndex((line) => line.endsWith("timing-sensitive files, one at a time"))
-    const files = acceptance()
+    // A file off until its variable is set (tests/work.test.ts without WORK_BIN) is in neither phase.
+    const files = acceptance().filter((file) => Option.isNone(offUntil(read(file), scratchEnv(dir.path))))
     const heading = Option.map(Option.fromNullishOr(/^accept: (\d+) files, (\d+) at a time \(/.exec(String(lines[pooled]))), (match) => ({
       files: Number(match[1]),
       width: Number(match[2]),
@@ -219,7 +220,7 @@ describe("bun run accept", () => {
       files: Option.some(files.filter((file) => !isSerial(read(file))).length),
       pool: files.filter((file) => !isSerial(read(file))),
       serial: files.filter((file) => isSerial(read(file))),
-      closing: Option.some({ mode: "all", passed: 0, failed: 0, owed: files.length, deep: 0, budget: 0 }),
+      closing: Option.some({ mode: "all", passed: 0, failed: 0, owed: acceptance().length, deep: 0, budget: 0 }),
     })
     // At most what --parallel asks, and at least one.
     expect(Option.getOrElse(Option.map(heading, (each) => each.width), () => 0)).toBeWithin(1, 4)
@@ -243,7 +244,12 @@ describe("bun run accept", () => {
           "accept: owed tests/tui-paint.test.ts",
           ...acceptance()
             .filter((file) => file !== "tests/tui-paint.test.ts" && file !== "tests/git-options.test.ts")
-            .map((file) => `owed: ${file} (not named)`),
+            .map((file) =>
+              Option.match(offUntil(read(file), scratchEnv(dir.path)), {
+                onNone: () => `owed: ${file} (not named)`,
+                onSome: (variable) => `owed: ${file} (off until enabled: until ${variable} is set)`,
+              }),
+            ),
           expect.stringMatching(/^owed: tests\/tui-paint\.test\.ts \(skipped: \d+ of \d+ tests skipped: no pass recorded\)$/),
         ],
         closing: Option.some({ mode: "all", passed: 1, failed: 0, owed: acceptance().length - 1, deep: 0, budget: 0 }),
@@ -309,6 +315,14 @@ describe("the acceptance tiers over the real tree", () => {
     expect(markers.filter((line) => !/: \/\/ accept: deep \(\d+(\.\d+)? s alone on a quiet host: .+\)$/.test(line))).toEqual([])
   })
 
+  test("a file that only skips until a variable names what it needs says so, and is off, not owed as skipped, while it is unset", () => {
+    const files = acceptance()
+    const off = files.filter((file) => read(file).split("\n").some((line) => line.startsWith("// accept: off")))
+    expect(off.filter((file) => Option.isNone(offUntil(read(file), {})))).toEqual([])
+    expect(off).toContain("tests/work.test.ts")
+    expect(offUntil(read("tests/work.test.ts"), {})).toEqual(Option.some("WORK_BIN"))
+  })
+
   test(
     "--list prints each tier's due files and the closing line, and exits without taking the lock",
     async () => {
@@ -320,21 +334,25 @@ describe("the acceptance tiers over the real tree", () => {
       const land = await accept(["--land", "--list"], scratchEnv(dir.path))
       const owed = await accept(["--owed", "--list"], scratchEnv(dir.path))
       const settled = await accept(["--owed", "--settled", "--list"], scratchEnv(dir.path))
-      const deep = files.filter((file) => tierOf(read(file)) === "deep")
+      // A file off until its variable is set (tests/work.test.ts without WORK_BIN) is no run's: owed as off in each.
+      const isOff = (file: string) => Option.isSome(offUntil(read(file), scratchEnv(dir.path)))
+      const on = files.filter((file) => !isOff(file))
+      const deep = on.filter((file) => tierOf(read(file)) === "deep")
       expect({ code: land.code, due: [...dueOf(land.lines)].sort(), closing: closingOf(land.lines) }).toEqual({
         code: 0,
-        due: files.filter((file) => tierOf(read(file)) === "land"),
+        due: on.filter((file) => tierOf(read(file)) === "land"),
         closing: Option.some({ mode: "land", passed: 0, failed: 0, owed: files.length, deep: deep.length, budget: 0 }),
       })
       // Without --settled the files that bound a time stay owed, by name and why.
-      const timing = files.filter((file) => isSerial(read(file)))
+      const timing = on.filter((file) => isSerial(read(file)))
       expect({ code: owed.code, due: [...dueOf(owed.lines)].sort(), held: owed.lines.filter((line) => line.endsWith("(waits for a settled host)")), closing: closingOf(owed.lines) }).toEqual({
         code: 0,
-        due: files.filter((file) => !isSerial(read(file))),
+        due: on.filter((file) => !isSerial(read(file))),
         held: timing.map((file) => `owed: ${file} (waits for a settled host)`),
         closing: Option.some({ mode: "owed", passed: 0, failed: 0, owed: files.length, deep: 0, budget: 0 }),
       })
-      expect({ code: settled.code, due: [...dueOf(settled.lines)].sort() }).toEqual({ code: 0, due: files })
+      expect(owed.lines.filter((line) => line.includes("(off until enabled"))).toEqual(files.filter(isOff).map((file) => `owed: ${file} (off until enabled: until ${Option.getOrElse(offUntil(read(file), {}), () => "")} is set)`))
+      expect({ code: settled.code, due: [...dueOf(settled.lines)].sort() }).toEqual({ code: 0, due: on })
       expect(land.lines.concat(owed.lines, settled.lines).filter((line) => line.includes("waiting for"))).toEqual([])
     },
     RUN_MS,

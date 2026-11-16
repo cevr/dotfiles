@@ -4,7 +4,7 @@ import { spawnSync, write } from "bun"
 import { Effect, Option } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { FleetOutcome, fleetLineOf } from "../fleet.ts"
-import { recordOnce } from "./fleet.ts"
+import { recordOnce, repositoryOf, sameOrigin } from "./fleet.ts"
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
@@ -226,6 +226,30 @@ describe("the tag object a record pushes", () => {
           sh(root, ["chmod", "755", `${root}/bin/git`])
           expect(refused(yield* record(root, "batch-y", both(d3, f1), `${root}/bin/git`))).toContain(`does not name dotfiles ${d3.slice(0, 10)}, fork ${f1.slice(0, 10)} (batch-y): nothing pushed`)
           expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f1, batch: "batch-n" }))
+        }),
+      ),
+    60_000,
+  )
+})
+
+describe("which checkouts the fleet covers", () => {
+  test("a repository is its origin's last two path segments, whatever the URL's form", () => {
+    expect(["https://github.com/cevr/dotfiles.git", "git@github.com:cevr/dotfiles.git", "ssh://git@github.com/Cevr/dotfiles/", "https://github.com/cevr/dotfiles"].map(repositoryOf)).toEqual(
+      Array.from({ length: 4 }, () => "cevr/dotfiles"),
+    )
+    expect(repositoryOf("git@github.com:biteinc/maitred.git")).toBe("biteinc/maitred")
+  })
+
+  test(
+    "a clone of the dotfiles origin (a verifier's checkout) is covered; another repository's checkout is not; a folder that is no checkout, or none, answers nothing, so the next folder decides",
+    () =>
+      onRepositories(1, (root) =>
+        Effect.gen(function* () {
+          gitClone(`${root}/dotfiles.git`, `${root}/verify-batch-1`, ["-q"], GIT_ENV)
+          repository(root, "maitred", 1)
+          sh(root, ["mkdir", `${root}/plain`])
+          const covered = (directory: string) => sameOrigin("git", `${root}/dotfiles`, directory)
+          expect(yield* Effect.all([covered(`${root}/verify-batch-1`), covered(`${root}/maitred`), covered(`${root}/plain`), covered(`${root}/missing`)])).toEqual([Option.some(true), Option.some(false), Option.none(), Option.none()])
         }),
       ),
     60_000,

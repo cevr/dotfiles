@@ -1,7 +1,7 @@
-// A fake `herdr`, `hc` and `opencode` for the tests: each reads the world in
+// A fake `herdr` and `opencode` for the tests: each reads the world in
 // $PANE_RESTORE_WORLD, answers the few calls pane-restore makes, records every
-// call in the world's `calls`, and writes the world back (hc's labels change).
-// The tests put shims named herdr, hc and opencode on PATH that run this file.
+// call in the world's `calls`, and writes the world back (herdr's panes change).
+// The tests put shims named herdr and opencode on PATH that run this file.
 import { readFileSync, writeFileSync } from "node:fs"
 
 export interface World {
@@ -13,7 +13,6 @@ export interface World {
     /** machine label → its own snapshot and processes, for `--machine`. */
     machines?: Record<string, { snapshot: unknown; processes: Record<string, ReadonlyArray<ReadonlyArray<string>>> }>
   }
-  hc: { terminals: Array<{ address: string; state: string; labels: Record<string, string>; foreground: { name: string; argv: string[] } | null }> }
   opencode: { sessions: string[] }
   calls: string[][]
 }
@@ -58,28 +57,6 @@ if (tool === "herdr") {
     host.processes[pane] = [rest.slice(3).join(" ").split(" ")]
     out({ id: "cli:pane:run", result: { type: "ok" } })
   } else fail(`fake herdr: unexpected ${rest.join(" ")}`, 2)
-} else if (tool === "hc") {
-  if (args[0] === "ls") {
-    // As hc 0.1.21: the list carries no labels and no foreground; `hc get` has them.
-    out({
-      hidden_finished: 0,
-      terminals: world.hc.terminals.map((t) => ({ address: t.address, agent: t.foreground?.name ?? "", cwd: "/", state: t.state })),
-    })
-  } else if (args[0] === "get") {
-    const terminal = world.hc.terminals.find((t) => t.address === args[1])
-    if (terminal === undefined) fail(`{"error":{"kind":"not_found"}}`, 3)
-    out(terminal)
-  } else if (args[0] === "label") {
-    const terminal = world.hc.terminals.find((t) => t.address === args[1])
-    if (terminal === undefined) fail(`{"error":{"kind":"not_found"}}`, 3)
-    for (const pair of args.slice(2).filter((a) => a !== "--json")) {
-      const at = pair.indexOf("=")
-      const [key, value] = [pair.slice(0, at), pair.slice(at + 1)]
-      if (value === "") delete terminal!.labels[key]
-      else terminal!.labels[key] = value
-    }
-    out(terminal)
-  } else fail(`fake hc: unexpected ${args.join(" ")}`, 2)
 } else if (tool === "opencode") {
   const match = args[0] === "api" && args[1] === "GET" ? /^\/api\/session\/([^/]+)$/.exec(args[2] ?? "") : null
   if (match === null) fail(`fake opencode: unexpected ${args.join(" ")}`, 2)

@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Option, PubSub, Schema, type Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import type { PingLine } from "@dotfiles/opencode-cache/keepalive"
+import { MAX_PINGS, type PingLine } from "@dotfiles/opencode-cache/keepalive"
 import * as MemoryPings from "@dotfiles/opencode-cache/memory/ping-log"
 import * as MemoryPinger from "@dotfiles/opencode-cache/memory/pinger"
 import * as Memory from "@dotfiles/opencode-cache/memory/request-log"
@@ -348,7 +348,10 @@ describe("the keepalive", () => {
   /** Moves the test clock on, then lets the pings it set off run. */
   const pass = (ms: number) => TestClock.adjust(ms).pipe(Effect.andThen(settle))
 
-  test("a subagent waiting on a tool: its last request again at max_tokens 1, 4.5 minutes on and every 4.5 after, 4 at most, the answers kept out of the session", () =>
+  /** Each ping of a wait after the first: 2 to MAX_PINGS, and one past it when `over`. */
+  const later = (over = false) => Array.from({ length: MAX_PINGS - 1 + Number(over) }, (_, index) => index + 2)
+
+  test("a subagent waiting on a tool: its last request again at max_tokens 1, 4.5 minutes on and every 4.5 after, MAX_PINGS (8) at most, the answers kept out of the session", () =>
     onTestClock(
       Effect.gen(function* () {
         const ledger = Memory.make()
@@ -362,10 +365,11 @@ describe("the keepalive", () => {
         expect(net.received).toHaveLength(0)
         yield* pass(SECOND)
         expect(net.received).toHaveLength(1)
-        for (const _ of [2, 3, 4]) yield* pass(PING)
-        expect(net.received).toHaveLength(4)
+        for (const _ of later()) yield* pass(PING)
+        expect(net.received).toHaveLength(8)
+        // About 41 minutes of the tool's run kept warm, then no more.
         yield* pass(20 * 60 * SECOND)
-        expect(net.received).toHaveLength(4)
+        expect(net.received).toHaveLength(8)
 
         // Each ping is the request as it went out, at max_tokens 1, but its length.
         const sent = net.received.map((ping) => {
@@ -373,7 +377,7 @@ describe("the keepalive", () => {
           return [ping.url, ping.method, headers.has("content-length"), headers.get("authorization"), headers.get("anthropic-beta"), parsed(ping.body)]
         })
         expect(sent).toEqual(
-          Array.from({ length: 4 }, () => [
+          Array.from({ length: MAX_PINGS }, () => [
             "https://api.anthropic.com/v1/messages",
             "POST",
             false,
@@ -383,12 +387,9 @@ describe("the keepalive", () => {
           ]),
         )
 
-        expect(pings.map((line) => [line.sessionID, line.ping, line.gapMs, line.status, line.read, line.write])).toEqual([
-          ["ses_child", 1, PING, Option.some(200), 90_000, 0],
-          ["ses_child", 2, PING, Option.some(200), 90_000, 0],
-          ["ses_child", 3, PING, Option.some(200), 90_000, 0],
-          ["ses_child", 4, PING, Option.some(200), 90_000, 0],
-        ])
+        expect(pings.map((line) => [line.sessionID, line.ping, line.gapMs, line.status, line.read, line.write])).toEqual(
+          Array.from({ length: MAX_PINGS }, (_, index) => ["ses_child", index + 1, PING, Option.some(200), 90_000, 0]),
+        )
         expect(pings[0]).toMatchObject({
           host: "mac",
           agent: Option.some("build"),
@@ -443,7 +444,7 @@ describe("the keepalive", () => {
       }),
     ))
 
-  test("parallel calls are one wait, pinged until the last returns; the next wait counts its own 4", () =>
+  test("parallel calls are one wait, pinged until the last returns; the next wait counts its own MAX_PINGS", () =>
     onTestClock(
       Effect.gen(function* () {
         const net = network()
@@ -455,16 +456,16 @@ describe("the keepalive", () => {
         yield* plugin.emit(...returned("ses_child", "call_a"))
         yield* pass(PING)
         expect(net.received).toHaveLength(2)
-        // A third call in the same wait sends no ping past the wait's fourth.
+        // A third call in the same wait sends no ping past the wait's last.
         yield* plugin.emit(...called("ses_child", "call_c"))
-        for (const _ of [3, 4, 5]) yield* pass(PING)
-        expect(net.received).toHaveLength(4)
+        for (const _ of later(true).slice(1)) yield* pass(PING)
+        expect(net.received).toHaveLength(MAX_PINGS)
         yield* plugin.emit(...returned("ses_child", "call_b"))
         yield* plugin.emit(...returned("ses_child", "call_c"))
         yield* plugin.send("ses_child", shortBody(5), { headers: SIGNED })
         yield* plugin.emit(...called("ses_child", "call_d"))
-        for (const _ of [1, 2, 3, 4, 5]) yield* pass(PING)
-        expect(net.received).toHaveLength(8)
+        for (const _ of [1, ...later(true)]) yield* pass(PING)
+        expect(net.received).toHaveLength(2 * MAX_PINGS)
       }),
     ))
 

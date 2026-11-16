@@ -6,7 +6,7 @@
 // chrome.ts's; this file draws them.
 import * as TuiClock from "@dotfiles/decider/tui-clock"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
-import type { BoxRenderable } from "@opentui/core"
+import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Option } from "effect"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js"
@@ -25,7 +25,7 @@ import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } fr
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { jobItem, jobsOf, runningJobs } from "../jobs.ts"
-import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
+import { type HintMove, navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
 import { sameWakeItem, wakeItem } from "../wakes.ts"
 import { useWorking, working } from "./family.ts"
@@ -64,19 +64,62 @@ export function useFamily(host: Host, sessionID: () => string | undefined) {
   }
 }
 
+/**
+ * A run of text a click acts on: brighter while the pointer is over it, the
+ * same cells either way. A drag that selected text is a copy, not a click.
+ */
+function Pressable(props: { host: Host; text: string; fg: RGBA; shrink: number; press: () => void }) {
+  const [hover, setHover] = createSignal(false)
+  const fg = () => {
+    if (hover()) return props.host.theme().text.base
+    return props.fg
+  }
+  return (
+    <box
+      flexShrink={props.shrink}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseUp={() => {
+        if (!props.host.selecting()) props.press()
+      }}
+    >
+      <text wrapMode="none" truncate fg={fg()}>
+        {props.text}
+      </text>
+    </box>
+  )
+}
+
 export function TopBar(props: { host: Host; sessionID: string }) {
-  // A subagent's title reads behind its parent's.
-  const title = createMemo(() => {
-    const session = props.host.session(props.sessionID)
-    return topTitle(session, session?.parentID ? props.host.session(session.parentID) : undefined)
-  })
+  // A subagent's title reads behind its parent's, which a click goes back to.
+  const parent = createMemo(() =>
+    // A grandchild's goes to its own parent, the subagent above it, not the session at the top.
+    Option.flatMap(Option.fromNullishOr(props.host.session(props.sessionID)?.parentID), (id) => Option.fromNullishOr(props.host.session(id))),
+  )
+  const title = createMemo(() => topTitle(props.host.session(props.sessionID), Option.getOrUndefined(parent())))
   const spent = createMemo(() => cost(props.host.cost(props.sessionID)))
   return (
     <box height={1} flexShrink={0} flexDirection="row" justifyContent="center">
+      <Show when={title().parent}>
+        {(parentTitle) => (
+          <>
+            <Pressable
+              host={props.host}
+              text={parentTitle()}
+              fg={props.host.theme().text.muted}
+              shrink={1}
+              press={() => {
+                const shown = parent()
+                if (Option.isSome(shown)) props.host.open(shown.value.id)
+              }}
+            />
+            <text wrapMode="none" flexShrink={0} fg={props.host.theme().text.muted}>
+              {" › "}
+            </text>
+          </>
+        )}
+      </Show>
       <text wrapMode="none" truncate fg={props.host.theme().text.base}>
-        <Show when={title().parent}>
-          {(parent) => <span style={{ fg: props.host.theme().text.muted }}>{parent()} › </span>}
-        </Show>
         {title().title}
         <span style={{ fg: props.host.theme().text.faint }}>
           {"  "}
@@ -212,6 +255,14 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))
   // A subagent's view keeps the session's layout: its way back and across, and its family's rows, sit where a session's way down and rows do.
   const child = createMemo(() => Boolean(props.sessionID && props.host.session(props.sessionID)?.parentID))
+  // Where a click on the hint goes: the parent, as ↑ and Escape do there, or the subagent ← / → moves to; in a
+  // session, what ↓ does there (the host's Subagents picker).
+  const family = useFamily(props.host, () => props.sessionID)
+  const move = (to: HintMove) => {
+    if (to === "subagents") return props.host.openSubagents()
+    const target = { parent: family.parentID, previous: () => family.step(-1), next: () => family.step(1) }[to]()
+    if (target) props.host.open(target)
+  }
   const wakes = props.host.wakes(() => props.sessionID)
   // The session's jobs: counted while they run, as the shells are; an ended one drops from the count.
   const jobReading = props.host.jobs(() => Option.fromNullishOr(props.sessionID))
@@ -251,9 +302,23 @@ export function Dock(props: { host: Host; sessionID?: string }) {
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
       {/* Right under the composer: the way to move (in a session down to its subagents, in a subagent back to its parent and across), then the model and usage at the right. */}
       <box flexDirection="row" height={1} gap={2}>
-        <text wrapMode="none" truncate fg={theme().text.faint} flexShrink={1}>
-          {navigationHint({ child: child(), others: others() })}
-        </text>
+        {/* A click on the way back or on an arrow across moves as its key does. */}
+        <box flexDirection="row" flexShrink={1}>
+          <For each={navigationHint({ child: child(), others: others() })}>
+            {(part) => (
+              <Show
+                when={part.move}
+                fallback={
+                  <text wrapMode="none" truncate fg={theme().text.faint} flexShrink={1}>
+                    {part.text}
+                  </text>
+                }
+              >
+                {(to) => <Pressable host={props.host} text={part.text} fg={theme().text.faint} shrink={0} press={() => move(to())} />}
+              </Show>
+            )}
+          </For>
+        </box>
         <box flexGrow={1} />
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {[model(), usage()].filter(Boolean).join(" · ")}

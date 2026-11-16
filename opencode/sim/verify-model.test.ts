@@ -2,7 +2,7 @@
 // text and off an OpenAI chat request alike, and the stream it answers a real OpenCode with.
 import { describe, expect, test } from "bun:test"
 import { Option, Predicate, Schema } from "effect"
-import { Answer, answer, chatAnswer, chatEvents, chatReading, ChatRequest, chatResponse, Directive, directives, TITLE, worldReading } from "./verify-model.ts"
+import { Answer, answer, chatAnswer, chatEvents, chatReading, ChatRequest, chatResponse, Directive, directives, SUMMARY, TITLE, worldReading } from "./verify-model.ts"
 
 const PROMPT = ['verify: call queue {"set":[{"id":"a","text":"A","state":"next"}]}', "verify: call sessions", "some words between", "verify: say all done"].join("\n")
 const decodeChat = Schema.decodeUnknownSync(Schema.fromJsonString(
@@ -57,6 +57,22 @@ describe("on real OpenCode", () => {
     expect(chatReading(request)).toEqual({ prompt: "verify: call sessions", answered: 1, calls: 1, last: "Sessions:\nses_1 idle" })
     expect(chatAnswer(request)).toEqual(Answer.Text({ text: "verify: 1 call(s) done; the last answered: ses_1 idle" }))
     expect(chatAnswer(Schema.decodeUnknownSync(ChatRequest)({ messages: [{ role: "system", content: "You name conversations" }] }))).toEqual(Answer.Text({ text: TITLE }))
+  })
+
+  test("a compaction request, first or an update, is answered with the summary, whatever the prompt before it says", () => {
+    const compaction = (ask: string) =>
+      Schema.decodeUnknownSync(ChatRequest)({
+        messages: [
+          { role: "system", content: "You are OpenCode" },
+          { role: "user", content: "verify: call sessions" },
+          { role: "user", content: `${ask} into a structured summary that will be given to another agent to resume the work.` },
+        ],
+      })
+    expect(chatAnswer(compaction("You MUST summarize the conversation above"))).toEqual(Answer.Text({ text: SUMMARY }))
+    expect(chatAnswer(compaction("Update the existing checkpoint in the conversation above"))).toEqual(Answer.Text({ text: SUMMARY }))
+    expect(SUMMARY).toStartWith("## Objective")
+    // A prompt that only mentions a summary is no compaction.
+    expect(chatAnswer(Schema.decodeUnknownSync(ChatRequest)({ messages: [{ role: "user", content: "verify: say summarize it" }] }))).toEqual(Answer.Text({ text: "summarize it" }))
   })
 
   test("a call streams as one tool-call chunk and a text as its words, each ending [DONE]", () => {

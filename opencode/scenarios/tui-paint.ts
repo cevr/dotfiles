@@ -6,8 +6,8 @@
 // WINDOW_MS twice: once before anything was asked (`quiet`), once with the
 // root idle and its workers running (`orchestrator`). Replayed against
 // OpenCode with a scripted model, in the owner's TUI: the Prime look and his
-// other TUI plugins, animations and tabs as the host defaults them, the
-// sidebar hidden.
+// other TUI plugins, animations as the host defaults them, his window-scoped
+// tabs (on whatever terminal runs it), the sidebar hidden.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/tui-paint.ts
 //
 // PAINT_TRACE=1 keeps a stack per render and live request (its first lines,
@@ -120,6 +120,10 @@ export default OpenCodeDriver.use(
     tuiConfig: {
       theme: { name: "prime", mode: "dark" },
       session: { sidebar: "hide" },
+      // The owner's tabs (his cli.json): this window's own, so its one session draws no strip. Mode on, not his
+      // "auto": auto turns tabs off inside herdr (HERDR_ENV), which a run from a herdr pane inherits, and a run
+      // outside one drew a default-scope strip whose busy tab swept at 20 frames a second (red at 2ca504cb).
+      tabs: { mode: "on", scope: "window" },
       plugins: [...PLUGINS.map((name) => `${root}/cmd/${name}`), probe],
     },
     tui: { viewport: { cols: 160, rows: 45 } },

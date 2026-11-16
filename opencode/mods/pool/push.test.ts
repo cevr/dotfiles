@@ -1,5 +1,5 @@
-// A push (push.ts) as its aggregates decide it: the Pushes aggregate starts,
-// ends and asks about pushes; the Resets aggregate spends a push's approved
+// A push (push.ts) as its aggregates decide it: the Pushes aggregate starts
+// and ends pushes; the Resets aggregate spends a push's approved
 // resets (resets.ts `pushDue`), by value, one at a time, in its scope only;
 // the plan and the use-or-lose forecast are measured from the readings; and
 // an account's line counts every reset in hand that would expire before it
@@ -7,23 +7,17 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import {
-  AskPush,
   EndPush,
   forecastOf,
   forecastText,
   grantOf,
   MAX_PUSH_MS,
-  NOT_NOW,
   planOf,
   planText,
-  proposalOf,
   type Push,
   Pushes,
   type PushState,
-  scopeKey,
-  START,
   StartPush,
-  TakePushAnswer,
   Tick,
 } from "./push.ts"
 import type { QuotaWindow, ResetCredit } from "./quota.ts"
@@ -45,7 +39,6 @@ import type { AccountStatus } from "./status.ts"
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
-const WEEK = 7 * DAY
 const T0 = Date.parse("2026-11-11T12:00:00Z")
 
 const decide = <S, C, E>(decider: { decide: (s: S, c: C, n: number) => Effect.Effect<ReadonlyArray<E>>; evolve: (s: S, e: E) => S }) =>
@@ -130,66 +123,8 @@ describe("the Pushes aggregate", () => {
     expect(closed.events).toMatchObject([{ _tag: "PushEnded", why: "its run ergo closed" }])
   })
 
-  test("the question is asked once per scope per week; a no holds for the week from the answer, a yes starts the push it proposed", () => {
-    const scope = { host: "mac", sessionID: "ses_root", run: "ergo" }
-    const ask = AskPush.make({ goal: "run ergo", scope, allowance: { max: 1, asNeeded: true, kinds: ["weekly"] }, sessionID: "ses_root", question: "?" })
-    const asked = pushes([[T0, ask], [T0 + DAY, ask]])
-    expect(asked.events.map((event) => event._tag)).toEqual(["PushAsked"])
-    const no = pushes([[T0 + HOUR, TakePushAnswer.make({ key: scopeKey(scope), answer: NOT_NOW })], [T0 + 6 * DAY, ask]], asked.state)
-    expect(no.events.map((event) => event._tag)).toEqual(["PushAnswered"])
-    // The week counts from the no, not the question.
-    expect(pushes([[T0 + HOUR + WEEK - 1, ask]], no.state).events).toEqual([])
-    expect(pushes([[T0 + HOUR + WEEK, ask]], no.state).events.map((event) => event._tag)).toEqual(["PushAsked"])
-    const yes = pushes([[T0 + HOUR, TakePushAnswer.make({ key: scopeKey(scope), answer: START })]], asked.state)
-    expect(Object.values(yes.state.pushes)).toMatchObject([{ goal: "run ergo", by: "proactive", scope, allowance: { max: 1, kinds: ["weekly"] } }])
-    // While a push covers the scope, nothing is asked.
-    const covered = pushes([[T0, StartPush.make({ goal: "ergo", scope: { host: "mac" }, allowance: { max: 1, asNeeded: false }, by: "asked" })], [T0, ask]])
-    expect(covered.events.map((event) => event._tag)).toEqual(["PushStarted"])
-    expect(pushes([[T0 + 2 * HOUR, EndPush.make({ id: "nope", why: "x" })]], yes.state).events).toEqual([])
-  })
-})
-
-describe("a run's question", () => {
-  const random = (seed: number) => () => {
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-  test("property: over any askers and answers within a week, at most one question per host and run, and none after a no", () => {
-    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
-      const next = random(seed)
-      let state = Pushes.initial
-      let at = T0
-      let asked = 0
-      let declined = false
-      for (let step = 0; step < 20; step++) {
-        at += Math.floor(next() * 8 * HOUR)
-        if (at - T0 >= WEEK) break
-        const session = `ses_orch_${Math.floor(next() * 4)}`
-        const scope = { host: "workbox", sessionID: session, run: "ergo" }
-        const ask = AskPush.make({ goal: "run ergo", scope, allowance: { max: 1, asNeeded: true }, sessionID: session, question: "?" })
-        const decided = pushes([[at, ask]], state)
-        state = decided.state
-        const now = decided.events.filter((event) => event._tag === "PushAsked").length
-        if (declined) expect(now).toBe(0)
-        asked += now
-        if (next() < 0.5) {
-          const answered = pushes([[at + MINUTE, TakePushAnswer.make({ key: scopeKey(scope), answer: NOT_NOW })]], state)
-          declined ||= answered.events.length > 0
-          state = answered.state
-        }
-      }
-      expect(asked).toBeLessThanOrEqual(1)
-    }
-  })
-
-  test("a push for the run, from whichever session, covers the run's question", () => {
-    const started = pushes([[T0, StartPush.make({ goal: "ergo", scope: { host: "workbox", sessionID: "ses_orch_1", run: "ergo" }, allowance: { max: 1, asNeeded: false }, by: "asked" })]])
-    const ask = (run: string) =>
-      AskPush.make({ goal: run, scope: { host: "workbox", sessionID: "ses_orch_2", run }, allowance: { max: 1, asNeeded: true }, sessionID: "ses_orch_2", question: "?" })
-    expect(pushes([[T0 + HOUR, ask("ergo")]], started.state).events).toEqual([])
-    expect(pushes([[T0 + HOUR, ask("other")]], started.state).events.map((event) => event._tag)).toEqual(["PushAsked"])
+  test("ending a push that is not on changes nothing", () => {
+    expect(pushes([[T0 + 2 * HOUR, EndPush.make({ id: "nope", why: "x" })]], Pushes.initial).events).toEqual([])
   })
 })
 
@@ -207,12 +142,12 @@ describe("a push's resets", () => {
     const due = held.events.filter((event) => event._tag === "ClaimDue")
     // The full reset clears both windows, and its account has the most days left: it frees the start.
     expect(due).toMatchObject([{ reset: { why: "push", yes: true, push: "push-1", credentialID: "b", creditID: "g-b", stage: "claiming" } }])
-    expect(held.events.some((event) => event._tag === "OwnerAsked")).toBe(false)
     // A weekly reset alone leaves a's spent 5-hour window holding the start: not a candidate.
     expect(waitThen(pool([spent("a", [grant("g-a", T0 + 30 * DAY, WEEKLY)])]), { hard: true }).events.some((event) => event._tag === "ClaimDue")).toBe(false)
-    // Another session's tree: the push does not cover it, and the owner is asked as before.
+    // Another session's tree: the push does not cover it; the standing allowance's rule decides (here every account is spent with a start held: the pool has run out), not as the push's, and asks nothing.
     const elsewhere = waitThen(view, { hard: true, root: "ses_other" }, [grantFor({ scope: { host: "workbox", sessionID: "ses_root" } })])
-    expect(elsewhere.events.map((event) => event._tag)).toEqual(["WaitNoted", "OwnerAsked"])
+    expect(elsewhere.events.map((event) => event._tag)).toEqual(["WaitNoted", "ClaimDue"])
+    expect(elsewhere.events[1]).toMatchObject({ reset: { why: "forecast" } })
     // The spend-evenly target alone is no lack of quota for a push of a session's tree.
     const scoped = [grantFor({ scope: { host: "workbox", sessionID: "ses_root" } })]
     expect(waitThen(view, { root: "ses_root" }, scoped).events.some((event) => event._tag === "ClaimDue")).toBe(false)
@@ -227,7 +162,7 @@ describe("a push's resets", () => {
     // In flight: no second claim.
     const again = resets([[T0 + 2 * MINUTE, Review.make({ pools: [view], pushes: [grantFor({ allowance: { max: 1, asNeeded: true } })] })]], one.state)
     expect(again.events.some((event) => event._tag === "ClaimDue")).toBe(false)
-    // Settled: the push has spent its one reset, so the next held start gets the owner's question instead.
+    // Settled: the push has spent its one reset, so the standing allowance's rule decides for the next held start.
     const settled = resets([[T0 + 3 * MINUTE, SettleClaim.make({ key: claimed[0]!.key, outcome: "reset", before: [] })]], one.state)
     expect(pushUsed(settled.state, "push-1")).toHaveLength(1)
     const later = resets(
@@ -319,18 +254,6 @@ describe("the plan and the forecast", () => {
     const text = planText(plan)
     expect(text).toContain("Host load 42.0 on 16 cores (over its cores)")
     expect(text).toContain("full reset on B")
-  })
-
-  test("a proposal is the fewest resets that cover the work past the room; none when the room covers it or nothing would", () => {
-    const view = pool([
-      account("a", [window("7d", 0.9, T0 + 5 * DAY)], [grant("g-a", T0 + 30 * DAY, WEEKLY)]),
-      account("b", [window("7d", 0.9, T0 + 5 * DAY)], [grant("g-b", T0 + 30 * DAY, WEEKLY)]),
-    ])
-    const plan = planOf({ views: [view], grant: { max: 99 }, now: T0 })
-    expect(proposalOf(plan, 0.1)).toBeUndefined()
-    expect(proposalOf(plan, 0.8)).toHaveLength(1)
-    expect(proposalOf(plan, 1.5)).toHaveLength(2)
-    expect(proposalOf(plan, 5)).toBeUndefined()
   })
 
   test("with low demand the resets in hand expire unused, and the forecast says so; with high demand they are spent", () => {

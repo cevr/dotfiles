@@ -1,26 +1,22 @@
 // The Pushes aggregate's state (push.ts) in the plugin's storage, which
 // OpenCode keeps once per host, so every instance of the plugin (one per
-// directory) sees the same pushes: one key per push, `push/push/<id>`, and
-// one per scope's question, `push/ask/<scope key, URI-encoded>`. A push's key
-// goes when it ends: nothing of it outlasts it.
+// directory) sees the same pushes: one key per push, `push/push/<id>`. A
+// push's key goes when it ends: nothing of it outlasts it. An older pool's
+// questions under `push/ask/` are never read.
 import { Effect, Layer, Option, Schema } from "effect"
-import { type Event, Push, PushAsk, type PushState } from "../push.ts"
+import { type Event, Push, type PushState } from "../push.ts"
 import { PushStore } from "../service.ts"
 import { PAGE, type Storage } from "./ledger.ts"
 
 const PUSHES = "push/push/"
-const ASKS = "push/ask/"
 
 const pushKey = (id: string) => `${PUSHES}${encodeURIComponent(id)}`
-const askKey = (key: string) => `${ASKS}${encodeURIComponent(key)}`
 
 const decodePush = Schema.decodeUnknownOption(Push)
-const decodeAsk = Schema.decodeUnknownOption(PushAsk)
 // As JSON: a scope's absent keys are typed `never`, which the storage's JSON type does not take as is.
 const encodePush = Schema.encodeSync(Schema.toCodecJson(Push))
-const encodeAsk = Schema.encodeSync(Schema.toCodecJson(PushAsk))
 
-const EMPTY: PushState = { pushes: {}, asks: {} }
+const EMPTY: PushState = { pushes: {} }
 
 /** Every entry under `prefix`, in key order. */
 const scanAll = (storage: Storage, prefix: string) =>
@@ -44,17 +40,12 @@ export const layer = (storage: Storage) =>
         const push = Option.getOrUndefined(decodePush(value))
         if (push !== undefined) pushes[push.id] = push
       }
-      const asks: Record<string, PushAsk> = {}
-      for (const { value } of yield* scanAll(storage, ASKS)) {
-        const ask = Option.getOrUndefined(decodeAsk(value))
-        if (ask !== undefined) asks[ask.key] = ask
-      }
-      return { pushes, asks } satisfies PushState
+      return { pushes } satisfies PushState
     }).pipe(
       Effect.catchCause(() => Effect.succeed(EMPTY)),
       Effect.withSpan("PushStore.read"),
     ),
-    record: Effect.fn("PushStore.record")(function* (events: ReadonlyArray<Event>, state: PushState) {
+    record: Effect.fn("PushStore.record")(function* (events: ReadonlyArray<Event>, _state: PushState) {
       for (const event of events) {
         const write = (() => {
           switch (event._tag) {
@@ -62,14 +53,6 @@ export const layer = (storage: Storage) =>
               return storage.set(pushKey(event.push.id), encodePush(event.push))
             case "PushEnded":
               return storage.remove(pushKey(event.id))
-            case "PushAsked":
-              return storage.set(askKey(event.ask.key), encodeAsk(event.ask))
-            case "PushAnswered": {
-              const ask = state.asks[event.key]
-              return ask === undefined ? Effect.void : storage.set(askKey(ask.key), encodeAsk(ask))
-            }
-            case "AsksForgotten":
-              return Effect.forEach(event.keys, (key) => storage.remove(askKey(key)), { discard: true })
           }
         })()
         yield* write.pipe(Effect.ignoreCause)

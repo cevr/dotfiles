@@ -11,7 +11,7 @@
 // it (the FleetStore, in the plugin's storage): a start admitted in one
 // project counts on the pace in all of them, and the report a peer reads is
 // the host's whole.
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { type PeerStatus, Report, type SharedReading, Start } from "./status.ts"
 
@@ -168,14 +168,38 @@ export const inflight = (state: FleetState, now: number, settleMs: number): Read
   ...Object.values(state.peers).flatMap((peer) => (peer.report?.starts ?? []).filter((start) => unsettled(start, now, settleMs))),
 ]
 
-/** What this host answers a peer: its own starts that still count and its readings. */
+/**
+ * What this host answers a peer: its own starts that still count, the
+ * provider of each of its sessions busy now (`busy`), and its readings.
+ */
 export const report = (
   state: FleetState,
   host: string,
   now: number,
   settleMs: number,
   readings: ReadonlyArray<SharedReading>,
-): Report => ({ host, at: now, starts: ownStarts(state, now, settleMs), readings })
+  busy: ReadonlyArray<string>,
+): Report => ({ host, at: now, starts: ownStarts(state, now, settleMs), busy, readings })
+
+/** A peer's busy sessions count while its last report came within this long: a peer that stops answering runs nothing known. */
+export const BUSY_FRESH_MS = 10 * 60_000
+
+/**
+ * The agents running across the fleet now: the provider of every session busy
+ * on this host (`own`) and in each peer's last report, while that report is
+ * fresh (BUSY_FRESH_MS), and the hosts they run on (this one always counts).
+ * A session running for hours counts as long as it is busy, however long ago
+ * it started.
+ */
+export const running = (state: FleetState, own: ReadonlyArray<string>, now: number) => {
+  const peers = Object.values(state.peers).map((peer) =>
+    Option.match(
+      Option.filter(Option.fromUndefinedOr(peer.seenAt), (at) => at > now - BUSY_FRESH_MS),
+      { onNone: () => [], onSome: () => peer.report?.busy ?? [] },
+    ),
+  )
+  return { busy: [...own, ...peers.flat()], hosts: 1 + peers.filter((busy) => busy.length > 0).length }
+}
 
 /** Each peer as the pane draws it, in the order `names` lists them. */
 export const peers = (state: FleetState, names: ReadonlyArray<string>, now: number, settleMs: number): ReadonlyArray<PeerStatus> =>

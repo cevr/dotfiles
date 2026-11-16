@@ -24,6 +24,7 @@ import { DRIFT_MARK } from "@dotfiles/opencode-orchestrate/skill-drift"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
+import { NOTHING_HELD } from "@dotfiles/opencode-orchestrate/ledger"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
@@ -88,6 +89,8 @@ interface World {
   readonly fleet?: Array<FleetTest.Asked>
   /** What recording each of them answers; `Off` (nothing said) when not named. */
   readonly fleetOutcome?: (asked: FleetTest.Asked) => FleetOutcome
+  /** The directories that are checkouts of the fleet's repository; every one when not named. */
+  readonly fleetCovers?: (directory: string) => Option.Option<boolean>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -189,12 +192,12 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       FileUnitLogs.layer(LOG_SCRIPT),
       StepLogTest.layer(world.steps ?? {}),
       OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
-      Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
+      Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS), held: () => Effect.succeed(NOTHING_HELD) }),
       OpenCodeSteer.layer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void nudges.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       OpenCodeSteer.tellLayer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void notes.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       SkillTest.skill(world.skill ?? { history: [] }),
       SkillTest.records(world.records ?? { seen: new Map() }),
-      FleetTest.layer(world.fleet ?? [], world.fleetOutcome),
+      FleetTest.layer(world.fleet ?? [], world.fleetOutcome, world.fleetCovers),
       MainLineTest.layer(() => Option.none()),
       RunFilesTest.layer(new Map()),
     )
@@ -1890,7 +1893,7 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
     })
   const verifier = (batch: string) => ({ agent: "verifier", description: `verifier ${batch} r1`, prompt: "v", background: true })
 
-  test("a root that runs units is told its status and the re-read once per compaction; a subagent and a root that runs none are not", () =>
+  test("a root that runs units is told its status, its ledger and the re-read once per compaction; a subagent and a root that runs none are not", () =>
     scenario(
       Effect.gen(function* () {
         const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "alpha", state: "ready" }, { unit: "beta", state: "implement" }] }]
@@ -1913,6 +1916,11 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
             "- alpha: ready · no lane",
             "- beta: implement · no lane",
             "next: wait for the hand-backs of beta (implementing).",
+            "",
+            "Your ledger, as it stood at the compaction:",
+            "Queue: nothing open.",
+            "Subagents: none running, latched or waiting on you.",
+            "Wakes, monitors and jobs: none.",
             "",
             "Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.",
           ].join("\n"),
@@ -1996,6 +2004,80 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
         expect([told?.sessionID, told?.text.endsWith(said)]).toEqual(["root", true])
         const refusals = logged.filter((each) => each.line.endsWith(said))
         expect(refusals.map((each) => each.near)).toEqual(["/run/batch-2-findings.md"])
+      }),
+    ))
+
+  test("M1, M2: another repository's accepted batch (a Bite verifier's, no heads line) is none of the fleet's: no record, no notice, no log; a dotfiles one still publishes", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const logged: Array<{ readonly near: string; readonly line: string }> = []
+        const bite = "/workspaces/.rifts/bite/scratchpad/batches/batch-288-findings.md"
+        const sessions = steps({
+          ses_b: { agent: "verifier", lastWords: `verifier batch-288 r1: accepted ${bite}`, directory: "/workspaces/.rifts/bite/verify-batch-288" },
+          ses_d: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+        })
+        const target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-1" }
+        // Were the Bite batch recorded, its batch file would be refused: it has no heads line.
+        const fleetOutcome = (asked: FleetTest.Asked) => {
+          if (asked.batch === "batch-1") return FleetOutcome.Recorded({ target })
+          return FleetOutcome.Refused({ reason: `the batch file ${asked.batch}.md has no heads line; write one` })
+        }
+        const fleetCovers = (directory: string) => Option.some(directory.startsWith("/checkouts/dotfiles"))
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetOutcome, fleetCovers, records: { seen: new Map(), logged } })
+        yield* begin(plugin, verifier("batch-288"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* begin(plugin, verifier("batch-1"), "ses_d")
+        yield* plugin.idle("ses_d")
+        yield* eventually(() => expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true))
+        expect(fleet).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }])
+        expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toEqual([])
+        expect(logged.filter((each) => each.line.includes("batch-288"))).toEqual([])
+      }),
+    ))
+
+  test("M1, M2: a verifier's hand-back with a parenthetical between its verdict and its findings path records by that path", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const findings = "/private/var/folders/qd/T/opencode/verify-1115cj/batch-2026-11-15cj-findings.md"
+        const sessions = steps({
+          ses_v: {
+            agent: "verifier",
+            lastWords: `verifier batch-2026-11-15cj r1: accepted (sidebar-fit accepted, status-pct accepted) ${findings}\n\nTwo units accepted.`,
+            directory: "/checkouts/dotfiles",
+          },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet })
+        yield* begin(plugin, verifier("batch-2026-11-15cj"), "ses_v")
+        yield* plugin.idle("ses_v")
+        yield* eventually(() => expect(fleet).toEqual([{ report: findings, batch: "batch-2026-11-15cj" }]))
+      }),
+    ))
+
+  test("M1, M2: a verifier whose folder is no git checkout falls back to its root's folder: a dotfiles root publishes, another repository's root stays silent", () =>
+    scenario(
+      Effect.gen(function* () {
+        // The plain folder's origin does not read; a checkout answers whether it is the dotfiles.
+        const fleetCovers = (directory: string) =>
+          Option.liftPredicate(directory.startsWith("/checkouts/dotfiles"), () => directory.startsWith("/checkouts/"))
+        const run = (rootDirectory: string) =>
+          Effect.gen(function* () {
+            const fleet: Array<FleetTest.Asked> = []
+            const sessions = {
+              ...steps({ ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/tmp/run" } }),
+              root: { directory: rootDirectory },
+            }
+            const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetCovers })
+            yield* begin(plugin, verifier("batch-1"), "ses_v")
+            yield* plugin.idle("ses_v")
+            return fleet
+          })
+        const dotfiles = yield* run("/checkouts/dotfiles")
+        yield* eventually(() => expect(dotfiles).toEqual([{ report: "/run/batch-1-findings.md", batch: "batch-1" }]))
+        const bite = yield* run("/checkouts/bite")
+        yield* settle
+        expect(bite).toEqual([])
       }),
     ))
 })

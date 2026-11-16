@@ -10,7 +10,7 @@
 // tests/prime-escape.test.ts, tests/escape-states.test.ts and
 // tests/queue-merge.test.ts run it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { Deferred, Effect, Option } from "effect"
 import { STOP_MS } from "@dotfiles/opencode-escape/escape"
 import type { InboxItem, Message } from "@dotfiles/opencode-escape/opencode/view"
 import { SEND_COMMAND } from "@dotfiles/opencode-escape/send"
@@ -271,6 +271,24 @@ describe("escape plugin", () => {
     expect(run.calls).toEqual(["take msg_2,msg_3", "interrupt false"])
     expect(run.dispatched).toEqual([])
     expect(run.toasts).toEqual([])
+  })
+
+  test("the turn stops only once the take-back is answered: a prompt sent just before the press reaches the inbox ahead of the stop", async () => {
+    const run = start()
+    run.sessions.ses_root!.messages.push({ id: "msg_3", type: "user", text: "Then tag it.", time: { created: SENT + 6_000 } })
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_3", "queue", SENT + 6_000)]
+    run.state.now = SENT + 60_000
+    const answer = Deferred.makeUnsafe<{ left: ReadonlyArray<string> }>()
+    run.host.ui.composer.takeBack = (input) => {
+      run.calls.push(`take ${input.inboxIDs.join(",")}`)
+      return Effect.runPromise(Deferred.await(answer))
+    }
+    run.press()
+    await run.flush()
+    expect(run.calls).toEqual(["take msg_3"])
+    Effect.runSync(Deferred.succeed(answer, { left: [] }))
+    await run.flush()
+    expect(run.calls).toEqual(["take msg_3", "interrupt false"])
   })
 
   test("an idle session's parked prompt comes back alone, and nothing is interrupted", async () => {

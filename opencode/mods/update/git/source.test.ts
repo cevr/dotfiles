@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { argv, file, spawnSync, write } from "bun"
-import { Effect, Exit } from "effect"
+import { argv, env as hostEnv, file, spawnSync, write } from "bun"
+import { Effect, Exit, Option } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
@@ -59,7 +59,7 @@ const scratch = Effect.gen(function* () {
 const advance = (root: string, mode: "ff" | "reset", commit: string) =>
   Effect.gen(function* () {
     return yield* (yield* Source).advance(commit)
-  }).pipe(Effect.provide(SourceLive.layer({ root, mode, bun: BUN, fork: "/nonexistent/loop-probe-x", env: GIT_ENV })), Effect.exit)
+  }).pipe(Effect.provide(SourceLive.layer({ root, mode, bun: BUN, fork: "/nonexistent/loop-probe-x", env: GIT_ENV, bin: Option.none() })), Effect.exit)
 
 describe("the advance step over real git and bun", () => {
   for (const mode of ["ff", "reset"] as const) {
@@ -135,6 +135,186 @@ describe("the advance step over real git and bun", () => {
   )
 
   test(
+    "W1: on the workbox a move installs the target's workbox/bin over a stale copy and runs apply-agent-settings; a removed script stays; a commit without the script moves too",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { root, a } = yield* scratch
+          const repo = (path: string) => Effect.promise(() => file(new URL(`../../../../${path}`, import.meta.url)).text())
+          const settings = yield* repo("workbox/bin/apply-agent-settings")
+          // The target: the real install script and apply-agent-settings; the scripts it calls in the
+          // checkout do nothing here, so no step touches this host's Claude or herdr.
+          yield* files(root, [
+            ["opencode/package.json", EMPTY_PACKAGE],
+            ["workbox/install-bin.sh", yield* repo("workbox/install-bin.sh")],
+            ["workbox/bin/apply-agent-settings", settings],
+            ["claude/mods/fx-ui/install.sh", "#!/bin/sh\nexit 0\n"],
+            ["claude/install-herdr-hook.sh", "#!/bin/sh\nexit 0\n"],
+          ])
+          sh(root, ["chmod", "755", "workbox/install-bin.sh", "workbox/bin/apply-agent-settings", "claude/mods/fx-ui/install.sh", "claude/install-herdr-hook.sh"])
+          sh(root, ["git", "add", "-A"])
+          sh(root, ["git", "commit", "-qm", "C"])
+          const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+          sh(root, ["git", "reset", "-q", "--hard", a])
+          // A fake home as the workbox has it: bootstrap's older apply-agent-settings, a script since
+          // removed from workbox/bin, herdr, the synced settings, the dotfiles where the scripts look.
+          const home = sh(".", ["mktemp", "-d", "-t", "update-source-home"]).out
+          const stubs = `${home}/stubs`
+          yield* files(home, [
+            [".local/bin/apply-agent-settings", "#!/bin/sh\nexit 0\n"],
+            [".local/bin/gone-script", "#!/bin/sh\nexit 0\n"],
+            [".local/bin/herdr", "#!/bin/sh\nexit 0\n"],
+            [".config/bite-workbox/settings-source/claude/settings.local.json", "{}"],
+            [".config/bite-workbox/settings-source/claude/statusline-git.sh", "#!/bin/sh\n"],
+            ["stubs/sudo", "#!/bin/sh\nexit 0\n"],
+          ])
+          sh(home, ["chmod", "755", ".local/bin/apply-agent-settings", ".local/bin/gone-script", ".local/bin/herdr", "stubs/sudo"])
+          sh(home, ["mkdir", "-p", "Developer/personal"])
+          sh(home, ["ln", "-s", root, "Developer/personal/dotfiles"])
+          const env = { ...GIT_ENV, HOME: home, PATH: `${stubs}:${hostEnv.PATH ?? ""}` }
+          const advanceTo = (target: string) =>
+            Effect.gen(function* () {
+              return yield* (yield* Source).advance(target)
+            }).pipe(Effect.provide(SourceLive.layer({ root, mode: "reset", bun: BUN, fork: "/nonexistent/loop-probe-x", env, bin: Option.some(SourceLive.WORKBOX_BIN) })), Effect.exit)
+          const moved = yield* advanceTo(c)
+          expect(Exit.match(moved, { onSuccess: () => "installed", onFailure: String })).toBe("installed")
+          expect(yield* Effect.promise(() => file(`${home}/.local/bin/apply-agent-settings`).text())).toBe(settings)
+          expect(sh(home, ["readlink", ".local/bin/codex-bridge"]).out).toBe(`${home}/Developer/personal/dotfiles/claude/mods/codex/bridge/bridge.ts`)
+          expect(yield* Effect.promise(() => file(`${home}/.local/bin/gone-script`).exists())).toBe(true)
+          // A commit older than the install script (a rollback's) moves with nothing to install.
+          expect(Exit.isSuccess(yield* advanceTo(a))).toBe(true)
+          expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
+          spawnSync(["rm", "-rf", root, home])
+        }),
+      ),
+    60_000,
+  )
+
+  for (const mode of ["ff", "reset"] as const) {
+    test(
+      `U1 (${mode}): an untracked copy of a file the target adds is the target's own and goes; an untracked file with other content refuses the move as CheckoutStuck, naming it, and nothing moves`,
+      () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const { root, a } = yield* scratch
+            const NOTE = "# The note the target adds\n"
+            yield* files(root, [
+              ["opencode/package.json", EMPTY_PACKAGE],
+              ["docs/research/note.md", NOTE],
+            ])
+            sh(root, ["git", "add", "-A"])
+            sh(root, ["git", "commit", "-qm", "C"])
+            const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+            sh(root, ["git", "reset", "-q", "--hard", a])
+            // The copy that came ahead of the commit, by hand or by Syncthing, byte for byte.
+            yield* files(root, [["docs/research/note.md", NOTE]])
+            expect(Exit.isSuccess(yield* advance(root, mode, c))).toBe(true)
+            expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(c)
+            expect(sh(root, ["git", "status", "--porcelain"]).out).toBe("")
+            sh(root, ["git", "reset", "-q", "--hard", a])
+            // Another file at that path: the owner's, so it stays, and the move waits for him.
+            const OTHER = "# My own draft\n"
+            yield* files(root, [["docs/research/note.md", OTHER]])
+            const stuck = yield* advance(root, mode, c)
+            if (mode === "reset") {
+              // A reset follows the commit whatever the tree holds: the commit's file wins, as it always has there.
+              expect(Exit.isSuccess(stuck)).toBe(true)
+            } else {
+              const error = Exit.findErrorOption(stuck)
+              expect(Option.map(error, (each) => each._tag)).toEqual(Option.some("CheckoutStuck"))
+              expect(Option.exists(error, (each) => each.message.includes("untracked files the target tracks with other content: docs/research/note.md"))).toBe(true)
+              expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
+              expect(yield* Effect.promise(() => file(`${root}/docs/research/note.md`).text())).toBe(OTHER)
+            }
+            spawnSync(["rm", "-rf", root])
+          }),
+        ),
+      60_000,
+    )
+
+    test(
+      `U2 (${mode}): an untracked copy at a non-ASCII path, which git quotes without -z, is read as it is on disk: the target's own goes and the move goes through`,
+      () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const { root, a } = yield* scratch
+            const PATH = "docs/research/café — 説明.md"
+            const NOTE = "# The note the target adds\n"
+            yield* files(root, [
+              ["opencode/package.json", EMPTY_PACKAGE],
+              [PATH, NOTE],
+            ])
+            sh(root, ["git", "add", "-A"])
+            sh(root, ["git", "commit", "-qm", "C"])
+            const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+            sh(root, ["git", "reset", "-q", "--hard", a])
+            yield* files(root, [[PATH, NOTE]])
+            expect(Exit.isSuccess(yield* advance(root, mode, c))).toBe(true)
+            expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(c)
+            expect(sh(root, ["git", "status", "--porcelain"]).out).toBe("")
+            expect(yield* Effect.promise(() => file(`${root}/${PATH}`).text())).toBe(NOTE)
+            spawnSync(["rm", "-rf", root])
+          }),
+        ),
+      60_000,
+    )
+  }
+
+  test("M1: each host runs its own commands script: the workbox's on Linux, the Mac's on macOS, none elsewhere", () => {
+    expect(SourceLive.binScript("linux")).toEqual(Option.some(SourceLive.WORKBOX_BIN))
+    expect(SourceLive.binScript("darwin")).toEqual(Option.some(SourceLive.MAC_BIN))
+    expect(SourceLive.binScript("win32")).toEqual(Option.none())
+  })
+
+  test(
+    "M2: on the Mac a move links install.sh's commands into ~/.local/bin over a stale link, twice alike; a link no longer made stays; a commit without the script moves too",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { root, a } = yield* scratch
+          const script = yield* Effect.promise(() => file(new URL("../../../../local-bin.sh", import.meta.url)).text())
+          yield* files(root, [
+            ["opencode/package.json", EMPTY_PACKAGE],
+            ["local-bin.sh", script],
+          ])
+          sh(root, ["git", "add", "-A"])
+          sh(root, ["git", "commit", "-qm", "C"])
+          const c = sh(root, ["git", "rev-parse", "HEAD"]).out
+          sh(root, ["git", "reset", "-q", "--hard", a])
+          // The Mac before: install.sh ran before rex-show existed, a link to a since-moved file, and one
+          // the script no longer makes.
+          const home = sh(".", ["mktemp", "-d", "-t", "update-source-home"]).out
+          sh(home, ["mkdir", "-p", ".local/bin"])
+          sh(home, ["ln", "-s", "/nonexistent/loop-probe-x/hours", ".local/bin/hours"])
+          sh(home, ["ln", "-s", "/nonexistent/loop-probe-x/gone", ".local/bin/gone"])
+          const env = { ...GIT_ENV, HOME: home }
+          const advanceTo = (target: string) =>
+            Effect.gen(function* () {
+              return yield* (yield* Source).advance(target)
+            }).pipe(Effect.provide(SourceLive.layer({ root, mode: "ff", bun: BUN, fork: "/nonexistent/loop-probe-x", env, bin: Option.some(SourceLive.MAC_BIN) })), Effect.exit)
+          const links = () =>
+            ["hours", "codex-bridge", "rex-show", "gone"].map((name) => `${name} -> ${sh(home, ["readlink", `.local/bin/${name}`]).out}`)
+          const expected = [
+            `hours -> ${root}/skills/track-work-hours/scripts/hours`,
+            `codex-bridge -> ${root}/claude/mods/codex/bridge/bridge.ts`,
+            `rex-show -> ${root}/opencode/cmd/rex/show.ts`,
+            "gone -> /nonexistent/loop-probe-x/gone",
+          ]
+          const moved = yield* advanceTo(c)
+          expect(Exit.match(moved, { onSuccess: () => "installed", onFailure: String })).toBe("installed")
+          expect(links()).toEqual(expected)
+          expect(Exit.isSuccess(yield* advanceTo(c))).toBe(true)
+          expect(links()).toEqual(expected)
+          // A commit older than the script (a rollback's) moves with nothing to link.
+          expect(Exit.isSuccess(yield* advanceTo(a))).toBe(true)
+          expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
+          spawnSync(["rm", "-rf", root, home])
+        }),
+      ),
+    60_000,
+  )
+
+  test(
     "a target whose sim-tui links the fork's protocol installs, and the next one too: the fork's modules stay as they were",
     () =>
       Effect.runPromise(
@@ -178,7 +358,7 @@ describe("the advance step over real git and bun", () => {
           const advanceTo = (target: string) =>
             Effect.gen(function* () {
               return yield* (yield* Source).advance(target)
-            }).pipe(Effect.provide(SourceLive.layer({ root: checkoutRoot, mode: "ff", bun: BUN, fork, env })), Effect.exit)
+            }).pipe(Effect.provide(SourceLive.layer({ root: checkoutRoot, mode: "ff", bun: BUN, fork, env, bin: Option.none() })), Effect.exit)
           expect(Exit.isSuccess(yield* advanceTo(b))).toBe(true)
           expect(forkModules()).toBe(before)
           // The next install's link-fork checks the fork first: a link written into it would fail it there.

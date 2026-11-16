@@ -7,9 +7,10 @@
 // (`--repo <main checkout>`).
 import { readdir, stat } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
-import { Effect, Layer, Option } from "effect"
+import { env } from "bun"
+import { Effect, Layer, Option, Result } from "effect"
 import type { RunTable } from "../run-table.ts"
-import { RunTables, RunsUnreadable } from "../service.ts"
+import { type Listed, RunTables, RunsUnreadable } from "../service.ts"
 
 /** How long one command may run. */
 const TIMEOUT_MS = 20_000
@@ -18,11 +19,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 const isNotFound = (cause: unknown) => isRecord(cause) && cause.code === "ENOENT"
 
+/**
+ * The environment every command runs in. The host's binary (`process.execPath`
+ * inside OpenCode) is Bun underneath: BUN_BE_BUN runs the status script as Bun,
+ * where without it the binary reads the script's path as an OpenCode command,
+ * shows its help and logs an ERROR on every poll.
+ */
+const ENV = { ...env, BUN_BE_BUN: "1" }
+
 /** A command's exit code and output. */
 const ran = Effect.fn("RunTables.ran")(function* (argv: ReadonlyArray<string>, cwd?: string) {
   const [out, err, code] = yield* Effect.tryPromise({
     try: () => {
-      const run = Bun.spawn([...argv], { cwd, stdout: "pipe", stderr: "pipe", signal: AbortSignal.timeout(TIMEOUT_MS) })
+      const run = Bun.spawn([...argv], { cwd, env: ENV, stdout: "pipe", stderr: "pipe", signal: AbortSignal.timeout(TIMEOUT_MS) })
       return Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])
     },
     catch: (cause) => new RunsUnreadable({ message: `${argv[0]} failed: ${messageOf(cause)}` }),
@@ -46,12 +55,15 @@ const namedDirs = Effect.fn("RunTables.namedDirs")(function* (top: string) {
   return named.filter((_, index) => found[index] === true)
 })
 
-/** The runs `script` (the orchestrate skill's `scripts/status.ts`) reads. */
-export const layer = (script: string) =>
+/** No runs: a directory in no repository. */
+const NONE: Listed = { runs: [], unreadable: [] }
+
+/** The runs `script` (the orchestrate skill's `scripts/status.ts`) reads, run by `runtime` (the host's binary). */
+export const layer = (script: string, runtime: string = process.execPath) =>
   Layer.succeed(RunTables, {
     list: Effect.fn("RunTables.list")(function* (directory: string) {
       const common = yield* command(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], directory).pipe(Effect.option)
-      if (Option.isNone(common)) return []
+      if (Option.isNone(common)) return NONE
       const top = basename(common.value.trim()) === ".git" ? dirname(common.value.trim()) : directory
       const root = join(top, "tmp/orchestrate")
       const entries = yield* Effect.tryPromise({ try: () => readdir(root, { withFileTypes: true }), catch: (cause) => cause }).pipe(
@@ -62,10 +74,12 @@ export const layer = (script: string) =>
       const inRepo = entries.filter((entry) => entry.isDirectory()).map((entry) => ({ name: entry.name, dir: join(root, entry.name) }))
       const named = (yield* namedDirs(top).pipe(Effect.orElseSucceed(() => []))).map((dir) => ({ name: basename(dir), dir }))
       const runs = [...inRepo, ...named.filter((run) => !inRepo.some((each) => each.dir === run.dir))]
-      return yield* Effect.forEach(
+      // Each run on its own: one the script fails on is left out and says why, the others still list.
+      const read = yield* Effect.forEach(
         runs,
-        (run) => command([process.execPath, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table }))),
+        (run) => command([runtime, script, run.dir, "--repo", top]).pipe(Effect.map((table): RunTable => ({ ...run, table })), Effect.result),
         { concurrency: "unbounded" },
       )
+      return { runs: read.flatMap((each) => Option.toArray(Result.getSuccess(each))), unreadable: read.flatMap((each) => Option.toArray(Result.getFailure(each))) }
     }),
   })

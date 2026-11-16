@@ -4,8 +4,9 @@
 // holding `broken`. Then the real status script, model-based: a unit's state
 // is its files and git (B1), and an `orchestrate.dir` run is read beside
 // `tmp/orchestrate`.
-import { env, spawnSync, write } from "bun"
+import { env, file, spawnSync, write } from "bun"
 import { expect, test } from "bun:test"
+import { execPath } from "node:process"
 import { Array as Arr, Context, Effect, Layer, Option, type Scope } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { scratch as scratchDir } from "../../../tests/scratch.ts"
@@ -56,7 +57,7 @@ const repositoryOf = (tables: ReadonlyArray<RunTable>) =>
       repository,
       outside,
       dir,
-      spoil: put(tables.map(({ name }) => [join(runs, name, "broken"), ""] as const)),
+      spoil: (name: string) => put([[join(runs, name, "broken"), ""]]),
     }
   })
 
@@ -69,7 +70,7 @@ test("each run names its dir: tmp/orchestrate/<run> at the repository's main che
   scoped(
     Effect.gen(function* () {
         const probe = yield* repositoryOf([{ name: "p5", table: "| Unit | State |\n" }])
-        const runs = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
+        const { runs } = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
         expect(runs.map((run) => run.dir)).toEqual([join(probe.repository, "tmp/orchestrate/p5")])
     }),
   ))
@@ -88,11 +89,48 @@ test("each directory `git config --get-all orchestrate.dir` names is one run mor
         yield* put([[join(flat, "table.md"), "| Unit | State |\n| b | implement |\n"]])
         for (const named of [flat, join(probe.dir, "gone")]) git(probe.repository, ["config", "--add", "orchestrate.dir", named])
         const tables = Context.get(yield* Layer.build(probe.layer), RunTables)
-        const runs = yield* tables.list(probe.repository)
+        const { runs } = yield* tables.list(probe.repository)
         expect(runs.map((run) => ({ name: run.name, dir: run.dir, units: unitsOf(run.table).map((unit) => unit.unit) }))).toEqual([
           { name: "p5", dir: join(probe.repository, "tmp/orchestrate/p5"), units: ["a"] },
           { name: "flat", dir: flat, units: ["b"] },
         ])
+    }),
+  ))
+
+// ── The host's binary runs the status script as Bun ──
+
+/**
+ * A stand-in for OpenCode's compiled binary: Bun underneath, it runs a script
+ * as Bun only with BUN_BE_BUN set; without it, it reads the script's path as an
+ * OpenCode command, logs an ERROR line to `log` and fails, as the live one did.
+ */
+const hostBinary = (log: string) => `#!${execPath}
+import { appendFileSync } from "node:fs"
+const args = process.argv.slice(2)
+if (process.env.BUN_BE_BUN !== "1") {
+  appendFileSync("${log}", "level=ERROR message=\\"cli process failed\\" cause=ShowHelp args=" + JSON.stringify(args) + "\\n")
+  console.error("Unexpected positional argument: " + JSON.stringify(args[1]))
+  process.exit(1)
+}
+const run = Bun.spawnSync(["${execPath}", ...args], { stdout: "inherit", stderr: "inherit" })
+process.exit(run.exitCode ?? 1)
+`
+
+test("an old run dir (no units, no plan) is read by the real status script through the host's binary: an empty table each poll, no ERROR logged", () =>
+  scoped(
+    Effect.gen(function* () {
+      const dir = yield* scratch
+      const repository = join(dir, "repo")
+      gitInit(repository, ["-q"])
+      const old = join(repository, "tmp/orchestrate/ftbbrand")
+      const host = join(dir, "opencode")
+      const log = join(dir, "opencode.log")
+      yield* put([[join(old, "e2.mjs"), "1\n"], [join(old, "proto/index.html"), "<p>\n"], [host, hostBinary(log)]])
+      spawnSync(["chmod", "+x", host])
+      const tables = Context.get(yield* Layer.build(RunScript.layer(REAL_STATUS, host)), RunTables)
+      const polls = yield* Effect.forEach(Arr.range(1, 5), () => tables.list(repository))
+      expect(polls.map(({ runs }) => runs.map((run) => ({ name: run.name, units: unitsOf(run.table) })))).toEqual(Arr.replicate([{ name: "ftbbrand", units: [] }], 5))
+      expect(yield* Effect.promise(() => file(log).exists())).toBe(false)
     }),
   ))
 

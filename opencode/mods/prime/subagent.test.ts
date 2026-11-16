@@ -69,14 +69,31 @@ describe("the order ←/→ walk", () => {
 })
 
 describe("the hints", () => {
-  test("a session with subagents running points down to them; one without says nothing", () => {
-    expect(navigationHint({ child: false, others: 3 })).toBe("↓ subagents")
-    expect(navigationHint({ child: false, others: 0 })).toBe("")
+  const hint = (input: { child: boolean; others: number }) => navigationHint(input).map((part) => part.text).join("")
+  /** The pressable parts: each one's text and where a click on it goes. */
+  const pressable = (input: { child: boolean; others: number }) =>
+    navigationHint(input)
+      .filter((part) => part.move)
+      .map((part) => [part.text, part.move])
+
+  test("a session with subagents running points down to them, pressable as ↓; one without says nothing", () => {
+    expect(hint({ child: false, others: 3 })).toBe("↓ subagents")
+    expect(hint({ child: false, others: 0 })).toBe("")
+    expect(pressable({ child: false, others: 3 })).toEqual([["↓ subagents", "subagents"]])
   })
 
   test("a subagent points back up, and across while another runs", () => {
-    expect(navigationHint({ child: true, others: 2 })).toBe("↑ back to parent · ←/→ other subagents")
-    expect(navigationHint({ child: true, others: 0 })).toBe("↑ back to parent")
+    expect(hint({ child: true, others: 2 })).toBe("↑ back to parent · ←/→ other subagents")
+    expect(hint({ child: true, others: 0 })).toBe("↑ back to parent")
+  })
+
+  test("the way back is pressable, and each arrow across: ← to the previous subagent, → to the next", () => {
+    expect(pressable({ child: true, others: 0 })).toEqual([["↑ back to parent", "parent"]])
+    expect(pressable({ child: true, others: 2 })).toEqual([
+      ["↑ back to parent", "parent"],
+      ["←", "previous"],
+      ["→", "next"],
+    ])
   })
 
   test("the arrows in a subagent's view move while its prompt is empty; a draft keeps them, and waiting prompts keep ↑", () => {

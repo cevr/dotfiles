@@ -32,7 +32,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -70,7 +70,7 @@ import {
   UnitLogs,
 } from "./service.ts"
 import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
-import { FLEET_DESCRIPTION, type FleetOutcome, fleetLineOf } from "./fleet.ts"
+import { FLEET_DESCRIPTION, findingsOf, type FleetOutcome, fleetLineOf } from "./fleet.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
@@ -851,9 +851,20 @@ export const verdictLayer = Layer.effect(
       const key = `${sessionID}\n${words ?? ""}`
       if (published.has(key)) return
       published.add(key)
-      const report = Option.fromUndefinedOr(said.file)
+      const root = Option.fromUndefinedOr(yield* sessions.parentOf(sessionID))
+      const checkout = Option.fromUndefinedOr(yield* sessions.directoryOf(sessionID))
+      // Only a batch of the repository the fleet publishes is the fleet's: the verifier's checkout must be one, or, when
+      // its origin does not read (no folder, not a git checkout), its root's directory. Another repository's accepted
+      // batch is not recorded and not told; with neither read, nothing is.
+      const coversAt = (directory: Option.Option<string>) => Option.match(directory, { onNone: () => Effect.succeed(Option.none<boolean>()), onSome: fleet.covers })
+      const atRoot = Effect.forEach(Option.toArray(root), (id) => sessions.directoryOf(id)).pipe(
+        Effect.flatMap((directories) => coversAt(Option.flatMap(Arr.head(directories), Option.fromUndefinedOr))),
+      )
+      const covered = yield* Option.match(yield* coversAt(checkout), { onSome: (answer) => Effect.succeed(Option.some(answer)), onNone: () => atRoot })
+      if (!Option.getOrElse(covered, () => false)) return
+      const report = Option.orElse(Option.flatMap(Option.fromUndefinedOr(words), findingsOf), () => Option.fromUndefinedOr(said.file))
       const outcome = yield* fleet.record({ report, batch: said.unit })
-      yield* told(Option.fromUndefinedOr(yield* sessions.parentOf(sessionID)), said.unit, report, Option.fromUndefinedOr(yield* sessions.directoryOf(sessionID)), outcome)
+      yield* told(root, said.unit, report, checkout, outcome)
     }, one.withPermits(1))
 
     return { handBack }

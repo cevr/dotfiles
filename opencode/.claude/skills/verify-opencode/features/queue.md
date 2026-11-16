@@ -23,7 +23,7 @@ The agent keeps a live list of what it has going: the `queue` tool sets it, patc
 - **Preconditions:** none beyond the baseline.
 - **States:** default (an empty queue), refused, and a reload. Loading and error are `n/a` (a memory store).
 - **World suites:** `cmd/queue/queue.sim.test.ts`
-- **Code:** `mods/queue/`, `cmd/queue/`, `sim/`
+- **Code:** `mods/queue/`, `cmd/queue/`, `sim/`; `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `cmd/queue/server.test.ts` (the seam), `mods/queue/queue.test.ts` (the aggregate).
 
 1. **Set.** Prompt `verify: call queue {"set":[{"id":"pool","text":"Sidebar pool worker","state":"running"},{"id":"panes","text":"Close old Claude panes","state":"needs-you"}]}`. The tool answers `Queue (2):` with `● pool [running]: Sidebar pool worker` and `! panes [needs-you]: Close old Claude panes`; the RPC answers revision 1.

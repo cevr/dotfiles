@@ -21,6 +21,8 @@
 //   leak) runs once more, alone, at the end: a pass then is `passed on its
 //   second run`, named.
 // - `bun run accept`: every file, the ledger ignored; passes still recorded.
+// - A file that says `// accept: off until <VAR> is set (<why>)` is no run's while <VAR> is empty: owed
+//   `off until enabled`, a known state, never run to skip everything and be owed as skipped.
 //
 // The owed and full runs go in two phases (scripts/accept-plan.ts): a pool as
 // wide as the cores the 1-minute load leaves free (or `--parallel=N`), then the
@@ -177,7 +179,7 @@ const prepare = Effect.fn("Accept.prepare")(function* (signalled: Deferred.Defer
   const reached = new Map(files.map((file) => [file, acceptReach(workspace, file, memo)]))
   const keys = new Map(files.map((file) => [file, acceptKey(shared, reached.get(file) ?? [file])]))
   const tiers = new Map(files.map((file) => [file, Accept.tierOf(text(file))]))
-  const candidates = files.map((file) => ({ file, tier: tiers.get(file) ?? "land", key: keys.get(file) ?? "" }))
+  const candidates = files.map((file) => ({ file, tier: tiers.get(file) ?? "land", key: keys.get(file) ?? "", ...Option.match(Accept.offUntil(text(file), ENV), { onNone: () => ({}), onSome: (off) => ({ off }) }) }))
   const named = own.filter((arg) => files.includes(arg))
   const selection = selectFrom(candidates, read.ledger, named, text)
   const head = (yield* git(["rev-parse", "HEAD"])).trim()

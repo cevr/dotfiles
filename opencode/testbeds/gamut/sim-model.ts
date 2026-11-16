@@ -3,7 +3,8 @@
  * `bun testbeds/gamut/sim-model.ts <port file>`.
  *
  * It listens on a free loopback port, writes the port to `<port file>` and
- * answers `POST …/chat/completions` with a streamed reply until it is killed.
+ * answers `POST …/chat/completions` with a streamed reply until it is killed,
+ * or its owner (`GAMUT_OWNER`, owner.ts) is gone.
  * It reaches no network and holds no credential: OpenCode sends it the
  * preset's placeholder key. The script, per request:
  *
@@ -19,6 +20,8 @@
  *
  * @module
  */
+
+import { whenOwnerGone } from "./owner.ts"
 
 /** One message of an OpenAI chat request, as much of it as the script reads. */
 interface ChatMessage {
@@ -151,4 +154,6 @@ if (import.meta.main) {
   const server = serveSim()
   await Bun.write(portFile, `${server.port}\n`)
   console.log(`sim model on http://127.0.0.1:${server.port}`)
+  // A run with an owner (`GAMUT_OWNER`) ends with it.
+  whenOwnerGone(() => void server.stop(true))
 }

@@ -475,6 +475,16 @@ describe("the scripted model", () => {
 
 // ── One run of the commands against a real OpenCode ──
 
+/**
+ * The environment of the e2e run's gamut commands: its own state file, and this test process as the run's owner, so a
+ * runner killed mid-run (afterAll never run) leaves no host or model (testbeds/gamut/owner.ts).
+ */
+const e2eEnv = (state: string) => ({ ...process.env, GAMUT_STATE: state, GAMUT_OWNER: String(process.pid) })
+
+test("the e2e run is owned by the test process: its gamut commands carry GAMUT_OWNER, this process's pid", () => {
+  expect(e2eEnv("/x/state.json")).toMatchObject({ GAMUT_STATE: "/x/state.json", GAMUT_OWNER: String(process.pid) })
+})
+
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/gamut.test.ts: the end-to-end run skipped. Set OPENCODE_DEV to the fork to run it.")
 
@@ -486,7 +496,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
   })
   const gamut = (...args: string[]) => {
     const run = Bun.spawnSync(["bun", join(root, "testbeds/gamut/gamut.ts"), ...args], {
-      env: { ...process.env, GAMUT_STATE: state },
+      env: e2eEnv(state),
       stdout: "pipe",
       stderr: "pipe",
     })

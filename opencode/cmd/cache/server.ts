@@ -26,7 +26,7 @@
  * request on a cache of five minutes or less, as the auth plugin signed it, is
  * kept in memory; while one of the session's tool calls runs
  * (`session.tool.called` to `session.tool.success`/`failed`), it is sent
- * again with `max_tokens: 1` every 4.5 minutes, at most 4 times a wait,
+ * again with `max_tokens: 1` every 4.5 minutes, at most 8 times a wait,
  * straight to the network (no hook, no event, never the session's history),
  * so the cache the next request reads stays warm on the same login. A root
  * session is never pinged. The session's next request, its execution's end

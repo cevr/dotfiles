@@ -13,6 +13,17 @@ export class UpdateFailed extends Schema.TaggedError<UpdateFailed>()("UpdateFail
 }) {}
 
 /**
+ * The checkout could not move to the target (git refused: an untracked file the target tracks with
+ * other content, a diverged branch): nothing moved, so nothing is installed or rejected, and the
+ * next check tries again. Measured 2026-11-15: the Mac kept batch ck for hours because an untracked
+ * copy of a file the target had just added made git refuse, and the refusal was a rejection.
+ */
+export class CheckoutStuck extends Schema.TaggedError<CheckoutStuck>()("CheckoutStuck", {
+  step: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
  * The dotfiles checkout the host runs its plugins from (its warm source), and the verified target
  * on its origin. Nothing else moves the checkout: `advance` is the one move, the commit and the
  * dependencies together.
@@ -25,11 +36,13 @@ export class Source extends Context.Service<
     /** The commit the checkout is on. */
     readonly head: Effect.Effect<string, UpdateFailed>
     /**
-     * Moves the checkout to `commit` and installs its dependencies as its lockfile pins them. A
-     * failed install moves the checkout back to where it was, so no plugin ever loads from a tree
-     * whose dependencies are missing.
+     * Moves the checkout to `commit` and installs its dependencies as its lockfile pins them, then the
+     * host's commands into `~/.local/bin` (`git/source.ts` `binScript`). A failed install moves
+     * the checkout back to where it was, so no plugin ever loads from a tree whose dependencies are
+     * missing. An untracked file the commit tracks with the same content is the commit's own file
+     * and goes first; when git still refuses the move, the failure is `CheckoutStuck`.
      */
-    readonly advance: (commit: string) => Effect.Effect<void, UpdateFailed>
+    readonly advance: (commit: string) => Effect.Effect<void, UpdateFailed | CheckoutStuck>
     /** Installs the checkout's dependencies again, as it stands. */
     readonly reinstall: Effect.Effect<void, UpdateFailed>
   }

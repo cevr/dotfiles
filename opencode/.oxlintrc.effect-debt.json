@@ -284,6 +284,94 @@
     },
     {
       "files": [
+        "mods/rex/filestore/spool.ts",
+        "mods/rex/process/diagrams.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/process/rex.ts",
+        "mods/rex/process/opener.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/show.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/process/browser.ts",
+        "mods/rex/process/browser.test.ts",
+        "mods/rex/process/sideshow.ts",
+        "mods/rex/process/sideshow.test.ts",
+        "mods/rex/process/simulators.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/feed-pty.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/process/group.ts",
+        "mods/rex/process/cdp.ts",
+        "mods/rex/process/cdp.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/rex/filestore/spool.test.ts",
+        "mods/rex/process/rex.test.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/show.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/rex/server.ts",
+        "cmd/rex/tui.tsx"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
         "mods/stall/filestore/captures.ts",
         "mods/update/filestore/builds.ts",
         "mods/update/filestore/stage.ts"
@@ -423,6 +511,25 @@
     {
       "files": [
         "tests/queue-merge.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "scenarios/rex-state.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/rex-state.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",

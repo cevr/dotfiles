@@ -1,13 +1,15 @@
 // The steps a session started, read from the call log the CallLog layer
 // writes (call-line.ts): its `call` and `latched` lines whose description
-// names a step (described.ts), by the unit each names. The log is read whole
-// on each ask; it grows by a line or two per subagent. No file is no steps; a
-// line that does not read (a partial last line, another program's) is
-// skipped.
+// names a step (described.ts), by the unit each names; and its calls, each
+// subagent with when it was started and last called (ledger.ts `callsIn`).
+// The log is read whole on each ask; it grows by a line or two per
+// subagent. No file is no steps; a line that does not read (a partial last
+// line, another program's) is skipped.
 import { readFile } from "node:fs/promises"
 import { Effect, Layer } from "effect"
 import { described } from "../described.ts"
 import { unitOf } from "../idle.ts"
+import { callsIn } from "../ledger.ts"
 import { StepLog } from "../service.ts"
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
@@ -31,10 +33,14 @@ export const unitsIn = (text: string, sessionID: string): ReadonlyArray<string> 
   return [...units]
 }
 
-export const layer = (file: string) =>
-  Layer.succeed(StepLog, {
+export const layer = (file: string) => {
+  const text = Effect.tryPromise(() => readFile(file, "utf8")).pipe(Effect.orElseSucceed(() => ""))
+  return Layer.succeed(StepLog, {
     units: Effect.fn("StepLog.units")(function* (sessionID: string) {
-      const text = yield* Effect.tryPromise(() => readFile(file, "utf8")).pipe(Effect.orElseSucceed(() => ""))
-      return unitsIn(text, sessionID)
+      return unitsIn(yield* text, sessionID)
+    }),
+    calls: Effect.fn("StepLog.calls")(function* (sessionID: string) {
+      return callsIn(yield* text, sessionID)
     }),
   })
+}

@@ -385,6 +385,37 @@ const loadCheck = Effect.sync((): Check => {
   return { name: "load", ok: true, detail: `1-min load ${one.toFixed(1)} on ${cores} cores: ${claim}` }
 })
 
+/** The branch the fork's worktree is to be at: the prime-look Rift's. */
+const FORK_BRANCH = "prime-look"
+
+/**
+ * The fork's worktree against its branch, the local one and origin's: a worktree behind either (a detached
+ * checkout one merge back) runs every check on an older fork than the branch head the checks claim. A branch
+ * that is not there is not compared.
+ */
+export const forkLag = Effect.fn("verify.forkLag")(function* (fork: string) {
+  const refs = [
+    { ref: FORK_BRANCH, full: `refs/heads/${FORK_BRANCH}` },
+    { ref: `origin/${FORK_BRANCH}`, full: `refs/remotes/origin/${FORK_BRANCH}` },
+  ]
+  const counted = yield* Effect.forEach(
+    refs,
+    ({ ref, full }) =>
+      output("fork", "git", ["-C", fork, "rev-list", "--count", `HEAD..${full}`]).pipe(
+        Effect.map((behind) => ({ ref, behind: Number(behind) })),
+        Effect.option,
+      ),
+    { concurrency: 2 },
+  )
+  const lagging = Arr.getSomes(counted).filter((each) => each.behind > 0)
+  const head = (yield* headOf(fork)).slice(0, 10)
+  return yield* must(
+    lagging.length === 0,
+    `${head}, at or past ${FORK_BRANCH}`,
+    `the fork's worktree ${head} is ${lagging.map((each) => `${each.behind} commit(s) behind ${each.ref}`).join(" and ")}: check out ${FORK_BRANCH} at its head, so the checks run on it`,
+  )
+})
+
 /** The world's checks: the fork is there and linked, so a world suite loads the plugins. */
 const worldChecks = Effect.fn("verify.worldChecks")(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -392,6 +423,7 @@ const worldChecks = Effect.fn("verify.worldChecks")(function* () {
   return yield* Effect.all(
     [
       check("fork", fs.exists(join(fork, "packages/plugin")).pipe(Effect.flatMap((ok) => must(ok, fork, `no fork at ${fork}: set OPENCODE_DEV`)))),
+      check("fork-branch", forkLag(fork)),
       check("linked", fs.exists(join(OPENCODE, "sim/node_modules/@opencode/plugin")).pipe(Effect.flatMap((ok) => must(ok, "sim/node_modules/@opencode/plugin", "the fork is not linked: run bun run link-fork")))),
       check("head", headOf(OPENCODE)),
       loadCheck,
@@ -452,6 +484,7 @@ const launchedChecks = Effect.fn("verify.launchedChecks")(function* (root: strin
     yield* check("pid", holdsPort(launched.port, launched.serverPid)),
     yield* check("head", headCheck(now.dotfiles, launched.dotfiles, commit)),
     yield* check("fork", must(now.forkHead === launched.forkHead, now.forkHead, `the fork moved to ${now.forkHead} from ${launched.forkHead}: launch again`)),
+    yield* check("fork-branch", forkLag(now.fork)),
     yield* check("answers", answers(launched.port, secret).pipe(Effect.map((status) => `GET /api/info ${status}`))),
     yield* check("log", logCheck(root)),
     { name: "audio", ok: true, detail: "n/a: no browser in either drive path" },

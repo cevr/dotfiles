@@ -9,6 +9,7 @@ import {
   AccountPool,
   AccountsHeld,
   heldMessage,
+  HoldCleared,
   LedgerPruned,
   ListLogins,
   LoginsListed,
@@ -50,9 +51,9 @@ const placed = (sessionID: string, credentialID: string, at: number, kind: Reque
     Story.then(RequestPlaced.make({ sessionID, kind, credentialID, at })),
   ] as const
 
-/** Take a reading that sets no hold. */
-const read = (credentialID: string, value: QuotaReading) =>
-  [Story.when(TakeReading.make({ credentialID, reading: value })), Story.then(ReadingTaken.make({ credentialID, reading: value }))] as const
+/** Take a reading that sets no hold, and the events it brings after (a hold it lifts). */
+const read = (credentialID: string, value: QuotaReading, ...after: ReadonlyArray<Event>) =>
+  [Story.when(TakeReading.make({ credentialID, reading: value })), Story.then<Event>(ReadingTaken.make({ credentialID, reading: value }), ...after)] as const
 
 /** Record a priced step of `sessionID` on `credentialID`. */
 const stepped = (sessionID: string, credentialID: string, cost: number, at: number) =>
@@ -468,6 +469,24 @@ describe("an account is held", () => {
         ReadingTaken.make({ credentialID: "a", reading: exhausted, hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 } }),
       ),
       ...placed("s1", "b", T0),
+    )
+  })
+
+  test("and freed by a reading taken after its hold with room and no refusal: a claim emptied the window, even after a late reading held it again", () => {
+    const exhausted = reading({ windows: [{ name: "5h", utilization: 1, resetAt: T0 + 2 * HOUR }] })
+    const room = reading({ at: T0 + MINUTE, windows: [{ name: "5h", utilization: 0, resetAt: T0 + 5 * HOUR }] })
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0 + MINUTE),
+      // The pre-claim reading arrives late, after the claim cleared the hold: it holds a again.
+      Story.given(ReadingTaken.make({ credentialID: "a", reading: exhausted, hold: { kind: "usage-limit", until: T0 + 2 * HOUR, at: T0 + MINUTE } })),
+      // A reading read no later than that hold says nothing new: a stays held.
+      ...read("a", room),
+      ...placed("s1", "b", T0 + MINUTE),
+      // A reading taken after the hold, with room: a is free, and the next run goes there.
+      Story.clock(T0 + 2 * MINUTE),
+      ...read("a", { ...room, at: T0 + 2 * MINUTE }, HoldCleared.make({ credentialID: "a" })),
+      ...placed("s2", "a", T0 + 2 * MINUTE),
     )
   })
 

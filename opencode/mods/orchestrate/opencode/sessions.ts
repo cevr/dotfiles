@@ -3,7 +3,7 @@
 // A latched child's state is the wakes' mark in its metadata (mods/wake
 // latch.ts), which only the wakes write. A session's last words are its
 // newest assistant message's text, from the host's model context.
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { Mark } from "@dotfiles/opencode-wake/latch"
 import { Sessions } from "../service.ts"
 
@@ -19,6 +19,8 @@ export interface Session {
   readonly latch?: unknown
   /** The directory it works in: the host's `location.directory`. */
   readonly directory?: string
+  /** When its last turn ended, while no turn runs (epoch ms): the host's `time.idle`, at or after `time.busy`. */
+  readonly idleSince?: number
 }
 
 /** Where a session runs, or which sessions a copy of the plugin serves. */
@@ -77,4 +79,7 @@ export const layer = (get: Get, messages: Messages) =>
     lastWordsOf: Effect.fn("Sessions.lastWordsOf")(function* (sessionID: string) {
       return lastWords(yield* messages(sessionID))
     }, orNone),
+    idleSinceOf: Effect.fn("Sessions.idleSinceOf")(function* (sessionID: string) {
+      return Option.fromUndefinedOr((yield* get(sessionID)).idleSince)
+    }, Effect.catchCause(() => Effect.succeed(Option.none<number>()))),
   })

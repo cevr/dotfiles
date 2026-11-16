@@ -343,6 +343,32 @@
     },
     {
       "files": [
+        "mods/rex/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The rex domain fence: the rex mod's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/guard/*.ts"
       ],
       "rules": {

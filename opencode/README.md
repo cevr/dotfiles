@@ -201,7 +201,7 @@ which the Prime look replaces, and no per-agent compaction window. The fork adds
 terminal. It shows pool accounts, holds, 5-hour and 7-day usage and reset
 times, and each rate-limit reset an account holds with its kind (5-hour,
 weekly, Fable, full or Codex), its expiry and what it clears; the resets the
-pool works (asked, offered on demand, claimed before they expired); live
+pool claimed on its own and why; live
 agents with their call-log descriptions; and each orchestrate
 run's unit states. Reads refresh every two seconds while open, retain the
 last reading on errors, and stop when closed. The pane takes focus when it
@@ -927,14 +927,24 @@ What stays, none of it kept between calls:
 - **The heavy footer** (`mods/orchestrate/heavy.ts`): every implementor and
   verifier prompt ends with its heavy-check thread share,
   `max(4, floor(cores / (working + 2)))`, and says the batch runs the full gate.
-- **The compaction note**: a root that compacts while it runs units gets one
-  message (no new turn): its `status` answer and the re-read.
+- **The compaction note**: a root that compacts after it started any unit's
+  step gets one message (no new turn): its `status` answer (or, when the run
+  tables cannot be read, the error and the units it started), its ledger
+  (`ledger.ts`: its queue items not done, its subagents now, each idle one
+  whose hand-back no later call answered flagged `not woken since`, and its
+  wakes, monitors and running jobs) and the re-read. A skipped note is logged
+  at INFO with why.
 - **The fleet target**: a verifier's `accepted` hand-back publishes the
   verified target once per verdict (`fleet.ts`, the `Verdicts` handler). A
   server restart forgets which verdicts it published, so it may read the same
   one again: the record then finds `refs/fleet/verified` already naming those
   heads, pushes nothing, and the run's log says `the verified target is
-  already …` (`git/fleet-record.test.ts`).
+  already …` (`git/fleet-record.test.ts`). Only a batch of the dotfiles is
+  the fleet's: the verifier's checkout (else its root's directory) must have
+  the dotfiles checkout's origin. Another repository's accepted batch (a Bite
+  verifier's) is not recorded and not told. The report is the last absolute
+  path ending in `-findings.md` on the hand-back's first line, past any
+  parenthetical after the verdict.
 
 Still refused: a subagent's `lane`, `land` or `verify`; a malformed input;
 the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
@@ -999,10 +1009,12 @@ session with no cache of its own goes where its fork source's cache lives
 The model, in the domain files at `mods/pool`'s root:
 
 - Facts: `LoginsListed`, `RequestPlaced`, `RequestRefused` (with its hold),
-  `ReadingTaken` (with the hold it sets, if any), `StepRecorded` (a priced
-  step), `RunReleased` and `LedgerPruned`.
+  `ReadingTaken` (with the hold it sets, if any), `HoldCleared` (a reset
+  claimed, or a reading taken after a usage-limit hold that shows room and no
+  refusal: a late reading from before a claim never keeps the claimed login
+  held), `StepRecorded` (a priced step), `RunReleased` and `LedgerPruned`.
 - Commands: `ListLogins`, `PlaceRequest`, `RefuseRequest`, `TakeReading`,
-  `RecordStep`, `ReleaseRun` and `PruneLedger`. Each one is decided only
+  `ClearHold`, `RecordStep`, `ReleaseRun` and `PruneLedger`. Each one is decided only
   from the pool's state, its input and the clock.
 - Rejections: `NoAccount` (a request on a pool that lists no login). The
   plugin then names no login on the request.
@@ -1041,6 +1053,70 @@ The ledger keeps its holds, readings, priced steps and session caches under
 `<pool>/cache/<session>`, so a new process starts where the last one
 stopped. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
+
+### Rate-limit resets
+
+The pool spends the usage-limit resets its accounts hold on its own: the
+owner approved every reset in hand ahead of time (2026-11-15), so it never
+asks whether to claim one. One pure rule decides (`claim-rule.ts`
+`decideClaim`), on each review of a pool with fresh readings (`resets.ts`).
+
+Demand is a forecast of what runs now (2026-11-15: a start is almost never
+held any more). Each account's burn per window is measured over its readings
+of the last two hours in one window period (`burn.ts`, kept in memory; a
+restart, or a spent window, falls back to the period's average, and a
+forecast on an average it lacks a measure for says so: `, burn the window's
+average (none measured yet, as after a restart)`). The pool's burn on a
+window is its open accounts' (with none open, the rate it spent the others
+at), a start held adding its share of the agents running across the fleet.
+The agents running are the sessions busy now (from a step's start until the
+session goes idle; one not heard of for an hour lost its idle event) on this
+host and on each peer that answered in the last 10 minutes (its report's
+`busy`), however long ago they started: a run of hours counts as long as it
+works. That burn, run against the room left on the accounts not spent, says
+when the pool runs out, and the pool's first natural reset says whether that
+matters. With no agent running and no start held there is no forecast. The
+readings decide which windows exist: the 5-hour one is optional (on
+2026-11-15 four of the seven Claude logins read none), and the forecast
+stands on the weekly window and Fable's own week alone.
+
+Capacity is taken in this order:
+
+1. A reset about to expire unused, soonest expiry first. One that expires
+   within a day is just used, on anything it gives back: at once on a spent
+   window, else at its last call (6 hours before it expires, more than one
+   5-hour period) on the window it gives back most of. One that expires
+   later but before that window resets by itself is used once the window is
+   spent and the work would use it.
+2. A fresh account: while the forecast keeps room on the pool's accounts to
+   its first natural reset, the work goes there and no other reset is spent.
+3. Only when the pool is forecast to run out before that reset: a reset on
+   the most-used account near its limit (85% used, or its own run-out within
+   an hour), that frees the account (no other spent window still holds it),
+   when the work would use at least half of what it gives back before the
+   window resets by itself: the account whose week is freshest on a tie.
+
+No claim lands inside 30 minutes of the window's own reset, nor a week-long
+window's under a day before it resets (but in a reset's last day), and an
+account takes one claim per window period, each judged again right before
+it is sent. A pool weighed with the forecast running out, or a start held,
+and no claim logs the reason for each no (`pool resets: no claim on <pool>:
+…`), only when it changes. After a claim the owner is told once, in the
+waiting session's tray, in one clause: `Claimed the weekly reset on
+<account>: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z
+(the pool runs out before its reset: 7 agents running on 2 hosts, weekly
+88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this
+week; next expires 2026-12-15 12:00Z.` The notice has one choice, `OK`, and
+asks nothing. A question an older pool left open is withdrawn.
+
+`resets: { auto: false }` claims nothing on its own; `resets: false` works
+none. `pool_push` still caps or shapes spending: a push's approved resets
+go for the work it scopes. A claim the pool decided on its own is sent
+only once every fleet peer granted the provider's lease; while a peer cannot
+be reached it is recorded unsent (`not sent: no agreement, <peer>
+unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
+its properties over generated weeks of steady burn, and against the same
+weeks with no reset spent.
 
 ## Status
 
@@ -1650,7 +1726,7 @@ headers, login and body), in memory only, and while one of the session's tool
 calls runs (`session.tool.called` to its `success` or `failed`, a tool the
 provider runs aside) re-sends it with `max_tokens: 1` (`keepalive.ts`). The
 first ping goes 4.5 minutes after the request, each next one 4.5 minutes after
-the ping before, at most 4 a wait; none once the cache's lifetime since the
+the ping before, at most 8 a wait (about 41 minutes of a tool's run); none once the cache's lifetime since the
 last request or ping has passed. The ping goes straight to the network on the
 login the request went out on (`fetch/pinger.ts`): no hook, no event, never
 the session's history, and its answer is read for its usage and dropped. A
@@ -3076,7 +3152,7 @@ account is at a hold line: its 5-hour window at 90% used of 100%, or its
 week at 99% used of 100%.
 
 Every usage figure the owner or an agent reads (the pace's hold reasons and
-latches, the reset questions and claim notices, `pool_push` plan and status,
+latches, the reset claim notices and claim log, `pool_push` plan and status,
 the sidebar and the `/pool` pane) is the share of the window USED, out of
 100%: `70% used of 100%`, or `70%/100% used` where space is tight. A
 threshold says the line it holds at (`holds at 90% used of 100%`), a reset

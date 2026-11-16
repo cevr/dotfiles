@@ -6,25 +6,27 @@
 // real endpoint: the auth plugin sends every request to ANTHROPIC_BASE_URL,
 // the pool's ChatGPT source to `usageURL`, and every token is drawn at run time.
 //
-// - Every Codex account spent and a start held: the pool consumes one credit,
-//   once, and asks no one.
-// - Every Claude account spent and a start held: the owner is asked in the
-//   waiting session (the questions plugin's tray); a no claims nothing, the
-//   next account is asked, that question is withdrawn once its hold lifts by
-//   itself, and on a yes the grant is claimed, once.
-// - The two Claude kinds: a weekly reset is offered on the fleet's demand
-//   early in the week and claimed on a yes; a Fable reset about to expire
-//   unused is claimed on its own, empties Fable's week and gives its part of
-//   the weekly use back, and the owner is told in the tray after.
+// The pool asks the owner nothing about resets: it claims them on its own
+// and tells the owner after, in the waiting session's tray.
+// - Every account spent, no agent running and no start held: no forecast,
+//   nothing claimed. With three agents running (Codex: started; Claude: three
+//   sessions busy on a long command, no start recorded): one Codex credit
+//   and one Claude grant claimed, once each; the claimed Claude account takes
+//   the work, so the other is not claimed.
+// - A spent week is left while the forecast keeps room on a fresher account
+//   to the reset; a Fable reset
+//   about to expire unused is claimed on its own, empties Fable's week and
+//   gives its part of the weekly use back, and the owner is told.
 // - One spent week, two weekly resets about to expire: one is claimed, and
 //   the reading after it (the week back to 0%) keeps the second.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
-import { claimEffect, type FakeAccount, fakeAccount, type FakeGrant, startFakeAnthropic, type FakeQuota } from "./fake-anthropic.ts"
+import { putToWork, working } from "../testbeds/busy-agents.ts"
+import { claimEffect, type FakeAccount, fakeAccount, type FakeGrant, type ReceivedRequest, startFakeAnthropic, type FakeQuota } from "./fake-anthropic.ts"
 import { spentAccount, startFakeChatGPT } from "./fake-chatgpt.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -38,8 +40,6 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 const TIMEOUT_MS = 180_000
-/** How long account b's first 5-hour hold lasts from the pool's first reading of it: its question is withdrawn once it lifts. */
-const SHORT_HOLD_MS = 25 * SECOND
 const SESSION = "ses_resets_root"
 
 interface Service {
@@ -48,6 +48,7 @@ interface Service {
 }
 
 const authorization = (service: Service) => `Basic ${btoa(`opencode:${service.password}`)}`
+
 
 /** One method of a plugin's RPC on the server, as the pane and report.ts ask it. */
 const rpc = async (service: Service, plugin: string, method: string, input: unknown = {}): Promise<unknown> => {
@@ -114,6 +115,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
     writeFileSync(
       join(home, ".config/opencode/opencode.json"),
       JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
         plugins: [
           anthropicAuthPlugin,
           {
@@ -193,6 +195,10 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       (value) => value !== undefined && typeof value.url === "string",
       () => `the service file (${log()})`,
     ))!
+    const directory = realpathSync(join(base, "work"))
+    /** `count` agents busy in sessions of their own (busy-agents.ts), once the pool read the usage `reads` times again. */
+    const work = (count: number, fake: { readonly received: ReadonlyArray<ReceivedRequest> }, reads = 0) =>
+      putToWork({ fork: String(fork), url: service.url, authorization: authorization(service), directory, received: fake.received, count, reads, log })
     const pool = (method: string, input: unknown = {}) => rpc(service, "dotfiles-opencode.pool", method, input)
     const questions = (method: string, input: unknown) => rpc(service, "dotfiles-opencode.questions", method, input)
     const open = async () => ((await questions("open", { sessionIDs: [SESSION] })) as { questions?: ReadonlyArray<OpenQuestion> } | undefined)?.questions ?? []
@@ -201,37 +207,41 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       (value) => typeof value === "object" && value !== null && "claims" in value,
       () => `the pool (${log()})`,
     )
-    return { pool, questions, open, log, stderr: () => stderr }
+    /**
+     * The pane pacing a start on each of `providers` once a second for `seconds`:
+     * the time a check that nothing more happens needs, over sweeps 6 s apart.
+     */
+    const pacing = async (providers: ReadonlyArray<string>, seconds: number): Promise<void> => {
+      for (let second = 0; second < seconds; second++) {
+        for (const providerID of providers) await pool("pace", { providerID, sessionID: SESSION })
+        await Bun.sleep(1000)
+      }
+    }
+    return { pool, questions, open, log, pacing, work, stderr: () => stderr }
   }
 
   test(
-    "a Codex credit is claimed by itself once; a Claude grant only on the owner's yes, with a no and a lifted hold claiming nothing",
+    "with agents running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with no agent running and no start held, nothing is claimed and nothing asked",
     kept.test(async () => {
       const now = Date.now()
       // ── The fakes ──
       const chatgpt = startFakeChatGPT()
       stops.push(chatgpt.stop)
-      chatgpt.accounts.set("acct-1", spentAccount("chatgpt-access-1", "credit-1", now))
+      // The credit ends before the week resets: not one to keep in hand.
+      chatgpt.accounts.set("acct-1", spentAccount("chatgpt-access-1", "credit-1", now, 40, 2 * DAY))
 
       const accounts = { a: fakeAccount(), b: fakeAccount() }
-      // a: spent for two hours, its week resetting in three days (the most time left, so asked first).
-      // b: spent for SHORT_HOLD_MS from the pool's first reading of it, its week resetting in two days. Not from
-      // the test's start: on a loaded host the service took longer than that to boot, b's hold lifted before
-      // the pool got to it, and nothing was asked.
+      // a and b: both 5-hour windows spent for two hours, a's week resetting in three days, b's in two.
       const quotas = new Map<string, FakeQuota>([
         ["a", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 3 * DAY } }],
+        ["b", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } }],
       ])
-      const quotaOf = (account: string): FakeQuota => {
-        if (account === "b" && !quotas.has("b"))
-          quotas.set("b", { fiveHour: { utilization: 1, resetAt: Date.now() + SHORT_HOLD_MS }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
-        const quota = quotas.get(account)!
-        // A window past its reset reads empty, as the real one does.
-        return Date.now() < quota.fiveHour.resetAt ? quota : { ...quota, fiveHour: { utilization: 0, resetAt: Date.now() + 5 * HOUR } }
-      }
       const anthropic = startFakeAnthropic({
         accounts,
-        quota: quotaOf,
-        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 1, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
+        script: working,
+        quota: (account) => quotas.get(account)!,
+        // Two resets in hand on each account: not the last one, kept in reserve.
+        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 2, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
         claim: (account) => {
           const quota = quotas.get(account)!
           quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: Date.now() + 5 * HOUR } })
@@ -241,64 +251,56 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       stops.push(anthropic.stop)
 
       // ── The server ──
-      const { pool, questions, open, log, stderr } = await serve("host", accounts, anthropic.url, now, chatgpt.usageURL)
+      const { pool, open, log, pacing, work, stderr } = await serve("host", accounts, anthropic.url, now, chatgpt.usageURL)
 
-      // ── Codex: claimed by itself, once ──
+      // ── No work: nothing running and no start held, over two sweeps ──
+      await pacing([], 15)
+      expect(anthropic.claims).toEqual([])
+      expect(chatgpt.consumes).toEqual([])
+      expect(await open()).toEqual([])
+
+      // ── Codex: three starts running, a start held: claimed on its own, once ──
+      for (let start = 0; start < 3; start++) await pool("started", { providerID: "openai" })
       const codexPace = (await pool("pace", { providerID: "openai", sessionID: SESSION })) as { ok?: boolean }
       expect(codexPace.ok).toBe(false)
       await until(async () => chatgpt.consumes.length, (count) => count > 0, () => `a consume (${log()})`)
-      await pool("pace", { providerID: "openai", sessionID: SESSION })
-      await Bun.sleep(1000)
+      await pacing(["openai"], 1)
       expect(chatgpt.consumes.map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
         { account: "acct-1", creditID: "credit-1", code: "reset" },
       ])
-      expect(await open()).toEqual([])
 
-      // ── Claude: asked, never claimed unasked ──
-      const asked = async (label: string) =>
-        (await until(
-          async () => {
-            await pool("pace", { providerID: "anthropic", sessionID: SESSION })
-            return open()
-          },
-          (rows) => rows.some((row) => row.header === `Claude reset · ${label}`),
-          () => `a question about ${label} (${log()})`,
-        )).find((row) => row.header === `Claude reset · ${label}`)!
-      const first = await asked("Claude a")
-      expect(first.question).toContain("remain before the weekly reset")
-      expect(first.question).toContain("Claim it?")
-      expect(anthropic.claims).toEqual([])
-
-      // A no: nothing is claimed, and the next account is asked.
-      expect(await questions("answer", { sessionID: SESSION, answers: [{ id: first.id, answer: "Don't claim" }] })).toMatchObject({ ok: true })
-      const second = await asked("Claude b")
-      expect(anthropic.claims).toEqual([])
-
-      // b's hold lifts by itself: the sweep reads it, and its question goes unanswered.
-      await until(open, (rows) => !rows.some((row) => row.id === second.id), () => `b's question withdrawn (${log()})`, SHORT_HOLD_MS + 30 * SECOND)
-      expect(anthropic.claims).toEqual([])
-      const lifted = (await pool("resets")) as Resets
-      expect(lifted.resets.filter((reset) => reset.label === "Claude b").map((reset) => [reset.stage, reset.message])).toEqual([
-        ["withdrawn", "the hold lifted"],
-      ])
-
-      // b is spent again: a new hold, asked again; on a yes its grant is claimed, once.
-      quotas.set("b", { fiveHour: { utilization: 1, resetAt: Date.now() + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
-      const third = await asked("Claude b")
-      expect(await questions("answer", { sessionID: SESSION, answers: [{ id: third.id, answer: "Claim it" }] })).toMatchObject({ ok: true })
-      await until(async () => anthropic.claims.length, (count) => count > 0, () => `a Claude claim (${log()})`)
-      await Bun.sleep(2000)
-      expect(anthropic.claims.map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([
-        { account: "b", grant: "grant-b", result: "reset" },
-      ])
+      // ── Claude: three agents put to work while the 5-hour windows had room, then the windows spent under them; busy, with no
+      // start recorded: the forecast runs the pool out before its reset, one grant claimed on its own, nothing asked ──
+      const spent = new Map(quotas)
+      for (const [account, quota] of spent) quotas.set(account, { ...quota, fiveHour: { ...quota.fiveHour, utilization: 0.5 } })
+      // A sweep reads the room on both logins before the agents start.
+      await work(3, anthropic, 2)
+      for (const [account, quota] of spent) quotas.set(account, quota)
+      await until(
+        async () => {
+          await pool("pace", { providerID: "anthropic", sessionID: SESSION })
+          return anthropic.claims.length
+        },
+        (count) => count > 0,
+        () => `a Claude claim (${log()})`,
+      )
+      // The claimed account takes the work: the other is not claimed, over two more sweeps.
+      await pacing(["anthropic"], 15)
+      expect(anthropic.claims.map(({ result }) => result)).toEqual(["reset"])
       expect(String(anthropic.claims[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
+      // The tray holds the two notices and nothing else; each says why, in one clause.
+      const rows = await open()
+      expect(rows.map((row) => row.header)).toEqual(["Pool reset claimed", "Pool reset claimed"])
+      const told = rows.map((row) => row.question).join("\n")
+      expect(told).toContain("Claimed the Codex reset on ChatGPT")
+      expect(told).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: (\d+ starts? held, )?3 agents running on 1 host, /)
       const settled = (await pool("resets")) as Resets
-      expect(settled.claims.map(({ provider, outcome }) => [provider, outcome])).toEqual([
+      expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
         ["claude", "reset"],
         ["codex", "reset"],
       ])
-      expect(settled.claims[0]?.weekly).toBe("kept")
-      expect(settled.claims[1]?.weekly).toBe("moved")
+      expect(settled.claims.find((claim) => claim.provider === "claude")?.weekly).toBe("kept")
+      expect(settled.claims.find((claim) => claim.provider === "codex")?.weekly).toBe("moved")
       // No token ever shows in what the pool answers or logs.
       const shown = JSON.stringify(settled) + stderr()
       for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, "chatgpt-access-1", "chatgpt-refresh-1"]) expect(shown).not.toContain(token)
@@ -307,22 +309,22 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
   )
 
   test(
-    "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+    "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
     kept.test(async () => {
       const now = Date.now()
       const accounts = { c: fakeAccount(), d: fakeAccount() }
-      // Day one of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used.
-      // d: its whole week spent on day one.
+      // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
+      // so at the pool's burn its room outlasts the reset. d: its whole week spent.
       const quotas = new Map<string, FakeQuota>([
         [
           "c",
           {
             fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR },
-            sevenDay: { utilization: 0.6, resetAt: now + 6 * DAY },
-            fable: { utilization: 1, resetAt: now + 6 * DAY, ofWeekly: 0.5 },
+            sevenDay: { utilization: 0.6, resetAt: now + 1.5 * DAY },
+            fable: { utilization: 1, resetAt: now + 1.5 * DAY, ofWeekly: 0.5 },
           },
         ],
-        ["d", { fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR }, sevenDay: { utilization: 1, resetAt: now + 6 * DAY } }],
+        ["d", { fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR }, sevenDay: { utilization: 1, resetAt: now + 1.5 * DAY } }],
       ])
       // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
       let fableListed = false
@@ -341,9 +343,10 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
                 },
               ]
             : []
-          : [{ id: "weekly-d", resetsLeft: claimed.has("weekly-d") ? 0 : 1, endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
+          : [{ id: "weekly-d", resetsLeft: claimed.has("weekly-d") ? 1 : 2, endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
       const anthropic = startFakeAnthropic({
         accounts,
+        script: working,
         quota: (account) => quotas.get(account)!,
         grants: grantsOf,
         claim: (account, grant) => {
@@ -354,25 +357,13 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         },
       })
       stops.push(anthropic.stop)
-      const { pool, questions, open, log } = await serve("kinds", accounts, anthropic.url, now)
+      const { pool, questions, open, log, pacing, work } = await serve("kinds", accounts, anthropic.url, now)
 
-      // ── Demand: three starts in flight across the fleet, from this session ──
-      for (let start = 0; start < 3; start++) await pool("started", { providerID: "anthropic" })
-      const offered = (await until(
-        async () => {
-          await pool("pace", { providerID: "anthropic", sessionID: SESSION })
-          return open()
-        },
-        (rows) => rows.some((row) => row.header === "Reset now · Claude d"),
-        () => `an offer for d (${log()})`,
-      )).find((row) => row.header === "Reset now · Claude d")!
-      expect(offered.question).toContain("weekly reset on account Claude d now? Demand: 3 starts are in flight across the fleet.")
-      expect(offered.question).toContain("Claiming it takes weekly 100% used of 100% → 0% used, next reset ")
-      expect(offered.question).toMatch(/6\.0 days remain before the weekly window resets by itself/)
+      // ── Demand: three agents busy, a start paced each second: c's room outlasts the reset, so d's week is left ──
+      await work(3, anthropic)
+      await pacing(["anthropic"], 15)
       expect(anthropic.claims).toEqual([])
-      expect(await questions("answer", { sessionID: SESSION, answers: [{ id: offered.id, answer: "Claim it" }] })).toMatchObject({ ok: true })
-      await until(async () => anthropic.claims.length, (count) => count > 0, () => `d's claim (${log()})`)
-      expect(anthropic.claims.map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([{ account: "d", grant: "weekly-d", result: "reset" }])
+      expect(await open()).toEqual([])
 
       // ── Use it or lose it: c's Fable reset, listed now, is claimed by itself and the owner told ──
       fableListed = true
@@ -386,13 +377,11 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         (rows) => rows.some((row) => row.header === "Pool reset claimed"),
         () => `the notice of c's claim (${seen.slice(0, 3000)})`,
       )).find((row) => row.header === "Pool reset claimed")!
-      expect(notice.question).toContain("The pool claimed the Fable reset on account Claude c before it expired unused")
+      expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
+      expect(notice.question).toContain("(about to expire unused: ")
       // Fable's part of the week, as the fake's usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
       expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset \S+ \S+ \(Fable's part 50% of the week as the usage endpoint reports it\)/)
-      expect(anthropic.claims.map(({ account, grant }) => [account, grant])).toEqual([
-        ["d", "weekly-d"],
-        ["c", "fable-c"],
-      ])
+      expect(anthropic.claims.map(({ account, grant }) => [account, grant])).toEqual([["c", "fable-c"]])
       const settled = (await pool("resets")) as Resets
       const fable = settled.claims.find((claim) => claim.label === "Claude c")
       expect(fable).toMatchObject({ outcome: "reset", weekly: "kept" })
@@ -400,14 +389,13 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       expect(fable?.after?.find((window) => window.name === "7d:Fable")?.utilization).toBe(0)
       expect(fable?.after?.find((window) => window.name === "7d")?.utilization).toBeCloseTo(0.1)
       expect(settled.resets.find((reset) => reset.label === "Claude c")).toMatchObject({ why: "expiring", kind: "fable", stage: "settled" })
-      expect(settled.resets.find((reset) => reset.label === "Claude d")).toMatchObject({ why: "offer", kind: "weekly" })
 
       // The owner reads the notice: it leaves the tray.
       expect(await questions("answer", { sessionID: SESSION, answers: [{ id: notice.id, answer: "OK" }] })).toMatchObject({ ok: true })
       await until(open, (rows) => !rows.some((row) => row.id === notice.id), () => `the notice withdrawn (${log()})`)
       // Each claim once.
       await Bun.sleep(7000)
-      expect(anthropic.claims).toHaveLength(2)
+      expect(anthropic.claims).toHaveLength(1)
     }),
     TIMEOUT_MS,
   )

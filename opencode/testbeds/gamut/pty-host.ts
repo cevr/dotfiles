@@ -5,7 +5,8 @@
  * The config (`HostConfig`) names the program, its directory, its whole
  * environment, the size and the Unix socket to listen on. The host reads it,
  * removes it (it may hold proxy values), starts the program and answers
- * requests on the socket until a `down` request. A program that exits by
+ * requests on the socket until a `down` request, or until its owner
+ * (`GAMUT_OWNER`, owner.ts) is gone. A program that exits by
  * itself leaves its last screen to read. `hostCall` is the client: gamut's
  * `send`, `keys`, `read`, `wait`, `restart` and `down` go through it.
  *
@@ -15,6 +16,7 @@
  * @module
  */
 import { rmSync } from "node:fs"
+import { whenOwnerGone } from "./owner.ts"
 import { Terminal } from "@xterm/headless"
 import { spawn, type IPty } from "zigpty"
 
@@ -560,6 +562,8 @@ if (import.meta.main) {
   const shutdown = () => void host.stop()
   process.on("SIGTERM", shutdown)
   process.on("SIGINT", shutdown)
+  // A run with an owner (`GAMUT_OWNER`) ends with it, its program too.
+  whenOwnerGone(shutdown)
   try {
     await host.stopped
   } finally {

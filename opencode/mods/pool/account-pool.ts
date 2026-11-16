@@ -201,6 +201,9 @@ const placeRequest = (
 // ── TakeReading ──
 // A reading of one account came in. A live refusal holds the account until the
 // refusal's time; a window read as exhausted holds it until that window resets.
+// A reading taken after a usage-limit hold was set, with no live refusal and
+// no exhausted window, lifts it: a reset claimed since, or a reading that
+// arrived late and held the account on windows a claim had already emptied.
 
 export const TakeReading = Schema.TaggedStruct("TakeReading", {
   credentialID: Schema.String,
@@ -211,7 +214,8 @@ export interface TakeReading extends Schema.Schema.Type<typeof TakeReading> {}
 /**
  * The account's newest reading, and the hold it sets, when it holds the
  * account longer than it is held now. A hold only grows: a shorter refusal
- * never frees an account a longer one holds.
+ * never frees an account a longer one holds; only a reading showing room
+ * lifts one (HoldCleared).
  */
 export const ReadingTaken = Schema.TaggedStruct("ReadingTaken", {
   credentialID: Schema.String,
@@ -228,7 +232,7 @@ const takeReading = (
   state: AccountPoolState,
   command: TakeReading,
   now: number,
-): Effect.Effect<ReadonlyArray<ReadingTaken>> => {
+): Effect.Effect<ReadonlyArray<ReadingTaken | HoldCleared>> => {
   const { credentialID } = command
   const reading = carryOver(state.readings[credentialID], command.reading, now)
   const refusal = reading.refusal
@@ -244,12 +248,14 @@ const takeReading = (
   const until = Math.max(refused?.until ?? 0, exhausted ?? 0)
   const current = state.holds[credentialID]
   const grows = until > now && (current === undefined || current.until < until)
+  const lifts = until <= now && Option.exists(Option.fromUndefinedOr(current), (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)
   return Effect.succeed([
     ReadingTaken.make({
       credentialID,
       reading,
       ...(grows ? { hold: { kind: refused?.kind ?? "usage-limit", until, at: now } } : {}),
     }),
+    ...[HoldCleared.make({ credentialID })].filter(() => lifts),
   ])
 }
 

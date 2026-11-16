@@ -11,8 +11,8 @@
 //
 // Each request after the prompt makes the next call; once every call has its answer the model ends the
 // turn with its `say`, or `verify: <n> call(s) done; the last answered: <its last line>`. A title request is
-// answered `Verify run`. The same prompt does the same on both hosts, so a journey found on the world is
-// typed into the real TUI word for word.
+// answered `Verify run`, and a compaction request (OpenCode asking for a summary) `SUMMARY`. The same prompt
+// does the same on both hosts, so a journey found on the world is typed into the real TUI word for word.
 import { Array as Arr, Data, Match, Option, Predicate, Schema } from "effect"
 
 /** A tool's input as a directive writes it: a JSON object. */
@@ -188,10 +188,21 @@ export const chatReading = (request: ChatRequest): Reading =>
 export const asksTitle = (request: ChatRequest): boolean =>
   messagesOf(request).some((message) => message.role === "system" && textOf(message).includes("You name conversations"))
 
+/** The openings of OpenCode's compaction prompts (packages/core session/compaction.ts): a first summary, or an update of one. */
+const SUMMARY_ASKS = ["You MUST summarize the conversation above", "Update the existing checkpoint in the conversation above"]
+
+/** Whether a chat request is OpenCode compacting a session: its last message asks for the summary. */
+export const asksSummary = (request: ChatRequest): boolean =>
+  Option.exists(Arr.last(messagesOf(request)), (message) => SUMMARY_ASKS.some((ask) => textOf(message).includes(ask)))
+
+/** The summary a compaction gets: OpenCode's template's first heading, so a real compaction completes on `verify:launch`. */
+export const SUMMARY = "## Objective\n- verify summary"
+
 /** The model's answer to a chat request. */
 export const chatAnswer = (request: ChatRequest): Answer =>
-  Match.value(asksTitle(request)).pipe(
-    Match.when(true, () => Answer.Text({ text: TITLE })),
+  Match.value({ title: asksTitle(request), summary: asksSummary(request) }).pipe(
+    Match.when({ title: true }, () => Answer.Text({ text: TITLE })),
+    Match.when({ summary: true }, () => Answer.Text({ text: SUMMARY })),
     Match.orElse(() => answer(chatReading(request))),
   )
 

@@ -13,8 +13,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 /** The real runs of scripts/accept.test.ts that carry a clock bound. */
 const TIMED_RUNS = "a land run under its budget|a deep run yields the lock to a land run|a land run's swarm"
 
-/** How many tests TIMED_RUNS names: a filter that matched fewer would judge less. */
-const TIMED_COUNT = 6
+/** How many tests TIMED_RUNS names: a filter that matched fewer would judge less. 7 since d0157629 added the box-stop
+ * test to "a land run's swarm". */
+const TIMED_COUNT = 7
 
 /** The timed runs' bun test, from opencode/, with its output and its exit code. */
 const timedRuns = Effect.gen(function* () {

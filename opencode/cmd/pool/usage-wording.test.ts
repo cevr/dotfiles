@@ -4,9 +4,11 @@
 // and a rate is the use per hour. Never a bare "X%", never room, left or
 // remaining as a percent. The pool's plugin root reaches the pool and the status mod both, so this table sees every kind.
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import { forecastText, planText } from "@dotfiles/opencode-pool/push"
-import { buysOf, claudeQuestion, toldText, unagreedQuestion } from "@dotfiles/opencode-pool/resets"
+import { type ClaimOption, ClaimVerdict, decideClaim, STEP_TEXT } from "@dotfiles/opencode-pool/claim-rule"
+import { buysOf, toldText } from "@dotfiles/opencode-pool/resets"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { accountRows } from "@dotfiles/opencode-status/pane"
 import { sidebarLines } from "@dotfiles/opencode-status/sidebar"
@@ -28,6 +30,31 @@ const fableReset = buysOf([
   { window: "7d:Fable", from: 1, to: 0, resetAt: now + 2 * DAY },
   { window: "7d", from: 0.6, to: 0.1, resetAt: now + 3.5 * DAY, share: { points: 0.5, low: 0.4, high: 0.6, source: "tally" } },
 ])
+
+/** The pool's one account, its week `used` and burning `burn` of it an hour, resetting in three days; a weekly grant in hand that does not expire soon. */
+const weekOf = (used: number, burn: number) => {
+  const resetAt = now + 3 * DAY
+  const option: ClaimOption = {
+    credentialID: "a",
+    creditID: "g",
+    label: "a",
+    window: "weekly",
+    long: true,
+    forecast: "7d",
+    from: used,
+    restored: used,
+    resetAt,
+    burn,
+    expiresAt: Option.none(),
+    frees: true,
+    weekUsed: used,
+    weekResetAt: Option.some(resetAt),
+  }
+  const situation = { now, held: 0, running: 7, hosts: 2, accounts: [{ credentialID: "a", windows: [{ name: "7d", used, resetAt, burn }], freeAt: Option.none() }], settling: false, pushed: false }
+  return decideClaim(situation, [option])
+}
+const chosen = weekOf(0.88, 0.144)
+const weighed = weekOf(0.5, 0.005)
 
 const table: ReadonlyArray<readonly [string, string]> = [
   [
@@ -55,21 +82,20 @@ const table: ReadonlyArray<readonly [string, string]> = [
       "weekly 60% used of 100% → ~10% used, next reset 2026-11-19 00:00Z (Fable's part 50% of the week (40%–60%) by the limit tally)",
   ],
   [
-    toldText({ kind: "session", label: "a", buys: fiveHourReset }),
-    "The pool claimed the 5-hour reset on account a before it expired unused: 5h 100% used of 100% → 0% used.",
+    toldText({
+      kind: "weekly",
+      label: "a",
+      buys: "weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z",
+      reason: ClaimVerdict.$match(chosen, { Claim: ({ step, reason }) => `${STEP_TEXT[step]}: ${reason}`, NoClaim: () => "" }),
+      left: 1,
+      nextExpires: now + 30 * DAY,
+    }),
+    "Claimed the weekly reset on a: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z (the pool runs out before its reset: 7 agents running on 2 hosts, weekly 88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this week; next expires 2026-12-15 12:00Z.",
   ],
+  [toldText({ kind: "weekly", label: "a", buys: fiveHourReset, left: 0 }), "Claimed the weekly reset on a: 5h 100% used of 100% → 0% used. No resets left this week."],
   [
-    claudeQuestion(
-      "a",
-      account([{ name: "5h", utilization: 1, resetAt: now + HOUR }, { name: "7d", utilization: 0.3, resetAt: now + 3.5 * DAY }]),
-      { id: "g", count: 1, usable: true, expiresAt: now + 30 * DAY, clears: ["five_hour"] },
-      now,
-    ),
-    "Claude reset on account a now: takes the 5h window from 100% used of 100% to 0% used and 3.5 days remain before the weekly reset (2026-11-19). The grant ends 2026-12-15. Claim it?",
-  ],
-  [
-    unagreedQuestion({ label: "a", kind: "session", why: "expiring", buys: fiveHourReset }, ["mac"]),
-    "5-hour reset on account a now? It would expire unused otherwise. Claiming it takes 5h 100% used of 100% → 0% used. mac is unreachable, so I can't rule out it claiming too. Claim it?",
+    ClaimVerdict.$match(weighed, { Claim: () => "", NoClaim: ({ reasons }) => reasons.join("; ") }),
+    "a: 7 agents running on 2 hosts, weekly 50% used, forecast 100% in 4.2 days, reset in 3.0 days; the pool keeps room until its first reset",
   ],
   [
     forecastText({ pool: "anthropic", burn: 0.0085, inHand: 2, wasted: [{ pool: "anthropic", label: "a", kind: "weekly", spare: 0.99, expiresAt: now + 6 * DAY }] }) ?? "",

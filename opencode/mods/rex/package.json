@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-rex",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode in Rex: its state in the tab header; each session's shells carry the Rex pane of the TUI that shows its family, or none; rex-show draws a showcase pane beside the caller.",
+  "exports": {
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-herdr": "workspace:*",
+    "pele": "1.13.0"
+  }
+}
