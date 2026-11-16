@@ -30,8 +30,8 @@ export const layer = Layer.effect(
         )
         const agents = Result.map(calls, live)
         /** Each run, naming its orchestrator when the call log can be read and shows a step of one of its units. */
-        const runs = Result.map(tables, (list) =>
-          list.map((run) => {
+        const runs = Result.map(tables, (listed) =>
+          listed.runs.map((run) => {
             const units = unitsOf(run.table)
             const row = { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units }
             const session = Option.flatMap(Result.getSuccess(calls), (state) => runSession(state, units.map((unit) => unit.unit)))
@@ -43,7 +43,8 @@ export const layer = Layer.effect(
           runs: Result.getOrElse(runs, () => []),
           errors: [
             ...(Result.isFailure(agents) ? [`Agents: ${agents.failure.message}`] : []),
-            ...(Result.isFailure(runs) ? [`Runs: ${runs.failure.message}`] : []),
+            // The runs not listed at all, or each run the script failed on, on its own: the other runs still show.
+            ...Result.match(tables, { onFailure: (failure) => [failure], onSuccess: (listed) => listed.unreadable }).map((each) => `Runs: ${each.message}`),
           ],
         }
       }),

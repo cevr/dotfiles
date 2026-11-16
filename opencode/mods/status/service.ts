@@ -20,18 +20,25 @@ export class CallLog extends Context.Service<
   { readonly events: Effect.Effect<ReadonlyArray<Event>, CallLogUnreadable> }
 >()("dotfiles-opencode/status/CallLog") {}
 
-/** The runs directory could not be listed, or the status script failed on a run. */
+/** The runs directory could not be listed, or the status script failed on one run. */
 export class RunsUnreadable extends Schema.TaggedError<RunsUnreadable>()("RunsUnreadable", {
   message: Schema.String,
 }) {}
+
+/** The runs read, and why each run left out could not be. */
+export interface Listed {
+  readonly runs: ReadonlyArray<RunTable>
+  readonly unreadable: ReadonlyArray<RunsUnreadable>
+}
 
 /**
  * The orchestrate runs of the repository holding `directory`
  * (`tmp/orchestrate/<run>` at its main checkout), each with the table the
  * orchestrate skill's status script derives from its units' logs. Outside a
- * repository, or with no runs directory, there are none.
+ * repository, or with no runs directory, there are none. A run the script
+ * fails on is left out and named in `unreadable`; the others still list.
  */
 export class RunTables extends Context.Service<
   RunTables,
-  { readonly list: (directory: string) => Effect.Effect<ReadonlyArray<RunTable>, RunsUnreadable> }
+  { readonly list: (directory: string) => Effect.Effect<Listed, RunsUnreadable> }
 >()("dotfiles-opencode/status/RunTables") {}

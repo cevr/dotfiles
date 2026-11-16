@@ -14,10 +14,10 @@ import * as World from "./world.ts"
 const SCRIPT = "/skills/orchestrate/scripts/status.ts"
 const REPOSITORY = "/repo"
 
-/** A world whose shell holds `runs` under the repository, read by the status script; `spoil` makes the script fail. */
+/** A world whose shell holds `runs` under the repository, read by the status script; `spoil` makes the script fail on one run. */
 runTablesLaws("the world's status script's RunTables", (runs: ReadonlyArray<RunTable>) =>
   Effect.sync(() => {
-    const state = { spoiled: false }
+    const spoiled = new Set<string>()
     const root = `${REPOSITORY}/tmp/orchestrate`
     const processes = (command: string): World.Process => {
       if (command === `ls -1 ${root}` && runs.length > 0) return { exitCode: 0, stdout: runs.map((run) => `${run.name}\n`).join(""), ms: 1 }
@@ -27,7 +27,7 @@ runTablesLaws("the world's status script's RunTables", (runs: ReadonlyArray<RunT
         {
           onNone: () => World.PROCESSES(command),
           onSome: (run): World.Process => {
-            if (state.spoiled) return { exitCode: 1, stdout: `cannot read ${root}/${run.name}\n`, ms: 1 }
+            if (spoiled.has(run.name)) return { exitCode: 1, stdout: `cannot read ${root}/${run.name}\n`, ms: 1 }
             return { exitCode: 0, stdout: run.table, ms: 1 }
           },
         },
@@ -38,9 +38,10 @@ runTablesLaws("the world's status script's RunTables", (runs: ReadonlyArray<RunT
       layer: runTables(world, SCRIPT),
       repository: REPOSITORY,
       outside: "/outside",
-      spoil: Effect.sync(() => {
-        state.spoiled = true
-      }),
+      spoil: (name: string) =>
+        Effect.sync(() => {
+          spoiled.add(name)
+        }),
     }
   }),
 )

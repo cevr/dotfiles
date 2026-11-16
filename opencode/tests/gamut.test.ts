@@ -486,7 +486,8 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
   })
   const gamut = (...args: string[]) => {
     const run = Bun.spawnSync(["bun", join(root, "testbeds/gamut/gamut.ts"), ...args], {
-      env: { ...process.env, GAMUT_STATE: state },
+      // The run ends with this test process: a runner killed mid-run (afterAll never run) leaves no host or model.
+      env: { ...process.env, GAMUT_STATE: state, GAMUT_OWNER: String(process.pid) },
       stdout: "pipe",
       stderr: "pipe",
     })

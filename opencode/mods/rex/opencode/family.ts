@@ -4,8 +4,10 @@
 // left out (the host's TUI sets its environment itself), and so is the root:
 // another TUI may show it. Read inside a Solid computation, every read here
 // is reactive.
+import type { Effect } from "effect"
 import { createEffect } from "solid-js"
 import { look, type Member, nothingSeen } from "../family.ts"
+import { type Clock, coalescedHands, type HandFailed, notHanded } from "./hand.ts"
 
 /** The reads the follower needs from the TUI plugin's `context.data`; `context.data` satisfies it. */
 export interface Reads {
@@ -45,4 +47,25 @@ export const followFamily = (reads: Reads, route: () => Route, hand: (sessionID:
     state.seen = next.seen
     next.due.forEach(hand)
   })
+}
+
+/** What the hand-off sends through: the client's `session.environment` for one session (`fromClient`), and the TUI's warning toast. */
+export interface HandHost {
+  readonly environment: (sessionID: string) => Effect.Effect<void, HandFailed>
+  readonly warn: (title: string, message: string) => void
+}
+
+/**
+ * Follows the family on screen and hands each subagent the environment when
+ * it is due, coalesced (`coalescedHands`): a restart's resets are tried again,
+ * and what fails for good is one warning per burst. Returns the stop.
+ */
+export const handFamily = (reads: Reads, route: () => Route, host: HandHost, clock: Clock, track: Track = createEffect): (() => void) => {
+  const hands = coalescedHands({
+    send: host.environment,
+    report: (failed) => host.warn(notHanded(failed.count), failed.error),
+    clock,
+  })
+  followFamily(reads, route, hands.hand, track)
+  return hands.dispose
 }
