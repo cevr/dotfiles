@@ -125,6 +125,25 @@ type Bench = ReturnType<typeof bench>
 
 const workrift = (b: Bench, cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, b.env, [SCRIPT, ...argv])
 
+/**
+ * The sqlite3 shim's lines that point a call at a fresh copy of Rift's registry in journal_mode=delete, so the
+ * script's `sqlite3 -readonly` reads it with any host sqlite3. Rift keeps its registry in WAL, and once Rift has
+ * closed it (no -shm left) macOS's sqlite3 3.54 refuses to open it read-only (batch cy: the trace test red on the
+ * Mac). The trace keeps the argument as the script gave it; only the call goes to the copy.
+ */
+const registryCopy = (real: string, registry: string, copies: string) =>
+  [
+    `registry='${registry}'`,
+    `if [ -f "$registry" ]; then`,
+    `  dir=$(mktemp -d '${copies}/c.XXXXXX')`,
+    `  cp "$registry" "$dir/registry.sqlite"`,
+    `  if [ -f "$registry-wal" ]; then cp "$registry-wal" "$dir/registry.sqlite-wal"; fi`,
+    `  '${real}' "$dir/registry.sqlite" 'pragma journal_mode=delete;' >/dev/null`,
+    `  for a do shift; if [ "$a" = "$registry" ]; then set -- "$@" "$dir/registry.sqlite"; else set -- "$@" "$a"; fi; done`,
+    `fi`,
+    "",
+  ].join("\n")
+
 describe("workrift with no backend file", () => {
   const ready = REAL.git !== null && REAL.rift !== null && REAL.sqlite3 !== null && process.platform === "darwin"
 
@@ -135,14 +154,17 @@ describe("workrift with no backend file", () => {
    */
   const traces = (script: string) => {
     const b = bench("off")
+    // Rift's registry on macOS (the script's default is Linux's).
+    const registry = join(b.home, "Library/Application Support/rift/rift.sqlite")
+    const copies = join(b.dir, "sqlite-copies")
+    mkdirSync(copies)
     for (const [name, real] of Object.entries(REAL)) {
       exe(
         join(b.bin, name),
-        `#!/bin/sh\nif [ -n "\${TRACE:-}" ]; then\n  { printf '%s' '${name}'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\\n'; } >>"$TRACE"\nfi\nexec '${real}' "$@"\n`,
+        `#!/bin/sh\nif [ -n "\${TRACE:-}" ]; then\n  { printf '%s' '${name}'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\\n'; } >>"$TRACE"\nfi\n${name === "sqlite3" ? registryCopy(real ?? "", registry, copies) : ""}exec '${real}' "$@"\n`,
       )
     }
-    // Rift's registry on macOS (the script's default is Linux's).
-    const env: Env = { ...b.env, RIFT_REGISTRY: join(b.home, "Library/Application Support/rift/rift.sqlite") }
+    const env: Env = { ...b.env, RIFT_REGISTRY: registry }
     const source = b.clone("app")
     sh(source, env, "rift", "init", "--here")
     b.push("feat/remote", { "remote.txt": "remote\n" })
