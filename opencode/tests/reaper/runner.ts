@@ -23,8 +23,9 @@ const program = Effect.gen(function* () {
   yield* Console.log(`daemon ${daemon.trim()}`)
   const child = yield* spawner.spawn(ChildProcess.make("sleep", ["121"], { ...QUIET, detached: true, stdout: "ignore" })).pipe(Scope.provide(scope))
   // One that starts another when it is told to stop, as a TUI starts a service when its own ends: never asked, never started.
+  // It writes that one's pid beside the reaper's `REAPER_SEEN` file, so the test can stop it after a failed run.
   const respawner = yield* spawner
-    .spawn(ChildProcess.make("sh", ["-c", "trap 'sleep 122 & exit' TERM; while :; do sleep 1; done"], { ...QUIET, detached: true, stdout: "ignore" }))
+    .spawn(ChildProcess.make("sh", ["-c", `trap 'sleep 122 & echo $! >"$REAPER_SEEN.respawned"; exit' TERM; while :; do sleep 1; done`], { ...QUIET, detached: true, stdout: "ignore" }))
     .pipe(Scope.provide(scope))
   yield* Console.log(`respawner ${respawner.pid}`)
   yield* Console.log(`child ${child.pid}`)

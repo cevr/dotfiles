@@ -9,7 +9,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Schedule, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { type Proc, stop, survivors, table } from "../scripts/leaks.ts"
+import { type Proc, signal, stop, survivors, table } from "../scripts/leaks.ts"
 
 /** The pid a `<label> <pid>` line of the runner names; 0 when none does. */
 const pidOf = (lines: ReadonlyArray<string>, label: string) =>
@@ -81,11 +81,15 @@ describe("the reaper of a test process", () => {
           Effect.sync(() => survivors([...started, ...reapers], table())),
           (alive) => alive.length === 0,
         )
-        // Whatever a failed run left, the test stops: it started them.
-        yield* Effect.promise(() => stop(orphans))
+        // Whatever a failed run left, the test stops: it started them. SIGKILL, not a SIGTERM the respawner would
+        // answer with one more; and the one a reaper's SIGTERM made it start, named in its file, goes too.
+        yield* Effect.sync(() => signal(orphans, "SIGKILL"))
+        const respawned = Number((yield* fs.readFileString(`${seen}.respawned`).pipe(Effect.orElseSucceed(() => ""))).trim())
+        const spawned = table().filter((row) => row.pid === respawned && row.args === "sleep 122")
+        yield* Effect.sync(() => signal(spawned, "SIGKILL"))
         expect([reapers.length, orphans.map((proc) => proc.args)]).toEqual([1, []])
         // The respawner was never told to stop: it started nothing on its way out.
-        expect(table().filter((row) => row.args === "sleep 122").map((row) => row.args)).toEqual([])
+        expect(spawned.map((row) => row.args)).toEqual([])
       }).pipe(Effect.scoped),
     40_000,
   )
