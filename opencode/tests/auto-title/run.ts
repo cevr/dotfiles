@@ -106,6 +106,7 @@ interface Embedded {
 }
 interface CreateOptions {
   readonly events: { readonly persist: boolean }
+  readonly models: { readonly fetch: boolean }
   readonly log: { readonly level: string; readonly emit: (entry: { readonly message: string }) => void }
   readonly config: { readonly directory: string; readonly project: boolean; readonly content: string }
 }
@@ -154,6 +155,8 @@ const run = Effect.gen(function* () {
       try: () =>
         sdk.OpenCode.create({
           events: { persist: true },
+          // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+          models: { fetch: false },
           log: { level: "info", emit: (entry) => void (entry.message.startsWith("auto-title") && log.push(entry.message)) },
           config: { directory: config, project: false, content: toJson(content) },
         }),

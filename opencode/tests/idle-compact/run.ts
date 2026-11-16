@@ -121,6 +121,8 @@ const opencode = await OpenCode.create({
   // The host activates its SDK plugins ahead of the config's (its boot order), so this hook runs before the plugin's.
   plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: Date.now() })) }],
   events: { persist: true },
+  // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+  models: { fetch: false },
   log: {
     level: "info",
     emit: (entry: { readonly message: string; readonly attributes?: Readonly<Record<string, unknown>> }) => {

@@ -129,7 +129,8 @@ const run = Effect.gen(function* () {
     },
   }
   const outcomes = yield* Effect.promise(() =>
-    real({ fork, directory, model: MODEL, create: { events: { persist: true }, config: { directory: config, project: false, content: toJson(content) } } }),
+    // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+    real({ fork, directory, model: MODEL, create: { events: { persist: true }, models: { fetch: false }, config: { directory: config, project: false, content: toJson(content) } } }),
   )
   yield* fs.writeFileString(path.join(base, "result.json"), toOutcomes({ outcomes }))
 })

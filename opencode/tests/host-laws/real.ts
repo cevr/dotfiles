@@ -259,6 +259,7 @@ interface LogEntry {
 const KEPT_WARNINGS = 40
 interface CreateOptions {
   readonly events: { readonly persist: boolean }
+  readonly models: { readonly fetch: boolean }
   readonly log: { readonly level: string; readonly emit: (entry: LogEntry) => void }
   readonly config: { readonly directory: string; readonly project: boolean; readonly content: string }
 }
@@ -353,6 +354,8 @@ const run = Effect.gen(function* () {
       try: () =>
         sdk.OpenCode.create({
           events: { persist: true },
+          // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+          models: { fetch: false },
           log: {
             level: "info",
             emit: (entry) => {

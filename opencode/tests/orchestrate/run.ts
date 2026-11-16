@@ -191,6 +191,8 @@ const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))
 const open = () =>
   OpenCode.create({
     events: { persist: true },
+    // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+    models: { fetch: false },
     config: { directory: config, project: false, content: JSON.stringify(content) },
   })
 const opencode = await open()

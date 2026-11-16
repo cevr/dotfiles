@@ -130,6 +130,7 @@ export interface RealOptions {
   /** The host's options, as the SDK's `OpenCode.create` takes them. */
   readonly create: {
     readonly events: { readonly persist: boolean }
+    readonly models: { readonly fetch: boolean }
     readonly config: { readonly directory: string; readonly project: boolean; readonly content: string }
   }
   readonly directory: string

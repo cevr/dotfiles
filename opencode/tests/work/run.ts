@@ -81,6 +81,7 @@ interface Embedded {
 }
 interface CreateOptions {
   readonly events: { readonly persist: boolean }
+  readonly models: { readonly fetch: boolean }
   readonly config: { readonly directory: string; readonly project: boolean; readonly content: string }
 }
 interface Sdk {
@@ -158,7 +159,8 @@ const run = Effect.gen(function* () {
   if (!isSdk(sdk)) return yield* new RunFailed({ message: "the fork's SDK has no OpenCode.create" })
   const opencode = yield* Effect.acquireRelease(
     Effect.tryPromise({
-      try: () => sdk.OpenCode.create({ events: { persist: true }, config: { directory: config, project: false, content: toJson(content) } }),
+      // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+      try: () => sdk.OpenCode.create({ events: { persist: true }, models: { fetch: false }, config: { directory: config, project: false, content: toJson(content) } }),
       catch: (cause) => new RunFailed({ message: "OpenCode did not start", cause }),
     }),
     (embedded) => Effect.promise(() => embedded.close()),
