@@ -154,7 +154,7 @@ describe("the verify-opencode skill names only what the tree has", () => {
         "tests/rift/sim.ts",
       ]
       expect({ exempt, uncovered: uncovered(features, found, exempt) }).toEqual({
-        exempt: ["scripts/", "formal/", "lint/", "tests/accept-clock.test.ts", "testbeds/gamut/", "tests/gamut.test.ts", "tests/gamut-owner.test.ts"],
+        exempt: ["scripts/", "formal/", "lint/", "tests/accept-clock.test.ts", "testbeds/gamut/", "tests/gamut.test.ts", "tests/gamut-owner.test.ts", "testbeds/reaper/", "tests/reaper.test.ts", "tests/reaper/"],
         uncovered: [],
       })
     }),

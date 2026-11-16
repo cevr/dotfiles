@@ -24,6 +24,8 @@ import { exclusively } from "../mods/work/process/flock.ts"
 import { buildsLock } from "../mods/update/settings.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { type Measure, measure, rows } from "../scripts/perf/plugin-start.ts"
+// The scratch service is stopped once this test process is gone, however it went (testbeds/reaper/start.ts).
+import "../testbeds/reaper/start.ts"
 
 /** Holds the builds lock of `home` exclusively (a `flock`, as daily's stage takes it) until the answered release runs. */
 const holdBuildsLock = (home: string) =>

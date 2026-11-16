@@ -93,6 +93,20 @@ const runner = (env: GitEnv = process.env) => {
 }
 type Runner = ReturnType<typeof runner>
 
+/**
+ * Pushes `BRANCH` to origin by origin's fetch URL, never forced, and moves `origin/<BRANCH>` to `merge` as a push
+ * by the remote's name would. By the URL, not the name: an adopted copy (the fork, prime-look) has the push URL
+ * work gives every workspace, which refuses each push (`no-push:workspaces-never-push-origin`); the land pushes
+ * the same way (mods/work/process/landing.ts `pushToOrigin`).
+ */
+const pushOrigin = ({ git }: Runner, fork: string, merge: string) => {
+  const origin = git(fork, "remote", "get-url", "origin")
+  if (!origin.ok) return origin
+  const pushed = git(fork, "push", "--quiet", origin.out, `refs/heads/${BRANCH}:refs/heads/${BRANCH}`)
+  if (pushed.ok) git(fork, "update-ref", `refs/remotes/origin/${BRANCH}`, merge)
+  return pushed
+}
+
 /** The worktree that has `refs/heads/<branch>` checked out, if any. */
 const checkedOut = ({ must }: Runner, fork: string, branch: string): string | undefined => {
   let path: string | undefined
@@ -239,7 +253,7 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
     return { kind: "stuck", reason, merge, upstream }
   }
   rmSync(options.report, { force: true })
-  const pushed = git(fork, "push", "--quiet", "origin", BRANCH)
+  const pushed = pushOrigin(run, fork, merge)
   log(
     pushed.ok
       ? `upstream: ${BRANCH} ${base.slice(0, 10)} -> ${merge.slice(0, 10)}, pushed to origin`

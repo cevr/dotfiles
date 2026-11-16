@@ -35,13 +35,14 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 
 `verify:drive --changed` reports each changed source file no feature's `Code` covers as unreachable. These need no drive, and it sets them aside:
 
-- **No drive:** `scripts/`, `formal/`, `lint/`, `tests/accept-clock.test.ts`, `testbeds/gamut/`, `tests/gamut.test.ts`, `tests/gamut-owner.test.ts`
+- **No drive:** `scripts/`, `formal/`, `lint/`, `tests/accept-clock.test.ts`, `testbeds/gamut/`, `tests/gamut.test.ts`, `tests/gamut-owner.test.ts`, `testbeds/reaper/`, `tests/reaper.test.ts`, `tests/reaper/`
 
 - `scripts/`: the repository's own tooling (the gate, the acceptance runner, this drive, receipts, the fork's link, the daily build). No user or agent meets it in a session; the gate runs its tests. A script that makes what a mod serves is in that feature's `Code` instead (`scripts/agents.ts`, the role agents, in orchestrate's).
 - `formal/`: the formal models and their trace replays, checked by their own tests in the gate. They model a mod; the mod's code is in its feature's `Code`.
 - `lint/`: the oxlint rules the gate runs over the tree. No session reaches them.
 - `tests/accept-clock.test.ts`: the acceptance runner's own clock bounds (`scripts/accept.ts`'s lock between land and deep runs), timed one at a time. It checks tooling under `scripts/`, not a mod.
 - `testbeds/gamut/`, `tests/gamut.test.ts`, `tests/gamut-owner.test.ts`: gamut, the testbed that drives a real OpenCode TUI on a pty (`bun run gamut up`, `send`, `read`, `down`), its terminal host, its scripted sim model and its owner watch, with their tests. It is a driver of OpenCode for checks, not a mod: no session meets it, and its tests boot it end to end.
+- `testbeds/reaper/`, `tests/reaper.test.ts`, `tests/reaper/`: the reaper every test process that spawns through `tests/owned.ts` or starts a service (`tests/service.ts`) runs, which stops what the test started once the test process is gone, however it went. Test tooling, not a mod: no session meets it; its test kills a runner and finds nothing left.
 
 ## Features
 

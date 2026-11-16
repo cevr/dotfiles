@@ -508,6 +508,24 @@ if (runnable) {
     )
 
     test(
+      "a new workspace keeps no copy of the base's .rift marker, whose id is the base's, and keeps work.toml; the base keeps both (fu-work r1)",
+      () =>
+        check(plain, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            yield* made.write(`${made.base}/.rift`, "01M4EHZ090G0CY7D88JE7YHZ1Z")
+            yield* made.sh(made.base, "sh", "-c", "echo /.rift >> .git/info/exclude")
+            const path = yield* rifts.create({ source: made.base, from: made.base, name: "marked", branch: "marked" })
+            const listed = (dir: string) => made.sh(dir, "ls", "-A").pipe(Effect.map((out) => out.split("\n").filter((name) => [".rift", "work.toml"].includes(name))))
+            expect(yield* listed(path)).toEqual(["work.toml"])
+            expect(yield* listed(made.base)).toEqual([".rift", "work.toml"])
+            expect((yield* rifts.inspect(path)).uncommitted).toEqual([])
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
       "a new workspace of a base with several packs and a multi-pack index reads every object",
       () =>
         check(plain, (made) =>
