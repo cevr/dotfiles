@@ -1,6 +1,6 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Array as Arr, Effect, Match, Schema } from "effect"
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
@@ -10,12 +10,16 @@ import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
+import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
 const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
+
+/** A written config's plugin entries: a path, or a path with options. */
+const decodeEntries = Schema.decodeUnknownSync(Schema.Struct({ plugins: Schema.Array(Schema.Union([Schema.String, Schema.Struct({ package: Schema.String })])) }))
 
 /** A config file's plugin list, as JSON. */
 const PluginsJson = Schema.fromJsonString(Schema.Struct({ plugins: Schema.Array(Schema.Unknown) }))
@@ -221,6 +225,66 @@ describe("the server config's built-in schedule plugin", () => {
     expect(BUILTIN_SCHEDULE_OFF).toBe("-opencode.tool.schedule")
     const once = mergeServer({ plugins: ["/x"] }, [`${MODS}/wake`, BUILTIN_SCHEDULE_OFF], {}, [MODS])
     expect(mergeServer(once, [`${MODS}/wake`, BUILTIN_SCHEDULE_OFF], {}, [MODS]).plugins).toEqual([`${MODS}/wake`, BUILTIN_SCHEDULE_OFF, "/x"])
+  })
+})
+
+describe("the workspace plugin: work replaces rift", () => {
+  /** A small seeded generator (mulberry32), so a failing seed replays. */
+  const random = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const UNRELATED: ReadonlyArray<PluginEntry> = ["/elsewhere/plugin", { package: "/elsewhere/configured", options: { keep: true } }, "/home/x/.cache/plugin/cmd/rift", "-opencode.other"]
+  /** An entry of ours for `dir`, bare or with options, as an earlier install or a hand edit wrote it. */
+  const entryOf = (dir: string, next: () => number): PluginEntry => Arr.getUnsafe([dir, { package: dir, options: { work: "/old/work", n: Math.floor(next() * 9) } }], Math.floor(next() * 2))
+  /** A prior server config: `…/cmd/rift` and `…/cmd/work` each absent, once or twice, ours and unrelated entries, any order. */
+  const priorPlugins = (seed: number): Array<PluginEntry> => {
+    const next = random(seed)
+    const times = () => Math.floor(next() * 3)
+    const entries: Array<PluginEntry> = [
+      ...Array.from({ length: times() }, () => entryOf(pluginDir("rift"), next)),
+      ...Array.from({ length: times() }, () => entryOf(pluginDir("work"), next)),
+      ...Array.from({ length: times() }, () => entryOf(pluginDir("guard"), next)),
+      ...UNRELATED.filter(() => next() < 0.7),
+    ]
+    // Fisher-Yates over the seed: any order.
+    for (let i = entries.length - 1; i > 0; i--) {
+      const j = Math.floor(next() * (i + 1))
+      ;[entries[i], entries[j]] = [entries[j]!, entries[i]!]
+    }
+    return entries
+  }
+  /** daily's server list around the workspace plugin, built with `name` as daily builds it (`pluginDir`). */
+  const ours = (name: string): ReadonlyArray<PluginEntry> => [pluginDir("guard"), pluginDir(name), pluginDir("tool-names")]
+  const owned = ownedDirs("/home/.local/share/opencode-prime")
+  /** The written config's plugin paths, each entry bare or with options. */
+  const pathsOf = (config: ReturnType<typeof mergeServer>): ReadonlyArray<string> =>
+    decodeEntries(config).plugins.map((entry) => Match.value(entry).pipe(Match.when(Match.string, (path) => path), Match.orElse((configured) => configured.package)))
+  const count = (config: ReturnType<typeof mergeServer>, dir: string) => pathsOf(config).filter((path) => path === dir).length
+
+  test("daily's server list names work, not rift", () => {
+    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
+    expect([source.split('pluginDir("work")').length - 1, source.split('pluginDir("rift")').length - 1]).toEqual([1, 0])
+    expect(pluginDir("work").endsWith("/opencode/cmd/work")).toBe(true)
+  })
+
+  test("for any prior config, the install writes cmd/work exactly once, cmd/rift not at all, and every unrelated entry as it was", () => {
+    for (let seed = 1; seed <= 300; seed++) {
+      const prior = priorPlugins(seed)
+      const merged = mergeServer({ plugins: prior }, ours("work"), {}, owned)
+      const unrelated = prior.filter((entry) => UNRELATED.includes(entry))
+      expect([seed, count(merged, pluginDir("work")), count(merged, pluginDir("rift")), merged.plugins]).toEqual([seed, 1, 0, [...ours("work"), ...unrelated]])
+    }
+  })
+
+  test("the rollback is the same function: built with rift, the install writes cmd/rift once and no cmd/work", () => {
+    for (let seed = 1; seed <= 300; seed++) {
+      const enabled = mergeServer({ plugins: priorPlugins(seed) }, ours("work"), {}, owned)
+      const rolledBack = mergeServer(enabled, ours("rift"), {}, owned)
+      expect([seed, count(rolledBack, pluginDir("rift")), count(rolledBack, pluginDir("work"))]).toEqual([seed, 1, 0])
+    }
   })
 })
 

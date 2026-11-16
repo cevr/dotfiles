@@ -7,7 +7,7 @@
 //    (scripts/upstream.ts); a conflict or a red check leaves prime-look as it was, writes
 //    `~/.local/state/opencode-daily/upstream-conflict.md` and the install goes on. `--no-upstream`
 //    skips it; `--dry-run` fetches, says what it would merge and stops before anything else.
-// 1. Builds the fork in `OPENCODE_DEV` (default: the prime-look Rift) as a release binary
+// 1. Builds the fork in `OPENCODE_DEV` (default: the prime-look workspace) as a release binary
 //    (channel `latest`, version `<base>-prime.<commit>`), so it shares the installed OpenCode's
 //    database and background service; a version change restarts that service as ours. With
 //    `--fork-target <sha>` it builds exactly that commit, in a detached worktree of the fork
@@ -50,7 +50,7 @@ const CMD = resolve(import.meta.dir, "../cmd")
 export const pluginDir = (name: string): string => (existsSync(join(CMD, name, "package.json")) ? join(CMD, name) : join(MODS, name))
 const THEME = resolve(import.meta.dir, "../themes/prime.json")
 
-type PluginEntry = string | { readonly package: string; readonly options?: Record<string, unknown> }
+export type PluginEntry = string | { readonly package: string; readonly options?: Record<string, unknown> }
 type Json = Record<string, unknown>
 
 /** Turns off the fork's built-in /btw (`opencode.btw`), so /btw is the btw mod's (cmd/btw). */
@@ -472,7 +472,7 @@ if (import.meta.main) {
     pluginDir("questions"),
     pluginDir("wake"),
     pluginDir("skills"),
-    pluginDir("rift"),
+    pluginDir("work"),
     pluginDir("tool-names"),
     pluginDir("cache"),
     pluginDir("memory"),

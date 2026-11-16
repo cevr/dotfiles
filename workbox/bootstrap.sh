@@ -55,7 +55,7 @@ check_hc() {
 }
 
 check_mode() {
-  for command in btrfs bun curl git hc hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale workbox-release-valve workbox-rift-storage workrift zsh; do
+  for command in btrfs bun curl git hc hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale work workbox-release-valve workbox-rift-storage workrift zsh; do
     check_command "$command"
   done
 
