@@ -146,7 +146,7 @@ esac`
 // POSIX tools they share with the Mac.
 const quietCommands = [
   "btrfs", "bun", "curl", "git", "hunk", "mongosh", "node", "redis-cli", "rift", "sideshow", "sqlite3",
-  "syncthing", "tailscale", "workbox-release-valve", "workbox-rift-storage", "workrift", "zsh", "getent",
+  "syncthing", "tailscale", "work", "workbox-release-valve", "workbox-rift-storage", "workrift", "zsh", "getent",
   "ss", "gh", "aws", "mati-grafana", "install-node", "linear", "sentry", "okra", "codex", "claude", "loginctl",
   "cmp",
 ]
@@ -332,6 +332,8 @@ const bootstrapTree = (root: string, log: string) => {
     cpSync(join(workbox, file), join(box, file))
   for (const name of readdirSync(join(workbox, "bin"))) stub(join(box, "bin"), name, log)
   stub(join(tree, "claude", "mods", "fx-ui"), "install.sh", log)
+  // The real install-bin.sh: it installs the stubbed bin/ into ~/.local/bin, as bootstrap did itself before.
+  cpSync(join(workbox, "install-bin.sh"), join(box, "install-bin.sh"))
   return box
 }
 
