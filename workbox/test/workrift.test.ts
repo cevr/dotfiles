@@ -547,7 +547,7 @@ describeWork("workrift with the work backend", () => {
       const stale = w.base("aa-stale")
       const real = w.base("zz-real")
       rmSync(stale, { recursive: true, force: true })
-      expect(JSON.parse(w.inBase(real, "--json", "bases"))).toContain(stale)
+      // Older work binaries still list it; work 34f3ef01f and later drop it themselves. Either way workrift must skip it.
 
       const made = w.wr(real, "create", "feat/after-stale")
       expect(made.code, made.err).toBe(0)

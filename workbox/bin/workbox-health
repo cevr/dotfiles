@@ -176,6 +176,11 @@ check "S3 backup bucket" aws s3api head-bucket --bucket bite-workbox-backups-251
 check "Swap" sh -c 'swapon --show --noheadings | grep -q .'
 # shellcheck disable=SC2016
 check "Disk space" sh -c '[ "$(df --output=pcent / | tail -1 | tr -dc 0-9)" -lt 85 ]'
+# /workspaces holds the home, /tmp and every Rift. A full btrfs blocks writes
+# while it waits for metadata space, which froze the OpenCode service
+# (2026-11-16); its image already spans what ext4 can back, so free space here.
+# shellcheck disable=SC2016
+check "Workspaces space" sh -c '[ "$(df --output=pcent /workspaces | tail -1 | tr -dc 0-9)" -lt 90 ]'
 
 if [ -f /var/run/reboot-required ]; then
   printf 'WARN  Reboot required'
