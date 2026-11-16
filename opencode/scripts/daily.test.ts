@@ -395,8 +395,10 @@ describe("the upstream merge", () => {
     expect(existsSync(f.options().report)).toBe(false)
   })
 
-  test("a clean merge whose checks pass fast-forwards prime-look to it inside `landing` alone, then pushes it to origin", async () => {
+  test("a clean merge whose checks pass fast-forwards prime-look to it inside `landing` alone, then pushes it to origin by its fetch URL, past the push URL work gives an adopted copy (post-land 2026-11-16)", async () => {
     using f = fixture()
+    // work's rule on every workspace, the adopted fork among them: a push by the remote's name is refused.
+    git(f.fork, "config", "remote.origin.pushurl", "no-push:workspaces-never-push-origin")
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     commitTo(f.origin, "prime-look", { "c.txt": "ours\n" })
     git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
@@ -417,6 +419,8 @@ describe("the upstream merge", () => {
     expect(git(f.fork, "rev-list", "--parents", "-n", "1", merge).split(" ")).toEqual([merge, before, f.head(f.upstream, "dev")])
     expect(f.calls).toEqual([f.options().worktree])
     expect(f.head(f.origin, "prime-look")).toBe(merge)
+    // origin/prime-look moved as a push by the remote's name would move it.
+    expect(git(f.fork, "rev-parse", "refs/remotes/origin/prime-look")).toBe(merge)
     // The fork had prime-look checked out, so its working tree followed.
     expect(readFileSync(join(f.fork, "b.txt"), "utf8")).toBe("upstream\n")
     expect(existsSync(f.options().report)).toBe(false)
