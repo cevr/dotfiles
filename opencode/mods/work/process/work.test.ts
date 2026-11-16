@@ -429,8 +429,7 @@ if (runnable) {
             yield* made.sh(pushed, "git", "push", "-q", made.origin, "HEAD:refs/heads/pushed")
             yield* made.sh(pushed, "git", "fetch", "-q", "origin")
             expect((yield* rifts.inspect(pushed)).unpushed).toEqual([])
-            // work's own check refuses it (NotHeld): the tool's rule has judged it, so the provider abandons.
-            expect(yield* made.workRan("rm", "pushed")).toMatchObject({ code: 1, stdout: expect.stringContaining("NotHeld") })
+            // The tool's rule has judged it, so the provider abandons; work's own check (4c2b2571 on) holds it too.
             yield* rifts.remove(pushed)
             expect(yield* rifts.list(made.base)).toEqual([])
 
@@ -441,8 +440,9 @@ if (runnable) {
             yield* made.work("rm", "-abandon", "elsewhere").pipe(Effect.orDie)
             yield* rifts.remove(elsewhere)
             expect(yield* rifts.list(made.base)).toEqual([kept])
-            // A trashed name is not given out again before a gc, so no workspace can replace one under its name.
-            expect(yield* made.workRan("new", "elsewhere")).toMatchObject({ code: 1, stdout: expect.stringContaining("NameTaken") })
+            // work (4c2b2571 on) gives a trashed name out again: the new workspace has an id of its own, which a removal
+            // that names the old id (`-expect`) never reaches.
+            expect(yield* made.workRan("new", "elsewhere")).toMatchObject({ code: 0 })
             yield* rifts.remove(kept)
 
             const late = yield* rifts.create({ source: made.base, from: made.base, name: "late", branch: "late" })
@@ -495,13 +495,13 @@ if (runnable) {
     )
 
     test(
-      "work.toml is one untracked file where the base's .git/info/exclude does not name it: the tool does not hide it",
+      "work.toml is no untracked file of a workspace, even where the base's .git/info/exclude does not name it: work (4c2b2571 on) hides it",
       () =>
         check(bench({ ...PLAIN, exclude: false }), (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
             const path = yield* rifts.create({ source: made.base, from: made.base, name: "seen", branch: "seen" })
-            expect((yield* rifts.inspect(path)).uncommitted).toEqual(["?? work.toml"])
+            expect((yield* rifts.inspect(path)).uncommitted).toEqual([])
           }),
         ),
       TIMEOUT,
