@@ -5,7 +5,7 @@ import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { parseNameStatus } from "./docs-guard.ts"
-import { ACCEPT_TESTS, DOCS_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
+import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
 import { importsOf } from "./reach.ts"
 
 /** The scripts/ folder as the merge check reads it (its files, each source's imports), and the selections over it. */
@@ -16,7 +16,8 @@ const tree = Effect.gen(function* () {
   const files = (yield* fs.readDirectory(path.join(root, "scripts"))).map((name) => `scripts/${name}`)
   const sources = files.filter((file) => /\.tsx?$/.test(file))
   const imports = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, importsOf(file, text)] as const)))
-  const exists = (file: string) => files.includes(file)
+  // The git-repo guard lives in tests/, outside the folder read here.
+  const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD
   const scripts = { files: sources.filter((file) => /\.test\.tsx?$/.test(file)), imports: (file: string) => imports.get(file) ?? [] }
   const tools = { bun: "bun", oxlint: "oxlint", typecheck: ["bun", "check", "-b"], projects: 3, exists, scripts }
   return {
@@ -41,7 +42,7 @@ describe("the merge check's tests", () => {
       expect(tests("M\tscripts/leaks.ts\n")).toEqual(["scripts/accept.test.ts", "scripts/leaks.test.ts"])
       // reach.ts has no test of its own; the tests that import it run.
       expect(tests("M\tscripts/reach.ts\n")).toEqual(["scripts/accept-ledger.test.ts", "scripts/accept.test.ts", "scripts/merge-check.test.ts"])
-      expect(tests("M\tscripts/leaks.test.ts\n")).toEqual(["scripts/leaks.test.ts"])
+      expect(tests("M\tscripts/leaks.test.ts\n")).toEqual(["scripts/leaks.test.ts", GIT_REPO_GUARD])
       // A script no test reaches selects none: its typecheck and lint still run.
       expect(tests("M\tscripts/receipt.ts\n")).toEqual([])
     }),
@@ -52,11 +53,23 @@ describe("the merge check's tests", () => {
       const { exists, legs, ran, tests } = yield* tree
       // auto-claim renamed tests in tests/pool-resets.test.ts, and the work.test marker changed: both reached main red.
       const accept = [...ACCEPT_TESTS].toSorted()
-      expect(tests("M\ttests/pool-resets.test.ts\n")).toEqual(accept)
-      expect(tests("M\ttests/work.test.ts\n")).toEqual(accept)
+      expect(tests("M\ttests/pool-resets.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
+      expect(tests("M\ttests/work.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
       expect(tests("M\ttests/parity.json\n")).toEqual(accept)
-      expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toEqual(accept)
+      expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
       expect(tests("M\tscripts/accept-ledger.ts\n")).toEqual(["scripts/accept-ledger.test.ts", "scripts/post-land.test.ts", ...ACCEPT_TESTS].toSorted())
+    }),
+  )
+
+  live("a new or changed test or testbed file runs the git-repo guard, which no import reaches; a deleted one, or source, does not (batch 2026-11-16cv)", () =>
+    Effect.gen(function* () {
+      const { ran, tests } = yield* tree
+      // small-fu3 added scripts/verify-fork.test.ts with a raw `git init`; its merge check ran no guard and main went red.
+      expect(ran("A\tscripts/verify-fork.test.ts\n")).toContain(GIT_REPO_GUARD)
+      expect(tests("M\ttestbeds/gamut/gamut.ts\n")).toContain(GIT_REPO_GUARD)
+      expect(tests("A\ttests/git-repo.ts\n")).toContain(GIT_REPO_GUARD)
+      expect(tests("D\tmods/update/git/source.test.ts\n")).not.toContain(GIT_REPO_GUARD)
+      expect(tests("M\tmods/update/git/source.ts\n")).toEqual([])
     }),
   )
 
@@ -67,10 +80,11 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  live("an unrelated diff runs none: mod source and its own tests, which the land's round gate ran", () =>
+  live("an unrelated diff runs none: mod source, which the land's round gate tested; its tests run only the git-repo guard", () =>
     Effect.gen(function* () {
       const { exists, legs, ran, tests } = yield* tree
-      expect(tests("M\tmods/update/git/source.ts\nM\tmods/update/git/source.test.ts\nA\tcmd/escape/setup.test.ts\n")).toEqual([])
+      expect(tests("M\tmods/update/git/source.ts\n")).toEqual([])
+      expect(tests("M\tmods/update/git/source.ts\nM\tmods/update/git/source.test.ts\nA\tcmd/escape/setup.test.ts\n")).toEqual([GIT_REPO_GUARD])
       expect(tests("")).toEqual([])
     }),
   )

@@ -7,6 +7,9 @@
 //   within scripts/, through any number of steps (fork.ts → daily.ts → daily.test), and a changed scripts/ test itself;
 // - scripts/accept.test.ts and scripts/accept-parity.test.ts when the acceptance tree changes (tests/, its parity
 //   baselines among them), the accept scripts change, or a simulated suite a parity manifest counts changes.
+// - tests/git-repo.test.ts, the guard that every test and testbed file makes its repositories through gitInit or
+//   gitClone, when a test or testbed file it scans is added or changed: it reads their text, it imports none, so no
+//   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
 
@@ -29,6 +32,7 @@ export interface Tools {
 
 export const DOCS_GUARD = "scripts/verify-docs.test.ts"
 export const ACCEPT_TESTS = ["scripts/accept.test.ts", "scripts/accept-parity.test.ts"] as const
+export const GIT_REPO_GUARD = "tests/git-repo.test.ts"
 
 /** The path a change leaves on disk: a rename's or a copy's new path, else its only one; none for a deletion. */
 const left = (change: Change): ReadonlyArray<string> => {
@@ -41,6 +45,8 @@ const named = (changes: ReadonlyArray<Change>) => changes.flatMap((change) => ch
 const SCRIPT = /^scripts\/([\w.-]+)\.tsx?$/
 const TEST = /^scripts\/[\w.-]+\.test\.tsx?$/
 const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/accept[\w-]*\.ts$/.test(path) || /\.sim\.test\.tsx?$/.test(path)
+/** A file tests/git-repo.test.ts scans for a raw `git init` or `git clone` (its `testFiles`). */
+const gitGuarded = (path: string) => /\.test\.tsx?$/.test(path) || /^(tests|testbeds)\/.*\.tsx?$/.test(path)
 
 /**
  * The scripts/ tests and the import specifiers each scripts/ file holds (`import`, `export … from` and `import()`,
@@ -82,6 +88,7 @@ export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: strin
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
   if (docsGuardDue(changes)) due.add(DOCS_GUARD)
+  if (changes.flatMap(left).some(gitGuarded)) due.add(GIT_REPO_GUARD)
   return [...due].filter(exists).toSorted()
 }
 
