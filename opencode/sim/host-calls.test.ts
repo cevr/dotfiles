@@ -17,6 +17,12 @@ const ROOT = process.cwd()
 const CONFIG = `${ROOT}/sim/tsconfig.json`
 const LAWS = `${ROOT}/sim/host-laws.ts`
 const PLANTED = `${ROOT}/sim/fixtures/host-calls.fixture.ts`
+/**
+ * The plugins the world loads, which the program holds. Named here so the gate's cache key for this file
+ * (scripts/reach.ts follows a named file, not the compiler's program) covers every plugin it reads: a changed
+ * host call re-runs it.
+ */
+const WORLD = `${ROOT}/sim/plugins.ts`
 
 /** A file of a world plugin: in this repository, outside sim/, not a test. */
 const isPlugin = (file: string) =>
@@ -61,6 +67,7 @@ describe("every argument a world plugin passes to the host is one a law passes",
     "no world plugin passes one no law passes",
     Effect.gen(function* () {
       const { files, laws, plugins } = yield* scanned((all) => all.filter(isPlugin))
+      expect(files).toContain(WORLD)
       // The world loads wake, idle compaction, questions, the pool and the Anthropic login: each one's root is read.
       for (const root of ["cmd/wake/server.ts", "cmd/idle-compact/server.ts", "cmd/questions/server.ts", "cmd/pool/server.ts", "cmd/anthropic-auth/server.ts"])
         expect(files).toContain(`${ROOT}/${root}`)

@@ -84,6 +84,8 @@ export const LAW = {
   steer:
     "a synthetic message with resume, steered, wakes an idle session into an execution that reads it, the message keeping its metadata, and a second admission of its id is not taken again",
   notice: "a synthetic message without resume starts no execution, and the next prompt's execution reads it",
+  takenBack:
+    "an inbox item a client takes back publishes session.inbox.cancelled for it, never session.inbox.delivered, and the next prompt's execution does not read it",
   compact:
     "a compaction asked with a reason runs on the model and starts the context completed with that reason; experimental.idle runs after a turn and not after the compaction alone",
   request: "model.request runs before each request of the plugin's sessions, with the request's kind",
@@ -170,7 +172,8 @@ export const DONE = "sim-law: done"
 
 /**
  * The probe's line asking the host's client (the TUI, the owner) to act, as only a client can: then the ask as
- * JSON, `{ "action": "archive", "sessionID" }` or `{ "action": "form", "sessionID", "key", "value" }` (create a
+ * JSON, `{ "action": "archive", "sessionID" }`, `{ "action": "cancel", "sessionID", "inboxID" }` (take an inbox item back)
+ * or `{ "action": "form", "sessionID", "key", "value" }` (create a
  * form of one string field `key` for the session and answer it `value`). The world's law run does it with the
  * world's own driver, the real run with the fork's SDK; the law waits for what the host does after.
  */

@@ -257,6 +257,8 @@ export const make = (worldOptions: WorldOptions) => {
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
     /** The owner takes the session's newest queued prompt back into the composer: it is cancelled, never delivered. */
     takeBack: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.takeBack(session)))),
+    /** The owner takes inbox item `inboxID` back from a client (`session.inbox.cancel`): it is cancelled, never delivered. */
+    cancel: (sessionID: string, inboxID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.cancel(session, inboxID)))),
     /** The session's queued prompts are delivered as one (the escape plugin's queue merge): one merged prompt, the originals cancelled. */
     merge: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.merge(session)))),
     /** The owner moves an idle session to `directory` (host law: move): from then on that location's copies decide it. */

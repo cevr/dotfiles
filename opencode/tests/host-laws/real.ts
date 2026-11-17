@@ -228,6 +228,7 @@ interface Embedded {
       }) => Promise<{ readonly id: string }>
       readonly reply: (input: { readonly sessionID: string; readonly formID: string; readonly answer: { readonly [key: string]: string } }) => Promise<void>
     }
+    readonly inbox: { readonly cancel: (input: { readonly sessionID: string; readonly inboxID: string }) => Promise<void> }
   }
   readonly close: () => Promise<void>
 }
@@ -237,14 +238,16 @@ const ClientAsk = Schema.fromJsonString(
   Schema.Union([
     Schema.Struct({ action: Schema.Literal("archive"), sessionID: Schema.String }),
     Schema.Struct({ action: Schema.Literal("form"), sessionID: Schema.String, key: Schema.String, value: Schema.String }),
+    Schema.Struct({ action: Schema.Literal("cancel"), sessionID: Schema.String, inboxID: Schema.String }),
   ]),
 )
 type ClientAsk = typeof ClientAsk.Type
 
-/** Does what the probe asked, as the owner would from a client: archive a session, or answer a form made for it. */
+/** Does what the probe asked, as the owner would from a client: archive a session, take an inbox item back, or answer a form made for it. */
 const act = (opencode: Embedded, ask: ClientAsk) => {
   const client = <A>(request: () => Promise<A>) => Effect.tryPromise({ try: request, catch: (cause) => new RealRunFailed({ message: `the client did not ${ask.action}`, cause }) })
   if (ask.action === "archive") return client(() => opencode.session.update({ sessionID: ask.sessionID, archived: true }))
+  if (ask.action === "cancel") return client(() => opencode.session.inbox.cancel({ sessionID: ask.sessionID, inboxID: ask.inboxID }))
   return client(() => opencode.session.form.create({ sessionID: ask.sessionID, title: "law", fields: [{ key: ask.key, type: "string" }] })).pipe(
     Effect.flatMap((form) => client(() => opencode.session.form.reply({ sessionID: ask.sessionID, formID: form.id, answer: { [ask.key]: ask.value } }))),
   )

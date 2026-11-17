@@ -6,14 +6,15 @@
  * hello.txt and pixel.png. It writes the session's
  * messages and the model's requests to `<base>/result.json`. On the stop
  * task it queues a prompt to the subagent once its turn stalls, and keeps
- * that subagent's inbox after the run.
+ * that subagent's inbox after the run. On the report task it waits on past the
+ * parent's first turn, until the parent answered its subagent's report.
  *
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Schedule } from "effect"
-import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, SELF, serve, type Seen, STALL_TASK, STOP_TASK } from "./sim.ts"
+import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -106,6 +107,16 @@ try {
   // The run ends with the session's turn. The stop task's subagent gets a prompt queued behind its stalled turn,
   // which its stop must drop; after the run, what still waits in its inbox.
   const ran = Effect.gen(function* () {
+    if (spec.task.endsWith(REPORT_TASK)) {
+      yield* done
+      // The parent's turn ended; now its subagent answers, and its report wakes the parent into a turn of its own.
+      sim.release()
+      yield* Effect.sync(() => sim.seen.some((request) => request.task.endsWith(REPORT_TASK) && request.last.includes("<subagent "))).pipe(
+        Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (heard) => heard }),
+      )
+      yield* done
+      return []
+    }
     if (!spec.task.endsWith(STOP_TASK)) {
       yield* done
       return []

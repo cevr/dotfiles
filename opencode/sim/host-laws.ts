@@ -80,6 +80,7 @@ export interface Probe {
 export const ClientAsk = Schema.Union([
   Schema.Struct({ action: Schema.Literal("archive"), sessionID: Schema.String }),
   Schema.Struct({ action: Schema.Literal("form"), sessionID: Schema.String, key: Schema.String, value: Schema.String }),
+  Schema.Struct({ action: Schema.Literal("cancel"), sessionID: Schema.String, inboxID: Schema.String }),
 ])
 export type ClientAsk = typeof ClientAsk.Type
 const encodeAsk = Schema.encodeSync(Schema.fromJsonString(ClientAsk))
@@ -313,6 +314,39 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(asked.length === 0, "a synthetic message without resume started a turn")
         yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: now" }))
         yield* ensure(count(yield* contextText(ctx, session.id), "heard read me later|now") === 1, "the next turn did not read the waiting message")
+      }),
+  },
+  {
+    name: LAW.takenBack,
+    operations: ["session.synthetic", "event.subscribe", "session.prompt", "session.context"],
+    // As the orchestrate plugin hears an item leave the inbox: delivered, or cancelled when the owner takes it back.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const id = SessionMessage.ID.make("msg_lawtakenback0001")
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.inbox.delivered", "session.inbox.cancelled"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.when(
+                Ref.update(seen, (all) => [...all, event.type]),
+                Effect.succeed(event.data.sessionID === session.id && event.data.inboxID === id),
+              ),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        yield* ctx.session.synthetic({ sessionID: session.id, id, text: "law: taken back", description: "law", resume: false })
+        yield* settle
+        yield* probe.client({ action: "cancel", sessionID: session.id, inboxID: id })
+        yield* waitFor(
+          Ref.get(seen).pipe(Effect.map((all) => all.includes("session.inbox.cancelled"))),
+          "the client's take-back published no session.inbox.cancelled for the item",
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: after the take-back" }))
+        const events = (yield* Ref.get(seen)).join(",")
+        yield* ensure(events === "session.inbox.cancelled", `the item's inbox events were ${events}`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "law: taken back") === 0, "the next turn read the item taken back")
       }),
   },
   {

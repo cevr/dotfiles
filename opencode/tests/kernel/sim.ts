@@ -16,6 +16,10 @@
  *   runs the shell line through `tools.shell`, then a closing line.
  * - The task `<sessionID>\nkernel stop`: one `kernel` call whose cell starts a worker on the stall task, stops it,
  *   and checks its shell never ended on its own, then a closing line.
+ * - The task `kernel report`: one `kernel` call whose cell starts a worker on `REPORT_CHILD` and returns, then a
+ *   closing line; once the worker's report arrives as the parent's next message, `REPORT_HEARD`.
+ * - The task `REPORT_CHILD` (that worker's): one line, held until the run releases it (`release`) once the parent's
+ *   turn ended.
  * - The task `kernel stall` (that worker's): a background shell call, then, once its result is back, an answer that
  *   opens and never ends (`stalls`).
  * - Anything else: one line.
@@ -137,6 +141,14 @@ const stopCell = (task: string) =>
     `seen.join("\\n")`,
   ].join("\n")
 
+export const REPORT_TASK = "kernel report"
+/** The worker's prompt in the report task; its answer waits for `release`. */
+export const REPORT_CHILD = "child: say hi late"
+/** The parent's answer to a finished subagent's report. */
+export const REPORT_HEARD = "sim: heard the subagent's report"
+/** One kernel call that starts a worker and returns at once: its report comes later, as the parent's next message. */
+const reportCell = () => `await tools.subagent({ agent: "worker", description: "report probe", prompt: "${REPORT_CHILD}" })\n"started"`
+
 /** The drop task, after its shell line: `<line>\nkernel drop`. */
 export const DROP_TASK = "kernel drop"
 /**
@@ -198,6 +210,7 @@ export const cells = (file: string) => [
 const ONE_CELL: ReadonlyArray<readonly [string, (task: string) => string]> = [
   [SUBAGENT_TASK, () => SUBAGENT_CELL],
   [STOP_TASK, stopCell],
+  [REPORT_TASK, reportCell],
   [DROP_TASK, dropCell],
   [SHELL_TASK, () => SHELL_CELL],
   [ATTACH_TASK, () => ATTACH_CELL],
@@ -208,6 +221,12 @@ const startLate = (request: ChatRequest): Reply => {
   if ((request.tools ?? []).some((tool) => tool.function?.name === "shell"))
     return { kind: "tool", name: "shell", input: { command: LATE_COMMAND, description: "late write", background: true } }
   return { kind: "tool", name: "kernel", input: { code: `await tools.shell({ command: "${LATE_COMMAND}", background: true })` } }
+}
+
+/** A one-cell task's last line: the report task's answer to its subagent's report once it arrives, else `DONE`. */
+const closing = (task: string, messages: ReadonlyArray<ChatMessage>) => {
+  if (task.endsWith(REPORT_TASK) && text(messages.at(-1)?.content).includes("<subagent ")) return REPORT_HEARD
+  return DONE
 }
 
 const reply = (request: ChatRequest, file: string): Reply => {
@@ -222,7 +241,7 @@ const reply = (request: ChatRequest, file: string): Reply => {
   const task = firstUser(messages)
   if (task.endsWith(STALL_TASK)) return startLate(request)
   for (const [name, cell] of ONE_CELL)
-    if (task.endsWith(name) && offersKernel) return results === 0 ? { kind: "tool", name: "kernel", input: { code: cell(task) } } : { kind: "text", text: DONE }
+    if (task.endsWith(name) && offersKernel) return results === 0 ? { kind: "tool", name: "kernel", input: { code: cell(task) } } : { kind: "text", text: closing(task, messages) }
   const offersSave = (request.tools ?? []).some((tool) => tool.function?.name === "memory_save")
   if (firstUser(messages).endsWith(MEMORY_TASK) && offersSave)
     return results === 0 ? { kind: "tool", name: "memory_save", input: { text: MEMORY_NOTE, scope: "global" } } : { kind: "text", text: DONE }
@@ -268,6 +287,14 @@ const stalls = (messages: ReadonlyArray<ChatMessage>, system: string) =>
 export const serve = (file: string) => {
   const seen: Seen[] = []
   let served = 0
+  /** The report task's worker's answers waiting for `release`, and whether it came. */
+  const held: Array<() => void> = []
+  const released = { value: false }
+  /** Sends the report task's worker's answer, now and to any request that comes after. */
+  const release = () => {
+    released.value = true
+    for (const send of held.splice(0)) send()
+  }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -300,10 +327,26 @@ export const serve = (file: string) => {
           headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
         })
       }
+      // The report task's worker answers only once the run releases it: after the parent's turn ended.
+      if (firstUser(messages) === REPORT_CHILD && !system.includes("You name conversations")) {
+        const answer = new TextEncoder().encode(events(reply(body, file), model, `sim${served}`))
+        return new Response(
+          new ReadableStream({
+            start: (controller) => {
+              held.push(() => {
+                controller.enqueue(answer)
+                controller.close()
+              })
+              if (released.value) release()
+            },
+          }),
+          { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } },
+        )
+      }
       return new Response(events(reply(body, file), model, `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },
   })
-  return { server, seen }
+  return { server, seen, release }
 }

@@ -62,7 +62,6 @@ export type Options = typeof Options.Type
 export type Externals = Rifts | SessionDirectories | Landing | Notices | Workbox | PostLandDebts | PostLandClaim
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
-type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 /** Where a land's gate and accept logs go. */
 export const landLogs = (): string => ProcessLanding.landLogs(process.env)
@@ -74,7 +73,7 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
     ProcessLanding.layer({ logs: landLogs() }),
     FilestoreDebts.layer(FilestoreDebts.debtsFile(landLogs())),
     ProcessWorkbox.layer({ workrift: options.workrift }),
-    OpenCodeNotices.layer((input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } as SyntheticInput)),
+    OpenCodeNotices.layer((input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } })),
     OpenCodeSessionDirectories.layer((sessionID) =>
       ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map((session) => session.location.directory)),
     ),

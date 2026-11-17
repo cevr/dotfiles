@@ -6,13 +6,14 @@
 // memory mod loaded its tools are offered beside the kernel and called directly, and a cell's
 // shell handle keeps a command's output through a wait, and a cell's subagent
 // handle stops a real child mid-turn (its parent hears it cancelled once) and
-// is refused a session that is no descendant. The kernel on its own is tested beside its code in mods/kernel.
+// is refused a session that is no descendant, and a child a cell started, once
+// finished, reaches its parent as its next message, which the parent answers. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, REPORT_HEARD, REPORT_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -85,6 +86,9 @@ const droppedAlpha = (result: Result) => {
 
 /** A message of the session's context that carries text, as a `<subagent>` notice is one. */
 const Notice = Schema.Struct({ type: Schema.Literal("synthetic"), text: Schema.String })
+/** An assistant message's text parts. */
+const AssistantText = Schema.Struct({ type: Schema.Literal("assistant"), content: Schema.Array(Schema.Unknown) })
+const TextPart = Schema.Struct({ text: Schema.String })
 const noticesOf = (result: Result) => Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(result.messages).filter(Schema.is(Notice)).map((notice) => notice.text)
 
 /**
@@ -259,6 +263,33 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     "a cell's subagent handle stops a real child mid-turn: it reads stopped, the parent hears one cancelled notice and no completion, and a stop of a session that is no descendant (its own) is refused",
     () =>
       run("stop", { task: `${SELF}\n${STOP_TASK}`, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, stoppedChild),
+    RUN_MS,
+  )
+
+  test(
+    "a subagent a cell started reaches its parent, once finished, as the parent's next message after its turn ended, and the parent answers it",
+    () =>
+      run("report", { task: REPORT_TASK, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, (result) => {
+        const [cell] = toolParts(result.messages)
+        expect({ status: cell?.state.status, text: (cell?.state.content ?? []).map((part) => part.text ?? "").join("") }).toEqual({ status: "completed", text: "started" })
+        // The parent's context: its turn's closing line, then the child's completed report, then its answer to it.
+        const said = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(result.messages).map((message) =>
+          [
+            ...Option.toArray(Schema.decodeUnknownOption(Notice)(message)).map((notice) => notice.text),
+            ...Option.toArray(Schema.decodeUnknownOption(AssistantText)(message)).flatMap((assistant) =>
+              assistant.content.flatMap((part) => Option.toArray(Schema.decodeUnknownOption(TextPart)(part)).map((text) => text.text)),
+            ),
+          ].join(""),
+        )
+        const closed = said.findIndex((text) => text.includes(DONE))
+        const report = said.findIndex((text) => text.startsWith("<subagent ") && text.includes('state="completed"'))
+        const answered = said.findIndex((text) => text.includes(REPORT_HEARD))
+        expect({ closed: closed >= 0, report: report > closed, answered: answered > report }).toEqual({ closed: true, report: true, answered: true })
+        // One request answered the report, and it was the report the parent read last.
+        expect(result.seen.filter((request) => request.task === REPORT_TASK && request.last.includes("<subagent ")).map((request) => request.last)).toEqual([
+          expect.stringContaining('state="completed"'),
+        ])
+      }),
     RUN_MS,
   )
 

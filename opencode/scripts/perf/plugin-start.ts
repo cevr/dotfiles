@@ -19,7 +19,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../../testbeds/anthropic-auth.ts"
 import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
-import { pluginDir } from "../daily.ts"
+import { BUILTIN_AUTOMATION_OFF, pluginDir } from "../daily.ts"
 import { Data, Effect, Option, Result, Schedule } from "effect"
 import { spawnSync } from "bun"
 
@@ -180,7 +180,7 @@ export const measure = async (options: Options): Promise<Measure> => {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify(value, null, 2))
   }
-  write(join(home, ".config/opencode/opencode.json"), { autoupdate: false, plugins: [...plugins, "-opencode.tool.schedule"] })
+  write(join(home, ".config/opencode/opencode.json"), { autoupdate: false, plugins: [...plugins, BUILTIN_AUTOMATION_OFF] })
   // The service's port is its channel's, the owner's service's too: the scratch one gets a free one.
   const free = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
   write(join(home, ".config/opencode/service.json"), { port: free.port })

@@ -1810,6 +1810,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     callRpc,
     move,
     takeBack,
+    cancel,
     merge,
     stop,
     resume,
