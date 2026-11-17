@@ -1,7 +1,7 @@
 // How many subagent rows the dock draws, and the line that counts the rest.
 // The rows themselves are tested in mods/subagents.
 import { describe, expect, test } from "bun:test"
-import { capped, moreLine } from "./rows.ts"
+import { capped, compact, moreLine } from "./rows.ts"
 
 describe("the rows beneath the composer", () => {
   test("a list over the cap shows the first rows in order and counts the rest", () => {
@@ -15,5 +15,17 @@ describe("the rows beneath the composer", () => {
     expect(moreLine(3, false)).toBe("+3 more · ↓ to see all")
     expect(moreLine(3, true)).toBe("+3 more")
     expect(moreLine(0, false)).toBe("")
+  })
+
+  test("a phone-sized terminal draws no rows, by width or by height; a desktop one does", () => {
+    // Portrait phone; phone with its keyboard up; phone on its side.
+    expect(compact({ width: 48, height: 52 })).toBe(true)
+    expect(compact({ width: 48, height: 24 })).toBe(true)
+    expect(compact({ width: 110, height: 22 })).toBe(true)
+    // A split pane on the Mac, and the edges, which keep the rows.
+    expect(compact({ width: 167, height: 35 })).toBe(false)
+    expect(compact({ width: 60, height: 30 })).toBe(false)
+    expect(compact({ width: 59, height: 30 })).toBe(true)
+    expect(compact({ width: 60, height: 29 })).toBe(true)
   })
 })

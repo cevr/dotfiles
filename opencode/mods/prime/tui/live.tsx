@@ -2,7 +2,9 @@
 // route's family, as `@dotfiles/opencode-subagents` reads and formats it. A
 // row opens its session on click and brightens under the pointer; inside a
 // subagent the current one is marked. They show whether or not the host shows
-// the session's sidebar, which carries only the queue.
+// the session's sidebar, which carries only the queue. A phone-sized terminal
+// (rows.ts, `compact`) draws none, the count line above them still opening
+// every one; resized back, they return.
 import { columns, format, sameSegments, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { subagents, visible, type Row as SubagentRow } from "@dotfiles/opencode-subagents/subagent-row"
@@ -10,7 +12,7 @@ import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, Index, Show, type Accessor } from "solid-js"
 import { wholeSecond } from "../clock.ts"
-import { capped, moreLine } from "../rows.ts"
+import { capped, compact, moreLine } from "../rows.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { useSessionLink } from "./link.ts"
@@ -18,6 +20,16 @@ import { roleColor } from "./tone.ts"
 
 /** The rows for `sessionID`'s family; `child` when the route is one of the subagents, which is then marked. */
 export function SubagentRows(props: { host: Host; sessionID: string; child: boolean }) {
+  const terminal = useTerminalDimensions()
+  // Unmounted while compact, so no clock ticks for rows that are not drawn.
+  return (
+    <Show when={!compact(terminal())}>
+      <Rows host={props.host} sessionID={props.sessionID} child={props.child} />
+    </Show>
+  )
+}
+
+function Rows(props: { host: Host; sessionID: string; child: boolean }) {
   const all = createMemo(() => {
     const family = props.host.subagents(props.sessionID)
     return subagents(family, family.root)

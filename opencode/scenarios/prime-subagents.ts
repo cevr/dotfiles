@@ -11,18 +11,23 @@
 // - `<label>-child`: after Enter in the picker;
 // - `<label>-sibling`: after Right in that subagent;
 // - `<label>-parent`: after Up from there;
-// - `<label>-dock`: after a click on the dock's `◆ 3 subagents`.
+// - `<label>-dock`: after a click on the dock's `◆ 3 subagents`;
+// - `<label>-phone`: the picker closed, resized to a portrait phone's 48 columns;
+// - `<label>-restored`: resized back to 106 columns.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
-import { dockRows, listsWorking } from "./prime-subagents-rows.ts"
+import { DOCK_COUNT, dockRows, listsWorking } from "./prime-subagents-rows.ts"
 
 const out = process.env.SCENARIO_OUT ?? "out"
 const label = process.env.SCENARIO_LABEL ?? "subagents"
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }
 const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text).join("").trimEnd()).join("\n")
 
+const VIEWPORT = { cols: 106, rows: 40 }
+/** A portrait phone: narrower than rows.ts `COMPACT_WIDTH`, as tall as the viewport. */
+const PHONE = { cols: 48, rows: 40 }
 const ASK = "Fix the three failing modules, one worker each."
 const STARTED = "Three workers are on it."
 // The workers, by call id: each step starts one; each worker runs one command, then waits.
@@ -44,7 +49,7 @@ export default OpenCodeDriver.use(
       // Each call its own row, as these frames read them; the default (low) folds a turn's calls into one.
       session: { verbosity: "medium" },
     },
-    tui: { viewport: { cols: 106, rows: 40 } },
+    tui: { viewport: VIEWPORT },
     project: {
       git: true,
       files: { ".opencode/themes/prime.json": readFileSync(`${process.cwd()}/themes/prime.json`, "utf8") },
@@ -161,6 +166,21 @@ export default OpenCodeDriver.use(
       yield* save(`${label}-dock`)
 
       yield* ui.press("escape")
+      yield* until(`${label}-closed`, (frame) => !frame.includes("Subagents 3") && dockRows(titles, frame))
+      // On a phone-sized terminal the count line stays and the rows under it go; resized back, they return.
+      yield* ui.resize(PHONE)
+      yield* until(
+        `${label}-phone`,
+        (frame) =>
+          frame.split("\n").every((line) => Array.from(line).length <= PHONE.cols) &&
+          frame.includes(DOCK_COUNT) &&
+          !titles.some((title) => frame.includes(`general gpt  ${title.slice(0, 8)}`)),
+      )
+      yield* save(`${label}-phone`)
+      yield* ui.resize(VIEWPORT)
+      yield* until(`${label}-restored`, (frame) => dockRows(titles, frame))
+      yield* save(`${label}-restored`)
+
       yield* Deferred.succeed(release, undefined)
       yield* until(`${label}-done`, (frame) => frame.includes("Noted."))
     }),

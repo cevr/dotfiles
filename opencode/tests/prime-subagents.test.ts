@@ -2,7 +2,8 @@
 // Runs scenarios/prime-subagents.ts with the Prime look against an OpenCode
 // checkout and asserts on its frames: a session's running subagents open by
 // keyboard and by mouse, each reads like the main session, and Up, Left and
-// Right move between them. It needs OPENCODE_DEV, the fork with the plugin hook points.
+// Right move between them; on a phone-sized terminal the dock keeps its count
+// line and draws no rows. It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -15,7 +16,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-subagents.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
 
 const root = join(import.meta.dir, "..")
-const names = ["started", "clicked", "returned", "picker", "child", "sibling", "parent", "dock"] as const
+const names = ["started", "clicked", "returned", "picker", "child", "sibling", "parent", "dock", "phone", "restored"] as const
 const frames: Record<(typeof names)[number], ReadonlyArray<string>> = {} as never
 
 const WORKERS = [
@@ -145,5 +146,16 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     const text = frames.dock.join("\n")
     expect(frames.dock[0]).not.toContain("›")
     for (const worker of WORKERS) expect(text).toMatch(workingRow(worker.title))
+  }))
+
+  test("on a phone-sized terminal the count line stays and no row is drawn under it; resized back, the rows return", kept.test(() => {
+    const dock = frames.phone.findIndex((line) => line.includes(DOCK_COUNT))
+    expect(dock).toBeGreaterThan(-1)
+    for (const line of frames.phone) expect(line.trim()).not.toMatch(/^[◇◈◆] general gpt  /)
+    for (const worker of WORKERS) expect(frames.phone.join("\n")).not.toContain(`general gpt  ${worker.title.slice(0, 8)}`)
+    // The normal size is unchanged: the rows under the count, in the order the workers started.
+    const back = frames.restored.findIndex((line) => line.includes(DOCK_COUNT))
+    const rows = frames.restored.slice(back + 1, back + 4).map((line) => line.trim())
+    WORKERS.forEach((worker, index) => expect(rows[index]).toMatch(dockRow(worker.title)))
   }))
 })
