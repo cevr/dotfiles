@@ -37,7 +37,8 @@ installimage cannot make this itself: it has no multi-device btrfs, and
 `SWRAID` puts every partition on mdraid (btrfs on mdraid would lose btrfs's
 own repair from the good copy). So installimage installs on DRIVE1 alone and
 `layout.sh` brings DRIVE2 in on the first boot. Every btrfs line mounts with
-`noatime,compress=zstd:3,space_cache=v2,discard=async`, by file system UUID.
+`noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed`, by file
+system UUID (`user_subvol_rm_allowed`: Ergo's `work` deletes a workspace's subvolume as the user).
 
 A dead drive: btrfs refuses to mount degraded on its own. Boot the Rescue
 System, `mount -o degraded,subvol=@root /dev/nvmeXn1p4 /mnt`, and follow

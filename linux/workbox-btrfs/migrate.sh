@@ -408,8 +408,9 @@ move_contents() {
     log "Moved $n entries from $from to $into"
 }
 
-# Adds subvol=@workspaces to the image line (add), or takes it out (drop).
-# Keeps a backup of the fstab when it changes.
+# Adds subvol=@workspaces to the image line (add), with user_subvol_rm_allowed
+# when an image line written before that option lacks it, or takes the subvol
+# out (drop). Keeps a backup of the fstab when it changes.
 set_image_subvol() {
     local mode=$1 tmp
     tmp=$(mktemp "$wb_fstab.XXXXXX")
@@ -417,6 +418,7 @@ set_image_subvol() {
         $1 == img && $2 == mp && $3 == "btrfs" {
             n = split($4, o, ","); out = ""
             for (i = 1; i <= n; i++) if (o[i] !~ /^subvol(id)?=/) out = out (out == "" ? "" : ",") o[i]
+            if (mode == "add" && ("," out ",") !~ /,user_subvol_rm_allowed,/) out = out ",user_subvol_rm_allowed"
             if (mode == "add") out = out "," sv
             $4 = out
         }

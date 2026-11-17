@@ -323,6 +323,9 @@ workspaces_ok() {
     [[ $(stat -c '%a %U' "$ws") == "$ws_mode" && $(stat -c '%a %U' "$ws/.rifts") == "$rifts_mode" && $(stat -c '%a %U' "$ws/.cache") == "700 $user" ]] || fail "$when: an owner or mode changed"
     [[ $(grep -c " $ws " "$root/etc/fstab") == 1 ]] || fail "$when: not one fstab line for $ws"
     grep -q "^$image $ws btrfs loop,.*subvol=@workspaces " "$root/etc/fstab" || fail "$when: the image line does not mount @workspaces"
+    # The box's line predates the option (written as the old workbox-rift-storage did): workspaces adds it, and the remount applies it.
+    grep -q "^$image $ws btrfs [^ ]*,user_subvol_rm_allowed,subvol=@workspaces " "$root/etc/fstab" || fail "$when: the image line lacks user_subvol_rm_allowed"
+    findmnt -n -o OPTIONS --mountpoint "$ws" | grep -q user_subvol_rm_allowed || fail "$when: $ws is mounted without user_subvol_rm_allowed"
     [[ $(grep -n " $ws " "$root/etc/fstab" | cut -d: -f1) -lt $(grep -n 'subvol=@home,' "$root/etc/fstab" | cut -d: -f1) ]] || fail "$when: the @home line comes before /workspaces"
     WORKBOX_RIFT_IMAGE=$image WORKBOX_RIFT_MOUNT=$ws WORKBOX_RIFT_FSTAB=$root/etc/fstab sh "$here/../../workbox/bin/workbox-rift-storage" --check > /dev/null ||
         fail "$when: workbox-rift-storage --check fails"
@@ -347,7 +350,8 @@ bash "$here/migrate.sh" workspaces --undo > "$work/ws-undo.log" 2>&1 || { cat "$
 [[ $(findmnt -n -o FSROOT --mountpoint "$ws") == / ]] || fail 'the undo left /workspaces off the top level'
 [[ ! -e $ws/@workspaces && $(stat -c %i "$src") == 256 && $(btrfs property get -ts "$ws/.rifts/app/ro-snap" ro) == ro=true ]] || fail 'the undo did not put the entries back'
 [[ $(sha256sum < "$ws/.cache/turbo/deep/blob") == "$blob_sum" ]] || fail 'the undo changed the Turbo cache'
-grep -q "^$image $ws btrfs loop,noatime,compress=zstd:3,space_cache=v2,discard=async 0 0\$" "$root/etc/fstab" || fail 'the undo did not restore the image line'
+# The undo takes the subvol out and keeps user_subvol_rm_allowed, which workspaces added to the old line.
+grep -q "^$image $ws btrfs loop,noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed 0 0\$" "$root/etc/fstab" || fail 'the undo did not restore the image line'
 [[ -z $(findmnt -rn -o TARGET | grep -F "$root/var/lib/workbox-btrfs/top") ]] || fail 'the undo left the top level mounted'
 bash "$here/migrate.sh" workspaces > "$work/ws-again.log" 2>&1 || { cat "$work/ws-again.log"; fail 'workspaces after the undo failed'; }
 workspaces_ok 'after undo and redo'

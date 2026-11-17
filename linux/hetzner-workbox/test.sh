@@ -145,7 +145,7 @@ pass "btrfs raid1 on ${d1}p4 and ${d2}p4"
 pass "/boot on mdraid1, files copied"
 grep -qE '^UUID=[^ ]+ /boot ext4' "$T/etc/fstab" || fail "fstab /boot line not switched"
 grep -qE '^UUID=[^ ]+ none swap' "$T/etc/fstab" || fail "fstab swap line not switched"
-[[ $(awk '$3 == "btrfs"' "$T/etc/fstab" | grep -c 'subvol=@[a-z]*,noatime,compress=zstd:3') == 4 ]] || fail "fstab btrfs options"
+[[ $(awk '$3 == "btrfs"' "$T/etc/fstab" | grep -c 'subvol=@[a-z]*,noatime,compress=zstd:3,.*user_subvol_rm_allowed') == 4 ]] || fail "fstab btrfs options"
 awk '$3 == "btrfs" && $1 !~ /^UUID=/ { exit 1 }' "$T/etc/fstab" || fail "a btrfs fstab line names a device, not the UUID"
 pass "fstab: /boot and swap by md UUID, btrfs by UUID with the options"
 mkdir -p "$work/esp2"
@@ -271,8 +271,8 @@ pass "rest: rsync of the paths outside the subvolumes"
 bash "$here/sync.sh" activate 2 > "$work/activate.log" 2>&1 || { cat "$work/activate.log"; fail "activate"; }
 # What the reboot would do: mount the subvolumes by name again.
 umount "$T/home/$user" "$T/workspaces"
-mount -o subvol=@home,compress=zstd:3 "${d1}p4" "$T/home/$user"
-mount -o subvol=@workspaces,compress=zstd:3 "${d1}p4" "$T/workspaces"
+mount -o subvol=@home,compress=zstd:3,user_subvol_rm_allowed "${d1}p4" "$T/home/$user"
+mount -o subvol=@workspaces,compress=zstd:3,user_subvol_rm_allowed "${d1}p4" "$T/workspaces"
 for d in home:"$T/home/$user" workspaces:"$T/workspaces"; do
     a=$S/${d%%:*} b=${d#*:}
     diff -r --no-dereference "$a" "$b" >/dev/null || fail "$b differs from $a"
@@ -342,7 +342,7 @@ HB_CHECK_SKIP="firewall sshd backup" HB_HOME=$T/home/$user HB_WORKSPACES=$T/work
 grep -q FAIL "$work/check.log" && fail "check.sh printed a FAIL"
 pass "check.sh: $(grep -c '^ok' "$work/check.log") ok lines"
 mkdir -p "$T/workspaces/.cache/turbo"
-printf 'UUID=0000 %s btrfs subvol=@workspaces,noatime,compress=zstd:3 0 0\n' "$T/workspaces" > "$work/fstab.native"
+printf 'UUID=0000 %s btrfs subvol=@workspaces,noatime,compress=zstd:3,user_subvol_rm_allowed 0 0\n' "$T/workspaces" > "$work/fstab.native"
 WORKBOX_RIFT_MOUNT=$T/workspaces WORKBOX_RIFT_FSTAB=$work/fstab.native WORKBOX_RIFT_IMAGE=$work/no-image \
     sh "$here/../../workbox/bin/workbox-rift-storage" --check >/dev/null || fail "workbox-rift-storage refuses a native /workspaces"
 printf '# nothing\n' > "$work/fstab.none"

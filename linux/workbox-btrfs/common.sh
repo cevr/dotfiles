@@ -23,7 +23,8 @@ wb_nologin=$WB_ROOT/run/nologin
 wb_old_home=$wb_home.pre-btrfs
 # Worktrees turned into Rifts: name, branch, old path, Rift path.
 wb_converted=$wb_home/.local/state/workbox-btrfs/converted.tsv
-wb_opts=noatime,compress=zstd:3,space_cache=v2,discard=async
+# user_subvol_rm_allowed: Ergo's work deletes a workspace's subvolume as the user (set by hand on the workbox 2026-11-15).
+wb_opts=noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed
 # The subvolumes, each with its mount point. The image line in the fstab mounts
 # @workspaces at /workspaces; the UUID lines mount these two.
 wb_subvols="@home:$wb_home @tmp:$wb_tmp"

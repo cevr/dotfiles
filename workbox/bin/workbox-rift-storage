@@ -5,8 +5,38 @@ set -eu
 image_path=${WORKBOX_RIFT_IMAGE:-/var/lib/bite-workspaces.btrfs}
 mount_path=${WORKBOX_RIFT_MOUNT:-/workspaces}
 image_size=${WORKBOX_RIFT_IMAGE_SIZE:-60G}
-fstab_options=loop,noatime,compress=zstd:3,space_cache=v2,discard=async
+# user_subvol_rm_allowed: Ergo's work deletes a workspace's subvolume as the
+# user (set by hand on the workbox 2026-11-15, now written here).
+fstab_options=loop,noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed
 fstab=${WORKBOX_RIFT_FSTAB:-/etc/fstab}
+
+# Whether the comma list $1 holds each option of the comma list $2, in any
+# order, among any others (subvol=@workspaces, which linux/workbox-btrfs/migrate.sh
+# workspaces adds).
+has_options() {
+  has_list=",$1,"
+  has_old_ifs=$IFS
+  IFS=,
+  for has_option in $2; do
+    case "$has_list" in
+      *",$has_option,"*) ;;
+      *)
+        IFS=$has_old_ifs
+        return 1
+        ;;
+    esac
+  done
+  IFS=$has_old_ifs
+}
+
+# The one fstab line that mounts the image here carries every option.
+image_line() {
+  image_options=$(awk -v img="$image_path" -v mp="$mount_path" \
+    '$1 == img && $2 == mp && $3 == "btrfs" && $5 == 0 && $6 == 0 { print $4 }' "$fstab")
+  test -n "$image_options" &&
+    test "$(printf '%s\n' "$image_options" | wc -l)" -eq 1 &&
+    has_options "$image_options" "$fstab_options"
+}
 
 usage() {
   printf 'usage: %s [--apply | --check]\n' "$0"
@@ -23,7 +53,7 @@ native_line() {
 
 check_state() {
   test "$(findmnt -n -o FSTYPE --target "$mount_path")" = btrfs
-  findmnt -n -o OPTIONS --target "$mount_path" | grep -q 'compress=zstd:3'
+  has_options "$(findmnt -n -o OPTIONS --target "$mount_path")" compress=zstd:3,user_subvol_rm_allowed
   test -d "$mount_path/bite"
   test -d "$mount_path/.rifts"
   test -d "$mount_path/.cache/turbo"
@@ -32,10 +62,7 @@ check_state() {
     return 0
   fi
   test -f "$image_path"
-  # linux/workbox-btrfs/migrate.sh workspaces mounts the subvolume @workspaces
-  # here instead of the top level, which then shows @home and @tmp.
-  grep -Fqx -e "$image_path $mount_path btrfs $fstab_options 0 0" \
-    -e "$image_path $mount_path btrfs $fstab_options,subvol=@workspaces 0 0" "$fstab"
+  image_line
 }
 
 case "${1:---check}" in

@@ -239,7 +239,7 @@ edit_fstab -v u="$fs_uuid" -v o="$hb_btrfs_opts" '
     { print }'
 for pair in $hb_subvols; do
     mp=$(at "${pair#*:}")
-    is_btrfs "$mp" && run mount -o remount,noatime,compress=zstd:3,discard=async "$mp"
+    is_btrfs "$mp" && run mount -o remount,noatime,compress=zstd:3,discard=async,user_subvol_rm_allowed "$mp"
 done
 tmpdir=$(at /tmp)
 [[ $(stat -c %a "$tmpdir") == 1777 ]] || run chmod 1777 "$tmpdir"

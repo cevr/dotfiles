@@ -42,8 +42,8 @@ mountpoint -q /var/lib/hetzner-sync/top 2>/dev/null && note "sync.sh's top-level
 
 # --- fstab: btrfs by UUID with the options; /boot and swap on md.
 if awk '$3 == "btrfs"' "$HB_FSTAB" | grep -q .; then
-    awk '$3 == "btrfs" && ($1 !~ /^UUID=/ || $4 !~ /compress=zstd:3/ || $4 !~ /noatime/) { exit 1 }' "$HB_FSTAB" &&
-        ok "fstab btrfs lines: UUID, compress=zstd:3, noatime" || bad "fstab btrfs lines lack UUID= or the options (layout.sh)"
+    awk '$3 == "btrfs" && ($1 !~ /^UUID=/ || $4 !~ /compress=zstd:3/ || $4 !~ /noatime/ || ("," $4 ",") !~ /,user_subvol_rm_allowed,/) { exit 1 }' "$HB_FSTAB" &&
+        ok "fstab btrfs lines: UUID, compress=zstd:3, noatime, user_subvol_rm_allowed" || bad "fstab btrfs lines lack UUID= or the options (layout.sh)"
 else
     bad "no btrfs line in $HB_FSTAB"
 fi

@@ -14,8 +14,8 @@ HB_TARGET=${HB_TARGET:-}
 HB_FSTAB=${HB_FSTAB:-$HB_TARGET/etc/fstab}
 HB_HOME=${HB_HOME:-$HB_TARGET/home/$HB_USER}
 HB_WORKSPACES=${HB_WORKSPACES:-$HB_TARGET/workspaces}
-# Mount options of every btrfs line, the same as the exe box's image.
-hb_btrfs_opts=noatime,compress=zstd:3,space_cache=v2,discard=async
+# Mount options of every btrfs line, the same as the exe box's image; user_subvol_rm_allowed: Ergo's work deletes a workspace's subvolume as the user (set by hand on the workbox 2026-11-15).
+hb_btrfs_opts=noatime,compress=zstd:3,space_cache=v2,discard=async,user_subvol_rm_allowed
 # The subvolumes installimage.conf creates, with their mount points.
 hb_subvols="@root:/ @home:/home/$HB_USER @tmp:/tmp @workspaces:/workspaces"
 
