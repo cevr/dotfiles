@@ -18,9 +18,10 @@ import type { Storage } from "./ledger.ts"
 export const CHUNK = 200
 
 /**
- * How long a writer appends to one chunk: an entry more than this after the chunk's first goes in a new chunk. So no
- * entry a chunk will ever hold is newer than its first entry's time plus this, which lets another process remove the
- * chunk once that time is past keep, with no race against its writer (the storage has no compare-and-set).
+ * How long a writer appends to one chunk: an entry this much or more after the chunk's oldest goes in a new chunk.
+ * The oldest only falls as entries come, so no entry a chunk will ever hold is newer than the oldest any process saw
+ * in it plus this, which lets another process remove the chunk once that time is past keep, with no race against its
+ * writer (the storage has no compare-and-set) and none against clocks set back.
  */
 export const SEAL_MS = 24 * 3_600_000
 
@@ -103,7 +104,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
   let writer = Option.none<string>()
   let seq = 0
   /** The chunk appends go to, and what it holds. */
-  let current = Option.none<{ readonly key: string; readonly opened: number; readonly entries: Array<A> }>()
+  let current = Option.none<{ readonly key: string; readonly oldest: number; readonly entries: Array<A> }>()
   let folded = false
 
   const read = Effect.gen(function* () {
@@ -171,11 +172,13 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
       const identity = kind.identity(entry)
       if (found.byIdentity.has(identity)) return
       found.byIdentity.set(identity, entry)
-      // A full chunk, or one opened more than SEAL_MS before this entry, is never written again.
-      const open = Option.filter(current, (chunk) => chunk.entries.length < CHUNK && kind.at(entry) - chunk.opened < SEAL_MS)
+      // A full chunk, or one whose oldest entry is SEAL_MS or more before this one, is never written again. The bound
+      // counts from the oldest entry, not the first: another process judges the chunk by the oldest it sees, and an
+      // entry older than the first (a clock set back, two appends that read the clock before the lock) lowers both.
+      const open = Option.filter(current, (chunk) => chunk.entries.length < CHUNK && kind.at(entry) - chunk.oldest < SEAL_MS)
       const target = yield* Option.match(open, {
-        onSome: Effect.succeed,
-        onNone: () => Effect.map(nextKey, (key) => ({ key, opened: kind.at(entry), entries: new Array<A>() })),
+        onSome: (chunk) => Effect.succeed({ ...chunk, oldest: Math.min(chunk.oldest, kind.at(entry)) }),
+        onNone: () => Effect.map(nextKey, (key) => ({ key, oldest: kind.at(entry), entries: new Array<A>() })),
       })
       target.entries.push(entry)
       current = Option.some(target)
@@ -250,7 +253,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
 /**
  * Whether every entry the chunk holds, or will ever hold, is of time `through` or before. This process's own chunk
  * holds what it wrote. Another process may still append to its chunk after this one read it, but only entries newer
- * than the chunk's first by less than SEAL_MS: once that time is past too, the chunk can change no more. (A fold's
+ * than the chunk's oldest by less than SEAL_MS: once that time is past too, the chunk can change no more. (A fold's
  * chunk is never appended to, so its newest entry would do, but nothing tells a fold's chunk from another; it just
  * goes up to a day later.)
  */

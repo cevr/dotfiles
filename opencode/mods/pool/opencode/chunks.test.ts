@@ -248,6 +248,30 @@ describe("the chunk store", () => {
   )
 
   effectTest(
+    "a chunk whose later entry is older than its first (a clock set back) is kept while its writer may still append in the window",
+    atNow(
+      Effect.gen(function* () {
+        const HOUR = 3_600_000
+        const entries = new Map<string, Schema.Json>()
+        const b = Chunks.open(memory(entries), kind)
+        // B opens a chunk at NOW, then its clock is set back an hour.
+        yield* b.append(step(NOW, "b1"))
+        yield* b.append(step(NOW - HOUR, "b0"))
+        // A reads the chunk: oldest NOW - 1 h, newest NOW.
+        const a = Chunks.open(memory(entries), kind)
+        yield* a.entries
+        // B appends 23.5 h after the chunk's first entry, 24.5 h after its oldest.
+        const b2 = step(NOW + 23 * HOUR + HOUR / 2, "b2")
+        yield* b.append(b2)
+        // A expires through NOW + 23 h: b2 is newer, so it must stay.
+        yield* a.expire(NOW + 23 * HOUR)
+        expect((yield* readBack(entries)).map((entry) => entry.sessionID)).toContain("b2")
+      }),
+    ),
+    5_000,
+  )
+
+  effectTest(
     "another process's chunk goes once it can change no more; its writer's next step opens a new one",
     atNow(
       Effect.gen(function* () {
