@@ -24,7 +24,7 @@ Every public action has one contract, and every surface is derived from it. Wher
 | The app | Contract source |
 | --- | --- |
 | A backend whose job is business rules over recorded facts (requests a state owner accepts or refuses, reads shaped for screens), hosted on Cloudflare with Alchemy | The **Domain Api** of an `@alchemy.run/domain` model. Load the `alchemy` skill's `references/domain.md`: it settles the fit and routes to the upstream `alchemy-domain` skill for building the model. |
-| The same kind of backend, kept off Alchemy (its own hosting, such as Mongo and queues in a work monorepo) | **The Domain shape on your own `Platform`.** At runtime `@alchemy.run/domain` imports only two Effect-only modules from `alchemy` and nothing from Cloudflare, and its `Platform` service is the hosting seam. Depend on the package and write a `Platform` for your stores; this is also the first step when Alchemy will later replace the project's infrastructure tool, because the `alchemy` peer is then the deploy tool you are adopting. When Alchemy is not the direction, vendor its core (Apache-2.0) into a package you own and replace those two imports, so the beta `alchemy` peer stays out and Effect upgrades stay on your schedule. Either way keep the API identical to upstream, so the rest of this file's Domain path applies unchanged. |
+| The same kind of backend, kept off Alchemy (its own hosting, such as Mongo and queues in a work monorepo) | **The Domain shape on your own `Platform`.** At runtime `@alchemy.run/domain` imports only two Effect-only modules from `alchemy` and nothing from Cloudflare (its platform adapters sit apart, in the `/Cloudflare`, `/Rivet` and `/EffectCluster` subpaths), and its `Platform` service is the hosting seam. Depend on the package and write a `Platform` for your stores; this is also the first step when Alchemy will later replace the project's infrastructure tool, because the `alchemy` peer is then the deploy tool you are adopting. When Alchemy is not the direction, vendor its core (Apache-2.0) into a package you own and replace those two imports, so the beta `alchemy` peer stays out and Effect upgrades stay on your schedule. Either way keep the API identical to upstream, so the rest of this file's Domain path applies unchanged. |
 | A library; a CLI or tool over local files or a vendor API; request/response work with no state of its own; a backend on Railway or another container host; a product that needs approval before a write, its own tool annotations, or tool lists filtered per caller | **Hand-built contracts**, the rest of this file. Its reference implementation is `joelhooks/rat-stack` (`okra repo fetch joelhooks/rat-stack`, or `git clone --depth 1 https://github.com/joelhooks/rat-stack` without okra): read `packages/capability/src` before building a contract kit, and adopt its code only after reading it at the pinned Effect version. |
 
 One app can hold both: a Domain backend, plus hand-built contracts for local work a CLI does beside it.
@@ -33,11 +33,11 @@ The two paths share one architecture: an infrastructure-free core package, surfa
 
 | Hand-built | Domain path |
 | --- | --- |
-| Contract and capability | A command, which its aggregate decides, or a read (a view, a stream, or an aggregate with `read`), listed on a `Domain.Api` |
-| Projection | `yield* MyApi` and `MyApi.client` (Effect RPC), `toHttpApi`, `toCli`, `toToolkit` and `toMcp`, the foldkit adapter |
+| Contract and capability | A command, which its aggregate decides, a read (a view or a stream), or a query over a projection's store, listed on a `Domain.Api` |
+| Projection | `yield* MyApi` and `MyApi.client` (Effect RPC), the foldkit adapter, and for internal tools `toHttpApi`, `toCli`, `toToolkit` and `toMcp`, each publishing only the calls its `expose` lists. A public or partner HTTP API is a hand-built `HttpApi` over `MyApi.clientInProcess` |
 | Contract kit | `@alchemy.run/domain` |
-| `annotations` | Fixed: reads are read-only and idempotent, commands destructive |
-| `needsApproval` | No equivalent at beta.85; a command's middleware can demand a second factor |
+| `annotations` | Hints are fixed (reads read-only and idempotent, commands destructive); each declaration's `{ description }` reaches tools, CLI help and OpenAPI |
+| `needsApproval` | No equivalent at beta.87; a command's middleware can demand a second factor |
 | Composition root | The Worker's `cmd/<name>-worker/main.ts` Layer |
 | Cartridge | A port or external system declared in the domain files, with its vendor Layer in a folder of the context named after the vendor |
 | Machine | An aggregate for one instance's states, a saga for a process across aggregates |
@@ -93,7 +93,7 @@ A single-surface app does not need a contract kit. Write the `HttpApi` or `Comma
 
 The API is complete when a team in another language (a Swift app, a CLI, an MCP server) could rebuild the product from the documented operations and protocols alone, without the TypeScript client or app source. Domain rules, authorization, state transitions, and orchestration sit behind operations.
 
-On the Domain path, the Api lists entries and the package projects them, so none of the rules above is written by hand. A narrower surface is a smaller Api (one per kind of client), and an HTTP status is an `httpApiStatus` annotation on the rejection, with the same 422 default. The surfaces and their limits are in the `alchemy` skill's `references/domain.md`.
+On the Domain path, the Api lists entries and the package projects them, so none of the rules above is written by hand. Each kind of client gets its own Api, each internal-tool projection publishes only the calls its `expose` lists, and an HTTP status is an `httpApiStatus` annotation on the rejection, with the same 422 default. The surfaces and their limits are in the `alchemy` skill's `references/domain.md`.
 
 ## Shape operations for the client's outcome
 
@@ -112,7 +112,7 @@ const { user, teams } = yield* client.users.currentWithTeams()
 - A command creates its own prerequisites (the workspace, the session) on the server. The client never runs an open, then status, then start chain.
 - Dependent writes for one outcome are one operation, with stated transaction or partial-failure behavior.
 - Queries are safe reads: a retry, a refetch on focus, or a second observer never starts work or changes state. A command is a mutation even when it is idempotent.
-- On the Domain path, the outcome-shaped read is a view keyed by what it is about, and a command's prerequisites come from a policy or saga on the server.
+- On the Domain path, the outcome-shaped read is a view keyed by what it is about (or a query, for a question across keys), and a command's prerequisites come from a policy or saga on the server.
 - Compose operations instead of passing a mode: `terminals.attach({ sessionId })` and `computers.attach({ sessionId })`, not `surface({ kind, sessionId })` that branches inside. Each operation composes the shared authorization and connection parts. This holds for services, client helpers, hooks, and components. IDs, limits, and abort signals are ordinary parameters, and a discriminant in a returned state describes data, not a mode.
 
 ## Composition root
@@ -290,8 +290,8 @@ Use this table when reviewing or redesigning a layout. Each row is a concern tha
 | A mode argument that selects a code path | Explicit operations that compose shared parts |
 | SDK code making a decision the server could make | The owning operation |
 | A check for local, sandbox, or `window` that picks where a command runs | An execution capability the host provides |
-| A business rule in a route, CLI command, tool handler, or other projection of a Domain Api | The command's `decide`, or the entry's middleware and `validate` |
-| An HTTP, CLI, or MCP surface written by hand beside a Domain Api | A projection of the Api; a smaller Api to publish less |
+| A business rule in a route, CLI command, tool handler, or other projection of a Domain Api | The command's `decide`, the entry's middleware, a view's or stream's `validate` Layer, or a query's handler |
+| An internal HTTP, CLI, or MCP surface written by hand beside a Domain Api | A projection of the Api, its `expose` listing the calls to publish |
 | Infrastructure imported into a context's domain files | An adapter folder named after that infrastructure |
 | Files named by kind (`*.aggregate.ts`, `*.view.ts`) or folders by kind (`contracts/`, `services/`) | Files named by concept in the package of their responsibility |
 | Two ways to do one thing | One paved path; delete the other |
