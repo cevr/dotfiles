@@ -539,15 +539,36 @@ describeWork("workrift with the work backend", () => {
     60_000,
   )
 
-  test(
-    "a base work still lists whose folder is gone is no base: create, remove, list, prune and sources skip it with no error (2026-11-16, the workbox's scratch bases)",
-    () => {
-      const w = workBench("stale", work)
+  /**
+   * A `work` that runs `real` but still lists in `--json bases` each path the file `listed-extra` beside it names, as
+   * work before 34f3ef01f listed a base whose folder is gone: the installed work drops one itself, so only through
+   * this does the stale-base case prove workrift's own skip (`work_bases`), whatever work version is installed.
+   */
+  const listingGone = (real: string) => {
+    const dir = mkdtempSync(join(scratchRoot, "listing-gone-"))
+    const shim = join(dir, "work")
+    exe(
+      shim,
+      `#!/bin/sh\nif [ "$#" -eq 2 ] && [ "$1" = "--json" ] && [ "$2" = "bases" ]; then\n  listed=$('${real}' --json bases) || exit\n  extra=$(cat "${dir}/listed-extra" 2>/dev/null)\n  printf '%s' "$listed" | jq -c --arg extra "$extra" 'if $extra == "" then . else (. + [$extra] | unique) end'\n  exit\nfi\nexec '${real}' "$@"\n`,
+    )
+    return { shim, list: (path: string) => writeFileSync(join(dir, "listed-extra"), path) }
+  }
+
+  test.each([
+    ["the installed work", false],
+    ["a work that still lists the gone base (workrift's own skip)", true],
+  ] as const)(
+    "a base work still lists whose folder is gone is no base: create, remove, list, prune and sources skip it with no error (2026-11-16, the workbox's scratch bases), on %s",
+    (_label, shimmed) => {
+      const gone = listingGone(work)
+      const w = workBench("stale", (shimmed && gone.shim) || work)
       // Registered before the real base, and in path order before it too: the loops reach it first.
       const stale = w.base("aa-stale")
       const real = w.base("zz-real")
       rmSync(stale, { recursive: true, force: true })
       // Older work binaries still list it; work 34f3ef01f and later drop it themselves. Either way workrift must skip it.
+      gone.list(stale)
+      if (shimmed) expect(JSON.parse(sh(real, w.env, gone.shim, "--json", "bases"))).toContain(stale)
 
       const made = w.wr(real, "create", "feat/after-stale")
       expect(made.code, made.err).toBe(0)
