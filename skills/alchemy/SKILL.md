@@ -26,7 +26,7 @@ What are you doing?
 | Topic | File | When to Read |
 |-------|------|--------------|
 | App-level code | `references/app-code.md` | Runtimes with `main: import.meta.url`, bindings, `Config` binding, `HttpRouter` in `fetch`, Layers that own resources, phases |
-| Domain backends | `references/domain.md` | Whether to use `@alchemy.run/domain`, the upstream `alchemy-domain` skill, our Go-style layout in place of its kind-suffixed one, the Api's HTTP, CLI and MCP projections, beta.85 gaps |
+| Domain backends | `references/domain.md` | Whether to use `@alchemy.run/domain`, the upstream `alchemy-domain` skill, our Go-style layout in place of its kind-suffixed one, the Api's HTTP, CLI and MCP projections, upgrading from beta.85, beta.87 gaps |
 | Testing | `references/testing.md` | Which test fits, stories, Api tests, stack tests with `@alchemy.run/test`, provider tests, the runner adapters |
 | Railway | `references/railway.md` | Project, Service (the `main`, `context`+`dockerfilePath`, and `image` sources), CustomDomain, Postgres/Redis/Bucket, Variables |
 | Cloudflare | `references/cloudflare.md` | Workers, Zone/DNS records, adopting a zone, `Cloudflare.state()`, OAuth scopes |
@@ -46,7 +46,7 @@ bun add -D -E alchemy@<latest> @alchemy.run/cloudflare@<latest> @effect/platform
 - **Start from the newest release.** Look up `latest` every time you add Alchemy, and never pin a version from memory or from this skill. Pin it exactly (no `^`), because betas break between releases.
 - **In an existing repo, compare the pinned version with `latest` first.** If the repo is behind, say so, and read the newer source (`okra repo fetch npm:alchemy@<latest>`) before working around a bug or a missing API; the fix may already have shipped. Upgrade as its own commit, and run `alchemy plan` after it to confirm the plan shows no changes.
 - **Providers are their own packages since beta.84** (`@alchemy.run/cloudflare`, `@alchemy.run/railway`, …), released with `alchemy` and peering on its exact version. Pin each at the same version as `alchemy`. The `alchemy/Cloudflare` and `alchemy/Railway/*` paths are gone.
-- Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` (`^4.1.0` from beta.85). Keep all three on the project's exact Effect version. `@alchemy.run/cloudflare` loads `@effect/platform-node` even under Bun.
+- Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node`: `^4.1.0` in beta.85, `^4.1.4` from beta.86. Keep all three on the project's exact Effect version, and move Effect to 4.1.4 or later in the same commit as Alchemy beta.86+. `@alchemy.run/cloudflare` loads `@effect/platform-node` even under Bun.
 - **Alchemy `2.0.0-beta.85` and later need Effect 4.1 (peer `^4.1.0`); beta.84 and earlier do not load on 4.1.** Those import `effect/Crypto`, which `effect@4.1.0` removed, so `alchemy plan` and `deploy` fail with `Cannot find package 'effect' imported from …/alchemy/src/Auth/OAuthFlow.ts`. Typecheck, build and unit tests still pass, because none of them load the CLI. Bump Alchemy and Effect together, then run `alchemy plan` as well as the gate.
 - **beta.85 upgrades the Cloudflare state store from v7 to v8, one way.** See cloudflare.md §State Store before the first beta.85 deploy.
 - `devDependencies` is fine even when app code imports `alchemy/*`: the Runtime bundle inlines everything `main` imports, and nothing installs at runtime unless `build.install` asks for it.
@@ -148,10 +148,10 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
 
 ## Compatibility
 
-Last proven on a real project with `alchemy@2.0.0-beta.85` and `effect@4.1.2`: a site on Cloudflare, deployed by CI on 2026-11-02; that first beta.85 deploy upgraded the shared Cloudflare state store from v7 to v8, and three other stacks deployed on it the same day. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
+Last proven on a real project with `alchemy@2.0.0-beta.85` and `effect@4.1.2`: a site on Cloudflare, deployed by CI on 2026-11-02; that first beta.85 deploy upgraded the shared Cloudflare state store from v7 to v8, and three other stacks deployed on it the same day. Reviewed against the `2.0.0-beta.87` changelog and source with `effect@4.1.4` on 2026-11-16, not yet deployed: the state store stays at v8, and nothing this skill relies on outside `@alchemy.run/domain` changed. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
 
-`@alchemy.run/domain` and `@alchemy.run/test` are reviewed against their 2.0.0-beta.85 source and docs, not yet proven on a real project.
+`@alchemy.run/domain` and `@alchemy.run/test` are reviewed against their 2.0.0-beta.87 source and docs, not yet proven on a real project.
 
 ## License
 
-The Alchemy guidance restates, in our own words, Alchemy's Apache-2.0 source, docs and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `d0b4a3326` (2.0.0-beta.85). No text is copied.
+The Alchemy guidance restates, in our own words, Alchemy's Apache-2.0 source, docs and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `33c10dd55` (2.0.0-beta.87). No text is copied.

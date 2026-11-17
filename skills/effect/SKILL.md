@@ -122,7 +122,7 @@ If a task spans several branches, read all matching files before editing.
 
 ## Compatibility
 
-Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Stable moved the `effect/unstable/*` modules to top-level paths (`effect/cli`, `effect/http`, `effect/http-api`, `effect/ai`, `effect/rpc`). Examples were reviewed against `effect@4.1.2` on 2026-11-02. Pin the version exactly.
+Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Stable moved the `effect/unstable/*` modules to top-level paths (`effect/cli`, `effect/http`, `effect/http-api`, `effect/ai`, `effect/rpc`). Examples were reviewed against `effect@4.1.2` on 2026-11-02, and the 4.1.3 and 4.1.4 changesets (checked 2026-11-16) change none of the APIs they use. Pin the version exactly.
 
 ## License
 
@@ -132,4 +132,4 @@ Program-design guidance is adapted from HumanLayer Fold's MIT-licensed `effect-p
 
 The architecture reference's operation shaping, SDK admission test, package rules, and vertical-slice order restate ideas from Fernando Rojo's [nando-skill](https://github.com/nandorojo/nando-skill) (no license, so no text is copied).
 
-The Domain Api path in the architecture and testing references restates, in our own words, Alchemy's Apache-2.0 `@alchemy.run/domain` and `@alchemy.run/test` source, docs, and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `d0b4a3326` (2.0.0-beta.85). No text is copied.
+The Domain Api path in the architecture and testing references restates, in our own words, Alchemy's Apache-2.0 `@alchemy.run/domain` and `@alchemy.run/test` source, docs, and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `33c10dd55` (2.0.0-beta.87). No text is copied.

@@ -26,12 +26,13 @@ Behaviour lives in stories, because they are fast and they account for every out
 
 ## Stories
 
-A story is given / when / then over the real model, in memory. `Story.make(Model, { layer, stub })` from `@alchemy.run/domain/Story` returns a runner, and each test passes it steps (`Story.given`, `when`, `then`, `rejected`, `replied`, `view`, `call`, `succeed`, `fail`, `clock`, `saga`, and the rest). The steps, the coverage list, and examples are in the upstream skill's `references/testing.md` (see [domain.md](domain.md) §Build it from the upstream skill) and at https://alchemy.run/domain/testing-models. Our rules:
+A story is given / when / then over the real model, in memory. `Story.make(Model, { layer, stub })` from `@alchemy.run/domain/Story` returns a runner, and each test passes it steps (`Story.given`, `when`, `then`, `rejected`, `replied`, `view`, `query`, `call`, `succeed`, `fail`, `clock`, `saga`, and the rest). The steps, the coverage list, and examples are in the upstream skill's `references/testing.md` (see [domain.md](domain.md) §Build it from the upstream skill) and at https://alchemy.run/domain/testing-models. Our rules:
 
 - **A passing story has accounted for every outcome.** It fails on any committed event, rejection, external call, or saga defect that no step asserts. Answer a failure by asserting the outcome or fixing the model, never by loosening the story.
 - **The upstream "What to cover" list is our bar**: every command, policy, saga, and view, with each of the cases it names.
 - **Stub the external systems the story should answer** (`stub: [FraudCheck]`). Provide a real adapter's Layer to assert its calls instead.
 - **Run one test suite against every adapter of a port** (the vendor, the memory fake), so the fake cannot drift from the vendor.
+- **A story runs every order of concurrent work** (since beta.86): when several policies or saga steps that write one stream are ready at once, it replays once per order, and every run must pass. Assert events whose order the model does not fix with `Story.anyOrder(...)` inside `then`. Past 256 orders the story fails; split it.
 - **Test a saga by its outcome**: the events its steps record on aggregates, and its `Story.saga` status. Its internal steps are not part of the contract.
 - **Keep one test asserting `Domain.verify(Model)` is empty.**
 - A story is an ordinary Effect, so it runs under the package's Effect test runner (`it.effect`). Upstream runs stories on `@effect/vitest`. A story hosts its own in-memory model, so `Domain.InMemory` belongs to Api tests only, and a story moves time with `Story.clock` or `Story.advance`.
