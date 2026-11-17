@@ -138,9 +138,12 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       yield* ctx.session.hook("experimental.idle", (event) =>
         compactor.background(
           event.sessionID,
-          event.background.map((job) =>
-            job.kind === "subagent" ? `subagent ${job.agent}: ${job.description}` : job.kind === "shell" ? `shell ${job.command}` : `image ${job.path}`,
-          ),
+          event.background.map((job) => {
+            if (job.kind === "subagent") return `subagent ${job.agent}: ${job.description}`
+            if (job.kind === "shell") return `shell ${job.command}`
+            if (job.kind === "image") return `image ${job.path}`
+            return job.kind
+          }),
         ),
       )
 
