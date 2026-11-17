@@ -42,11 +42,25 @@ const claims = kv("resets/claim/%").flatMap(({ value }) =>
 const steps = new Map<string, { pool: string; credentialID: string; at: number }>()
 let first = Number.POSITIVE_INFINITY
 let unnamed = Number.NEGATIVE_INFINITY
+// A pool keeps its steps in chunks, `chunk/step/<pool>/<writer>/<seq>`, rows of [at, sessionID, credentialID, cost,
+// messageID?]; an older one kept one per key, `<pool>/step/<at>/<session>`. A step both hold counts once.
+const placed: Array<{ pool: string; at: number; sessionID: string; credentialID: string; messageID?: string }> = []
 for (const { key, value } of kv("%/step/%")) {
-  const pool = key.split("/", 1)[0]!
-  first = Math.min(first, value.at)
-  if (typeof value.messageID === "string") steps.set(value.messageID, { pool, credentialID: value.credentialID, at: value.at })
-  else unnamed = Math.max(unnamed, value.at)
+  const parts = key.split("/")
+  if (parts[0] === "chunk") {
+    for (const row of value?.entries ?? []) {
+      const [at, sessionID, credentialID, , messageID] = row
+      placed.push({ pool: parts[2]!, at, sessionID, credentialID, messageID })
+    }
+  } else placed.push({ pool: parts[0]!, ...value })
+}
+const seen = new Set<string>()
+for (const { pool, at, sessionID, credentialID, messageID } of placed) {
+  if (seen.has(`${pool}/${at}/${sessionID}`)) continue
+  seen.add(`${pool}/${at}/${sessionID}`)
+  first = Math.min(first, at)
+  if (typeof messageID === "string") steps.set(messageID, { pool, credentialID, at })
+  else unnamed = Math.max(unnamed, at)
 }
 const since = Number.isFinite(first) ? Math.max(first, unnamed + 1) : Date.now()
 

@@ -67,7 +67,9 @@ describe("the limit store", () => {
       2 * HOUR,
     )
     expect(before.recent[0]?.families[0]?.weighted.rate).toBe(3)
-    expect([...entries.keys()]).toEqual(["limits/use/msg_1"])
+    // One chunk, under this process's writer: the second use of the message was not written.
+    expect([...entries.keys()].map((key) => key.replace(/^chunk\/use\/[^/]+\//, "chunk/use/<writer>/"))).toEqual(["chunk/use/<writer>/000000"])
+    expect([...entries.values()]).toEqual([{ v: 1, entries: [["msg_1", HOUR, "anthropic", "a", "claude-opus-5-5", 1_000_000, 0, 0, 0]] }])
     const file = JSON.parse(readFileSync(path, "utf8"))
     expect(file.line).toBe("limit/Mtok 5h: Opus 3.0% n 1 (last 7 days)")
     expect(file.tally).toEqual(before)

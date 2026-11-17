@@ -148,7 +148,7 @@ import * as WorkloadLive from "@dotfiles/opencode-pool/opencode/workload"
 import { PUSH_DESCRIPTION, PushRequest, PushToolInput } from "@dotfiles/opencode-pool/push"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import * as ResetsStoreLive from "@dotfiles/opencode-pool/opencode/resets"
-import * as Shared from "@dotfiles/opencode-pool/opencode/shared"
+import * as Records from "@dotfiles/opencode-pool/opencode/records"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
 import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
@@ -322,8 +322,9 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
  */
 export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) => {
-  // What every copy of the plugin in this process reads whole at start, read once for all of them (opencode/shared.ts).
-  const share = Shared.make()
+  // The priced steps and the tally's requests, read and decoded once for every copy of the plugin in this process,
+  // and written by one writer of its own (opencode/records.ts).
+  const records = Records.make()
   return (
     ctx: Plugin.Context,
     options: Options,
@@ -331,10 +332,13 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ): Layer.Layer<Externals | Limits | PushStore | Workload> => {
     const pools = new Set([...Object.values(options.providers), ...Object.values(options.paced)])
-    const storage = share(ctx.storage, [...[...pools].map((pool) => `${pool}/`), LimitsLive.PREFIX])
+    const storage = ctx.storage
+    const stores = records(storage)
     // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
     return Layer.unwrap(Effect.as(migrate(storage), Layer.mergeAll(
-      LimitsLive.layer(storage, options.limitsFile ?? LimitsLive.defaultPath()),
+      // An older pool's one key per step or request is folded into chunks in the background, a page at a time.
+      Layer.effectDiscard(Effect.forkScoped(stores.fold([...pools]))),
+      LimitsLive.layer(storage, options.limitsFile ?? LimitsLive.defaultPath(), stores.uses),
       LoginsLive.layer(
         {
           connections: (pool) =>
@@ -354,7 +358,7 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
           published: client.events.subscribe("reading"),
         }
       }),
-      LedgerLive.layer(storage),
+      LedgerLive.layer(storage, stores.steps),
       peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
       FleetStoreLive.layer(ctx.storage),

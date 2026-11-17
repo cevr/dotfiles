@@ -2,7 +2,8 @@
 // start so it names the same logins by their ids now: over the in-memory
 // storage the seam tests use, paged as the plugin's storage pages.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, type Schema } from "effect"
+import { Effect, Fiber, Layer, type Schema } from "effect"
+import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { PoolId } from "../account-pool.ts"
 import { LEGACY_PREFIX as OLD, renameText, renameValue } from "../legacy-ids.ts"
 import { storage } from "../memory/ledger.ts"
@@ -195,4 +196,31 @@ describe("the storage migration", () => {
         expect([...entries.keys()].every((key) => key === MIGRATED || key.startsWith("anthropic/reading/store:"))).toBe(true)
       }),
     ))
+
+  effectTest(
+    "a migration interrupted mid-way leaves no mark, and the next start finishes it",
+    Effect.gen(function* () {
+      const entries = new Map<string, Schema.Json>(Array.from({ length: 10 }, (_, index) => [`anthropic/reading/${OLD}l${index}`, { at: index }]))
+      const inner = storage(entries)
+      const writes = { count: 0 }
+      // The fifth write never ends: the process stops there.
+      const stalling: LedgerLive.Storage = {
+        ...inner,
+        set: (key, value) =>
+          Effect.suspend(() => {
+            writes.count++
+            return Effect.andThen(Effect.when(Effect.never, Effect.succeed(writes.count === 5)), inner.set(key, value))
+          }),
+      }
+      const fiber = yield* Effect.forkChild(migrate(stalling))
+      yield* Effect.yieldNow
+      yield* Fiber.interrupt(fiber)
+      expect(writes.count).toBe(5)
+      expect(entries.has(MIGRATED)).toBe(false)
+      expect(yield* run(entries)).toBeGreaterThan(0)
+      expect(entries.get(MIGRATED)).toBe(true)
+      expect([...entries.keys()].every((key) => key === MIGRATED || key.startsWith("anthropic/reading/store:"))).toBe(true)
+    }),
+    5_000,
+  )
 })
