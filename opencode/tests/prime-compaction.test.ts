@@ -9,6 +9,7 @@ import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { isTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-compaction.test.ts: skipped. Set OPENCODE_DEV to the fork with the compaction slot to run it.")
@@ -18,14 +19,11 @@ const names = ["details", "all", "overview"] as const
 const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { details: [], all: [], overview: [] }
 const files = { details: "compaction", all: "compaction-all", overview: "compaction-overview" }
 
-/** The turn's end time, right-aligned, that Prime draws once the turn's completion arrives (mods/prime/turn-time.ts). */
-const TURN_TIME = /^ +(\w{3} \d{1,2} )?\d{1,2}:\d{2} [AP]M ET( · \d{2}:\d{2} \w+)?$/
-
 /** The frame's transcript from the prompt on, with the blank rows and the turn's end time dropped (a frame may be taken before or after the time arrives). */
 function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const start = frame.findIndex((line) => line.includes("┃ Check the build."))
   const end = hintRow(frame)
-  return frame.slice(start, end < 0 ? undefined : end).filter((line) => line.trim() !== "" && !TURN_TIME.test(line))
+  return frame.slice(start, end < 0 ? undefined : end).filter((line) => line.trim() !== "" && !isTurnTime(line))
 }
 
 /** The one line: manual, the 171k prompt to the 6k summary, and the second the scripted summary took. */

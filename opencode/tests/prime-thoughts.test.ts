@@ -9,13 +9,15 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { timedRows, withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-thoughts.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
 
 type Rgba = readonly [number, number, number, number]
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba }> }> }
-type Saved = { lines: ReadonlyArray<string>; frame: Frame }
+/** `rows` are `lines` without the turn's end time (tests/turn-time.ts), which a frame may catch or not. */
+type Saved = { lines: ReadonlyArray<string>; rows: ReadonlyArray<string>; frame: Frame }
 
 const root = join(import.meta.dir, "..")
 // The scenario's scripted texts (scenarios/prime-thoughts.ts).
@@ -59,9 +61,9 @@ function fg(saved: Saved, line: string, offset: number) {
 
 /** The `count` lines from the first line equal to `first`. */
 function slice(saved: Saved, first: string, count: number) {
-  const at = saved.lines.indexOf(first)
-  if (at === -1) throw new Error(`no line is ${JSON.stringify(first)}:\n${saved.lines.join("\n")}`)
-  return saved.lines.slice(at, at + count)
+  const at = saved.rows.indexOf(first)
+  if (at === -1) throw new Error(`no line is ${JSON.stringify(first)}:\n${saved.rows.join("\n")}`)
+  return saved.rows.slice(at, at + count)
 }
 
 describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE_DEV)", () => {
@@ -80,12 +82,12 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    const load = (name: string): Saved => ({
-      lines: readFileSync(join(out, `${name}.txt`), "utf8")
+    const load = (name: string): Saved => {
+      const lines = readFileSync(join(out, `${name}.txt`), "utf8")
         .split("\n")
-        .map((line) => line.trimEnd()),
-      frame: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")),
-    })
+        .map((line) => line.trimEnd())
+      return { lines, rows: withoutTurnTime(lines), frame: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")) }
+    }
     frames.streaming = load("thoughts-streaming")
     frames.details = load("thoughts")
     frames.all = load("thoughts-all")
@@ -187,8 +189,8 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     expect(text).not.toContain("thinking")
     expect(text).not.toContain("Thought")
     expect(text).not.toContain("CSV quoting fixed.")
-    const at = frames.overview.lines.indexOf("  ● Read 1 file · ran 1 command")
-    expect(frames.overview.lines.slice(at, at + 6)).toEqual([
+    const shown = slice(frames.overview, "  ● Read 1 file · ran 1 command", 6)
+    expect(shown).toEqual([
       "  ● Read 1 file · ran 1 command",
       "  ● Started 1 agent",
       `  ${STARTED}`,
@@ -196,5 +198,8 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
       "  ● Ran 1 command",
       `  ${NOTED}`,
     ])
+    // A turn's end time, where the frame holds one, sits under the turn's last row: the answer before the worker's
+    // notice wakes the parent, and the answer after it.
+    for (const end of timedRows(frames.overview.lines).filter((line) => shown.includes(line))) expect([`  ${STARTED}`, `  ${NOTED}`]).toContain(end)
   }))
 })

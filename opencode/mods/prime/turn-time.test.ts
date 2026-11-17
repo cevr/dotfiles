@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { OWNER_ZONE, ownerZone, turnEnd, turnTime } from "./turn-time.ts"
+import { maskTurnTimeInPlace, OWNER_ZONE, ownerZone, turnEnd, turnTime } from "./turn-time.ts"
 
 const at = (iso: string) => Date.parse(iso)
 const NY = OWNER_ZONE
@@ -36,6 +36,14 @@ describe("the time under a finished turn", () => {
     expect(turnEnd(step, at("2026-11-17T03:00:00Z"), NY, "UTC")).toEqual(Option.some("9:12 PM ET · 02:12 UTC"))
     expect(turnEnd({ time: { created: at("2026-11-17T02:00:00Z") } }, at("2026-11-17T03:00:00Z"), NY, "UTC")).toEqual(Option.some("9:00 PM ET · 02:00 UTC"))
     expect(turnEnd({ ...step, retry: { attempt: 1 } }, at("2026-11-17T03:00:00Z"), NY, "UTC")).toEqual(Option.none())
+  })
+
+  test("a frame's row is masked whatever its zones, and in place: a row moved off the right edge reads differently", () => {
+    const right = (text: string) => text.padStart(105)
+    const rows = ["9:12 PM ET", "10:00 AM ET · 15:00 UTC", "Nov 16 9:12 PM ET · 02:12 GMT+5:30", "9:12 PM PT · 05:12 CET"].map(right)
+    expect(rows.map(maskTurnTimeInPlace)).toEqual(rows.map(() => right("<turn-time>")))
+    expect(maskTurnTimeInPlace("  9:12 PM ET")).not.toBe(maskTurnTimeInPlace(right("9:12 PM ET")))
+    expect(maskTurnTimeInPlace("  The build passes.")).toBe("  The build passes.")
   })
 
   test("the owner's zone is the plugin's `zone` option when this host knows it, else New York", () => {

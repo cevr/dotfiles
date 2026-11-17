@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { timedRows, withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-queued.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -30,7 +31,7 @@ const hintAt = (frame: ReadonlyArray<string>) => {
   return at - 1
 }
 /** The rows above Prime's hint line (the transcript, then the queued rows), blank rows dropped. */
-const above = (frame: ReadonlyArray<string>) => frame.slice(0, hintAt(frame)).filter((line) => line.trim() !== "")
+const above = (frame: ReadonlyArray<string>) => withoutTurnTime(frame.slice(0, hintAt(frame))).filter((line) => line.trim() !== "")
 const LOADER = (label: string) => new RegExp(`^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} · (\\d+)s$`)
 const LATER = "  ◌ after the turn · Afterwards tag the release."
 
@@ -64,13 +65,16 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
       LATER,
     ])
     // The compaction's row is the wait's only one: no loader row beside it.
-    const row = frames.queued.findIndex((line) => LOADER("Automatic compaction").test(line))
-    expect(Number(LOADER("Automatic compaction").exec(frames.queued[row] ?? "")?.[1])).toBeGreaterThanOrEqual(1)
+    // The first turn's end time, which the frame may catch or not, sits under its last row (tests/turn-time.ts).
+    const queued = withoutTurnTime(frames.queued)
+    const row = queued.findIndex((line) => LOADER("Automatic compaction").test(line))
+    expect(Number(LOADER("Automatic compaction").exec(queued[row] ?? "")?.[1])).toBeGreaterThanOrEqual(1)
     expect(frames.queued.join("\n")).not.toContain("Compacting")
     expect(frames.queued.join("\n")).not.toContain("Executing")
     // One blank row above the compaction, its own gap: the hidden prompts' rows add none.
-    expect(frames.queued[row - 1]?.trim()).toBe("")
-    expect(frames.queued[row - 2]).toBe("    │ (no output)")
+    expect(queued[row - 1]?.trim()).toBe("")
+    expect(queued[row - 2]).toBe("    │ (no output)")
+    for (const end of timedRows(frames.queued).filter((line) => above(frames.queued).slice(-6).includes(line))) expect(end).toBe("    │ (no output)")
     for (const prompt of ["Also update the docs.", "Then bump the version.", "Afterwards tag the release."])
       expect(shown.some((line) => line.includes(`┃ ${prompt}`))).toBe(false)
     // The host's own queued box is replaced, not drawn beside the list.

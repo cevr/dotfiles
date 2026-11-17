@@ -12,6 +12,7 @@ import type { Requests } from "../scenarios/prime-precompute.ts"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { timedRows, withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-precompute.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -27,6 +28,9 @@ function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const end = hintRow(frame)
   return frame.slice(start, end < 0 ? undefined : end).filter((line) => line.trim() !== "")
 }
+
+/** The transcript without the turns' end times, which a frame may catch or not (tests/turn-time.ts). */
+const untimed = (frame: ReadonlyArray<string>) => withoutTurnTime(transcript(frame))
 
 describe.skipIf(!fork)("an automatic compaction swaps in the summary written in the background, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-precompute-")
@@ -59,11 +63,13 @@ describe.skipIf(!fork)("an automatic compaction swaps in the summary written in 
   test("the automatic compaction swaps it in at once and reads as one finished row, the background request's tokens on it", kept.test(() => {
     // Every step of the second turn came after the prompt; no summary request did.
     expect(seen.requests.filter((request) => request.at >= seen.next).map((request) => request.kind)).toEqual(["step", "step"])
-    const shown = transcript(frames.swapped)
+    const shown = untimed(frames.swapped)
     const row = shown.findIndex((line) => line.includes("◇ Compacted automatically"))
     // Instant: from the compaction's start to the step it resumes, under a second.
     expect(shown[row]).toMatch(/^ {2}◇ Compacted automatically · 88k → 500 tokens · \d+ms$/)
     expect(shown.slice(row + 1)).toEqual(["  Docs updated."])
+    // Where the second turn's end time shows, it closes on the answer, not on the compaction.
+    for (const end of timedRows(transcript(frames.swapped)).filter((line) => shown.slice(row).includes(line))) expect(end).toBe("  Docs updated.")
     expect(frames.swapped.join("\n")).not.toContain("Automatic compaction")
     expect(frames.swapped.join("\n")).not.toContain("Compacting")
   }))

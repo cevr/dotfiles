@@ -7,8 +7,8 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { maskTurnTime } from "../mods/prime/turn-time.ts"
 import { hintRow } from "./composer.ts"
+import { timedAmong, withoutTurnTime } from "./turn-time.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -21,11 +21,15 @@ const cases = ["steer", "queue", "tool", "draft", "offline"] as const
 const saved = new Map<string, string>()
 const frame = (name: string) => `${saved.get(`${name}.txt`)}`
 
-/** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
+/**
+ * The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) without the turns' end
+ * times, which a frame may catch or not (tests/turn-time.ts); the rows above with them; and the composer's first row.
+ */
 function split(name: string) {
   const lines = frame(name).split("\n")
   const hint = hintRow(lines)
-  return { transcript: lines.slice(0, hint).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray(), composer: lines[hint + 1] ?? "" }
+  const above = lines.slice(0, hint).filter((line) => line.trim() !== "")
+  return { transcript: withoutTurnTime(above), above, composer: lines[hint + 1] ?? "" }
 }
 
 describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE_DEV)", () => {
@@ -48,8 +52,10 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
   for (const which of ["steer", "queue"] as const)
     test(`a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`, kept.test(() => {
       expect(split(`${which}-before`).transcript.join("\n")).toContain("Executing")
-      const { transcript, composer } = split(`${which}-after`)
-      expect(transcript.slice(-4)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted", "<turn-time>"])
+      const { transcript, above, composer } = split(`${which}-after`)
+      expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
+      // The interrupted turn's end time, where the frame holds it, sits under its last row.
+      expect([[], ["  ■ Interrupted"]]).toContainEqual([...timedAmong(above, transcript.slice(-3))])
       expect(composer).toBe(" ┃ Also update the docs.")
       // The second Escape finds an idle session; the prompt stays in the composer.
       expect(split(`${which}-again`).composer).toBe(" ┃ Also update the docs.")
@@ -57,12 +63,15 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
 
   test("a running shell call: one Escape cancels it and interrupts", kept.test(() => {
     expect(frame("tool-tool")).toBe("interrupted")
-    expect(split("tool-after").transcript.slice(-3)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted", "<turn-time>"])
+    const { transcript, above } = split("tool-after")
+    expect(transcript.slice(-2)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted"])
+    expect([[], ["  ■ Interrupted"]]).toContainEqual([...timedAmong(above, transcript.slice(-2))])
   }))
 
   test("a draft in the composer: one Escape interrupts and the draft stays", kept.test(() => {
-    const { transcript, composer } = split("draft-after")
-    expect(transcript.slice(-2)).toEqual(["  ■ Interrupted", "<turn-time>"])
+    const { transcript, above, composer } = split("draft-after")
+    expect(transcript.at(-1)).toBe("  ■ Interrupted")
+    expect([[], ["  ■ Interrupted"]]).toContainEqual([...timedAmong(above, transcript.slice(-1))])
     expect(composer).toBe(" ┃ half a thought")
   }))
 

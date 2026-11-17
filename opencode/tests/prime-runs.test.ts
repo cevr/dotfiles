@@ -9,9 +9,9 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { maskTurnTime } from "../mods/prime/turn-time.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { timedRows, withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-runs.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -28,12 +28,15 @@ function hintAt(frame: ReadonlyArray<string>) {
   return at - 1
 }
 
-/** The frame's transcript from the prompt on, up to Prime's hint line, with the blank rows dropped. */
-function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
+/** The frame's rows from the prompt on, up to Prime's hint line, with the blank rows dropped. */
+function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const start = frame.findIndex((line) => line.includes("┃ Check the build"))
   const end = hintAt(frame)
-  return frame.slice(start, end > start ? end : undefined).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray()
+  return frame.slice(start, end > start ? end : undefined).filter((line) => line.trim() !== "")
 }
+
+/** The transcript: those rows without the turn's end time, which a frame may catch or not (tests/turn-time.ts). */
+const transcript = (frame: ReadonlyArray<string>) => withoutTurnTime(rows(frame))
 
 /** A row's exact line; `<t>` stands for a duration such as `12ms` or `6.0s`. */
 const row = (line: string) =>
@@ -86,8 +89,9 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
       " ┃ Also read the notes file.",
       "  ● Read notes.md",
       "  Suite passed; the notes say ship it.",
-      "<turn-time>",
     ])
+    // Where the turn's end time shows, it sits under the turn's last row.
+    for (const end of timedRows(rows(frames.details))) expect(end).toBe("  Suite passed; the notes say ship it.")
   }))
 
   test("All: the first group keeps its header and tree; each call after a message is the group's line alone", kept.test(() => {
@@ -117,7 +121,7 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
       " ┃ Also read the notes file.",
       "  ● Read 1 file",
       "  Suite passed; the notes say ship it.",
-      "<turn-time>",
     ])
+    for (const end of timedRows(rows(frames.overview))) expect(end).toBe("  Suite passed; the notes say ship it.")
   }))
 })

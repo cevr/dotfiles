@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-indent.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -98,5 +99,6 @@ describe.skipIf(!fork)("every transcript row starts in one column in the Prime l
 function turn(frame: ReadonlyArray<string>) {
   const first = frame.indexOf(row(frame, TURN.call).line)
   const last = frame.indexOf(row(frame, TURN.notice).line)
-  return frame.slice(first, last + 1).map((line) => line.trimEnd())
+  // The turn's end time shows once its completion arrives (tests/turn-time.ts): either frame may hold it or not.
+  return withoutTurnTime(frame.slice(first, last + 1)).map((line) => line.trimEnd())
 }

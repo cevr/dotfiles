@@ -9,10 +9,10 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { maskTurnTime } from "../mods/prime/turn-time.ts"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { timedAmong, withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-escape.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -21,10 +21,14 @@ const root = join(import.meta.dir, "..")
 const names = ["cancel-hint", "cancelled", "interrupt-hint", "interrupted"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
-/** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
+/**
+ * The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) without the turns' end
+ * times, which a frame may catch or not (tests/turn-time.ts); the rows above with them; and the composer's first row.
+ */
 function split(frame: ReadonlyArray<string>) {
   const hint = hintRow(frame)
-  return { transcript: frame.slice(0, hint).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray(), composer: frame[hint + 1] ?? "" }
+  const above = frame.slice(0, hint).filter((line) => line.trim() !== "")
+  return { transcript: withoutTurnTime(above), above, composer: frame[hint + 1] ?? "" }
 }
 /** The Dock's top row: the tray, right above its rule (the activity counts under it show only while something is active). */
 const dock = (frame: ReadonlyArray<string>) => {
@@ -71,8 +75,10 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
   }))
 
   test("Escape at 7 s interrupts: the prompt and its partial answer stay", kept.test(() => {
-    const { transcript, composer } = split(frames.interrupted)
-    expect(transcript.slice(-4)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted", "<turn-time>"])
+    const { transcript, above, composer } = split(frames.interrupted)
+    expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
+    // An interrupted turn gets its end time too, once its completion arrives: under its last row.
+    expect([[], ["  ■ Interrupted"]]).toContainEqual([...timedAmong(above, transcript.slice(-3))])
     expect(composer).toBe(" ┃")
   }))
 })

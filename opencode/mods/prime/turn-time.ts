@@ -62,6 +62,9 @@ export const TURN_TIME_ROW = /^ +(?:[A-Z][a-z]{2} \d{1,2} )?\d{1,2}:\d{2} [AP]M 
 /** A frame's line with the row, whose wall time differs from run to run, as `<turn-time>`; any other line as it is. */
 export const maskTurnTime = (line: string): string => line.replace(TURN_TIME_ROW, "<turn-time>")
 
+/** As `maskTurnTime`, but the mask keeps the row's right edge: a row drawn anywhere but the right reads differently. */
+export const maskTurnTimeInPlace = (line: string): string => line.replace(TURN_TIME_ROW, (row) => "<turn-time>".padStart(row.length))
+
 /** The host's own zone: TZ when set, else the system's. */
 export const hostZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone
 

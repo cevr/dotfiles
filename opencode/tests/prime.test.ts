@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { timedRows, withoutTurnTime } from "./turn-time.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork)
@@ -303,9 +304,13 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  └ Read out/traces.jsonl · failed · File not found: out/traces.jsonl",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]
-    const first = indexOf(overview, row(rows[0]!))
+    // Each turn's end time (tests/turn-time.ts) shows once its completion arrives: the frame may hold it or not.
+    const shown = withoutTurnTime(overview.lines)
+    const first = shown.findIndex((line) => row(rows[0]!).test(line))
     expect(first).toBeGreaterThan(0)
-    rows.forEach((line, index) => expect(overview.lines[first + index]).toMatch(row(line)))
+    rows.forEach((line, index) => expect(shown[first + index]).toMatch(row(line)))
+    // Where one shows, it closes a turn: the parent's, once the reviewer starts, and the last.
+    for (const end of timedRows(overview.lines)) expect(["  ● Ran 1 agent", rows.at(-1)]).toContain(end)
   }))
 
   test("the splash stays on screen in every mode", kept.test(() => {

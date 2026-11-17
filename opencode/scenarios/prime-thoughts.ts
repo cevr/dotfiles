@@ -55,7 +55,8 @@ export default OpenCodeDriver.use(
       // Each call its own row, as these frames read them; the default (low) folds a turn's calls into one.
       session: { verbosity: "medium" },
     },
-    tui: { viewport: { cols: 106, rows: 48 } },
+    // Tall enough that All keeps the first step's header on screen under the turns' end-time rows (mods/prime/turn-time.ts).
+    tui: { viewport: { cols: 106, rows: 52 } },
     project: {
       git: true,
       files: {
