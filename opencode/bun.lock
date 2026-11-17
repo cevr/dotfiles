@@ -88,6 +88,15 @@
         "@dotfiles/opencode-idle-compact": "workspace:*",
       },
     },
+    "cmd/image": {
+      "name": "@dotfiles/opencode-cmd-image",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-image": "workspace:*",
+        "@dotfiles/opencode-wake": "workspace:*",
+      },
+    },
     "cmd/kernel": {
       "name": "@dotfiles/opencode-cmd-kernel",
       "version": "0.0.0",
@@ -302,6 +311,10 @@
     "mods/image": {
       "name": "@dotfiles/opencode-image",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-wake": "workspace:*",
+      },
     },
     "mods/kernel": {
       "name": "@dotfiles/opencode-kernel",
@@ -499,6 +512,8 @@
     "@dotfiles/opencode-cmd-herdr": ["@dotfiles/opencode-cmd-herdr@workspace:cmd/herdr"],
 
     "@dotfiles/opencode-cmd-idle-compact": ["@dotfiles/opencode-cmd-idle-compact@workspace:cmd/idle-compact"],
+
+    "@dotfiles/opencode-cmd-image": ["@dotfiles/opencode-cmd-image@workspace:cmd/image"],
 
     "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
 

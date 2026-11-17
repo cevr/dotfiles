@@ -31,9 +31,10 @@ export const KERNEL_INPUTS: Readonly<Record<string, string>> = {
   browse_status: "{}",
   browse_tabs_cleanup: "{ idleMinutes?: number }",
   edit: "{ path: string, oldString: string, newString: string, replaceAll?: boolean }",
-  experimental_image_generate: "{ prompt: string, images?: string[], model?: string, path?: string }",
   glob: "{ pattern: string, path?: string, hidden?: boolean, limit?: number }",
   grep: "{ pattern: string, path?: string, include?: string, literal?: boolean, caseSensitive?: boolean, limit?: number }",
+  image:
+    '{ prompt: string, images?: string[], path?: string, size?: string, format?: "png" | "webp" | "jpeg", paid?: { model: "flare" | "sunburst", quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max", background?: "auto" | "transparent" | "opaque", n?: number, mask?: string } }',
   job: '{ action?: "run" | "check" | "wait" | "kill" | "list" | null, command?: string | null, cwd?: string | null, note?: string | null, heavy?: boolean | null, timeoutSeconds?: number | "Infinity" | "-Infinity" | "NaN" | null, id?: string | null, ms?: number | "Infinity" | "-Infinity" | "NaN" | null }',
   message: "{ to: string, text: string, wake?: boolean | null, replyTo?: string | null }",
   monitor:

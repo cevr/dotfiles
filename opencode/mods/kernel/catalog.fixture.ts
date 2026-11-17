@@ -71,9 +71,9 @@ export const catalog: ReadonlyArray<{ readonly id: string; readonly description:
       "List the other OpenCode sessions on this server that you can write to with the message tool: each one's id, title, whether it is running or idle, its agent, its directory and when it was last active, newest first. Main sessions by default; children: true adds subagents' sessions (with their parent). search narrows by text in the title, directory or id.\n\nYour own session is marked (you). Sessions on a host paired with this one (mail pairing) are listed too, marked `on <host>`; write to one by its id.",
   },
   {
-    id: "experimental_image_generate",
+    id: "image",
     description:
-      "Generates a new image, or edits existing ones.\nOnly call this when the user asks you to create or edit an image. If you think an image would help but the user didn't ask for one, ask them first instead of generating it.\nImages you pass are used as the source to edit, or as references for style and subject.\nEach call makes one image. For several images, call it once per image.\nIt runs in the background: the call starts a job and returns right away, and you are notified automatically when the image is saved, with its path. Never poll, sleep, or check for the file while you wait.\nDon't repeat a request unless the user asks.",
+      "Make or edit an image. By default the ChatGPT subscription makes it, at no cost past the plan; the paid OpenAI Images API is used only when you set `paid`.\n- It runs in the background as a job outside the server: the call returns at once with the job's id, the path and the route, and a letter with the saved path, its size and the route wakes this session when it ends. Never poll, sleep or check for the file meanwhile; end your turn unless other work remains. A subagent waits with job({ action: \"wait\", id }).\n- After the letter, read the path to see the image.\n- Pass images as references (subscription) or as the sources to edit (paid).\n- Leave `paid` out unless the user asked for the paid API, Flare or Sunburst, or for what only it does.",
   },
   {
     id: "subagent",

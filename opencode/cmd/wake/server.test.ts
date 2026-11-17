@@ -212,6 +212,17 @@ describe("the wake tools", () => {
       }),
     ))
 
+  test("the set RPC starts a job for a session, a subagent too, as its job call would, and refuses what the call refuses", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const started = yield* plugin.set({ sessionID: "ses_child", job: { command: "bun run.ts /tmp/r.json", cwd: "/work/app", note: "Read the saved path.", timeoutSeconds: 900 } })
+        expect(started).toMatchObject({ outcome: "set", id: expect.stringMatching(/^j[0-9a-z]{6}$/) })
+        expect((yield* plugin.jobs("ses_child")).jobs.map((job): Armed => ({ outcome: "set", id: job.id }))).toEqual([started])
+        expect(yield* plugin.set({ sessionID: "ses_root", job: { command: "true", cwd: "relative", note: "n" } })).toEqual({ outcome: "refused", reason: "cwd must be an absolute path" })
+      }),
+    ))
+
   test("the set RPC sets an alarm or a repeating monitor for a session as its tool would, and refuses what the tool refuses", () =>
     scenario(
       Effect.gen(function* () {
@@ -234,7 +245,7 @@ describe("the wake tools", () => {
           outcome: "refused",
           reason: 'a baseline is for repeat: "change"',
         })
-        expect(yield* plugin.set({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused", reason: expect.stringContaining("not a wake or a monitor") })
+        expect(yield* plugin.set({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused", reason: expect.stringContaining("not a wake, a monitor or a job") })
       }),
     ))
 

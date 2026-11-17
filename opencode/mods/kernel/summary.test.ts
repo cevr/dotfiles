@@ -80,7 +80,7 @@ describe("search over the live catalog", () => {
     ["send message to another session", "message"],
     ["isolated workspace", "rift"],
     ["pull request ci", "pr"],
-    ["generate image", "experimental_image_generate"],
+    ["generate image", "image"],
     ["watch a command until", "monitor"],
     ["to-do list", "queue"],
     ["web search", "websearch"],

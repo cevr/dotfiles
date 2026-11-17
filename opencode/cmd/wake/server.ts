@@ -5,7 +5,8 @@
  * the `wake`, `monitor`, `wake_cancel`, `wake_list` and `job` tools, takes
  * OpenCode's automation tools (`AUTOMATION_TOOLS`) out of the registry, and
  * answers the wakes RPC (`WAKES`) the tray, the OS jobs and the schedule
- * migration (`scripts/migrate-schedules.ts`, over `set`) call.
+ * migration (`scripts/migrate-schedules.ts`, over `set`) and the image plugin
+ * (`cmd/image`, a job over `set`) call.
  *
  * - `wake` sets an alarm and `monitor` a polled command for the calling
  *   session, and return at once; a fire arrives as a synthetic steer that
@@ -291,12 +292,12 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
             ),
           set: (input) =>
             Schema.decodeUnknownEffect(SetAsk)(input).pipe(
-              Effect.mapError((error) => ({ reason: `not a wake or a monitor: ${error.message}` })),
-              Effect.flatMap((ask) =>
-                "wake" in ask
-                  ? wakes.wake(ask.sessionID, ask.wake).pipe(Effect.map((placed) => placed.entry.id))
-                  : wakes.monitor(ask.sessionID, ask.monitor).pipe(Effect.map((placed) => placed.entry.id)),
-              ),
+              Effect.mapError((error) => ({ reason: `not a wake, a monitor or a job: ${error.message}` })),
+              Effect.flatMap((ask) => {
+                if ("wake" in ask) return wakes.wake(ask.sessionID, ask.wake).pipe(Effect.map((placed) => placed.entry.id))
+                if ("monitor" in ask) return wakes.monitor(ask.sessionID, ask.monitor).pipe(Effect.map((placed) => placed.entry.id))
+                return wakes.job(ask.sessionID, ask.job).pipe(Effect.map((started) => started.job.id))
+              }),
               Effect.map((id): Armed => ({ outcome: "set", id })),
               Effect.catch((failure) => Effect.succeed<Armed>({ outcome: "refused", reason: failure.reason })),
             ),

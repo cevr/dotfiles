@@ -60,7 +60,7 @@ export type Plan =
       readonly schedule: Row
       readonly sessionID: string
       readonly directory: string
-      readonly ask: SetAsk
+      readonly ask: Exclude<SetAsk, { readonly job: object }>
       /** The prompt file the note points at, when the prompt was too long to carry. */
       readonly prompt?: { readonly file: string; readonly text: string }
       /** Where the entry differs from the schedule. */

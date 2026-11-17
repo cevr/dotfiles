@@ -486,6 +486,7 @@ if (import.meta.main) {
     mailEntry(pluginDir("mail"), { host: hostname(), tailscale: await tailscaleAddress() }),
     pluginDir("questions"),
     pluginDir("wake"),
+    pluginDir("image"),
     pluginDir("skills"),
     pluginDir("work"),
     pluginDir("tool-names"),

@@ -6,5 +6,9 @@
   "description": "Image generation: the ChatGPT subscription's image tool by default, the paid OpenAI Images API only when asked.",
   "exports": {
     "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-wake": "workspace:*"
   }
 }

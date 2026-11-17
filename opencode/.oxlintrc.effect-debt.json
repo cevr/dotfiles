@@ -779,6 +779,69 @@
         "effect/noEffectRunInTests": "off",
         "effect/noGlobals": "off"
       }
+    },
+    {
+      "files": [
+        "cmd/image/server.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/image/run.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/image/key.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "cmd/image/server.test.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/filesystem/requests.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "scenarios/image.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/image.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }

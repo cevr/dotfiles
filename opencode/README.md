@@ -42,7 +42,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, auto-title, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, auto-title, session mail, background questions, wakes, the image tool, skills, the rift tool and tool names, the cache, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false` (it removes the retired
 `experimental.background_compaction` an earlier run wrote), and into `cli.json` Prime, status, the queue, background questions, the
@@ -2982,6 +2982,47 @@ Log tail:
 
 `tests/job.test.ts` runs `scenarios/job.ts`: a job whose end wakes the idle
 session, and a killed one that wakes nobody.
+
+## Image
+
+The `image` tool (`cmd/image`, over `mods/image`) makes or edits an image. It
+is ours, ported from okra's image code, and replaces OpenCode's
+`experimental_image_generate`, which the plugin takes out of the registry: one
+image tool, always offered, so the tool list never changes in a session, and
+no silent third-party default for a Claude session.
+
+```
+image({ prompt, images?, path?, size?, format?, paid?: { model: "flare" | "sunburst", quality?, background?, n?, mask? } })
+```
+
+- **Subscription (default).** The ChatGPT subscription's image tool through
+  the Codex backend (`codex login`'s `~/.codex/auth.json`, read on each
+  request), the main model the newest `gpt-<n>-sol` OpenCode lists for
+  `openai`, falling to the next when the backend refuses one. No cost past
+  the plan. `size` is a request the backend may change; the letter says so.
+- **Paid.** The OpenAI Images API (GPT Image 2.5 Flare or Sunburst), only when
+  the call sets `paid`; `images` are then the sources to edit. The key is
+  `OPENAI_API_KEY`, else `$XDG_DATA_HOME/opencode-image/openai.key` (0600),
+  stored with `<key> | bun cmd/image/key.ts set --stdin` (never printed;
+  `bun cmd/image/key.ts status` says whether one is there). With no key the
+  paid route answers `AUTH_MISSING`.
+- The call asks the `image` permission with the route as its resource
+  (`subscription`, or `paid: gpt-image-2.5-flare, quality high, n 1`), so a
+  rule can deny the paid route; nothing forces a prompt.
+- It runs as a [job](#jobs) of the session, started over the wakes' `set` RPC
+  (`cmd/image/run.ts` on a request file kept beside the images), so a server
+  restart does not kill it. The call answers at once with the job's id, the
+  path and the route; the end letter carries the saved path, its size and the
+  route, or the failure's code and fix. Default path:
+  `<tmp>/opencode/images/<sessionID>/<prompt-slug>-<id>.png`.
+- The plugin adds the `image` skill from `mods/image/SKILL.md`.
+
+`cmd/image/server.test.ts` is the seam; `tests/image.test.ts` runs
+`scenarios/image.ts` in real OpenCode against a fake Codex backend and a fake
+Images API: a direct subscription call with an image model offered (OpenCode's
+own tool absent from every request) and the skill loaded, then a paid call
+from a kernel cell. `SCENARIO_LIVE=1` (direct run only, by hand) makes one
+free image on the real `codex login`.
 
 ## Memory
 

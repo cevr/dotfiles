@@ -424,7 +424,7 @@ const text = { type: "string" } as const
  * - `due({ id })`: the OS backstop's call when its job fires: fire the entry if it is due and not yet fired. `Due` says what happened.
  * - `latch(LatchAsk)`: keep a held subagent start as a latch of the asking session, with its child session made unprompted. `Latched` says its id and child, or why not.
  * - `cancel({ sessionID, id })`: the owner cancels one of the session's entries, as `wake_cancel` does. `Cancelled` says which ids went, or why not.
- * - `set({ sessionID, wake } | { sessionID, monitor })`: set an alarm or a monitor for that session, as its own `wake` or `monitor` call would (scripts/migrate-schedules.ts uses it). `Armed` says its id, or why not.
+ * - `set({ sessionID, wake } | { sessionID, monitor } | { sessionID, job })`: set an alarm, a monitor or a job for that session, as its own `wake`, `monitor` or `job` call would (scripts/migrate-schedules.ts and the image plugin use it). `Armed` says its id, or why not.
  * - `jobs({ sessionID })`: the session's jobs, running and recently ended (`Board`).
  * - `kill({ sessionID, id })`: the owner stops one of the session's running jobs; its end letter still wakes the session. `Killed` says whether, or why not.
  * - `changed({ sessionID })`: published after every change to a session's wakes.
@@ -438,7 +438,7 @@ export const WAKES = {
     due: { input: object({ id: text }, ["id"]), output: { type: "object" } },
     latch: { input: { type: "object" }, output: { type: "object" } },
     cancel: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
-    set: { input: object({ sessionID: text, wake: { type: "object" }, monitor: { type: "object" } }, ["sessionID"]), output: { type: "object" } },
+    set: { input: object({ sessionID: text, wake: { type: "object" }, monitor: { type: "object" }, job: { type: "object" } }, ["sessionID"]), output: { type: "object" } },
   },
   events: {
     changed: { schema: { type: "object", properties: { sessionID: text }, required: ["sessionID"] } },
@@ -561,6 +561,16 @@ export const SetAsk = Schema.Union([
       note: Schema.String,
       repeat: Schema.optional(Repeat),
       baseline: Schema.optional(Schema.String),
+    }),
+  }),
+  Schema.Struct({
+    sessionID: Schema.String,
+    job: Schema.Struct({
+      command: Schema.String,
+      cwd: Schema.optional(Schema.String),
+      note: Schema.String,
+      heavy: Schema.optional(Schema.Boolean),
+      timeoutSeconds: Schema.optional(Schema.Number),
     }),
   }),
 ])

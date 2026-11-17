@@ -6,9 +6,10 @@
 // The key is a dependency of the paid backend's implementation alone
 // (`openai/images.ts`), never of the model: a subscription request cannot
 // reach it, and the model never holds it.
-import { Context, type Effect, type Option, type Redacted } from "effect"
+import { Context, type Effect, type Option, type Redacted, Schema } from "effect"
+import type { Listed } from "./models.ts"
 import type { ImageFailed } from "./outcome.ts"
-import type { Background, Format, Quality } from "./request.ts"
+import type { Background, Format, Quality, Request } from "./request.ts"
 
 /** An image's bytes and media type: a reference, a source to edit or a mask. */
 export interface Part {
@@ -74,3 +75,45 @@ export class ImageFiles extends Context.Service<
     readonly write: (path: string, data: Uint8Array) => Effect.Effect<void, ImageFailed>
   }
 >()("dotfiles-opencode/image/ImageFiles") {}
+
+/** The models OpenCode lists in a directory, by the fields the subscription's model rule reads; none when it cannot say. */
+export class Catalog extends Context.Service<
+  Catalog,
+  {
+    readonly models: (directory: string) => Effect.Effect<ReadonlyArray<Listed>>
+  }
+>()("dotfiles-opencode/image/Catalog") {}
+
+/**
+ * The request files a job's runner reads: `save` keeps a request under its
+ * call's id and answers the file; `read` loads one back (INVALID_INPUT when it
+ * is missing or not a request); `remove` drops it, gone or not.
+ */
+export class Requests extends Context.Service<
+  Requests,
+  {
+    readonly save: (id: string, request: Request) => Effect.Effect<string, ImageFailed>
+    readonly read: (file: string) => Effect.Effect<Request, ImageFailed>
+    readonly remove: (file: string) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/image/Requests") {}
+
+/** The jobs host would not start the runner; `reason` is its words. */
+export class JobRefused extends Schema.TaggedError<JobRefused>()("JobRefused", {
+  reason: Schema.String,
+}) {}
+
+/** One runner job: the request file it carries out, the directory it runs in and the note its end letter carries. */
+export interface JobStart {
+  readonly file: string
+  readonly cwd: string
+  readonly note: string
+}
+
+/** Jobs outside the server (the wakes' jobs): `start` runs the image runner on a request file for a session, and answers the job's id. */
+export class Jobs extends Context.Service<
+  Jobs,
+  {
+    readonly start: (sessionID: string, job: JobStart) => Effect.Effect<string, JobRefused>
+  }
+>()("dotfiles-opencode/image/Jobs") {}

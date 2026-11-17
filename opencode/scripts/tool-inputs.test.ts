@@ -8,6 +8,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Schema } from "effect"
 import { PrInput } from "../mods/git/pr.ts"
+import { ImageInput } from "../mods/image/tool.ts"
 import { KernelInput } from "../mods/kernel/description.ts"
 import { SessionsInput } from "../mods/mail/directory.ts"
 import { MessageInput } from "../mods/mail/letter.ts"
@@ -36,6 +37,7 @@ const INPUTS: Record<string, unknown> = {
   CancelInput,
   ListInput,
   JobInput,
+  ImageInput,
 }
 
 const cmd = join(import.meta.dir, "..", "cmd")
@@ -74,6 +76,10 @@ describe("plugin tool inputs", () => {
     const decode = decoder(SaveInput)
     expect(decode({ text: "Use bun", id: "5", tags: '["preferences","reports"]' })).toEqual({ text: "Use bun", id: 5, tags: ["preferences", "reports"] })
     expect(decode({ text: "Use bun", tags: "tests, ci" })).toEqual({ text: "Use bun", tags: ["tests", "ci"] })
+  })
+
+  test("an image's references arrive as a JSON-array string and decode", () => {
+    expect(decoder(ImageInput)({ prompt: "a fox", images: '["a.png","b.png"]' })).toEqual({ prompt: "a fox", images: ["a.png", "b.png"] })
   })
 
   test("a wake's seconds and a pr's list arrive as strings and decode", () => {

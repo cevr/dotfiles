@@ -1,0 +1,17 @@
+{
+  "name": "@dotfiles/opencode-cmd-image",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The image tool's OpenCode plugin (server: the `image` tool and skill, upstream's image tool removed), its job runner (run) and the paid API's key command (key): the composition root of @dotfiles/opencode-image.",
+  "exports": {
+    "./server": "./server.ts",
+    "./run": "./run.ts",
+    "./key": "./key.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-image": "workspace:*",
+    "@dotfiles/opencode-wake": "workspace:*"
+  }
+}

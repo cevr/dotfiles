@@ -483,10 +483,11 @@
                   "!effect",
                   "!effect/*",
                   "*/**/effect",
+                  "!@dotfiles/decider/*",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The image domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (codex/, openai/, filesystem/, memory/)."
+                "message": "The image domain fence: its domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (codex/, openai/, filesystem/, memory/, opencode/)."
               }
             ]
           }
