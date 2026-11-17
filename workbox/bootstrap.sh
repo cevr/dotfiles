@@ -39,6 +39,13 @@ check_memory_protection() {
 # herdr-core (hc) holds the terminals: the same checks as workbox-health. They
 # read hc alone, so they pass with herdr running beside it or stopped.
 # `hc server status` starts the core when none runs, in its own transient unit.
+# An active user timer with its next run set: an active timer can still have
+# none (OnUnitActiveSec after a user manager restart, 2026-11-13).
+check_timer() {
+  systemctl --user is-active --quiet "$1"
+  systemctl --user show "$1" -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value | grep -q '[1-9]'
+}
+
 check_hc() {
   hc_status=$(hc server status --json)
   printf '%s' "$hc_status" | jq -e '.pid | type == "number"' >/dev/null
@@ -64,10 +71,9 @@ check_mode() {
   test -L "$HOME/.zshrc"
   systemctl --user is-active --quiet sideshow.service
   systemctl --user is-enabled --quiet opencode.service
-  systemctl --user is-active --quiet workrift-prune.timer
-  systemctl --user is-active --quiet workbox-backup.timer
-  systemctl --user is-active --quiet workbox-health.timer
-  systemctl --user is-active --quiet workbox-update-report.timer
+  for timer in cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workrift-prune.timer workbox-backup.timer workbox-health.timer workbox-update-report.timer; do
+    check_timer "$timer"
+  done
   systemctl is-active --quiet bite-workbox-sshd.service
   systemctl is-active --quiet bite-agent-settings.path
   systemctl is-enabled --quiet bite.slice

@@ -32,6 +32,13 @@ check_user_service() {
   check "$service_name active" systemctl --user is-active --quiet "$service_name"
 }
 
+# A user timer enabled, active and with its next run set: an active timer can
+# still have none (OnUnitActiveSec after a user manager restart, 2026-11-13).
+check_user_timer() {
+  check_user_service "$1"
+  check "$1 next run set" sh -c "systemctl --user show '$1' -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value | grep -q '[1-9]'"
+}
+
 check_memory_protection() {
   protection_label=$1
   protected_service=$2
@@ -97,10 +104,9 @@ check "hc core keeps running after logout" hc_status_is '.keeps_running_after_lo
 check "hc-core.service enabled" systemctl --user is-enabled --quiet hc-core.service
 check "hc core keeps running after a terminal's OOM" hc_core_unit_is OOMPolicy continue
 check_user_service sideshow.service
-check_user_service cleanup-mosh-servers.timer
-check_user_service workbox-backup.timer
-check_user_service workbox-health.timer
-check_user_service workbox-update-report.timer
+for timer_name in cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workrift-prune.timer workbox-backup.timer workbox-health.timer workbox-update-report.timer; do
+  check_user_timer "$timer_name"
+done
 
 # shellcheck disable=SC2016
 check "Resolver stub link" sh -c '

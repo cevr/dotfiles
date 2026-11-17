@@ -2,8 +2,10 @@
 Description=Remove disconnected Mosh servers every 15 minutes
 
 [Timer]
-OnBootSec=15m
-OnUnitActiveSec=15m
+# On the calendar, not OnBootSec plus OnUnitActiveSec: once the boot delay has passed, a user manager started
+# again (the home migration of 2026-11-13 restarted it) arms that pair only after the service runs, so the
+# timer never fired again until it was restarted by hand. A calendar time is armed whenever the timer starts.
+OnCalendar=*:00/15
 Persistent=true
 
 [Install]
