@@ -8,7 +8,7 @@
 // `rift.mergeCheck` a land goes by receipts (`cover`, `mergeGate`, `recordOf`, `afterPush`): never the full
 // gate. The plugin calls this and nothing else.
 import { Array as Arr, Clock, Context, Data, DateTime, Effect, Layer, Option, Predicate, Result, Scope, Semaphore } from "effect"
-import { findRift, resolvePath } from "./find.ts"
+import { findRift, isPath, resolvePath } from "./find.ts"
 import { focusLine, shareOf, type Covered, type Receipt, type Standing } from "./receipt.ts"
 import { CHECK_EVERY, baseOf, forcedLine, headOf, loadedLine, loadWord, observe, overloaded, owe, pay, pays, phase, ran, unitsOf, type Debts, type Trigger } from "./owed.ts"
 import {
@@ -144,6 +144,9 @@ const commandLine = (command: WorkboxCommand): string => {
 }
 
 /** Whether `failure` is work's refusal of a name a workspace holds, live or removed (in the trash until a gc). */
+/** The workspaces a land names, by path or name; a `{ path, unit }` entry is its path here: the unit is the orchestrate plugin's. */
+const landTargets = (input: RiftInput): ReadonlyArray<string> => (input.workspaces ?? input.rifts ?? []).map((target) => (typeof target === "string" ? target : target.path))
+
 const isNameTaken = (failure: RiftFailed): boolean => failure.message.startsWith("NameTaken")
 
 /** The suffixes a name a removed workspace still holds is tried with, in order. */
@@ -585,12 +588,16 @@ export const layer = Layer.effect(
     })
 
     const land = Effect.fn("RiftTool.land")(function* (sessionID: string, directory: string, source: string, input: RiftInput) {
-      // A `{ path, unit }` entry is its path here: the unit is the orchestrate plugin's.
       if (Predicate.isNotUndefined(input.workspaces) && Predicate.isNotUndefined(input.rifts)) return yield* new TargetsTwice()
-      const targets = (input.workspaces ?? input.rifts ?? []).map((target) => (typeof target === "string" ? target : target.path))
+      const targets = landTargets(input)
       if (targets.length === 0) return yield* new RiftsMissing()
       // Every Rift is found and checked before any is touched.
       const paths = yield* Effect.forEach(targets, (target) => findRift(directory, source, target).pipe(Effect.provideService(Rifts, rifts)))
+      // A workspace of another base would merge into this base's integration workspace: unrelated histories.
+      for (const path of paths) {
+        const base = yield* rifts.source(path)
+        if (base !== source) return yield* new LandRefused({ path, reason: `is a workspace of ${base}, not of ${source}; land each base's workspaces in a call of their own.` })
+      }
       const units = yield* Effect.forEach(paths, (path) => unitOf(path, source))
       const config = yield* landing.config(source)
       const gateCommand = config.gate
@@ -743,8 +750,12 @@ export const layer = Layer.effect(
           return yield* list(yield* source())
         case "remove":
           return yield* claimed(remove(directory, yield* source(), input))
-        case "land":
-          return yield* land(sessionID, directory, yield* source(), input)
+        case "land": {
+          // Unless named, a land's base is that of its first workspace given by path, else the session's: a session lands another repository's workspace by its path.
+          const byPath = Option.filter(Arr.findFirst(landTargets(input), isPath), () => Predicate.isUndefined(input.source))
+          const base = yield* Option.match(byPath, { onNone: source, onSome: (path) => rifts.source(resolvePath(directory, path)) })
+          return yield* land(sessionID, directory, base, input)
+        }
         default:
           return yield* onWorkbox(directory, input, input.action)
       }

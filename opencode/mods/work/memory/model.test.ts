@@ -187,6 +187,30 @@ describe("land", () => {
     expect([...made.rifts.rifts.keys()]).toEqual([INTEGRATE])
   })
 
+  test("a workspace of another base, given by path, lands in that base's integration workspace, never the session's; one batch never mixes bases", () => {
+    const MANNA = "/code/manna"
+    const KEYCHAIN = "/code/.rifts/manna/keychain"
+    const made = bench(
+      MemoryRifts.world([SOURCE, MANNA], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(KEYCHAIN, "keychain")]),
+      MemoryLanding.world({ ...configured, [MANNA]: MemoryLanding.config("main", "bun run gate", void 0) }),
+    )
+    return within(made, (tool) =>
+      Effect.gen(function* () {
+        // The session runs in /code/app; the workspace is manna's.
+        expect(yield* answerOf(tool, { action: "land", rifts: [KEYCHAIN] })).toStartWith("Landed 1 workspace(s) as one push")
+        expect(made.landing.steps.slice(0, 2)).toEqual(["start /code/.rifts/manna/integrate main", "merge keychain"])
+        expect(made.rifts.rifts.has(INTEGRATE)).toBe(false)
+        made.rifts.rifts.set(KEYCHAIN, MemoryRifts.clean(KEYCHAIN, "keychain"))
+        made.landing.steps.length = 0
+        expect(yield* answerOf(tool, { action: "land", rifts: [KEYCHAIN, FEAT] })).toBe(
+          `refused: Did not land anything: ${FEAT} is a workspace of ${SOURCE}, not of ${MANNA}; land each base's workspaces in a call of their own.`,
+        )
+        expect(yield* answerOf(tool, { action: "land", rifts: [KEYCHAIN], source: SOURCE })).toStartWith(`refused: Did not land anything: ${KEYCHAIN} is a workspace of ${MANNA}`)
+        expect(made.landing.steps).toEqual([])
+      }),
+    )
+  })
+
   describe("with rift.postLand set", () => {
     const withPostLand = (accept: string | undefined) =>
       bench(
