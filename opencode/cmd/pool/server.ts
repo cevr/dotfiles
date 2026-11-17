@@ -482,8 +482,9 @@ export const make = (
           Effect.onExit(
             Exit.match({
               onSuccess: () => Effect.void,
+              // A start the plugin's end interrupted is no failure to report; its waiters end all the same.
               onFailure: (cause) =>
-                Effect.logError(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(cause)}`).pipe(
+                Effect.when(Effect.logError(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(cause)}`), Effect.sync(() => !Cause.hasInterruptsOnly(cause))).pipe(
                   Effect.andThen(Deferred.die(ready, Cause.squash(cause))),
                 ),
             }),
