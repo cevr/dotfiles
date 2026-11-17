@@ -73,9 +73,21 @@ Each candidate must pass the contract's finding test. Keep the evidence: file, l
 
 **Safety fact.** Name the one fact the change is safe because of ("every caller passes an already-decoded value"), and push it down the proof ladder: said → pointed at the line → walked the path → ran it → reproduced in the app. A fact that stops before *ran it* is `unproven`.
 
+## Second review
+
+As Phase 3 ends, start ONE background subagent from the other model family on the same review, so a different family's blind spots check yours.
+
+- **OpenCode** (the `subagent` tool takes `model`): you on Claude → the newest OpenAI Sol; you on GPT → the newest Claude Opus. Look the id up with the models tool, never a pinned version, and pass `<provider>/<id>#high` when that model lists a `high` variant; otherwise its default, and the report says so. Use `agent: "worker"` and a `description` starting `second review`.
+- **Claude Code**: a Codex thread (`mcp__codex__start`, `model: "sol"`), or `okra counsel`. **Codex**: `okra counsel`, which sends to Claude. With neither, skip.
+- **The prompt**: the pinned base and head shas, the scope, the mode, the spec path if any, and: "Read `~/.claude/skills/code-review/SKILL.md` and its review contract; run Phases 1–4 on exactly this base and head, outcome report; skip its Second review." It is **independent**: give it none of your findings, candidates or safety fact.
+- **No wait**: its report arrives as a message. Don't poll; end the turn or go on with other work, and run Phase 4 when it lands.
+- **Skip** on a trivial diff (docs, a rename, a few lines with no logic), or when the user asked for a quick review; the report's verdict line says `second review: skipped (<reason>)`.
+
 ## Phase 4: Validate and report
 
 Re-open every cited file and follow the control flow before you keep a finding. Drop a candidate the source does not support. Separate pre-existing issues from issues in the reviewed change. No finding quota; no expansion into unrelated cleanup.
+
+With a second review, validate its findings the same way as yours. A finding both sides raise gains confidence; a finding only one side raises stays only when the source supports it. Each kept finding names who found it: `you`, `second (<model>)`, or `both`; a dropped second-review finding goes to `Rejected findings` with the reason.
 
 Lead with the verdict and the safety fact with its rung, then group:
 
@@ -97,7 +109,7 @@ In **report** outcome, stop here.
 
 A PR someone else wrote and asked you to review (`gh search prs --review-requested=@me --state open`, or a PR the user names).
 
-- Run Phases 1–4 yourself, in this session, in report outcome, on `gh pr diff` and `gh pr view` against the PR's base.
+- Run Phases 1–4 yourself, with the Second review, in this session, in report outcome, on `gh pr diff` and `gh pr view` against the PR's base.
 - Be thorough on correctness: every Blocker, Major and Minor defect, with its evidence. Style preferences and Optional cleanup stay out of the review.
 - Verdict: `approve with notes` when nothing blocks, `request changes` when a Blocker or Major stands.
 - Draft the review: the verdict, a short body, and inline comments at file and line. Post it on the owner's go.
