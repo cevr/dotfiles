@@ -131,7 +131,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
@@ -424,29 +424,61 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
-      yield* migrate(ctx.storage)
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
-      const services = yield* Layer.build(
-        Model.layer({
-          providers: options.providers,
-          cacheLifeMs: options.cacheLifeMs,
-          refreshOutageMs: options.refreshOutageMinutes * 60_000,
-          paced: options.paced,
-          fleet: {
-            host: options.fleet.host,
-            settleMs: options.fleet.settleMinutes * 60_000,
-            startCost: options.fleet.startCost,
-            pollMs: options.fleet.pollSeconds * 1000,
-          },
-          resets: resetsOf(options),
-          autoClaims: typeof options.resets === "boolean" || options.resets.auto,
-          ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
-        }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
+
+      // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
+      // of seconds at its load, in each location). The host activates a location's plugins one after another and
+      // serves no provider or model until all have, so the model builds off that path: the plugin's hooks, tools and
+      // RPCs are in place at once and each waits for the model, a request's placement too. A model that cannot be
+      // built fails every one of them.
+      const ready = yield* Deferred.make<Model.Pool["Service"]>()
+      const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
+        Deferred.await(ready).pipe(Effect.flatMap(use))
+      yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
+          yield* migrate(ctx.storage)
+          const services = yield* Layer.build(
+            Model.layer({
+              providers: options.providers,
+              cacheLifeMs: options.cacheLifeMs,
+              refreshOutageMs: options.refreshOutageMinutes * 60_000,
+              paced: options.paced,
+              fleet: {
+                host: options.fleet.host,
+                settleMs: options.fleet.settleMinutes * 60_000,
+                startCost: options.fleet.startCost,
+                pollMs: options.fleet.pollSeconds * 1000,
+              },
+              resets: resetsOf(options),
+              autoClaims: typeof options.resets === "boolean" || options.resets.auto,
+              ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
+            }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
+          )
+          const pool = Context.get(services, Model.Pool)
+          yield* Deferred.succeed(ready, pool)
+
+          yield* Effect.forkScoped(pool.follow)
+
+          // A notice read leaves the tray as soon as the questions change.
+          if (Object.keys(resetsOf(options)).length > 0) yield* Effect.forkScoped(pool.followAnswers)
+
+          if (options.sweepMinutes > 0)
+            yield* Effect.forkScoped(
+              pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
+            )
+
+          if (options.fleet.peers.length > 0)
+            yield* Effect.forkScoped(pool.poll.pipe(Effect.repeat(Schedule.spaced(`${options.fleet.pollSeconds} seconds`))))
+        }).pipe(
+          Effect.withSpan("Pool.start"),
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) ? Effect.void : Deferred.die(ready, new Error(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(exit.cause)}`)),
+          ),
+        ),
       )
-      const pool = Context.get(services, Model.Pool)
 
       // The auth plugin takes a store account's token from its source.
       const anthropic = storePool(options)
@@ -489,15 +521,15 @@ export const make = (
       yield* ctx.session.hook("model.request", (event) =>
         Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
           Effect.flatMap(([cacheLifeMs, source]) =>
-            pool
-              .place({
+            withPool((pool) =>
+              pool.place({
                 providerID: event.model.providerID,
                 sessionID: event.sessionID,
                 kind: event.kind,
                 ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
                 ...(source === undefined ? {} : { cacheOf: source }),
-              })
-              .pipe(
+              }),
+            ).pipe(
                 Effect.map((placed) => {
                   if (placed === undefined) return
                   event.headers[CREDENTIAL_HEADER] = placed.credentialID
@@ -531,14 +563,14 @@ export const make = (
       }
 
       yield* ctx.session.hook("http.response", (event) =>
-        pool
-          .responded({
+        withPool((pool) =>
+          pool.responded({
             providerID: event.model.providerID,
             sessionID: event.sessionID,
             kind: event.kind,
             status: event.response.status,
-          })
-          .pipe(
+          }),
+        ).pipe(
             Effect.andThen(
               observe(event.model.providerID, (now) => ChatGPT.fromHeaders((name) => event.response.headers.get(name), now)),
             ),
@@ -551,7 +583,7 @@ export const make = (
         )
 
       yield* ctx.session.hook("retry", (event) =>
-        pool.retry({ providerID: event.model.providerID, sessionID: event.sessionID, error: event.error.type }).pipe(
+        withPool((pool) => pool.retry({ providerID: event.model.providerID, sessionID: event.sessionID, error: event.error.type })).pipe(
           Effect.map((failOver) => {
             if (failOver) event.decision = { retry: true, delay: 0 }
           }),
@@ -584,38 +616,28 @@ export const make = (
           Stream.runForEach((event) => {
             if (event.type === "session.execution.interrupted") {
               if (event.data.reason === "shutdown") return Effect.void
-              return pool.release(event.data.sessionID)
+              return withPool((pool) => pool.release(event.data.sessionID))
             }
             if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed")
-              return pool.release(event.data.sessionID)
+              return withPool((pool) => pool.release(event.data.sessionID))
             if (event.type === "session.step.started") {
               // A step that never ends leaves its entry: past a bound, the oldest go.
               if (stepModels.size >= STEP_MODELS) stepModels.delete(stepModels.keys().next().value ?? "")
               if (event.data.model === undefined) return Effect.void
               stepModels.set(event.data.assistantMessageID, event.data.model)
               // The session is busy, an agent running for the reset forecast, until it goes idle.
-              return pool.stepStarted(event.data.sessionID, event.data.model.providerID)
+              const providerID = event.data.model.providerID
+              return withPool((pool) => pool.stepStarted(event.data.sessionID, providerID))
             }
             return usageOf(event.data).pipe(
-              Effect.flatMap((usage) => pool.stepEnded(event.data.sessionID, Number(event.data.cost), event.data.assistantMessageID, usage)),
+              Effect.flatMap((usage) =>
+                withPool((pool) => pool.stepEnded(event.data.sessionID, Number(event.data.cost), event.data.assistantMessageID, usage)),
+              ),
             )
           }),
           Effect.ignoreCause,
         ),
       )
-
-      yield* Effect.forkScoped(pool.follow)
-
-      // A notice read leaves the tray as soon as the questions change.
-      if (Object.keys(resetsOf(options)).length > 0) yield* Effect.forkScoped(pool.followAnswers)
-
-      if (options.sweepMinutes > 0)
-        yield* Effect.forkScoped(
-          pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
-        )
-
-      if (options.fleet.peers.length > 0)
-        yield* Effect.forkScoped(pool.poll.pipe(Effect.repeat(Schedule.spaced(`${options.fleet.pollSeconds} seconds`))))
 
       // The owner's session starts, reads, ends or plans a push; the calling session scopes one that names `session`.
       yield* ctx.tool.transform((editor) => {
@@ -626,7 +648,7 @@ export const make = (
           // A direct tool beside the others, so it is offered without code mode and reached from a kernel cell.
           options: { codemode: false },
           execute: (input, context) =>
-            pool.push({ ...input, sessionID: context.sessionID }).pipe(
+            withPool((pool) => pool.push({ ...input, sessionID: context.sessionID })).pipe(
               Effect.flatMap((answer) =>
                 answer.ok
                   ? Effect.succeed({ content: [{ type: "text" as const, text: answer.text }] })
@@ -641,35 +663,35 @@ export const make = (
       // RPC that cannot be registered stops the plugin.
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => pool.pace(providerOf(input), modelOf(input), sessionOf(input)).pipe(Effect.orDie),
-          status: () => pool.status.pipe(Effect.orDie),
+          pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input))).pipe(Effect.orDie),
+          status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
-            Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: pool.session }),
-          alerts: () => pool.alerts,
+            Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: (query) => withPool((pool) => pool.session(query)) }),
+          alerts: () => withPool((pool) => pool.alerts),
           // A malformed question names no session: it has no steps.
-          logins: (input) => Option.match(decodeLoginsQuery(input), { onNone: () => Effect.succeed({ steps: [] }), onSome: pool.logins }),
+          logins: (input) => Option.match(decodeLoginsQuery(input), { onNone: () => Effect.succeed({ steps: [] }), onSome: (query) => withPool((pool) => pool.logins(query)) }),
           // A malformed question names no provider: nothing started.
           started: (input) =>
             Option.match(decodeStartedQuery(input), {
               onNone: () => Effect.succeed({}),
-              onSome: ({ providerID }) => pool.started(providerID).pipe(Effect.as({})),
+              onSome: ({ providerID }) => withPool((pool) => pool.started(providerID)).pipe(Effect.as({})),
             }),
-          report: () => pool.report,
-          fleet: () => pool.fleet,
-          resets: () => pool.resets,
+          report: () => withPool((pool) => pool.report),
+          fleet: () => withPool((pool) => pool.fleet),
+          resets: () => withPool((pool) => pool.resets),
           // A malformed lease message is refused: no lease is lent on it.
           lease: (input) =>
             Option.match(decodeLease(input), {
               onNone: () => Effect.succeed({ granted: false, reason: "not a lease message" }),
-              onSome: pool.lease,
+              onSome: (message) => withPool((pool) => pool.lease(message)),
             }),
-          limits: () => pool.limits,
+          limits: () => withPool((pool) => pool.limits),
           // A malformed push request changes nothing.
           push: (input) =>
             Option.match(decodePush(input), {
               onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
-              onSome: pool.push,
+              onSome: (request) => withPool((pool) => pool.push(request)),
             }),
         })
         .pipe(Effect.orDie)

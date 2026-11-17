@@ -8,13 +8,14 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Queue, Schedule, Schema, Stream } from "effect"
+import { Effect, Fiber, Latch, Layer, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
 import * as FleetTest from "@dotfiles/opencode-pool/memory/fleet"
 import { LEGACY_PREFIX } from "@dotfiles/opencode-pool/legacy-ids"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
+import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
 import type { LimitsAnswer } from "@dotfiles/opencode-pool/model"
 import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
@@ -26,7 +27,8 @@ import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
-import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
+import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
+import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
 import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
@@ -148,6 +150,8 @@ const start = (
   options: Record<string, unknown> = { sweepMinutes: 0 },
   state: World = world(),
   externals: Parameters<typeof make>[0] | "test" = "test",
+  /** Whether the start waits until the pool answers, its ledger read; else it ends once the plugin is active. */
+  ready = true,
 ) =>
   Effect.gen(function* () {
     const root = yield* scratchRoot
@@ -283,6 +287,8 @@ const start = (
       storage: LedgerTest.storage(state.storage),
     } as unknown as Host
     yield* make(externals === "test" ? testLayers(state, published, root) : externals).effect(host)
+    // The model builds from the ledger after the plugin is active: a start is complete once the pool answers.
+    if (ready) yield* Effect.exit(rpc[POOL_STATUS.id]!["alerts"]!({}))
 
     /** One model request of a session: the headers the pool sets on it. */
     const send = Effect.fn("PoolServerTest.send")(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
@@ -390,6 +396,9 @@ const start = (
       tools,
     }
   })
+
+/** The keys the pool's ledger and stores wrote: the storage's, the migration's mark left out. */
+const ledgerKeys = (state: World) => [...state.storage.keys()].filter((key) => key !== MIGRATED)
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
@@ -499,7 +508,7 @@ describe("the hooks", () => {
         expect(yield* plugin.retry({ retry: true, delay: 2000 })).toEqual({ retry: true, delay: 2000 })
         expect(yield* plugin.request()).toBe("cred-a")
         // Only where the session's cache is: no hold.
-        expect([...state.storage.keys()]).toEqual(["anthropic/cache/ses_1"])
+        expect(ledgerKeys(state)).toEqual(["anthropic/cache/ses_1"])
       }),
     ))
 
@@ -826,6 +835,30 @@ describe("a session's cache", () => {
 })
 
 describe("the ledger", () => {
+  // A week of steps takes the live storage tens of seconds to read, and the host serves no provider until every
+  // plugin of the location is active: the plugin is active before its ledger is read.
+  test("is read after the plugin is active: a request meanwhile waits for it and goes where it says", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.storage.set("anthropic/hold/cred-a", { kind: "usage-limit", until: 10 * HOUR, at: 0 })
+        const open = yield* Latch.make(false)
+        let scans = 0
+        const storage = LedgerTest.storage(state.storage)
+        const slow = LedgerLive.layer({ ...storage, scan: (options) => Effect.sync(() => void scans++).pipe(Effect.andThen(open.await), Effect.andThen(storage.scan(options))) })
+        const root = yield* scratchRoot
+        const published = yield* Queue.unbounded<PublishedReading>()
+        const plugin = yield* start(undefined, state, () => Layer.merge(testLayers(state, published, root)(), slow), false)
+        expect(Object.keys(plugin.hooks).sort()).toEqual(["http.response", "model.request", "retry"])
+        yield* waitFor("the ledger read", () => scans > 0)
+        const request = yield* Effect.forkChild(plugin.request("s1"))
+        yield* settle
+        expect(request.pollUnsafe()).toBeUndefined()
+        yield* open.open
+        expect(yield* Fiber.join(request)).toBe("cred-b")
+      }),
+    ))
+
   test("keeps holds, readings, priced steps and caches under the pool's id, and a new process reads them back", () =>
     onTestClock(
       Effect.gen(function* () {
@@ -835,7 +868,7 @@ describe("the ledger", () => {
         yield* plugin.request("s1")
         yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 0.25 } })
         yield* plugin.publish({ credentialID: "cred-b", reading: { at: HOUR, windows: [], refusal: { kind: "usage-limit", until: 3 * HOUR } } })
-        expect([...state.storage.keys()].sort()).toEqual([
+        expect(ledgerKeys(state).sort()).toEqual([
           "anthropic/cache/s1",
           "anthropic/hold/cred-b",
           "anthropic/reading/cred-b",
@@ -865,7 +898,7 @@ describe("the ledger", () => {
         yield* TestClock.adjust(WINDOW_MS)
 
         const next = yield* start(undefined, state)
-        expect([...state.storage.keys()].sort()).toEqual(["anthropic/reading/cred-a", "anthropic/reading/cred-b", "other/hold/cred-a"])
+        expect(ledgerKeys(state).sort()).toEqual(["anthropic/reading/cred-a", "anthropic/reading/cred-b", "other/hold/cred-a"])
         yield* next.pace("anthropic")
         const accounts = (yield* next.status).anthropic?.accounts
         expect(accounts?.map((account) => [account.credentialID, account.load, account.hold, account.reading?.at])).toEqual([
@@ -902,7 +935,7 @@ describe("the sweep", () => {
         state.readings.set("cred-a", { at: 0, windows: [], refusal: { kind: "usage-limit", until: 2 * HOUR } })
         yield* start({ sweepMinutes: 0 }, state)
         yield* TestClock.adjust(HOUR)
-        expect([...state.storage.keys()]).toEqual([])
+        expect(ledgerKeys(state)).toEqual([])
       }),
     ))
 })
