@@ -42,7 +42,7 @@ export interface Spec {
   readonly plugin: string
   readonly background?: boolean
   readonly others?: number
-  /** Background compaction on (the fork's `background_compaction` flag), and the prompt `PRECOMPUTE_TASK`. */
+  /** The prompt `PRECOMPUTE_TASK`, on which the host's background compaction (default on) writes a summary. */
   readonly precompute?: boolean
 }
 
@@ -93,7 +93,6 @@ const content = {
   },
   // A 1000-token prompt is over a 50-token threshold.
   plugins: [{ package: spec.plugin, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }],
-  ...(spec.precompute ? { experimental: { background_compaction: true } } : {}),
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */

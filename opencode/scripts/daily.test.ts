@@ -92,16 +92,16 @@ describe("the server config", () => {
 })
 
 describe("background compaction", () => {
-  test("turns the fork's flag on in the server config and keeps the other experimental settings", () => {
-    const existing = { experimental: { todo: true, background_compaction: false } }
-    expect(mergeServer(existing, [], {}, [MODS]).experimental).toEqual({ todo: true, background_compaction: true })
-    expect(mergeServer({}, [], {}, [MODS]).experimental).toEqual({ background_compaction: true })
+  test("is default on in the fork (upstream #64290): daily removes the retired flag it wrote, and keeps the other experimental settings", () => {
+    expect(mergeServer({ experimental: { todo: true, background_compaction: true } }, [], {}, [MODS]).experimental).toEqual({ todo: true })
+    expect(mergeServer({ experimental: { background_compaction: true } }, [], {}, [MODS])).not.toHaveProperty("experimental")
+    expect(mergeServer({}, [], {}, [MODS])).not.toHaveProperty("experimental")
   })
 
   const fork = process.env.OPENCODE_DEV
-  test.skipIf(!fork)("names a flag the fork defines (OPENCODE_DEV)", () => {
+  test.skipIf(!fork)("the fork defines no background_compaction flag any more (OPENCODE_DEV)", () => {
     const registry = readFileSync(join(fork ?? "", "packages/schema/src/config/flag.ts"), "utf8")
-    expect(registry).toMatch(/^\s+background_compaction:/m)
+    expect(registry).not.toMatch(/^\s+background_compaction:/m)
   })
 })
 

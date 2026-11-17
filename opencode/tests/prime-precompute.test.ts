@@ -1,11 +1,10 @@
 // accept: one at a time (it asserts the background summary is asked before the next turn's request, by their times).
 // Runs scenarios/prime-precompute.ts with the Prime look against an OpenCode
-// checkout, background compaction on, and asserts that an automatic
+// checkout (background compaction is default on), and asserts that an automatic
 // compaction swaps in the summary the host wrote in the background: one
 // summary request, sent as the first turn ended and before the next prompt,
 // none at the compaction, which finishes at once and reads as one finished
-// row with the background request's tokens. Needs OPENCODE_DEV, a fork with
-// the `background_compaction` flag.
+// row with the background request's tokens. Needs OPENCODE_DEV.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"

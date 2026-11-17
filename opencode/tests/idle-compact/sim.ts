@@ -37,7 +37,7 @@ export const PROMPT_TOKENS = 1_000
  * A task that grows near the 128k window's ceiling (108.8k): its first step runs a foreground shell on a
  * `PRECOMPUTE_FIRST`-token prompt, and its answer reports `PRECOMPUTE_PROMPT`, past the fork's background-summary
  * trigger (the ceiling less half the room the cycle started with, 64.4k) and below the ceiling, so with
- * `background_compaction` on the host writes and holds a summary as the turn ends.
+ * the host (background compaction is default on) writes and holds a summary as the turn ends.
  */
 export const PRECOMPUTE_TASK = "idle compact on a held summary"
 export const PRECOMPUTE_FIRST = 20_000

@@ -10,7 +10,7 @@
  *   ceiling (108.8k), so the host compacts before the next step; then one line.
  * - `BACKGROUND_TASK`: a foreground `shell` call on a 20k prompt, then one line
  *   on a 90k one, past the background-summary trigger and below the ceiling, so
- *   with `background_compaction` on the host writes a summary as the turn ends.
+ *   the host writes a summary as the turn ends.
  * - Anything else (`IDLE_TASK`): one line.
  *
  * @module

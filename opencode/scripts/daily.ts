@@ -209,12 +209,28 @@ export const tailscaleAddress = async (): Promise<string | undefined> => {
 
 const record = (value: unknown): Json => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : {})
 
+/** `config` without the key `key`. */
+const without = (config: Json, key: string): Json => Object.fromEntries(Object.entries(config).filter(([name]) => name !== key))
+
+/**
+ * The config's `experimental` settings, without the `background_compaction` flag daily wrote until upstream #64290
+ * (fork 56711ea7) made background compaction default on and removed the flag. The fork ignores a key it no longer
+ * defines, so an old config was harmless; daily removes what it wrote all the same, and the whole `experimental`
+ * object once nothing else is in it.
+ */
+const retired = (existing: Json) => {
+  const experimental = without(record(existing.experimental), "background_compaction")
+  const rest = without(existing, "experimental")
+  if (Object.keys(experimental).length === 0) return rest
+  return { ...rest, experimental }
+}
+
 /**
  * The global server config with ours merged in: our plugins (any entry from `owned` dirs, or an
  * earlier copy of one that names no directory, such as `-opencode.tool.schedule`, is replaced,
  * every other entry kept, ours first so the auth plugin precedes the pool), each
- * role's model (its other fields kept), background compaction on (the other `experimental`
- * settings kept), and auto-update off so the stock release never replaces the fork.
+ * role's model (its other fields kept), the retired `experimental.background_compaction` removed
+ * (`retired`), and auto-update off so the stock release never replaces the fork.
  */
 export const mergeServer = (
   existing: Json,
@@ -232,15 +248,11 @@ export const mergeServer = (
   const anthropic = record(providers.anthropic)
   const settings = record(anthropic.settings)
   return {
-    ...existing,
+    ...retired(existing),
     autoupdate: false,
     // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
     // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
     providers: { ...providers, anthropic: { ...anthropic, settings: { ...settings, cache: { ...record(settings.cache), ttl: CLAUDE_CACHE_TTL } } } },
-    // Background compaction (the fork's `background_compaction` flag, off in a released build): as a session nears
-    // its compaction ceiling, the summary is written from the warm cache in the background and held, so the
-    // automatic or idle compaction that follows swaps it in at once instead of waiting on a summary request.
-    experimental: { ...record(existing.experimental), background_compaction: true },
     plugins: [...plugins, ...others],
     agents: {
       ...agents,

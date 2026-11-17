@@ -11,8 +11,8 @@
  *   host compacts before the next step.
  * - `idle`: `IDLE_TASK` with the idle-compact plugin on an 8 s cache and a 3 s
  *   margin: the idle session is compacted through `session.compact`.
- * - `background`: `BACKGROUND_TASK` with `background_compaction` on: the host
- *   writes a summary in the background as the turn ends.
+ * - `background`: `BACKGROUND_TASK`: the host (background compaction is default
+ *   on) writes a summary in the background as the turn ends.
  *
  * It writes every model request the sim got, in order, with its whole body, to
  * `<base>/result.json`.
@@ -71,7 +71,6 @@ const content = {
     // A 1000-token prompt is over a 50-token threshold.
     ...(spec.mode === "idle" ? [{ package: spec.idleCompact, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }] : []),
   ],
-  ...(spec.mode === "background" ? { experimental: { background_compaction: true } } : {}),
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */

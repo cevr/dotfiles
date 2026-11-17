@@ -44,8 +44,8 @@ service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, auto-title, session mail, background questions, wakes, skills, the rift tool and tool names, the cache, the role
 models, a one-hour prompt cache for Claude
-(`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
-(`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions, the
+(`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false` (it removes the retired
+`experimental.background_compaction` an earlier run wrote), and into `cli.json` Prime, status, the queue, background questions, the
 Prime theme and the `window` tab scope (a TUI window's tabs are the sessions
 opened in it, not every TUI's on the machine). Every other key and plugin there is kept. Rerun it after a fork
 change. At its end it writes what the host now runs to
@@ -2249,8 +2249,8 @@ window; idle compaction runs only between requests,
 so the two never run at once, and orchestrate's `compaction` hook adds what it
 keeps to both.
 
-Background compaction is the fork's `background_compaction` flag, which
-`bun run daily` turns on in the server config. Once a session's context is
+Background compaction is default on in the fork (upstream #64290 removed
+its `background_compaction` flag). Once a session's context is
 within 60k tokens of its compaction ceiling (orchestrate's window included),
 or half the room its cycle started with when that is less, the host
 summarizes everything before the latest response in the background, while

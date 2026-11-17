@@ -1,5 +1,5 @@
-// Background compaction (the fork's `background_compaction` flag, which
-// `bun run daily` turns on) in the Prime look. The first turn ends near the
+// Background compaction (default on in the fork since upstream #64290) in the
+// Prime look. The first turn ends near the
 // simulated model's ceiling (128k window, 108.8k ceiling): a tool step on a
 // 20k prompt, then an answer on a 90k one, past the background trigger (the
 // ceiling less half the room the cycle started with, 64.4k). As the turn
@@ -46,7 +46,7 @@ export type Requests = { readonly requests: ReadonlyArray<Request>; readonly nex
 export default OpenCodeDriver.use(
   {
     opencode: process.env.OPENCODE_DEV ? { dev: process.env.OPENCODE_DEV } : undefined,
-    config: { autoupdate: false, username: "Demo", experimental: { background_compaction: true } },
+    config: { autoupdate: false, username: "Demo" },
     tuiConfig: {
       animations: false,
       tabs: { mode: "off" },
