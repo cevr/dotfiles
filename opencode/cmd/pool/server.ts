@@ -479,8 +479,14 @@ export const make = (
             yield* Effect.forkScoped(pool.poll.pipe(Effect.repeat(Schedule.spaced(`${options.fleet.pollSeconds} seconds`))))
         }).pipe(
           Effect.withSpan("Pool.start"),
-          Effect.onExit((exit) =>
-            Exit.isSuccess(exit) ? Effect.void : Deferred.die(ready, new Error(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(exit.cause)}`)),
+          Effect.onExit(
+            Exit.match({
+              onSuccess: () => Effect.void,
+              onFailure: (cause) =>
+                Effect.logError(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(cause)}`).pipe(
+                  Effect.andThen(Deferred.die(ready, Cause.squash(cause))),
+                ),
+            }),
           ),
         ),
       )

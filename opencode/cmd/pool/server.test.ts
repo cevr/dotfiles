@@ -852,7 +852,7 @@ describe("the ledger", () => {
         const slow = LedgerLive.layer({ ...storage, scan: (options) => Effect.sync(() => void scans++).pipe(Effect.andThen(open.await), Effect.andThen(storage.scan(options))) })
         const root = yield* scratchRoot
         const published = yield* Queue.unbounded<PublishedReading>()
-        const plugin = yield* start(undefined, state, () => Layer.merge(testLayers(state, published, root)(), slow), false)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, () => Layer.merge(testLayers(state, published, root)(), slow), false)
         expect(Object.keys(plugin.hooks).sort()).toEqual(["http.response", "model.request", "retry"])
         yield* waitFor("the ledger read", () => scans > 0)
         const request = yield* Effect.forkChild(plugin.request("s1"))
