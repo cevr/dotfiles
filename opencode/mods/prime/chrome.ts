@@ -1,6 +1,7 @@
 // The words of the frame around the transcript, without rendering: the top
 // bar's cost, the splash's model line, the tray's model and usage, the
 // dock's counts and the loader's spinner.
+import { Option } from "effect"
 import type { Session } from "./session.ts"
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
@@ -61,9 +62,10 @@ export function plural(count: number, word: string) {
 
 /**
  * Whether the dock's count line shows: while a subagent works, a shell or a
- * job runs, or a wake or monitor is pending. With all five at zero it is not
- * drawn, not even as a blank row. An unread notice keeps it too, since the
- * dock is where it is counted until the next turn reads it.
+ * job runs, a wake or monitor is pending, or the queue holds an item not
+ * done. With all of them at zero it is not drawn, not even as a blank row. An
+ * unread notice keeps it too, since the dock is where it is counted until the
+ * next turn reads it.
  */
 export function dockShown(input: {
   readonly subagents: number
@@ -72,8 +74,21 @@ export function dockShown(input: {
   readonly wakes: number
   readonly monitors: number
   readonly notices: number
+  readonly queued: number
 }) {
-  return input.subagents > 0 || input.shells > 0 || input.jobs > 0 || input.wakes > 0 || input.monitors > 0 || input.notices > 0
+  return Object.values(input).some((count) => count > 0)
+}
+
+/**
+ * The dock's queue item: `5 queued`, and how many of them need the owner
+ * (`2 need you`), drawn in the warning colour; none with nothing queued.
+ */
+export function queueItem(tally: { readonly open: number; readonly needsYou: number }): Option.Option<{ readonly text: string; readonly needs: Option.Option<string> }> {
+  const verb = ["need", "needs"][Number(tally.needsYou === 1)]
+  return Option.map(Option.liftPredicate(tally.open, (open) => open > 0), (open) => ({
+    text: `${open} queued`,
+    needs: Option.map(Option.liftPredicate(tally.needsYou, (needs) => needs > 0), (needs) => `${needs} ${verb} you`),
+  }))
 }
 
 /** The loader's spinner frames, a braille turn. */

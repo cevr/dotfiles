@@ -59,6 +59,4 @@
 - After a big task, ask about the automations worth setting up.
 - In OpenCode, never write a "What I need from you" section, not even a short one: call `ask_user_async`. Subagents may call `ask_user_async` too: the question surfaces in the orchestrator's (root) session, where the owner answers it, and the answer comes back to the subagent.
 - Only where no async question tool exists (Claude Code, Codex) end the turn with a short numbered **"What I need from you"** section instead, held to the same rules.
-- End a turn with **"In the queue"**, left out when it has no items.
-- **"In the queue"** lists what runs now: background agents, Codex threads, latched turns, waits and monitors, each with its state. Then list what comes next: your next steps, and dated items with their date. Mark each item as yours or another session's.
-- In OpenCode, keep the `queue` tool current as items change; the end-of-turn section stays.
+- In OpenCode, the `queue` tool is the record of work in flight: update it the moment an item changes, one item per running agent, monitor, wait, next step, dated item and owner item (owner mine or other), with `after` and `on` set when you start a unit or verifier. The owner reads it in the Queue tab (`/queue`), so replies carry no queue or next-steps list. Outside OpenCode (Claude Code, Codex), end with a brief list of what still runs.

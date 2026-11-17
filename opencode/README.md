@@ -1278,12 +1278,38 @@ the `queue` tool: `set` replaces the calling session's list, `upsert` and
 `remove` patch it by id, and the answer is the list as it now stands. An
 item has an id, one line of text, a state (`needs-you`, `running`,
 `waiting`, `scheduled`, `next`, `done`), an owner (`mine` or `other` with
-`who`), an optional `at` (required when scheduled), `detail`, and `session`:
-the subagent session doing the work. The tool is a direct one, so a kernel
+`who`), an optional `at` (required when scheduled), `detail`, `session`:
+the subagent session doing the work, and the links that make the queue a
+plan: `after` (the ids it waits on) and `on` (each outcome and what follows
+it, an item id or a few words: `{ accepted: "land", changes: "fix-r2" }`).
+Queues stored before the links read as items without them. The tool is a direct one, so a kernel
 cell calls it as `tools.queue(...)`. Such a call leaves no tool part in the
 transcript, so the queue is kept in a store, not read from parts. Its one
 option is `dir`, default `$XDG_STATE_HOME/opencode-queue`. A deleted
 session's queue goes.
+
+The owner reads the queue in Prime's Queue tab (`mods/prime/tui/queue.tsx`),
+a tab of the composer panel that Prime registers once the queue RPC answers.
+The dock under the composer counts it (`4 queued, 1 needs you`, the second
+part in the warning colour); `/queue` (or `/ledger`) and a click on the count
+open the tab. It draws `plan.ts`'s projection, one line each:
+
+```
+! Close old Claude panes · needs you
+● Money parsing r1 · running
+  on accepted ⇥ ○ Verify money parsing
+  on changes  ⇥ fix round 2
+│ ○ Verify money parsing · next
+│   on accepted ⇥ land + install
+○ Merge workers, run daily · next
+```
+
+An item that waits on another, or that one of another's outcomes leads to,
+nests under it; the rest stand at the left in the board's order. `after …`
+names what an item waits on besides the item it is drawn under. Each item is
+drawn once, a cycle from its first item. ↑/↓ move between items; Enter opens
+a linked subagent's session or shows the item whole.
+`tests/queue-panel.test.ts` runs `scenarios/queue-panel.ts` for it.
 
 The TUI plugin appends the Queue section to `sidebar.content`. It is not
 installed: `scripts/daily.ts` leaves it out of `cli.json` (the owner found the
@@ -1305,7 +1331,8 @@ The model, in the domain files at `mods/queue`'s root:
   `UnknownState`, `DuplicateItem`, `UnknownItem` or `UnclearChange`. A change
   that leaves the list as it is records nothing.
 - Values: an item and its checks (`item.ts`), the board the sidebar draws
-  (`board.ts`), the tool's text (`description.ts`).
+  (`board.ts`), the plan the Queue tab draws and the dock's count
+  (`plan.ts`), the tool's text (`description.ts`).
 - Handler: `QueueModel` (`model.ts`), which serializes a session's changes and
   stores the folded list with the next revision.
 - Contract: `QueueStore` in `service.ts`, with what every implementation owes

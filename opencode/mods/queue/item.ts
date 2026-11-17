@@ -1,9 +1,11 @@
 // One entry of the queue: what the agent says runs, waits, is scheduled,
-// comes next, needs the owner, or is done; whose it is; and, for work in a
-// subagent, that subagent's session. The `queue` tool takes items as the
-// agent writes them (ItemInput, all text); `itemOf` checks one and gives the
-// Item the queue stores, or says what is wrong with it.
-import { Effect, Schema } from "effect"
+// comes next, needs the owner, or is done; whose it is; for work in a
+// subagent, that subagent's session; and where it sits in the plan: the items
+// it waits on (`after`) and what follows each of its outcomes (`on`). The
+// `queue` tool takes items as the agent writes them (ItemInput, all text but
+// the links); `itemOf` checks one and gives the Item the queue stores, or says
+// what is wrong with it.
+import { Array as Arr, Effect, Option, Result, Schema } from "effect"
 
 /** What an item is doing, in the order the sidebar groups them. */
 export const STATES = ["needs-you", "running", "waiting", "scheduled", "next", "done"] as const
@@ -14,6 +16,12 @@ export type State = typeof State.Type
 export const OWNERS = ["mine", "other"] as const
 export const Owner = Schema.Literals(OWNERS)
 export type Owner = typeof Owner.Type
+
+/** At most this many `after` ids and `on` outcomes on one item. */
+export const MAX_LINKS = 8
+/** An outcome's name and what follows it stay this short. */
+export const MAX_OUTCOME = 24
+export const MAX_NEXT = 80
 
 /** An item as the queue stores it. `doneAt` (epoch ms) is when it became done; the queue sets it. */
 export const Item = Schema.Struct({
@@ -27,6 +35,10 @@ export const Item = Schema.Struct({
   detail: Schema.optionalKey(Schema.String),
   /** The subagent session doing this work; the sidebar shows its live state instead of `state`. */
   session: Schema.optionalKey(Schema.String),
+  /** The ids of the items this one waits on. */
+  after: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** What follows each outcome, in the order written: `{ accepted: "land" }`, an item's id or a few words. */
+  on: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   doneAt: Schema.optionalKey(Schema.Number),
 })
 export type Item = typeof Item.Type
@@ -46,6 +58,10 @@ export const ItemInput = Schema.Struct({
   detail: Schema.optional(Schema.String).annotate({ description: "A few words: a pane, a session id, what it waits on." }),
   session: Schema.optional(Schema.String).annotate({
     description: "The subagent session id doing this work (from the subagent tool's result). The sidebar then shows that session's live state; do not copy its status.",
+  }),
+  after: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Ids of the items this one waits on, e.g. ['impl-r1']. [] clears." }),
+  on: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
+    description: "What follows each outcome: an item id or a few words, e.g. {accepted: 'land', changes: 'fix round 2', failed: 'tell owner'}. {} clears.",
   }),
 })
 export type ItemInput = typeof ItemInput.Type
@@ -69,6 +85,57 @@ const field = (value: string | undefined): string | undefined => {
   const line = value === undefined ? "" : oneLine(value)
   return line === "" ? undefined : line
 }
+
+/** A link written as one line: runs of whitespace become one space. */
+const pairOf = ([outcome, next]: readonly [string, string]): readonly [string, string] => [oneLine(outcome), oneLine(next)]
+
+/** `after` as stored: one line each, no blanks, no repeats, not the item itself. */
+const afterOf = (id: string, ids: ReadonlyArray<string>): Result.Result<ReadonlyArray<string>, InvalidItem> => {
+  const kept = [...new Set(ids.values().map(oneLine).filter((each) => each !== "" && each !== id))]
+  if (kept.length > MAX_LINKS) return Result.fail(new InvalidItem({ id, reason: `after names at most ${MAX_LINKS} items` }))
+  return Result.succeed(kept)
+}
+
+/** `on` as stored, in the order written: each outcome and what follows it on one line, both short. */
+const onOf = (id: string, on: Readonly<Record<string, string>>): Result.Result<Readonly<Record<string, string>>, InvalidItem> => {
+  const outcomes = Object.entries(on)
+    .values()
+    .map(pairOf)
+    .filter(([outcome, next]) => outcome !== "" && next !== "")
+    .toArray()
+  if (outcomes.length > MAX_LINKS) return Result.fail(new InvalidItem({ id, reason: `on names at most ${MAX_LINKS} outcomes` }))
+  const long = Arr.findFirst(outcomes, ([outcome, next]) => [...outcome].length > MAX_OUTCOME || [...next].length > MAX_NEXT)
+  if (Option.isSome(long))
+    return Result.fail(new InvalidItem({ id, reason: `on "${long.value[0]}": keep an outcome to ${MAX_OUTCOME} characters and what follows to ${MAX_NEXT}` }))
+  return Result.succeed(Object.fromEntries(outcomes))
+}
+
+/** An item's links: the items it waits on, and what follows each of its outcomes. */
+export interface Links {
+  readonly after?: ReadonlyArray<string>
+  readonly on?: Readonly<Record<string, string>>
+}
+
+/**
+ * The links of the item `input` describes over `previous` (the stored item,
+ * when patching): `after` and `on` as written, else as they were; an empty
+ * one is left out, so `[]` and `{}` clear them.
+ */
+export const linksOf = (id: string, input: Pick<ItemInput, "after" | "on">, previous: Option.Option<Links>): Result.Result<Links, InvalidItem> =>
+  Result.gen(function* () {
+    const after = yield* Option.match(Option.fromNullishOr(input.after), {
+      onNone: () => Result.succeed(Option.getOrElse(Option.flatMapNullishOr(previous, (item) => item.after), Arr.empty)),
+      onSome: (ids) => afterOf(id, ids),
+    })
+    const on = yield* Option.match(Option.fromNullishOr(input.on), {
+      onNone: () => Result.succeed(Option.getOrElse(Option.flatMapNullishOr(previous, (item) => item.on), () => ({}))),
+      onSome: (outcomes) => onOf(id, outcomes),
+    })
+    return {
+      ...Arr.match(after, { onEmpty: () => ({}), onNonEmpty: (ids) => ({ after: ids }) }),
+      ...Arr.match(Object.keys(on), { onEmpty: () => ({}), onNonEmpty: () => ({ on }) }),
+    }
+  })
 
 /**
  * The item `input` describes, over `previous` (the stored item with its id,
@@ -97,6 +164,7 @@ export const itemOf = (input: ItemInput, previous: Item | undefined, now: number
       if (!Number.isFinite(time)) return yield* new InvalidItem({ id, reason: `at must be an ISO 8601 date-time, not "${at}"` })
       at = new Date(time).toISOString()
     }
+    const links = yield* Effect.fromResult(linksOf(id, input, Option.fromNullishOr(previous)))
     if (stateText === "scheduled" && at === undefined) return yield* new InvalidItem({ id, reason: "a scheduled item needs at (ISO 8601)" })
     const doneAt = stateText !== "done" ? undefined : previous?.state === "done" && previous.doneAt !== undefined ? previous.doneAt : now
     return {
@@ -108,6 +176,7 @@ export const itemOf = (input: ItemInput, previous: Item | undefined, now: number
       ...(at === undefined ? {} : { at }),
       ...(kept.detail === undefined ? {} : { detail: kept.detail }),
       ...(kept.session === undefined ? {} : { session: kept.session }),
+      ...links,
       ...(doneAt === undefined ? {} : { doneAt }),
     }
   })

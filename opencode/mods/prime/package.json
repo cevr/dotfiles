@@ -11,6 +11,7 @@
   "dependencies": {
     "@dotfiles/decider": "workspace:*",
     "@dotfiles/opencode-cache": "workspace:*",
+    "@dotfiles/opencode-queue": "workspace:*",
     "@dotfiles/opencode-subagents": "workspace:*",
     "@dotfiles/opencode-wake": "workspace:*"
   }

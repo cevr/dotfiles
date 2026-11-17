@@ -5,6 +5,8 @@
 // is active) and a live row per subagent under it. The words are
 // chrome.ts's; this file draws them.
 import * as TuiClock from "@dotfiles/decider/tui-clock"
+import { board } from "@dotfiles/opencode-queue/board"
+import { tally } from "@dotfiles/opencode-queue/plan"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -14,6 +16,7 @@ import {
   cost,
   dockShown,
   plural,
+  queueItem,
   splashAgent,
   splashModel,
   SPINNER,
@@ -34,6 +37,7 @@ import { useWorking, working } from "./family.ts"
 import type { Host } from "./host.ts"
 import { SubagentRows } from "./live.tsx"
 import { toneColor } from "./tone.ts"
+import { QUEUE_TAB } from "./queue.tsx"
 import { GUTTER } from "./transcript.tsx"
 
 /**
@@ -305,13 +309,24 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const subagentText = () => `◆ ${plural(subagents(), "subagent")}`
   const shellText = () => plural(shells(), "shell")
   const jobText = createMemo(() => jobItem(jobs()))
+  // The root session's queue: what is not done, how much of it needs the owner. A click opens the Queue tab.
+  const queue = props.host.queue(() => Option.fromNullishOr(props.sessionID))
+  const queued = createMemo(() =>
+    Option.match(queue(), { onNone: () => ({ open: 0, needsYou: 0 }), onSome: (shown) => tally(board(shown.items, shown.live, TuiClock.now())) }),
+  )
+  const queueText = createMemo(() => queueItem(queued()))
+  const [queueHover, setQueueHover] = createSignal(false)
   // The wake item takes what the row has left after the other items. The wakes are read
   // again every 2 seconds; a reading that says the same keeps the item, and draws nothing.
   const wake = keptMemo(() => {
     const reading = wakes()
     if (!reading) return undefined
     const job = Option.match(jobText(), { onNone: () => 0, onSome: (text) => DOCK_SEP.length + cellsOf(text) })
-    const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText()) + job
+    const queue = Option.match(queueText(), {
+      onNone: () => 0,
+      onSome: (item) => DOCK_SEP.length + cellsOf(item.text) + Option.match(item.needs, { onNone: () => 0, onSome: (needs) => 2 + cellsOf(needs) }),
+    })
+    const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText()) + job + queue
     return wakeItem(reading, (measured() ?? terminal().width - 2) - others)
   }, sameWakeItem)
   // The count opens the host's Subagents picker, as Down on an empty prompt does.
@@ -329,6 +344,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
       wakes: entries.filter((entry) => entry.kind === "alarm").length,
       monitors: entries.filter((entry) => entry.kind === "monitor").length,
       notices: wakes()?.notices ?? 0,
+      queued: queued().open,
     })
   })
   return (
@@ -412,6 +428,26 @@ export function Dock(props: { host: Host; sessionID?: string }) {
             </span>
           </text>
         </box>
+        <Show when={Option.getOrUndefined(queueText())}>
+          {(item) => (
+            <>
+              <text wrapMode="none" flexShrink={0}>
+                {sep()}
+              </text>
+              <box
+                flexShrink={0}
+                onMouseOver={() => setQueueHover(true)}
+                onMouseOut={() => setQueueHover(false)}
+                onMouseUp={() => props.host.openTab(QUEUE_TAB)}
+              >
+                <text wrapMode="none">
+                  <span style={{ fg: [theme().text.muted, theme().text.base][Number(queueHover())] }}>{item().text}</span>
+                  <Show when={Option.getOrUndefined(item().needs)}>{(needs) => <span style={{ fg: theme().text.feedback.warning.base }}>{`, ${needs()}`}</span>}</Show>
+                </text>
+              </box>
+            </>
+          )}
+        </Show>
         <Show when={Option.getOrUndefined(jobText())}>
           {(text) => (
             <text wrapMode="none" flexShrink={0}>

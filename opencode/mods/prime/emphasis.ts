@@ -111,8 +111,9 @@ export interface Label {
 }
 
 /**
- * The lead labels of the "In the queue" section, as replies already write
- * them (`- **Running (mine):**`), each with the subagent state it names.
+ * The lead labels of the "In the queue" section, as replies wrote them before
+ * the Queue tab took the queue over and as older transcripts still hold them
+ * (`- **Running (mine):**`), each with the subagent state it names.
  * Longest first, so `Waiting on you` is not read as `Waiting`.
  */
 export const LABELS: ReadonlyArray<readonly [string, State]> = [
@@ -311,7 +312,6 @@ export function guidance(): string {
     "This terminal draws [[Word]] in a reply to the user as a coloured chip. Put it beside the claim or item it describes. Use only these words, as written, with short detail if useful ([[Done 12/12]], [[Failed: 3 tests]]):",
     ...groups,
     "A chip names a state, not emphasis: at most one per sentence, bullet or table cell. None in headings, code, commands, paths, or anything another program or agent reads (files, commit messages, tool inputs, prompts and messages to other sessions).",
-    'The "In the queue" labels are drawn with their state marks as you already write them; add no chips to them.',
     "</reply_style>",
   ].join("\n")
 }
