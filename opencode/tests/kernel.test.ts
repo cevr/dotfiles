@@ -272,6 +272,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       run("report", { task: REPORT_TASK, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, (result) => {
         const [cell] = toolParts(result.messages)
         expect({ status: cell?.state.status, text: (cell?.state.content ?? []).map((part) => part.text ?? "").join("") }).toEqual({ status: "completed", text: "started" })
+        // The model held the worker's answer until the parent's turn ended, then sent it.
+        expect(result.waited).toBe(1)
         // The parent's context: its turn's closing line, then the child's completed report, then its answer to it.
         const said = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(result.messages).map((message) =>
           [

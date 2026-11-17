@@ -38,6 +38,8 @@ export interface Result {
   readonly seen: ReadonlyArray<Seen>
   /** The stop task's subagent's inbox after the run: what still waits to reach it. */
   readonly inbox: ReadonlyArray<unknown>
+  /** The report task's worker's answers the model held until the parent's turn ended. */
+  readonly waited: number
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
@@ -131,7 +133,7 @@ try {
     return (yield* Effect.forEach(children, (child) => Effect.promise(() => opencode.sessions.inbox.list({ sessionID: child.id })))).flat()
   })
   const inbox = await Effect.runPromise(ran)
-  const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, inbox }
+  const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, inbox, waited: sim.waited() }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()

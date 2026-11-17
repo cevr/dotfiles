@@ -287,17 +287,20 @@ const stalls = (messages: ReadonlyArray<ChatMessage>, system: string) =>
 export const serve = (file: string) => {
   const seen: Seen[] = []
   let served = 0
-  /** The report task's worker's answers waiting for `release`, and whether it came. */
+  /** The report task's worker's answers waiting for `release`, whether it came, and how many it sent that had waited. */
   const held: Array<() => void> = []
-  const released = { value: false }
-  /** Sends the report task's worker's answer, now and to any request that comes after. */
+  const released = { value: false, waited: 0 }
+  /** Sends the report task's worker's answers that wait, and from now on each at once. */
   const release = () => {
     released.value = true
+    released.waited += held.length
     for (const send of held.splice(0)) send()
   }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
+    // A held answer waits for the parent's whole turn: past Bun's default 10 s idle cut, up to its 255 s most.
+    idleTimeout: 255,
     fetch: async (request) => {
       const url = new URL(request.url)
       if (request.method !== "POST" || !url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 })
@@ -328,16 +331,18 @@ export const serve = (file: string) => {
         })
       }
       // The report task's worker answers only once the run releases it: after the parent's turn ended.
-      if (firstUser(messages) === REPORT_CHILD && !system.includes("You name conversations")) {
+      // A worker's first user message holds more than its prompt, which ends it, as every task here does.
+      if (firstUser(messages).endsWith(REPORT_CHILD) && !system.includes("You name conversations")) {
         const answer = new TextEncoder().encode(events(reply(body, file), model, `sim${served}`))
         return new Response(
           new ReadableStream({
             start: (controller) => {
-              held.push(() => {
+              const send = () => {
                 controller.enqueue(answer)
                 controller.close()
-              })
-              if (released.value) release()
+              }
+              if (released.value) send()
+              else held.push(send)
             },
           }),
           { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } },
@@ -348,5 +353,7 @@ export const serve = (file: string) => {
       })
     },
   })
-  return { server, seen, release }
+  /** How many of the report task's worker's answers waited for `release` before they were sent. */
+  const waited = () => released.waited
+  return { server, seen, release, waited }
 }
