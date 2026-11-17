@@ -2,7 +2,7 @@
 // mid-way and taken up again, an old build's key written after it), both shapes read as one, and writers in one
 // process or in several on one storage. Each `Chunks.open` over a storage is one process's store.
 import { describe, expect } from "bun:test"
-import { Array as Arr, Effect, Order, Schema } from "effect"
+import { Array as Arr, Deferred, Effect, Fiber, Order, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { type Step, WINDOW_MS } from "../accounts.ts"
@@ -185,6 +185,39 @@ describe("the chunk store", () => {
         yield* Effect.forEach(copies, (copy, index) => copy.steps(ANTHROPIC).append(step(NOW, `ses_copy_${index}`)), { concurrency: 3 })
         expect(keysUnder(entries, kind.prefix)).toHaveLength(1)
         expect(yield* readBack(entries)).toHaveLength(8)
+      }),
+    ),
+    5_000,
+  )
+
+  effectTest(
+    "a step appended while the first read is underway is kept, in the store and in the storage",
+    atNow(
+      Effect.gen(function* () {
+        const entries = oneKeyEach(sessions(5))
+        const inner = memory(entries)
+        const release = yield* Deferred.make<boolean>()
+        // The first read of the old keys waits until the append has been asked for; any later read goes through.
+        const legacyScans = { count: 0 }
+        const slow: LedgerLive.Storage = {
+          ...inner,
+          scan: (options) =>
+            Effect.suspend(() => {
+              const first = options.prefix === kind.legacy && ++legacyScans.count === 1
+              return Effect.andThen(Effect.when(Deferred.await(release), Effect.succeed(first)), inner.scan(options))
+            }),
+        }
+        const store = Chunks.open(slow, kind)
+        const reading = yield* Effect.forkChild(store.entries)
+        yield* Effect.yieldNow
+        const late = step(NOW, "ses_during")
+        const appending = yield* Effect.forkChild(store.append(late))
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(release, true)
+        yield* Fiber.join(appending)
+        expect(yield* Fiber.join(reading)).toHaveLength(5)
+        expect(sorted(yield* store.entries)).toEqual(sorted([...sessions(5), late]))
+        expect(yield* readBack(entries)).toEqual(sorted([...sessions(5), late]))
       }),
     ),
     5_000,
