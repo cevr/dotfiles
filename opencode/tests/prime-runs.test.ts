@@ -9,6 +9,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { maskTurnTime } from "../mods/prime/turn-time.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -31,7 +32,7 @@ function hintAt(frame: ReadonlyArray<string>) {
 function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const start = frame.findIndex((line) => line.includes("┃ Check the build"))
   const end = hintAt(frame)
-  return frame.slice(start, end > start ? end : undefined).filter((line) => line.trim() !== "")
+  return frame.slice(start, end > start ? end : undefined).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray()
 }
 
 /** A row's exact line; `<t>` stands for a duration such as `12ms` or `6.0s`. */
@@ -85,6 +86,7 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
       " ┃ Also read the notes file.",
       "  ● Read notes.md",
       "  Suite passed; the notes say ship it.",
+      "<turn-time>",
     ])
   }))
 
@@ -115,6 +117,7 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
       " ┃ Also read the notes file.",
       "  ● Read 1 file",
       "  Suite passed; the notes say ship it.",
+      "<turn-time>",
     ])
   }))
 })

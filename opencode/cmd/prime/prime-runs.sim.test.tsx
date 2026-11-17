@@ -11,6 +11,7 @@
 import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
+import { maskTurnTime } from "../../mods/prime/turn-time.ts"
 import { longShell, type Model, ranRead, ranShell, text } from "../../sim-tui/server.ts"
 
 const FILE = "cmd/prime/prime-runs.sim.test.tsx"
@@ -62,7 +63,7 @@ const transcript = (frame: ReadonlyArray<string>): ReadonlyArray<string> => {
   const start = frame.findIndex((line) => line.includes("┃ Check the build"))
   const end = hintAt(frame)
   // Up to the hint when it is below the prompt, else to the frame's end.
-  return frame.slice(start, Math.max(end, frame.length * Number(end <= start))).filter((line) => line.trim() !== "")
+  return frame.slice(start, Math.max(end, frame.length * Number(end <= start))).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray()
 }
 
 /** A row's exact line; `<t>` stands for a duration such as `12ms` or `6.0s`. */
@@ -151,6 +152,7 @@ seeded("Details: a step's two parallel calls share a group; the next step, the t
       " ┃ Also read the notes file.",
       "  ● Read notes.md",
       "  Suite passed; the notes say ship it.",
+      "<turn-time>",
     ])
   }),
 )
@@ -185,6 +187,7 @@ seeded("Overview: a header per group, between the messages that end them", ({ se
       " ┃ Also read the notes file.",
       "  ● Read 1 file",
       "  Suite passed; the notes say ship it.",
+      "<turn-time>",
     ])
   }),
 )

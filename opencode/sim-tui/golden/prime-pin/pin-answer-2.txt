@@ -1,6 +1,5 @@
                                          two batches  $0.00
  ┃ Now list the second batch, and keep going well past the width of this terminal so the pinned li…
-  - two item 18
   - two item 19
   - two item 20
   - two item 21
@@ -20,6 +19,7 @@
   - two item 35
   - two item 36
   - two item 37
+  - two item 38
                                                                                    Jump to latest ↓
 
 

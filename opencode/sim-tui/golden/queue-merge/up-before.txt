@@ -37,4 +37,4 @@
                                                                                             gpt-sim-model
  ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
- ✓ Server  ● UI  Theme  Tools  Experiments
+ ✓ Server  ○ UI  Theme  Tools  Experiments

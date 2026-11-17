@@ -7,27 +7,27 @@
  ┃ Check the build.
 
   The build passes.
+                                                                                               9:09 PM ET
 
  ┃ Now run the linter.
 
   The linter is clean.
+                                                                                               9:09 PM ET
 
  ┃ Run the slow suite.
 
   Running The suite passes.
+                                                                                               9:09 PM ET
 
  ┃ Also update the docs.
 
   Docs updated.
+                                                                                               9:09 PM ET
 
  ┃ Afterwards tag the release.
 
   Release tagged.
-
-  ⠏ Executing · 4s
-
-
-
+                                                                                               9:09 PM ET
 
 
 

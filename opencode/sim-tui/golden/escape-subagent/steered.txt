@@ -35,6 +35,6 @@
  ↑ back to parent                                                                           gpt-sim-model
  ────────────────────────────────────────────────────────────────────────────────────────────────────────
  ◆ 1 subagent  ·  0 shells
- › ◇ general gpt  Fix money parsing  Reading the parser · 2s
+ › ◆ general gpt  Fix money parsing  Reading the parser · 2s
 
- ✓ Server  ○ UI  Theme  Tools  Experiments
+ ✓ Server  ⦿ UI  Theme  Tools  Experiments

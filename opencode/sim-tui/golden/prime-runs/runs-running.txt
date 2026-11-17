@@ -16,7 +16,7 @@
 
   ○ Running sleep 6; printf 'suite ok\n'
 
-  ⠙ Executing · 0s
+  ⠹ Executing · 0s
 
 
 
@@ -45,4 +45,4 @@
  ────────────────────────────────────────────────────────────────────────────────────────────────────────
  ◆ 0 subagents  ·  1 shell
 
- ✓ Server  ● UI  Theme  Tools  Experiments
+ ✓ Server  ○ UI  Theme  Tools  Experiments

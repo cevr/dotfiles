@@ -1,5 +1,6 @@
                                          two batches  $0.00
  ┃ List the first batch.
+  - one item 28
   - one item 29
   - one item 30
   - one item 31
@@ -12,14 +13,13 @@
   - one item 38
   - one item 39
   - one item 40
+                                                                                         9:14 PM ET
 
  ┃ Now list the second batch, and keep going well past the width of this terminal so the pinned
  ┃ line has to be cut short.
 
   - two item 01
   - two item 02
-  - two item 03
-  - two item 04
                                                                                    Jump to latest ↓
 
 

@@ -9,6 +9,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { maskTurnTime } from "../mods/prime/turn-time.ts"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -23,7 +24,7 @@ const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 /** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
 function split(frame: ReadonlyArray<string>) {
   const hint = hintRow(frame)
-  return { transcript: frame.slice(0, hint).filter((line) => line.trim() !== ""), composer: frame[hint + 1] ?? "" }
+  return { transcript: frame.slice(0, hint).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray(), composer: frame[hint + 1] ?? "" }
 }
 /** The Dock's top row: the tray, right above its rule (the activity counts under it show only while something is active). */
 const dock = (frame: ReadonlyArray<string>) => {
@@ -71,7 +72,7 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
 
   test("Escape at 7 s interrupts: the prompt and its partial answer stay", kept.test(() => {
     const { transcript, composer } = split(frames.interrupted)
-    expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
+    expect(transcript.slice(-4)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted", "<turn-time>"])
     expect(composer).toBe(" ┃")
   }))
 })

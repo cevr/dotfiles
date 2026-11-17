@@ -8,11 +8,13 @@
 // draws its session row: `↻` a retry, `■` an interrupt, `✗` an error, and
 // nothing for a step that ended well (Prime closes a turn with no agent,
 // model or duration line; step-end.ts).
+import { Option } from "effect"
 import { createMemo, createSignal, For, Show, type Accessor } from "solid-js"
 import type { Detail } from "../detail.ts"
 import type { Run } from "../group.ts"
 import { noticeApart, noticeGroup, noticeLines } from "../notice.ts"
 import { stepEndRow } from "../step-end.ts"
+import { hostZone, turnEnd } from "../turn-time.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { useSessionLink } from "./link.ts"
@@ -108,7 +110,13 @@ function NoticeRuns(props: { host: Host; runs: ReadonlyArray<Run>; hover: boolea
 /** Where a session row's glyph sits: the column a group's glyph sits in. */
 const GLYPH = GUTTER
 
-export function StepEnd(props: { host: Host; sessionID: string; messageID: string; detail: Accessor<Detail> }) {
+/**
+ * The end of a turn (the host draws this slot once a step ends the turn, well,
+ * interrupted or with an error, or waits on a retry): the step's row when it
+ * ended badly, then, once no retry is pending, when the turn ended, on the
+ * right in the dock's faint colour (turn-time.ts). `zone` is the owner's.
+ */
+export function StepEnd(props: { host: Host; sessionID: string; messageID: string; detail: Accessor<Detail>; zone: string }) {
   const message = createMemo(() => {
     const found = props.host.message(props.sessionID, props.messageID)
     return found?.type === "assistant" ? found : undefined
@@ -119,18 +127,31 @@ export function StepEnd(props: { host: Host; sessionID: string; messageID: strin
     const found = message()
     return found ? stepEndRow({ error: found.error, retry: found.retry }, now(), props.detail()) : undefined
   })
+  // The step's own end, not the render's (turn-time.ts `turnEnd`).
+  const ended = createMemo(() => Option.getOrUndefined(Option.flatMap(Option.fromNullishOr(message()), (found) => turnEnd(found, now(), props.zone, hostZone()))))
   return (
-    <Show when={row()}>
-      {(shown) => (
-        <box marginTop={1} paddingLeft={GLYPH} flexDirection="row" flexShrink={0}>
-          <text width={2} flexShrink={0} fg={toneColor(props.host.theme(), shown().tone)}>
-            {shown().glyph}
-          </text>
-          <text flexGrow={1} flexShrink={1} wrapMode="word" fg={toneColor(props.host.theme(), shown().tone)}>
-            {shown().text}
-          </text>
-        </box>
-      )}
-    </Show>
+    <>
+      <Show when={row()}>
+        {(shown) => (
+          <box marginTop={1} paddingLeft={GLYPH} flexDirection="row" flexShrink={0}>
+            <text width={2} flexShrink={0} fg={toneColor(props.host.theme(), shown().tone)}>
+              {shown().glyph}
+            </text>
+            <text flexGrow={1} flexShrink={1} wrapMode="word" fg={toneColor(props.host.theme(), shown().tone)}>
+              {shown().text}
+            </text>
+          </box>
+        )}
+      </Show>
+      <Show when={ended()}>
+        {(text) => (
+          <box flexDirection="row" justifyContent="flex-end" flexShrink={0}>
+            <text wrapMode="none" fg={props.host.theme().text.faint}>
+              {text()}
+            </text>
+          </box>
+        )}
+      </Show>
+    </>
   )
 }

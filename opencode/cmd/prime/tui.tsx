@@ -24,6 +24,7 @@ import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/p
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
 import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
+import { ownerZone } from "@dotfiles/opencode-prime/turn-time"
 import { Option } from "effect"
 import { createSignal } from "solid-js"
 
@@ -34,6 +35,8 @@ export default Plugin.define({
     const build = builds(context, () => readUpstream())
     const h = host(context, goal.read, build)
     const [detail, setDetail] = createSignal<Detail>("details")
+    // The owner's time zone, for when each turn ended (mods/prime/turn-time.ts).
+    const zone = ownerZone(context.options)
     // A prompt the runner has not taken draws nothing in the transcript (tui/transcript.tsx UserBand), so its row takes no gap either.
     const hidden = (messageID: string | undefined) => {
       const sessionID = h.route()
@@ -86,11 +89,12 @@ export default Plugin.define({
       replace: "session.message.completion",
       render: (input) => <Completion host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
     })
-    // Prime closes a turn with no agent, model or duration line; a step that
-    // ended badly draws its retry, interrupt or error row (tui/notice.tsx).
+    // Prime closes a turn with no agent, model or duration line, only when it ended (in the owner's zone, the
+    // option `zone`, and the host's when it differs); a step that ended badly draws its retry, interrupt or error
+    // row first (tui/notice.tsx).
     context.ui.slot({
       replace: "session.message.assistant.footer",
-      render: (input) => <StepEnd host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
+      render: (input) => <StepEnd host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} zone={zone} />,
     })
     // A compaction is one line below All, and the host's whole block (its summary) at All (tui/compaction.tsx).
     context.ui.slot({

@@ -5,9 +5,11 @@
 // - a duration the real run measured in wall time (`· 12s`, `0.4s`);
 // - an id the real server drew (`ses_…`, `msg_…`, `call_…` keep their prefix);
 // - the working directory, the fixture's temporary one against the drive's;
-// - a glyph animated in wall time (a spinner, a pulsing dot or diamond).
+// - a glyph animated in wall time (a spinner, a pulsing dot or diamond);
+// - Prime's row under a finished turn, the wall time it ended (mods/prime/turn-time.ts).
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Effect, FileSystem, Path, Schema } from "effect"
+import { TURN_TIME_ROW } from "../mods/prime/turn-time.ts"
 
 /** The fields a real run and a simulated one may disagree on, and what each is masked as. */
 export const MASKS: ReadonlyArray<readonly [RegExp, string]> = [
@@ -23,6 +25,9 @@ export const MASKS: ReadonlyArray<readonly [RegExp, string]> = [
   [/[◆◇] (worker|general)\b/g, "<pulse> $1"],
   // A running call's dot, which pulses ● / ○.
   [/^( +)[●○] Running /g, "$1<pulse> Running "],
+  // Prime's row under a finished turn (mods/prime/turn-time.ts): the wall time the turn ended, in the owner's zone
+  // and the host's when they differ (the real run's Mac reads one time, the simulated host UTC two), right-aligned.
+  [TURN_TIME_ROW, "<turn-time>"],
 ]
 
 const mask = (line: string) => MASKS.reduce((text, [pattern, by]) => text.replace(pattern, by), line.trimEnd())

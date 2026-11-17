@@ -9,6 +9,7 @@ import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
 import { type Model, stall, text } from "../../sim-tui/server.ts"
+import { maskTurnTime } from "../../mods/prime/turn-time.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/prime/prime-escape.sim.test.tsx"
@@ -31,7 +32,7 @@ const title = () => "helper rename"
 /** The rows above the composer (the transcript, down to Prime's hint line) and the composer's first row. */
 const split = (frame: ReadonlyArray<string>) => {
   const hint = hintRow(frame)
-  return { transcript: frame.slice(0, hint).filter((line) => line.trim() !== ""), composer: frame[hint + 1] ?? "" }
+  return { transcript: frame.slice(0, hint).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray(), composer: frame[hint + 1] ?? "" }
 }
 /** The Dock's top row: the tray, right above its rule. */
 const dock = (frame: ReadonlyArray<string>) => {
@@ -115,7 +116,7 @@ seeded("Escape at 7 s interrupts: the prompt and its partial answer stay", ({ se
     const frames = yield* scenario(seed)
     expect(yield* Golden.check("prime-escape", "interrupted", frames.interrupted)).toEqual([])
     const { transcript, composer } = split(frames.interrupted ?? [])
-    expect(transcript.slice(-3)).toEqual([` ┃ ${ASK}`, `  ${PARTIAL}`, "  ■ Interrupted"])
+    expect(transcript.slice(-4)).toEqual([` ┃ ${ASK}`, `  ${PARTIAL}`, "  ■ Interrupted", "<turn-time>"])
     expect(composer).toBe(" ┃")
   }),
 )

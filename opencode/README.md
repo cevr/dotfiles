@@ -240,6 +240,11 @@ theme. The mod has three parts.
   session's first read and on reconnect, kept current from its `changed`
   events).
 
+Each finished turn, interrupted or errored ones too, ends with one right-aligned row in the dock's faint colour
+saying when it ended (`turn-time.ts`): `9:12 PM ET` in the owner's zone (the plugin's `zone` option, default
+`America/New_York`), then the host's own time when its offset differs (`9:12 PM ET · 02:12 UTC` on the UTC
+workbox), and the date first once the turn is older than the owner's today (`Nov 16 9:12 PM ET`).
+
 The dock under the composer counts the session's work:
 
 ```

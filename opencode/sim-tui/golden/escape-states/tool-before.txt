@@ -8,9 +8,9 @@
 
   Working on it
 
-  ○ Running sleep 60 · 6s
+  ● Running sleep 60 · 6s
 
-  ⠧ Executing · 6s
+  ⠏ Executing · 6s
 
   Press ctrl+b to move running work to the background
 
@@ -37,4 +37,4 @@
                                                                                             gpt-sim-model
  ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
- ✓ Server  ⦿ UI  Theme  Tools  Experiments
+ ✓ Server  ○ UI  Theme  Tools  Experiments

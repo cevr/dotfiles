@@ -10,6 +10,7 @@ import { Effect } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
 import { type Model, shell, stall, text } from "../../sim-tui/server.ts"
+import { maskTurnTime } from "../../mods/prime/turn-time.ts"
 import { hintRow } from "../../tests/composer.ts"
 
 const FILE = "cmd/escape/escape-states.sim.test.tsx"
@@ -98,7 +99,7 @@ const play = (seed: number, which: Case) =>
 /** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
 const split = (lines: ReadonlyArray<string> = []) => {
   const hint = hintRow(lines)
-  return { transcript: lines.slice(0, hint).filter((line) => line.trim() !== ""), composer: lines[hint + 1] ?? "" }
+  return { transcript: lines.slice(0, hint).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray(), composer: lines[hint + 1] ?? "" }
 }
 const golden = (which: Case, frames: Record<string, ReadonlyArray<string>>, names: ReadonlyArray<string>) =>
   Effect.forEach(names, (name) => Effect.map(Golden.check("escape-states", `${which}-${name}`, frames[name]), (lines) => lines.map((line) => `${name} ${line}`))).pipe(
@@ -114,7 +115,7 @@ for (const which of ["steer", "queue"] as const)
         expect(yield* golden(which, frames, ["before", "after", "again"])).toEqual([])
         expect(split(frames.before).transcript.join("\n")).toContain("Executing")
         const { transcript, composer } = split(frames.after)
-        expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
+        expect(transcript.slice(-4)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted", "<turn-time>"])
         expect(composer).toBe(" ┃ Also update the docs.")
         // The second Escape finds an idle session; the prompt stays in the composer.
         expect(split(frames.again).composer).toBe(" ┃ Also update the docs.")
@@ -126,7 +127,7 @@ seeded("a running shell call: one Escape cancels it and interrupts", ({ seed, ex
     const frames = yield* play(seed, "tool")
     expect(yield* golden("tool", frames, ["before", "after"])).toEqual([])
     expect(frames.tool).toEqual(["interrupted"])
-    expect(split(frames.after).transcript.slice(-2)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted"])
+    expect(split(frames.after).transcript.slice(-3)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted", "<turn-time>"])
   }),
 )
 
@@ -135,7 +136,7 @@ seeded("a draft in the composer: one Escape interrupts and the draft stays", ({ 
     const frames = yield* play(seed, "draft")
     expect(yield* golden("draft", frames, ["before", "after"])).toEqual([])
     const { transcript, composer } = split(frames.after)
-    expect(transcript.at(-1)).toBe("  ■ Interrupted")
+    expect(transcript.slice(-2)).toEqual(["  ■ Interrupted", "<turn-time>"])
     expect(composer).toBe(" ┃ half a thought")
   }),
 )

@@ -46,3 +46,4 @@
 - ↓ opens the panel only on an empty composer; with a draft it moves the cursor.
 - The panel needs the fork's `panel-slots` and `panel-terminal-state` work (in `prime-look`); a fork without it draws the host's own panel, which is not Prime's.
 - Times tick live: compare words, never a whole frame, across snapshots.
+- Each finished turn ends with a wall-clock row (`mods/prime/turn-time.ts`); goldens and transcript checks read it as `<turn-time>` (`maskTurnTime`, the `MASKS` in `sim-tui/golden.ts`).

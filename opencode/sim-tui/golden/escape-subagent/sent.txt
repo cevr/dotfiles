@@ -9,19 +9,19 @@
  ┃ Worker brief: fix money parsing.
 
   Reading the parser and done.
+                                                                                               9:15 PM ET
 
  ┃ Check the cents rounding too.
 
   Cents rounding checked
 
   ■ Interrupted
+                                                                                               9:15 PM ET
 
  ┃ Stop and ship the fix now.
 
   Shipped the fix.
-
-
-
+                                                                                               9:15 PM ET
 
 
 

@@ -7,6 +7,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
+import { maskTurnTime } from "../mods/prime/turn-time.ts"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -24,7 +25,7 @@ const frame = (name: string) => `${saved.get(`${name}.txt`)}`
 function split(name: string) {
   const lines = frame(name).split("\n")
   const hint = hintRow(lines)
-  return { transcript: lines.slice(0, hint).filter((line) => line.trim() !== ""), composer: lines[hint + 1] ?? "" }
+  return { transcript: lines.slice(0, hint).values().map(maskTurnTime).filter((line) => line.trim() !== "").toArray(), composer: lines[hint + 1] ?? "" }
 }
 
 describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE_DEV)", () => {
@@ -48,7 +49,7 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
     test(`a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`, kept.test(() => {
       expect(split(`${which}-before`).transcript.join("\n")).toContain("Executing")
       const { transcript, composer } = split(`${which}-after`)
-      expect(transcript.slice(-3)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted"])
+      expect(transcript.slice(-4)).toEqual([" ┃ Rename the helper.", "  Working on it", "  ■ Interrupted", "<turn-time>"])
       expect(composer).toBe(" ┃ Also update the docs.")
       // The second Escape finds an idle session; the prompt stays in the composer.
       expect(split(`${which}-again`).composer).toBe(" ┃ Also update the docs.")
@@ -56,12 +57,12 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
 
   test("a running shell call: one Escape cancels it and interrupts", kept.test(() => {
     expect(frame("tool-tool")).toBe("interrupted")
-    expect(split("tool-after").transcript.slice(-2)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted"])
+    expect(split("tool-after").transcript.slice(-3)).toEqual(["  ● Ran sleep 60 · cancelled", "  ■ Interrupted", "<turn-time>"])
   }))
 
   test("a draft in the composer: one Escape interrupts and the draft stays", kept.test(() => {
     const { transcript, composer } = split("draft-after")
-    expect(transcript.at(-1)).toBe("  ■ Interrupted")
+    expect(transcript.slice(-2)).toEqual(["  ■ Interrupted", "<turn-time>"])
     expect(composer).toBe(" ┃ half a thought")
   }))
 
