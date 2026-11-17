@@ -96,7 +96,8 @@ describe("the limit store", () => {
       entries,
       path,
       (limits) => Effect.andThen(limits.flush, limits.tally),
-      9 * DAY,
+      // A day past keep, so the chunk is sealed too (chunks.ts SEAL_MS): another process may append to it until then.
+      9 * DAY + HOUR,
     )
     expect(entries.size).toBe(0)
     expect(later.cumulative[0]?.families[0]?.mtok).toBe(1)

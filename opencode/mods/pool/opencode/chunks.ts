@@ -17,6 +17,13 @@ import type { Storage } from "./ledger.ts"
 /** The most entries one chunk holds. */
 export const CHUNK = 200
 
+/**
+ * How long a writer appends to one chunk: an entry more than this after the chunk's first goes in a new chunk. So no
+ * entry a chunk will ever hold is newer than its first entry's time plus this, which lets another process remove the
+ * chunk once that time is past keep, with no race against its writer (the storage has no compare-and-set).
+ */
+export const SEAL_MS = 24 * 3_600_000
+
 /** How many keys one read of the storage asks for: the most the host answers. */
 const READ_PAGE = 1000
 
@@ -45,7 +52,10 @@ export interface Store<A> {
   readonly entries: Effect.Effect<ReadonlyArray<A>>
   /** Keeps an entry, unless one of its identity is kept already. A write that fails is lost (logged). */
   readonly append: (entry: A) => Effect.Effect<void>
-  /** Forgets every entry of time `through` or before, and removes every chunk that holds only those, any writer's. */
+  /**
+   * Forgets every entry of time `through` or before, and removes every chunk that holds, and will hold, only those:
+   * this process's by what it wrote, another's once it can change no more (SEAL_MS).
+   */
   readonly expire: (through: number) => Effect.Effect<void>
   /** Rewrites the old keys as chunks and removes them; how many old keys it removed. Once per process. */
   readonly fold: Effect.Effect<number>
@@ -54,10 +64,17 @@ export interface Store<A> {
 const Chunk = Schema.Struct({ v: Schema.Literal(1), entries: Schema.Array(Schema.Unknown) })
 const decodeChunk = Schema.decodeUnknownOption(Chunk)
 
+/** A chunk as this process saw it last. */
+interface Seen {
+  readonly oldest: number
+  readonly newest: number
+  readonly own: boolean
+}
+
 interface Held<A> {
   readonly byIdentity: Map<string, A>
-  /** Each chunk read or written, by key: its newest entry's time. */
-  readonly chunks: Map<string, number>
+  /** Each chunk read or written, by key: its oldest and newest entry's times as seen, and whether this process wrote it. */
+  readonly chunks: Map<string, Seen>
   /** The old keys read, in order, each with its entry's identity when it decoded. */
   readonly legacy: Array<{ readonly key: string; readonly identity: Option.Option<string> }>
   /** The identities only an old key holds. */
@@ -86,7 +103,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
   let writer = Option.none<string>()
   let seq = 0
   /** The chunk appends go to, and what it holds. */
-  let current = Option.none<{ readonly key: string; readonly entries: Array<A> }>()
+  let current = Option.none<{ readonly key: string; readonly opened: number; readonly entries: Array<A> }>()
   let folded = false
 
   const read = Effect.gen(function* () {
@@ -94,14 +111,16 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
     for (const { key, value } of yield* scanAll(storage, kind.prefix)) {
       const chunk = decodeChunk(value)
       if (Option.isNone(chunk)) continue
+      let oldest = Number.POSITIVE_INFINITY
       let newest = Number.NEGATIVE_INFINITY
       for (const row of chunk.value.entries)
         Option.map(Option.map(decodeRow(row), kind.fromRow), (entry) => {
           const identity = kind.identity(entry)
+          oldest = Math.min(oldest, kind.at(entry))
           newest = Math.max(newest, kind.at(entry))
           if (!found.byIdentity.has(identity)) found.byIdentity.set(identity, entry)
         })
-      found.chunks.set(key, newest)
+      found.chunks.set(key, { oldest, newest, own: false })
     }
     for (const { key, value } of yield* scanAll(storage, kind.legacy)) {
       const entry = Option.map(decodeOld(value), (old) => kind.fromOld(key.slice(kind.legacy.length), old))
@@ -141,7 +160,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
     storage.set(key, { v: 1, entries: entries.map(kind.toRow) }).pipe(
       Effect.tap(() =>
         Effect.sync(() =>
-          found.chunks.set(key, Math.max(...entries.map(kind.at))),
+          found.chunks.set(key, { oldest: Math.min(...entries.map(kind.at)), newest: Math.max(...entries.map(kind.at)), own: true }),
         ),
       ),
     )
@@ -152,15 +171,11 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
       const identity = kind.identity(entry)
       if (found.byIdentity.has(identity)) return
       found.byIdentity.set(identity, entry)
-      // An entry past keep goes from the chunk on its next write: a chunk another process expired comes back without it.
-      const kept = Option.match(current, {
-        onNone: () => Option.none<{ readonly key: string; readonly entries: Array<A> }>(),
-        onSome: (chunk) =>
-          Option.some({ key: chunk.key, entries: chunk.entries.filter((it) => kind.at(entry) - kind.at(it) < kind.keepMs) }),
-      })
-      const target = yield* Option.match(Option.filter(kept, (chunk) => chunk.entries.length < CHUNK), {
+      // A full chunk, or one opened more than SEAL_MS before this entry, is never written again.
+      const open = Option.filter(current, (chunk) => chunk.entries.length < CHUNK && kind.at(entry) - chunk.opened < SEAL_MS)
+      const target = yield* Option.match(open, {
         onSome: Effect.succeed,
-        onNone: () => Effect.map(nextKey, (key) => ({ key, entries: new Array<A>() })),
+        onNone: () => Effect.map(nextKey, (key) => ({ key, opened: kind.at(entry), entries: new Array<A>() })),
       })
       target.entries.push(entry)
       current = Option.some(target)
@@ -174,8 +189,8 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
     Effect.gen(function* () {
       const found = yield* load
       for (const [identity, entry] of [...found.byIdentity]) if (kind.at(entry) <= through) found.byIdentity.delete(identity)
-      for (const [key, newest] of [...found.chunks])
-        if (newest <= through) {
+      for (const [key, chunk] of [...found.chunks])
+        if (removable(chunk, through)) {
           yield* storage.remove(key)
           found.chunks.delete(key)
           if (Option.exists(current, (open) => open.key === key)) current = Option.none()
@@ -231,5 +246,14 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
     fold,
   }
 }
+
+/**
+ * Whether every entry the chunk holds, or will ever hold, is of time `through` or before. This process's own chunk
+ * holds what it wrote. Another process may still append to its chunk after this one read it, but only entries newer
+ * than the chunk's first by less than SEAL_MS: once that time is past too, the chunk can change no more. (A fold's
+ * chunk is never appended to, so its newest entry would do, but nothing tells a fold's chunk from another; it just
+ * goes up to a day later.)
+ */
+const removable = (chunk: Seen, through: number) => chunk.newest <= through && (chunk.own || chunk.oldest + SEAL_MS <= through)
 
 const emptyHeld = <A>(): Held<A> => ({ byIdentity: new Map(), chunks: new Map(), legacy: [], onlyLegacy: new Set() })

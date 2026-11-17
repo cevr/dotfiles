@@ -904,7 +904,14 @@ describe("the ledger", () => {
         yield* TestClock.adjust(WINDOW_MS)
 
         const next = yield* start(undefined, state)
-        expect(ledgerKeys(state).sort()).toEqual(["anthropic/reading/cred-a", "anthropic/reading/cred-b", "other/hold/cred-a"])
+        // The first process's chunk stays: that process may still append to it for a day after its first step
+        // (chunks.ts SEAL_MS). Its step is past the window, so nothing counts it.
+        expect(ledgerKeys(state).sort()).toEqual([
+          "anthropic/reading/cred-a",
+          "anthropic/reading/cred-b",
+          "chunk/step/anthropic/<writer>/000000",
+          "other/hold/cred-a",
+        ])
         yield* next.pace("anthropic")
         const accounts = (yield* next.status).anthropic?.accounts
         expect(accounts?.map((account) => [account.credentialID, account.load, account.hold, account.reading?.at])).toEqual([

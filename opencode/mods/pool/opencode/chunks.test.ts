@@ -9,6 +9,7 @@ import { type Step, WINDOW_MS } from "../accounts.ts"
 import { storage as memory } from "../memory/ledger.ts"
 import { Ledger, Limits } from "../service.ts"
 import * as Chunks from "./chunks.ts"
+import { SEAL_MS } from "./chunks.ts"
 import * as LedgerLive from "./ledger.ts"
 import * as LimitsLive from "./limits.ts"
 import * as Records from "./records.ts"
@@ -224,17 +225,79 @@ describe("the chunk store", () => {
   )
 
   effectTest(
-    "a chunk another process expired comes back from its writer's next append holding only live steps",
+    "another process's chunk is kept while its writer may still append to it, though every step it held when read is past",
     atNow(
       Effect.gen(function* () {
         const entries = new Map<string, Schema.Json>()
-        const writer = Chunks.open(memory(entries), kind)
-        yield* writer.append(step(NOW, "ses_early"))
-        yield* Chunks.open(memory(entries), kind).expire(NOW)
+        // Process B writes a step, and keeps its chunk open.
+        const b = Chunks.open(memory(entries), kind)
+        yield* b.append(step(NOW, "b1"))
+        // Process A reads B's chunk while its newest step is b1.
+        const a = Chunks.open(memory(entries), kind)
+        yield* a.entries
+        // B appends to the same chunk, and A then prunes b1 out of the window.
+        const b2 = step(NOW + SEAL_MS - 1, "b2")
+        yield* b.append(b2)
+        yield* a.expire(NOW)
+        // B stops before it writes again: a new process still reads b2 (and b1, past, which stays with its chunk
+        // until the chunk goes; every reader cuts by time).
+        expect(yield* readBack(entries)).toEqual([step(NOW, "b1"), b2])
+      }),
+    ),
+    5_000,
+  )
+
+  effectTest(
+    "another process's chunk goes once it can change no more; its writer's next step opens a new one",
+    atNow(
+      Effect.gen(function* () {
+        const entries = new Map<string, Schema.Json>()
+        const b = Chunks.open(memory(entries), kind)
+        yield* b.append(step(NOW, "b1"))
+        const a = Chunks.open(memory(entries), kind)
+        yield* a.entries
+        // Sealed (a day past its first step) and past: A removes it.
+        yield* a.expire(NOW + SEAL_MS)
         expect(keysUnder(entries, kind.prefix)).toEqual([])
-        const later = step(NOW + WINDOW_MS, "ses_later")
-        yield* writer.append(later)
+        const later = step(NOW + SEAL_MS, "b3")
+        yield* b.append(later)
+        expect(keysUnder(entries, kind.prefix)).toHaveLength(1)
         expect(yield* readBack(entries)).toEqual([later])
+      }),
+    ),
+    5_000,
+  )
+
+  effectTest(
+    "this process's own chunk goes as soon as its newest step is past",
+    atNow(
+      Effect.gen(function* () {
+        const entries = new Map<string, Schema.Json>()
+        const store = Chunks.open(memory(entries), kind)
+        yield* store.append(step(NOW, "s1"))
+        yield* store.expire(NOW)
+        expect(keysUnder(entries, kind.prefix)).toEqual([])
+        expect(yield* store.entries).toEqual([])
+      }),
+    ),
+    5_000,
+  )
+
+  effectTest(
+    "of two entries of one identity, the first is kept: the earlier chunk's over a later one's, a chunk's over an old key's",
+    atNow(
+      Effect.gen(function* () {
+        const first = step(NOW, "ses_same")
+        const entries = new Map<string, Schema.Json>([
+          [`${kind.prefix}a-writer/000000`, { v: 1, entries: [kind.toRow(first)] }],
+          [`${kind.prefix}b-writer/000000`, { v: 1, entries: [kind.toRow({ ...first, cost: 9 })] }],
+          [oldKey(first), { ...first, cost: 7 }],
+        ])
+        expect(yield* readBack(entries)).toEqual([first])
+        // The fold carries nothing of an identity a chunk holds, and removes the old key.
+        expect(yield* Chunks.open(memory(entries), kind).fold).toBe(1)
+        expect(keysUnder(entries, kind.prefix)).toHaveLength(2)
+        expect(yield* readBack(entries)).toEqual([first])
       }),
     ),
     5_000,
