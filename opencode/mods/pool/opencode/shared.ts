@@ -18,6 +18,12 @@ interface Held {
 /** How many entries one read of the storage asks for: the most the host answers. */
 const READ_PAGE = 1000
 
+/** One turn of the event loop: what is queued on it (a request, a timer) runs before the fiber goes on. */
+const toEventLoop = Effect.callback<void>((resume) => {
+  const handle = setImmediate(() => resume(Effect.void))
+  return Effect.sync(() => clearImmediate(handle))
+})
+
 /** The first index in sorted `keys` whose key is greater than `key` (or at least `key` when `inclusive`). */
 const indexAfter = (keys: ReadonlyArray<string>, key: string, inclusive: boolean) => {
   let low = 0
@@ -64,9 +70,12 @@ export const make = () => {
             values.set(entry.key, entry.value)
           }
           after = page.next
+          // The host's read is synchronous: between pages the event loop serves the rest of the process.
+          if (after !== undefined) yield* toEventLoop
         } while (after !== undefined)
         const read: Held = { keys, values }
         held.set(prefix, read)
+        yield* Effect.logInfo(`pool storage: read ${prefix} for every copy in this process: ${keys.length} entries`)
         return read
       }).pipe(Semaphore.withPermit(lock(prefix)))
     })
