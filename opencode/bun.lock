@@ -299,6 +299,10 @@
       "name": "@dotfiles/opencode-idle-compact",
       "version": "0.0.0",
     },
+    "mods/image": {
+      "name": "@dotfiles/opencode-image",
+      "version": "0.0.0",
+    },
     "mods/kernel": {
       "name": "@dotfiles/opencode-kernel",
       "version": "0.0.0",
@@ -541,6 +545,8 @@
     "@dotfiles/opencode-herdr": ["@dotfiles/opencode-herdr@workspace:mods/herdr"],
 
     "@dotfiles/opencode-idle-compact": ["@dotfiles/opencode-idle-compact@workspace:mods/idle-compact"],
+
+    "@dotfiles/opencode-image": ["@dotfiles/opencode-image@workspace:mods/image"],
 
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
 

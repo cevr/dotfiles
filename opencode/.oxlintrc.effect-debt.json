@@ -678,6 +678,107 @@
         "effect/noNodeBuiltinImport": "off",
         "effect/noAsyncFunction": "off"
       }
+    },
+    {
+      "files": [
+        "mods/image/codex/credentials.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/codex/subscription.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/openai/images.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/filesystem/files.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/filesystem/key.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/laws.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/memory/model.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/filesystem/files.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/filesystem/key.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/codex/subscription.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/openai/images.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/image/codex/live.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off"
+      }
     }
   ]
 }

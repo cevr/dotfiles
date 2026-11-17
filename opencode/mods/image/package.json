@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-image",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Image generation: the ChatGPT subscription's image tool by default, the paid OpenAI Images API only when asked.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}
