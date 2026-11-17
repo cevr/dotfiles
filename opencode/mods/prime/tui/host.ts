@@ -10,6 +10,7 @@ import type { CurrentModel, Usage } from "../chrome.ts"
 import type { Goal } from "../goal.ts"
 import type { Jobs } from "../jobs.ts"
 import type { PendingItem, WaitingPrompt } from "../pending.ts"
+import type { Starting } from "../starting.ts"
 import type { UpstreamReading } from "../update.ts"
 import type { ShellEntry } from "../shells.ts"
 import type { Wakes } from "../wakes.ts"
@@ -69,6 +70,8 @@ export interface Host {
   update(): boolean
   /** Upstream OpenCode against the installed build, as daily last counted it (update.ts `UpstreamReading`). */
   upstream(): UpstreamReading | undefined
+  /** What the TUI waits for before a prompt can go, since when (starting.ts); undefined once nothing. */
+  starting(): Starting | undefined
 
   // Session data.
   session(sessionID: string): Session | undefined
