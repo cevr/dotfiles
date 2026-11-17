@@ -5,7 +5,7 @@
 // compacts (automatic, past the window's ceiling; idle, through cmd/idle-compact;
 // background, the host's summary written as a turn ends), the summary request
 // sends the tools and every message of the request before it byte for byte,
-// the memory digest in the system prompt included, and only adds after them:
+// Prime's reply style and the memory digest in the system prompt included, and only adds after them:
 // a prompt cache then reads the whole conversation instead of the tools and
 // the first system blocks. The plugins' own hooks are tested beside their code.
 import { afterAll, describe, expect, test } from "bun:test"
@@ -29,7 +29,7 @@ const run = async (mode: Mode): Promise<Result> => {
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  const spec: Spec = { base, fork: resolve(fork ?? ""), mode, memory: join(ROOT, "cmd/memory"), idleCompact: join(ROOT, "cmd/idle-compact") }
+  const spec: Spec = { base, fork: resolve(fork ?? ""), mode, prime: join(ROOT, "cmd/prime"), memory: join(ROOT, "cmd/memory"), idleCompact: join(ROOT, "cmd/idle-compact") }
   writeFileSync(file, JSON.stringify(spec))
   const child = owned([process.execPath, join(import.meta.dir, "compaction-prefix/run.ts"), file], {
     env: {
@@ -95,8 +95,10 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(summary).toBeDefined()
       expect(before).toBeDefined()
       if (mode !== "background") expect(result.compacted).toBe(true)
-      // The request before carries the digest, so the summary request is held to it.
+      // The request before carries Prime's reply style and the digest after it, so the summary request is held to both.
       expect(systemOf(before)).toContain(NOTE)
+      expect(systemOf(before).indexOf("<reply_style>")).toBeGreaterThan(-1)
+      expect(systemOf(before).indexOf("<reply_style>")).toBeLessThan(systemOf(before).indexOf(NOTE))
       expect(firstDifference(before!, summary!)).toBeUndefined()
     },
     120_000,

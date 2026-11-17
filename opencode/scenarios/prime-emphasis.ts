@@ -12,12 +12,23 @@
 // - `emphasis-stream.json`: each distinct frame captured back to back while the
 //   reply streamed, and the closed pills any of them showed as typed (none).
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
+//
+// Both halves of Prime are loaded, the server half (cmd/prime/server.ts, the
+// reply style) before memory (cmd/memory, on a scratch file holding one global
+// note, so its digest is in the system prompt), as daily lists them. After the
+// screenshot the owner asks for a worker, so a subagent's request is made too.
+// With SCENARIO_DUMP=1 it writes `requests.json`: each model request's kind
+// (`title`, `root`, `child`), how many times it holds the section's opening tag,
+// and where the section and memory's digest start in it.
 import { Effect, Schedule, Stream } from "effect"
-import { readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { main as memory } from "../cmd/memory/cli.ts"
 
 const root = process.cwd()
-const out = process.env.SCENARIO_OUT || "out"
+const out = resolve(process.env.SCENARIO_OUT || "out")
+mkdirSync(out, { recursive: true })
 const plain = process.env.SCENARIO_EMPHASIS === "off"
 const name = ["emphasis", "emphasis-plain"][Number(plain)] || "emphasis"
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }
@@ -51,6 +62,17 @@ const REPLY = [
   "- **Next:** emphasis-rules, after this lands.",
 ].join("\n")
 
+/** The owner's second ask, for a worker; the worker's brief, which only its own requests carry; its report. */
+const DELEGATE = "Have a worker check the disk again."
+const BRIEF = "Report the disk use of / in one line."
+const REPORT = "Disk at 61%."
+const DONE = "The worker says the disk is at 61%."
+const OPEN = "<reply_style>"
+const DIGEST = "# Memory"
+
+/** Memory's file: the scenario adds one global note before the first ask, so its digest is in every system prompt. */
+const MEMORY_DB = `${out}/memory.db`
+
 /** A closed pill as tree-sitter draws it unhooked, `[Done]`: not a pill still open (`[[Done]`). */
 const shortcut = (pill: string) => new RegExp(`(?<!\\[)\\[${pill.replace(/[$/]/g, "\\$&")}\\](?!\\])`)
 /** The known pills of REPLY, as typed: none may show so in a frame once it has closed. */
@@ -59,7 +81,7 @@ const PILLS = Array.from(REPLY.matchAll(/\[\[([^\]]+)\]\]/g), (match) => match[1
 export default OpenCodeDriver.use(
   {
     opencode: { dev: process.env.OPENCODE_DEV || "" },
-    config: { autoupdate: false, username: "Demo" },
+    config: { autoupdate: false, username: "Demo", plugins: [`${root}/cmd/prime`, { package: `${root}/cmd/memory`, options: { path: MEMORY_DB } }] },
     tuiConfig: {
       animations: false,
       tabs: { mode: "off" },
@@ -74,9 +96,23 @@ export default OpenCodeDriver.use(
   },
   ({ ui, llm }) =>
     Effect.gen(function* () {
+      const requests: Array<{ kind: string; opens: number; section: number; digest: number }> = []
       yield* llm.serve((req) => {
-        if (JSON.stringify(req).includes("You name conversations")) return Stream.make(Llm.text("disk cleanup"), Llm.finish())
-        return Stream.make(Llm.text(REPLY, { delay: 15, chunkSize: 3 }), Llm.finish())
+        const s = JSON.stringify(req)
+        // The worker's conversation is its brief alone; the root's holds the owner's first ask.
+        const kind = ["root", "child", "title"][Number(s.includes(BRIEF) && !s.includes(ASK)) + 2 * Number(s.includes("You name conversations"))] || "title"
+        requests.push({ kind, opens: s.split(OPEN).length - 1, section: s.indexOf(OPEN), digest: s.indexOf(DIGEST) })
+        if (kind === "title") return Stream.make(Llm.text("disk cleanup"), Llm.finish())
+        if (kind === "child") return Stream.make(Llm.text(REPORT), Llm.finish())
+        if (!s.includes(DELEGATE)) return Stream.make(Llm.text(REPLY, { delay: 15, chunkSize: 3 }), Llm.finish())
+        if (!s.includes("call_worker"))
+          return Stream.make(
+            Llm.toolCall({ index: 0, id: "call_worker", name: "subagent", input: { agent: "general", description: "disk check", prompt: BRIEF } }),
+            Llm.finish("tool-calls"),
+          )
+        // OpenCode runs every subagent in the background: the root waits for the worker's report, then answers.
+        if (!s.includes(REPORT)) return Stream.make(Llm.finish())
+        return Stream.make(Llm.text(DONE), Llm.finish())
       })
       const done = (frame: string) => frame.includes("Next: emphasis-rules") && !frame.includes("Executing")
       // The turn's end time, the row Prime draws under a finished turn.
@@ -87,6 +123,9 @@ export default OpenCodeDriver.use(
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
           Effect.tapError(() => ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${label}.timeout.txt`, text(frame))))),
         )
+      yield* Effect.promise(() => memory(["add", "The owner reads replies in the Prime look.", "--scope", "global"], { db: MEMORY_DB, now: Date.now() })).pipe(
+        Effect.filterOrFail((added) => added.code === 0, (added) => `memory add failed: ${added.out}`),
+      )
       yield* ui.submit(ASK)
       // Frames back to back while the reply streams, until it is done.
       const frames: Array<string> = []
@@ -105,5 +144,10 @@ export default OpenCodeDriver.use(
       writeFileSync(`${out}/${name}.txt`, text(frame))
       writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
       console.log("screenshot:", yield* ui.screenshot(name))
+
+      // A worker's request, for the dump: its system prompt holds no section.
+      yield* ui.submit(DELEGATE)
+      yield* until(`${name}-worker`, (frame) => frame.includes(DONE))
+      if (process.env.SCENARIO_DUMP) writeFileSync(`${out}/requests.json`, JSON.stringify(requests))
     }),
 )

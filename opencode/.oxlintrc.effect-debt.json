@@ -585,6 +585,16 @@
     },
     {
       "files": [
+        "tests/prime-emphasis.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "scenarios/prime-emphasis.ts"
       ],
       "rules": {

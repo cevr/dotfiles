@@ -490,6 +490,8 @@ if (import.meta.main) {
     pluginDir("work"),
     pluginDir("tool-names"),
     pluginDir("cache"),
+    // Prime's reply style (cmd/prime/server.ts) goes before memory, whose digest stays last in the system prompt.
+    pluginDir("prime"),
     pluginDir("memory"),
     pluginDir("stall"),
     pluginDir("rex"),

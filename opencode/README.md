@@ -215,7 +215,8 @@ It makes no live model request.
 
 `cmd/prime` is the Prime look's TUI plugin (`dotfiles-opencode.prime`), the composition
 root of `mods/prime`. `daily` loads it first in `cli.json`, with the Prime
-theme. The mod has three parts.
+theme, and its server half (`server.ts`, the reply style below) in the server
+plugins, before memory. The mod has three parts.
 
 - The domain is the mod's root files, plain TypeScript with no OpenCode,
   OpenTUI or Solid. It covers what each row says: a tool group's header
@@ -491,7 +492,7 @@ import `opencode/` or `@opencode/*`.
 A reply draws a few `[[Word]]` pills as coloured chips, and the "In the
 queue" section's lead labels with their state's diamond. Both come from one
 table, `emphasis.ts`, which also builds the prompt section that teaches the
-chips (`guidance`, sent by the server half once it lands).
+chips (`guidance`, sent by the server half: [the reply style](#the-reply-style)).
 
 ```
 Disk is at 61% after the cleanup  ● Measured , down from 89%.     ← [[Measured]]
@@ -547,6 +548,44 @@ scenario's (`sim-tui/golden/prime-emphasis/`). The scenario writes
 `emphasis.png`, and with `SCENARIO_EMPHASIS=off` `emphasis-plain.png`, and
 records every frame of the stream (`emphasis-stream.json`, the closed pills
 any showed as typed: none).
+
+#### The reply style
+
+The server half, `cmd/prime/server.ts`, teaches the chips: its `context`,
+`compaction` and `generate` hooks add `guidance()`'s `<reply_style>` section
+(about 1,000 characters, 250 tokens) to the system prompt of every request
+that sends a session's conversation; a title request gets none. Daily lists
+it right before memory, so memory's digest stays last.
+
+- Root sessions only. A subagent's answer is read by its orchestrator, not
+  scanned by the owner, so a subagent gets none.
+- Only a session whose first request the plugin sees. At a session's first
+  sighting the plugin reads it: a parent, or a context that already holds an
+  answer or a compaction (a session older than the install), means none, for
+  good. So an install rewrites no live session's cached prompt.
+- Frozen per session. The text a session got (or none) is kept in the
+  plugin's storage under `reply-style:<sessionID>` (`mods/prime/opencode/reply-style.ts`,
+  the pattern of the kernel's frozen descriptions) and sent byte for byte for
+  the session's life; a changed vocabulary reaches new sessions only, so a
+  word taken out of the table stays drawn (an accepted word) for the
+  sessions that learnt it. A deleted session's entry goes.
+- The decision is `mods/prime/reply-style.ts` (`sectionOf`, `firstSection`,
+  the `ReplyStyles` contract; its in-memory store in `memory/`). The server
+  option `rules: false` sends the section to no session.
+- A headless root (`opencode run`, a wake's new session) gets it too, and
+  nothing draws there; the section's last rule keeps chips out of anything a
+  program reads. `~/Developer/personal/dotfiles/AGENTS.md` is unchanged: its
+  rule (each claim carries its evidence or a label) stands, and the section
+  says how to write the label in this terminal.
+
+`cmd/prime/prime-rules.sim.test.ts` runs the plugin on the simulated host (a
+new root gets the section once on each request, its compaction's too, the
+same bytes; a subagent and a session older than the plugin get none; a
+restart on new words keeps a live session's; `rules: false`; a deleted
+session). `tests/prime-emphasis.test.ts` runs the scenario with both halves
+and memory in OpenCode, `SCENARIO_DUMP=1`: every root request holds the
+section once, at one place, before memory's digest, and a worker's holds
+none (`requests.json`).
 
 ## Background shells
 

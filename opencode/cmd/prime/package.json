@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The Prime mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-prime.",
+  "description": "The Prime mod's OpenCode plugins, the look (tui) and the reply style it teaches root sessions (server): the composition root of @dotfiles/opencode-prime.",
   "exports": {
+    "./server": "./server.ts",
     "./tui": "./tui.tsx"
   },
   "dependencies": {

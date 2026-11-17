@@ -30,7 +30,8 @@ export interface Spec {
   readonly base: string
   readonly fork: string
   readonly mode: Mode
-  /** `cmd/memory` and `cmd/idle-compact` of this checkout. */
+  /** `cmd/prime`, `cmd/memory` and `cmd/idle-compact` of this checkout. */
+  readonly prime: string
   readonly memory: string
   readonly idleCompact: string
 }
@@ -67,6 +68,8 @@ const content = {
     },
   },
   plugins: [
+    // Prime's reply style, then memory's digest, as daily loads them.
+    spec.prime,
     { package: spec.memory, options: { path: db } },
     // A 1000-token prompt is over a 50-token threshold.
     ...(spec.mode === "idle" ? [{ package: spec.idleCompact, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }] : []),

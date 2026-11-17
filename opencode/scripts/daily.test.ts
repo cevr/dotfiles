@@ -75,6 +75,14 @@ describe("the server config", () => {
     expect({ writes, stageBranches: stage.length - 1, writeBeforeStage: (stage[0] ?? "").includes("writeConfigs(") }).toEqual({ writes: 1, stageBranches: 1, writeBeforeStage: true })
   })
 
+  test("lists Prime's server half before memory, so its reply style precedes memory's digest, which stays last", () => {
+    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
+    const main = source.slice(source.indexOf("if (import.meta.main)"))
+    const server = main.slice(main.indexOf("const server: PluginEntry[] = ["), main.indexOf("BUILTIN_AUTOMATION_OFF"))
+    const at = (name: string) => server.indexOf(`pluginDir("${name}")`)
+    expect({ prime: at("prime") >= 0, beforeMemory: at("prime") < at("memory") }).toEqual({ prime: true, beforeMemory: true })
+  })
+
   test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
     const existing = {
       providers: {
