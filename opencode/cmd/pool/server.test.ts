@@ -31,7 +31,11 @@ import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Repo
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
-import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
+import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, liveWith, make } from "./server.ts"
+import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
+
+/** The live adapters of one process: each start is a process of its own, its shared storage read anew. */
+const live = () => liveWith(PeersLive.layer)
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -1058,7 +1062,7 @@ describe("on the live adapters", () => {
   test("a step's tokens reach the tally file this start names, at the next sweep", () =>
     onTestClock(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 5 }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 5 }, world(), live())
         yield* TestClock.adjust(HOUR)
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
@@ -1077,7 +1081,7 @@ describe("on the live adapters", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        const plugin = yield* start(undefined, state, live)
+        const plugin = yield* start(undefined, state, live())
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         expect(yield* plugin.request("ses_2")).toBe("cred-b")
         // The integration's label names the login a session is on.
@@ -1103,7 +1107,7 @@ describe("on the live adapters", () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-store-"))
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live())
         expect((yield* plugin.status).anthropic?.sources).toEqual([{ kind: "store", dir, accounts: [], skipped: [] }])
         let activation = "auto"
         const editor = {
@@ -1135,7 +1139,7 @@ describe("on the live adapters", () => {
     state.storage.set(`anthropic/hold/${LEGACY_PREFIX}work`, hold)
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live())
         // The held login is passed over.
         expect(yield* plugin.request("ses_1")).not.toBe("store:work")
         const status = yield* plugin.status
@@ -1172,7 +1176,7 @@ describe("the alerts RPC", () => {
     const { dir, login, trade } = store(400)
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live())
         expect(yield* plugin.alerts).toEqual({ lost: [], outages: [] })
         expect(yield* trade).toBe("failed")
         const alerts = yield* plugin.alerts
@@ -1199,7 +1203,7 @@ describe("the alerts RPC", () => {
     return scenario(
       Effect.gen(function* () {
         // A threshold of 30 ms: one 429 that pauses the store for ten minutes is out once it passes.
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }], refreshOutageMinutes: 0.0005 }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }], refreshOutageMinutes: 0.0005 }, world(), live())
         expect(yield* trade).toBe("failed")
         yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)))
         expect(yield* plugin.alerts).toEqual({
@@ -1398,7 +1402,7 @@ describe("a paced provider on the live adapters", () => {
           metadata: { accountID: "acct-1" },
         })
         state.active.set("openai", "chatgpt-1")
-        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: `${server.url.origin}/backend-api/wham/usage` }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: `${server.url.origin}/backend-api/wham/usage` }, state, live())
         // 80% of the week spent halfway through it: over the pace.
         expect(yield* plugin.pace("openai")).toMatchObject({ ok: false, measured: true })
         expect(seen).toEqual(["acct-1"])
@@ -1432,7 +1436,7 @@ describe("a paced provider on the live adapters", () => {
       Effect.gen(function* () {
         const state = world()
         state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
-        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: "http://127.0.0.1:9/none" }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: "http://127.0.0.1:9/none" }, state, live())
         expect(yield* plugin.pace("openai")).toMatchObject({ ok: true, measured: false })
       }),
     ))
@@ -1476,7 +1480,7 @@ describe("resets on the live adapters", () => {
           const state = world()
           state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
           state.credentials.set("chatgpt-1", { type: "oauth", access: "access-1", refresh: "r", expires: now + DAY, metadata: { accountID: "acct-1" } })
-          const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live)
+          const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live())
           yield* busy(plugin, "openai")
           expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })
           yield* waitFor("the fake's consume request", () => fake.consumes.length > 0)
@@ -1519,7 +1523,7 @@ describe("resets on the live adapters", () => {
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
         state.parents.set("ses_child", "ses_root")
-        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live())
         yield* busy(plugin, "anthropic")
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
         yield* waitFor("the plugin's claim and the notice", () => plugin.claims.length > 0 && state.owner.asked.length > 0)
@@ -1543,7 +1547,7 @@ describe("resets on the live adapters", () => {
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
-        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
         yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
         expect(plugin.claims.map(({ creditID }) => creditID)).toEqual(["grant-1"])
@@ -1572,7 +1576,7 @@ describe("resets on the live adapters", () => {
           },
         })
         state.parents.set("ses_child", "ses_root")
-        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
         yield* waitFor("the plugin's claim and the owner's question", () => plugin.claims.length > 0 && state.owner.asked.length > 0)
         expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
@@ -1613,7 +1617,7 @@ describe("resets on the live adapters", () => {
           },
         })
         state.parents.set("ses_child", "ses_root")
-        const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live())
         yield* busy(plugin, "anthropic")
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
         yield* settle
@@ -1637,7 +1641,7 @@ describe("resets on the live adapters", () => {
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(Date.now()))
-        const plugin = yield* start({ sweepMinutes: 0, resets: false }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, resets: false }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
         yield* settle
         expect(state.owner.asked).toEqual([])

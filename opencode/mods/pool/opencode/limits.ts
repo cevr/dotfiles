@@ -30,7 +30,8 @@ import { Limits } from "../service.ts"
 import type { Storage } from "./ledger.ts"
 import { PAGE } from "./ledger.ts"
 
-const PREFIX = "limits/use/"
+/** Where the requests are kept in the plugin's storage, one key per assistant message under it. */
+export const PREFIX = "limits/use/"
 
 /** Where the tally is kept unless the options say otherwise: `$XDG_STATE_HOME/opencode-pool/limits.json`. */
 export const defaultPath = () => join(TuiDirs.dirs().state, "opencode-pool", "limits.json")

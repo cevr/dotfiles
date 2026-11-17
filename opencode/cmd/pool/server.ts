@@ -148,6 +148,7 @@ import * as WorkloadLive from "@dotfiles/opencode-pool/opencode/workload"
 import { PUSH_DESCRIPTION, PushRequest, PushToolInput } from "@dotfiles/opencode-pool/push"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import * as ResetsStoreLive from "@dotfiles/opencode-pool/opencode/resets"
+import * as Shared from "@dotfiles/opencode-pool/opencode/shared"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
 import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
@@ -320,16 +321,20 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
  * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
  */
-export const liveWith =
-  (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) =>
-  (
+export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) => {
+  // What every copy of the plugin in this process reads whole at start, read once for all of them (opencode/shared.ts).
+  const share = Shared.make()
+  return (
     ctx: Plugin.Context,
     options: Options,
     sources: ReadonlyArray<StoreSource>,
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
-  ): Layer.Layer<Externals | Limits | PushStore | Workload> =>
-    Layer.mergeAll(
-      LimitsLive.layer(ctx.storage, options.limitsFile ?? LimitsLive.defaultPath()),
+  ): Layer.Layer<Externals | Limits | PushStore | Workload> => {
+    const pools = new Set([...Object.values(options.providers), ...Object.values(options.paced)])
+    const storage = share(ctx.storage, [...[...pools].map((pool) => `${pool}/`), LimitsLive.PREFIX])
+    // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
+    return Layer.unwrap(Effect.as(migrate(storage), Layer.mergeAll(
+      LimitsLive.layer(storage, options.limitsFile ?? LimitsLive.defaultPath()),
       LoginsLive.layer(
         {
           connections: (pool) =>
@@ -349,7 +354,7 @@ export const liveWith =
           published: client.events.subscribe("reading"),
         }
       }),
-      LedgerLive.layer(ctx.storage),
+      LedgerLive.layer(storage),
       peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
       FleetStoreLive.layer(ctx.storage),
@@ -360,7 +365,9 @@ export const liveWith =
       PushStoreLive.layer(ctx.storage),
       // The host's load, and the orchestrate runs of this directory from the status plugin (reached at each call: it may start after the pool).
       WorkloadLive.layer(() => Effect.suspend(() => ctx.rpc(STATUS).status({}))),
-    )
+    )))
+  }
+}
 
 /** The outside systems as OpenCode provides them, the peers over SSH. */
 export const live = liveWith(PeersLive.layer)
@@ -438,8 +445,6 @@ export const make = (
         Deferred.await(ready).pipe(Effect.flatMap(use))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
-          // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
-          yield* migrate(ctx.storage)
           const services = yield* Layer.build(
             Model.layer({
               providers: options.providers,
