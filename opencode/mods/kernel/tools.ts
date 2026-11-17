@@ -127,7 +127,7 @@ export interface InACell {
  * How a tool differs in a cell from what its own description says: the shell
  * tool only runs commands there, and acts on a shell through its handle's
  * methods (worker/shell-handle.ts); the subagent tool resolves to a handle
- * whose methods wait on and stop the subagent (worker/subagent-handle.ts).
+ * whose methods read and stop the subagent (worker/subagent-handle.ts).
  */
 export const IN_A_CELL: Readonly<Record<string, InACell>> = {
   shell: {
@@ -137,8 +137,8 @@ export const IN_A_CELL: Readonly<Record<string, InACell>> = {
   },
   subagent: {
     input: "{ agent: string, description: string, prompt: string, model?: string, sessionID?: string }",
-    line: "Starts a subagent in the background and resolves to a live handle whose methods (.wait, .stop, .read, .refresh) act on it.",
-    note: "In a cell, `tools.subagent({ agent, description, prompt, model?, sessionID? })` starts a subagent in the background (or, with a sessionID, sends one more work) and resolves to a live handle: `.sessionID`, `.description`, `.agent`, `.state` (running, done, stopped, failed), `.message` (its last message, as the latest method read it), `.note` (what the latest method did), and methods that update the handle in place and resolve to it: `.wait(ms?)` (up to 10 min by default, until it goes idle; `.message` is then its final message, and `.note` says when it still runs), `.stop()` (ends its turn, its background shells and queued prompts, and its own subagents'; you hear once that it was cancelled, never that it finished; a second stop changes nothing), `.read()` and `.refresh()` (its state now and its last message). `await tools.subagent.handle(sessionID)` builds one for a subagent of this session, and `await tools.subagent.list()` one for each. Example, in parallel: `const hs = await Promise.all(units.map((u) => tools.subagent({ agent: 'worker', description: u, prompt: '…' }))); await Promise.all(hs.map((h) => h.wait(600_000))); for (const h of hs) if (h.state === 'running') await h.stop()`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.subagent.handle(h.sessionID)`. The `subagents` tool does the same outside a cell.",
+    line: "Starts a subagent in the background and resolves to a live handle whose methods (.stop, .read, .refresh) act on it; its report arrives as your next message when it finishes.",
+    note: "In a cell, `tools.subagent({ agent, description, prompt, model?, sessionID? })` starts a subagent in the background (or, with a sessionID, sends one more work) and resolves to a live handle: `.sessionID`, `.description`, `.agent`, `.state` (running, done, stopped, failed), `.message` (its last message, as the latest method read it), `.note` (what the latest method did), and methods that update the handle in place and resolve to it: `.stop()` (ends its turn, its background shells and queued prompts, and its own subagents'; you hear once that it was cancelled, never that it finished; a second stop changes nothing), `.read()` and `.refresh()` (its state now and its last message). `await tools.subagent.handle(sessionID)` builds one for a subagent of this session, and `await tools.subagent.list()` one for each. There is no wait: a finished subagent's report arrives as your next message, so start them and go on with other work or end your turn. Example, in parallel: `await Promise.all(units.map((u) => tools.subagent({ agent: 'worker', description: u, prompt: '…' })))`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.subagent.handle(h.sessionID)`. The `subagents` tool does the same outside a cell.",
   },
 }
 

@@ -1,16 +1,15 @@
 // A session's own subagents over a host in memory: a stop stops the subagent
 // and each of its own subagents, deepest first, ends a running turn once, and refuses any session
-// that is not the caller's descendant; a wait gives up at its limit; the state
-// is read off the host's session.
+// that is not the caller's descendant; the state is read off the host's
+// session.
 import { describe, expect, test } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, Option } from "effect"
+import { Effect, Option } from "effect"
 import { make, type Host, type Outcome, type Session, stateOf } from "./subagents.ts"
 
-/** A session the host holds: as the tool reads it, with its last words and the end its waits await. */
+/** A session the host holds: as the tool reads it, with its last words. */
 interface Stored {
   session: Session
   words: string
-  readonly ended: Deferred.Deferred<void>
 }
 
 const NONE = Option.none<number>()
@@ -27,7 +26,6 @@ const stored = (id: string, parent: Option.Option<string>, busy: Option.Option<n
     outcome: Option.map(end, ([, outcome]) => outcome),
   },
   words,
-  ended: Deferred.makeUnsafe<void>(),
 })
 
 /** A tree: root has children a (running, over a running g, over a running gg) and b (done); other is another root's child. */
@@ -42,7 +40,7 @@ const tree = (): Map<string, Stored> =>
     ["other", stored("other", Option.some("elsewhere"), Option.some(5), Option.none(), "")],
   ])
 
-/** A host holding `sessions`: a stop ends a running one as interrupted; a wait ends when its session does. */
+/** A host holding `sessions`: a stop ends a running one as interrupted. */
 const memory = (sessions: Map<string, Stored>) => {
   /** Each session the host was asked to stop, in order; the ones whose turn it ended. */
   const stopped: Array<string> = []
@@ -53,9 +51,9 @@ const memory = (sessions: Map<string, Stored>) => {
     Option.match(Option.filter(find(id), (held) => stateOf(held.session) === "running"), {
       onNone: () => Effect.succeed(false),
       onSome: (held) =>
-        Effect.suspend(() => {
+        Effect.sync(() => {
           held.session = { ...held.session, idle: Option.some(Option.getOrElse(held.session.busy, () => 0) + 1), outcome: Option.some(outcome) }
-          return Effect.as(Deferred.done(held.ended, Exit.void), true)
+          return true
         }),
     })
   const host: Host = {
@@ -66,14 +64,9 @@ const memory = (sessions: Map<string, Stored>) => {
         Effect.sync(() => void stopped.push(id)),
         Effect.tap(end(id, "interrupted"), (ran) => Effect.sync(() => void (ran && interrupted.push(id)))),
       ),
-    wait: (id) =>
-      Option.match(Option.filter(find(id), (held) => stateOf(held.session) === "running"), {
-        onNone: () => Effect.void,
-        onSome: (held) => Deferred.await(held.ended),
-      }),
     lastWords: (id) => Effect.sync(() => Option.match(find(id), { onNone: () => "", onSome: (held) => held.words })),
   }
-  return { stopped, interrupted, end, subagents: make(host) }
+  return { stopped, interrupted, subagents: make(host) }
 }
 
 /** The refusal an effect fails with: its tag and message. */
@@ -141,34 +134,11 @@ describe("a stop", () => {
     ))
 })
 
-describe("a wait", () => {
-  test("gives up at its limit on a subagent that still runs, and says so", () =>
+describe("a read", () => {
+  test("refuses a session that is not the caller's", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const world = memory(tree())
-        expect(yield* world.subagents.wait("root", "a", 20)).toMatchObject({ state: "running", note: "still running after 20 ms" })
-      }),
-    ))
-
-  test("ends when the subagent goes idle, with its final message", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const sessions = tree()
-        const world = memory(sessions)
-        const fiber = yield* Effect.forkChild(world.subagents.wait("root", "a", 60_000))
-        // The wait starts on a running subagent, which then ends.
-        yield* Effect.yieldNow
-        for (const held of Option.toArray(Option.fromNullishOr(sessions.get("a")))) held.words = "a's answer"
-        expect(yield* world.end("a", "succeeded")).toBe(true)
-        expect(yield* Fiber.join(fiber)).toMatchObject({ state: "done", message: "a's answer", note: "" })
-      }),
-    ))
-
-  test("and a read refuse a session that is not the caller's", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const world = memory(tree())
-        expect((yield* refusal(world.subagents.wait("root", "other", 10)))[0]).toBe("SubagentRefused")
         expect((yield* refusal(world.subagents.get("root", "other")))[0]).toBe("SubagentRefused")
       }),
     ))

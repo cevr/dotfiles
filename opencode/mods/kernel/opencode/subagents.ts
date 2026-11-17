@@ -1,4 +1,4 @@
-// The `subagents` tool: a session lists, reads, waits on and stops its own
+// The `subagents` tool: a session lists, reads and stops its own
 // subagents (../subagents.ts), through the host's sessions. A direct tool, so
 // a session without the kernel has it too, and a kernel cell reaches it as
 // `tools.subagents`; a cell's subagent handle (../worker/subagent-handle.ts)
@@ -12,35 +12,37 @@
 //
 // Every answer is `{ subagents }`: the session's subagents for a list, the one
 // it named for the other actions.
+//
+// It has no wait: a subagent reports when it is done, as a message to its
+// parent, so a parent never blocks on one (a blocked parent queues the
+// owner's messages behind the wait).
 import { type Plugin, Tool } from "@opencode/plugin/effect"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import { SessionID } from "@opencode/schema/session-id"
 import { DateTime, Effect, Match, Option, Schema } from "effect"
 import { Listed, make, type Host, type Session, type Subagents, type View } from "../subagents.ts"
 
-/** How long a wait without `ms` waits: the shell's own foreground limit. */
-export const DEFAULT_WAIT_MS = 10 * 60 * 1_000
-
 export const name = "subagents"
 
+/** Why there is no wait, as the tool says it: a finished subagent's report arrives on its own. */
+export const NO_WAIT = "A finished subagent's report arrives as your next message, so don't wait on it: go on with other work or end your turn."
+
 export const Input = Schema.Struct({
-  action: Schema.Literals(["list", "get", "wait", "stop"]).annotate({
-    description:
-      'What to do: "list" this session\'s subagents, "get" one (its state and last message), "wait" up to ms for one to go idle, or "stop" one.',
+  action: Schema.Literals(["list", "get", "stop"]).annotate({
+    description: 'What to do: "list" this session\'s subagents, "get" one (its state and last message), or "stop" one.',
+    message: `Expected "list", "get" or "stop"; there is no "wait". ${NO_WAIT}`,
   }),
-  sessionID: Schema.optionalKey(SessionID).annotate({ description: "Get, wait, stop: the subagent's sessionID, as the subagent tool returned it." }),
-  ms: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThan(0))).annotate({
-    description: "Wait: the most milliseconds to wait; default 600000 (10 min).",
-  }),
+  sessionID: Schema.optionalKey(SessionID).annotate({ description: "Get, stop: the subagent's sessionID, as the subagent tool returned it." }),
 })
 export interface Input extends Schema.Schema.Type<typeof Input> {}
 
 export const Output = Listed
 
 export const description = [
-  "List, read, wait on and stop this session's own subagents (the sessions the subagent tool started, and theirs).",
-  '{ action: "list" } lists them with their state: running, done, stopped or failed. { action: "get", sessionID } gives one\'s state and last message. { action: "wait", sessionID, ms? } waits up to ms (default 10 min) for it to go idle.',
+  "List, read and stop this session's own subagents (the sessions the subagent tool started, and theirs).",
+  '{ action: "list" } lists them with their state: running, done, stopped or failed. { action: "get", sessionID } gives one\'s state and last message.',
   '{ action: "stop", sessionID } stops it, and its own subagents first: it ends its turn, its background shells and its queued prompts; you hear once that it was cancelled, never that it finished. A second stop changes nothing.',
+  NO_WAIT,
   "Only this session's own subagents are reachable; any other session is refused. To give a subagent more work, call subagent with its sessionID.",
 ].join("\n")
 
@@ -91,10 +93,6 @@ export const hostOf = (ctx: Plugin.Context): Host => ({
       Effect.map((result) => result.interrupted),
       Effect.catchCause((cause) => Effect.as(Effect.logWarning("subagents: a stop of a session failed", { sessionID, cause }), false)),
     ),
-  wait: (sessionID) =>
-    ctx.session
-      .wait({ sessionID: SessionID.make(sessionID) })
-      .pipe(Effect.catchCause((cause) => Effect.logWarning("subagents: a wait on a session failed", { sessionID, cause }))),
   lastWords: (sessionID) =>
     ctx.session.context({ sessionID: SessionID.make(sessionID) }).pipe(
       Effect.map(wordsOf),
@@ -123,7 +121,6 @@ export const run = (subagents: Subagents, caller: string, input: Input): Effect.
     onSome: (target) =>
       Match.value(input.action).pipe(
         Match.when("get", () => one(refused(subagents.get(caller, target)))),
-        Match.when("wait", () => one(refused(subagents.wait(caller, target, Option.getOrElse(Option.fromNullishOr(input.ms), () => DEFAULT_WAIT_MS))))),
         Match.orElse(() => one(refused(subagents.stop(caller, target)))),
       ),
   })

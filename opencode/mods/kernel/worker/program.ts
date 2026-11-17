@@ -117,7 +117,7 @@ type ToolNode = (...args: unknown[]) => unknown
  * (shell-handle.ts) whose methods act on it; `tools.shell.handle(id)` builds
  * one for a shell the session started, and `tools.shell.list()` one for each.
  * `tools.subagent(input)` starts a subagent and resolves to a live handle
- * (subagent-handle.ts) whose methods wait on, read and stop it;
+ * (subagent-handle.ts) whose methods read and stop it;
  * `tools.subagent.handle(sessionID)` and `tools.subagent.list()` build them
  * for the session's subagents.
  */

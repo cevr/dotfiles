@@ -60,7 +60,7 @@ describe("the catalog", () => {
   test("gives the subagent tool its input and a line that names its handle; its docs carry the handle's methods and re-attach", () => {
     const text = catalog([{ name: "subagent", description: "Start a subagent.", input: { type: "object", properties: { background: { type: "boolean" } } } }])
     expect(text).toBe(
-      "- tools.subagent(input: { agent: string, description: string, prompt: string, model?: string, sessionID?: string }): Starts a subagent in the background and resolves to a live handle whose methods (.wait, .stop, .read, .refresh) act on it.",
+      "- tools.subagent(input: { agent: string, description: string, prompt: string, model?: string, sessionID?: string }): Starts a subagent in the background and resolves to a live handle whose methods (.stop, .read, .refresh) act on it; its report arrives as your next message when it finishes.",
     )
     const docs = docsOf("subagent", "Start a subagent.")
     expect(docs).toContain("Start a subagent.\n\nIn a cell, `tools.subagent({ agent,")

@@ -1,5 +1,6 @@
 // A session's own subagents, as the `subagents` tool reads and stops them:
-// each one's state, its last words, a wait for it to go idle, and a stop.
+// each one's state, its last words, and a stop. There is no wait: a subagent
+// reports to its parent when it is done.
 //
 // A session reaches only its own descendants: a child, a child's child, and
 // so on. Any other session is refused, so no session stops another's work.
@@ -34,13 +35,12 @@ export interface Session {
   readonly idle: Option.Option<number>
 }
 
-/** The host's sessions: read one, list one's children, stop one, wait for one to go idle, its last words. */
+/** The host's sessions: read one, list one's children, stop one, its last words. */
 export interface Host {
   readonly get: (sessionID: string) => Effect.Effect<Option.Option<Session>>
   readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<Session>>
   /** Ends the session's turn, its background work and queued input, and resolves once it settled; whether a turn ran. */
   readonly stop: (sessionID: string) => Effect.Effect<boolean>
-  readonly wait: (sessionID: string) => Effect.Effect<void>
   readonly lastWords: (sessionID: string) => Effect.Effect<string>
 }
 
@@ -141,15 +141,6 @@ export const make = (host: Host) => {
     /** One of the caller's subagents, with its last words. */
     get: Effect.fn("Subagents.get")(function* (caller: string, target: string) {
       return yield* view(yield* own(caller, target), "")
-    }),
-
-    /** Waits up to `ms` for one of the caller's subagents to go idle; the note says when it still runs. */
-    wait: Effect.fn("Subagents.wait")(function* (caller: string, target: string, ms: number) {
-      const session = yield* own(caller, target)
-      if (stateOf(session) !== "running") return yield* view(session, "")
-      const ended = yield* host.wait(session.id).pipe(Effect.timeoutOption(Duration.millis(ms)))
-      const now = yield* fresh(session)
-      return yield* view(now, Option.match(ended, { onNone: () => `still running after ${ms} ms`, onSome: () => "" }))
     }),
 
     /**

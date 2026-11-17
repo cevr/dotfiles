@@ -582,12 +582,15 @@ server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 
 ### Subagents
 
-A session lists, reads, waits on and stops its own subagents with the
+A session lists, reads and stops its own subagents with the
 `subagents` tool, which the kernel plugin adds beside the kernel
 (`mods/kernel/subagents.ts`, `mods/kernel/opencode/subagents.ts`), so a
 session without the kernel has it too: `{ action: "list" }`, `{ action:
-"get", sessionID }` (its state and last message), `{ action: "wait",
-sessionID, ms? }` (10 min by default) and `{ action: "stop", sessionID }`.
+"get", sessionID }` (its state and last message) and `{ action: "stop",
+sessionID }`. It has no wait: a subagent reports when it is done, as a
+message to its parent, so a parent never blocks on one and the owner's
+messages never queue behind a wait. A call that asks for `"wait"` is
+refused with that hint.
 A state is `running`, `done`, `stopped` or `failed`, read off the host's
 session (its newest execution still runs, else its last outcome). Only the
 session's own descendants are reachable; any other session is refused with
@@ -606,7 +609,7 @@ changes nothing.
 In a kernel cell, `await tools.subagent({ agent, description, prompt })`
 resolves to a live handle (`mods/kernel/worker/subagent-handle.ts`):
 `.sessionID`, `.description`, `.agent`, `.state`, `.message`, `.note`, and
-`.wait(ms?)`, `.stop()`, `.read()`, `.refresh()`, each a `subagents` call
+`.stop()`, `.read()`, `.refresh()`, each a `subagents` call
 with its sessionID that updates the handle in place and resolves to it.
 `await tools.subagent.handle(sessionID)` rebuilds one (after a kernel
 restart, which keeps a handle's data but not its methods), and `await
@@ -616,8 +619,8 @@ turn wrote; a stopped verifier gave no verdict.
 
 ```ts
 const probe = await tools.subagent({ agent: "worker", description: "probe", prompt: "…" })
-await probe.wait(60_000) // probe.state, probe.message
-if (probe.state === "running") await probe.stop()
+// End the turn: its report arrives as the next message. To call it off:
+await probe.stop()
 ```
 
 ## Orchestrate

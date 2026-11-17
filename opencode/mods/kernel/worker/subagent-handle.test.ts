@@ -25,7 +25,6 @@ const session = KernelSessionId.make("ses_parent")
 const Asked = Schema.Struct({
   action: Schema.optionalKey(Schema.String),
   sessionID: Schema.optionalKey(Schema.String),
-  ms: Schema.optionalKey(Schema.Number),
   agent: Schema.optionalKey(Schema.String),
 })
 const asked = Schema.decodeUnknownSync(Asked)
@@ -49,7 +48,7 @@ describe("a cell's subagent handle", () => {
               if (call.sessionID === "ses_other") return Effect.fail(new CallFailed({ message: "ses_other is not a subagent of this session" }))
               if (call.action === "list") return Effect.succeed({ subagents: [view("running", "", "")] })
               const stopped = calls.some(([, earlier]) => asked(earlier).action === "stop")
-              if (call.action === "wait" && !stopped) return Effect.succeed({ subagents: [view("running", `still running after ${call.ms} ms`, "")] })
+              if (call.action === "get" && !stopped) return Effect.succeed({ subagents: [view("running", "", "")] })
               if (call.action === "stop") return Effect.succeed({ subagents: [view("stopped", "stopped", "half done")] })
               return Effect.succeed({ subagents: [view("stopped", "", "half done")] })
             })
@@ -64,16 +63,16 @@ describe("a cell's subagent handle", () => {
             "sessionID,description,agent,state,message,note",
           )
           expect(yield* run("[h.sessionID, h.description, h.agent, h.state, h.message, h.note]")).toBe('[ "ses_c", "probe", "worker", "running", "", "" ]')
-          expect(yield* run("(await h.wait(50)) === h && [h.state, h.note]")).toBe('[ "running", "still running after 50 ms" ]')
+          expect(yield* run("(await h.refresh()) === h && [h.state, h.note]")).toBe('[ "running", "" ]')
+          // No wait: a finished subagent's report arrives as the session's next message.
+          expect(yield* run("typeof h.wait")).toBe("undefined")
           expect(yield* run("await h.stop(); [h.state, h.note, h.message]")).toBe('[ "stopped", "stopped", "half done" ]')
-          expect(yield* run("await h.refresh(); await h.read(); await h.wait(); h.state")).toBe("stopped")
+          expect(yield* run("await h.read(); h.state")).toBe("stopped")
           expect(calls).toEqual([
             ["subagent", { agent: "worker", description: "probe", prompt: "go" }],
-            ["subagents", { action: "wait", ms: 50, sessionID: "ses_c" }],
+            ["subagents", { action: "get", sessionID: "ses_c" }],
             ["subagents", { action: "stop", sessionID: "ses_c" }],
             ["subagents", { action: "get", sessionID: "ses_c" }],
-            ["subagents", { action: "get", sessionID: "ses_c" }],
-            ["subagents", { action: "wait", ms: 600_000, sessionID: "ses_c" }],
           ])
 
           // One list call, a live handle for each subagent; a refusal reaches the cell as its message.
@@ -87,7 +86,7 @@ describe("a cell's subagent handle", () => {
           yield* workers.start(session, yield* scratch)
           yield* workers.restore(session, snapshot.bindings)
           expect(yield* run("[h.sessionID, h.state, h.message, typeof h.stop]")).toBe('[ "ses_c", "stopped", "half done", "undefined" ]')
-          expect(yield* run("const again = await tools.subagent.handle(h.sessionID); [again.state, again.message, typeof again.stop, typeof again.wait]")).toBe(
+          expect(yield* run("const again = await tools.subagent.handle(h.sessionID); [again.state, again.message, typeof again.stop, typeof again.refresh]")).toBe(
             '[ "stopped", "half done", "function", "function" ]',
           )
           expect(calls.at(-1)).toEqual(["subagents", { action: "get", sessionID: "ses_c" }])

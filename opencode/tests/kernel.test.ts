@@ -89,7 +89,7 @@ const noticesOf = (result: Result) => Schema.decodeUnknownSync(Schema.Array(Sche
 
 /**
  * The stop run: the cell saw its child (mid-turn, its background shell running, a prompt queued behind it) running
- * past a short wait, stopped once and then unchanged, still stopped after the time its shell would have ended, the
+ * a few seconds in, stopped once and then unchanged, still stopped after the time its shell would have ended, the
  * shell's file never written, and a stop of its own session refused. The parent heard one cancelled notice and none
  * of a finish; the child asked the model only for its shell and its stalled turn, never with the queued prompt, which
  * no longer waits in its inbox.
@@ -98,7 +98,7 @@ const stoppedChild = (result: Result) => {
   const [cell] = toolParts(result.messages)
   expect(cell?.state.status).toBe("completed")
   expect((cell?.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(
-    /^waited: running, still running after 3000 ms\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\)\nlater: stopped\nlate file: none\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
+    /^read: running\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\)\nlater: stopped\nlate file: none\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
   )
   const notices = noticesOf(result).filter((text) => text.startsWith("<subagent "))
   expect(notices).toHaveLength(1)

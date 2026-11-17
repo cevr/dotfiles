@@ -106,7 +106,7 @@ export const SELF = "{self}"
 /** The stop task, after its own session's id: `<sessionID>\nkernel stop`. */
 export const STOP_TASK = "kernel stop"
 /**
- * One kernel call that starts a worker on the stall task, waits on it past a short limit, stops it twice, waits
+ * One kernel call that starts a worker on the stall task, reads it after a few seconds, stops it twice, waits
  * past the time its shell would have ended and reads it again, then asks the subagents tool to stop its own
  * session, no subagent of itself; it prints a line of what each step did.
  */
@@ -114,8 +114,9 @@ const stopCell = (task: string) =>
   [
     `const seen = []`,
     `const h = await tools.subagent({ agent: "worker", description: "stop probe", prompt: "${STALL_TASK}" })`,
-    `await h.wait(3000)`,
-    "seen.push(`waited: ${h.state}, ${h.note}`)",
+    `await new Promise((resolve) => setTimeout(resolve, 3000))`,
+    `await h.refresh()`,
+    "seen.push(`read: ${h.state}`)",
     `await h.stop()`,
     "seen.push(`stopped: ${h.state}, ${h.note}`)",
     `await h.stop()`,

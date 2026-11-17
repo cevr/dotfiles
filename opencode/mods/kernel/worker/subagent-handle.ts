@@ -2,14 +2,15 @@
  * A subagent inside a cell: `await tools.subagent({ agent, description,
  * prompt })` starts one in the background, as the subagent tool does, and
  * resolves to a live handle whose methods act on it through the `subagents`
- * tool (../opencode/subagents.ts): `.wait(ms?)`, `.stop()`, `.read()`,
- * `.refresh()`. `tools.subagent.handle(sessionID)` builds one for a subagent
- * of the session, and `tools.subagent.list()` one for each.
+ * tool (../opencode/subagents.ts): `.stop()`, `.read()`, `.refresh()`.
+ * `tools.subagent.handle(sessionID)` builds one for a subagent of the
+ * session, and `tools.subagent.list()` one for each. It has no wait: a
+ * finished subagent's report arrives as the session's next message.
  *
  * A handle is `{ sessionID, description, agent, state, message, note }`:
  * `state` is running, done, stopped or failed; `message` the subagent's last
  * message as the latest call read it (empty until a call reads it); `note`
- * what the latest call did when it says (a stop, a wait that timed out). Its
+ * what the latest call did when it says (a stop). Its
  * data fields are plain and enumerable, so it prints, serializes and survives
  * a kernel restart as data; its methods are not enumerable, so a restart
  * drops them, and `tools.subagent.handle(h.sessionID)` builds a live one again.
@@ -20,9 +21,6 @@
  * @module
  */
 import type { Json } from "../frame.ts"
-
-/** How long `wait()` without a limit waits: the subagents tool's own default. */
-export const DEFAULT_WAIT_MS = 10 * 60 * 1_000
 
 /** A subagent as the subagents tool answers it. */
 export interface SubagentHandleData {
@@ -36,8 +34,6 @@ export interface SubagentHandleData {
 
 /** A live handle: the data, updated in place by each method. */
 export interface SubagentHandle extends SubagentHandleData {
-  /** Waits up to `ms` for it to go idle; its `message` is then its final message. */
-  wait(ms?: number): Promise<SubagentHandle>
   /** Stops it: its turn and its own running subagents end; its parent hears once that it was cancelled. */
   stop(): Promise<SubagentHandle>
   /** Its state now and its last message. */
@@ -66,7 +62,7 @@ const listedOf = (result: Json): ReadonlyArray<Json> => {
   return []
 }
 
-const METHODS = ["wait", "stop", "read", "refresh"]
+const METHODS = ["stop", "read", "refresh"]
 
 /** `data` as a live handle whose methods reach the subagents tool through `call`. */
 export const makeSubagentHandle = (data: SubagentHandleData, call: CallTool): SubagentHandle => {
@@ -77,7 +73,6 @@ export const makeSubagentHandle = (data: SubagentHandleData, call: CallTool): Su
     })
   const handle: SubagentHandle = {
     ...data,
-    wait: (ms = DEFAULT_WAIT_MS) => update({ action: "wait", ms }),
     stop: () => update({ action: "stop" }),
     read: () => update({ action: "get" }),
     refresh: () => update({ action: "get" }),
