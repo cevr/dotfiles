@@ -445,8 +445,8 @@ export interface Options {
   readonly compactionReason?: boolean
   /** Background compaction: a session idle with a prompt at or past `trigger` and under `ceiling` gets a summary written ahead. */
   readonly backgroundCompaction?: { readonly trigger: number; readonly ceiling: number }
-  /** `experimental.schedules` on: the schedule tools are built in. */
-  readonly schedules?: boolean
+  /** `experimental.automations` on: the automation tools are built in. */
+  readonly automations?: boolean
   readonly models?: ReadonlyArray<CatalogModel>
   /** The model sessions run on; default `sim/sim-model`, answered by `script`. */
   readonly model?: { readonly providerID: string; readonly id: string }
@@ -542,13 +542,13 @@ const denied = (name: string, agent: Types.DeepMutable<Agent.Info>) => {
   return rule?.resource === "*" && rule.effect === "deny"
 }
 
-/** OpenCode's schedule tools: built in only under `experimental.schedules` (real OpenCode's default is off). */
-export const SCHEDULES = [
-  "opencode_schedule_create",
-  "opencode_schedule_list",
-  "opencode_schedule_pause",
-  "opencode_schedule_resume",
-  "opencode_schedule_delete",
+/** OpenCode's automation tools: built in only under `experimental.automations` (real OpenCode turns it on by default only in local and dev builds). */
+export const AUTOMATIONS = [
+  "opencode_automation_create",
+  "opencode_automation_list",
+  "opencode_automation_pause",
+  "opencode_automation_resume",
+  "opencode_automation_delete",
 ]
 
 const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optional(Schema.String), background: Schema.optional(Schema.Boolean) })
@@ -903,7 +903,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     )
 
   /** The tools a request in `directory` offers: the built-ins, then each copy's transform there, in load order. */
-  const builtIn = [...BUILTIN, ...Arr.filter(SCHEDULES, () => options.schedules === true)]
+  const builtIn = [...BUILTIN, ...Arr.filter(AUTOMATIONS, () => options.automations === true)]
   const toolsOf = (directory: string) => {
     const offered = new Map<string, Option.Option<Tool.Info>>(builtIn.map((name) => [name, Option.none()]))
     offered.set("subagent", Option.some(subagentTool))

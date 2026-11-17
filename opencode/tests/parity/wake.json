@@ -8,7 +8,7 @@
           "name": "the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice",
           "expects": 15,
           "carried": "both",
-          "why": "the repeating monitor (the baseline, one notice per change, the cancel) on the world; real too for what only the real host's config shows: the server's commands without /schedule, and the requests without the schedule tools, with the built-in schedule plugin off as daily writes it"
+          "why": "the repeating monitor (the baseline, one notice per change, the cancel) on the world; real too for what only the real host's config shows: the server's commands without /automation, and the requests without the automation tools, with the built-in automation plugin off as daily writes it"
         }
       ]
     },

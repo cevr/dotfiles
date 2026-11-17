@@ -3,7 +3,7 @@
  * wakes model (`@dotfiles/opencode-wake/model`) on the plugin's storage, the
  * session inbox, owned `/bin/sh` checks and the Bun.cron backstop, registers
  * the `wake`, `monitor`, `wake_cancel`, `wake_list` and `job` tools, takes
- * OpenCode's schedule tools (`SCHEDULE_TOOLS`) out of the registry, and
+ * OpenCode's automation tools (`AUTOMATION_TOOLS`) out of the registry, and
  * answers the wakes RPC (`WAKES`) the tray, the OS jobs and the schedule
  * migration (`scripts/migrate-schedules.ts`, over `set`) call.
  *
@@ -66,18 +66,18 @@ import {
 import { type Armed, type Board, type Cancelled, type Due, type Killed, type Pending, SetAsk, WAKES, type WakeRejected } from "@dotfiles/opencode-wake/wake"
 
 /**
- * OpenCode's schedule tools, by their registry ids; the wake tools replace
- * them. A schedule fires by prompting its session with its whole action, a
+ * OpenCode's automation tools, by their registry ids; the wake tools replace
+ * them. An automation fires by prompting its session with its whole action, a
  * real user message each time; a wake or a monitor fires as a short
- * synthetic notice. They are offered only under `experimental.schedules`,
+ * synthetic notice. They are offered only under `experimental.automations`,
  * and removed here for every agent either way.
  */
-export const SCHEDULE_TOOLS = [
-  "opencode_schedule_create",
-  "opencode_schedule_list",
-  "opencode_schedule_pause",
-  "opencode_schedule_resume",
-  "opencode_schedule_delete",
+export const AUTOMATION_TOOLS = [
+  "opencode_automation_create",
+  "opencode_automation_list",
+  "opencode_automation_pause",
+  "opencode_automation_resume",
+  "opencode_automation_delete",
 ] as const
 
 export const Options = Schema.Struct({
@@ -194,7 +194,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       const wakes = Context.get(services, Model.WakesModel)
 
       yield* ctx.tool.transform((editor) => {
-        for (const id of SCHEDULE_TOOLS) editor.remove(id)
+        for (const id of AUTOMATION_TOOLS) editor.remove(id)
         // Direct tools beside the others, so they are offered without code mode and reached from a kernel cell.
         editor.add({
           name: NAMES.wake,

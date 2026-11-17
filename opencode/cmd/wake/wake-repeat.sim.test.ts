@@ -3,13 +3,13 @@
 // requests and the transcript, moved off real OpenCode (it waited out a
 // one-second monitor and two status changes in real time). The plugin is
 // `cmd/wake/server.ts`'s `make` on the world's context (sim/plugins.ts), the
-// host with `experimental.schedules` on, so the schedule tools are built in
+// host with `experimental.automations` on, so the automation tools are built in
 // (the law "a tool a transform adds is offered, and a built-in tool it removes
 // is not"); the model answers by the rules scenarios/wake-repeat.ts had
 // before its monitor moved here (3d449520). The status
 // file is the world's shell: `cat` prints what the test last wrote. What only
-// the real host shows (the server's command list without `/schedule`, with
-// the built-in schedule plugin off as daily writes it) stays in the real file.
+// the real host shows (the server's command list without `/automation`, with
+// the built-in automation plugin off as daily writes it) stays in the real file.
 import { Effect } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
@@ -74,7 +74,7 @@ seeded("the schedule tools are gone, and a repeating monitor wakes the session o
     const offered: Array<ReadonlyArray<string>> = []
     const world = World.make({
       seed,
-      schedules: true,
+      automations: true,
       script: (request) => {
         if (request.kind === "title") return World.say("Repeat fixture")
         if (request.kind === "primary") offered.push(request.tools)
@@ -92,7 +92,7 @@ seeded("the schedule tools are gone, and a repeating monitor wakes the session o
     const step = (text: string, done: () => boolean) => world.prompt(session, text).pipe(Effect.andThen(world.until(() => idle() && done(), 60_000)))
     const replied = (text: string) => () => replies().includes(text)
 
-    // The flag is on, yet no schedule tool is offered on any request; ours are.
+    // The flag is on, yet no automation tool is offered on any request; ours are.
     yield* step("step-tools", replied("Tools noted."))
 
     yield* step("step-watch", replied("Watch set."))
@@ -117,7 +117,7 @@ seeded("the schedule tools are gone, and a repeating monitor wakes the session o
 
     expect(offered.length).toBeGreaterThan(0)
     for (const tools of offered) {
-      expect(tools.filter((name) => /schedule_(create|list|pause|resume|delete)/.test(name))).toEqual([])
+      expect(tools.filter((name) => /automation_(create|list|pause|resume|delete)/.test(name))).toEqual([])
       expect(tools).toContain("wake_cancel")
     }
 

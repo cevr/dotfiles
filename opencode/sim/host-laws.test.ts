@@ -85,7 +85,7 @@ const playLaws = (seed: number) =>
     // The model goes over HTTP, as on real OpenCode, so the HTTP and retry laws have a wire to hook; the integration law a login.
     const world = World.make({
       seed,
-      schedules: true,
+      automations: true,
       script: (request) => World.say(answer(request.kind, `${request.system}\n${request.text}`)),
       model: { providerID: "sim", id: "sim-model" },
       // As real OpenCode's law config: the sim model, a sol of a family with a release date, and the socket law's model,

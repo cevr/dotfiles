@@ -328,8 +328,8 @@ const run = Effect.gen(function* () {
       },
     },
     plugins: [{ package: probe, options: PROBE_OPTIONS }],
-    // As the world's law run: OpenCode's schedule tools built in, for the tool law to remove one.
-    experimental: { schedules: true },
+    // As the world's law run: OpenCode's automation tools built in, for the tool law to remove one.
+    experimental: { automations: true },
   }
 
   const sdk: Partial<Sdk> = yield* Effect.tryPromise({

@@ -2797,25 +2797,29 @@ background shell, and its parent (or the root) sets the wake. The root
 sessions, the orchestrator included, use them for every wake-up; `okra
 schedule` is no longer needed for that.
 
-### OpenCode's schedules are off
+### OpenCode's automations are off
 
-OpenCode's own schedule tools (`schedule_create`, `_list`, `_pause`,
-`_resume`, `_delete`, offered under `experimental.schedules`) fire a schedule
-by prompting its session with its whole action: a real user message each
+OpenCode's own automation tools (`automation_create`, `_list`, `_pause`,
+`_resume`, `_delete`, offered under `experimental.automations`, which upstream
+renamed from `experimental.schedules` and its schedule tools on 2026-11-16 and
+still reads under the old key) fire an automation by prompting its session
+with its whole action: a real user message each
 time, kilobytes for a watch that fires on every change. The wake plugin takes
-them out of the registry for every agent (`SCHEDULE_TOOLS` in
+them out of the registry for every agent (`AUTOMATION_TOOLS` in
 `cmd/wake/server.ts`, as the work plugin takes the worktree tools), so a wake
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The
-host's `/schedule` command, which tells the model to call those tools, comes
-from the same built-in plugin (`opencode.tool.schedule`); a plugin cannot
+host's `/automation` command, which tells the model to call those tools, comes
+from the same built-in plugin (`opencode.tool.automation`); a plugin cannot
 remove a command, so `bun run daily` turns that plugin off in the server
-config (`-opencode.tool.schedule`, `BUILTIN_SCHEDULE_OFF` in
-`scripts/daily.ts`), and neither the tools nor `/schedule` are offered.
-Stored schedules and their API stay the host's.
+config (`-opencode.tool.automation`, `BUILTIN_AUTOMATION_OFF` in
+`scripts/daily.ts`, which also drops the retired `-opencode.tool.schedule`),
+and neither the tools nor `/automation` are offered. Stored automations and
+their API stay the host's.
 
-`bun scripts/migrate-schedules.ts` moves the active schedules over once: for
+`bun scripts/migrate-schedules.ts` moved the active schedules over once, before
+upstream's rename (it reads the retired schedule rows and API): for
 each it plans the equivalent wake or monitor for its session (the mapping is
 in the script's header), writes a prompt over 200 characters to
 `$XDG_STATE_HOME/opencode-wake/schedules/<id>.md` and points the note at it,
@@ -2825,8 +2829,8 @@ the schedule; what has no equivalent (cron, a Code Mode check, remaining
 runs) is skipped and named. `--rows <file>` reads another machine's rows
 (the script's `QUERY` through `sqlite3 -readonly -json`).
 `tests/wake-repeat.test.ts` runs `scenarios/wake-repeat.ts` in real OpenCode
-with `experimental.schedules` on and the built-in schedule plugin off: no
-request offers a schedule tool, the server lists no `/schedule`, and a
+with `experimental.automations` on and the built-in automation plugin off: no
+request offers an automation tool, the server lists no `/automation`, and a
 `repeat: "change"` monitor wakes the session once per change of a file.
 
 ### Jobs

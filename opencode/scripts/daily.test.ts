@@ -9,7 +9,7 @@ import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -220,11 +220,16 @@ describe("the TUI config's built-in /btw", () => {
   })
 })
 
-describe("the server config's built-in schedule plugin", () => {
-  test("is turned off once, however many runs merged it, so neither its tools nor /schedule are offered", () => {
-    expect(BUILTIN_SCHEDULE_OFF).toBe("-opencode.tool.schedule")
-    const once = mergeServer({ plugins: ["/x"] }, [`${MODS}/wake`, BUILTIN_SCHEDULE_OFF], {}, [MODS])
-    expect(mergeServer(once, [`${MODS}/wake`, BUILTIN_SCHEDULE_OFF], {}, [MODS]).plugins).toEqual([`${MODS}/wake`, BUILTIN_SCHEDULE_OFF, "/x"])
+describe("the server config's built-in automation plugin", () => {
+  test("is turned off once, however many runs merged it, so neither its tools nor /automation are offered", () => {
+    expect(BUILTIN_AUTOMATION_OFF).toBe("-opencode.tool.automation")
+    const once = mergeServer({ plugins: ["/x"] }, [`${MODS}/wake`, BUILTIN_AUTOMATION_OFF], {}, [MODS])
+    expect(mergeServer(once, [`${MODS}/wake`, BUILTIN_AUTOMATION_OFF], {}, [MODS]).plugins).toEqual([`${MODS}/wake`, BUILTIN_AUTOMATION_OFF, "/x"])
+  })
+
+  test("drops the entry that turned it off under its name before upstream's rename", () => {
+    const merged = mergeServer({ plugins: ["-opencode.tool.schedule", "/x"] }, [`${MODS}/wake`, BUILTIN_AUTOMATION_OFF], {}, [MODS])
+    expect(merged.plugins).toEqual([`${MODS}/wake`, BUILTIN_AUTOMATION_OFF, "/x"])
   })
 })
 

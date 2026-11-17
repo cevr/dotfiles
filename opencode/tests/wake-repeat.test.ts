@@ -1,9 +1,9 @@
 // accept: deep (18.7 s alone on a quiet host: measured before the monitor moved to the simulated host, 1-minute load 45.1–62.5 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
-// Public seam: real OpenCode with `experimental.schedules` on, the real wake
-// server plugin, the built-in schedule plugin off as daily writes it, and a
+// Public seam: real OpenCode with `experimental.automations` on, the real wake
+// server plugin, the built-in automation plugin off as daily writes it, and a
 // scripted model. scenarios/wake-repeat.ts asks the model once, keeping the
-// tools it was offered. The schedule tools must be gone from the request
-// while the flag is on, and the `/schedule` command from the server's
+// tools it was offered. The automation tools must be gone from the request
+// while the flag is on, and the `/automation` command from the server's
 // commands: what the real host's config (the built-in plugin off) shows. The
 // repeating monitor (each change one short synthetic notice, never a user
 // prompt; a cancel stops it) runs on the simulated host under the same name:
@@ -36,7 +36,7 @@ const run = async (out: string) => {
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/wake-repeat.test.ts: skipped. Set OPENCODE_DEV to the fork.")
-describe.skipIf(!fork)("with OpenCode's schedules on", () => {
+describe.skipIf(!fork)("with OpenCode's automations on", () => {
   const kept = keptScratch(Boolean(fork), "wake-repeat-")
   test("the schedule tools are gone, and a repeating monitor wakes the session once per change with a short notice", kept.test(async () => {
     const out = kept.dir(`${label}-`)
@@ -44,13 +44,13 @@ describe.skipIf(!fork)("with OpenCode's schedules on", () => {
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root")
 
-    // The flag is on, yet with the built-in schedule plugin off neither its /schedule command nor a schedule tool is offered; ours are.
+    // The flag is on, yet with the built-in automation plugin off neither its /automation command nor a automation tool is offered; ours are.
     const commands: ReadonlyArray<string> = JSON.parse(read("commands.json"))
     expect(commands).toContain("review")
-    expect(commands).not.toContain("schedule")
+    expect(commands).not.toContain("automation")
     expect(root.length).toBeGreaterThan(0)
     for (const request of root) {
-      expect(request.request).not.toMatch(/schedule_(create|list|pause|resume|delete)/)
+      expect(request.request).not.toMatch(/automation_(create|list|pause|resume|delete)/)
       expect(request.request).toContain("wake_cancel")
     }
   }), 180_000)

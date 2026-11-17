@@ -18,7 +18,7 @@ import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
 import { Armed, Board, Cancelled, Due, Killed, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
 import { waitUntil } from "../../tests/wait.ts"
-import WakePlugin, { make, SCHEDULE_TOOLS } from "./server.ts"
+import WakePlugin, { make, AUTOMATION_TOOLS } from "./server.ts"
 
 type Host = Parameters<(typeof WakePlugin)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
@@ -59,8 +59,8 @@ const start = (
     const emitted: Array<readonly [string, unknown]> = []
     const events = yield* Queue.unbounded<Event>()
     const added = new Map<string, Added>()
-    // The registry's built-in tools before the transform: OpenCode's schedule tools beside one that stays.
-    const builtin = new Set<string>(["shell", ...SCHEDULE_TOOLS])
+    // The registry's built-in tools before the transform: OpenCode's automation tools beside one that stays.
+    const builtin = new Set<string>(["shell", ...AUTOMATION_TOOLS])
     const host = {
       options,
       location: { directory: DIR },
@@ -128,7 +128,7 @@ describe("the wake tools", () => {
       }),
     ))
 
-  test("take OpenCode's schedule tools out of the registry, leaving the other built-in tools", () =>
+  test("take OpenCode's automation tools out of the registry, leaving the other built-in tools", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start()

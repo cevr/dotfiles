@@ -349,13 +349,13 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
-    // Both hosts run with `experimental.schedules` on, so the schedule tools are built in.
+    // Both hosts run with `experimental.automations` on, so the automation tools are built in.
     name: LAW.tools,
     operations: ["tool.transform", "tool.list"],
     check: (ctx) =>
       Effect.gen(function* () {
         const before = (yield* ctx.tool.list()).map((tool) => tool.id)
-        yield* ensure(before.includes("opencode_schedule_create"), `the built-in tools were ${before.join(",")}`)
+        yield* ensure(before.includes("opencode_automation_create"), `the built-in tools were ${before.join(",")}`)
         yield* ctx.tool.transform((editor) => {
           editor.add({
             name: "law_echo",
@@ -363,11 +363,11 @@ export const LAWS: ReadonlyArray<Law> = [
             input: Schema.Struct({ text: Schema.String }),
             execute: (input) => Effect.succeed({ content: input.text }),
           })
-          editor.remove("opencode_schedule_create")
+          editor.remove("opencode_automation_create")
         })
         const after = (yield* ctx.tool.list()).map((tool) => tool.id)
         yield* ensure(after.includes("law_echo"), "the added tool is not offered")
-        yield* ensure(!after.includes("opencode_schedule_create"), "the removed tool is offered")
+        yield* ensure(!after.includes("opencode_automation_create"), "the removed tool is offered")
       }),
   },
   {

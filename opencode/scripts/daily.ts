@@ -57,12 +57,15 @@ type Json = Record<string, unknown>
 export const BUILTIN_BTW_OFF = "-opencode.btw"
 
 /**
- * Turns off the fork's built-in schedule plugin (`opencode.tool.schedule`): its schedule tools and
- * its `/schedule` command, which tells the model to call them. The wake plugin's tools replace
- * them (the README's OpenCode's schedules are off); a plugin can take a tool out of the registry
- * but not a command, so the plugin goes whole. Stored schedules and their API are the host's own.
+ * Turns off the fork's built-in automation plugin (`opencode.tool.automation`): its automation tools and
+ * its `/automation` command, which tells the model to call them. The wake plugin's tools replace
+ * them (the README's OpenCode's automations are off); a plugin can take a tool out of the registry
+ * but not a command, so the plugin goes whole. Stored automations and their API are the host's own.
  */
-export const BUILTIN_SCHEDULE_OFF = "-opencode.tool.schedule"
+export const BUILTIN_AUTOMATION_OFF = "-opencode.tool.automation"
+
+/** Server plugin entries the host no longer has, dropped from the config: the automation plugin's name before upstream's rename (2026-11-16). */
+const RETIRED_PLUGINS: ReadonlyArray<string> = ["-opencode.tool.schedule"]
 
 const packageOf = (entry: unknown): string | undefined =>
   typeof entry === "string" ? entry : typeof entry === "object" && entry !== null && "package" in entry ? String(entry.package) : undefined
@@ -227,8 +230,8 @@ const retired = (existing: Json) => {
 
 /**
  * The global server config with ours merged in: our plugins (any entry from `owned` dirs, or an
- * earlier copy of one that names no directory, such as `-opencode.tool.schedule`, is replaced,
- * every other entry kept, ours first so the auth plugin precedes the pool), each
+ * earlier copy of one that names no directory, such as `-opencode.tool.automation`, is replaced,
+ * a `RETIRED_PLUGINS` entry dropped, every other entry kept, ours first so the auth plugin precedes the pool), each
  * role's model (its other fields kept), the retired `experimental.background_compaction` removed
  * (`retired`), and auto-update off so the stock release never replaces the fork.
  */
@@ -241,7 +244,7 @@ export const mergeServer = (
   const ours = plugins.map(packageOf)
   const others = (Array.isArray(existing.plugins) ? existing.plugins : []).filter((entry) => {
     const path = packageOf(entry)
-    return path === undefined || (!ours.includes(path) && !owned.some((dir) => path === dir || path.startsWith(`${dir}/`)))
+    return path === undefined || (!ours.includes(path) && !RETIRED_PLUGINS.includes(path) && !owned.some((dir) => path === dir || path.startsWith(`${dir}/`)))
   })
   const agents = (typeof existing.agents === "object" && existing.agents !== null ? existing.agents : {}) as Record<string, Json>
   const providers = record(existing.providers)
@@ -492,7 +495,7 @@ if (import.meta.main) {
     pluginDir("rex"),
     pluginDir("escape"),
     updateEntry(pluginDir("update"), settings),
-    BUILTIN_SCHEDULE_OFF,
+    BUILTIN_AUTOMATION_OFF,
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
