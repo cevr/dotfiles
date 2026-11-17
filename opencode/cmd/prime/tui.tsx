@@ -20,6 +20,7 @@ import { arrowMoves } from "@dotfiles/opencode-prime/subagent"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { hints as jobHints, JobTab } from "@dotfiles/opencode-prime/tui/jobs"
+import { hints as queueHints, QUEUE_TAB, QueueTab } from "@dotfiles/opencode-prime/tui/queue"
 import { Dock, GoalLine, HintLine, Queued, Splash, StartingNotice, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
@@ -27,7 +28,7 @@ import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
 import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
 import { ownerZone } from "@dotfiles/opencode-prime/turn-time"
 import { Option } from "effect"
-import { createSignal } from "solid-js"
+import { createEffect, createRoot, createSignal, onCleanup, untrack } from "solid-js"
 
 export default Plugin.define({
   id: "dotfiles-opencode.prime",
@@ -171,6 +172,41 @@ export default Plugin.define({
       render: (input) => <JobTab host={h} sessionID={input.sessionID} close={input.close} />,
     })
 
+    // The Queue tab: the root session's queue as a plan (tui/queue.tsx), registered once a queue plugin answers a
+    // read (the dock's count reads it), so a TUI without one has no such tab. /queue (or /ledger) and a click on the
+    // dock's `N queued` open it.
+    const stopQueue = createRoot((dispose) => {
+      createEffect(() => {
+        if (!h.queueServed()) return
+        // Untracked: registering reads the host's plugin registry, which must not run this again.
+        const remove = untrack(() =>
+          context.ui.composerTab?.({
+            id: QUEUE_TAB,
+            title: "Queue",
+            hints: () => queueHints,
+            render: (input) => <QueueTab host={h} sessionID={input.sessionID} close={input.close} />,
+          }),
+        )
+        onCleanup(() => remove?.())
+      })
+      return dispose
+    })
+    context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: "prime.queue.open",
+          title: "Show the queue",
+          group: "Session",
+          enabled: () => h.queueServed() && Boolean(h.route()),
+          slash: { name: "queue", aliases: ["ledger"] },
+          run() {
+            h.openTab(QUEUE_TAB)
+          },
+        },
+      ],
+    }))
+
     context.keymap.layer(() => ({
       mode: "global",
       priority: 100,
@@ -257,6 +293,7 @@ export default Plugin.define({
     return () => {
       goal.stop()
       build.stop()
+      stopQueue()
     }
   },
 })

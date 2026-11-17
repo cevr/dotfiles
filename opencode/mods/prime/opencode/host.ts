@@ -9,12 +9,14 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
-import type { Option } from "effect"
+import { Option } from "effect"
+import { createSignal } from "solid-js"
 import type { Starting } from "../starting.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
 import { killJob, readJobs } from "./jobs.ts"
 import { openPending } from "./pending.ts"
+import { queues } from "./queue.ts"
 import { openShells, shellTail } from "./shells.ts"
 import { cancelWake, readWakes } from "./wakes.ts"
 
@@ -35,6 +37,9 @@ export function host(
   const data = context.data
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
   const family = familyReader()
+  const queue = queues(context, family)
+  // The tab openTab asked for, until the panel's tab bar shows it.
+  const [wantedTab, setWantedTab] = createSignal<Option.Option<string>>(Option.none())
   return {
     theme: () => context.theme,
     version: () => context.app.version,
@@ -68,6 +73,8 @@ export function host(
     pending: (sessionID) => data.session.pending.list(sessionID),
     openPending: (sessionID, prompt) => void openPending(context, sessionID, prompt),
     wakes: (sessionID) => readWakes(context, sessionID),
+    queue: queue.read,
+    queueServed: queue.served,
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
     subagents: (sessionID) => family(data, sessionID, context.location),
@@ -87,6 +94,9 @@ export function host(
     openSubagents: () => {
       context.keymap.dispatch("session.child.first")
     },
+    openTab: (id) => setWantedTab(Option.some(id)),
+    wantedTab,
+    tookTab: () => setWantedTab(Option.none()),
     openShells: (sessionID) => void openShells(context, sessionID),
     cancelWake: (sessionID, id) => cancelWake(context, sessionID, id),
     jobs: (sessionID) => readJobs(context, sessionID),

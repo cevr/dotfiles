@@ -2,6 +2,8 @@
 // its rows use. The components own this contract; opencode/host.ts fills it
 // from OpenCode's plugin context, handing the host's values over as they are,
 // so every read stays reactive inside a Solid computation.
+import type { Live } from "@dotfiles/opencode-queue/board"
+import type { Item } from "@dotfiles/opencode-queue/item"
 import type { Family } from "@dotfiles/opencode-subagents/family"
 import type { RGBA } from "@opentui/core"
 import type { Option } from "effect"
@@ -58,6 +60,13 @@ export type Overlay = {
   readonly reveal: (messageID: string) => void
 }
 
+/** A root session's queue (the queue mod's), with the live state of each of its subagents, by session id. */
+export type QueueReading = {
+  readonly root: string
+  readonly items: ReadonlyArray<Item>
+  readonly live: ReadonlyMap<string, Live>
+}
+
 /** A key a composer tab binds: what it does, in the host's key syntax (`ctrl+d`). */
 export type ComposerKey = { readonly title: string; readonly bind: string; readonly run: () => void }
 
@@ -104,6 +113,14 @@ export interface Host {
   jobs(sessionID: Accessor<Option.Option<string>>): Accessor<Option.Option<Jobs>>
   /** Stops one of the session's running jobs; its end letter still wakes the session: why not, or none once asked. */
   killJob(sessionID: string, id: string): Promise<Option.Option<string>>
+  /**
+   * The queue of the root of the session the accessor names, kept current
+   * while the calling component lives; none until the first reading, with no
+   * session, or while no queue plugin answers.
+   */
+  queue(sessionID: Accessor<Option.Option<string>>): Accessor<Option.Option<QueueReading>>
+  /** Whether a queue plugin has answered a queue read: the Queue tab and /queue exist from then on. */
+  queueServed(): boolean
   /** Every session of the session's family. */
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */
@@ -128,6 +145,15 @@ export interface Host {
   selecting(): boolean
   /** Opens the host's Subagents picker, as Down on an empty prompt does. */
   openSubagents(): void
+  /**
+   * Opens the composer panel on the tab `id`, or moves the open panel to it:
+   * the panel's tab bar takes the request (`wantedTab`) and says when it did (`tookTab`).
+   */
+  openTab(id: string): void
+  /** The tab `openTab` asked for that the panel has not shown yet. */
+  wantedTab(): Option.Option<string>
+  /** The panel shows the tab `openTab` asked for. */
+  tookTab(): void
   /** Opens the list of the session's shell commands, where the reader can read or kill one. */
   openShells(sessionID: string): void
   /** Shows text in the host's alert dialog until the reader closes it. */

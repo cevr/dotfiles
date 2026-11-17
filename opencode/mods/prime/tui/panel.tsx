@@ -3,8 +3,12 @@
 // its footer, drawn into the fork's `session.composer.panel.*` slots; the
 // host keeps the panel's keys, scrolling and row highlight. The Wakes and
 // Monitors tabs (composer.tsx) and the Jobs tab (jobs.tsx) draw their rows
-// with `PanelLine` too. The
-// words and the columns are ../panel.ts.
+// with `PanelLine` too; the Queue tab (queue.tsx) draws its plan. The tab bar
+// also opens the tab the Host was asked for (`openTab`). The words and the
+// columns are ../panel.ts.
+import * as TuiClock from "@dotfiles/decider/tui-clock"
+import { board } from "@dotfiles/opencode-queue/board"
+import { tally } from "@dotfiles/opencode-queue/plan"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { spinner } from "@dotfiles/opencode-subagents/line"
 import { live, subagents } from "@dotfiles/opencode-subagents/subagent-row"
@@ -93,6 +97,8 @@ export function PanelTabs(props: { readonly host: Host; readonly input: TabsInpu
   const shownID = () => Option.liftPredicate(props.input.sessionID, () => props.input.open)
   const wakes = props.host.wakes(() => Option.getOrUndefined(shownID()))
   const jobs = props.host.jobs(shownID)
+  const queue = props.host.queue(shownID)
+  const queued = createMemo(() => Option.match(queue(), { onNone: () => 0, onSome: (shown) => tally(board(shown.items, shown.live, TuiClock.now())).open }))
   const counts = createMemo(
     () =>
       new Map([
@@ -101,7 +107,23 @@ export function PanelTabs(props: { readonly host: Host; readonly input: TabsInpu
         ["wakes", tabEntries(wakes(), "alarm").length],
         ["monitors", tabEntries(wakes(), "monitor").length],
         ["jobs", runningJobs(jobsOf(jobs()))],
+        ["queue", queued()],
       ]),
+  )
+  // A tab the host was asked to open (Host `openTab`, /queue): the closed panel opens first, then shows it once the
+  // host has made its own tab active, a microtask on; the open one shows it at once.
+  createEffect(
+    on([() => props.host.wantedTab(), () => props.input.open], ([wanted, open]) =>
+      Option.map(wanted, (id) => {
+        if (!open) return props.host.openSubagents()
+        queueMicrotask(() => {
+          if (!Option.contains(props.host.wantedTab(), id)) return
+          // A tab the panel does not have is not shown: the request goes.
+          if (props.input.tabs.some((tab) => tab.id === id)) props.input.select(id)
+          props.host.tookTab()
+        })
+      }),
+    ),
   )
   const { width, measure } = useWidth()
   const cells = createMemo(() => tabBar(props.input.tabs, props.input.active, counts(), Math.max(0, width() - 4)))
