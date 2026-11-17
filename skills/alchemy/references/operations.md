@@ -20,7 +20,7 @@ Running Alchemy: the CLI, credentials, stages, state, lifecycle policies, CI, an
 | `alchemy deploy [file] --stage s --yes` | Plans and applies. `--yes` is required in plain mode (agents, CI, no TTY) |
 | `alchemy destroy --stage s --yes` | Deletes every resource in the stage in reverse dependency order, skipping retained ones |
 | `alchemy dev` | Hot-reloading local loop in `dev_$USER`, with emulated resources locally and the rest live |
-| `alchemy drift` | Detects drift, and can repair it |
+| `alchemy drift` | Detects drift, and can repair it. Exits 2 when it leaves drift unrepaired, for a scheduled check |
 | `alchemy logs [--tail]` | Runtime logs (Workers and Lambda; not Railway) |
 | `alchemy state list\|read\|delete` | Inspects the state store |
 | `alchemy profile create\|edit\|refresh\|show\|current\|list` | Credentials |
@@ -56,6 +56,7 @@ Agents (`CLAUDECODE` is set) always get plain output. Read `plan` first, then `d
 |------|------|
 | Take over a resource created outside Alchemy | `.pipe(Alchemy.AdoptPolicy.adopt(true))` or `--adopt` for one run |
 | Never delete the cloud object | `.pipe(Alchemy.RemovalPolicy.retain())`. Conditional: `retain(stage === "prod")`. It must be deployed *before* the change that would delete the resource. |
+| Refuse any plan that would replace or delete it (a VPC, a key that seals data) | `.pipe(Alchemy.RemovalPolicy.protect())`, since beta.86. `plan`, `deploy` and `destroy` fail with `ProtectedResource`; to remove it on purpose, deploy it without `protect()` first |
 | Rename a logical ID without a replacement | `.pipe(Alchemy.renamedFrom("OldId"))` |
 | Reference another stage's or stack's resource | `X.ref("id", { stage: "staging" })`, or a typed `Alchemy.Stack<Self, Outputs>()("Name")` handle |
 
