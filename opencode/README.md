@@ -1056,10 +1056,16 @@ The model, in the domain files at `mods/pool`'s root:
   usage sweep a read that never refreshes (`peek`).
 
 The aggregate stores folded state, not events: no one reads its history.
-The ledger keeps its holds, readings, priced steps and session caches under
-`<pool>/hold/<id>`, `<pool>/reading/<id>`, `<pool>/step/<at>/<session>` and
-`<pool>/cache/<session>`, so a new process starts where the last one
-stopped. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
+The ledger keeps its holds, readings and session caches under
+`<pool>/hold/<id>`, `<pool>/reading/<id>` and `<pool>/cache/<session>`, and
+its priced steps, like the limit tally's requests, in chunks of up to 200
+(`chunk/step/<pool>/<writer>/<seq>`, `chunk/use/<writer>/<seq>`,
+`opencode/chunks.ts`), so a new process starts where the last one stopped
+and reads a week of steps in a few thousand keys, not ~350k. Each process
+writes under a writer of its own, and its copies of the plugin share one
+store; a step or request two writers both hold counts once. A key per step
+or request (`<pool>/step/<at>/<session>`, `limits/use/<message>`), as an
+older pool kept them, is read too and folded into chunks in the background. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
 
 ### Rate-limit resets

@@ -402,7 +402,9 @@ const start = (
   })
 
 /** The keys the pool's ledger and stores wrote: the storage's, the migration's mark left out. */
-const ledgerKeys = (state: World) => [...state.storage.keys()].filter((key) => key !== MIGRATED)
+/** The ledger's keys, each chunk's writer (a process's own random name) written `<writer>`. */
+const ledgerKeys = (state: World) =>
+  state.storage.keys().filter((key) => key !== MIGRATED).map((key) => key.replace(/^(chunk\/.*\/)[^/]+(\/\d{6})$/, "$1<writer>$2")).toArray()
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
@@ -876,7 +878,7 @@ describe("the ledger", () => {
           "anthropic/cache/s1",
           "anthropic/hold/cred-b",
           "anthropic/reading/cred-b",
-          `anthropic/step/${String(HOUR).padStart(15, "0")}/s1`,
+          "chunk/step/anthropic/<writer>/000000",
         ])
 
         const next = yield* start(undefined, state)
