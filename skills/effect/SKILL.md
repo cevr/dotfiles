@@ -124,6 +124,8 @@ If a task spans several branches, read all matching files before editing.
 
 Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Stable moved the `effect/unstable/*` modules to top-level paths (`effect/cli`, `effect/http`, `effect/http-api`, `effect/ai`, `effect/rpc`). Examples were reviewed against `effect@4.1.2` on 2026-11-02, and the 4.1.3 and 4.1.4 changesets (checked 2026-11-16) change none of the APIs they use. Pin the version exactly.
 
+Tooling: on TypeScript 7 use `@effect/tsgo` (`effect-tsgo diagnostics` takes the same `--project`/`--lspconfig` flags); `@effect/language-service` only runs on TypeScript 5 and 6. `@effect/tsgo` 0.70 adds suggestions that fail the typecheck where suggestions are errors: `schemaClassMissingBrand` (pass `{ readonly brand: unique symbol }` as a schema class's second type argument), `mapConstToAs`, `onExitFailureToOnError` and `flatMapProvideServiceToProvideServiceEffect`; `preferSchemaOverJson` became `globalJson` and `globalJsonInEffect`. Fix what they flag rather than turning them off.
+
 ## License
 
 MIT.

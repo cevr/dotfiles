@@ -109,6 +109,8 @@ beta.86 broke the package in several places. A model written against beta.85 nee
 - **`validate` moved off the view and stream declarations** onto their Layers (`AccountSummary.toLayer(...)`), merged into the handlers. `Model.layer(handlers)` is a type error until every guarded view and stream has one.
 - **`attributes` is gone** from commands, events and rejections. Record a payload value with `Effect.annotateCurrentSpan` in the handler.
 - **`toHttpApi`, `toCli`, `toMcp` and `toToolkit` publish nothing without `expose`** (§One Api, every surface).
+- **`layerDurableObjects` needs `SecureRandom`**: provide `SecureRandom.layerWebCrypto` (`effect/crypto`) after it, not beside it in one `Layer.mergeAll`.
+- **Aggregate clients**: `state(target)` is renamed `get(target)`. `schedule` returns a `ScheduleReceipt` and cannot fail (scheduling again with the same `commandId` replaces the earlier one), so drop any `catchTag("AlreadyExecuted")` around it; `unschedule` still fails with `AlreadyExecuted`, `AlreadyCancelled` or `NotScheduled`.
 - **Durable Object classes are renamed on the first deploy** with `renamedFrom`, keeping their data. Two models that shared a class fail with `DurableObjectRenameConflict` until all but one set `legacyData: false` on their `layer`.
 
 ## Gaps at beta.87
