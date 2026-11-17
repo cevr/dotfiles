@@ -85,26 +85,34 @@ describe("PatchQueue", () => {
       ),
     ))
 
-  test("done keeps its first stamp; leaving done drops it; an empty string clears a field", () =>
+  test("done keeps its first stamp; leaving done drops it; an empty string clears a field; links are stored as written, kept when left out, cleared when empty", () =>
     Effect.runPromise(
       story(
-        Story.given(QueueChanged.make({ items: [{ ...panes, state: "done", doneAt: Date.parse(NOW) }, pool] })),
+        Story.given(QueueChanged.make({ items: [{ ...panes, state: "done", doneAt: Date.parse(NOW) }, { ...pool, after: ["panes"], on: { accepted: "land" } }] })),
         Story.clock(LATER),
-        Story.when(PatchQueue.make({ upsert: [{ id: "panes", text: "Closed the old panes" }, { id: "pool", state: "next", session: "" }], remove: [] })),
+        Story.when(
+          PatchQueue.make({
+            upsert: [
+              { id: "panes", text: "Closed the old panes", after: [" pool ", "panes"], on: { accepted: "land\n + install", failed: " " } },
+              { id: "pool", state: "next", session: "" },
+            ],
+            remove: [],
+          }),
+        ),
         Story.then(
           QueueChanged.make({
             items: [
-              { ...panes, text: "Closed the old panes", state: "done", doneAt: Date.parse(NOW) },
-              { id: "pool", text: "Sidebar pool worker", state: "next", owner: "mine" },
+              { ...panes, text: "Closed the old panes", state: "done", after: ["pool"], on: { accepted: "land + install" }, doneAt: Date.parse(NOW) },
+              { id: "pool", text: "Sidebar pool worker", state: "next", owner: "mine", after: ["panes"], on: { accepted: "land" } },
             ],
           }),
         ),
-        Story.when(PatchQueue.make({ upsert: [{ id: "panes", state: "next" }], remove: [] })),
+        Story.when(PatchQueue.make({ upsert: [{ id: "panes", state: "next", after: [], on: {} }], remove: [] })),
         Story.then(
           QueueChanged.make({
             items: [
               { ...panes, text: "Closed the old panes", state: "next" },
-              { id: "pool", text: "Sidebar pool worker", state: "next", owner: "mine" },
+              { id: "pool", text: "Sidebar pool worker", state: "next", owner: "mine", after: ["panes"], on: { accepted: "land" } },
             ],
           }),
         ),
