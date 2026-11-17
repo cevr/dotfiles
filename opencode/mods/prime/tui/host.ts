@@ -70,8 +70,8 @@ export interface Host {
   update(): boolean
   /** Upstream OpenCode against the installed build, as daily last counted it (update.ts `UpstreamReading`). */
   upstream(): UpstreamReading | undefined
-  /** What the TUI waits for before a prompt can go, since when (starting.ts); undefined once nothing. */
-  starting(): Starting | undefined
+  /** What the TUI waits for before a prompt can go, since when (starting.ts); none once nothing. */
+  starting(): Option.Option<Starting>
 
   // Session data.
   session(sessionID: string): Session | undefined

@@ -10,8 +10,9 @@
 // the service lists once the location's plugins are active (starting.ts).
 import * as TuiClock from "@dotfiles/decider/tui-clock"
 import type { Plugin } from "@opencode/plugin/tui"
+import { Option } from "effect"
 import { createSignal } from "solid-js"
-import type { Starting } from "../starting.ts"
+import { type Reading, type Starting, startingAfter } from "../starting.ts"
 import type { UpstreamReading } from "../update.ts"
 
 /** The waits between tries of one read: 1 s, doubling, at most 30 s, about four minutes in all. */
@@ -30,46 +31,50 @@ export function builds(context: Plugin.Context, readUpstream: () => UpstreamRead
   const [upstream, setUpstream] = createSignal<UpstreamReading | undefined>(undefined, {
     equals: (a, b) => a?.commits === b?.commits && a?.blocked === b?.blocked,
   })
-  const [starting, setStarting] = createSignal<Starting | undefined>(undefined, {
-    equals: (a, b) => a?.phase === b?.phase && a?.since === b?.since,
+  const [starting, setStarting] = createSignal<Option.Option<Starting>>(Option.none(), {
+    equals: (a, b) =>
+      Option.match(a, {
+        onNone: () => Option.isNone(b),
+        onSome: (left) => Option.match(b, { onNone: () => false, onSome: (right) => left.phase === right.phase && left.since === right.since }),
+      }),
   })
   // A read the next connection started is newer, so each read takes a turn and an older one's answer is dropped.
   let turn = 0
   let cancel: (() => void) | undefined
+  const location = Option.fromNullishOr(context.location)
+  const learnt = (reading: Reading) => setStarting((waiting) => startingAfter(waiting, reading, TuiClock.now(), Option.isSome(location)))
   // The location's providers answer once its plugins are active; with no location there is nothing more to wait for.
-  const plugins = (current: number, since: number) => {
-    const location = context.location
-    if (location === undefined) return setStarting(undefined)
-    setStarting({ phase: "plugins", since })
-    void context.client.provider.list({ location: { directory: location.directory } }).then(
-      () => {
-        if (turn === current) setStarting(undefined)
-      },
-      () => {
-        if (turn === current) cancel = TuiClock.once(PLUGINS_RETRY_MS, () => plugins(current, since))
-      },
+  const plugins = (current: number) =>
+    Option.map(location, ({ directory }) =>
+      context.client.provider.list({ location: { directory } }).then(
+        () => {
+          if (turn === current) learnt("providers")
+        },
+        () => {
+          if (turn === current) cancel = TuiClock.once(PLUGINS_RETRY_MS, () => void plugins(current))
+        },
+      ),
     )
-  }
-  const attempt = (current: number, tries: number, since: number) => {
+  const attempt = (current: number, tries: number) => {
     void context.client.server.info().then(
       (info) => {
         if (turn !== current) return
         setServed(info.version)
-        plugins(current, since)
+        learnt("served")
+        plugins(current)
       },
       () => {
         const wait = RETRY_MS[tries]
         if (turn !== current || wait === undefined) return
-        cancel = TuiClock.once(wait, () => attempt(current, tries + 1, since))
+        cancel = TuiClock.once(wait, () => attempt(current, tries + 1))
       },
     )
   }
   const load = () => {
     cancel?.()
     setUpstream(readUpstream())
-    const since = TuiClock.now()
-    setStarting({ phase: "service", since })
-    attempt(++turn, 0, since)
+    learnt("connected")
+    attempt(++turn, 0)
   }
   load()
   const unconnected = context.data.on("server.connected", load)

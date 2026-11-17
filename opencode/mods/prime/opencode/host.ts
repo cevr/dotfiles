@@ -9,6 +9,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
+import type { Option } from "effect"
 import type { Starting } from "../starting.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
@@ -28,7 +29,7 @@ export function host(
   build: {
     readonly served: () => string | undefined
     readonly upstream: () => UpstreamReading | undefined
-    readonly starting: () => Starting | undefined
+    readonly starting: () => Option.Option<Starting>
   },
 ): Host {
   const data = context.data

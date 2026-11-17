@@ -178,7 +178,7 @@ export function HintLine(props: { host: Host; sessionID: string }) {
     <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
       {/* While the service or its plugins start, that takes the hint's place: a prompt sent then waits for it. */}
       <Show
-        when={props.host.starting()}
+        when={Option.isSome(props.host.starting())}
         fallback={
           <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
             {send()}
@@ -201,10 +201,10 @@ export function HintLine(props: { host: Host; sessionID: string }) {
  */
 export function StartingNotice(props: { host: Host }) {
   const theme = () => props.host.theme()
-  const now = useNow(() => props.host.starting() !== undefined)
+  const now = useNow(() => Option.isSome(props.host.starting()))
   const line = createMemo(() => startingLine(props.host.starting(), now()))
   return (
-    <Show when={line()}>
+    <Show when={Option.getOrUndefined(line())}>
       {(shown) => (
         <text wrapMode="none" truncate fg={theme().text.faint}>
           <span style={{ fg: theme().text.muted }}>{shown().lead}</span>
