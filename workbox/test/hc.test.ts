@@ -66,6 +66,8 @@ type Host = {
   coreUnit: string
   /** That unit's OOMPolicy, whatever unit it is. */
   oomPolicy: string
+  /** Whether each user timer has its next run set; false as a timer on OnUnitActiveSec after a user manager restart. */
+  timersArmed?: boolean
 }
 
 const statusJson = (host: Host) =>
@@ -94,6 +96,7 @@ const writeHost = (home: string, host: Host) => {
       `HERDR_ACTIVE_EXIT=${host.herdrActive ? 0 : 3}`,
       `HC_UNIT=${host.coreUnit}`,
       `HC_OOM=${host.oomPolicy}`,
+      `TIMER_NEXT='${host.timersArmed === false ? "" : "Tue 2026-11-17 06:00:00 UTC"}'`,
       "",
     ].join("\n"),
   )
@@ -108,6 +111,7 @@ case "$*" in
   "--user is-active --quiet herdr-bite.service"|"--user is-enabled --quiet herdr-bite.service") exit "$HERDR_ACTIVE_EXIT" ;;
   "--user show $HC_UNIT -p OOMPolicy --value") echo "$HC_OOM" ;;
   *" -p Slice --value") echo bite.slice ;;
+  *".timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value") printf '%s\\n%s\\n' "$TIMER_NEXT" 0 ;;
   "show bite.slice -p MemoryMin --value") echo 268435456 ;;
   "show bite.slice -p MemoryLow --value") echo 536870912 ;;
   "show user-"*" -p MemoryMax --value") echo 55834574848 ;;
@@ -377,6 +381,15 @@ describe("bootstrap", () => {
       expect(result.calls.filter((c) => c.startsWith("herdr "))).toEqual([])
       expect(result.calls).toContain("hc server status --json")
     }
+  }, 30_000)
+
+  test("--check and workbox-health fail when a user timer is active with no next run (2026-11-13: OnUnitActiveSec after a user manager restart)", async () => {
+    const stalled = { ...today, timersArmed: false }
+    const checked = await bootstrapCheck(stalled)
+    expect({ code: checked.code === 0 ? 0 : "failed", passed: checked.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
+    const health = await runHealth(stalled)
+    expect(health.stdout).toContain("FAIL  workbox-health.timer next run set")
+    expect((await runHealth(today)).stdout).toContain("PASS  workbox-health.timer next run set")
   }, 30_000)
 
   test("--check fails on each wrong hc input alone: no core, hc-core.service not enabled, keeps unknown, the core outside an hc-serve unit, OOMPolicy=stop", async () => {
