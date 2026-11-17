@@ -9,6 +9,8 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
+import type { Option } from "effect"
+import type { Starting } from "../starting.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
 import { killJob, readJobs } from "./jobs.ts"
@@ -24,7 +26,11 @@ import { cancelWake, readWakes } from "./wakes.ts"
 export function host(
   context: Plugin.Context,
   goal: (sessionID: string) => Goal | undefined,
-  build: { readonly served: () => string | undefined; readonly upstream: () => UpstreamReading | undefined },
+  build: {
+    readonly served: () => string | undefined
+    readonly upstream: () => UpstreamReading | undefined
+    readonly starting: () => Option.Option<Starting>
+  },
 ): Host {
   const data = context.data
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
@@ -34,6 +40,7 @@ export function host(
     version: () => context.app.version,
     update: () => updateAvailable(context.app.version, build.served()),
     upstream: build.upstream,
+    starting: build.starting,
     session: (sessionID) => data.session.get(sessionID),
     sessions: () => data.session.list(),
     messages: (sessionID) => data.session.message.list(sessionID),

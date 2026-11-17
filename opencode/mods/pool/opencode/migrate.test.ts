@@ -9,7 +9,7 @@ import { storage } from "../memory/ledger.ts"
 import { FleetStore, Ledger, PushStore, ResetsStore } from "../service.ts"
 import * as FleetLive from "./fleet.ts"
 import * as LedgerLive from "./ledger.ts"
-import { migrate } from "./migrate.ts"
+import { MIGRATED, migrate } from "./migrate.ts"
 import * as PushesLive from "./pushes.ts"
 import * as ResetsLive from "./resets.ts"
 
@@ -116,7 +116,8 @@ describe("the storage migration", () => {
           peerLimitRows: [`anthropic|${legacy}|5h|0`],
           pushAccounts: [legacy],
         })
-        expect(yield* run(entries)).toBe(entries.size)
+        const size = entries.size
+        expect(yield* run(entries)).toBe(size)
         const now = "claude:anthropic:store:work:123"
         expect(yield* readIds(entries)).toEqual({
           holds: ["store:work"],
@@ -151,9 +152,26 @@ describe("the storage migration", () => {
           "anthropic/step/000000000000001/ses_1": { at: 1, sessionID: "ses_1", credentialID: "store:work", cost: 2 },
           [`resets/reset/${encodeURIComponent("claude:anthropic:store:work:123")}`]: { key: "claude:anthropic:store:work:123", credentialID: "store:work" },
           "anthropic/hold/cred_abc": { kind: "rate-limit", until: 9 },
+          [MIGRATED]: true,
         })
         // A second start finds nothing to do.
         expect(yield* run(entries)).toBe(0)
+      }),
+    ))
+
+  test("a storage it finished migrating is not read again: a later start scans only for its mark", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const entries = new Map<string, Schema.Json>([[`anthropic/hold/${OLD}work`, { kind: "usage-limit", until: 5 }]])
+        expect(yield* run(entries)).toBe(1)
+        // An entry naming a legacy id after the mark is left alone, and the start reads one page of one key.
+        entries.set(`anthropic/hold/${OLD}late`, { kind: "usage-limit", until: 5 })
+        const scans: Array<{ readonly prefix: string; readonly limit?: number }> = []
+        const store = storage(entries)
+        const counted = { ...store, scan: (options: Parameters<typeof store.scan>[0]) => (scans.push(options), store.scan(options)) }
+        expect(yield* migrate(counted)).toBe(0)
+        expect(scans).toEqual([{ prefix: MIGRATED, limit: 1 }])
+        expect(entries.has(`anthropic/hold/${OLD}late`)).toBe(true)
       }),
     ))
 
@@ -165,7 +183,7 @@ describe("the storage migration", () => {
           ["anthropic/hold/store:work", { kind: "usage-limit", until: 50 }],
         ])
         yield* run(entries)
-        expect(Object.fromEntries(entries)).toEqual({ "anthropic/hold/store:work": { kind: "usage-limit", until: 50 } })
+        expect(Object.fromEntries(entries)).toEqual({ "anthropic/hold/store:work": { kind: "usage-limit", until: 50 }, [MIGRATED]: true })
       }),
     ))
 
@@ -174,7 +192,7 @@ describe("the storage migration", () => {
       Effect.gen(function* () {
         const entries = new Map<string, Schema.Json>(Array.from({ length: 1200 }, (_, index) => [`anthropic/reading/${OLD}l${index}`, { at: index }]))
         expect(yield* run(entries)).toBe(1200)
-        expect([...entries.keys()].every((key) => key.startsWith("anthropic/reading/store:"))).toBe(true)
+        expect([...entries.keys()].every((key) => key === MIGRATED || key.startsWith("anthropic/reading/store:"))).toBe(true)
       }),
     ))
 })

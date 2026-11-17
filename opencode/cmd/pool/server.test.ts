@@ -8,13 +8,14 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Queue, Schedule, Schema, Stream } from "effect"
+import { Effect, Fiber, Latch, Layer, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
 import * as FleetTest from "@dotfiles/opencode-pool/memory/fleet"
 import { LEGACY_PREFIX } from "@dotfiles/opencode-pool/legacy-ids"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
+import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
 import type { LimitsAnswer } from "@dotfiles/opencode-pool/model"
 import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
@@ -26,10 +27,15 @@ import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
-import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
+import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
+import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
-import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
+import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, liveWith, make } from "./server.ts"
+import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
+
+/** The live adapters of one process: each start is a process of its own, its shared storage read anew. */
+const live = () => liveWith(PeersLive.layer)
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -148,6 +154,8 @@ const start = (
   options: Record<string, unknown> = { sweepMinutes: 0 },
   state: World = world(),
   externals: Parameters<typeof make>[0] | "test" = "test",
+  /** Whether the start waits until the pool answers, its ledger read; else it ends once the plugin is active. */
+  ready = true,
 ) =>
   Effect.gen(function* () {
     const root = yield* scratchRoot
@@ -283,6 +291,8 @@ const start = (
       storage: LedgerTest.storage(state.storage),
     } as unknown as Host
     yield* make(externals === "test" ? testLayers(state, published, root) : externals).effect(host)
+    // The model builds from the ledger after the plugin is active: a start is complete once the pool answers.
+    if (ready) yield* Effect.exit(rpc[POOL_STATUS.id]!["alerts"]!({}))
 
     /** One model request of a session: the headers the pool sets on it. */
     const send = Effect.fn("PoolServerTest.send")(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
@@ -390,6 +400,9 @@ const start = (
       tools,
     }
   })
+
+/** The keys the pool's ledger and stores wrote: the storage's, the migration's mark left out. */
+const ledgerKeys = (state: World) => [...state.storage.keys()].filter((key) => key !== MIGRATED)
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
@@ -499,7 +512,7 @@ describe("the hooks", () => {
         expect(yield* plugin.retry({ retry: true, delay: 2000 })).toEqual({ retry: true, delay: 2000 })
         expect(yield* plugin.request()).toBe("cred-a")
         // Only where the session's cache is: no hold.
-        expect([...state.storage.keys()]).toEqual(["anthropic/cache/ses_1"])
+        expect(ledgerKeys(state)).toEqual(["anthropic/cache/ses_1"])
       }),
     ))
 
@@ -826,6 +839,30 @@ describe("a session's cache", () => {
 })
 
 describe("the ledger", () => {
+  // A week of steps takes the live storage tens of seconds to read, and the host serves no provider until every
+  // plugin of the location is active: the plugin is active before its ledger is read.
+  test("is read after the plugin is active: a request meanwhile waits for it and goes where it says", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.storage.set("anthropic/hold/cred-a", { kind: "usage-limit", until: 10 * HOUR, at: 0 })
+        const open = yield* Latch.make(false)
+        let scans = 0
+        const storage = LedgerTest.storage(state.storage)
+        const slow = LedgerLive.layer({ ...storage, scan: (options) => Effect.sync(() => void scans++).pipe(Effect.andThen(open.await), Effect.andThen(storage.scan(options))) })
+        const root = yield* scratchRoot
+        const published = yield* Queue.unbounded<PublishedReading>()
+        const plugin = yield* start({ sweepMinutes: 0 }, state, () => Layer.merge(testLayers(state, published, root)(), slow), false)
+        expect(Object.keys(plugin.hooks).sort()).toEqual(["http.response", "model.request", "retry"])
+        yield* waitFor("the ledger read", () => scans > 0)
+        const request = yield* Effect.forkChild(plugin.request("s1"))
+        yield* settle
+        expect(request.pollUnsafe()).toBeUndefined()
+        yield* open.open
+        expect(yield* Fiber.join(request)).toBe("cred-b")
+      }),
+    ))
+
   test("keeps holds, readings, priced steps and caches under the pool's id, and a new process reads them back", () =>
     onTestClock(
       Effect.gen(function* () {
@@ -835,7 +872,7 @@ describe("the ledger", () => {
         yield* plugin.request("s1")
         yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 0.25 } })
         yield* plugin.publish({ credentialID: "cred-b", reading: { at: HOUR, windows: [], refusal: { kind: "usage-limit", until: 3 * HOUR } } })
-        expect([...state.storage.keys()].sort()).toEqual([
+        expect(ledgerKeys(state).sort()).toEqual([
           "anthropic/cache/s1",
           "anthropic/hold/cred-b",
           "anthropic/reading/cred-b",
@@ -865,7 +902,7 @@ describe("the ledger", () => {
         yield* TestClock.adjust(WINDOW_MS)
 
         const next = yield* start(undefined, state)
-        expect([...state.storage.keys()].sort()).toEqual(["anthropic/reading/cred-a", "anthropic/reading/cred-b", "other/hold/cred-a"])
+        expect(ledgerKeys(state).sort()).toEqual(["anthropic/reading/cred-a", "anthropic/reading/cred-b", "other/hold/cred-a"])
         yield* next.pace("anthropic")
         const accounts = (yield* next.status).anthropic?.accounts
         expect(accounts?.map((account) => [account.credentialID, account.load, account.hold, account.reading?.at])).toEqual([
@@ -902,7 +939,7 @@ describe("the sweep", () => {
         state.readings.set("cred-a", { at: 0, windows: [], refusal: { kind: "usage-limit", until: 2 * HOUR } })
         yield* start({ sweepMinutes: 0 }, state)
         yield* TestClock.adjust(HOUR)
-        expect([...state.storage.keys()]).toEqual([])
+        expect(ledgerKeys(state)).toEqual([])
       }),
     ))
 })
@@ -1025,7 +1062,7 @@ describe("on the live adapters", () => {
   test("a step's tokens reach the tally file this start names, at the next sweep", () =>
     onTestClock(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 5 }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 5 }, world(), live())
         yield* TestClock.adjust(HOUR)
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
@@ -1044,7 +1081,7 @@ describe("on the live adapters", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        const plugin = yield* start(undefined, state, live)
+        const plugin = yield* start(undefined, state, live())
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         expect(yield* plugin.request("ses_2")).toBe("cred-b")
         // The integration's label names the login a session is on.
@@ -1070,7 +1107,7 @@ describe("on the live adapters", () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-store-"))
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live())
         expect((yield* plugin.status).anthropic?.sources).toEqual([{ kind: "store", dir, accounts: [], skipped: [] }])
         let activation = "auto"
         const editor = {
@@ -1102,7 +1139,7 @@ describe("on the live adapters", () => {
     state.storage.set(`anthropic/hold/${LEGACY_PREFIX}work`, hold)
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live())
         // The held login is passed over.
         expect(yield* plugin.request("ses_1")).not.toBe("store:work")
         const status = yield* plugin.status
@@ -1139,7 +1176,7 @@ describe("the alerts RPC", () => {
     const { dir, login, trade } = store(400)
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live())
         expect(yield* plugin.alerts).toEqual({ lost: [], outages: [] })
         expect(yield* trade).toBe("failed")
         const alerts = yield* plugin.alerts
@@ -1166,7 +1203,7 @@ describe("the alerts RPC", () => {
     return scenario(
       Effect.gen(function* () {
         // A threshold of 30 ms: one 429 that pauses the store for ten minutes is out once it passes.
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }], refreshOutageMinutes: 0.0005 }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }], refreshOutageMinutes: 0.0005 }, world(), live())
         expect(yield* trade).toBe("failed")
         yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)))
         expect(yield* plugin.alerts).toEqual({
@@ -1365,7 +1402,7 @@ describe("a paced provider on the live adapters", () => {
           metadata: { accountID: "acct-1" },
         })
         state.active.set("openai", "chatgpt-1")
-        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: `${server.url.origin}/backend-api/wham/usage` }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: `${server.url.origin}/backend-api/wham/usage` }, state, live())
         // 80% of the week spent halfway through it: over the pace.
         expect(yield* plugin.pace("openai")).toMatchObject({ ok: false, measured: true })
         expect(seen).toEqual(["acct-1"])
@@ -1399,7 +1436,7 @@ describe("a paced provider on the live adapters", () => {
       Effect.gen(function* () {
         const state = world()
         state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
-        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: "http://127.0.0.1:9/none" }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: "http://127.0.0.1:9/none" }, state, live())
         expect(yield* plugin.pace("openai")).toMatchObject({ ok: true, measured: false })
       }),
     ))
@@ -1443,7 +1480,7 @@ describe("resets on the live adapters", () => {
           const state = world()
           state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
           state.credentials.set("chatgpt-1", { type: "oauth", access: "access-1", refresh: "r", expires: now + DAY, metadata: { accountID: "acct-1" } })
-          const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live)
+          const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live())
           yield* busy(plugin, "openai")
           expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })
           yield* waitFor("the fake's consume request", () => fake.consumes.length > 0)
@@ -1486,7 +1523,7 @@ describe("resets on the live adapters", () => {
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
         state.parents.set("ses_child", "ses_root")
-        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live())
         yield* busy(plugin, "anthropic")
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
         yield* waitFor("the plugin's claim and the notice", () => plugin.claims.length > 0 && state.owner.asked.length > 0)
@@ -1510,7 +1547,7 @@ describe("resets on the live adapters", () => {
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(now))
-        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
         yield* waitFor("the plugin's claim", () => plugin.claims.length > 0)
         expect(plugin.claims.map(({ creditID }) => creditID)).toEqual(["grant-1"])
@@ -1539,7 +1576,7 @@ describe("resets on the live adapters", () => {
           },
         })
         state.parents.set("ses_child", "ses_root")
-        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
         yield* waitFor("the plugin's claim and the owner's question", () => plugin.claims.length > 0 && state.owner.asked.length > 0)
         expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
@@ -1580,7 +1617,7 @@ describe("resets on the live adapters", () => {
           },
         })
         state.parents.set("ses_child", "ses_root")
-        const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live())
         yield* busy(plugin, "anthropic")
         expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
         yield* settle
@@ -1604,7 +1641,7 @@ describe("resets on the live adapters", () => {
         const state = world()
         state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
         state.readings.set("cred-a", spentClaude(Date.now()))
-        const plugin = yield* start({ sweepMinutes: 0, resets: false }, state, live)
+        const plugin = yield* start({ sweepMinutes: 0, resets: false }, state, live())
         expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
         yield* settle
         expect(state.owner.asked).toEqual([])

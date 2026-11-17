@@ -19,7 +19,7 @@ import { arrowMoves } from "@dotfiles/opencode-prime/subagent"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { hints as jobHints, JobTab } from "@dotfiles/opencode-prime/tui/jobs"
-import { Dock, GoalLine, HintLine, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
+import { Dock, GoalLine, HintLine, Queued, Splash, StartingNotice, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
@@ -129,6 +129,11 @@ export default Plugin.define({
     context.ui.slot({
       append: "home.footer.status",
       render: () => <UpdateNotice host={h} />,
+    })
+    // And beside it while the service or its plugins start (in a session the line above the composer says it).
+    context.ui.slot({
+      append: "home.footer.status",
+      render: () => <StartingNotice host={h} />,
     })
 
     // The background-work panel (Down on an empty prompt) in the Prime look: its tab bar, each

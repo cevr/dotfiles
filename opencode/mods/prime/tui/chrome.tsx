@@ -24,10 +24,12 @@ import {
 import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
+import { startingLine } from "../starting.ts"
 import { jobItem, jobsOf, runningJobs } from "../jobs.ts"
 import { type HintMove, navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
 import { sameWakeItem, wakeItem } from "../wakes.ts"
+import { useNow } from "./clock.ts"
 import { useWorking, working } from "./family.ts"
 import type { Host } from "./host.ts"
 import { SubagentRows } from "./live.tsx"
@@ -174,11 +176,42 @@ export function HintLine(props: { host: Host; sessionID: string }) {
   )
   return (
     <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
-      <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
-        {send()}
-      </text>
+      {/* While the service or its plugins start, that takes the hint's place: a prompt sent then waits for it. */}
+      <Show
+        when={Option.isSome(props.host.starting())}
+        fallback={
+          <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
+            {send()}
+          </text>
+        }
+      >
+        <box paddingLeft={GUTTER} flexShrink={1}>
+          <StartingNotice host={props.host} />
+        </box>
+      </Show>
       <UpdateNotice host={props.host} />
     </box>
+  )
+}
+
+/**
+ * `server starting · 42s · a prompt sent now waits for it` while the TUI waits for its service, then
+ * `plugins starting · …` while the location's plugins activate (starting.ts): the lead muted, the rest faint, the
+ * time ticking each second. Nothing for a wait under STARTING_SHOWN_AFTER_MS, nor once it is over.
+ */
+export function StartingNotice(props: { host: Host }) {
+  const theme = () => props.host.theme()
+  const now = useNow(() => Option.isSome(props.host.starting()))
+  const line = createMemo(() => startingLine(props.host.starting(), now()))
+  return (
+    <Show when={Option.getOrUndefined(line())}>
+      {(shown) => (
+        <text wrapMode="none" truncate fg={theme().text.faint}>
+          <span style={{ fg: theme().text.muted }}>{shown().lead}</span>
+          {shown().rest}
+        </text>
+      )}
+    </Show>
   )
 }
 
