@@ -10,6 +10,7 @@
  */
 import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
+import { emphasisOn } from "@dotfiles/opencode-prime/emphasis"
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { readUpstream } from "@dotfiles/opencode-prime/filestore/upstream"
 import { builds } from "@dotfiles/opencode-prime/opencode/build"
@@ -37,6 +38,8 @@ export default Plugin.define({
     const [detail, setDetail] = createSignal<Detail>("details")
     // The owner's time zone, for when each turn ended (mods/prime/turn-time.ts).
     const zone = ownerZone(context.options)
+    // Chips and queue labels in replies (mods/prime/emphasis.ts), unless the option `emphasis` is false.
+    const emphasis = emphasisOn(context.options)
     // A prompt the runner has not taken draws nothing in the transcript (tui/transcript.tsx UserBand), so its row takes no gap either.
     const hidden = (messageID: string | undefined) => {
       const sessionID = h.route()
@@ -79,7 +82,7 @@ export default Plugin.define({
     })
     context.ui.slot({
       replace: "session.part.text",
-      render: (input) => <AssistantText host={h} {...input} />,
+      render: (input) => <AssistantText host={h} {...input} emphasis={emphasis} />,
     })
     context.ui.slot({
       replace: "session.part.tool",
@@ -99,7 +102,7 @@ export default Plugin.define({
     // A compaction is one line below All, and the host's whole block (its summary) at All (tui/compaction.tsx).
     context.ui.slot({
       replace: "session.message.compaction",
-      render: (input) => <Compaction host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
+      render: (input) => <Compaction host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} emphasis={emphasis} />,
     })
     // The prompts the runner has not taken, steers and queued ones in one list, in place of the host's queued box (tui/chrome.tsx).
     context.ui.slot({

@@ -486,6 +486,68 @@ and `Killed sh_…`.
 `@dotfiles/opencode-subagents/*` and its own root files. `tui/` may not
 import `opencode/` or `@opencode/*`.
 
+### Emphasis
+
+A reply draws a few `[[Word]]` pills as coloured chips, and the "In the
+queue" section's lead labels with their state's diamond. Both come from one
+table, `emphasis.ts`, which also builds the prompt section that teaches the
+chips (`guidance`, sent by the server half once it lands).
+
+```
+Disk is at 61% after the cleanup  ● Measured , down from 89%.     ← [[Measured]]
+- The upload check broke  ✗ Failed: 3 tests  on the token step.   ← [[Failed: 3 tests]]
+- ◈ Running (mine): the 95% disk watch.                            ← **Running (mine):**
+```
+
+- Chips, taught: `Measured ●`, `Inferred ○`, `Guess ?` (the evidence
+  labels the task-ending rule asks for), `Done ✓`, `Failed ✗`, `Blocked ◆`,
+  `Skipped ◌`, and two solid ones for what still asks: `Costs money $`,
+  `Irreversible !`. A word may carry short detail after a space or colon
+  (`[[Done 12/12]]`). `Passed` and `Unverified` are drawn as `Done` and
+  `Guess` but not taught. Anything else in `[[…]]` (a wiki link, `[[ -f x ]]`)
+  stays as typed.
+- A chip is a space, its mark, a space, the text and a space: exactly as wide
+  as `[[text]]`, so a pill closing mid-stream never reflows the reply. A soft
+  chip is its tone on a ground tinted 22% toward it, a solid one the
+  ground's colour, bold, on its tone (`chipColors` in `tui/tone.ts`). The
+  marks are Prime's own; no Nerd Font is needed.
+- Labels are recognised, not taught: a bold span that opens a paragraph or
+  list item and names one (`Running`, `Waiting on you`, `Waiting (yours)`,
+  `Waiting`, `Dated`, `Scheduled`, `Held`, `Next`) gets the diamond and tone
+  the subagent rows give that state (`SYMBOLS`, `stateTone` in
+  `mods/subagents/line.ts`) in front, two cells.
+- Nothing is rewritten: the stored text, copies and exports keep the pills as
+  typed; code (`` `[[Done]]` ``) stays as typed; with `session.markdown` set
+  to source nothing is drawn. The TUI option `emphasis: false` turns it off.
+
+How it draws, with no fork change: `tui/prose.tsx` wraps the host's
+`ui.Markdown` in a box and, when it mounts (before the first highlight),
+`attach` in `tui/emphasis.ts` hooks the opentui `MarkdownRenderable` under
+it. opentui draws a prose block twice: a preview from marked's tokens while
+it streams (its `renderInlineContent`, which table cells use too), then
+tree-sitter's chunks through each block's `onChunks` (by default the
+renderable's `_linkifyMarkdownChunks`, opentui's `detectLinks`). `attach`
+wraps both: the final path keeps `detectLinks` and replaces the chunks a pill
+or label drew by their source ranges (`finalEdits`), the preview path splits
+marked's runs at the same pills (`previewEdits`), and a table, or a reply
+mounted mid-stream, holding a pill is rebuilt once. Both names are opentui's
+private ones: if one goes in an upgrade that path is skipped and the text
+draws as it did, and `mods/prime/tui/emphasis.test.ts` (which checks both
+names on the pinned opentui) fails the gate. The way out is a public
+inline-chunk transform on `MarkdownRenderable`, covering the preview and
+table cells, asked of opentui (anomalyco/opentui, not filed yet).
+
+`mods/prime/emphasis.test.ts` holds the vocabulary, the splitting on both
+paths and the width law; `mods/prime/tui/emphasis.test.ts` runs `attach` in
+opentui's test renderer with its real tree-sitter (the final frame, a table
+cell, a streamed reply that never shows a closed pill as typed, the source
+view); `cmd/prime/prime-emphasis.sim.test.tsx` runs `scenarios/prime-emphasis.ts`'s
+reply in the fork's TUI on the simulated host and holds its frame to the
+scenario's (`sim-tui/golden/prime-emphasis/`). The scenario writes
+`emphasis.png`, and with `SCENARIO_EMPHASIS=off` `emphasis-plain.png`, and
+records every frame of the stream (`emphasis-stream.json`, the closed pills
+any showed as typed: none).
+
 ## Background shells
 
 The fork (branch `shell-handles`, on `bg-shells`, and `shell-action` for the `action` input) makes every `shell` call

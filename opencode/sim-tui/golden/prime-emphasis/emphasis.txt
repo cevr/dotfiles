@@ -1,0 +1,40 @@
+                                         disk cleanup  $0.00
+  cwd ~/files
+
+ ┃ How did the disk cleanup go?
+
+  Disk is at 61% after the cleanup  ● Measured , down from 89%.
+
+  - Build caches deleted in 104 workspaces  ✓ Done 104/104 .
+  - The deep accept run was not started  ◌ Skipped : the host was loaded.
+  - The upload check broke  ✗ Failed: 3 tests  on the token step.
+  - The bucket move waits on the owner's login  ◆ Blocked .
+  - The leak is the stale lock  ○ Inferred  from the log tail.
+  - The workbox may need a reboot  ? Guess .
+  - The gate ran green  ✓ Passed .
+  - Deleting the old bucket  ! Irreversible  loses the 2024 logs.
+  - Moving it to cold storage  $ Costs money  about $4 a month.
+
+  ┌─────────────────────────────────────────────────┬─────────────────────────────────────────────┐
+  │ unit                                            │ state                                       │
+  ├─────────────────────────────────────────────────┼─────────────────────────────────────────────┤
+  │ emphasis-draw                                   │  ✓ Done                                     │
+  ├─────────────────────────────────────────────────┼─────────────────────────────────────────────┤
+  │ emphasis-rules                                  │  ◆ Blocked                                  │
+  └─────────────────────────────────────────────────┴─────────────────────────────────────────────┘
+
+  In the queue:
+
+  - ◈ Running (mine): the 95% disk watch.
+  - ◆ Waiting on you: the bucket login.
+  - ◇ Dated (mine): the cache review on 2026-11-20.
+  - ◇ Next: emphasis-rules, after this lands.
+                                                                                        11:28 AM ET
+
+
+
+ ┃
+                                                                                      gpt-sim-model
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+ ✓ Server  ○ UI  Theme  Tools  Experiments

@@ -585,6 +585,15 @@
     },
     {
       "files": [
+        "scenarios/prime-emphasis.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "mods/cache/filestore/ping-log.ts"
       ],
       "rules": {

@@ -6,6 +6,7 @@ import { governingAsk, oneLine } from "../ask.ts"
 import { inboxOf, isWaiting } from "../pending.ts"
 import { attachedLine, promptText } from "../prompt.ts"
 import type { Host, Overlay, Palette } from "./host.ts"
+import { Prose } from "./prose.tsx"
 
 export type PartProps = { host: Host; sessionID: string; messageID: string; partID: string }
 
@@ -77,7 +78,8 @@ export function UserBand(props: { host: Host; sessionID: string; messageID: stri
   )
 }
 
-export function AssistantText(props: PartProps) {
+/** The reply's text as the host's Markdown, its emphasis drawn unless the option `emphasis` is off (tui/prose.tsx). */
+export function AssistantText(props: PartProps & { emphasis: boolean }) {
   const part = usePart(props)
   const content = createMemo(() => {
     const item = part()
@@ -87,11 +89,10 @@ export function AssistantText(props: PartProps) {
     const message = props.host.message(props.sessionID, props.messageID)
     return message?.type === "assistant" && message.time.completed === undefined
   })
-  const Markdown = props.host.Markdown
   return (
     <Show when={content()}>
       <box paddingLeft={GUTTER} flexShrink={0}>
-        <Markdown content={content()} streaming={streaming()} />
+        <Prose host={props.host} content={content()} streaming={streaming()} emphasis={props.emphasis} />
       </box>
     </Show>
   )

@@ -11,6 +11,7 @@ import { compactionAt, compactionBlock, compactionLine } from "../compaction.ts"
 import type { Detail } from "../detail.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
+import { Prose } from "./prose.tsx"
 import { toneColor } from "./tone.ts"
 import { GUTTER } from "./transcript.tsx"
 
@@ -24,7 +25,7 @@ function useSpinner(on: Accessor<boolean>) {
   return () => SPINNER[frame()] ?? ""
 }
 
-export function Compaction(props: { host: Host; sessionID: string; messageID: string; detail: Accessor<Detail> }) {
+export function Compaction(props: { host: Host; sessionID: string; messageID: string; detail: Accessor<Detail>; emphasis: boolean }) {
   const found = createMemo(() => compactionAt(props.host.messages(props.sessionID), props.messageID))
   const running = () => found()?.message.status === "running"
   const spinner = useSpinner(running)
@@ -37,7 +38,7 @@ export function Compaction(props: { host: Host; sessionID: string; messageID: st
           when={props.detail() === "all"}
           fallback={<Line host={props.host} line={compactionLine(at().message, at().next, now())} spinner={spinner} />}
         >
-          <Block host={props.host} block={compactionBlock(at().message, now())} spinner={spinner} />
+          <Block host={props.host} block={compactionBlock(at().message, now())} spinner={spinner} emphasis={props.emphasis} />
         </Show>
       )}
     </Show>
@@ -59,10 +60,9 @@ function Line(props: { host: Host; line: ReturnType<typeof compactionLine>; spin
 }
 
 /** The host's compaction block, as the fork draws it (packages/tui/src/routes/session/index.tsx, CompactionMessage). */
-function Block(props: { host: Host; block: ReturnType<typeof compactionBlock>; spinner: Accessor<string> }) {
+function Block(props: { host: Host; block: ReturnType<typeof compactionBlock>; spinner: Accessor<string>; emphasis: boolean }) {
   const theme = () => props.host.theme()
   const color = () => (props.block.failed ? theme().text.feedback.error.base : theme().text.muted)
-  const Markdown = props.host.Markdown
   return (
     <box flexShrink={0}>
       <box flexDirection="row" alignItems="center">
@@ -83,7 +83,7 @@ function Block(props: { host: Host; block: ReturnType<typeof compactionBlock>; s
       </box>
       <Show when={props.block.body}>
         <box paddingTop={1} paddingLeft={3}>
-          <Markdown content={props.block.body} streaming={props.block.running} />
+          <Prose host={props.host} content={props.block.body} streaming={props.block.running} emphasis={props.emphasis} />
         </box>
       </Show>
     </box>
