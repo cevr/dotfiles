@@ -2,6 +2,7 @@
 // its rows use. The components own this contract; opencode/host.ts fills it
 // from OpenCode's plugin context, handing the host's values over as they are,
 // so every read stays reactive inside a Solid computation.
+import type { FormInput as QueueForm } from "@dotfiles/opencode-queue/answer"
 import type { Live } from "@dotfiles/opencode-queue/board"
 import type { Item } from "@dotfiles/opencode-queue/item"
 import type { Family } from "@dotfiles/opencode-subagents/family"
@@ -121,6 +122,12 @@ export interface Host {
   queue(sessionID: Accessor<Option.Option<string>>): Accessor<Option.Option<QueueReading>>
   /** Whether a queue plugin has answered a queue read: the Queue tab and /queue exist from then on. */
   queueServed(): boolean
+  /**
+   * Opens the host's question form in the session for the owner's answer to a
+   * queue item (the queue mod's `formOf`); its submit reaches the queue's
+   * server plugin. Whether it opened, or one was pending already.
+   */
+  answerQueue(sessionID: string, form: QueueForm): Promise<"opened" | "already" | "failed">
   /** Every session of the session's family. */
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */

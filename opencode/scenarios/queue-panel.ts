@@ -5,11 +5,19 @@
 // counts `4 queued, 1 needs you`; `/queue` opens the composer panel's Queue
 // tab, which draws the plan (each item, its outcomes, what waits on it nested
 // under it); Escape puts it away; a click on the dock's count opens it again.
+// Then Enter on the first item (no choices) opens the host's question form
+// with the queue's own (done, still needed) and the owner types an answer;
+// /queue, ↓ to the last item and Enter opens its own choices and the first is
+// picked. Each answer reaches the model as one message, which it replies to,
+// and the tab marks the item answered.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/queue-panel.ts
 //
 // It writes, under SCENARIO_OUT, `queue-panel-<name>.txt` for each frame:
 // `bar` (the reply and the dock's count), `tab` (after /queue, with a
-// screenshot), `closed` (after Escape), `clicked` (after the click), and
+// screenshot), `closed` (after Escape), `clicked` (after the click),
+// `builtins` (the form with the queue's own choices), `typed` (the reply to
+// the typed answer), `choices` (the form with the item's own, with a
+// screenshot), `picked` (the reply to the pick), `answered` (the tab after), and
 // `queue-panel-<name>.timeout.txt` when a wait times out.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -22,12 +30,16 @@ const out = process.env.SCENARIO_OUT ?? "out"
 export const REPLY = "Started the money parsing unit."
 
 /** The queue the model sets, as the tool takes it. */
-export const ITEMS: Array<Record<string, string | Array<string> | Record<string, string>>> = [
+export const ITEMS: Array<Record<string, string | Array<string> | Record<string, string> | Array<Record<string, string>>>> = [
   { id: "panes", text: "Close old Claude panes", state: "needs-you" },
   { id: "impl", text: "Money parsing r1", state: "running", on: { accepted: "verify", changes: "fix round 2" } },
   { id: "verify", text: "Verify money parsing", state: "next", after: ["impl"], on: { accepted: "land + install" } },
-  { id: "daily", text: "Merge workers, run daily", state: "next" },
+  { id: "daily", text: "Merge workers, run daily", state: "next", choices: [{ label: "Run it tonight", description: "After the merge" }, { label: "Skip today" }] },
 ]
+
+/** The model's replies to each answer, by the message it reads. */
+export const TYPED = { said: "Owner on queue item panes (Close old Claude panes): Keep the two newest", reply: "Keeping the two newest panes." } as const
+export const PICKED = { said: "Owner on queue item daily (Merge workers, run daily): Run it tonight", reply: "Running the merge tonight." } as const
 
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }
 const text = (frame: Frame) => frame.lines.map((line) => line.spans.map((span) => span.text).join("").trimEnd()).join("\n")
@@ -53,6 +65,9 @@ export default OpenCodeDriver.use(
         if (s.includes("You name conversations")) return Stream.make(Llm.text("Queue panel"), Llm.finish())
         if (!s.includes("call_queue"))
           return Stream.make(Llm.toolCall({ index: 0, id: "call_queue", name: "queue", input: { set: ITEMS } }), Llm.finish("tool-calls"))
+        // The history holds every answer so far: the latest first.
+        if (s.includes(PICKED.said)) return Stream.make(Llm.text(PICKED.reply), Llm.finish())
+        if (s.includes(TYPED.said)) return Stream.make(Llm.text(TYPED.reply), Llm.finish())
         return Stream.make(Llm.text(REPLY), Llm.finish())
       })
       const until = (name: string, ready: (frame: string) => boolean) =>
@@ -91,5 +106,35 @@ export default OpenCodeDriver.use(
       yield* click("4 queued")
       yield* until("clicked", (frame) => frame.includes("on accepted ⇥ ○ Verify money parsing"))
       yield* save("clicked")
+
+      // Enter on the first item, which has no choices: the queue's own, and an answer typed, which wakes the agent.
+      yield* ui.press("return")
+      yield* until("builtins", (frame) => frame.includes("Done / no longer needed") && frame.includes("Type your own answer"))
+      yield* save("builtins")
+      yield* ui.press("down")
+      yield* ui.press("down")
+      yield* ui.press("return")
+      yield* ui.type("Keep the two newest")
+      yield* until("typing", (frame) => frame.includes("Keep the two newest"))
+      yield* ui.press("return")
+      yield* until("typed", (frame) => frame.includes(TYPED.reply))
+      yield* save("typed")
+
+      // The last item's own choices: the first picked.
+      yield* ui.submit("/queue")
+      yield* until("reopened", (frame) => frame.includes("answered: Keep the two newest"))
+      yield* ui.press("down")
+      yield* ui.press("down")
+      yield* ui.press("down")
+      yield* ui.press("return")
+      yield* until("choices", (frame) => frame.includes("Skip today") && frame.includes("After the merge"))
+      yield* save("choices")
+      console.log("screenshot:", yield* ui.screenshot("queue-panel-choices"))
+      yield* ui.press("return")
+      yield* until("picked", (frame) => frame.includes(PICKED.reply))
+      yield* save("picked")
+      yield* ui.submit("/queue")
+      yield* until("answered", (frame) => frame.includes("answered: Run it tonight"))
+      yield* save("answered")
     }),
 )

@@ -2,15 +2,18 @@
 // session's queue over the queue RPC every 2 seconds (keeping the answer only
 // when its revision moved), reads the live state of that root's subagents from
 // the TUI's data for the items linked to one, and draws the rows board.ts
-// projects from them, one line each. The subagents themselves are Prime's rows
+// projects from them, one line each; a click on one answers its item, as
+// Enter in Prime's Queue tab does. The subagents themselves are Prime's rows
 // beneath the composer, not this section's. A failed or undecodable answer
 // changes nothing; no rows draw nothing.
 // cmd/queue/tui.tsx registers it on `sidebar.content`.
 import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
 import type { Plugin } from "@opencode/plugin/tui"
-import { Option, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { formOf } from "../answer.ts"
 import { board, line, type Mark } from "../board.ts"
+import { fromContext, openAnswer } from "../opencode/answer.ts"
 import { liveStates } from "../opencode/subagents.ts"
 import { QUEUE, Snapshot } from "../queue.ts"
 
@@ -59,6 +62,22 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
     const items = current?.root === root() ? current.snapshot.items : []
     return board(items, liveStates(ctx.data, root(), ctx.location, family), now())
   })
+  // A click on a row answers its item, in the form the Queue tab opens (../answer.ts).
+  const forms = fromContext(ctx)
+  const answer = (id: string) =>
+    Option.map(
+      Option.flatMap(Option.fromNullishOr(queue()), (current) =>
+        Option.map(Arr.findFirst(current.snapshot.items, (each) => each.id === id), (item) => formOf(current.root, item)),
+      ),
+      (form) =>
+        Effect.runFork(
+          openAnswer(forms, props.sessionID, form).pipe(
+            Effect.map((opened) => {
+              if (opened === "failed") ctx.ui.toast.show({ message: "The answer form did not open", variant: "error" })
+            }),
+          ),
+        ),
+    )
   const theme = () => ctx.theme
   const colour = (mark: Mark) => {
     const text = theme().text
@@ -76,7 +95,7 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
         </text>
         <For each={rows()}>
           {(row) => (
-            <text fg={colour(row.mark)} wrapMode="none">
+            <text fg={colour(row.mark)} wrapMode="none" onMouseUp={() => void answer(row.key)}>
               {line(row, WIDTH)}
             </text>
           )}

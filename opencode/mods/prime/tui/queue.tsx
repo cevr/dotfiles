@@ -3,10 +3,14 @@
 // a plan, the queue mod's `plan` (../../queue/plan.ts), one line each: every
 // item a block with its outcomes, what waits on it nested under it. ↑/↓ move
 // the highlight between items (↑ on the first closes the panel, as the host's
-// tabs do); Enter opens a linked subagent's session, or shows another item
-// whole. The tab mounts only while it is the active one, so its keys bind
-// only then.
+// tabs do); Enter (or a click) answers the item: it opens the host's question
+// form with the item's whole block, the choices the agent gave it (or the
+// queue mod's own: done, still needed) and a line to type one's own, and the
+// submit goes to the agent as one message (../../queue/answer.ts). ctrl+o
+// opens a linked subagent's session. The tab mounts only while it is the
+// active one, so its keys bind only then.
 import * as TuiClock from "@dotfiles/decider/tui-clock"
+import { formOf } from "@dotfiles/opencode-queue/answer"
 import type { Mark } from "@dotfiles/opencode-queue/board"
 import { plan, planText, segments, type ItemLine, type Tone } from "@dotfiles/opencode-queue/plan"
 import type { RGBA } from "@opentui/core"
@@ -17,7 +21,12 @@ import type { Host } from "./host.ts"
 /** The tab's id among the panel's. */
 export const QUEUE_TAB = "queue"
 
-export const hints = [{ label: "open", shortcut: "enter" }] as const
+/** The keys the tab binds, and the footer's hints for them. */
+export const KEYS = { answer: "return", session: "ctrl+o" } as const
+export const hints = [
+  { label: "answer", shortcut: "enter" },
+  { label: "session", shortcut: KEYS.session },
+] as const
 
 /** How many lines show before the plan scrolls. */
 const LINES = 14
@@ -37,22 +46,38 @@ export function QueueTab(props: { readonly host: Host; readonly sessionID: strin
   })
   const at = () => Option.getOrElse(Arr.get(items(), selected()), () => -1)
 
-  // A linked item opens its subagent's session; another shows its block whole.
-  const open = () =>
+  const highlighted = () => Option.filter(Arr.get(lines(), at()), (line): line is ItemLine => line.kind === "item")
+
+  // The highlighted item's answer form, with its block whole; the panel steps aside for it.
+  const answer = () =>
     Option.map(
-      Option.filter(Arr.get(lines(), at()), (line): line is ItemLine => line.kind === "item"),
-      (line) =>
-        Option.match(line.session, {
-          onSome: (session) => props.host.open(session),
-          onNone: () =>
-            props.host.showDetail(
-              line.row.text,
-              lines()
-                .filter((each) => each.key === line.key)
-                .map((each) => planText({ ...each, depth: 0 }).trim())
-                .join("\n"),
-            ),
+      Option.flatMap(reading(), (shown) =>
+        Option.map(
+          Option.flatMap(highlighted(), (line) => Arr.findFirst(shown.items, (each) => each.id === line.key)),
+          (item) => formOf(shown.root, item, detailOf(item.id)),
+        ),
+      ),
+      (form) =>
+        props.host.answerQueue(props.sessionID, form).then((opened) => {
+          if (opened === "failed") return props.host.notify("The answer form did not open", "error")
+          props.close()
         }),
+    )
+  /** An item's block whole, as the tab draws it. */
+  const detailOf = (id: string) =>
+    lines()
+      .filter((each) => each.key === id)
+      .map((each) => planText({ ...each, depth: 0 }).trim())
+      .join("\n")
+
+  // A linked item opens its subagent's session; another hands the key on.
+  const session = () =>
+    Option.match(
+      Option.flatMap(highlighted(), (line) => line.session),
+      {
+        onNone: () => false as const,
+        onSome: (id) => props.host.open(id),
+      },
     )
 
   props.host.composerKeys(() => [
@@ -72,7 +97,8 @@ export function QueueTab(props: { readonly host: Host; readonly sessionID: strin
         if (count > 0) setSelected((index) => (index + 1) % count)
       },
     },
-    { title: "Open the item", bind: "return", run: () => void open() },
+    { title: "Answer the item", bind: KEYS.answer, run: () => void answer() },
+    { title: "Open the item's session", bind: KEYS.session, run: session },
   ])
 
   // The window of lines that holds the highlighted item's line.
@@ -120,7 +146,7 @@ export function QueueTab(props: { readonly host: Host; readonly sessionID: strin
                   const item = items().indexOf(first() + index)
                   if (item < 0) return
                   setSelected(item)
-                  void open()
+                  void answer()
                 }}
               >
                 <text wrapMode="none" truncate>

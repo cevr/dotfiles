@@ -6,12 +6,15 @@
 // composer counts it (`4 queued, 1 needs you`), `/queue` opens the composer
 // panel's Queue tab with the plan (each item with its state, a unit's
 // outcomes, the verifier after it nested under it), Escape puts it away, and a
-// click on the dock's count opens it again.
+// click on the dock's count opens it again. Enter on an item opens the host's
+// question form with its choices (the queue's own when the agent gave none)
+// and a line of one's own; a pick or an answer typed reaches the agent as one
+// message, and the tab marks the item answered.
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { REPLY } from "../scenarios/queue-panel.ts"
+import { PICKED, REPLY, TYPED } from "../scenarios/queue-panel.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -73,12 +76,21 @@ describe.skipIf(!fork)("the Queue tab", () => {
     expect(lines.find((line) => line.startsWith("Subagents"))).toMatch(/· {2}Queue 4 +esc$/)
     const first = lines.indexOf(PLAN[0])
     expect(lines.slice(first, first + PLAN.length)).toEqual([...PLAN])
-    expect(lines).toContain("Enter open · ←/→ tabs")
+    expect(lines).toContain("Enter answer · Ctrl+O session · ←/→ tabs")
     // The transcript above the panel holds none of the queue.
     const transcript = tab.split("\n").slice(0, tab.split("\n").findIndex((line) => line.startsWith(" ┃  Subagents")))
     for (const text of TEXTS) expect({ text, shown: transcript.some((line) => line.includes(text)) }).toEqual({ text, shown: false })
 
     expect(frame("closed")).not.toContain("on accepted ⇥")
     expect(panel(frame("clicked"))).toContain(PLAN[2])
+
+    // Enter answers an item: the agent's choices, else the queue's own, and a line of one's own; each answer reaches the agent as one message.
+    for (const shown of ["Close old Claude panes", "Done / no longer needed", "Still needed", "Type your own answer"]) expect(frame("builtins")).toContain(shown)
+    for (const shown of ["Merge workers, run daily", "Run it tonight", "After the merge", "Skip today", "Type your own answer"]) expect(frame("choices")).toContain(shown)
+    expect(frame("typed")).toContain(TYPED.reply)
+    expect(frame("picked")).toContain(PICKED.reply)
+    const answered = panel(frame("answered"))
+    expect(answered).toContain("! Close old Claude panes · needs you · answered: Keep the two newest")
+    expect(answered).toContain("○ Merge workers, run daily · next · answered: Run it tonight")
   }), 150_000)
 })

@@ -4,12 +4,13 @@
 // the compiler checks that the host's values fit the look's own types.
 // The part, the context usage and the goal are worked out here from the
 // host's base reads (`partOf`, `contextUsage`, `opencode/goal.ts`).
+import { fromContext as answerFormsOf, openAnswer } from "@dotfiles/opencode-queue/opencode/answer"
 import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
-import { Option } from "effect"
+import { Effect, Option } from "effect"
 import { createSignal } from "solid-js"
 import type { Starting } from "../starting.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
@@ -38,6 +39,7 @@ export function host(
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
   const family = familyReader()
   const queue = queues(context, family)
+  const answerForms = answerFormsOf(context)
   // The tab openTab asked for, until the panel's tab bar shows it.
   const [wantedTab, setWantedTab] = createSignal<Option.Option<string>>(Option.none())
   return {
@@ -75,6 +77,7 @@ export function host(
     wakes: (sessionID) => readWakes(context, sessionID),
     queue: queue.read,
     queueServed: queue.served,
+    answerQueue: (sessionID, form) => Effect.runPromise(openAnswer(answerForms, sessionID, form)),
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
     subagents: (sessionID) => family(data, sessionID, context.location),
