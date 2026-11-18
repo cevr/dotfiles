@@ -142,6 +142,8 @@ interface Script {
   readonly refusals: Array<{ readonly login: string; readonly index: number; readonly resetAt: number }>
   /** The store's files: how many writes failed so far. */
   readonly slots: MemorySlots.MemorySlots
+  /** How many requests the provider had received at each restart: a process's requests lie between two. */
+  readonly restarts: Array<number>
 }
 
 const tokenAnswer = (fault: TokenFault): Provider.TokenAnswer => {
@@ -160,7 +162,7 @@ const run = (
 ) =>
   Effect.gen(function* () {
     const slots = MemorySlots.make()
-    const script: Script = { limits: new Map(), tokens: new Map(), bursts: new Set(), revoked: new Set(), refusals: [], slots }
+    const script: Script = { limits: new Map(), tokens: new Map(), bursts: new Set(), revoked: new Set(), refusals: [], slots, restarts: [] }
     const accounts = Provider.accounts(seed, LOGINS)
     const world = World.make({
       seed,
@@ -233,7 +235,10 @@ const run = (
           onSome: (id) => world.prompt(id, `turn at ${before}`),
         })
       if (command.type === "advance") yield* world.advance(command.ms)
-      if (command.type === "restart") yield* world.restart
+      if (command.type === "restart") {
+        script.restarts.push(world.provider().received().length)
+        yield* world.restart
+      }
       yield* world.runtime.settle
       check(world, script, command, before)
     }
@@ -260,8 +265,18 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"], lasting: boolea
   // keeps the rotation and the lock past this process's wait, which then serves the token the file holds. The provider
   // refuses it (401), and the pool fails over (store.ts, the held write).
   expect(
-    messages.filter((request) => request.account === "" && !(lasting && request.status === 401)),
+    messages.filter((request) => request.account === "" && !(lasting && request.status === 401 && Option.isSome(Option.fromNullishOr(request.retired)))),
     label,
+  ).toEqual([])
+  // The bound: one process sends a retired token once. A held rotation lasts up to (times - 1) × LAND_MS = 50 s past
+  // its trade, and a waiter serves the stored token after the 30 s lock wait, so ⌈50 / 30⌉ = 2 waiters in a row could
+  // each send it. The first one's 401 marks the login rejected in the store, and a waiter serves the token it read
+  // only while no refusal names it: the second fails over without sending it.
+  const epoch = (index: number) => script.restarts.filter((at) => at <= index).length
+  const sent = messages.flatMap((request) => Arr.filter([`${epoch(request.index)} ${request.retired}`], () => Option.isSome(Option.fromNullishOr(request.retired))))
+  expect(
+    sent.filter((key, at) => sent.indexOf(key) !== at),
+    `${label}: a retired token sent twice by one process`,
   ).toEqual([])
   // Never on a login the provider refused as spent before its reset, once the refusal is back: with every login spent
   // the pool refuses the turn itself.
@@ -347,10 +362,11 @@ revoked.seeded("with every login's refresh token revoked, every turn still ends 
 )
 
 // The lasting mode: a store write that keeps failing (a full disk, a read-only mount). The holder that traded keeps the
-// new tokens and the lock, writing again every 10 s, past another holder's 30 s wait. Expected: the waiter may send
-// the token the trade retired (401) and fail over, but no refresh token is traded twice, every turn ends as the
+// new tokens and the lock, writing again every 10 s, past another holder's 30 s wait. Expected: a waiter may send
+// the token the trade retired (401), once per process, and fail over, but no refresh token is traded twice, every turn ends as the
 // property says, and once writes work again every final turn is answered.
-const lasting = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: [] })
+/** The lasting mode's seeds found failing: two waiters in a row sent the same retired token (106497663). */
+const lasting = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663] })
 
 lasting.seeded("with store writes failing for a while, every turn still ends as the property says, and no refresh token is traded twice", ({ seed, expect }) =>
   Effect.asVoid(property(seed, expect, lastingCommandsOf(seed), true)),

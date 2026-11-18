@@ -71,6 +71,11 @@ export interface Received {
   readonly opencodeHeaders: ReadonlyArray<string>
   /** Virtual epoch ms. */
   readonly at: number
+  /**
+   * Only for a request signed by an access token a rotation retired: which one, as `<account>#<n>` (the provider's
+   * nth retirement), never the token.
+   */
+  readonly retired?: string
 }
 
 export interface Options {
@@ -199,6 +204,8 @@ export const make = (options: Options, world: Pick<Runtime, "now" | "fork">) => 
   const quotaOf = options.quota ?? (() => defaultQuota(now()))
   const script = options.script ?? ((): FakeAnswer => ({ kind: "ok" }))
   const current = new Map<string, FakeAccount>(Object.entries(options.accounts))
+  /** Each access token a rotation retired, as `<account>#<n>`. */
+  const retired = new Map<string, string>()
   const counts = new Map<string, number>()
   const received: Array<Received> = []
   const claims: Array<Claim> = []
@@ -239,6 +246,10 @@ export const make = (options: Options, world: Pick<Runtime, "now" | "fork">) => 
       sessionHeader: header(request, "x-claude-code-session-id"),
       opencodeHeaders,
       at: now(),
+      ...Option.match(Option.fromNullishOr(retired.get(header(request, "authorization").replace(/^Bearer /, ""))), {
+        onNone: () => ({}),
+        onSome: (which) => ({ retired: which }),
+      }),
     })
   }
 
@@ -411,6 +422,7 @@ export const make = (options: Options, world: Pick<Runtime, "now" | "fork">) => 
       Effect.andThen(
         Effect.sync(() => {
           const rotated = { access: token("sim-access"), refresh: token("sim-refresh") }
+          retired.set(entry[1].access, `${name}#${retired.size + 1}`)
           current.set(name, rotated)
           return Response.json({ access_token: rotated.access, refresh_token: rotated.refresh, expires_in: 8 * 3600, token_type: "Bearer" })
         }),
