@@ -1032,13 +1032,22 @@ export const make = (options: Options) => {
       )
     },
     "session.outline": ({ sessionID, query }) => {
-      // Oldest first; `after` reads only the messages after that one.
+      // Oldest first; `after` reads only the messages after that one, `before` only those before it; `limit` keeps at
+      // most that many, the newest of them unless read `after` one.
       const all = list(sessionID)
-      const from = Option.match(Option.fromNullishOr(query.get("after")), {
-        onNone: () => 0,
-        onSome: (after) => all.findIndex((message) => message.id === after) + 1,
+      const after = Option.fromNullishOr(query.get("after"))
+      const from = Option.match(after, { onNone: () => 0, onSome: (id) => all.findIndex((message) => message.id === id) + 1 })
+      const to = Option.match(Option.fromNullishOr(query.get("before")), {
+        onNone: () => all.length,
+        onSome: (id) => all.findIndex((message) => message.id === id),
       })
-      return Effect.succeed(json("session.outline", { data: all.slice(Math.max(0, from)).map(outlineEntry) }))
+      const span = all.slice(Math.max(0, from), Math.max(0, to))
+      const page = Option.match(Option.map(Option.fromNullishOr(query.get("limit")), Number), {
+        onNone: () => span,
+        onSome: (limit) =>
+          Option.match(after, { onNone: () => span.slice(Math.max(0, span.length - limit)), onSome: () => span.slice(0, limit) }),
+      })
+      return Effect.succeed(json("session.outline", { data: page.map(outlineEntry) }))
     },
     "session.inbox.list": ({ sessionID }) => Effect.succeed(json("session.inbox.list", { data: pending(sessionID) })),
     "session.inbox.cancel": ({ sessionID, params }) => {

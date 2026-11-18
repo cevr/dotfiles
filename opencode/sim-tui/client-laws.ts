@@ -415,6 +415,11 @@ export const LAWS: ReadonlyArray<Law> = [
         const rest = yield* server.call(get(`/api/session/${sessionID}/outline?after=${first}`))
         failures.push(...expectStatus("outline after", rest, 200))
         if (drawn(rest).map((entry) => entry.type).join(",") !== "assistant") failures.push(`outline after the prompt: ${shown(rest)}`)
+        // A page back from a message: the newest of the ones before it, still oldest first.
+        const last = entries.at(-1)?.id ?? ""
+        const back = yield* server.call(get(`/api/session/${sessionID}/outline?before=${last}&limit=1`))
+        failures.push(...expectStatus("outline before", back, 200))
+        if (drawn(back).map((entry) => entry.id).join(",") !== first) failures.push(`outline before the reply: ${shown(back)}`)
         return failures
       }),
   },
