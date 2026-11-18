@@ -32,7 +32,7 @@ export const live = (ctx: Plugin.Context, options: Options, env: Readonly<global
     Sessions.layer(ctx),
     Handoff.layer(options, env),
     HandoffMark.layer(files(options).mark, process.pid),
-    Records.layer(options.record),
+    Records.layer(options, process.pid),
     Rejections.layer(files(options).rejected),
     Configs.layer({ config: options.config, kept: files(options).kept }),
     Log.layer(files(options).log, options.host),

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { spawnSync } from "bun"
+import { env, spawnSync } from "bun"
 import { Effect, Option } from "effect"
 import { buildName } from "../builds.ts"
-import { parseRecord } from "../record.ts"
+import { parseRecord, promoted, proven, type Record, rolledBack } from "../record.ts"
+import { Records } from "../service.ts"
+import * as RecordFile from "./records.ts"
 import { stageBuild, type Stage } from "./stage.ts"
 
 const VERSION = "2.2.7-prime.abcdef12"
@@ -26,7 +28,7 @@ const onScratch = (body: (stage: Stage) => void) =>
       (dir) =>
         Effect.sync(() => {
           sh(`mkdir -p '${dir}/build' && printf binary > '${dir}/build/opencode'`)
-          body({ built: `${dir}/build/opencode`, share: `${dir}/share`, version: VERSION, record: `${dir}/state/opencode/installed.json`, lock: `${dir}/state/builds.lock`, dotfiles: "d".repeat(40), fork: "f".repeat(40), pid: 71234 })
+          body({ built: `${dir}/build/opencode`, share: `${dir}/share`, version: VERSION, record: `${dir}/state/opencode/installed.json`, launcher: `${dir}/bin/opencode`, resident: `${dir}/resident`, lock: `${dir}/state/builds.lock`, dotfiles: "d".repeat(40), fork: "f".repeat(40), pid: 71234 })
         }),
       (dir) => Effect.sync(() => void spawnSync(["rm", "-rf", dir])),
     ),
@@ -61,4 +63,68 @@ describe("daily's stage of a build", () => {
       stageBuild(stage)
       expect(entries(stage.share)).toEqual([buildName(VERSION)])
     }))
+})
+
+const OLD = "2.2.7-prime.aaaaaaaa"
+const NEW = "2.2.7-prime.bbbbbbbb"
+
+/**
+ * A stand-in build: a TUI start replaces a running service of another version before it starts, as
+ * the fork's client does for its own build (`mismatch: "replace"`, `service.ensure`), and `service
+ * restart` restarts the service onto it. What each does goes to `$EVENTS`; the service's version is `$SERVICE`.
+ */
+const standIn = (version: string) => `#!/bin/sh
+case "$1" in
+service) echo ${version} > "$SERVICE"; echo "restart ${version}" >> "$EVENTS"; exit 0 ;;
+api) exit 0 ;;
+esac
+running=$(cat "$SERVICE")
+[ "$running" = ${version} ] || { echo "replaced $running with ${version}" >> "$EVENTS"; echo ${version} > "$SERVICE"; }
+echo "tui ${version} $*" >> "$EVENTS"
+`
+
+describe("the launcher a stage and the handoff leave", () => {
+  test("a TUI started while a build waits for its handoff runs the running build and leaves the shared service alone; the handoff moves it, a rollback moves it back", () =>
+    Effect.runPromise(
+      Effect.acquireUseRelease(
+        Effect.sync(() => sh("mktemp -d -t update-launcher").stdout.toString().trim()),
+        (dir) => {
+          const paths = { record: `${dir}/state/opencode/installed.json`, launcher: `${dir}/bin/opencode`, resident: `${dir}/resident` }
+          const stage = (version: string): Stage => {
+            expect(spawnSync(["/bin/sh", "-c", 'mkdir -p "$(dirname "$2")" && printf "%s" "$1" > "$2"', "sh", standIn(version), `${dir}/build/${version}`]).exitCode).toBe(0)
+            return { ...paths, built: `${dir}/build/${version}`, share: `${dir}/share`, version, lock: `${dir}/state/builds.lock`, dotfiles: version.slice(-1).repeat(40), fork: version.slice(-1).repeat(40), pid: 71234 }
+          }
+          const launch = (...args: ReadonlyArray<string>) => expect(spawnSync([paths.launcher, ...args], { env: { ...env, SERVICE: `${dir}/service`, EVENTS: `${dir}/events` } }).exitCode).toBe(0)
+          /** What happened since the last look, and the version the shared service runs. */
+          const seen = () => [sh(`cat '${dir}/events' && : > '${dir}/events'`).stdout.toString().trim().split("\n"), sh(`cat '${dir}/service'`).stdout.toString().trim()]
+          /** The handoff's record write, through the real file store. */
+          const change = (next: (record: Record) => Option.Option<Record>) =>
+            Records.use((file) => file.read.pipe(Effect.flatMap((read) => Effect.forEach(Option.toArray(Option.flatMap(read, next)), file.write, { discard: true }))))
+          return Effect.gen(function* () {
+            sh(`echo ${OLD} > '${dir}/service' && : > '${dir}/events'`)
+            // The old build installed and proven: the service runs it.
+            stageBuild(stage(OLD))
+            yield* change((record) => Option.some(proven(promoted(record))))
+
+            // The new build staged: a TUI starts on the old build, and the service it shares is not touched.
+            stageBuild(stage(NEW))
+            launch("--auto", "/w")
+            expect(seen()).toEqual([[`tui ${OLD} --auto /w`], OLD])
+
+            // The handoff installs it and restarts the service through the launcher; a TUI then runs it.
+            yield* change((record) => Option.some(promoted(record)))
+            launch("service", "restart")
+            launch("--auto", "/w")
+            expect(seen()).toEqual([[`restart ${NEW}`, `tui ${NEW} --auto /w`], NEW])
+
+            // Its rollback restarts onto the good build, and the launcher goes back with it.
+            yield* change(rolledBack)
+            launch("service", "restart")
+            launch("--auto", "/w")
+            expect(seen()).toEqual([[`restart ${OLD}`, `tui ${OLD} --auto /w`], OLD])
+          }).pipe(Effect.provide(RecordFile.layer(paths, 71234)))
+        },
+        (dir) => Effect.sync(() => void spawnSync(["rm", "-rf", dir])),
+      ),
+    ))
 })

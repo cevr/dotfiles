@@ -35,7 +35,8 @@ again. The workbox skips the step and pulls origin `prime-look`.
 builds the fork in `OPENCODE_DEV` (default: the
 `prime-look` Rift) as a release binary named `<version>-prime.<commit>`,
 copies it to `~/.local/share/opencode-prime/`, and writes
-`~/.local/bin/opencode`, a launcher that runs it without `ANTHROPIC_BASE_URL`,
+`~/.local/bin/opencode`, a launcher that runs the installed build (below: a
+staged build only once the handoff installs it) without `ANTHROPIC_BASE_URL`,
 so OpenCode's Claude traffic never routes through TeamClaude's proxy, even when
 an agent session on TeamClaude starts it. `~/.local/bin` precedes `~/.bun/bin`,
 so a new terminal runs it, and `opencode2` stays the stock release. As a `latest`
@@ -103,7 +104,12 @@ only the resident location's copy acts, so a host runs one updater.
 - **Build ahead.** `bun scripts/daily.ts --stage --fork-target <sha>` from
   the advanced checkout: the fork to the target's commit (on the Mac, upstream
   merged first, step 0), the build, the configs and the build `staged` in
-  `installed.json`, with no restart. A failed stage moves the dotfiles and the
+  `installed.json`, with no restart. The launcher stays on the running build:
+  the staged one's client would replace the shared service, since the record
+  names neither it nor a build it superseded (workbox, 2026-11-18: each TUI
+  opened in the wait restarted the service). Only the record's writes move it,
+  the handoff's install and its rollback (`mods/update/filestore/stage.ts`
+  `writeLauncher`). A failed stage moves the dotfiles and the
   configs back. The build is exactly the target's fork commit, whatever
   prime-look's HEAD (which a land's post-land merge moves): daily builds it in
   a detached worktree of the fork pinned there,
@@ -120,8 +126,8 @@ only the resident location's copy acts, so a host runs one updater.
   again (up to ten times per turn); its parent hears it end as usual. No
   timeout: the log says how long it waited. A newer target while it waits is built ahead first.
 - **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
-  service it restarts: it names the staged build installed, `opencode service
-  restart`, then the health check (every configured local plugin loaded in
+  service it restarts: it names the staged build installed and points the
+  launcher at it, `opencode service restart`, then the health check (every configured local plugin loaded in
   the resident location, the pool's status answering accounts, which
   spends nothing, and a login, a pool account or a stored credential, for
   each provider the configured models use: the default model, each agent's

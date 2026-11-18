@@ -122,7 +122,7 @@ export class Builds extends Context.Service<
   }
 >()("dotfiles-opencode/update/Builds") {}
 
-/** The installed record (`record.ts`). */
+/** The installed record (`record.ts`); a write points the launcher at the build it installs (`filestore/launcher.ts`). */
 export class Records extends Context.Service<
   Records,
   {

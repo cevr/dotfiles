@@ -1,5 +1,5 @@
 // The mail listener runs from the service's start: `opencode service start`,
-// through the launcher daily writes (scripts/daily.ts `launcher`), loads the
+// through the launcher daily writes (mods/update/filestore/launcher.ts `launcher`), loads the
 // resident location, so a fresh server, with no client, no session and no
 // turn, takes a signed delivery from a paired host. Only the service start is
 // this file's; the listener's answer on a fresh host is the simulated file's. The fork runs from source
@@ -12,7 +12,8 @@ import { join } from "node:path"
 import { sign } from "../mods/mail/pairing.ts"
 import { ROUTES } from "../mods/mail/peer.ts"
 import { keyed, token } from "../mods/mail/node/keyed.ts"
-import { launcher, residentConfig, residentDir } from "../scripts/daily.ts"
+import { launcher } from "../mods/update/filestore/launcher.ts"
+import { residentConfig, residentDir } from "../scripts/daily.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { freePort } from "./service.ts"
 import { keptScratch } from "./scratch.ts"

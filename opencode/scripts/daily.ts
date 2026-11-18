@@ -14,11 +14,12 @@
 //    pinned there (`~/.local/state/opencode-daily/fork-build`), never prime-look's HEAD, which
 //    a land's post-land merge moves. A binary whose version names another commit stops daily, and the
 //    record names the commit built (mods/update/process/pin.ts). `--skip-build` reuses the last build.
-// 2. Copies it to `~/.local/share/opencode-prime/` and writes `~/.local/bin/opencode`, a launcher
-//    that runs it without the caller's Anthropic routing and, after a service start or restart,
-//    loads the resident location so the server plugins run with no client (`launcher`,
-//    `residentDir`). `~/.local/bin` comes before `~/.bun/bin` on PATH; `opencode2` stays the
-//    stock release.
+// 2. Copies it to `~/.local/share/opencode-prime/`, stages it in the installed record and writes
+//    `~/.local/bin/opencode`, a launcher that runs the build the record installs (the running one
+//    until the handoff installs this one) without the caller's Anthropic routing and, after a
+//    service start or restart, loads the resident location so the server plugins run with no
+//    client (mods/update/filestore/launcher.ts, `residentDir`). `~/.local/bin` comes before
+//    `~/.bun/bin` on PATH; `opencode2` stays the stock release.
 // 3. Merges our entries into `~/.config/opencode/opencode.json` (server plugins, the role
 //    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
 //    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
@@ -69,33 +70,6 @@ const RETIRED_PLUGINS: ReadonlyArray<string> = ["-opencode.tool.schedule"]
 
 const packageOf = (entry: unknown): string | undefined =>
   typeof entry === "string" ? entry : typeof entry === "object" && entry !== null && "package" in entry ? String(entry.package) : undefined
-
-/**
- * `~/.local/bin/opencode`: runs `binary` without the caller's Anthropic routing. The pool picks
- * the account for OpenCode's Claude requests, but the Anthropic auth plugin sends them to
- * `ANTHROPIC_BASE_URL` when it is set, and a Claude Code session on TeamClaude sets it to the
- * proxy. The background service inherits the environment of the client that starts it, so the
- * variables are dropped at every launch, not only when `daily` restarts the service.
- */
-export const launcher = (binary: string, resident: string): string => {
-  const quoted = `'${binary.replaceAll("'", `'\\''`)}'`
-  const header = `'x-opencode-directory:${encodeURIComponent(resident).replaceAll("'", "%27")}'`
-  return [
-    "#!/bin/sh",
-    "# Written by `bun run daily` (dotfiles/opencode/scripts/daily.ts).",
-    "unset ANTHROPIC_BASE_URL ANTHROPIC_INSECURE",
-    "# A started service loads the server plugins in its resident location (`residentConfig`).",
-    'case "$1 $2" in',
-    '"service start" | "service restart")',
-    `  ${quoted} "$@" || exit`,
-    `  ${quoted} api GET /api/location -H ${header} >/dev/null || echo "opencode: the service did not load its resident location; its plugins wait for a client" >&2`,
-    "  exit 0",
-    "  ;;",
-    "esac",
-    `exec ${quoted} "$@"`,
-    "",
-  ].join("\n")
-}
 
 /**
  * The resident location: a directory of its own whose config keeps it loaded
@@ -459,12 +433,10 @@ if (import.meta.main) {
   const record = installedFile(home)
   const checkout = dirname(dirname(MODS))
   // Under the builds lock, from the copy through the staged record (mods/update/filestore/stage.ts).
-  const binary = stageBuild({ built, share, version, record, lock: buildsLock(home), dotfiles: headOf(checkout), fork: builtCommit, pid: process.pid })
+  // The launcher stays on the build the record installs; the handoff moves it onto this one (stage.ts `writeLauncher`).
   const link = join(home, ".local/bin/opencode")
-  mkdirSync(dirname(link), { recursive: true })
-  rmSync(link, { force: true })
   writeJson(join(residentDir(home), "opencode.json"), residentConfig)
-  writeFileSync(link, launcher(binary, residentDir(home)), { mode: 0o755 })
+  const binary = stageBuild({ built, share, version, record, launcher: link, resident: residentDir(home), lock: buildsLock(home), dotfiles: headOf(checkout), fork: builtCommit, pid: process.pid })
 
   const settings = settingsFor({ host: hostname(), home, state: dirname(dirname(record)), checkout, fork, bun: process.execPath, resident: residentDir(home), launcher: link })
   const auth = anthropicAuthPlugin

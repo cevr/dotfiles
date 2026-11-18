@@ -1,7 +1,7 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Match, Schema } from "effect"
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
@@ -9,7 +9,7 @@ import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -654,40 +654,8 @@ describe("the installed build's record", () => {
   })
 })
 
-describe("the opencode launcher", () => {
-  test("runs the binary with the caller's arguments and without its Anthropic routing", async () => {
-    using held = scratchDir("launcher it's-")
-    const dir = held.path
-    const binary = join(dir, "opencode-fake")
-    writeFileSync(binary, '#!/bin/sh\necho "base=${ANTHROPIC_BASE_URL:-unset} insecure=${ANTHROPIC_INSECURE:-unset} home=$HOME args=$*"\n')
-    chmodSync(binary, 0o755)
-    const link = join(dir, "opencode")
-    writeFileSync(link, launcher(binary, "/home/x/.local/state/opencode-prime/resident"), { mode: 0o755 })
-    const run = Bun.spawnSync([link, "run", "hello"], {
-      env: { ...process.env, HOME: "/home/x", ANTHROPIC_BASE_URL: "http://localhost:3456", ANTHROPIC_INSECURE: "1" },
-    })
-    expect(run.stdout.toString().trim()).toBe("base=unset insecure=unset home=/home/x args=run hello")
-  })
-
-  test("after a service start or restart, asks the service for its resident location; a failed start stops there", () => {
-    using held = scratchDir("launcher-")
-    const dir = held.path
-    const binary = join(dir, "opencode-fake")
-    writeFileSync(binary, '#!/bin/sh\necho "ran $*"\n')
-    chmodSync(binary, 0o755)
-    const link = join(dir, "opencode")
-    writeFileSync(link, launcher(binary, "/home/x/state/it's resident"), { mode: 0o755 })
-    for (const verb of ["start", "restart"]) {
-      const run = Bun.spawnSync([link, "service", verb], { env: { ...process.env } })
-      expect([run.exitCode, run.stdout.toString().trim().split("\n")]).toEqual([0, [`ran service ${verb}`]])
-    }
-    // The boot's own output is dropped; what it was asked shows through a binary that prints to stderr.
-    writeFileSync(binary, '#!/bin/sh\necho "ran $*" >&2\n')
-    const booted = Bun.spawnSync([link, "service", "restart"], { env: { ...process.env } })
-    expect(booted.stderr.toString().trim().split("\n")).toEqual(["ran service restart", "ran api GET /api/location -H x-opencode-directory:%2Fhome%2Fx%2Fstate%2Fit%27s%20resident"])
-    writeFileSync(binary, '#!/bin/sh\necho "ran $*"\n[ "$1" = service ] && exit 3\nexit 0\n')
-    const failed = Bun.spawnSync([link, "service", "start"], { env: { ...process.env } })
-    expect([failed.exitCode, failed.stdout.toString().trim()]).toEqual([3, "ran service start"])
+describe("the resident location", () => {
+  test("is a directory of its own whose config keeps it loaded", () => {
     expect(residentDir("/home/x")).toBe("/home/x/.local/state/opencode-prime/resident")
     expect(residentConfig).toEqual({ experimental: { location_idle_timeout: false } })
   })

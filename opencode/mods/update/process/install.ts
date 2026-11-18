@@ -1,6 +1,5 @@
 import { env, spawnSync } from "bun"
 import { Option, Schema } from "effect"
-import { type Build, parseRecord, recordText, stagedRecord } from "../record.ts"
 import { HANDOFF_SETTINGS, modeOf, type Settings, SettingsJson, stepEnv } from "../settings.ts"
 import { environment } from "./run.ts"
 
@@ -45,12 +44,6 @@ export const updateEntry = (directory: string, settings: Settings) => ({ package
 
 /** The commit a checkout is on, in full. */
 export const headOf = (directory: string): string => spawnSync(["git", "-C", directory, "rev-parse", "HEAD"]).stdout.toString().trim()
-
-/**
- * The installed record once daily built `build` (`record.ts` `stagedRecord`): the last record's text
- * read back, `build` staged for the handoff to install, the builds in the share directory superseded.
- */
-export const stagedText = (last: string, build: Build, share: ReadonlyArray<string>): string => recordText(stagedRecord(parseRecord(last), build, share))
 
 /**
  * Restarts the service through the update's handoff, as the plugin does, waiting for it: the health
