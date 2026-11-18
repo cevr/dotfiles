@@ -11,8 +11,7 @@ fstab_options=loop,noatime,compress=zstd:3,space_cache=v2,discard=async,user_sub
 fstab=${WORKBOX_RIFT_FSTAB:-/etc/fstab}
 
 # Whether the comma list $1 holds each option of the comma list $2, in any
-# order, among any others (subvol=@workspaces, which linux/workbox-btrfs/migrate.sh
-# workspaces adds).
+# order, among any others (such as subvol=@workspaces).
 has_options() {
   has_list=",$1,"
   has_old_ifs=$IFS

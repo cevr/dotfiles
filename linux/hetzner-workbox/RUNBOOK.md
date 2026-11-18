@@ -117,7 +117,8 @@ terminal that is about to stop.
 8. **Services**: `systemctl --user enable --now hc-core.service sideshow.service
    film-lab.service t3code.service teamclaude.service sh.executor.daemon.service`,
    `systemctl --user start opencode.service`, `sudo systemctl enable --now
-   syncthing@exedev`. `workbox-health` must pass.
+   syncthing@exedev`. `~/Developer/personal/dotfiles/workbox/bootstrap.sh --check`
+   must pass.
 9. **exe-only features** (README.md, last table): `tailscale serve --bg
    --https=8228 http://127.0.0.1:8228`, the same for 8229 and for 443 to 3773;
    in `~/.config/systemd/user/film-lab.service.d/` set `FILM_LAB_HOSTS` to the

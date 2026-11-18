@@ -1,7 +1,0 @@
-{
-  "name": "workbox-tool-sideshow",
-  "private": true,
-  "dependencies": {
-    "sideshow": "0.14.0"
-  }
-}

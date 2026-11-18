@@ -326,10 +326,4 @@ describe("runbooks", () => {
     const needed = [`${CLI} save`, `${CLI} check`]
     expect(needed.filter((text) => !mac.includes(text))).toEqual([])
   })
-
-  test("the workbox runbook saves herdr's bite session, and restores into herdr after", () => {
-    const workbox = book("linux/workbox-btrfs/RUNBOOK.md")
-    const needed = [`${CLI} save --session bite`, `${CLI} check`, `${CLI} restore --herdr`]
-    expect(needed.filter((text) => !workbox.includes(text))).toEqual([])
-  })
 })

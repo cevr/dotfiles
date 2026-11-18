@@ -1,6 +1,8 @@
 # Bite workbox
 
-This directory defines the persistent workflow layer for the Bite exe.dev VM.
+This directory defines the persistent workflow layer for the Bite workbox
+(today the exe.dev VM `bite-cristian`; from December the Hetzner AX102 that
+`linux/hetzner-workbox/` provisions).
 
 ## Apply
 
@@ -16,18 +18,18 @@ Run this command to verify the installed state:
 ~/Developer/personal/dotfiles/workbox/bootstrap.sh --check
 ```
 
-The base VM must already have Bun, Claude, MongoDB, Redis, Syncthing,
-Tailscale, and the Bite repository. The bootstrap installs the workbox shell,
-pinned Bun tools, herdr-core (`hc`) when it is missing, Sideshow, agent settings,
-S3 backups, health checks, update checks, security updates, the Tailscale SSH
+The base box must already have Bun and the Bun CLIs in `~/.bun` (Sideshow,
+Hunk, Codex), Claude, MongoDB, Redis, Syncthing, Tailscale, and the Bite
+repository; on the Hetzner box they come with the synced home. The bootstrap
+installs the workbox shell and scripts, herdr-core (`hc`) when it is missing,
+Sideshow, agent settings, S3 backups, security updates, the Tailscale SSH
 service, and swap protection. It configures `systemd-resolved` with public
 fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
 service from workload memory pressure. It caps user sessions, which hold the
 terminals and every agent, at 52 GB of memory and 1 GB of swap. It caps
 `/dev/shm` at 8 GB because no process owns its files and the kernel cannot
 reclaim them. It starts the herdr-core core and the OpenCode service at boot. It
-mounts a fixed 60 GB Btrfs workspace file system at `/workspaces`. It uses
-`/workspaces/.cache/turbo` as a local Turbo cache.
+uses `/workspaces/.cache/turbo` as a local Turbo cache.
 
 ## Terminals: herdr-core
 
@@ -50,16 +52,19 @@ Reach it with `ssh -t bite-workbox hc` (hc's picker, any client), or from the
 Mac with `--on workbox` and addresses such as `workbox/t7` once
 `hc machine add bite-workbox --name workbox` has run there.
 
-Herdr ran the terminals before. Its unit (`herdr-bite.service`), its config and
-`migrate-herdr-to-systemd` stay in this directory, no longer enabled or used by
-bootstrap, as the rollback path until `herdr-retire`. Roll back with
-`systemctl --user enable --now herdr-bite.service` after `hc kill` on the hc
-shells, so no session is open twice.
-
 `opencode.service`, also a oneshot at `default.target`, runs
 `opencode service start` at boot; the server moves itself into its own scope.
 
-Hunk uses the Rose Pine theme.
+`herdr-config.toml` is the Mac's herdr config (`install.sh` links it).
+
+## Timers
+
+| Timer | Runs |
+| --- | --- |
+| `workbox-backup.timer` | `backup-state` each day at 02:30 |
+| `transcript-archive.timer` | Claude and Codex transcripts to the R2 archive each day at 03:15 |
+| `cull-transcript-images.timer` | replaces transcript images with a note each Sunday |
+| `cleanup-mosh-servers.timer` | signals disconnected Mosh servers every 15 minutes |
 
 ## S3 backups
 
@@ -75,12 +80,6 @@ noncurrent snapshot objects after 14 days.
 
 ## Commands
 
-- `workbox-health` checks the full remote workflow. Its network checks cover the
-  resolver, public DNS, public HTTPS, Tailscale MagicDNS, and daemon restarts.
-- `workbox-release-valve` previews runaway Bite development workload groups.
-  Use `workbox-release-valve --apply` to stop the reported groups. It also
-  reports `/dev/shm` usage and its largest entries, which hold RAM that no
-  process owns; the valve never deletes them.
 - `workbox-rift-storage` creates or checks the Btrfs workspace file system.
 - `workrift init <repository> [path]` clones a repository as a warm source (a base).
 - `workrift create <branch>` creates a complete isolated workspace from the warm
@@ -97,44 +96,27 @@ noncurrent snapshot objects after 14 days.
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
   `sources`, `prune` (only `--dry-run`) and `storage` here. It answers to
   `rift` as an alias until 2026-12-06; `workrift` keeps its name until then.
-- `workbox-port <port>` prints the private exe.dev URL for a running HTTP server.
+- `workbox-port <port>` prints the private URL for a running HTTP server.
 - `backup-state` creates and verifies an S3 state snapshot.
-- `check-updates` reports Ubuntu, Bun tool, and skill updates.
-- `check-skills` lists skills okra would update and skill folders nothing tracks.
-  Your own skills go in `skills/.own-skills`.
-- `install-bun-tools` restores the pinned Bun CLIs. Each tool is a project of
-  its own in `bun-tools/<tool>/` (a `package.json` and its `bun.lock`),
-  installed with `bun install --frozen-lockfile` into
-  `~/.local/share/bite-workbox/bun-tools/<tool>` and linked into `~/.bun/bin`.
-  A shared `bun add --global` tree hoisted one `effect` for tools pinned to
-  different Effect releases and broke their builds. An overrides entry keeps
-  `@effect/platform-node-shared` on the tool's own Effect release, since
-  `@effect/platform-bun` asks for it with a caret range. A command in
-  `~/.bun/bin` linked to a local checkout is kept. To bump a tool, edit its
-  version in `package.json` and run `bun install --lockfile-only` in its folder.
 - `install-node` installs the exact Node version from `package.json`.
-- `migrate-herdr-to-systemd` moves a live Herdr session under its user service
-  (rollback only, until `herdr-retire`).
+- `apply-agent-settings` links the shared Claude and Codex settings and
+  installs the synced local ones; `bite-agent-settings.path` runs it when they
+  change, and the fleet update runs it through `install-bin.sh --apply`.
+- `trash` moves files to the home trash, across Btrfs subvolumes.
 - `cleanup-mosh-servers` removes disconnected Mosh servers.
-
-The release valve targets Bite test daemons, Bun, TypeScript compiler and Go
-toolchain groups, Go test binaries, and detached Bite test workers. Apply mode
-uses four bounded stop passes. It does not stop Codex, the herdr-core core and
-its terminal holders, Herdr, Sideshow, SSH,
-Tailscale, MongoDB, Redis, Syncthing, or system services. It returns a failure
-if a protected agent continues to start new workload groups.
 
 ## Workspaces
 
 `workrift` makes workspaces with Rift or with Ergo's `work`: the file
-`~/.config/workrift/backend` holds `rift` or `work` (absent: `rift`). Under
-`work` a warm source is a work base, and its workspaces go to
-`.work/<source>/<branch>` next to it; the Rift details below hold for the `rift`
-backend, and for the older workspaces under `.rifts/`.
+`~/.config/workrift/backend` holds `rift` or `work` (absent: `rift`). The
+workbox runs `work`: a warm source is a work base, and its workspaces go to
+`.work/<source>/<branch>` next to it; the Rift details below hold for the older
+workspaces under `.rifts/`.
 
-The root file system stays on ext4. The workspace file system uses Btrfs inside
-`/var/lib/bite-workspaces.btrfs`. Its fixed size prevents workspace data from using
-all system storage. The image mounts through `/etc/fstab` at `/workspaces`.
+On the exe.dev VM the root file system stays on ext4 and the workspace file
+system uses Btrfs inside `/var/lib/bite-workspaces.btrfs`, mounted through
+`/etc/fstab` at `/workspaces`; on the Hetzner box `/workspaces` is a subvolume
+of the root Btrfs.
 
 Each repository has one clean warm source, such as `/workspaces/bite`. Do not
 use a warm source for feature work. `workrift` finds the source from the current
@@ -153,7 +135,6 @@ command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,
 checkouts and installs yield to the OpenCode service.
 Run `gh stack checkout <PR>` in the workspace when imported metadata needs a refresh.
-New workspaces go to `.rifts/<source>/<branch>` next to the source.
 
 A branch change inside a workspace can also change the lock file. For a
 repository with `lefthook.yml`, `workrift` writes an untracked
@@ -171,10 +152,10 @@ the branch; a failed step only prints a warning. Bootstrap sets the Bite warm st
 `bun run compile` and links its `.env`. Per-repository create and remove hooks
 belong in Rift's own `.rift.toml` in the source.
 
-The `workrift-prune.timer` runs `workrift prune` each day at 03:30. It keeps
-pinned, in-use and recently modified workspaces and every ancestor of a kept
-workspace, and archives the rest to `~/rift-archive/<date>` for 30 days before
-it removes them. Pin a workspace by adding its path to `~/.config/workrift/keep`.
+`workrift prune` keeps pinned, in-use and recently modified workspaces and every
+ancestor of a kept workspace, and archives the rest to `~/rift-archive/<date>`
+for 30 days before it removes them. Pin a workspace by adding its path to
+`~/.config/workrift/keep`. No timer runs it.
 
 All workspaces use the local cache at `/workspaces/.cache/turbo`.
 `TURBO_CACHE=local:rw` disables remote cache reads and writes. Turbo 2.10 and later
@@ -182,24 +163,7 @@ evicts the oldest entries at the start of a run once the cache passes
 `TURBO_CACHE_MAX_SIZE` (2 GB). Turbo uses two
 concurrent tasks by default on this workbox.
 
-The Herdr service (rollback only) keeps running when the kernel kills a pane
-process for excess memory use. It does not restart when another Herdr server
-already owns the session. Systemd stops repeated unknown start failures after
-three attempts in 60 seconds.
-
 The Mosh server wrapper gives each new server a 15-minute signal timeout. The
 cleanup timer sends the Mosh stale-session signal every 15 minutes. Connected
 servers ignore the signal. Disconnected servers exit. The cleanup skips legacy
 servers that do not have the signal timeout.
-
-Preview the Herdr migration (rollback only):
-
-```sh
-migrate-herdr-to-systemd --dry-run
-```
-
-Run the migration:
-
-```sh
-migrate-herdr-to-systemd
-```
