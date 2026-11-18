@@ -39,10 +39,13 @@ const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST 
 /**
  * The revoked mode's seeds a sweep of 1 to 1000 found failing (pool-faults-bias), replayed on every run: a 401 held a
  * revoked store login for the host's refresh (181 and on), then a restart between a 401 and its retry (60 and on);
- * a plan limit whose reset fell between two seconds, announced up to a second early (452011062).
+ * a plan limit whose reset fell between two seconds, announced up to a second early (452011062); a turn placed before
+ * a restart whose mark was pruned, refused (401) after it: the pool could not name its login and left the provider's
+ * words (1864123045); a due token served without the lock inside this process's trade gap, while another holder's
+ * trade (its write held) had retired it (950002555).
  */
 const REVOKED_PAST: ReadonlyArray<number> = [
-  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994, 452011062,
+  60, 163, 181, 210, 335, 392, 400, 426, 433, 454, 456, 506, 524, 536, 623, 686, 688, 731, 763, 765, 821, 922, 928, 935, 949, 994, 452011062, 1864123045, 950002555,
 ]
 
 const HOUR = 3_600_000
@@ -57,10 +60,12 @@ type Command =
   | { readonly type: "session" }
   | { readonly type: "prompt"; readonly session: number }
   | { readonly type: "limit"; readonly login: number; readonly hours: number }
-  | { readonly type: "expire"; readonly login: number }
+  /** The login's token expires `inMs` from now (past by a second when unnamed). */
+  | { readonly type: "expire"; readonly login: number; readonly inMs?: number }
   | { readonly type: "other"; readonly login: number }
   | { readonly type: "token"; readonly login: number; readonly answer: TokenFault }
-  | { readonly type: "write-fails" }
+  /** The next `times` writes of the store fail (one when unnamed). */
+  | { readonly type: "write-fails"; readonly times?: number }
   | { readonly type: "burst"; readonly login: number }
   | { readonly type: "advance"; readonly ms: number }
   | { readonly type: "restart" }
@@ -102,6 +107,22 @@ const revokedCommandsOf = (seed: number): ReadonlyArray<Command> => {
   const commands = drawn(random)
   for (const login of LOGINS.keys()) commands.splice(1 + below(random, commands.length), 0, { type: "revoke", login })
   return [...commands, { type: "expire", login: 0 }, { type: "expire", login: 1 }, { type: "prompt", session: 0 }]
+}
+
+/**
+ * The lasting mode's commands of a seed, from a generator of its own: the same draw, each store write fault lasting
+ * 2 to 6 writes, and at a point the seed chooses one more such fault, then another holder's trade of a login due its
+ * refresh but still good (three minutes left) and a turn, so a held rotation outlasts this process's lock wait at least once.
+ */
+const lastingCommandsOf = (seed: number): ReadonlyArray<Command> => {
+  const random = generator(`pool-faults:lasting:${seed}`)
+  const commands = drawn(random).map((command): Command => (command.type === "write-fails" ? { type: "write-fails", times: 2 + below(random, 5) } : command))
+  const login = below(random, 2)
+  commands.splice(1 + below(random, commands.length), 0, { type: "write-fails", times: 2 + below(random, 5) }, { type: "expire", login, inMs: 3 * 60_000 }, { type: "other", login }, {
+    type: "prompt",
+    session: 0,
+  })
+  return commands
 }
 
 const slot = (label: string) => `${STORE}/.slots/anthropic/${encodeURIComponent(label)}`
@@ -191,11 +212,11 @@ const run = (
         // The login's token as the store holds it, its expiry now past: the next read refreshes it.
         const login = LOGINS[command.login]
         const held = Option.flatMap(slots.get(slot(login)), (text) => Option.fromNullishOr(decodeStoredOAuth(text)))
-        if (Option.isSome(held)) slots.put(slot(login), encodeRefresh(held.value, { ...held.value, expires: before - 1000 }))
+        if (Option.isSome(held)) slots.put(slot(login), encodeRefresh(held.value, { ...held.value, expires: before + (command.inMs ?? -1000) }))
       }
       if (command.type === "other") world.runtime.fork(Effect.ignore(other.resolveEffect(`${STORE_PREFIX}${LOGINS[command.login]}`)))
       if (command.type === "token") script.tokens.set(LOGINS[command.login], command.answer)
-      if (command.type === "write-fails") slots.failWrites(1)
+      if (command.type === "write-fails") slots.failWrites(command.times ?? 1)
       if (command.type === "burst") script.bursts.add(LOGINS[command.login])
       if (command.type === "revoke") script.revoked.add(LOGINS[command.login])
     }
@@ -226,14 +247,17 @@ const run = (
   })
 
 /** The invariants after one command. */
-const invariants = (seed: number, expect: Seed.Seeded["expect"]) => (world: World.World, script: Script, command: Command, before: number) => {
+const invariants = (seed: number, expect: Seed.Seeded["expect"], lasting: boolean) => (world: World.World, script: Script, command: Command, before: number) => {
   const label = `seed ${seed}: ${line(command)}`
   if (command.type !== "advance") expect(world.now(), label).toBe(before)
   const received = world.provider().received()
   const messages = received.flatMap((request, index) => Arr.filter([{ ...request, index }], () => request.path === "/v1/messages"))
-  // A request goes out on exactly one login the provider knows: none unsigned, none on a stranger's token.
+  // A request goes out on exactly one login the provider knows: none unsigned, none on a stranger's token. Only while
+  // writes keep failing (the lasting mode) may one go out on the token another holder's trade retired: that holder
+  // keeps the rotation and the lock past this process's wait, which then serves the token the file holds. The provider
+  // refuses it (401), and the pool fails over (store.ts, the held write).
   expect(
-    messages.filter((request) => request.account === ""),
+    messages.filter((request) => request.account === "" && !(lasting && request.status === 401)),
     label,
   ).toEqual([])
   // Never on a login the provider refused as spent before its reset, once the refusal is back: with every login spent
@@ -270,9 +294,9 @@ const opensAt = (message: string) =>
   Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(message)?.[1]), (iso) => Option.map(DateTime.make(iso), DateTime.toEpochMillis))
 
 /** The property on `commands`; whether its run ended with every login's refresh token refused. */
-const property = (seed: number, expect: Seed.Seeded["expect"], commands: ReadonlyArray<Command>) =>
+const property = (seed: number, expect: Seed.Seeded["expect"], commands: ReadonlyArray<Command>, lasting = false) =>
   Effect.gen(function* () {
-    const { world, sessions } = yield* run(seed, commands, invariants(seed, expect))
+    const { world, sessions } = yield* run(seed, commands, invariants(seed, expect, lasting))
     for (const session of sessions) {
       expect(world.sessions.get(session)?.running, `seed ${seed}: ${session} still running: ${line(world.messages(session).slice(-2))}`).toBe(false)
       for (const message of world.messages(session)) {
@@ -317,4 +341,14 @@ revoked.seeded("with every login's refresh token revoked, every turn still ends 
     const lost = yield* property(seed, expect, revokedCommandsOf(seed))
     expect(lost, `seed ${seed}: the revoked mode ended with a login whose last trade was not refused`).toBe(true)
   }),
+)
+
+// The lasting mode: a store write that keeps failing (a full disk, a read-only mount). The holder that traded keeps the
+// new tokens and the lock, writing again every 10 s, past another holder's 30 s wait. Expected: the waiter may send
+// the token the trade retired (401) and fail over, but no refresh token is traded twice, every turn ends as the
+// property says, and once writes work again every final turn is answered.
+const lasting = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: [] })
+
+lasting.seeded("with store writes failing for a while, every turn still ends as the property says, and no refresh token is traded twice", ({ seed, expect }) =>
+  Effect.asVoid(property(seed, expect, lastingCommandsOf(seed), true)),
 )
