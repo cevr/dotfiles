@@ -296,12 +296,26 @@ export const layer = (options: Options) => {
 
   const madeMeanwhile = Effect.fn("WorkRifts.madeMeanwhile")(function* (base: string, request: CreateRequest) {
     const recordOf = live(base).pipe(Effect.map((records) => Option.fromUndefinedOr(records.find((record) => record.name === request.name))))
-    /** The record of the name, and whether it is creating with its maker gone. */
+    /**
+     * The record of the name, and whether it is creating with its maker gone. A maker that activates between
+     * the read and the probe has removed its lock file by the time the probe runs, so a "gone" probe reads the
+     * record again: only the same reservation still creating is left by its maker; anything else is what the
+     * maker made (or gave up) meanwhile.
+     */
     const look = recordOf.pipe(
       Effect.flatMap((found) =>
         Option.match(Option.filter(found, isCreating), {
           onNone: () => Effect.succeed({ found, orphan: false }),
-          onSome: (making) => makerGone(making).pipe(Effect.map((orphan) => ({ found, orphan }))),
+          onSome: (making) =>
+            makerGone(making).pipe(
+              Effect.flatMap((gone) =>
+                Effect.gen(function* () {
+                  if (!gone) return { found, orphan: false }
+                  const again = yield* recordOf
+                  return { found: again, orphan: Option.exists(again, (record) => record.id === making.id && isCreating(record)) }
+                }),
+              ),
+            ),
         }),
       ),
     )

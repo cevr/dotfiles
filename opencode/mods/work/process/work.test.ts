@@ -312,6 +312,15 @@ fi
 exec /bin/cp "$@"
 `
 
+/** A `perl` whose first run (the maker probe) says it started and waits for the test's go before it probes. */
+const HELD_PERL = `#!/bin/sh
+if [ ! -e "$HOME/probe.go" ]; then
+  : > "$HOME/probe.started"
+  while [ ! -e "$HOME/probe.go" ]; do sleep 0.05; done
+fi
+exec /usr/bin/perl "$@"
+`
+
 /** The words of a failed create, or "made" when it was made. */
 const failureWords = <R>(effect: Effect.Effect<string, RiftFailed, R>) =>
   effect.pipe(
@@ -618,6 +627,31 @@ if (runnable) {
             expect(records.map((record) => [record.name, record.state._tag])).toEqual([["dead", "Creating"]])
             yield* made.work("rm", "dead").pipe(Effect.orDie)
             expect(nameOf(yield* rifts.create(request))).toBe("dead")
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a create whose maker probe runs just after the work new it waits on finished (its lock file gone) answers the made workspace, not a dead maker",
+      () =>
+        check(bench({ ...PLAIN, stubs: [["cp", SLOW_CP], ["perl", HELD_PERL]], makingWaitMs: 50_000 }), (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const request = { source: made.base, from: made.base, name: "race", branch: "race" }
+            const making = yield* Effect.forkChild(failureWords(rifts.create(request)))
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            // The second create has read the record as creating and is about to probe its maker's lock.
+            const waiting = yield* Effect.forkChild(rifts.create(request))
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/probe.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            // The maker finishes meanwhile, removing its lock file; then the probe runs.
+            yield* made.sh(made.root, "touch", `${made.env.HOME}/clone.go`)
+            expect(yield* Fiber.join(making)).toBe("made")
+            yield* made.sh(made.root, "touch", `${made.env.HOME}/probe.go`)
+            const answered = yield* Fiber.join(waiting)
+            expect(nameOf(answered)).toBe("race")
+            const records = yield* made.work("list").pipe(Effect.flatMap(Schema.decodeUnknownEffect(RECORDS)), Effect.orDie)
+            expect(records.map((record) => [record.name, record.state._tag])).toEqual([["race", "Active"]])
           }),
         ),
       TIMEOUT,
