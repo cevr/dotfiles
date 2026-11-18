@@ -52,4 +52,6 @@ The agent keeps a live list of what it has going: the `queue` tool sets it, patc
 - Items are matched by `id`; `upsert` of an unknown id adds it, `remove` of an unknown id is refused.
 - A `scheduled` item needs `at` (ISO 8601); without it the call is refused.
 - The sidebar shows the route's root session's queue only: a subagent's items never draw there.
+- A change to `cmd/queue/server.ts` or a file it imports runs `tests/queue-panel.test.ts` among its focused checks: a server plugin that fails to load shows nowhere else (the tool call folds to `+ 1 tool`, the dock never counts), and the seam tests start it on a stand-in host. The server's log says why: `failed to load plugin … cmd/queue`.
+- At run time OpenCode gives the plugin only `effect` and `@opencode/plugin`; any other package resolves through the checkout's node_modules links, which point nowhere in a copy (a verifier's or a workspace's before `scripts/link-fork.ts`). Import other packages for types only; `cmd/queue/server.test.ts` checks it.
 - On the world, a child that ends wakes its parent with a report, so the parent's turn count grows: wait for "at least" the texts you expect, not an exact count, once a child has run.

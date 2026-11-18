@@ -79,11 +79,13 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
         Effect.mapError((error) => new Error(`dotfiles-opencode.queue: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      const services = yield* Layer.build(
-        Layer.merge(Model.layer, Fresh.layer).pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(externals(options))),
-      )
-      const queue = Context.get(services, Model.QueueModel)
-      const freshness = Context.get(services, Fresh.Freshness)
+      // One store for the model and the sweep, so the sweep reads what the tool wrote. The model sends the owner's
+      // answers through the host, a plain view of the context: building it reads nothing of the host.
+      const store = Layer.succeedContext(yield* Layer.build(externals(options)))
+      const queue = Context.get(yield* Layer.build(Model.layer.pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(store))), Model.QueueModel)
+
+      // A queue that cannot be read fails the call, and the sidebar keeps what it drew.
+      yield* ctx.rpc.register(QUEUE, { get: (input) => queue.get(sessionOf(input)).pipe(Effect.orDie) }).pipe(Effect.orDie)
 
       yield* ctx.tool.transform((editor) => {
         editor.add({
@@ -125,13 +127,18 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
         ),
       )
 
-      // The staleness sweep: a pass every few minutes, after a first wait, each pass on its own so one failure skips only it.
+      // The staleness sweep, last and on its own fiber: nothing of it runs or can fail before the tool and the RPC
+      // answer. A pass every few minutes after a first wait, each on its own, so a failure is logged and skips only it.
       yield* Effect.forkScoped(
-        Effect.sleep(Fresh.FIRST_AFTER).pipe(Effect.andThen(freshness.sweep.pipe(Effect.ignoreCause, Effect.repeat(Schedule.spaced(Fresh.SWEEP_EVERY))))),
+        Effect.gen(function* () {
+          const freshness = Context.get(yield* Layer.build(Fresh.layer.pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(store))), Fresh.Freshness)
+          yield* Effect.sleep(Fresh.FIRST_AFTER)
+          yield* freshness.sweep.pipe(
+            Effect.ignoreCause({ log: "Warn", message: "queue: a staleness pass failed" }),
+            Effect.repeat(Schedule.spaced(Fresh.SWEEP_EVERY)),
+          )
+        }).pipe(Effect.ignoreCause({ log: "Warn", message: "queue: the staleness sweep stopped" })),
       )
-
-      // A queue that cannot be read fails the call, and the sidebar keeps what it drew.
-      yield* ctx.rpc.register(QUEUE, { get: (input) => queue.get(sessionOf(input)).pipe(Effect.orDie) }).pipe(Effect.orDie)
     }),
   })
 
