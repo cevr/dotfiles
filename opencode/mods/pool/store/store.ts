@@ -655,8 +655,9 @@ export class StoreSource {
       if (!writing && settled && !this.due(label, stored.expires)) return served
       // A token still good past its last minute can wait for its refresh: a
       // trade that cannot happen now serves it, and a later request tries again.
+      // A due token is read again under the lock even then: another holder that
+      // traded it (its write held) may have retired the access token read here.
       const usable = settled && this.fresh(stored.expires)
-      if (!writing && usable && this.held() !== undefined) return served
       // Under the lock the file is read again and a failed trade serves what it holds; a lock
       // held for the whole wait serves the token read here.
       return yield* serialized(this.state, this.locked(this.refreshLocked(label))).pipe(
