@@ -3,7 +3,7 @@
 // leads to (QueueChanged); a change that leaves the list as it is records
 // nothing. The store keeps the folded state with a revision the sidebar polls.
 // Also the queue's RPC, which the sidebar reads.
-import { Effect, Schema } from "effect"
+import { Effect, Option, Record as Rec, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { InvalidItem, Item, ItemInput, itemOf, UnknownState } from "./item.ts"
@@ -117,8 +117,46 @@ export const QUEUE = {
   events: {},
 } as const
 
-/** A session's queue as stored and as `get` answers it. A session with no queue is revision 0 with no items. */
-export const Snapshot = Schema.Struct({ revision: Schema.Number, items: Schema.Array(Item) })
+/**
+ * A session's queue as stored and as `get` answers it. A session with no queue is revision 0 with no items.
+ * The store also keeps `touched`: when each item was last written or restated (epoch ms, by id), which
+ * the staleness sweep reads; `get` leaves it out, and a change to it alone keeps the revision.
+ */
+export const Snapshot = Schema.Struct({
+  revision: Schema.Number,
+  items: Schema.Array(Item),
+  touched: Schema.optionalKey(Schema.Record(Schema.String, Schema.Number)),
+})
 export type Snapshot = typeof Snapshot.Type
+
+/**
+ * When each item of `next` was last written or restated: now for an item a
+ * patch names (`named`) or one that is new or differs from `previous`; else
+ * the time it had. Items gone from the queue drop out.
+ */
+export const touchedOf = (previous: Snapshot, next: ReadonlyArray<Item>, named: ReadonlySet<string>, now: number): Readonly<Record<string, number>> => {
+  const before = new Map(previous.items.map((item) => [item.id, item]))
+  const kept = Option.getOrElse(Option.fromNullishOr(previous.touched), () => ({}))
+  return Object.fromEntries(
+    next.flatMap((item): ReadonlyArray<readonly [string, number]> => {
+      const unchanged = Option.exists(Option.fromNullishOr(before.get(item.id)), (old) => sameItem(old, item))
+      if (named.has(item.id) || !unchanged) return [[item.id, now]]
+      return Option.toArray(Option.map(Rec.get(kept, item.id), (time): readonly [string, number] => [item.id, time]))
+    }),
+  )
+}
+
+/** The ids a command restates: a patch's upserts; a whole new list names none, so only its changes count. */
+export const namedOf = (command: Command): ReadonlySet<string> => {
+  if (command._tag === "SetQueue") return new Set()
+  return new Set(command.upsert.map((input) => input.id.trim()))
+}
+
+const sameItem = Schema.toEquivalence(Item)
+const sameTouched = Schema.toEquivalence(Schema.Record(Schema.String, Schema.Number))
+
+/** Whether two snapshots keep the same touch times; none counts as no times. */
+export const sameTouches = (left: Snapshot, right: Readonly<Record<string, number>>): boolean =>
+  sameTouched(Option.getOrElse(Option.fromNullishOr(left.touched), () => ({})), right)
 
 export const EMPTY: Snapshot = { revision: 0, items: [] }
