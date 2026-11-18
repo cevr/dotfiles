@@ -6,7 +6,9 @@
 // pattern, what runs on the machine) and fails with `Destructive` when a
 // verdict denies the call; for a `git worktree add`, it reads the checkout
 // (and, off a cloning file system, the warm sources) and fails with
-// `FullCopy` when a workspace can copy it (worktree.ts); then, for a foreground call that opens with a long
+// `FullCopy` when a workspace can copy it (worktree.ts); for a `work gc`, it reads
+// the workspaces work is still making and fails with `Destructive` while one's
+// folder exists (work-gc.ts); then, for a foreground call that opens with a long
 // sleep (sleep.ts), it asks whether the session is a subagent and fails with
 // `Idle` when it is. The plugin calls this and nothing else.
 //
@@ -22,9 +24,10 @@ import { killsByPattern, killVerdict } from "./kill.ts"
 import { launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
+import { workGcReason, workGcs } from "./work-gc.ts"
 import { clones, FullCopy, riftHome, worktreeAdds, worktreeReason } from "./worktree.ts"
 
 /** The guard's settings, from the plugin's options. */
@@ -60,6 +63,7 @@ export const layer = (config: Config) =>
       const processes = yield* Processes
       const subagents = yield* Subagents
       const checkouts = yield* Checkouts
+      const reservations = yield* Reservations
 
       /** The bases that decide whether a workspace can copy `checkout`: none asked on a cloning file system, which decides alone. */
       const sourcesFor = (checkout: Checkout): Effect.Effect<ReadonlyArray<WarmSource>, CheckoutUnknown> => {
@@ -106,6 +110,17 @@ export const layer = (config: Config) =>
           const sources = yield* sourcesFor(checkout.value).pipe(Effect.catchTag("CheckoutUnknown", unknown))
           const home = riftHome(checkout.value, sources)
           if (Option.isSome(home)) return yield* new FullCopy({ command: call.command, reason: worktreeReason(add, checkout.value, home.value) })
+        }
+        // The work registry is read only for a `work gc`.
+        for (const gc of workGcs(call.command, place)) {
+          const making = yield* reservations
+            .of(gc.directory)
+            .pipe(
+              Effect.catchTag("ReservationsUnknown", (error) =>
+                refuse(`cannot tell which workspaces \`${gc.command}\` would delete (${error.directory}: ${error.message}); the guard refuses rather than guess`),
+              ),
+            )
+          if (making.length > 0) return yield* refuse(workGcReason(gc, making))
         }
         // The process table is read only for a kill by pattern; a `kill -1` needs none.
         const running = killsByPattern(call.command)

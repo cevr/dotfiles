@@ -9,6 +9,7 @@ A shell call that would lose work for good never runs: a recursive `rm` of the r
 - `guard-kill`: a pattern kill reaching OpenCode, and `kill -1`, are refused; a kill by PID passes.
 - `guard-sleep`: a subagent's opening `sleep` of 30 s or more is refused; the root's runs.
 - `guard-worktree`: `git worktree add` in a checkout a workspace can copy is refused, naming the work tool's `create` and `workrift create <branch>`.
+- `guard-work-gc`: `work gc` is refused while its base has a workspace whose record says creating and whose folder exists, naming it (`cmd/guard/server.test.ts`); it runs when none is.
 - `guard-heavy`: a heavy command runs under the launcher, niced.
 
 ## How to get to it (user POV)

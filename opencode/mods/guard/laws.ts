@@ -2,7 +2,7 @@
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, Option, Result, type Scope } from "effect"
-import { Checkouts, Processes, RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable, Subagents, type WarmSource } from "./service.ts"
+import { Checkouts, Processes, RepoRootUnknown, RepoRoots, type Reservation, Reservations, SessionDirectories, SessionUnreadable, Subagents, type WarmSource } from "./service.ts"
 
 /** `layer` lists the processes running now; `self` is a process it must list: the test's own. */
 export const processesLaws = (name: string, layer: Layer.Layer<Processes>, self: { readonly pid: number; readonly args: string }) =>
@@ -93,6 +93,26 @@ export interface CheckoutBench {
   /** The warm sources the implementation lists, in order; a failure when it cannot list them. */
   readonly sources: ReadonlyArray<WarmSource> | "unreadable"
 }
+
+/** An implementation of Reservations, a directory in a work base, and what it answers for it: the workspaces being made, or that it cannot read them. */
+export interface ReservationBench {
+  readonly layer: Layer.Layer<Reservations>
+  readonly directory: string
+  readonly expected: ReadonlyArray<Reservation> | "unreadable"
+}
+
+/** `bench` makes a fresh implementation; the directory answers its expected workspaces, or fails ReservationsUnknown, never a guess. */
+export const reservationsLaws = (name: string, bench: () => Effect.Effect<ReservationBench, never, Scope.Scope>) =>
+  describe(`${name} keeps the Reservations laws`, () => {
+    test("a directory answers the workspaces of its base whose record says creating and whose folder exists, or fails ReservationsUnknown", () =>
+      check(bench, layerOf, (made) =>
+        Effect.gen(function* () {
+          const found = yield* Effect.result((yield* Reservations).of(made.directory))
+          if (made.expected === "unreadable") expect(found._tag === "Failure" && found.failure._tag).toBe("ReservationsUnknown")
+          else expect(found).toEqual(Result.succeed(made.expected))
+        }),
+      ))
+  })
 
 /** `bench` makes a fresh implementation over a checkout with an origin, a directory in it, one with none, a plain directory and a missing path. */
 export const checkoutsLaws = (name: string, bench: () => Effect.Effect<CheckoutBench, never, Scope.Scope>) =>

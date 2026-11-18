@@ -1919,6 +1919,17 @@ prefixes, takes neither quoted text nor a heredoc body for a command, and reads 
 `sh -c`, `bash -c` and `eval`. When it cannot
 tell where a call runs, or whether a path is a repository, it refuses.
 
+It refuses `work gc` while the work base it runs on has a workspace whose
+record still says `creating` and whose folder exists, naming each: gc takes
+such a record for a reservation whose maker died and deletes its folder
+outright, not to the trash, and a `work new` cut off between its clone and
+its activation leaves exactly that over a whole workspace an agent may work
+in (2026-11-17: a lane cut off by a plugin reload, then `work gc -older 0s`,
+lost an implementor's commits). It reads the registry with `work --json list`
+only for such a call (`mods/guard/work-gc.ts`, `process/reservations.ts`), and
+refuses when it cannot. The work tool no longer cuts a `work new` or `work rm`
+off: an interrupt leaves it to finish.
+
 It refuses a kill by pattern that would reach OpenCode: `pkill`, `killall`
 and `kill $(pgrep …)` (with `-f`, `-i`, `-x` read as those tools read them)
 whose pattern matches this server's process or one whose name or program

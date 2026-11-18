@@ -14,6 +14,7 @@ import type { ProcessInfo } from "@dotfiles/opencode-guard/kill"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
+import * as MemoryReservations from "@dotfiles/opencode-guard/memory/reservations"
 import { Processes, ProcessesUnreadable } from "@dotfiles/opencode-guard/service"
 import { externalsOn as mailOn, make as makeMail } from "@dotfiles/opencode-cmd-mail/server"
 import type * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
@@ -104,6 +105,8 @@ export interface GuardMachine {
   readonly repos: ReadonlyArray<string>
   /** The Git checkouts on disk, with their file systems and origins, and Rift's warm sources. */
   readonly checkouts: MemoryCheckouts.World
+  /** The work bases, with the workspaces of each still being made. */
+  readonly reservations: MemoryReservations.World
   /** Each launcher written, by its path (`/launchers/<n>/<name>`). */
   readonly launchers: Map<string, string>
   launchersFail: boolean
@@ -115,11 +118,13 @@ export const guardMachine = (input: {
   readonly processes: ReadonlyArray<ProcessInfo>
   readonly repos?: ReadonlyArray<string>
   readonly checkouts?: MemoryCheckouts.World
+  readonly reservations?: MemoryReservations.World
 }): GuardMachine => ({
   processes: input.processes,
   psFails: false,
   repos: input.repos ?? [],
   checkouts: input.checkouts ?? { checkouts: [] },
+  reservations: input.reservations ?? { bases: {} },
   launchers: new Map(),
   launchersFail: false,
   scope: false,
@@ -136,6 +141,7 @@ export const guard = (machine: GuardMachine) =>
       sessionsOf(ctx),
       MemoryRepoRoots.layer({ repos: machine.repos }),
       MemoryCheckouts.layer(machine.checkouts),
+      MemoryReservations.layer(machine.reservations),
       // The memory launchers read `unwritable` at each write: the machine's fault, as it is now.
       MemoryLaunchers.layer({
         written: machine.launchers,

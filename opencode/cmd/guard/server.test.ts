@@ -9,6 +9,7 @@ import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
+import * as MemoryReservations from "@dotfiles/opencode-guard/memory/reservations"
 import * as MemorySessionDirectories from "@dotfiles/opencode-guard/memory/session-directories"
 import * as MemorySubagents from "@dotfiles/opencode-guard/memory/subagents"
 import Guard, { make } from "./server.ts"
@@ -38,6 +39,7 @@ interface World {
   /** Each session's parent; default `ses_1` a root and `ses_child` its subagent. */
   readonly parents?: Readonly<Record<string, string | undefined>>
   readonly processes?: MemoryProcesses.World
+  readonly reservations?: MemoryReservations.World
   readonly launchers?: Omit<MemoryLaunchers.World, "written">
 }
 
@@ -60,6 +62,7 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
         MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app", ses_child: "/work/app" }),
         MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] }),
         MemoryCheckouts.layer({ checkouts: [] }),
+        MemoryReservations.layer(world.reservations ?? { bases: {} }),
         MemorySubagents.layer(world.parents ?? { ses_1: undefined, ses_child: "ses_1" }),
         MemoryProcesses.layer(world.processes ?? PROCESSES),
         MemoryLaunchers.layer({ scope: false, ...world.launchers, written }),
@@ -158,6 +161,23 @@ describe("the guard plugin", () => {
         // A malformed `background` is no background, and never hides a destructive call.
         expect(yield* call("shell", { command: "sleep 60", background: "yes" }, "ses_child")).toStartWith("Tool.Error: guard-sleep:")
         expect(yield* call("shell", { command: "git reset --hard", background: "yes" })).toContain("guard-destructive:")
+      }),
+    ))
+
+  test("refuses `work gc` while its base has a workspace whose record still says creating, naming it; lets it run when none is, and refuses when the registry cannot be read", () =>
+    scenario(
+      Effect.gen(function* () {
+        const making = { name: "hy-drums-fade", path: "/work/.work/app/hy-drums-fade" }
+        const { call } = yield* start({ home: HOME }, { reservations: { bases: { "/work/app": [making] }, unreadable: ["/work/locked"] } })
+        const refused = yield* call("shell", { command: "cd /work/app && work gc -older 0s | tail -1" })
+        expect(refused).toStartWith("Tool.Error: guard-destructive: `work gc -older 0s` would delete, outright and not to the trash, a workspace whose record still says creating: hy-drums-fade (/work/.work/app/hy-drums-fade).")
+        expect(refused).toContain("`work rm <name>`")
+        expect(yield* call("bash", { command: "work --json gc", workdir: "/work/app/src" })).toContain("guard-destructive:")
+        expect(yield* call("shell", { command: "sh -c 'work gc'" })).toContain("would delete, outright")
+        // Another base, and the other work commands, run.
+        expect(yield* call("shell", { command: "work gc", workdir: "/work/lib" })).toBeUndefined()
+        expect(yield* call("shell", { command: "work list && work rm gc" })).toBeUndefined()
+        expect(yield* call("shell", { command: "work gc", workdir: "/work/locked" })).toContain("cannot tell which workspaces `work gc` would delete")
       }),
     ))
 

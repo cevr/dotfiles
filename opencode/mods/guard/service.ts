@@ -109,6 +109,27 @@ export class Checkouts extends Context.Service<
   }
 >()("dotfiles-opencode/guard/Checkouts") {}
 
+/** The guard could not read the work registry of a directory's base. */
+export class ReservationsUnknown extends Schema.TaggedError<ReservationsUnknown>()("ReservationsUnknown", {
+  directory: Schema.String,
+  message: Schema.String,
+}) {}
+
+/** A workspace of a work base whose record says `creating`: its name and its folder, which exists. */
+export interface Reservation {
+  readonly name: string
+  readonly path: string
+}
+
+/** The workspaces work is making, read when a call runs `work gc` (work-gc.ts). */
+export class Reservations extends Context.Service<
+  Reservations,
+  {
+    /** The workspaces of the work base `directory` (absolute) is in whose record says creating and whose folder exists; none when it is in no base. */
+    readonly of: (directory: string) => Effect.Effect<ReadonlyArray<Reservation>, ReservationsUnknown>
+  }
+>()("dotfiles-opencode/guard/Reservations") {}
+
 /** The processes running on the machine, read when a call kills by pattern. */
 export class Processes extends Context.Service<
   Processes,
