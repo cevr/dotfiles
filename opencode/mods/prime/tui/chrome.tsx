@@ -189,7 +189,8 @@ export function HintLine(props: { host: Host; sessionID: string }) {
           <Show
             when={Option.isSome(props.host.starting())}
             fallback={
-              <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
+              // opentui before 0.9 never painted a text's own left padding: these cells only reserved room on the right.
+              <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingRight={GUTTER}>
                 {send()}
               </text>
             }
@@ -201,7 +202,8 @@ export function HintLine(props: { host: Host; sessionID: string }) {
         }
       >
         {(keys) => (
-          <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
+          // Drawn where the send hint is, so the same right-hand reserve (see above).
+          <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingRight={GUTTER}>
             <span style={{ fg: props.host.theme().hue.accent[300] }}>{leaderLabel(keys())}</span>
             {LEADER_REST}
           </text>
