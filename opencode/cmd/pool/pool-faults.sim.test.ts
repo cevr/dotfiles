@@ -265,7 +265,7 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"], lasting: boolea
   // keeps the rotation and the lock past this process's wait, which then serves the token the file holds. The provider
   // refuses it (401), and the pool fails over (store.ts, the held write).
   expect(
-    messages.filter((request) => request.account === "" && !(lasting && request.status === 401 && request.retired !== undefined)),
+    messages.filter((request) => request.account === "" && !(lasting && request.status === 401 && Option.isSome(Option.fromNullishOr(request.retired)))),
     label,
   ).toEqual([])
   // The bound: one process sends a retired token once. A held rotation lasts up to (times - 1) × LAND_MS = 50 s past
@@ -273,7 +273,7 @@ const invariants = (seed: number, expect: Seed.Seeded["expect"], lasting: boolea
   // each send it. The first one's 401 marks the login rejected in the store, and a waiter serves the token it read
   // only while no refusal names it: the second fails over without sending it.
   const epoch = (index: number) => script.restarts.filter((at) => at <= index).length
-  const sent = messages.flatMap((request) => Arr.filter([`${epoch(request.index)} ${request.retired}`], () => request.retired !== undefined))
+  const sent = messages.flatMap((request) => Arr.filter([`${epoch(request.index)} ${request.retired}`], () => Option.isSome(Option.fromNullishOr(request.retired))))
   expect(
     sent.filter((key, at) => sent.indexOf(key) !== at),
     `${label}: a retired token sent twice by one process`,
