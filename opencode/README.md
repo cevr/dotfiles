@@ -1335,6 +1335,25 @@ there, and no row carries a subagent's role, update or time; Prime's rows
 beneath the composer show the subagents, sidebar open or closed. Done items
 stay ten minutes.
 
+A queue goes stale when the agent forgets it, so the server sweeps it
+(`fresh.ts`, the rules in `stale.ts`). Every ten minutes (the first pass five
+minutes after it starts) it reads this location's root sessions changed in
+the last day; an item looks stale when its linked subagent ended (30 minutes
+ago or more) or is gone while the item still runs or waits, when a wake or
+monitor it names was seen pending and is no more, when it needs the owner and
+the session has no open `ask_user_async` question, or when nobody wrote or
+restated it for six hours (a dated item counts from its date; one a running
+subagent does is never). A session with stale items, or more than 25 open
+ones, gets one steered `Queue check` note listing each with why and asking
+the agent to set it done, remove it or restate it: it wakes an idle session
+and waits for a busy one's next turn. One note an hour per session at most,
+the same ask again only after six hours, three notes a pass. The sweep never
+changes a queue. The store keeps when each item was last written or restated
+(`touched`); an upsert of an item as it stands marks it checked without a new
+revision, and the RPC answers without the times. The host's facts come
+through `opencode/host.ts`: the session list, `session.get`, the wakes'
+`pending` and the questions' `open` RPCs.
+
 The model, in the domain files at `mods/queue`'s root:
 
 - Aggregate: `Queue` (`queue.ts`), deciding `SetQueue` and `PatchQueue` into

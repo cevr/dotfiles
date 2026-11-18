@@ -12,6 +12,10 @@
  * - `get({ sessionID })` answers `{ revision, items }`; the revision goes up
  *   with every change, so a reader polls cheaply.
  * - A deleted session's queue goes.
+ * - Every few minutes a sweep (`@dotfiles/opencode-queue/fresh`) reads this
+ *   location's recently active root sessions' queues and sends a session whose
+ *   items look stale one short note asking its agent to check them: at most
+ *   one an hour per session, never changing a queue itself.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `dir`: where the queues are kept, default `$XDG_STATE_HOME/opencode-queue`
@@ -20,10 +24,12 @@
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
-import { Context, Effect, Layer, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
 import { DESCRIPTION, listing } from "@dotfiles/opencode-queue/description"
 import * as FileStore from "@dotfiles/opencode-queue/filestore/store"
+import * as Fresh from "@dotfiles/opencode-queue/fresh"
 import * as Model from "@dotfiles/opencode-queue/model"
+import * as Host from "@dotfiles/opencode-queue/opencode/host"
 import { explain, QUEUE, QueueInput, type Rejection } from "@dotfiles/opencode-queue/queue"
 import type { QueueStore, QueueUnreadable, QueueUnwritable } from "@dotfiles/opencode-queue/service"
 
@@ -67,8 +73,11 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
         Effect.mapError((error) => new Error(`dotfiles-opencode.queue: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(externals(options))))
+      const services = yield* Layer.build(
+        Layer.merge(Model.layer, Fresh.layer.pipe(Layer.provide(Host.fromContext(ctx)))).pipe(Layer.provide(externals(options))),
+      )
       const queue = Context.get(services, Model.QueueModel)
+      const freshness = Context.get(services, Fresh.Freshness)
 
       yield* ctx.tool.transform((editor) => {
         editor.add({
@@ -91,6 +100,11 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
           Stream.runForEach((event) => queue.forget(event.data.sessionID).pipe(Effect.ignoreCause)),
           Effect.ignoreCause,
         ),
+      )
+
+      // The staleness sweep: a pass every few minutes, after a first wait, each pass on its own so one failure skips only it.
+      yield* Effect.forkScoped(
+        Effect.sleep(Fresh.FIRST_AFTER).pipe(Effect.andThen(freshness.sweep.pipe(Effect.ignoreCause, Effect.repeat(Schedule.spaced(Fresh.SWEEP_EVERY))))),
       )
 
       // A queue that cannot be read fails the call, and the sidebar keeps what it drew.

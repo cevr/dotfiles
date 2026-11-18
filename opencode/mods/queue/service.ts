@@ -1,7 +1,9 @@
-// The contract the queue needs from outside: somewhere to keep each session's
-// queue. What every implementation owes is in laws.ts.
-import { Context, type Effect, Schema } from "effect"
+// The contracts the queue needs from outside: somewhere to keep each session's
+// queue (what every implementation owes is in laws.ts), and the host the
+// staleness sweep reads and sends its note through.
+import { Context, type Effect, type Option, Schema } from "effect"
 import type { Snapshot } from "./queue.ts"
+import type { Linked } from "./stale.ts"
 
 /** A session's stored queue exists but could not be read. */
 export class QueueUnreadable extends Schema.TaggedError<QueueUnreadable>()("QueueUnreadable", { message: Schema.String }) {}
@@ -22,3 +24,34 @@ export class QueueStore extends Context.Service<
     readonly remove: (sessionID: string) => Effect.Effect<void, QueueUnwritable>
   }
 >()("dotfiles-opencode/queue/QueueStore") {}
+
+/** A root session of this location: whether a turn runs now, and when it last changed (epoch ms). */
+export interface Root {
+  readonly id: string
+  readonly busy: boolean
+  readonly updated: number
+}
+
+/** The host would not take the note. */
+export class NoteRefused extends Schema.TaggedError<NoteRefused>()("NoteRefused", { sessionID: Schema.String, message: Schema.String }) {}
+
+/**
+ * The host as the staleness sweep sees it. Every read answers what it can:
+ * a host or plugin that does not answer is `Option.none()` (or no roots),
+ * never a failure, so one silent neighbour costs only its own facts.
+ */
+export class QueueHost extends Context.Service<
+  QueueHost,
+  {
+    /** This location's root sessions, the most recently changed first. */
+    readonly roots: Effect.Effect<ReadonlyArray<Root>>
+    /** A subagent session's state; none when the host could not say. */
+    readonly linked: (sessionID: string) => Effect.Effect<Option.Option<Linked>>
+    /** The ids of the alarms and monitors each session has pending (the wakes plugin's `pending`). */
+    readonly wakes: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Option.Option<ReadonlyMap<string, ReadonlyArray<string>>>>
+    /** How many ask_user_async questions each session has open (the questions plugin's `open`). */
+    readonly questions: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Option.Option<ReadonlyMap<string, number>>>
+    /** Put the note into the session: waking it when `wake`, else read at its next turn. */
+    readonly note: (sessionID: string, text: string, description: string, wake: boolean) => Effect.Effect<void, NoteRefused>
+  }
+>()("dotfiles-opencode/queue/QueueHost") {}

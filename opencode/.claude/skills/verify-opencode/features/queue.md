@@ -12,6 +12,7 @@ The agent keeps a live list of what it has going: the `queue` tool sets it, patc
 - `queue-keep`: a reload keeps it; a deleted session's queue goes.
 - `queue-sidebar`: the sidebar's Queue section, one line an item, a linked subagent's live state as its mark.
 - `queue-links`: `after` and `on` are stored as written, kept when a patch leaves them out, cleared by `[]` and `{}`.
+- `queue-stale`: every 10 minutes (the first pass 5 minutes after start) the server sweeps this location's root sessions changed in the last day; one whose queue holds stale items (a linked subagent ended or gone while the item runs or waits, a wake or monitor it names ended, a needs-you with no open question, an item untouched 6 h) or more than 25 open items gets one steered `Queue check` note listing them with why, waking it when idle, else read at its next turn; at most one note an hour per session, the same ask again after 6 h, 3 notes a pass. It never changes a queue; an upsert that restates an item marks it checked without a new revision.
 - `queue-tab`: the dock's `N queued` count and the Queue tab (`/queue`, `/ledger`, a click on the count), the plan drawn there and none of it in the transcript.
 
 ## How to get to it (user POV)
@@ -27,7 +28,7 @@ The agent keeps a live list of what it has going: the `queue` tool sets it, patc
 - **States:** default (an empty queue), refused, and a reload. Loading and error are `n/a` (a memory store).
 - **World suites:** `cmd/queue/queue.sim.test.ts`
 - **Code:** `mods/queue/`, `cmd/queue/`, `sim/`; `scenarios/queue-panel.ts`, `tests/queue-panel.test.ts` (the Queue tab in a real TUI); `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
-- **Regression:** `cmd/queue/server.test.ts` (the seam), `mods/queue/queue.test.ts` (the aggregate), `mods/queue/item.test.ts` (the links), `mods/queue/plan.test.ts` (the plan the Queue tab draws).
+- **Regression:** `cmd/queue/server.test.ts` (the seam), `mods/queue/queue.test.ts` (the aggregate), `mods/queue/item.test.ts` (the links), `mods/queue/plan.test.ts` (the plan the Queue tab draws), `mods/queue/stale.test.ts` (which items look stale, the cadence, the note), `mods/queue/memory/fresh.test.ts` (the sweep on the test clock), `mods/queue/opencode/host.test.ts` (what the sweep reads of the host).
 
 1. **Set.** Prompt `verify: call queue {"set":[{"id":"pool","text":"Sidebar pool worker","state":"running"},{"id":"panes","text":"Close old Claude panes","state":"needs-you"}]}`. The tool answers `Queue (2):` with `● pool [running]: Sidebar pool worker` and `! panes [needs-you]: Close old Claude panes`; the RPC answers revision 1.
 2. **Patch.** Prompt `verify: call queue {"upsert":[{"id":"panes","state":"done"}]}`. The RPC answers revision 2, `panes` done.
