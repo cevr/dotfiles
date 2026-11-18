@@ -100,6 +100,12 @@ const DEFAULT_EXPIRES_IN_S = 36_000
 /** How soon a credential that failed for a passing reason is tried again. */
 const RETRY_MS = 60_000
 /**
+ * How soon a held rotation (a trade whose write failed) is written again, the store's lock kept meanwhile: well inside
+ * another holder's lock wait (LOCK_POLLS), so a holder that waits on it reads the landed token, not the one the trade
+ * retired (a provider may refuse that at once), whenever a write works again.
+ */
+const LAND_MS = 10_000
+/**
  * How long a 429 from the token endpoint pauses every refresh from this store
  * when it names no retry-after. The limit is the endpoint's, not one account's:
  * retrying each account on its own kept a rate limit going for 40 minutes on
@@ -895,7 +901,7 @@ export class StoreSource {
   }
 
   /**
-   * Every held rotation is written again every `RETRY_MS` until none is left, whether or not a request comes: a
+   * Every held rotation is written again every `LAND_MS` until none is left, whether or not a request comes: a
    * process gone idle would otherwise keep the lock for good, and every other holder of the store would wait on it.
    * One loop per store in this process.
    */
@@ -910,7 +916,7 @@ export class StoreSource {
     ).pipe(Effect.ignore)
     const loop: Effect.Effect<void> = Effect.suspend(() => {
       if (this.state.pending.size === 0) return Effect.void
-      return this.sleep(RETRY_MS).pipe(Effect.andThen(land), Effect.andThen(loop))
+      return this.sleep(LAND_MS).pipe(Effect.andThen(land), Effect.andThen(loop))
     })
     Effect.runForkWith(this.context)(loop.pipe(Effect.ensuring(Effect.sync(() => (this.state.landing = false)))))
   }

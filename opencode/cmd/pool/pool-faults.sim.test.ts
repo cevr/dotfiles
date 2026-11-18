@@ -25,11 +25,13 @@ import * as World from "../../sim/world.ts"
 
 /**
  * Seeds a wider sweep found failing (pool-seeds), replayed on every run: 1 to 500 in round 1; 1 to 1000 in round 2,
- * every login refused (522 and on); a refused login whose last trade, another holder's, met a 429 (39066929).
+ * every login refused (522 and on); a refused login whose last trade, another holder's, met a 429 (39066929); another
+ * holder's trade whose write failed, held past this process's whole lock wait, so it sent the token the trade retired
+ * (744883142, the post-land run of dca79ac5).
  */
 const PAST = [
   27, 50, 126, 130, 137, 141, 150, 160, 174, 216, 220, 223, 225, 241, 245, 251, 296, 300, 318, 327, 332, 346, 353, 388, 393, 437, 452, 483, 492,
-  522, 582, 677, 956, 981, 994, 39066929,
+  522, 582, 677, 956, 981, 994, 39066929, 744883142,
 ]
 
 const { seeded } = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: PAST })
