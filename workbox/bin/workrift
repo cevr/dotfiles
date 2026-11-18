@@ -54,8 +54,9 @@ usage: workrift <command>
 
   init <repository> [path]    clone a repository as a warm Rift source
   create <branch>             create a workspace for a branch from the warm source
-  deps                        install dependencies if the lock file changed since the last install,
+  deps [rebase|amend]         install dependencies if the lock file changed since the last install,
                               and run the warm step if HEAD's tree changed since the last warm
+                              (post-rewrite passes its argument: rebase means a rebase has ended)
   refresh                     update the warm source from its default branch
   list                        list the warm source's workspaces
   remove [--with-children] [path]
@@ -213,22 +214,47 @@ warmed_tree_file() {
   git -C "$1" rev-parse --path-format=absolute --git-path workrift-warmed-tree
 }
 
+# Whether $1 is in the middle of a rebase, merge, cherry-pick, revert or bisect,
+# or holds unmerged paths: its files may carry conflict markers, and the
+# operation's last step (post-rewrite at a rebase's end) moves HEAD again.
+# Git runs that post-rewrite before it removes the rebase state, so $2 =
+# rebase (post-rewrite's argument) leaves the rebase state out.
+operation_in_progress() {
+  states='rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG'
+  if [ "${2:-}" = rebase ]; then
+    states='MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG'
+  fi
+  for state in $states; do
+    [ ! -e "$(git -C "$1" rev-parse --path-format=absolute --git-path "$state")" ] || return 0
+  done
+  [ -n "$(git -C "$1" ls-files -u)" ]
+}
+
 # Build output is only right for the tree it was built from: a workspace whose
 # HEAD moved since (a merge, a switch, a detach, a rebase) reads a stale build.
-# Run the warm step in $1 unless its last run built HEAD's tree. A failed step
-# warns and records nothing, so the next call runs it again.
+# Run the warm step in $1 unless its last run built HEAD's tree, HEAD is unborn,
+# an operation is in progress, or WORKRIFT_WARM=0. The step runs in the
+# foreground, its output in a log in the Git directory. The marker is cleared
+# first: a step that fails may leave the output half gone, so no tree counts as
+# built until one succeeds.
 warm_build() {
+  [ "${WORKRIFT_WARM:-1}" != 0 ] || return 0
   warm=$(warm_command "$1")
   [ -n "$warm" ] || return 0
-  tree=$(git -C "$1" rev-parse 'HEAD^{tree}')
+  tree=$(git -C "$1" rev-parse -q --verify 'HEAD^{tree}') || return 0
   tree_file=$(warmed_tree_file "$1")
   if [ -f "$tree_file" ] && [ "$(cat "$tree_file")" = "$tree" ]; then
     return 0
   fi
-  if run_warm "$1" "$warm"; then
+  ! operation_in_progress "$1" "${2:-}" || return 0
+  warm_log=$(git -C "$1" rev-parse --path-format=absolute --git-path workrift-warm.log)
+  printf 'workrift: rebuilding changed packages (WORKRIFT_WARM=0 skips)\n' >&2
+  : >"$tree_file"
+  if run_warm "$1" "$warm" >"$warm_log" 2>&1; then
     printf '%s\n' "$tree" >"$tree_file"
+    printf 'workrift: warm step done; log: %s\n' "$warm_log" >&2
   else
-    printf 'workrift: warm step failed in %s; build output may be stale\n' "$1" >&2
+    printf 'workrift: warm step failed in %s; build output may be stale; log: %s\n' "$1" "$warm_log" >&2
   fi
 }
 
@@ -245,9 +271,11 @@ install_dependency_hooks() {
   fi
   {
     printf '%s\n' "$dependency_hook_marker"
-    for hook in post-checkout post-merge post-rewrite; do
+    for hook in post-checkout post-merge; do
       printf '%s:\n  jobs:\n    - name: workrift deps\n      run: workrift deps\n' "$hook"
     done
+    # post-rewrite's argument (rebase or amend) tells deps a rebase has ended.
+    printf 'post-rewrite:\n  jobs:\n    - name: workrift deps\n      run: workrift deps {1}\n'
   } >"$local_config"
   exclude_file=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude)
   mkdir -p "$(dirname "$exclude_file")"
@@ -413,6 +441,7 @@ refresh_source() {
   install_dependency_hooks "$source_path"
   warm=$(warm_command "$source_path")
   if [ -n "$warm" ]; then
+    : >"$(warmed_tree_file "$source_path")"
     run_warm "$source_path" "$warm"
     git -C "$source_path" rev-parse 'HEAD^{tree}' >"$(warmed_tree_file "$source_path")"
   fi
@@ -965,14 +994,14 @@ case "$command" in
     create_workspace "$1"
     ;;
   deps)
-    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    [ "$#" -le 1 ] || { usage >&2; exit 2; }
     top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
     if [ "$backend" = work ]; then
       work_deps "$top"
     else
       sync_dependencies "$top"
     fi
-    warm_build "$top"
+    warm_build "$top" "${1:-}"
     ;;
   refresh)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }

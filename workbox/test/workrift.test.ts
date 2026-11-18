@@ -454,15 +454,94 @@ describeWork("workrift with the work backend", () => {
       w.create(w.app, "feat/same")
       expect(trees()).toEqual([mainTree, xTree, mainTree])
 
-      // A failed warm step warns, records nothing, and runs again at the next deps.
+      // The warm says it starts, and leaves its output in a log in the Git directory, not on the terminal.
+      const log = sh(path, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-warm.log").trim()
+      sh(path, w.env, "git", "config", "workrift.warm", `echo built-output; git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/feat/x")
+      const loud = w.wr(path, "deps")
+      expect(loud.code).toBe(0)
+      expect(loud.err).toContain("workrift: rebuilding changed packages (WORKRIFT_WARM=0 skips)")
+      expect(loud.err).toContain(log)
+      expect(loud.out + loud.err).not.toContain("built-output")
+      expect(readFileSync(log, "utf8")).toContain("built-output")
+      expect(trees()).toEqual([mainTree, xTree, mainTree, xTree])
+
+      // WORKRIFT_WARM=0 skips the warm alone, and leaves the marker: the next deps builds.
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/main")
+      const skipped = run(path, { ...w.env, WORKRIFT_WARM: "0" }, [SCRIPT, "deps"])
+      expect(skipped.code).toBe(0)
+      expect(trees()).toEqual([mainTree, xTree, mainTree, xTree])
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(trees()).toEqual([mainTree, xTree, mainTree, xTree, mainTree])
+
+      // A failed warm step can leave the output half gone (a build cleans first): it warns, clears the
+      // marker, and a return to the last tree that built builds again.
       sh(path, w.env, "git", "switch", "-q", "--detach", "origin/feat/x")
       sh(path, w.env, "git", "config", "workrift.warm", "exit 3")
       const failed = w.wr(path, "deps")
       expect(failed.code).toBe(0)
       expect(failed.err).toContain("warm step failed")
+      expect(failed.err).toContain(log)
       sh(path, w.env, "git", "config", "workrift.warm", `git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/main")
       expect(w.wr(path, "deps").code).toBe(0)
-      expect(trees()).toEqual([mainTree, xTree, mainTree, xTree])
+      expect(trees()).toEqual([mainTree, xTree, mainTree, xTree, mainTree, mainTree])
+    },
+    30_000,
+  )
+
+  test(
+    "deps on an unborn branch (git switch --orphan) exits 0 and builds nothing",
+    () => {
+      const w = workBench("orphan", work)
+      const warmed = join(w.dir, "warmed")
+      sh(w.app, w.env, "git", "config", "workrift.warm", `git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+      const path = w.create(w.app, "feat/orphan")
+      const before = existsSync(warmed) ? readFileSync(warmed, "utf8") : ""
+      sh(path, w.env, "git", "switch", "-q", "--orphan", "fresh")
+      const ran = w.wr(path, "deps")
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(warmed) ? readFileSync(warmed, "utf8") : "").toBe(before)
+    },
+    30_000,
+  )
+
+  test(
+    "with the hooks installed, a rebase that stops on a conflict builds nothing until it ends, then once; an amend that keeps the tree builds nothing",
+    () => {
+      const w = workBench("rebase", work)
+      const warmed = join(w.dir, "warmed")
+      w.push("main", { "a.txt": "base\n", "b.txt": "base\n", "lefthook.yml": "{}\n" })
+      sh(w.app, w.env, "git", "config", "workrift.warm", `git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      w.push("feat/r", { "b.txt": "r\n" }, "first")
+      w.push("feat/r", { "a.txt": "r\n" }, "second")
+      const path = w.create(w.app, "feat/r")
+      // The hooks lefthook-local.yml installs, as plain Git hooks: post-rewrite passes its first argument.
+      for (const hook of ["post-checkout", "post-merge"]) exe(join(path, ".git/hooks", hook), `#!/bin/sh\nexec '${SCRIPT}' deps\n`)
+      exe(join(path, ".git/hooks/post-rewrite"), `#!/bin/sh\nexec '${SCRIPT}' deps "$1"\n`)
+      expect(readFileSync(join(w.app, "lefthook-local.yml"), "utf8")).toContain("post-rewrite:\n  jobs:\n    - name: workrift deps\n      run: workrift deps {1}\n")
+      w.push("main", { "a.txt": "main\n" })
+      sh(path, w.env, "git", "fetch", "-q", "origin")
+      const trees = () => lines(existsSync(warmed) ? readFileSync(warmed, "utf8") : "")
+      const before = trees()
+
+      const stopped = run(path, w.env, ["git", "rebase", "origin/main"])
+      expect(stopped.code).not.toBe(0)
+      expect(readFileSync(join(path, "a.txt"), "utf8")).toContain("<<<<<<<")
+      // A path checkout mid-rebase runs post-checkout: no build over conflict markers.
+      sh(path, w.env, "git", "checkout", "--", "b.txt")
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(trees()).toEqual(before)
+
+      writeFileSync(join(path, "a.txt"), "both\n")
+      sh(path, w.env, "git", "add", "a.txt")
+      sh(path, { ...w.env, GIT_EDITOR: "true" }, "git", "rebase", "--continue")
+      const done = sh(path, w.env, "git", "rev-parse", "HEAD^{tree}").trim()
+      expect(trees()).toEqual([...before, done])
+
+      sh(path, w.env, "git", "commit", "-q", "--amend", "--no-edit")
+      expect(trees()).toEqual([...before, done])
     },
     30_000,
   )

@@ -142,10 +142,17 @@ repository with `lefthook.yml`, `workrift` writes an untracked
 merge and rewrite. `.git/info/exclude` hides the file, and `--copy-all` copies
 it into every workspace. The same moves make the build output stale, so
 `workrift deps` also runs the warm step when HEAD's tree differs from the tree
-the last warm step built. `git reset --hard` runs no hook, so run `workrift deps`
-by hand after it. The last installed lock fingerprint is in
-`.git/workrift-installed-locks`, the last warmed tree in
-`.git/workrift-warmed-tree`.
+the last warm step built. The warm runs in the foreground: it prints one line
+before it starts and one with its result, and its output goes to
+`.git/workrift-warm.log`. `WORKRIFT_WARM=0` skips the warm alone. It does not
+run on an unborn branch, or while a rebase, merge, cherry-pick, revert or bisect
+is in progress (a path checkout mid-rebase runs post-checkout over conflict
+markers); post-rewrite passes `rebase` at a rebase's end, so a rebase builds
+once, there. A warm that fails clears the marker, since it may have left the
+output half gone. `git reset`, `git commit`, `git cherry-pick` and
+`git rebase --abort` run no hook, so run `workrift deps` by hand after them. The
+last installed lock fingerprint is in `.git/workrift-installed-locks`, the last
+warmed tree in `.git/workrift-warmed-tree`.
 
 A source's Git config holds its settings: `workrift.main` (default branch),
 `workrift.install` (default: from the lock file) and `workrift.warm` (a build
