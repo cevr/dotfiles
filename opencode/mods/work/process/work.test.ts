@@ -3,7 +3,7 @@
 // carries a WORK_BASE that names no base, so a call that does not name its own base reads the wrong
 // registry and fails. Without WORK_BIN these do not run: `work` is not on this host's PATH yet.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Exit, Fiber, Layer, Option, Schedule, Schema } from "effect"
+import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schedule, Schema } from "effect"
 import { gitClone, gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { check, riftsLaws } from "../laws.ts"
@@ -28,6 +28,8 @@ interface Setup {
   readonly exclude: boolean
   readonly workrift: boolean
   readonly stubs: ReadonlyArray<readonly [string, string]>
+  /** How long a create waits for a workspace of its name being made; the provider's default when absent. */
+  readonly makingWaitMs?: number
 }
 
 const PLAIN: Setup = { exclude: true, workrift: false, stubs: [] }
@@ -85,7 +87,7 @@ const setup = Effect.fn("work.bench")(function* (dir: string, made: Setup) {
     write,
     work,
     workRan,
-    layer: ProcessWork.layer({ work: WORK_BIN, workrift: made.workrift, env }),
+    layer: ProcessWork.layer({ work: WORK_BIN, workrift: made.workrift, env, ...Option.toArray(Option.fromUndefinedOr(made.makingWaitMs)).map((makingWaitMs) => ({ makingWaitMs }))[0] }),
     source: base,
     inside: `${base}/src`,
     plain: `${root}/plain`,
@@ -286,14 +288,36 @@ const model = (seed: number, steps: number) =>
     ),
   )
 
-/** A `cp` that, for the copy-on-write clone (`cp -c`), says it started and waits for the test's go before it copies. */
+/** A `cp` that, for the copy-on-write clone (`cp -c`), says it started, waits for the test's go before it copies, and says when it is done. */
 const SLOW_CP = `#!/bin/sh
 if [ "$1" = "-c" ]; then
   : > "$HOME/clone.started"
   while [ ! -e "$HOME/clone.go" ]; do sleep 0.05; done
+  /bin/cp "$@"
+  copied=$?
+  : > "$HOME/clone.done"
+  exit $copied
 fi
 exec /bin/cp "$@"
 `
+
+/** A `cp` whose copy-on-write clone says it started and fails 3 s later: its `work new` gives the name up. */
+const FAILING_CP = `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  : > "$HOME/clone.started"
+  sleep 3
+  echo "cp: the clone failed" >&2
+  exit 1
+fi
+exec /bin/cp "$@"
+`
+
+/** The words of a failed create, or "made" when it was made. */
+const failureWords = <R>(effect: Effect.Effect<string, RiftFailed, R>) =>
+  effect.pipe(
+    Effect.map(() => "made"),
+    Effect.catchTag("RiftFailed", (error) => Effect.succeed(error.message)),
+  )
 
 /** A `workrift` that logs how it was called and answers the workspace path the test gave it. */
 const LOGGING_WORKRIFT = `#!/bin/sh
@@ -567,6 +591,71 @@ if (runnable) {
             expect(records.map((record) => [record.name, record.state._tag])).toEqual([["cut", "Active"]])
             expect((yield* rifts.inspect(path)).branch).toBe("cut")
             expect(yield* rifts.list(made.base)).toEqual([path])
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a create of a name whose work new was killed mid-clone (a reboot, a crash) fails at once naming `work rm <name>`, and keeps the folder; once it is removed, the name is made",
+      () =>
+        check(bench({ ...PLAIN, stubs: [["cp", SLOW_CP]], makingWaitMs: 50_000 }), (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            // A `work new` this test starts and holds the pid of, as the maker a reboot would end.
+            const pid = yield* out(made, made.base, "sh", "-c", `WORK_BASE="$1" "$0" --json new -branch dead dead >/dev/null 2>&1 & echo $!`, WORK_BIN, made.base)
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            yield* made.sh(made.root, "kill", "-9", pid)
+            // Its cp goes on to its end; the record stays creating, its lock free.
+            yield* made.sh(made.root, "touch", `${made.env.HOME}/clone.go`)
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.done`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            const request = { source: made.base, from: made.base, name: "dead", branch: "dead" }
+            const [took, said] = yield* Effect.timed(failureWords(rifts.create(request)))
+            expect(Duration.toMillis(took)).toBeLessThan(20_000)
+            expect(said).toContain("was left being made by a `work new` that is gone")
+            expect(said).toContain("`work rm dead`")
+            const records = yield* made.work("list").pipe(Effect.flatMap(Schema.decodeUnknownEffect(RECORDS)), Effect.orDie)
+            expect(records.map((record) => [record.name, record.state._tag])).toEqual([["dead", "Creating"]])
+            yield* made.work("rm", "dead").pipe(Effect.orDie)
+            expect(nameOf(yield* rifts.create(request))).toBe("dead")
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a create waiting on a live work new that outlasts the wait fails naming `work rm <name>`, and the work new still makes it",
+      () =>
+        check(bench({ ...PLAIN, stubs: [["cp", SLOW_CP]], makingWaitMs: 2_000 }), (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const request = { source: made.base, from: made.base, name: "slow", branch: "slow" }
+            const making = yield* Effect.forkChild(failureWords(rifts.create(request)))
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            const waited = yield* failureWords(rifts.create(request))
+            expect(waited).toContain("is still being made after 2 s")
+            expect(waited).toContain("`work rm slow`")
+            yield* made.sh(made.root, "touch", `${made.env.HOME}/clone.go`)
+            expect(yield* Fiber.join(making)).toBe("made")
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a create waiting on a work new that fails says the name was given up, and the next create makes it",
+      () =>
+        check(bench({ ...PLAIN, stubs: [["cp", FAILING_CP]], makingWaitMs: 50_000 }), (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const request = { source: made.base, from: made.base, name: "slow", branch: "slow" }
+            const making = yield* Effect.forkChild(failureWords(rifts.create(request)))
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            // This create waits while the clone fails (FAILING_CP, 3 s after it started): its work new gives the name up.
+            expect(yield* failureWords(rifts.create(request))).toContain("was given up while this create waited for it")
+            expect(yield* Fiber.join(making)).not.toBe("made")
+            yield* made.sh(made.root, "rm", "-f", `${made.root}/bin/cp`)
+            expect(nameOf(yield* rifts.create(request))).toBe("slow")
           }),
         ),
       TIMEOUT,

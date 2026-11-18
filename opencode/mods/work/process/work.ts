@@ -76,6 +76,16 @@ const isLive = (record: Rec): boolean => record.state._tag !== "Trashed"
 /** A record of a workspace `work new` is still making. */
 const isCreating = (record: Rec): boolean => record.state._tag === "Creating"
 
+/**
+ * Asks whether the maker of a reservation still holds its lock. `work new` holds an flock on
+ * `<storage home>/.lock-<id>` from its reservation to its activation (Ergo's journal/lock.ergo), and the kernel
+ * frees it when the process ends however it ends. The probe opens the file without creating it and tries the
+ * lock at once, then lets it go. Exit 0 means it took the lock, so the maker is gone. Exit 3 means the file is
+ * missing: a maker removes it only after its record has left Creating, so a creating record without the file
+ * also has no maker. Exit 1 means the lock is held, so the maker is alive. Anything else (no perl) is unknown.
+ */
+const MAKER_PROBE = 'use Fcntl ":flock"; open(my $f, "<", $ARGV[0]) or exit 3; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)'
+
 /** A record `list` shows: live and made (a clone in progress is not listed yet). */
 const isMade = (record: Rec): boolean => isLive(record) && !isCreating(record)
 
@@ -274,20 +284,49 @@ export const layer = (options: Options) => {
    * holds); still being made, or made on another branch, fails saying so. Its folder is never removed here:
    * one an interrupted create left can already hold an agent's work.
    */
+  /** Whether the `work new` that reserved `record` is gone: its lock free or its lock file removed (MAKER_PROBE). */
+  const makerGone = (record: Rec) =>
+    spawn(["perl", "-e", MAKER_PROBE, `${record.path.slice(0, record.path.lastIndexOf("/"))}/.lock-${record.id}`], "/").pipe(
+      Effect.map((ran) => record.id !== "" && (ran.code === 0 || ran.code === 3)),
+    )
+
+  /** What to do with a workspace of this name left creating: look in it, then clear its name, which `work gc` must never do. */
+  const clearIt = (name: string, path: string) =>
+    `Its folder may already hold work: look in ${path}, then move it to the trash with \`work rm ${name}\` on its base and call again, or pick another name; never run \`work gc\` on its base for it`
+
   const madeMeanwhile = Effect.fn("WorkRifts.madeMeanwhile")(function* (base: string, request: CreateRequest) {
     const recordOf = live(base).pipe(Effect.map((records) => Option.fromUndefinedOr(records.find((record) => record.name === request.name))))
-    const waitMs = options.makingWaitMs ?? 300_000
-    const record = yield* recordOf.pipe(
-      Effect.repeat({ schedule: Schedule.spaced(MAKING_POLL_MS), while: (found) => Option.exists(found, isCreating), times: Math.ceil(waitMs / MAKING_POLL_MS) }),
+    /** The record of the name, and whether it is creating with its maker gone. */
+    const look = recordOf.pipe(
+      Effect.flatMap((found) =>
+        Option.match(Option.filter(found, isCreating), {
+          onNone: () => Effect.succeed({ found, orphan: false }),
+          onSome: (making) => makerGone(making).pipe(Effect.map((orphan) => ({ found, orphan }))),
+        }),
+      ),
     )
+    const waitMs = options.makingWaitMs ?? 300_000
+    const seenLast = yield* look.pipe(
+      Effect.repeat({
+        schedule: Schedule.spaced(MAKING_POLL_MS),
+        while: (state) => Option.exists(state.found, isCreating) && !state.orphan,
+        times: Math.ceil(waitMs / MAKING_POLL_MS),
+      }),
+    )
+    const record = seenLast.found
     return yield* Option.match(record, {
       onNone: () => Effect.fail(new RiftFailed({ operation: "work new", message: `the workspace ${request.name} being made was given up while this create waited for it; call again` })),
       onSome: (found) =>
         Effect.gen(function* () {
+          if (isCreating(found) && seenLast.orphan)
+            return yield* new RiftFailed({
+              operation: "work new",
+              message: `the workspace ${request.name} at ${found.path} was left being made by a \`work new\` that is gone (its record says creating; a reboot, a crash or a kill cut it off), so it will never be made. ${clearIt(request.name, found.path)}`,
+            })
           if (isCreating(found))
             return yield* new RiftFailed({
               operation: "work new",
-              message: `the workspace ${request.name} at ${found.path} is still being made after ${Math.round(waitMs / 1000)} s (its record says creating). Its folder may already hold work: never run \`work gc\` on its base; wait and call again`,
+              message: `the workspace ${request.name} at ${found.path} is still being made after ${Math.round(waitMs / 1000)} s (its record says creating, and its \`work new\` still runs). Wait and call again. ${clearIt(request.name, found.path)}`,
             })
           if (found.branch !== request.branch)
             return yield* new RiftFailed({ operation: "work new", message: `the workspace ${request.name} at ${found.path} was made meanwhile on branch ${found.branch}, not ${request.branch}; pick another name` })
