@@ -116,7 +116,10 @@ const revokedCommandsOf = (seed: number): ReadonlyArray<Command> => {
  */
 const lastingCommandsOf = (seed: number): ReadonlyArray<Command> => {
   const random = generator(`pool-faults:lasting:${seed}`)
-  const commands = drawn(random).map((command): Command => (command.type === "write-fails" ? { type: "write-fails", times: 2 + below(random, 5) } : command))
+  const commands = drawn(random).map((command): Command => {
+    if (command.type !== "write-fails") return command
+    return { type: "write-fails", times: 2 + below(random, 5) }
+  })
   const login = below(random, 2)
   commands.splice(1 + below(random, commands.length), 0, { type: "write-fails", times: 2 + below(random, 5) }, { type: "expire", login, inMs: 3 * 60_000 }, { type: "other", login }, {
     type: "prompt",
