@@ -1,6 +1,8 @@
 // `owned(command, options)`: `Bun.spawn` for a test's child that may start
 // others (opencode-drive and its server and TUIs, an OpenCode server, a
-// `run --standalone` and its `serve --stdio`). Everything the child starts is
+// `run --standalone` and its `serve --stdio`). It runs at the owner's build's
+// flags (scripts/release-flags.ts: `full_codemode` off unless the test names
+// it in `OPENCODE_FLAGS`). Everything the child starts is
 // stopped (SIGTERM, then SIGKILL) when the child exits, and, for a child still
 // running, when the test process exits: a test that failed, timed out or never
 // reached its own `kill`.
@@ -24,6 +26,7 @@
 // `opencode.env` (scenarios/herdr.ts).
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
+import { releaseFlags } from "../scripts/release-flags.ts"
 import { type ChildTemp, childTemp, parentEnv } from "./scratch.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
@@ -86,7 +89,7 @@ export const owned = <
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
   const temp = childTemp(options?.env)
-  const child = Bun.spawn([...command], { ...options, env: outsidePanes(temp.env, parentEnv), detached: true })
+  const child = Bun.spawn([...command], { ...options, env: releaseFlags(outsidePanes(temp.env, parentEnv)), detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)
