@@ -2,7 +2,7 @@
 // transcript with every turn folded to one line in Prime's look, in the
 // transcript's place. Three asks, each a thought and a shell call, then a
 // two-sentence answer with a 30-line list; scrolled up into answer 2, the map
-// opens with that turn on the line the transcript showed it on, a prompt
+// opens whole (it fits) with that turn selected, a prompt
 // behind the `┃` rail in bold, a run as its first sentence, its work and the
 // time it ended on the right; Esc shows the transcript as it was, and Enter
 // unfolds it at the selected turn, its start on its collapsed row's line.
@@ -91,12 +91,19 @@ const play = (seed: number) =>
     }),
   )
 
-seeded("the map folds the transcript in place: the turn at its top keeps its line, and Esc shows it as it was", ({ seed, expect }) =>
+seeded("the map folds the transcript in place: a session that fits shows whole, the turn at the top selected, and Esc shows it as it was", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
-    // The transcript's top shows answer two's list (under the pinned ask); folded, answer two's run holds that line.
+    // The transcript's top shows answer two's list (under the pinned ask).
     expect(frames.expanded[FIRST + 1]).toMatch(/two item/)
-    expect(frames.collapsed[FIRST]).toContain("Answer two is ready.")
+    // Folded, the three asks fit with room to spare: the map shows them from the session's start rather than leave
+    // blank lines below the last turn, and answer two's run, the turn at the transcript's top, is the one selected.
+    expect(frames.collapsed[FIRST]).toMatch(/^ *\w{3} \w{3} \d{2} *$/)
+    for (const index of [0, 1, 2]) expect(frames.collapsed.join("\n")).toContain(ask(index))
+    const background = (text: string) =>
+      frames.look.lines.flatMap((line) => line.spans).find((span) => span.text.includes(text))?.bg
+    expect(background("Answer two is ready.")).not.toEqual(background("Answer three is ready."))
+    expect(background("Answer one is ready.")).toEqual(background("Answer three is ready."))
     expect(frames.restored).toEqual(frames.expanded)
   }),
 )

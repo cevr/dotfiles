@@ -1,7 +1,7 @@
 // The transcript map (ctrl+x g) on a long session, with Prime loaded. Two
 // hundred asks were queued at once, so each keeps the id it was given when
 // queued, older than the answers before it (as a notice queued long before it
-// arrives does on a real session). Three pages up, the map opens on the turns
+// arrives does on a real session). Eight pages up, the map opens on the turns
 // that were on screen: the turn at the transcript's top is the one selected
 // and keeps its line, Esc shows the transcript as it was, and Enter unfolds a
 // turn with its start on its collapsed row's line. The wheel scrolls the map
@@ -94,7 +94,7 @@ const play = (seed: number) =>
       yield* tui.advance(500)
       const ids = tui.server.messages(tui.sessionID).map((message) => message.id)
       const unordered = ids.filter((id, index) => index > 0 && id < (ids[index - 1] ?? "")).length
-      for (let page = 0; page < 3; page++) {
+      for (let page = 0; page < 8; page++) {
         yield* tui.press({ name: "\x1b[5~" }) // PgUp
         yield* tui.advance(200)
       }
@@ -169,7 +169,7 @@ const play = (seed: number) =>
 /** The turn a transcript line shows, by the name every line of it carries ("" for none), and whether it is the prompt. */
 const turnOf = (row: string) => ({ name: /n\d{3}/.exec(row)?.[0] ?? "", prompt: /┃ Ask/.test(row) })
 
-seeded("three pages up a long session, the map opens on the turns that were on screen, the top one selected on its line", ({ seed, expect }) =>
+seeded("eight pages up a long session, the map opens on the turns that were on screen, the top one selected on its line", ({ seed, expect }) =>
   Effect.gen(function* () {
     const frames = yield* scenario(seed)
     // The asks arrived after the answers before them, with older ids.
