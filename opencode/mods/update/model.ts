@@ -1,12 +1,12 @@
 import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
-import { describeGate, Gate, gate, rootsOf } from "./gate.ts"
+import { describeGate, Gate, gate } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
-import { Builder, Builds, type CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
+import { Builder, Builds, type CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
 import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
-/** How often a held restart reads the sessions again. */
+/** How often a restart the Sabbath rest holds looks at the clock again. */
 export const GATE_POLL = Duration.seconds(30)
 
 /**
@@ -21,7 +21,7 @@ export const HEALTH_POLL = Duration.seconds(2)
 
 /** How the in-server update runs. */
 export interface Policy {
-  /** How often a run looks for a newer target while a built one waits for the gate. */
+  /** How often a run looks for a newer target while a built one waits out the Sabbath rest. */
   readonly fetchEvery: Duration.Duration
 }
 
@@ -54,7 +54,6 @@ export const updaterLayer = (policy: Policy) =>
     Effect.gen(function* () {
       const source = yield* Source
       const builder = yield* Builder
-      const sessions = yield* Sessions
       const handoff = yield* Handoff
       const records = yield* Records
       const mark = yield* HandoffMark
@@ -101,9 +100,9 @@ export const updaterLayer = (policy: Policy) =>
         const fetched = yield* Ref.make(since)
         for (;;) {
           const now = yield* Clock.currentTimeMillis
-          const held = gate(now, rootsOf(yield* sessions.all))
+          const held = gate(now)
           if (Gate.$is("Open")(held)) {
-            yield* log.line(`restart: ${describeGate(held)} after ${Duration.format(Duration.millis(now - since))} of waiting`)
+            if (now > since) yield* log.line(`restart: the Sabbath rest ended after ${Duration.format(Duration.millis(now - since))} of waiting`)
             return "open" satisfies Waited
           }
           const line = describeGate(held)
@@ -120,7 +119,7 @@ export const updaterLayer = (policy: Policy) =>
       })
 
       const restart = Effect.fn("Updater.restart")(function* (target: Target) {
-        yield* log.line(`update: ${shortTarget(target)} is built; waiting for every root session to be idle`)
+        yield* log.line(`update: ${shortTarget(target)} is built; restarting onto it`)
         const waited = yield* waitForGate(target)
         if (waited === "superseded") return true
         yield* handoff.start(shortTarget(target))

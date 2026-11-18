@@ -1,17 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import { Clock, Duration, Effect, Fiber, Layer, Option } from "effect"
 import { TestClock } from "effect/testing"
-import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import { EXIT_CODES, GATE_POLL, handoff, HEALTH_DEADLINE, HEALTH_POLL, intervalChecks, Updater, updaterLayer } from "./model.ts"
 import { type Build, proven, type Record, stagedRecord } from "./record.ts"
-import { Builder, Builds, CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
+import { Builder, Builds, CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
 import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
 
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
+/** 2026-11-14T17:00:00Z, a Saturday noon in Knowlton: the Sabbath. */
+const SATURDAY_NOON = 1_794_675_600_000
 
 const TARGET: Target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-7" }
 const PRIOR = "c".repeat(40)
@@ -35,7 +36,6 @@ const onTarget = (): Option.Option<Record> => Option.some(proven({ version: NEW.
 interface World {
   readonly calls: Array<string>
   readonly lines: Array<string>
-  views: ReadonlyArray<SessionView>
   record: Option.Option<Record>
   rejected: Option.Option<Rejected>
   /** The running handoff's mark, and the pids that live. */
@@ -43,7 +43,6 @@ interface World {
   living: ReadonlyArray<number>
   readonly readings: Array<Reading>
   stageFails: boolean
-  sessionsFail: boolean
   /** How many restarts still fail before one goes through. */
   restartFailures: number
   reinstallFails: boolean
@@ -66,14 +65,12 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   lines: [],
   beats: [],
   verifiedDeaths: 0,
-  views: [],
   record: Option.none(),
   rejected: Option.none(),
   mark: Option.none(),
   living: [HANDOFF_PID],
   readings: [],
   stageFails: false,
-  sessionsFail: false,
   restartFailures: 0,
   reinstallFails: false,
   pruneFails: false,
@@ -82,8 +79,6 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   before: Option.some([]),
   ...at,
 })
-
-const session = (id: string, at: Partial<Omit<SessionView, "id">> = {}): SessionView => ({ id, parentID: Option.none(), busy: false, compacting: false, ...at })
 
 const failure = (step: string) => Effect.fail(new UpdateFailed({ step, message: `${step} exited 1` }))
 
@@ -131,15 +126,6 @@ const fakes = (host: World) =>
             host.record = Option.some(stagedRecord(host.record, NEW, []))
             return Effect.void
           }),
-      }),
-    ),
-    Layer.succeed(
-      Sessions,
-      Sessions.of({
-        all: Effect.suspend(() => {
-          if (host.sessionsFail) return failure("list the sessions")
-          return Effect.succeed(host.views)
-        }),
       }),
     ),
     Layer.succeed(Handoff, Handoff.of({ start: (reason) => Effect.sync(() => void host.calls.push(`handoff ${reason}`)) })),
@@ -254,23 +240,34 @@ const POOL_FAILED = "pool: Cannot find package '@dotfiles/opencode-status'"
 const notices = (host: World) => host.calls.filter((call) => call.startsWith("notice "))
 
 describe("the updater on its seams", () => {
-  test("a busy root holds the restart; once the roots are idle, running subagents do not, and the build is handed off", () => {
-    const host = world({ record: onGood(), views: [session("ses_root", { busy: true }), session("ses_sub", { parentID: Option.some("ses_root"), busy: true })] })
+  test("the build is handed off as soon as it is staged: no session holds the restart", () => {
+    const host = world({ record: onGood() })
     return run(
       host,
       Effect.gen(function* () {
-        const updater = yield* Updater
-        const fiber = yield* Effect.forkChild(updater.check("asked"))
+        yield* check("asked")
+        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7", `handoff ${SHORT}`])
+        expect(host.lines).toEqual([`update: ${SHORT}; advancing the dotfiles from ${PRIOR.slice(0, 10)}`, `update: ${SHORT} is built; restarting onto it`, "update: the restart is handed off"])
+      }),
+    )
+  })
+
+  test("the Sabbath rest holds the restart, and it is handed off once the rest ends", () => {
+    const host = world({ record: onGood() })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* TestClock.setTime(SATURDAY_NOON)
+        const fiber = yield* Effect.forkChild((yield* Updater).check("asked"))
         yield* settle
         yield* TestClock.adjust(GATE_POLL)
         yield* settle
         expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7"])
-        expect(host.lines).toContain("restart held: root sessions at work: ses_root")
-        host.views = [session("ses_root"), session("ses_sub", { parentID: Option.some("ses_root"), busy: true })]
-        yield* TestClock.adjust(GATE_POLL)
+        expect(host.lines.some((line) => line.startsWith("restart held: the Sabbath rest, until "))).toBe(true)
+        yield* TestClock.adjust(Duration.hours(12))
         yield* Fiber.join(fiber)
-        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7", `handoff ${SHORT}`])
-        expect(host.lines.some((line) => /^restart: .* after 1m of waiting$/.test(line))).toBe(true)
+        expect(host.calls.at(-1)).toBe(`handoff ${SHORT}`)
+        expect(host.lines.some((line) => /^restart: the Sabbath rest ended after .* of waiting$/.test(line))).toBe(true)
       }),
     )
   })
@@ -367,16 +364,11 @@ describe("the updater on its seams", () => {
     )
   })
 
-  test("P5, M1: a failed session read while the build waits ends the run; the next check restarts onto the staged build without building it again", () => {
-    const host = world({ record: onGood(), sessionsFail: true })
+  test("M1: a build an earlier run staged is restarted onto without building it again", () => {
+    const host = world({ record: stagedTarget() })
     return run(
       host,
       Effect.gen(function* () {
-        yield* check("interval")
-        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7"])
-        expect(host.lines.at(-1)).toBe("update failed at list the sessions: list the sessions exited 1")
-        host.sessionsFail = false
-        host.calls.length = 0
         yield* check("interval")
         expect(host.calls).toEqual([`handoff ${SHORT}`])
       }),
@@ -674,7 +666,7 @@ const poolSilent: Reading = { ...healthy, accounts: Option.none() }
 
 /**
  * A handoff on the fakes with the restarted service's own check at `after` into it: the plugin of
- * the new service, its roots idle, checks while the handoff still reads health.
+ * the new service checks while the handoff still reads health.
  */
 const checkDuring = (after: Duration.Input) =>
   Effect.gen(function* () {

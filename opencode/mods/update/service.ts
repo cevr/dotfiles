@@ -1,5 +1,4 @@
 import { Context, type Effect, type Option, Schema } from "effect"
-import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import type { Placement } from "./placement.ts"
 import type { Record } from "./record.ts"
@@ -59,14 +58,6 @@ export class Builder extends Context.Service<
     readonly stage: (target: Target) => Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builder") {}
-
-/** The host's sessions, every location's, as the restart gate reads them. */
-export class Sessions extends Context.Service<
-  Sessions,
-  {
-    readonly all: Effect.Effect<ReadonlyArray<SessionView>, UpdateFailed>
-  }
->()("dotfiles-opencode/update/Sessions") {}
 
 /**
  * Hands the restart to a process of its own, which outlives the service it restarts: it restarts

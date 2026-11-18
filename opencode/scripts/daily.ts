@@ -26,7 +26,7 @@
 //    committed.
 // 4. Writes upstream/dev's lead for the TUI's corner (`upstreamReading`), then restarts the service
 //    through the update's handoff (mods/update: health check, reinstall, rollback). `--stage` (the
-//    update plugin's build ahead) restarts nothing: the plugin does, once every root session is idle.
+//    update plugin's build ahead) restarts nothing: the plugin does, at once (outside the Sabbath rest).
 import { $ } from "bun"
 import { Effect } from "effect"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -493,7 +493,7 @@ if (import.meta.main) {
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
   console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
-  if (args.has("--stage")) console.log("staged: the update plugin restarts the service once every root session is idle")
+  if (args.has("--stage")) console.log("staged: the update plugin restarts the service now (after the Sabbath rest, in it)")
   else {
     const code = restartThroughHandoff(settings, "daily by hand")
     console.log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`)

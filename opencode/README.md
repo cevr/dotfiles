@@ -117,14 +117,19 @@ only the resident location's copy acts, so a host runs one updater.
   each target after, and never moves prime-look for it. A binary whose
   version (`-prime.<hash>`) names another commit fails the stage, and
   `installed.json` names the commit built (`mods/update/process/pin.ts`).
-- **The wait.** The restart waits until no root session on the host runs a
-  turn or a compaction, and never in the Sabbath rest
-  (`mods/orchestrate/sabbath.ts`). Subagents do not hold it: the restart cuts
-  them and the server resumes them. A cut subagent finds OpenCode's note "The
+- **The restart.** Once the build is staged the handoff starts at once,
+  whatever the host's sessions are doing; only the Sabbath rest
+  (`mods/orchestrate/sabbath.ts`) holds it, and a newer target while it waits
+  is built ahead first. The restart cuts running turns and subagents, roots
+  included, and the server resumes them: a cut turn finds OpenCode's note "The
   server restarted while you were working. Continue from where you left off
-  without repeating completed work." as its newest message and runs its turn
-  again (up to ten times per turn); its parent hears it end as usual. No
-  timeout: the log says how long it waited. A newer target while it waits is built ahead first.
+  without repeating completed work." as its newest message and runs again (up
+  to ten times per turn), and a subagent's parent hears it end as usual. A
+  running shell command does not survive: `opencode service restart` stops the
+  shell daemon with the old service, so a foreground command's call ends
+  interrupted (its turn resumes and runs it again if it needs it) and a
+  background command is gone with no notice (a real restart, 2026-11-18). The
+  owner accepts that loss over holding updates for busy roots.
 - **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
   service it restarts: it names the staged build installed and points the
   launcher at it, `opencode service restart`, then the health check (every configured local plugin loaded in

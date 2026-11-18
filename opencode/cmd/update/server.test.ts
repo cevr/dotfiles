@@ -7,7 +7,7 @@ import { iso } from "@dotfiles/opencode-update/gate"
 import { GATE_POLL } from "@dotfiles/opencode-update/model"
 import { Placement } from "@dotfiles/opencode-update/placement"
 import { UPDATE } from "@dotfiles/opencode-update/rpc"
-import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Placer, Records, Rejections, Resident, Sessions, Source } from "@dotfiles/opencode-update/service"
+import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Placer, Records, Rejections, Resident, Source } from "@dotfiles/opencode-update/service"
 import { RESIDENT_DELAY } from "@dotfiles/opencode-update/watch"
 import { Clock, Duration, Effect, Layer, Option, type Scope } from "effect"
 import { TestClock } from "effect/testing"
@@ -72,7 +72,6 @@ const fakes = (host: World): Externals => {
       Layer.mergeAll(
         Layer.succeed(Source, Source.of({ verified: Effect.succeed(Option.none()), head: unused("head"), advance: () => unused("advance"), reinstall: unused("reinstall") })),
         Layer.succeed(Builder, Builder.of({ stage: () => unused("stage") })),
-        Layer.succeed(Sessions, Sessions.of({ all: unused("sessions") })),
         Layer.succeed(Handoff, Handoff.of({ start: () => unused("handoff") })),
         Layer.succeed(HandoffMark, HandoffMark.of({ hold: Effect.void, release: Effect.void, read: Effect.succeed(Option.none()), alive: () => Effect.succeed(false) })),
         Layer.succeed(Records, Records.of({ read: Effect.succeed(Option.none()), write: () => unused("record") })),

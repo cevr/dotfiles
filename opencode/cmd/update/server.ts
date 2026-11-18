@@ -7,7 +7,6 @@ import * as Records from "@dotfiles/opencode-update/filestore/records"
 import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Source from "@dotfiles/opencode-update/git/source"
 import { intervalChecks, Updater, updaterLayer } from "@dotfiles/opencode-update/model"
-import * as Sessions from "@dotfiles/opencode-update/opencode/sessions"
 import { describePlacement, Placement } from "@dotfiles/opencode-update/placement"
 import * as Builder from "@dotfiles/opencode-update/process/builder"
 import * as Handoff from "@dotfiles/opencode-update/process/handoff"
@@ -25,11 +24,10 @@ import { Clock, Config, Context, Effect, Layer, Schema, type Scope } from "effec
 export const canonical = (directory: string): string => directory.replace(/(.)\/+$/, "$1")
 
 /** Every implementation the updater runs on, for these options and step variables. */
-export const live = (ctx: Plugin.Context, options: Options, env: Readonly<globalThis.Record<string, string>>) =>
+export const live = (options: Options, env: Readonly<globalThis.Record<string, string>>) =>
   Layer.mergeAll(
     Source.layer({ root: options.checkout, mode: options.mode, bun: options.bun, fork: options.fork, env, bin: Source.binScript(process.platform) }),
     Builder.layer(options, env),
-    Sessions.layer(ctx),
     Handoff.layer(options, env),
     HandoffMark.layer(files(options).mark, process.pid),
     Records.layer(options, process.pid),
@@ -60,10 +58,10 @@ export interface Externals {
   readonly watch: (options: Options) => Layer.Layer<Layer.Success<ReturnType<typeof watchLayer>>>
 }
 
-/** The live systems, in OpenCode's `ctx`; the service's registration is where XDG_STATE_HOME (or HOME) puts it. */
-export const liveExternals = (ctx: Plugin.Context): Externals => ({
+/** The live systems; the service's registration is where XDG_STATE_HOME (or HOME) puts it. */
+export const liveExternals = (): Externals => ({
   placement: () => ProcessPlacement.layer(ProcessPlacement.optionsOf(process.pid, process.platform)),
-  live: (options, env) => live(ctx, options, env),
+  live: (options, env) => live(options, env),
   watch: (options) =>
     Layer.unwrap(
       Effect.gen(function* () {
@@ -128,5 +126,5 @@ export const plugin = Effect.fn("Update.plugin")(function* (host: Host, external
 
 export default Plugin.define({
   id: "dotfiles-opencode.update",
-  effect: (ctx) => plugin(ctx, liveExternals(ctx)),
+  effect: (ctx) => plugin(ctx, liveExternals()),
 })
