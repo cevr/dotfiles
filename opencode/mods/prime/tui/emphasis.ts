@@ -53,12 +53,12 @@ const drawer = (look: Look) => (base: MarkdownInlineSpan, piece: Piece): Markdow
  * last `]` (it could still open a link), so `[[Done]]` at the very end draws as `[[Done]`.
  */
 function closeTail(spans: ReadonlyArray<MarkdownInlineSpan>, source: string): ReadonlyArray<MarkdownInlineSpan> {
-  const tail = /\[\[[^[\]\n]{1,64}\]\]$/.exec(source.trimEnd())?.[0]
-  const last = spans.at(-1)
-  if (tail === undefined || last === undefined || last.code) return spans
+  const tail = Option.map(Option.fromNullishOr(/\[\[[^[\]\n]{1,64}\]\]$/.exec(source.trimEnd())), (match) => match[0])
+  const last = Option.filter(Option.fromUndefinedOr(spans.at(-1)), (span) => !span.code)
+  if (Option.isNone(tail) || Option.isNone(last)) return spans
   const drawn = spans.map((span) => span.text).join("")
-  if (drawn.endsWith(tail) || !drawn.endsWith(tail.slice(0, -1))) return spans
-  return [...spans.slice(0, -1), { ...last, text: `${last.text}]` }]
+  if (drawn.endsWith(tail.value) || !drawn.endsWith(tail.value.slice(0, -1))) return spans
+  return [...spans.slice(0, -1), { ...last.value, text: `${last.value.text}]` }]
 }
 
 /**
@@ -66,11 +66,14 @@ function closeTail(spans: ReadonlyArray<MarkdownInlineSpan>, source: string): Re
  * concealed the inner brackets); 0.9's engine draws both pairs.
  */
 function wikiLinks(spans: ReadonlyArray<MarkdownInlineSpan>): ReadonlyArray<MarkdownInlineSpan> {
-  return spans.map((span) =>
-    span.code
-      ? span
-      : { ...span, text: span.text.replace(/\[\[([^[\]\n]{1,64})\]\]/g, (whole, inner: string) => (Option.isSome(pillOf(inner)) ? whole : `[${inner}]`)) },
-  )
+  const unwiki = (whole: string, inner: string): string => {
+    if (Option.isSome(pillOf(inner))) return whole
+    return `[${inner}]`
+  }
+  return spans.map((span) => {
+    if (span.code) return span
+    return { ...span, text: span.text.replace(/\[\[([^[\]\n]{1,64})\]\]/g, unwiki) }
+  })
 }
 
 /** The emphasis hook: pills in the drawn text outside code, and the block's lead label; nothing in the source view. */
@@ -79,7 +82,8 @@ export const emphasisHook = (look: Look): MarkdownInlineHook => {
   return (drawn, context) => {
     if (!context.conceal) return drawn
     const spans = wikiLinks(closeTail(drawn, context.source))
-    const label = context.tableCell ? Option.none<Label>() : leadLabel(context.source.trimStart())
+    // A table cell never leads a block, so it never takes a lead label.
+    const label = Option.filter(leadLabel(context.source.trimStart()), () => !context.tableCell)
     const edits = previewEdits(spans, spans.map((span) => span.code), label)
     if (edits.length === 0) return [...spans]
     return Array.from(splice(spans, edits, draw))
@@ -94,8 +98,16 @@ export const emphasisHook = (look: Look): MarkdownInlineHook => {
  */
 export function attach(markdown: MarkdownRenderable, look: Look): void {
   const mine = emphasisHook(look)
-  const prior = markdown.inlineHook
-  const filter = markdown.inlineHookFilter
-  markdown.inlineHookFilter = prior === undefined ? FILTER : filter === undefined ? undefined : [...filter, ...FILTER]
-  markdown.inlineHook = prior === undefined ? mine : (spans, context) => mine(prior(spans, context), context)
+  const prior = Option.fromUndefinedOr(markdown.inlineHook)
+  if (Option.isNone(prior)) {
+    markdown.inlineHookFilter = FILTER
+    markdown.inlineHook = mine
+    return
+  }
+  const host = prior.value
+  // A host hook with no filter runs on every block, and so does the chain.
+  markdown.inlineHookFilter = Option.getOrUndefined(
+    Option.map(Option.fromUndefinedOr(markdown.inlineHookFilter), (filter) => [...filter, ...FILTER]),
+  )
+  markdown.inlineHook = (spans, context) => mine(host(spans, context), context)
 }
