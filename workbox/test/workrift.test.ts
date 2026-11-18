@@ -425,6 +425,49 @@ describeWork("workrift with the work backend", () => {
   )
 
   test(
+    "deps runs the warm step once for each tree HEAD moves to, so the build output follows the checkout (stale dist, 2026-11-18)",
+    () => {
+      const w = workBench("warm", work)
+      const warmed = join(w.dir, "warmed")
+      sh(w.app, w.env, "git", "config", "workrift.warm", `git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+      const trees = () => lines(existsSync(warmed) ? readFileSync(warmed, "utf8") : "")
+      const treeOf = (path: string, at = "HEAD") => sh(path, w.env, "git", "rev-parse", `${at}^{tree}`).trim()
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      const mainTree = treeOf(w.app)
+      expect(trees()).toEqual([mainTree])
+
+      // A branch with its own tree: the workspace builds it once.
+      w.push("feat/x", { "src.txt": "x\n" })
+      const path = w.create(w.app, "feat/x")
+      const xTree = treeOf(path)
+      expect(trees()).toEqual([mainTree, xTree])
+
+      // HEAD moves inside the workspace (a detach, a merge, a switch): the hook's `workrift deps` builds the new tree.
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/main")
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(trees()).toEqual([mainTree, xTree, mainTree])
+      // The same tree again builds nothing.
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(trees()).toEqual([mainTree, xTree, mainTree])
+
+      // A workspace whose tree is the source's keeps the copied build: nothing runs.
+      w.create(w.app, "feat/same")
+      expect(trees()).toEqual([mainTree, xTree, mainTree])
+
+      // A failed warm step warns, records nothing, and runs again at the next deps.
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/feat/x")
+      sh(path, w.env, "git", "config", "workrift.warm", "exit 3")
+      const failed = w.wr(path, "deps")
+      expect(failed.code).toBe(0)
+      expect(failed.err).toContain("warm step failed")
+      sh(path, w.env, "git", "config", "workrift.warm", `git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(trees()).toEqual([mainTree, xTree, mainTree, xTree])
+    },
+    30_000,
+  )
+
+  test(
     "create run from a checkout with gh stack metadata for the branch carries the metadata into the workspace",
     () => {
       const w = workBench("stack", work)

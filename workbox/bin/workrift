@@ -12,7 +12,9 @@
 # A branch change inside a workspace can change the lock file without going
 # through workrift. For repositories that use lefthook, the source gets an
 # untracked lefthook-local.yml that runs `workrift deps` after checkout, merge
-# and rewrite, and --copy-all carries it into every workspace.
+# and rewrite, and --copy-all carries it into every workspace. The same moves
+# make the build output stale, so `deps` also runs the warm step when HEAD's
+# tree differs from the one the last warm step built.
 #
 # Per-repository settings live in the source's Git config:
 #   workrift.main     default branch (default: origin HEAD)
@@ -52,7 +54,8 @@ usage: workrift <command>
 
   init <repository> [path]    clone a repository as a warm Rift source
   create <branch>             create a workspace for a branch from the warm source
-  deps                        install dependencies if the lock file changed since the last install
+  deps                        install dependencies if the lock file changed since the last install,
+                              and run the warm step if HEAD's tree changed since the last warm
   refresh                     update the warm source from its default branch
   list                        list the warm source's workspaces
   remove [--with-children] [path]
@@ -204,6 +207,31 @@ run_warm() {
   (cd "$1" && sh -c "$2") 9>&-
 }
 
+# The tree the last successful warm step built, kept in the Git directory beside
+# the install fingerprint, so a copy carries it together with the build output.
+warmed_tree_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-warmed-tree
+}
+
+# Build output is only right for the tree it was built from: a workspace whose
+# HEAD moved since (a merge, a switch, a detach, a rebase) reads a stale build.
+# Run the warm step in $1 unless its last run built HEAD's tree. A failed step
+# warns and records nothing, so the next call runs it again.
+warm_build() {
+  warm=$(warm_command "$1")
+  [ -n "$warm" ] || return 0
+  tree=$(git -C "$1" rev-parse 'HEAD^{tree}')
+  tree_file=$(warmed_tree_file "$1")
+  if [ -f "$tree_file" ] && [ "$(cat "$tree_file")" = "$tree" ]; then
+    return 0
+  fi
+  if run_warm "$1" "$warm"; then
+    printf '%s\n' "$tree" >"$tree_file"
+  else
+    printf 'workrift: warm step failed in %s; build output may be stale\n' "$1" >&2
+  fi
+}
+
 dependency_hook_marker='# Managed by workrift: keep dependencies in step with the lock file.'
 
 # lefthook merges lefthook-local.yml into the tracked lefthook.yml, and the
@@ -327,12 +355,9 @@ create_workspace() {
   case "$work_deps_tag" in
     '' | NoDeps | Unchanged) sync_dependencies "$workspace" >&2 ;;
   esac
-  # The copied build output matches the source's commit, not the branch. A warm
+  # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
-  warm=$(warm_command "$source_path")
-  if [ -n "$warm" ] && ! run_warm "$workspace" "$warm" >&2; then
-    printf 'workrift: warm step failed in %s; build output may be stale\n' "$workspace" >&2
-  fi
+  warm_build "$workspace" >&2
   printf '%s\n' "$workspace"
 }
 
@@ -371,10 +396,7 @@ advance_source() {
   fi
   git -C "$source_path" merge --ff-only "origin/$main" >&2
   sync_dependencies "$source_path" >&2
-  warm=$(warm_command "$source_path")
-  if [ -n "$warm" ] && ! run_warm "$source_path" "$warm" >&2; then
-    printf 'workrift: warm step failed in %s; build output may be stale\n' "$source_path" >&2
-  fi
+  warm_build "$source_path" >&2
 }
 
 refresh_source() {
@@ -392,6 +414,7 @@ refresh_source() {
   warm=$(warm_command "$source_path")
   if [ -n "$warm" ]; then
     run_warm "$source_path" "$warm"
+    git -C "$source_path" rev-parse 'HEAD^{tree}' >"$(warmed_tree_file "$source_path")"
   fi
   printf 'Warm source is ready at %s.\n' "$source_path"
 }
@@ -949,6 +972,7 @@ case "$command" in
     else
       sync_dependencies "$top"
     fi
+    warm_build "$top"
     ;;
   refresh)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }

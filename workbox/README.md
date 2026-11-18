@@ -140,15 +140,19 @@ A branch change inside a workspace can also change the lock file. For a
 repository with `lefthook.yml`, `workrift` writes an untracked
 `lefthook-local.yml` in the source that runs `workrift deps` after checkout,
 merge and rewrite. `.git/info/exclude` hides the file, and `--copy-all` copies
-it into every workspace. `git reset --hard` runs no hook, so run `workrift deps`
+it into every workspace. The same moves make the build output stale, so
+`workrift deps` also runs the warm step when HEAD's tree differs from the tree
+the last warm step built. `git reset --hard` runs no hook, so run `workrift deps`
 by hand after it. The last installed lock fingerprint is in
-`.git/workrift-installed-locks`.
+`.git/workrift-installed-locks`, the last warmed tree in
+`.git/workrift-warmed-tree`.
 
 A source's Git config holds its settings: `workrift.main` (default branch),
 `workrift.install` (default: from the lock file) and `workrift.warm` (a build
 step after the install). `refresh` runs it in the source. `create` runs it in the
-new workspace, because the copied build output matches the source's commit, not
-the branch; a failed step only prints a warning. Bootstrap sets the Bite warm step to
+new workspace unless the branch's tree is the source's, because the copied build
+output matches the source's tree, not the branch; a failed step only prints a
+warning and runs again at the next `workrift deps`. Bootstrap sets the Bite warm step to
 `bun run compile` and links its `.env`. Per-repository create and remove hooks
 belong in Rift's own `.rift.toml` in the source.
 
