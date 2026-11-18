@@ -24,6 +24,7 @@ import { hints as queueHints, QUEUE_TAB, QueueTab } from "@dotfiles/opencode-pri
 import { Dock, GoalLine, HintLine, Queued, Splash, StartingNotice, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
+import { MapRow } from "@dotfiles/opencode-prime/tui/map"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
 import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
 import { ownerZone } from "@dotfiles/opencode-prime/turn-time"
@@ -99,6 +100,12 @@ export default Plugin.define({
     context.ui.slot({
       replace: "session.message.assistant.footer",
       render: (input) => <StepEnd host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} zone={zone} />,
+    })
+    // The transcript map (ctrl+x g) folds each turn to one line; Prime draws the line as its transcript draws the
+    // turn, so the map reads as the transcript folded (tui/map.tsx).
+    context.ui.slot({
+      replace: "session.map.turn",
+      render: (input) => <MapRow host={h} input={input} zone={zone} />,
     })
     // A compaction is one line below All, and the host's whole block (its summary) at All (tui/compaction.tsx).
     context.ui.slot({

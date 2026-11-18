@@ -43,6 +43,8 @@ export type Palette = {
     readonly background: { readonly added: RGBA; readonly removed: RGBA; readonly context: RGBA }
   }
   readonly border: { readonly base: RGBA }
+  /** Prose: a reply's text as the host's Markdown sets it. */
+  readonly markdown: { readonly text: RGBA }
   readonly background: {
     readonly base: RGBA
     /** A list row's ground, and the highlighted row's. */

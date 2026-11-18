@@ -18,7 +18,7 @@ export function usePart(props: PartProps) {
 }
 
 /** OpenTUI border characters with only the vertical drawn: fx's heavy user-turn rail. */
-const USER_RAIL = {
+export const USER_RAIL = {
   topLeft: "",
   bottomLeft: "",
   vertical: "┃",
