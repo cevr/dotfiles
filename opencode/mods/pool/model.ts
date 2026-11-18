@@ -389,7 +389,11 @@ export const layer = (config: Config) =>
         if (where === undefined) return false
         // A request placed before a restart is answered after it: the ledger's mark names its account.
         const answered = answeredOn(yield* SynchronizedRef.get(where.pool), input.sessionID, "primary")
-        if (Option.isNone(answered)) return false
+        // A refused sign-in (401) on a login this copy cannot name (placed before a restart, its mark since pruned)
+        // goes again, placed afresh: on a login not held, or else the pool refuses it in its own words (a sign-in to
+        // make, when the first opens), never the provider's. Another refusal (429) stays the host's to retry: placed
+        // afresh it could go out again on the login that just refused it.
+        if (Option.isNone(answered)) return input.error === "Authentication"
         const credentialID = answered.value
         // A refusal that never reached a response (a sign-in that failed before
         // the request went out) is only in the provider's reading.
