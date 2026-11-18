@@ -45,9 +45,10 @@ const answer = (turn: string) => `Answer ${turn} is ready. Here is the list.\n\n
  */
 const selectedLine = (frame: App.Frame, hovered = -1) => {
   const rows = frame.lines.flatMap((line, index) =>
-    index === hovered
-      ? []
-      : line.spans.filter((each) => /Ask n\d{3}|Answer n\d{3}/.test(each.text)).slice(0, 1).map((span) => ({ index, kind: span.text.includes("Ask"), bg: span.bg })),
+    line.spans
+      .filter((each) => index !== hovered && /Ask n\d{3}|Answer n\d{3}/.test(each.text))
+      .slice(0, 1)
+      .map((span) => ({ index, kind: span.text.includes("Ask"), bg: span.bg })),
   )
   const unique = rows.filter((row) => rows.filter((other) => other.kind === row.kind && other.bg === row.bg).length === 1)
   return [-1, unique[0]?.index ?? -1][Number(unique.length === 1)] ?? -1
@@ -69,7 +70,7 @@ type Frames = Record<"expanded" | "collapsed" | "restored" | "unfolded", Readonl
 /** How many lines down the screen moved from `before` to `after`, read off the first answer line both show (0 for none). */
 const moved = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) => {
   const from = before.findIndex((row, index) => index > FIRST && /Answer n\d{3}/.test(row) && after.includes(row))
-  return from === -1 ? 0 : after.indexOf(before[from] ?? "") - from
+  return [after.indexOf(before[from] ?? "") - from, 0][Number(from === -1)] ?? 0
 }
 
 const played = new Map<number, Frames>()
