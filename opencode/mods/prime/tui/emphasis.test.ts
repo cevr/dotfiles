@@ -121,7 +121,7 @@ describe("attach on the pinned opentui", () => {
       attach(made, look)
       const frame = yield* until(setup, (shown) => shown.includes("Done") && shown.includes("Failed"))
       const lines = frame.split("\n").map((line) => line.trimEnd())
-      expect(lines[0]).toBe("Result:  ✓ Done  the build passed. [[Guess]] is code, [[acknowledge-before-processing]] a")
+      expect(lines[0]).toBe("Result:  ✓ Done  the build passed. [[Guess]] is code, [acknowledge-before-processing] a")
       expect(lines).toContain(`- ${SYMBOLS.blocked} Waiting on you: merge 21810.  ! Irreversible`)
       expect(lines).toContain(`- ${SYMBOLS.idle} Next: the deep run  ◌ Skipped`)
       expect(lines.some((line) => line.includes(" ✗ Failed: 3 tests "))).toBe(true)

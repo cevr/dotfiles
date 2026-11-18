@@ -8,7 +8,7 @@
 // and the hook runs only on blocks whose source can hold a pill or a label.
 import type { MarkdownInlineHook, MarkdownInlineSpan, MarkdownRenderable, Renderable, RGBA } from "@opentui/core"
 import { Option } from "effect"
-import { chipText, leadLabel, previewEdits, splice, type Label, type Piece, type Pill } from "../emphasis.ts"
+import { chipText, leadLabel, pillOf, previewEdits, splice, type Label, type Piece, type Pill } from "../emphasis.ts"
 import type { ChipColors } from "./tone.ts"
 
 /** How a piece looks in the theme in use, read at each draw so a theme change repaints. */
@@ -61,15 +61,27 @@ function closeTail(spans: ReadonlyArray<MarkdownInlineSpan>, source: string): Re
   return [...spans.slice(0, -1), { ...last, text: `${last.text}]` }]
 }
 
+/**
+ * An unknown `[[word]]` outside code drawn as `[word]`, as opentui drew a wiki link before 0.9 (its tree-sitter
+ * concealed the inner brackets); 0.9's engine draws both pairs.
+ */
+function wikiLinks(spans: ReadonlyArray<MarkdownInlineSpan>): ReadonlyArray<MarkdownInlineSpan> {
+  return spans.map((span) =>
+    span.code
+      ? span
+      : { ...span, text: span.text.replace(/\[\[([^[\]\n]{1,64})\]\]/g, (whole, inner: string) => (Option.isSome(pillOf(inner)) ? whole : `[${inner}]`)) },
+  )
+}
+
 /** The emphasis hook: pills in the drawn text outside code, and the block's lead label; nothing in the source view. */
 export const emphasisHook = (look: Look): MarkdownInlineHook => {
   const draw = drawer(look)
   return (drawn, context) => {
     if (!context.conceal) return drawn
-    const spans = closeTail(drawn, context.source)
+    const spans = wikiLinks(closeTail(drawn, context.source))
     const label = context.tableCell ? Option.none<Label>() : leadLabel(context.source.trimStart())
     const edits = previewEdits(spans, spans.map((span) => span.code), label)
-    if (edits.length === 0) return drawn
+    if (edits.length === 0) return [...spans]
     return Array.from(splice(spans, edits, draw))
   }
 }
