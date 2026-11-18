@@ -110,4 +110,19 @@ describe("the host as the sweep reads it", () => {
     }),
     TIMEOUT_MS,
   )
+
+  effectTest(
+    "a call the host never answers is cut off and counts as failed, so it holds up no pass",
+    Effect.gen(function* () {
+      const hung = host({ sessions: Effect.never, get: () => Effect.never, pending: () => Effect.never, open: () => Effect.never, synthetic: () => Effect.never })
+      const cut = <A, E>(body: (service: QueueHost["Service"]) => Effect.Effect<A, E>) => QueueHost.use(body).pipe(Effect.provide(layer(hung, "20 millis")))
+      expect(yield* cut((service) => service.roots)).toEqual([])
+      expect(yield* cut((service) => service.linked("ses_busy"))).toEqual(Option.none())
+      expect(yield* cut((service) => service.wakes(["ses_busy"]))).toEqual(Option.none())
+      expect(yield* cut((service) => service.questions(["ses_busy"]))).toEqual(Option.none())
+      const late = yield* cut((service) => Effect.flip(service.note("ses_idle", "check", "Queue check", true)))
+      expect([late._tag, late.message]).toEqual(["NoteRefused", "the host did not answer in time"])
+    }),
+    TIMEOUT_MS,
+  )
 })

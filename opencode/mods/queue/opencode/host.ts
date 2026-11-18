@@ -18,9 +18,18 @@
 // - the note: `session.synthetic` with `delivery: "steer"` admits it; with
 //   `resume: true` it wakes an idle session, with `resume: false` it waits
 //   for the next turn; its description is the TUI's `◈` notice row.
+// - every call is cut off after CALL_TIMEOUT and then counts as failed, so a
+//   host that never answers costs one pass that long, not every later one.
+//
+// At run time a plugin gets only `effect` and `@opencode/plugin` from
+// OpenCode; any other package comes from the checkout's own node_modules,
+// links that point nowhere in a copy of it. So this file imports
+// `@opencode/schema` for its types only, and brands a session id itself:
+// a value import of it stopped the whole plugin, queue RPC included, from
+// loading in such a copy ("Cannot find package '@opencode/schema'").
 import type { Plugin } from "@opencode/plugin/effect"
-import { SessionID } from "@opencode/schema/session-id"
-import { Array as Arr, DateTime, Effect, Layer, Option, Schema } from "effect"
+import type { SessionID as HostSessionID } from "@opencode/schema/session-id"
+import { Array as Arr, Cause, DateTime, type Duration, Effect, Layer, Option, Schema } from "effect"
 import { NoteRefused, QueueHost, type Root } from "../service.ts"
 import type { Linked } from "../stale.ts"
 
@@ -81,6 +90,7 @@ const notFound = Schema.is(NotFound)
 
 const messageOf = (cause: unknown): string => {
   if (notFound(cause)) return "no such session"
+  if (Cause.isTimeoutError(cause)) return "the host did not answer in time"
   if (Schema.is(Said)(cause)) return cause.message
   return "the host refused it"
 }
@@ -88,21 +98,29 @@ const messageOf = (cause: unknown): string => {
 const perSession = <A>(sessionIDs: ReadonlyArray<string>, rows: ReadonlyArray<A>, sessionOf: (row: A) => string) =>
   new Map(sessionIDs.map((sessionID) => [sessionID, rows.filter((row) => sessionOf(row) === sessionID)]))
 
-export const layer = (host: Host) =>
-  Layer.succeed(
+/** How long one call to the host may take before it counts as failed. */
+export const CALL_TIMEOUT: Duration.Input = "30 seconds"
+
+/** A session id as the host's calls take it, branded here (see the header). */
+const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const sessionIDOf = (sessionID: string): HostSessionID => SessionID.make(sessionID)
+
+export const layer = (host: Host, callTimeout: Duration.Input = CALL_TIMEOUT) => {
+  const cut = <A>(call: Effect.Effect<A, unknown>) => Effect.timeout(call, callTimeout)
+  return Layer.succeed(
     QueueHost,
     QueueHost.of({
-      roots: host.sessions.pipe(
+      roots: cut(host.sessions).pipe(
         Effect.map((sessions) => Arr.take(Arr.filter(sessions, (session) => Option.isNone(Option.fromNullishOr(session.parentID))).map(rootOf), ROOTS)),
         Effect.orElseSucceed(Arr.empty),
       ),
       linked: (sessionID) =>
-        host.get(sessionID).pipe(
+        cut(host.get(sessionID)).pipe(
           Effect.map((session) => Option.some(linkedOf(session))),
           Effect.catch((cause) => Effect.succeed(Option.liftPredicate<Linked>({ state: "gone" }, () => notFound(cause)))),
         ),
       wakes: (sessionIDs) =>
-        host.pending(sessionIDs).pipe(
+        cut(host.pending(sessionIDs)).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Pending)),
           Effect.map(
             (pending): ReadonlyMap<string, ReadonlyArray<string>> =>
@@ -116,7 +134,7 @@ export const layer = (host: Host) =>
           Effect.option,
         ),
       questions: (sessionIDs) =>
-        host.open(sessionIDs).pipe(
+        cut(host.open(sessionIDs)).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Open)),
           Effect.map(
             (open): ReadonlyMap<string, number> =>
@@ -125,12 +143,13 @@ export const layer = (host: Host) =>
           Effect.option,
         ),
       note: (sessionID, text, description, wake) =>
-        host.synthetic({ sessionID, text, description, resume: wake }).pipe(
+        cut(host.synthetic({ sessionID, text, description, resume: wake })).pipe(
           Effect.asVoid,
           Effect.mapError((cause) => new NoteRefused({ sessionID, message: messageOf(cause) })),
         ),
     }),
   )
+}
 
 /** The host through the plugin context, read lazily: nothing of the context is touched until a pass runs. */
 export const fromContext = (ctx: Plugin.Context) =>
@@ -138,13 +157,13 @@ export const fromContext = (ctx: Plugin.Context) =>
     sessions: Effect.suspend(() => ctx.session.list({ directory: ctx.location.directory, archived: false, order: "desc", limit: READ })).pipe(
       Effect.map((page) => page.data),
     ),
-    get: (sessionID) => Effect.suspend(() => ctx.session.get({ sessionID: SessionID.make(sessionID) })),
+    get: (sessionID) => Effect.suspend(() => ctx.session.get({ sessionID: sessionIDOf(sessionID) })),
     pending: (ids) => Effect.suspend(() => ctx.rpc(WAKES_PENDING).pending({ sessionIDs: [...ids] })),
     open: (ids) => Effect.suspend(() => ctx.rpc(QUESTIONS_OPEN).open({ sessionIDs: [...ids] })),
     synthetic: (input) =>
       Effect.suspend(() =>
         ctx.session.synthetic({
-          sessionID: SessionID.make(input.sessionID),
+          sessionID: sessionIDOf(input.sessionID),
           text: input.text,
           description: input.description,
           metadata: { plugin: "dotfiles-opencode.queue", kind: "staleness" },

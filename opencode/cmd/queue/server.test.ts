@@ -4,9 +4,10 @@
 // apart from its parent's, and a deleted session's queue going.
 // tests/queue.test.ts runs it in OpenCode, directly and from a kernel cell.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Tool } from "@opencode/plugin/effect"
 import { Effect, Queue, Schedule, Schema, type Scope, Stream } from "effect"
 import * as MemoryStore from "@dotfiles/opencode-queue/memory/store"
@@ -163,6 +164,39 @@ describe("the queue tool", () => {
         expect(snapshot.items.map((item) => item.id).sort()).toEqual(["a", "b", "c", "d"])
       }),
     ))
+})
+
+/**
+ * The bare packages server.ts reaches at run time, through every file it imports in this
+ * checkout (types are erased, so `import type` counts for nothing).
+ */
+const runtimePackages = (entry: string) => {
+  const transpiler = new Bun.Transpiler({ loader: "ts" })
+  const seen = new Set<string>()
+  const packages = new Set<string>()
+  const visit = (file: string) => {
+    if (seen.has(file)) return
+    seen.add(file)
+    for (const { path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+      if (path.startsWith("node:")) continue
+      if (path.startsWith(".") || path.startsWith("@dotfiles/")) visit(Bun.resolveSync(path, dirname(file)))
+      else packages.add(path)
+    }
+  }
+  visit(entry)
+  return [...packages].sort()
+}
+
+describe("in OpenCode", () => {
+  // OpenCode gives a plugin only `effect` and `@opencode/plugin`; any other package comes from
+  // the checkout's node_modules links, which point nowhere in a copy of it, and one import that
+  // does not resolve stops the whole plugin, queue RPC and tool included.
+  test("the plugin needs no package at run time but what OpenCode provides", () => {
+    const foreign = runtimePackages(fileURLToPath(new URL("server.ts", import.meta.url))).filter(
+      (path) => !/^(effect|@opencode\/plugin)(\/|$)/.test(path),
+    )
+    expect(foreign).toEqual([])
+  })
 })
 
 describe("on the file store", () => {
