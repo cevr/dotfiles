@@ -91,6 +91,10 @@ lost box. `backup.sh run` (the `hetzner-backup.timer`, 02:30 UTC nightly):
    last month, since btrbk never deletes raw increments. That bounds the
    Storage Box at two full copies and their increments.
 
+The S3 snapshot backup (`workbox-backup.timer`, `workbox/README.md`, S3
+backups) runs here too, installed by `provision.sh bootstrap`: the owner keeps
+both. It needs the `bite-dev` AWS SSO login kept valid on this box.
+
 The key is the backup: copy `/etc/btrbk/backup.key` into the owner's password
 manager when `provision.sh backup` makes it.
 
