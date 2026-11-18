@@ -204,28 +204,29 @@ describe("process Landing", () => {
     expect(await made.run((landing) => landing.install(made.integration, started.previous))).toEqual([])
   })
 
-  test("a lock file the new main deletes with its folder needs no install: install answers none, not a spawn in a missing folder", async () => {
+  test("a lock file the new main deletes with its folder needs no install: install answers none, not a spawn in a missing folder", () => {
     const made = bench()
-    write(made.source, "tools/t/package.json", JSON.stringify({ name: "t", version: "1.0.0" }))
-    // A lock file of its own beside it, as each tool folder under workbox/bun-tools had (its content never read).
+    const push = (message: string) => {
+      sh(made.source, "git", "commit", "-q", "-m", message)
+      sh(made.source, "git", "push", "-q", "origin", "main")
+    }
+    // A package with a lock file of its own, as each tool folder under workbox/bun-tools had (its content never read).
+    write(made.source, "tools/t/package.json", '{"name":"t"}\n')
     write(made.source, "tools/t/bun.lock", "{}\n")
     sh(made.source, "git", "add", "-A")
-    sh(made.source, "git", "commit", "-q", "-m", "add tools/t")
-    sh(made.source, "git", "push", "-q", "origin", "main")
-    await made.run((landing) => landing.start(made.integration, "main"))
-    expect(existsSync(join(made.integration, "tools/t/bun.lock"))).toBe(true)
-    // The next main drops the whole package, its lock file and its folder with it.
-    sh(made.source, "git", "rm", "-q", "-r", "tools/t")
-    sh(made.source, "git", "commit", "-q", "-m", "drop tools/t")
-    sh(made.source, "git", "push", "-q", "origin", "main")
-    const installed = await made.run((landing) =>
+    push("add tools/t")
+    return made.run((landing) =>
       Effect.gen(function* () {
+        yield* landing.start(made.integration, "main")
+        expect(existsSync(join(made.integration, "tools/t/bun.lock"))).toBe(true)
+        // The next main drops the whole package, its lock file and its folder with it.
+        sh(made.source, "git", "rm", "-q", "-r", "tools/t")
+        push("drop tools/t")
         const started = yield* landing.start(made.integration, "main")
-        return yield* landing.install(made.integration, started.previous)
+        expect(existsSync(join(made.integration, "tools/t"))).toBe(false)
+        expect(yield* landing.install(made.integration, started.previous)).toEqual([])
       }),
     )
-    expect(existsSync(join(made.integration, "tools/t"))).toBe(false)
-    expect(installed).toEqual([])
   })
 
   test("check keeps the command's output in a log and never fails on its exit code", async () => {
