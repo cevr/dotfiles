@@ -7,7 +7,9 @@ workbox_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 system_dir="$workbox_dir/systemd/system"
 resolved_config="$workbox_dir/systemd/resolved.conf.d/workbox.conf"
 user_unit_dir="$HOME/.config/systemd/user"
-bite_source=/workspaces/bite
+# The folder that holds the workspace bases; a test sets it to a scratch folder.
+workspaces_dir=${WORKBOX_WORKSPACES_DIR:-/workspaces}
+bite_source="$workspaces_dir/bite"
 local_bin_dir="$HOME/.local/bin"
 user_timers="cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer"
 
@@ -161,7 +163,7 @@ fi
 if [ -f "$bite_source/.rift" ]; then
   ln -sfn "$HOME/.config/bite-workbox/bite-env/.env" "$bite_source/.env"
   git -C "$bite_source" config workrift.warm \
-    'TURBO_CACHE=local:rw TURBO_CACHE_DIR=/workspaces/.cache/turbo bun run compile'
+    "TURBO_CACHE=local:rw TURBO_CACHE_DIR=$workspaces_dir/.cache/turbo bun run compile"
 fi
 
 for unit in "$workbox_dir"/systemd/user/*; do

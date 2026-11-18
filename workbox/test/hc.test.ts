@@ -1,16 +1,71 @@
 // The workbox's hc (herdr-core) side, run through the real scripts with a
 // scratch HOME and a PATH of stub commands that answer from a fixture and
-// record their arguments. Nothing here touches the real host: every stub
-// writes only under the scratch folder.
+// record their arguments. Nothing here touches the real host: every path a
+// script writes (HOME, TMPDIR, WORKBOX_WORKSPACES_DIR, the working folder) is
+// under the scratch folder, and `run` refuses to start a script otherwise.
+// 2026-11-18: bootstrap's hard-coded /workspaces/bite let each run repoint the
+// real Bite base's .env at a scratch HOME this file then deleted.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { basename, dirname, join, resolve } from "node:path"
 
 const repo = join(import.meta.dir, "..", "..")
 const workbox = join(repo, "workbox")
-const scratchRoot = mkdtempSync(join(tmpdir(), "hc-workbox-test-"))
+
+/** `path` with its symbolic links resolved, a dangling one too, as far as it exists. */
+const resolved = (path: string): string => {
+  if (existsSync(path)) return realpathSync(path)
+  const parent = dirname(path)
+  if (parent === path) return path
+  const real = join(resolved(parent), basename(path))
+  const target = linkTarget(real)
+  return target === null ? real : resolved(resolve(dirname(real), target))
+}
+const linkTarget = (path: string) => {
+  try {
+    return readlinkSync(path)
+  } catch {
+    return null
+  }
+}
+const isInside = (path: string, root: string) => {
+  const real = resolved(path)
+  return real === root || real.startsWith(`${root}/`)
+}
+
+const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "hc-workbox-test-")))
+for (const real of ["/workspaces", homedir()].map(resolved))
+  if (isInside(scratchRoot, real)) throw new Error(`hc.test: scratch folder ${scratchRoot} is inside ${real}; set TMPDIR to /tmp`)
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+
+// The variables that name a place a script writes. A bootstrap run must set
+// all three: its defaults are the real /workspaces and HOME.
+const writtenPathKeys = ["HOME", "TMPDIR", "WORKBOX_WORKSPACES_DIR", "WORKBOX_BACKUP_CONFIG", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"]
+const bootstrapKeys = ["HOME", "TMPDIR", "WORKBOX_WORKSPACES_DIR"]
+
+/** Throws before a script starts when it could write outside the scratch folder. */
+const guard = (cmd: string[], env: Record<string, string>, cwd: string) => {
+  const outside = [
+    ...writtenPathKeys.filter((key) => key in env && !isInside(env[key]!, scratchRoot)).map((key) => `${key}=${env[key]}`),
+    ...(isInside(cwd, scratchRoot) ? [] : [`cwd=${cwd}`]),
+    ...(cmd.some((part) => basename(part) === "bootstrap.sh") ? bootstrapKeys.filter((key) => !(key in env)).map((key) => `${key} unset`) : []),
+  ]
+  if (outside.length > 0) throw new Error(`hc.test: ${cmd.join(" ")} could write outside ${scratchRoot}: ${outside.join(", ")}`)
+}
 
 const which = (name: string) => Bun.which(name) ?? ""
 const jq = which("jq")
@@ -40,7 +95,8 @@ const link = (dir: string, name: string, target: string) => {
   symlinkSync(target, join(dir, name))
 }
 
-const run = async (cmd: string[], env: Record<string, string>, cwd = repo) => {
+const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot) => {
+  guard(cmd, env, cwd)
   const proc = Bun.spawn(cmd, { env, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -225,6 +281,7 @@ const bootstrapCheck = async (host: Host) => {
     HOME: home,
     PATH: `${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: home,
+    WORKBOX_WORKSPACES_DIR: join(home, "workspaces"),
   })
   return { ...result, calls: calls(log) }
 }
@@ -265,13 +322,18 @@ esac`)
   stub(stubs, "curl", log, `case "$*" in
   "-fsSL https://releases.herdr.dev/core/install.sh") cat '${installer}' ;;
 esac`)
+  // A Bite base made by `workrift init`, which bootstrap gives its .env link.
+  const workspaces = join(root, "workspaces")
+  mkdirSync(join(workspaces, "bite"), { recursive: true })
+  writeFileSync(join(workspaces, "bite", ".rift"), "")
   const result = await run(["/bin/sh", join(box, "bootstrap.sh")], {
     HOME: home,
     USER: "exedev",
     PATH: `${stubs}:${hostBin(host.herdrPresent, hcInstalled)}:${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: root,
+    WORKBOX_WORKSPACES_DIR: workspaces,
   })
-  return { ...result, home, calls: calls(log) }
+  return { ...result, home, workspaces, calls: calls(log) }
 }
 
 describe("bootstrap", () => {
@@ -350,8 +412,31 @@ describe("bootstrap", () => {
       expect(existsSync(join(result.home, ".config", "systemd", "user", "herdr-bite.service"))).toBe(false)
       expect(existsSync(join(result.home, ".config", "herdr", "config.toml"))).toBe(false)
       expect(existsSync(join(result.home, ".config", "bite-workbox", "herdr-plugins.txt"))).toBe(false)
+      // The Bite base under WORKBOX_WORKSPACES_DIR, never /workspaces/bite, gets the .env link and the warm step.
+      const bite = join(result.workspaces, "bite")
+      expect(readlinkSync(join(bite, ".env"))).toBe(join(result.home, ".config", "bite-workbox", "bite-env", ".env"))
+      expect(result.calls).toContain(
+        `git -C ${bite} config workrift.warm TURBO_CACHE=local:rw TURBO_CACHE_DIR=${result.workspaces}/.cache/turbo bun run compile`,
+      )
+      expect(all).not.toMatch(/(^|\s)\/workspaces\//m)
     }
   }, 60_000)
+
+  test("the guard refuses a bootstrap run whose paths leave the scratch folder", async () => {
+    const home = scratch("guard")
+    const env = { HOME: home, TMPDIR: home, WORKBOX_WORKSPACES_DIR: join(home, "workspaces") }
+    const script = join(workbox, "bootstrap.sh")
+    for (const [label, bad] of [
+      ["no WORKBOX_WORKSPACES_DIR", { HOME: home, TMPDIR: home }],
+      ["the real /workspaces", { ...env, WORKBOX_WORKSPACES_DIR: "/workspaces" }],
+      ["a real HOME", { ...env, HOME: homedir() }],
+      ["a link out of scratch", { ...env, WORKBOX_WORKSPACES_DIR: join(home, "escape", "bite") }],
+    ] as const) {
+      if (label === "a link out of scratch") symlinkSync("/nonexistent/loop-probe-x", join(home, "escape"))
+      await expect(run(["/bin/sh", script, "--check"], bad)).rejects.toThrow(/could write outside/)
+    }
+    await expect(run(["/bin/sh", script, "--check"], env, workbox)).rejects.toThrow(/cwd=/)
+  })
 })
 
 // ---------------------------------------------------------------- 2. backup
@@ -464,10 +549,13 @@ describe("unit files", () => {
   })
 
   test.skipIf(!which("systemd-analyze"))("systemd-analyze verify accepts both units", async () => {
+    // A scratch HOME whose ~/.local/bin holds the commands the units start, as verify checks they exist.
+    const home = scratch("systemd-analyze")
+    for (const name of ["hc", "opencode"]) stub(join(home, ".local", "bin"), name, join(home, "calls.log"))
     for (const unit of ["hc-core.service", "opencode.service"]) {
       const result = await run(
         ["systemd-analyze", "--user", "verify", join(workbox, "systemd", "user", unit)],
-        { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+        { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: scratch("systemd-analyze-run") },
       )
       expect({ unit, code: result.code, stderr: result.stderr }).toEqual({ unit, code: 0, stderr: "" })
     }
