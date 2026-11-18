@@ -549,6 +549,30 @@ if (runnable) {
     )
 
     test(
+      "a create interrupted mid-clone leaves its work new to finish (the record ends active, not creating), and the next create of that name waits for it and answers it",
+      () =>
+        check(bench({ ...PLAIN, stubs: [["cp", SLOW_CP]] }), (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const request = { source: made.base, from: made.base, name: "cut", branch: "cut" }
+            const making = yield* Effect.forkChild(rifts.create(request))
+            yield* made.sh(made.root, "test", "-e", `${made.env.HOME}/clone.started`).pipe(Effect.sandbox, Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }))
+            // The plugin's scope closing under the call, as a reload does.
+            yield* Fiber.interrupt(making)
+            const again = yield* Effect.forkChild(rifts.create(request))
+            yield* made.sh(made.root, "touch", `${made.env.HOME}/clone.go`)
+            const path = yield* Fiber.join(again)
+            expect(nameOf(path)).toBe("cut")
+            const records = yield* made.work("list").pipe(Effect.flatMap(Schema.decodeUnknownEffect(RECORDS)), Effect.orDie)
+            expect(records.map((record) => [record.name, record.state._tag])).toEqual([["cut", "Active"]])
+            expect((yield* rifts.inspect(path)).branch).toBe("cut")
+            expect(yield* rifts.list(made.base)).toEqual([path])
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
       "with workrift: true create and remove go through workrift, named the source; source, list and inspect ask work",
       () =>
         check(bench({ ...PLAIN, workrift: true, stubs: [["workrift", LOGGING_WORKRIFT]] }), (made) =>

@@ -30,9 +30,11 @@ export const commands = (env: Readonly<Record<string, string>> = {}) => {
   /**
    * Runs `argv` in `cwd`, in a process group of its own; never fails on its exit code, so a caller can read
    * it. An interrupt kills the whole group: a check's command runs inside `nice` and two shells, and only
-   * the group reaches it.
+   * the group reaches it. With `finish`, an interrupt leaves the group to run to its end (its output still
+   * drained): a command that writes a registry in steps (`work new`, `work rm`) killed between them leaves
+   * a record that says `creating` over a whole workspace, which `work gc` deletes.
    */
-  const spawn = (argv: ReadonlyArray<string>, cwd: string, extra: Readonly<Record<string, string>> = {}) =>
+  const spawn = (argv: ReadonlyArray<string>, cwd: string, extra: Readonly<Record<string, string>> = {}, finish = false) =>
     Effect.acquireUseRelease(
       Effect.try({
         try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }),
@@ -43,7 +45,7 @@ export const commands = (env: Readonly<Record<string, string>> = {}) => {
           const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
           return { code: await child.exited, stdout, stderr }
         }),
-      (child, exit) => Effect.when(killGroup(child.pid), Effect.sync(() => Exit.hasInterrupts(exit))),
+      (child, exit) => Effect.when(killGroup(child.pid), Effect.sync(() => !finish && Exit.hasInterrupts(exit))),
     )
 
   /** Runs `argv` and answers its output, or fails with what it said. */

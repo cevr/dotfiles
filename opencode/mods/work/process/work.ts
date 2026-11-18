@@ -7,7 +7,7 @@
 // Unsaved work is read with Git exactly as process/rifts.ts reads it. A removal is
 // `work rm -abandon -expect <id>`: the tool's removal rule (workspace.ts) has judged it already,
 // and the id is the one the caller's inspect saw, so a workspace replaced since is refused.
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
@@ -19,7 +19,15 @@ export interface Options {
   readonly workrift: boolean
   /** Variables added to every command's environment (a test's scratch HOME). */
   readonly env?: Readonly<Record<string, string>>
+  /** How long a create waits for a workspace of its name still being made (`creating`) to be made; 5 minutes when absent. */
+  readonly makingWaitMs?: number
 }
+
+/** The `work` commands that write the registry in steps: an interrupt leaves them to finish (command.ts `finish`). */
+const STEPPED: ReadonlySet<string> = new Set(["new", "rm"])
+
+/** How often a create reads the registry while it waits for a workspace being made. */
+const MAKING_POLL_MS = 1_000
 
 /** One registry record, as `work --json list` prints it; other fields are left out. */
 const Rec = Schema.Struct({
@@ -65,8 +73,11 @@ interface Known {
 /** A record that still names a workspace: anything but trashed. */
 const isLive = (record: Rec): boolean => record.state._tag !== "Trashed"
 
+/** A record of a workspace `work new` is still making. */
+const isCreating = (record: Rec): boolean => record.state._tag === "Creating"
+
 /** A record `list` shows: live and made (a clone in progress is not listed yet). */
-const isMade = (record: Rec): boolean => isLive(record) && record.state._tag !== "Creating"
+const isMade = (record: Rec): boolean => isLive(record) && !isCreating(record)
 
 /**
  * `bases` in the order to search for `path`: a path under `<dir>/.work/<name>/` or `<dir>/.rifts/<name>/`
@@ -110,7 +121,7 @@ export const layer = (options: Options) => {
       const operation = `work ${args[0] ?? ""}`
       const where = Option.getOrElse(base, () => "/")
       const env = Option.match(base, { onNone: () => ({}), onSome: (named) => ({ WORK_BASE: named }) })
-      const ran = yield* spawn([bin, "--json", ...args], where, env)
+      const ran = yield* spawn([bin, "--json", ...args], where, env, STEPPED.has(args[0] ?? ""))
       if (ran.code !== 0) return yield* new RiftFailed({ operation, message: failureOf(ran) })
       return yield* Schema.decodeUnknownEffect(schema)(ran.stdout.trim()).pipe(
         Effect.mapError((error) => new RiftFailed({ operation, message: `its answer does not read: ${error.message}` })),
@@ -257,6 +268,39 @@ export const layer = (options: Options) => {
     return { args: [], track: false }
   })
 
+  /**
+   * The workspace `request` names once the `work new` making it is done, waiting at most `makingWaitMs`: made
+   * on the request's branch, it is answered (and started at `at`, refusing rather than overwriting what it
+   * holds); still being made, or made on another branch, fails saying so. Its folder is never removed here:
+   * one an interrupted create left can already hold an agent's work.
+   */
+  const madeMeanwhile = Effect.fn("WorkRifts.madeMeanwhile")(function* (base: string, request: CreateRequest) {
+    const recordOf = live(base).pipe(Effect.map((records) => Option.fromUndefinedOr(records.find((record) => record.name === request.name))))
+    const waitMs = options.makingWaitMs ?? 300_000
+    const record = yield* recordOf.pipe(
+      Effect.repeat({ schedule: Schedule.spaced(MAKING_POLL_MS), while: (found) => Option.exists(found, isCreating), times: Math.ceil(waitMs / MAKING_POLL_MS) }),
+    )
+    return yield* Option.match(record, {
+      onNone: () => Effect.fail(new RiftFailed({ operation: "work new", message: `the workspace ${request.name} being made was given up while this create waited for it; call again` })),
+      onSome: (found) =>
+        Effect.gen(function* () {
+          if (isCreating(found))
+            return yield* new RiftFailed({
+              operation: "work new",
+              message: `the workspace ${request.name} at ${found.path} is still being made after ${Math.round(waitMs / 1000)} s (its record says creating). Its folder may already hold work: never run \`work gc\` on its base; wait and call again`,
+            })
+          if (found.branch !== request.branch)
+            return yield* new RiftFailed({ operation: "work new", message: `the workspace ${request.name} at ${found.path} was made meanwhile on branch ${found.branch}, not ${request.branch}; pick another name` })
+          seen.set(found.path, { base, name: found.name, id: found.id })
+          yield* Option.match(Option.fromUndefinedOr(request.at), {
+            onNone: () => Effect.void,
+            onSome: (at) => Effect.asVoid(git(found.path, "switch", "--quiet", "--detach", at)),
+          })
+          return found.path
+        }),
+    })
+  })
+
   const create = Effect.fn("WorkRifts.create")(function* (request: CreateRequest) {
     if (options.workrift) {
       // From the caller's checkout, so workrift imports its gh stack metadata; the source is named outright.
@@ -269,6 +313,10 @@ export const layer = (options: Options) => {
       return path
     }
     const parent = yield* placeOf(request.source)
+    // A workspace of this name still being made (an earlier create an interrupt cut off, its `work new` left
+    // to finish): wait for it, then answer it as this create's, so the earlier call's lane is finished here.
+    const pending = Option.fromUndefinedOr(parent.records.find((record) => record.name === request.name))
+    if (Option.exists(pending, isCreating)) return yield* madeMeanwhile(parent.base, request)
     const on = Option.match(parent.record, { onNone: () => [], onSome: (record) => ["-on", record.name] })
     const start = yield* branchArgs(request.source, request.branch)
     const made = yield* call(Created, Option.some(parent.base), ["new", "-branch", request.branch, ...on, ...start.args, request.name])
