@@ -55,8 +55,8 @@ One line per saved OpenCode pane, then the totals; it exits 1 when any failed.
 
 ## Runbook steps
 
-The Mac's are in `mac/developer-volume/RUNBOOK.md` (steps 3 and 12), the
-workbox's in `linux/workbox-btrfs/RUNBOOK.md` (steps 4 and 7); a test holds both.
+The Mac's are in `mac/developer-volume/RUNBOOK.md` (steps 3 and 12); a test
+holds them.
 
 Before the move, while Herdr still runs:
 
