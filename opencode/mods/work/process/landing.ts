@@ -409,7 +409,8 @@ export const layer = (options: Options) => {
   })
 
   const install = Effect.fn("Landing.install")(function* (integration: string, previous: string) {
-    const changed = lines(yield* git(integration, "diff", "--name-only", previous, "HEAD")).filter(isLock)
+    // A deleted lock file needs no install, and its folder may be gone with it: a spawn there fails ENOENT.
+    const changed = lines(yield* git(integration, "diff", "--name-only", "--diff-filter=d", previous, "HEAD")).filter(isLock)
     const committed: Array<string> = []
     for (const lock of changed) {
       const [frozen, free] = INSTALLS[basename(lock)]!

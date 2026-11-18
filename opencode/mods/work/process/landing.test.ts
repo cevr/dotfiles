@@ -204,6 +204,30 @@ describe("process Landing", () => {
     expect(await made.run((landing) => landing.install(made.integration, started.previous))).toEqual([])
   })
 
+  test("a lock file the new main deletes with its folder needs no install: install answers none, not a spawn in a missing folder", async () => {
+    const made = bench()
+    write(made.source, "tools/t/package.json", JSON.stringify({ name: "t", version: "1.0.0" }))
+    // A lock file of its own beside it, as each tool folder under workbox/bun-tools had (its content never read).
+    write(made.source, "tools/t/bun.lock", "{}\n")
+    sh(made.source, "git", "add", "-A")
+    sh(made.source, "git", "commit", "-q", "-m", "add tools/t")
+    sh(made.source, "git", "push", "-q", "origin", "main")
+    await made.run((landing) => landing.start(made.integration, "main"))
+    expect(existsSync(join(made.integration, "tools/t/bun.lock"))).toBe(true)
+    // The next main drops the whole package, its lock file and its folder with it.
+    sh(made.source, "git", "rm", "-q", "-r", "tools/t")
+    sh(made.source, "git", "commit", "-q", "-m", "drop tools/t")
+    sh(made.source, "git", "push", "-q", "origin", "main")
+    const installed = await made.run((landing) =>
+      Effect.gen(function* () {
+        const started = yield* landing.start(made.integration, "main")
+        return yield* landing.install(made.integration, started.previous)
+      }),
+    )
+    expect(existsSync(join(made.integration, "tools/t"))).toBe(false)
+    expect(installed).toEqual([])
+  })
+
   test("check keeps the command's output in a log and never fails on its exit code", async () => {
     const made = bench()
     const ran = await made.run((landing) => landing.check(made.integration, "gate", 'echo " 3 pass"; echo oops >&2; [ "$RIFT_LAND_BASE" = b0 ] && exit 3', { RIFT_LAND_BASE: "b0" }))
