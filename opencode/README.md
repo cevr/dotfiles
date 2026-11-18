@@ -447,6 +447,13 @@ names the escape plugin's key that interrupts the turn and sends what waits
 the command's id through the host's `keymap.shortcuts`, so the hint shows
 only while that plugin binds one; see Escape).
 
+While a leader chord waits for its next key (after Ctrl+X, until the next
+key, Escape or the leader's timeout), that hint line reads `Ctrl+X …`, the
+keys in the accent, in place of its hint: the host keymap's pending sequence
+read through `keymap.pending` (`pendingLeader` in `pending.ts`), so no row
+moves. The stock composer shows the same in its footer status when Prime is
+off.
+
 The loader under the transcript reads `Executing · 13s`, from the run's first
 step, so a waiting prompt never restarts the clock. While a compaction of
 the current run runs there is no loader: the compaction's own row spins and

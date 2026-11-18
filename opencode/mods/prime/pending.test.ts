@@ -1,11 +1,14 @@
 // What the runner has not taken: which prompts wait, the queued rows that show
 // them, and when the loader shows and what it times.
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import {
   isWaiting,
   keyLabel,
+  leaderLabel,
   loader,
   pendingActions,
+  pendingLeader,
   queuedRow,
   sendHint,
   waitingPrompts,
@@ -135,6 +138,18 @@ describe("the prompts the runner has not taken", () => {
     expect(sendHint({ shortcut: "ctrl+return", running: true, waiting: 0 })).toBe("")
     expect(sendHint({ shortcut: undefined, running: true, waiting: 1 })).toBe("")
     expect(keyLabel("ctrl+shift+s")).toBe("Ctrl+Shift+S")
+  })
+
+  test("a pending leader chord reads in Prime's key words, each step labelled", () => {
+    expect(leaderLabel("ctrl+x")).toBe("Ctrl+X")
+    expect(leaderLabel("ctrl+x g")).toBe("Ctrl+X G")
+  })
+
+  test("a pending sequence is the leader's only when it starts with the leader", () => {
+    expect(pendingLeader([])).toEqual(Option.none())
+    expect(pendingLeader([{ key: "ctrl+x", token: "leader" }])).toEqual(Option.some("ctrl+x"))
+    expect(pendingLeader([{ key: "ctrl+x", token: "leader" }, { key: "g" }])).toEqual(Option.some("ctrl+x g"))
+    expect(pendingLeader([{ key: "g" }])).toEqual(Option.none())
   })
 })
 

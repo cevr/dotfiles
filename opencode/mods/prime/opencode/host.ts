@@ -16,6 +16,7 @@ import type { Starting } from "../starting.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
 import { killJob, readJobs } from "./jobs.ts"
+import { pendingLeader } from "../pending.ts"
 import { openPending } from "./pending.ts"
 import { queues } from "./queue.ts"
 import { openShells, shellTail } from "./shells.ts"
@@ -109,6 +110,7 @@ export function host(
     // Priority 1, as the host's own tabs bind theirs; the tab mounts only while it is the active one.
     composerKeys: (commands) => context.keymap.layer(() => ({ mode: "composer", priority: 1, commands: [...commands()] })),
     shortcut: (commandID) => context.keymap.shortcuts(commandID)[0],
+    leader: () => pendingLeader(context.keymap.pending()),
     Markdown: context.ui.Markdown,
     Code: context.ui.Code,
   }

@@ -24,7 +24,7 @@ import {
   trayModel,
   usageLabel,
 } from "../chrome.ts"
-import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
+import { inboxOf, LEADER_REST, leaderLabel, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { startingLine } from "../starting.ts"
@@ -180,18 +180,32 @@ export function HintLine(props: { host: Host; sessionID: string }) {
   )
   return (
     <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
-      {/* While the service or its plugins start, that takes the hint's place: a prompt sent then waits for it. */}
+      {/* While a leader chord waits for its next key, that takes the hint's place, until the chord completes, is
+          cancelled or times out. */}
       <Show
-        when={Option.isSome(props.host.starting())}
+        when={Option.getOrUndefined(props.host.leader())}
         fallback={
-          <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
-            {send()}
-          </text>
+          /* While the service or its plugins start, that takes the hint's place: a prompt sent then waits for it. */
+          <Show
+            when={Option.isSome(props.host.starting())}
+            fallback={
+              <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
+                {send()}
+              </text>
+            }
+          >
+            <box paddingLeft={GUTTER} flexShrink={1}>
+              <StartingNotice host={props.host} />
+            </box>
+          </Show>
         }
       >
-        <box paddingLeft={GUTTER} flexShrink={1}>
-          <StartingNotice host={props.host} />
-        </box>
+        {(keys) => (
+          <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
+            <span style={{ fg: props.host.theme().hue.accent[300] }}>{leaderLabel(keys())}</span>
+            {LEADER_REST}
+          </text>
+        )}
       </Show>
       <UpdateNotice host={props.host} />
     </box>

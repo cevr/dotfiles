@@ -1,6 +1,7 @@
 // What the runner has not taken yet, without rendering: the prompts that wait
 // in the session's inbox, the queued rows above the composer that show them
 // until the runner takes them, and when the loader shows and what it times.
+import { Array as Arr, Option } from "effect"
 import { oneLine } from "./ask.ts"
 import type { Message } from "./session.ts"
 
@@ -118,6 +119,25 @@ export function keyLabel(shortcut: string) {
     .map((part) => (part.toLowerCase() === "return" ? "Enter" : part.charAt(0).toUpperCase() + part.slice(1)))
     .join("+")
 }
+
+/**
+ * The keys of a leader chord waiting for its next key (`ctrl+x`), read from the host keymap's pending sequence;
+ * none while nothing waits, or while what waits did not start with the leader.
+ */
+export function pendingLeader(pending: ReadonlyArray<{ readonly key: string; readonly token?: string }>): Option.Option<string> {
+  return Arr.head(pending).pipe(
+    Option.filter((first) => first.token === "leader"),
+    Option.map(() => pending.map((item) => item.key).join(" ")),
+  )
+}
+
+/** A pending leader chord in Prime's key words, each step labelled: `ctrl+x` reads `Ctrl+X`. */
+export function leaderLabel(keys: string) {
+  return keys.split(" ").map(keyLabel).join(" ")
+}
+
+/** What follows the pending leader's keys on the hint line: the chord waits for its next key. */
+export const LEADER_REST = " …"
 
 /**
  * The hint above the composer for the send key, while a turn runs and a

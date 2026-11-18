@@ -174,6 +174,11 @@ export interface Host {
   composerKeys(commands: Accessor<ReadonlyArray<ComposerKey>>): void
   /** The first key bound to a keymap command, in the host's words (`ctrl+return`), or undefined when none is. */
   shortcut(commandID: string): string | undefined
+  /**
+   * The keys of a leader chord waiting for its next key, in the host's words
+   * (`ctrl+x`), or none while none waits. Reactive.
+   */
+  leader(): Option.Option<string>
 
   /** The host's markdown renderer, for text that reads like the transcript. */
   readonly Markdown: (props: { readonly content: string; readonly streaming?: boolean }) => JSX.Element
