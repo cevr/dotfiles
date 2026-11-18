@@ -108,7 +108,25 @@ describe("attach on the pinned opentui", () => {
       expect(made.inlineHookFilter).toEqual(["ses_", ...FILTER])
       const frame = yield* until(setup, (shown) => shown.includes("@Title"))
       expect(frame.split("\n")[0]?.trimEnd()).toBe("@Title then  ✓ Done")
+      expect(style(spanOf(setup, " ✓ Done "))).toEqual(Option.some({ fg: channels(SUCCESS), bg: channels(GROUND), bold: false }))
       expect(Option.isSome(findMarkdown(setup.renderer.root))).toBe(true)
+    }).pipe(Effect.scoped),
+    TIMEOUT_MS,
+  )
+
+  effectTest(
+    "runs alone on the blocks that may hold a pill or a label, and on every block after a host hook with no filter",
+    Effect.gen(function* () {
+      const setup = yield* renderer
+      const alone = markdown(setup, { conceal: true, streaming: false, content: "[[Done]]" })
+      attach(alone, look)
+      expect(alone.inlineHookFilter).toEqual(FILTER)
+      const everywhere = markdown(setup, { conceal: true, streaming: false, content: "ses_x then [[Done]]" })
+      everywhere.inlineHook = (spans) => spans.map((span) => ({ ...span, text: span.text.replace("ses_x", "@Title") }))
+      attach(everywhere, look)
+      expect(everywhere.inlineHookFilter).toBeUndefined()
+      const frame = yield* until(setup, (shown) => shown.includes("@Title"))
+      expect(frame).toContain("@Title then  ✓ Done")
     }).pipe(Effect.scoped),
     TIMEOUT_MS,
   )
