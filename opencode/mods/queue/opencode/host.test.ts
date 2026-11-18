@@ -99,12 +99,12 @@ describe("the host as the sweep reads it", () => {
     Effect.gen(function* () {
       const sent: Array<unknown> = []
       const target = host({ synthetic: (input) => Effect.sync(() => sent.push(input)) })
-      yield* use(target, (service) => service.note("ses_idle", "check", "Queue check", true))
-      expect(sent).toEqual([{ sessionID: "ses_idle", text: "check", description: "Queue check", resume: true }])
-      const gone = yield* use(host({ synthetic: () => Effect.fail(new NotFound()) }), (service) => Effect.flip(service.note("ses_gone", "check", "Queue check", false)))
+      yield* use(target, (service) => service.note("ses_idle", "check", "Queue check", true, "staleness"))
+      expect(sent).toEqual([{ sessionID: "ses_idle", text: "check", description: "Queue check", resume: true, kind: "staleness" }])
+      const gone = yield* use(host({ synthetic: () => Effect.fail(new NotFound()) }), (service) => Effect.flip(service.note("ses_gone", "check", "Queue check", false, "answer")))
       expect([gone._tag, gone.message]).toEqual(["NoteRefused", "no such session"])
       const down = yield* use(host({ synthetic: () => Effect.fail(new Down({ message: "busy elsewhere" })) }), (service) =>
-        Effect.flip(service.note("ses_idle", "check", "Queue check", true)),
+        Effect.flip(service.note("ses_idle", "check", "Queue check", true, "staleness")),
       )
       expect(down.message).toBe("busy elsewhere")
     }),

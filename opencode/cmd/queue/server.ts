@@ -12,6 +12,11 @@
  * - `get({ sessionID })` answers `{ revision, items }`; the revision goes up
  *   with every change, so a reader polls cheaply.
  * - A deleted session's queue goes.
+ * - Pressing an item in the Queue tab opens the host's question form for it
+ *   (`@dotfiles/opencode-queue/answer`); its submit comes back as the host's
+ *   `form.replied` event, and the owner's answer goes to the session that
+ *   owns the queue as one message that wakes it. The item only records that
+ *   an answer went; the agent decides what follows.
  * - Every few minutes a sweep (`@dotfiles/opencode-queue/fresh`) reads this
  *   location's recently active root sessions' queues and sends a session whose
  *   items look stale one short note asking its agent to check them: at most
@@ -25,6 +30,7 @@ import { Plugin, Tool } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
+import { answersOf } from "@dotfiles/opencode-queue/answer"
 import { DESCRIPTION, listing } from "@dotfiles/opencode-queue/description"
 import * as FileStore from "@dotfiles/opencode-queue/filestore/store"
 import * as Fresh from "@dotfiles/opencode-queue/fresh"
@@ -74,7 +80,7 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
         Effect.orDie,
       )
       const services = yield* Layer.build(
-        Layer.merge(Model.layer, Fresh.layer.pipe(Layer.provide(Host.fromContext(ctx)))).pipe(Layer.provide(externals(options))),
+        Layer.merge(Model.layer, Fresh.layer).pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(externals(options))),
       )
       const queue = Context.get(services, Model.QueueModel)
       const freshness = Context.get(services, Fresh.Freshness)
@@ -98,6 +104,23 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.deleted"] }).pipe(
           Stream.runForEach((event) => queue.forget(event.data.sessionID).pipe(Effect.ignoreCause)),
+          Effect.ignoreCause,
+        ),
+      )
+
+      // The owner's answer to an item, off the host's form: one message to the session that owns the queue.
+      yield* Effect.forkScoped(
+        ctx.event.subscribe({ types: ["form.replied"] }).pipe(
+          Stream.runForEach((event) =>
+            Effect.forEach(
+              answersOf(event.data.answer),
+              (given) =>
+                queue.answer(given.root, given.id, given.answer).pipe(
+                  Effect.catchCause((cause) => Effect.logWarning("queue: the owner's answer did not reach its session", { sessionID: given.root, id: given.id, cause })),
+                ),
+              { discard: true },
+            ),
+          ),
           Effect.ignoreCause,
         ),
       )

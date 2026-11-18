@@ -15,13 +15,14 @@
 //   the questions plugin's `open({ sessionIDs })` (mods/questions/question.ts
 //   `QUESTIONS`), through the context's `rpc(definition)` client; a plugin
 //   not loaded fails the call.
-// - the note: `session.synthetic` with `delivery: "steer"` admits it; with
+// - the note (a staleness check, or the owner's answer to an item, told apart
+//   by `metadata.kind`): `session.synthetic` with `delivery: "steer"` admits it; with
 //   `resume: true` it wakes an idle session, with `resume: false` it waits
 //   for the next turn; its description is the TUI's `◈` notice row.
 import type { Plugin } from "@opencode/plugin/effect"
 import { SessionID } from "@opencode/schema/session-id"
 import { Array as Arr, DateTime, Effect, Layer, Option, Schema } from "effect"
-import { NoteRefused, QueueHost, type Root } from "../service.ts"
+import { type NoteKind, NoteRefused, QueueHost, type Root } from "../service.ts"
 import type { Linked } from "../stale.ts"
 
 /** A session as the host's `session.get` and `session.list` give it: the fields read here. */
@@ -41,7 +42,13 @@ export interface Host {
   readonly pending: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<unknown, unknown>
   /** The questions plugin's `open({ sessionIDs })` answer, undecoded. */
   readonly open: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<unknown, unknown>
-  readonly synthetic: (input: { readonly sessionID: string; readonly text: string; readonly description: string; readonly resume: boolean }) => Effect.Effect<unknown, unknown>
+  readonly synthetic: (input: {
+    readonly sessionID: string
+    readonly text: string
+    readonly description: string
+    readonly resume: boolean
+    readonly kind: NoteKind
+  }) => Effect.Effect<unknown, unknown>
 }
 
 const BY_SESSIONS = { type: "object", properties: { sessionIDs: { type: "array", items: { type: "string" } } }, required: ["sessionIDs"] } as const
@@ -124,8 +131,8 @@ export const layer = (host: Host) =>
           ),
           Effect.option,
         ),
-      note: (sessionID, text, description, wake) =>
-        host.synthetic({ sessionID, text, description, resume: wake }).pipe(
+      note: (sessionID, text, description, wake, kind) =>
+        host.synthetic({ sessionID, text, description, resume: wake, kind }).pipe(
           Effect.asVoid,
           Effect.mapError((cause) => new NoteRefused({ sessionID, message: messageOf(cause) })),
         ),
@@ -147,7 +154,7 @@ export const fromContext = (ctx: Plugin.Context) =>
           sessionID: SessionID.make(input.sessionID),
           text: input.text,
           description: input.description,
-          metadata: { plugin: "dotfiles-opencode.queue", kind: "staleness" },
+          metadata: { plugin: "dotfiles-opencode.queue", kind: input.kind },
           delivery: "steer",
           resume: input.resume,
         }),

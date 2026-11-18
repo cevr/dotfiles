@@ -147,6 +147,7 @@ export const segments = (line: PlanLine): ReadonlyArray<Segment> =>
         { text: ` · ${WORDS[row.mark]}`, tone: row.mark },
         ...optional(Option.fromNullishOr(row.detail), "muted", " · "),
         ...optional(Option.fromNullishOr(row.who), "muted", " · "),
+        ...optional(Option.fromNullishOr(row.answered), "muted", " · answered: "),
       ],
       after: ({ waits, depth }): ReadonlyArray<Segment> => [
         guide(depth),

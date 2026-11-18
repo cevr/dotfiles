@@ -32,6 +32,9 @@ export interface Root {
   readonly updated: number
 }
 
+/** What a note into a session is: the sweep's staleness check, or the owner's answer to an item. */
+export type NoteKind = "staleness" | "answer"
+
 /** The host would not take the note. */
 export class NoteRefused extends Schema.TaggedError<NoteRefused>()("NoteRefused", { sessionID: Schema.String, message: Schema.String }) {}
 
@@ -51,7 +54,7 @@ export class QueueHost extends Context.Service<
     readonly wakes: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Option.Option<ReadonlyMap<string, ReadonlyArray<string>>>>
     /** How many ask_user_async questions each session has open (the questions plugin's `open`). */
     readonly questions: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Option.Option<ReadonlyMap<string, number>>>
-    /** Put the note into the session: waking it when `wake`, else read at its next turn. */
-    readonly note: (sessionID: string, text: string, description: string, wake: boolean) => Effect.Effect<void, NoteRefused>
+    /** Put the note into the session: waking it when `wake`, else read at its next turn. `kind` says what it is: a staleness check or the owner's answer to an item. */
+    readonly note: (sessionID: string, text: string, description: string, wake: boolean, kind: NoteKind) => Effect.Effect<void, NoteRefused>
   }
 >()("dotfiles-opencode/queue/QueueHost") {}

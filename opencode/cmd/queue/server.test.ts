@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Tool } from "@opencode/plugin/effect"
-import { Effect, Queue, Schedule, Schema, type Scope, Stream } from "effect"
+import { Effect, Option, Queue, Schedule, Schema, type Scope, Stream } from "effect"
 import * as MemoryStore from "@dotfiles/opencode-queue/memory/store"
 import { QUEUE, type QueueInput, Snapshot } from "@dotfiles/opencode-queue/queue"
 import { fileOf } from "@dotfiles/opencode-queue/filestore/store"
@@ -25,6 +25,16 @@ interface Added {
   readonly execute: (input: QueueInput, context: unknown) => Effect.Effect<{ readonly content: ReadonlyArray<Tool.Content> }, Tool.Error>
 }
 
+/** A synthetic message as the plugin puts it into a session. */
+interface Synthetic {
+  readonly sessionID: string
+  readonly text: string
+  readonly description: string
+  readonly delivery: string
+  readonly resume: boolean
+  readonly metadata: { readonly plugin: string; readonly kind: string }
+}
+
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
 /** The plugin started on a stand-in host: the tool it added, a call of it per session, its RPC, and a session deletion. */
@@ -32,6 +42,8 @@ const start = (options: Record<string, unknown> = {}, externals: Parameters<type
   Effect.gen(function* () {
     const rpc: Record<string, Record<string, Handler>> = {}
     const deletions = yield* Queue.unbounded<{ readonly type: "session.deleted"; readonly data: { readonly sessionID: string } }>()
+    const replies = yield* Queue.unbounded<{ readonly type: "form.replied"; readonly data: { readonly sessionID: string; readonly answer: Readonly<Record<string, string>> } }>()
+    const synthetic: Array<Synthetic> = []
     let added: Added | undefined
     const host = {
       options,
@@ -42,7 +54,15 @@ const start = (options: Record<string, unknown> = {}, externals: Parameters<type
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(deletions) },
+      event: {
+        // Each subscriber reads its own events: the form's submits, or the deletions.
+        subscribe: ({ types }: { readonly types: ReadonlyArray<string> }) =>
+          Option.match(Option.liftPredicate(types, (each) => each.includes("form.replied")), {
+            onSome: () => Stream.fromQueue(replies),
+            onNone: () => Stream.fromQueue(deletions),
+          }),
+      },
+      session: { synthetic: (input: Synthetic) => Effect.sync(() => void synthetic.push(input)) },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
           Effect.sync(() => {
@@ -63,7 +83,15 @@ const start = (options: Record<string, unknown> = {}, externals: Parameters<type
     const fail = (input: QueueInput, sessionID?: string) => Effect.flip(execute(input, sessionID)).pipe(Effect.map((error) => error.message))
     const get = (sessionID: string) => handler({ sessionID }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Snapshot)), Effect.orDie)
     const deleteSession = (sessionID: string) => Queue.offer(deletions, { type: "session.deleted", data: { sessionID } })
-    return { tool, call, fail, get, deleteSession }
+    /** The host's form submit, in the session on screen. */
+    const reply = (answer: Readonly<Record<string, string>>, sessionID = "ses_root") => Queue.offer(replies, { type: "form.replied", data: { sessionID, answer } })
+    /** The synthetic messages sent so far, once there are `count`. */
+    const sent = (count: number) =>
+      Effect.suspend(() => Effect.fromOption(Option.liftPredicate([...synthetic], (all) => all.length >= count))).pipe(
+        Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+        Effect.orDie,
+      )
+    return { tool, call, fail, get, deleteSession, reply, sent }
   })
 
 describe("the options", () => {
@@ -161,6 +189,38 @@ describe("the queue tool", () => {
         const snapshot = yield* plugin.get("ses_root")
         expect(snapshot.revision).toBe(4)
         expect(snapshot.items.map((item) => item.id).sort()).toEqual(["a", "b", "c", "d"])
+      }),
+    ))
+})
+
+describe("the owner's answer to an item", () => {
+  test("the host form's submit reaches the session that owns the queue as one waking message, read in order; another form's keys send nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ set: [{ id: "pool", text: "Pool token", state: "next", choices: [{ label: "Rotate it" }, { label: "Keep it" }] }] })
+        // The form opened in a subagent's session on screen still answers the root's queue its key names.
+        yield* plugin.reply({ "ask_user_async:q1": "SQLite", "queue:ses_root:pool": "Rotate it" }, "ses_child")
+        yield* plugin.reply({ "queue:ses_root:pool": "Wait for Friday" })
+        expect(yield* plugin.sent(2)).toEqual([
+          {
+            sessionID: "ses_root",
+            text: "Owner on queue item pool (Pool token): Rotate it",
+            description: "Queue answer: pool",
+            delivery: "steer",
+            resume: true,
+            metadata: { plugin: "dotfiles-opencode.queue", kind: "answer" },
+          },
+          {
+            sessionID: "ses_root",
+            text: "Owner on queue item pool (Pool token): Wait for Friday",
+            description: "Queue answer: pool",
+            delivery: "steer",
+            resume: true,
+            metadata: { plugin: "dotfiles-opencode.queue", kind: "answer" },
+          },
+        ])
+        expect((yield* plugin.get("ses_root")).items.map((item) => item.answered)).toEqual([{ answer: "Wait for Friday", at: expect.any(Number) }])
       }),
     ))
 })

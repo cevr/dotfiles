@@ -4,6 +4,7 @@
 // here (Prime's rows beneath the composer carry them). Pure; the TUI supplies
 // the linked sessions' states and the time.
 import { fit } from "@dotfiles/opencode-subagents/line"
+import { Option } from "effect"
 import type { Item } from "./item.ts"
 
 /** A subagent session's state, as the TUI sees it. `since` (epoch ms) is when it finished. */
@@ -32,6 +33,8 @@ export interface Row {
   readonly detail?: string
   /** Whose it is, when not this agent's. */
   readonly who?: string
+  /** The owner's answer, sent and not yet acted on by the agent. */
+  readonly answered?: string
 }
 
 /** How long a done item stays on the board. */
@@ -100,6 +103,7 @@ export const board = (items: ReadonlyArray<Item>, live: ReadonlyMap<string, Live
       ...(time === undefined || place.group !== "scheduled" ? {} : { time }),
       ...(item.detail === undefined ? {} : { detail: item.detail }),
       ...(item.owner === "other" ? { who: item.who ?? "other" } : {}),
+      ...Option.match(Option.fromNullishOr(item.answered), { onNone: () => ({}), onSome: (answered) => ({ answered: answered.answer }) }),
       order: rows.length,
       ...(item.at === undefined ? {} : { at: Date.parse(item.at) }),
     })

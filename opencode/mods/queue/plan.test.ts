@@ -10,6 +10,12 @@ const item = (id: string, state: Item["state"], extra: Partial<Item> = {}): Item
 const text = (items: ReadonlyArray<Item>, live: ReadonlyMap<string, Live> = new Map()) => plan(items, live, NOW).map(planText)
 
 describe("plan", () => {
+  test("an item the owner answered says so until the agent writes it again", () => {
+    expect(text([item("panes", "needs-you", { text: "Close old panes", answered: { answer: "Still needed", at: NOW } })])).toEqual([
+      "! Close old panes · needs you · answered: Still needed",
+    ])
+  })
+
   test("nests what waits on an item, and what its outcomes lead to, under it; draws each outcome", () => {
     const items = [
       item("land", "next", { text: "Land + install", after: ["verify"] }),

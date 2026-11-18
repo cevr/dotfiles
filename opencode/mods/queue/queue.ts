@@ -3,10 +3,10 @@
 // leads to (QueueChanged); a change that leaves the list as it is records
 // nothing. The store keeps the folded state with a revision the sidebar polls.
 // Also the queue's RPC, which the sidebar reads.
-import { Effect, Option, Record as Rec, Schema } from "effect"
+import { Array as Arr, Effect, Option, Record as Rec, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { toolInput } from "@dotfiles/decider/tool-input"
-import { InvalidItem, Item, ItemInput, itemOf, UnknownState } from "./item.ts"
+import { answeredOf, InvalidItem, Item, ItemInput, itemOf, oneLine, UnknownState } from "./item.ts"
 
 export interface QueueState {
   readonly items: ReadonlyArray<Item>
@@ -20,7 +20,11 @@ export interface SetQueue extends Schema.Schema.Type<typeof SetQueue> {}
 export const PatchQueue = Schema.TaggedStruct("PatchQueue", { upsert: Schema.Array(ItemInput), remove: Schema.Array(Schema.String) })
 export interface PatchQueue extends Schema.Schema.Type<typeof PatchQueue> {}
 
-export type Command = SetQueue | PatchQueue
+/** Record that the owner's answer to an item was sent to the agent. Only the plugin gives it, never the tool. */
+export const AnswerItem = Schema.TaggedStruct("AnswerItem", { id: Schema.String, answer: Schema.String })
+export interface AnswerItem extends Schema.Schema.Type<typeof AnswerItem> {}
+
+export type Command = SetQueue | PatchQueue | AnswerItem
 
 /** The list a change led to. */
 export const QueueChanged = Schema.TaggedStruct("QueueChanged", { items: Schema.Array(Item) })
@@ -68,6 +72,16 @@ export const Queue: Decider<QueueState, Command, QueueChanged, Rejection> = {
   decide: (state, command, now) =>
     Effect.gen(function* () {
       const byId = new Map(state.items.map((item) => [item.id, item]))
+      if (command._tag === "AnswerItem") {
+        const answer = oneLine(command.answer)
+        if (answer === "") return yield* new InvalidItem({ id: command.id, reason: "an answer needs text" })
+        const items = Option.flatMap(
+          Arr.findFirstIndex(state.items, (item) => item.id === command.id),
+          (at) => Arr.modify(state.items, at, (item) => answeredOf(item, answer, now)),
+        )
+        if (Option.isNone(items)) return yield* new UnknownItem({ ids: [command.id], known: [...byId.keys()] })
+        return changed(state, items.value)
+      }
       if (command._tag === "SetQueue") {
         const items = yield* Effect.forEach(command.items, (input) => itemOf(input, byId.get(input.id.trim()), now))
         const twice = duplicate(items.map((item) => item.id))
@@ -148,7 +162,7 @@ export const touchedOf = (previous: Snapshot, next: ReadonlyArray<Item>, named: 
 
 /** The ids a command restates: a patch's upserts; a whole new list names none, so only its changes count. */
 export const namedOf = (command: Command): ReadonlySet<string> => {
-  if (command._tag === "SetQueue") return new Set()
+  if (command._tag !== "PatchQueue") return new Set()
   return new Set(command.upsert.map((input) => input.id.trim()))
 }
 

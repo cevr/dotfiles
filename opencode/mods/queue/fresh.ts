@@ -112,7 +112,7 @@ export const layer = Layer.effect(
         wanted.push({ root, key, text: noteOf(stale, open), noted: { sessionID: root.id, stale: stale.map((each) => each.id), open, woke: !root.busy } })
       }
       return yield* Effect.forEach(wanted, ({ root, key, text, noted }) =>
-        host.note(root.id, text, `Queue check: ${noted.stale.length} stale of ${noted.open} open`, !root.busy).pipe(
+        host.note(root.id, text, `Queue check: ${noted.stale.length} stale of ${noted.open} open`, !root.busy, "staleness").pipe(
           Effect.andThen(Ref.update(sent, (before) => new Map(before).set(root.id, { at: now, key }))),
           Effect.as([noted]),
           Effect.catchTag("NoteRefused", (refused) =>

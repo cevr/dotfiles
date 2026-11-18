@@ -11,6 +11,7 @@ export const DESCRIPTION = [
   "needs-you is what only the owner can do (a decision, a login, an irreversible action); done items stay visible for ten minutes.",
   "When you start a subagent, add an item with session set to its sessionID (from the subagent tool's result): the queue then shows that session's live state (running, blocked, done, failed), so leave the item as written while it runs. A subagent without an item does not show in the queue.",
   "The Queue tab draws the plan as a state machine. When you start a unit or a verifier, set after (the ids it waits on) and on (each outcome and what follows: an item id or a few words), one line each: on {accepted: 'land', changes: 'fix-r2', failed: 'tell owner'}.",
+  "The owner can press an item to answer it: give choices (at most 4 {label, description?}, as ask_user_async's options) for the answers you expect, else they pick done, still needed or type their own; the answer arrives as a message 'Owner on queue item <id> (<text>): <answer>', and you decide what follows (set it done, remove it, act), which your next write of the item records.",
   "A queue check note lists items that look stale (a finished subagent, an ended monitor, a needs-you with no open question, an item untouched for hours): check each, then set it done, remove it, or upsert it as it is to mark it checked.",
   "Answers with the queue as it now stands.",
 ].join("\n\n")

@@ -22,6 +22,17 @@ export const MAX_LINKS = 8
 /** An outcome's name and what follows it stay this short. */
 export const MAX_OUTCOME = 24
 export const MAX_NEXT = 80
+/** At most this many answer choices on one item, as ask_user_async allows; a label stays this short. */
+export const MAX_CHOICES = 4
+export const MAX_LABEL = 60
+
+/** An answer the agent offers the owner for an item: a label to pick, and what it means. */
+export const Choice = Schema.Struct({ label: Schema.String, description: Schema.optionalKey(Schema.String) })
+export type Choice = typeof Choice.Type
+
+/** The owner's answer to an item, sent to the agent at `at` (epoch ms); the agent's next write of the item clears it. */
+export const Answered = Schema.Struct({ answer: Schema.String, at: Schema.Number })
+export type Answered = typeof Answered.Type
 
 /** An item as the queue stores it. `doneAt` (epoch ms) is when it became done; the queue sets it. */
 export const Item = Schema.Struct({
@@ -39,7 +50,11 @@ export const Item = Schema.Struct({
   after: Schema.optionalKey(Schema.Array(Schema.String)),
   /** What follows each outcome, in the order written: `{ accepted: "land" }`, an item's id or a few words. */
   on: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  /** The answers the owner may pick when they press the item; the Queue tab offers its own when there are none. */
+  choices: Schema.optionalKey(Schema.Array(Choice)),
   doneAt: Schema.optionalKey(Schema.Number),
+  /** The owner's last answer, sent and not yet followed by a write of the item; only the queue sets it. */
+  answered: Schema.optionalKey(Answered),
 })
 export type Item = typeof Item.Type
 
@@ -62,6 +77,9 @@ export const ItemInput = Schema.Struct({
   after: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Ids of the items this one waits on, e.g. ['impl-r1']. [] clears." }),
   on: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description: "What follows each outcome: an item id or a few words, e.g. {accepted: 'land', changes: 'fix round 2', failed: 'tell owner'}. {} clears.",
+  }),
+  choices: Schema.optional(Schema.Array(Schema.Struct({ label: Schema.String, description: Schema.optional(Schema.String) }))).annotate({
+    description: `At most ${MAX_CHOICES} answers the owner can pick when they press the item; they may also type their own. [] clears.`,
   }),
 })
 export type ItemInput = typeof ItemInput.Type
@@ -108,6 +126,40 @@ const onOf = (id: string, on: Readonly<Record<string, string>>): Result.Result<R
   if (Option.isSome(long))
     return Result.fail(new InvalidItem({ id, reason: `on "${long.value[0]}": keep an outcome to ${MAX_OUTCOME} characters and what follows to ${MAX_NEXT}` }))
   return Result.succeed(Object.fromEntries(outcomes))
+}
+
+/**
+ * The choices of the item `input` describes over `previous`: as written, each
+ * label and description on one line, else as they were; none is left out, so
+ * `[]` clears them. At most MAX_CHOICES, each with a short label of its own.
+ */
+export const choicesOf = (
+  id: string,
+  input: Pick<ItemInput, "choices">,
+  previous: Option.Option<{ readonly choices?: ReadonlyArray<Choice> }>,
+): Result.Result<Option.Option<ReadonlyArray<Choice>>, InvalidItem> =>
+  Option.match(Option.fromNullishOr(input.choices), {
+    onNone: () => Result.succeed(Option.flatMapNullishOr(previous, (item) => item.choices)),
+    onSome: (written) => Result.map(checkedChoices(id, written.map(choiceOf)), (choices) => Option.liftPredicate(choices, Arr.isReadonlyArrayNonEmpty)),
+  })
+
+/** A choice as stored: its label and description on one line, a blank description left out. */
+const choiceOf = (choice: { readonly label: string; readonly description?: string }): Choice =>
+  Option.match(Option.fromNullishOr(field(choice.description)), {
+    onNone: () => ({ label: oneLine(choice.label) }),
+    onSome: (description) => ({ label: oneLine(choice.label), description }),
+  })
+
+/** Choices within the limits: at most MAX_CHOICES, each with a short label of its own. */
+const checkedChoices = (id: string, choices: ReadonlyArray<Choice>): Result.Result<ReadonlyArray<Choice>, InvalidItem> => {
+  const invalid = (reason: string) => Result.fail(new InvalidItem({ id, reason }))
+  if (choices.length > MAX_CHOICES) return invalid(`choices holds at most ${MAX_CHOICES}`)
+  if (choices.some((choice) => choice.label === "")) return invalid("a choice has no label")
+  const long = Arr.findFirst(choices, (choice) => [...choice.label].length > MAX_LABEL)
+  if (Option.isSome(long)) return invalid(`choice "${long.value.label}": keep a label to ${MAX_LABEL} characters`)
+  const labels = choices.map((choice) => choice.label.toLowerCase())
+  if (labels.some((label, at) => labels.indexOf(label) !== at)) return invalid("two choices share a label")
+  return Result.succeed(choices)
 }
 
 /** An item's links: the items it waits on, and what follows each of its outcomes. */
@@ -165,6 +217,7 @@ export const itemOf = (input: ItemInput, previous: Item | undefined, now: number
       at = new Date(time).toISOString()
     }
     const links = yield* Effect.fromResult(linksOf(id, input, Option.fromNullishOr(previous)))
+    const choices = yield* Effect.fromResult(choicesOf(id, input, Option.fromNullishOr(previous)))
     if (stateText === "scheduled" && at === undefined) return yield* new InvalidItem({ id, reason: "a scheduled item needs at (ISO 8601)" })
     const doneAt = stateText !== "done" ? undefined : previous?.state === "done" && previous.doneAt !== undefined ? previous.doneAt : now
     return {
@@ -177,6 +230,10 @@ export const itemOf = (input: ItemInput, previous: Item | undefined, now: number
       ...(kept.detail === undefined ? {} : { detail: kept.detail }),
       ...(kept.session === undefined ? {} : { session: kept.session }),
       ...links,
+      ...Option.match(choices, { onNone: () => ({}), onSome: (kept) => ({ choices: kept }) }),
       ...(doneAt === undefined ? {} : { doneAt }),
     }
   })
+
+/** `item` with the owner's `answer` recorded as sent at `now`, until the agent next writes the item. */
+export const answeredOf = (item: Item, answer: string, now: number): Item => ({ ...item, answered: { answer, at: now } })
