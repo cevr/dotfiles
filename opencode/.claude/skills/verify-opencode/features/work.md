@@ -4,7 +4,7 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 
 ## Sub-features
 
-- `work-create`: `{ action: "create", branch }` answers `Created the workspace <path> from <base>, on branch <branch>.`, the workspace under `.work/<repo>/` beside the base (on the workbox, `workrift create <branch>`).
+- `work-create`: `{ action: "create", branch }` answers `Created the workspace <path> from <base>, on branch <branch>.`, the workspace under `.work/<repo>/` beside the base (on the workbox, `workrift create <branch>`). A create cut off by an interrupt (a plugin reload) leaves its `work new` to finish, and a create of a name whose record still says `creating` waits for it and answers that workspace, never a `-2` (`mods/work/process/work.test.ts`, the interrupted mid-clone case).
 - `work-list`: `{ action: "list" }` answers `Workspaces of <base>:` with each one's branch and `clean` or its unsaved work.
 - `work-remove`: `{ action: "remove", name }` moves a workspace to the trash; one holding work found nowhere else is refused, naming it, unless `force: true`.
 - `work-land`: `{ action: "land", workspaces }` answers `Landed <n> workspace(s) as one push: <sha> …`, and the accept check wakes the session after the turn.
