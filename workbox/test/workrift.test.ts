@@ -210,7 +210,11 @@ describe("workrift with no backend file", () => {
       // The run did reach each verb's real work: a created path, a list of two, a trashed child.
       expect(before.map((step) => step.code)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0])
       expect(before.find((step) => step.argv === "list")?.calls).toContainEqual(expect.stringMatching(/^rift \[list\]/))
-      expect(after).toEqual(before)
+      // deps now also keeps the build output in step (stale dist, 2026-11-18): it reads the workspace's warm
+      // step once more, its last call, and with none set does nothing else. That call is the only difference.
+      const deps = after.find((step) => step.argv === "deps")
+      expect(deps?.calls.at(-1)).toMatch(/^git \[-C\] \[[^\]]+\] \[config\] \[--get\] \[workrift\.warm\]$/)
+      expect(after.map((step) => (step === deps ? { ...step, calls: step.calls.slice(0, -1) } : step))).toEqual(before)
     },
     60_000,
   )
@@ -542,6 +546,95 @@ describeWork("workrift with the work backend", () => {
 
       sh(path, w.env, "git", "commit", "-q", "--amend", "--no-edit")
       expect(trees()).toEqual([...before, done])
+      // A plain commit runs no hook, so its tree is not the marker's; an amend after it builds nothing either.
+      writeFileSync(join(path, "c.txt"), "c\n")
+      sh(path, w.env, "git", "add", "c.txt")
+      sh(path, w.env, "git", "commit", "-q", "-m", "c")
+      sh(path, w.env, "git", "commit", "-q", "--amend", "--no-edit")
+      expect(trees()).toEqual([...before, done])
+    },
+    30_000,
+  )
+
+  /** A base with lefthook.yml and a warm step that logs the tree it built, and a workspace for `branch` with the managed hooks as plain Git hooks. */
+  const hooked = (label: string, branch: string, files: Record<string, string> = {}) => {
+    const w = workBench(label, work)
+    const warmed = join(w.dir, "warmed")
+    w.push("main", { "a.txt": "base\n", "b.txt": "base\n", "lefthook.yml": "{}\n" })
+    sh(w.app, w.env, "git", "config", "workrift.warm", `git rev-parse 'HEAD^{tree}' >>'${warmed}'`)
+    expect(w.wr(w.app, "refresh").code).toBe(0)
+    if (Object.keys(files).length > 0) w.push(branch, files)
+    const path = w.create(w.app, branch)
+    for (const hook of ["post-checkout", "post-merge"]) exe(join(path, ".git/hooks", hook), `#!/bin/sh\nexec '${SCRIPT}' deps\n`)
+    exe(join(path, ".git/hooks/post-rewrite"), `#!/bin/sh\nexec '${SCRIPT}' deps "$1"\n`)
+    const trees = () => lines(existsSync(warmed) ? readFileSync(warmed, "utf8") : "")
+    const tree = () => sh(path, w.env, "git", "rev-parse", "HEAD^{tree}").trim()
+    return { w, path, trees, tree }
+  }
+
+  test(
+    "a rebase that only moves HEAD (no own commits, so no post-rewrite) builds the new tree once",
+    () => {
+      const { w, path, trees, tree } = hooked("rebase-ff", "feat/none")
+      w.push("main", { "a.txt": "main\n" })
+      sh(path, w.env, "git", "fetch", "-q", "origin")
+      const before = trees()
+      sh(path, w.env, "git", "rebase", "-q", "origin/main")
+      expect(trees()).toEqual([...before, tree()])
+    },
+    30_000,
+  )
+
+  test(
+    "a merge that stops on a conflict, or a stash that leaves unmerged paths, builds nothing",
+    () => {
+      const { w, path, trees } = hooked("unmerged", "feat/m", { "a.txt": "m\n" })
+      w.push("main", { "a.txt": "main\n" })
+      sh(path, w.env, "git", "fetch", "-q", "origin")
+      const marker = sh(path, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-warmed-tree").trim()
+      const before = trees()
+      expect(run(path, w.env, ["git", "merge", "-q", "origin/main"]).code).not.toBe(0)
+      // A marker that no longer matches, so only the in-progress check stops the build.
+      writeFileSync(marker, "none\n")
+      sh(path, w.env, "git", "checkout", "--", "b.txt")
+      expect(trees()).toEqual(before)
+      // Resolved but not committed: MERGE_HEAD alone holds the merge open.
+      writeFileSync(join(path, "a.txt"), "both\n")
+      sh(path, w.env, "git", "add", "a.txt")
+      expect(sh(path, w.env, "git", "ls-files", "-u")).toBe("")
+      sh(path, w.env, "git", "checkout", "--", "b.txt")
+      expect(trees()).toEqual(before)
+      sh(path, w.env, "git", "merge", "--abort")
+
+      // Unmerged paths with no operation's state file: a stash applied over a conflicting change.
+      writeFileSync(join(path, "a.txt"), "stashed\n")
+      sh(path, w.env, "git", "stash", "-q")
+      writeFileSync(join(path, "a.txt"), "committed\n")
+      sh(path, w.env, "git", "commit", "-q", "-am", "conflicting")
+      expect(run(path, w.env, ["git", "stash", "apply", "-q"]).code).not.toBe(0)
+      expect(sh(path, w.env, "git", "ls-files", "-u")).not.toBe("")
+      writeFileSync(marker, "none\n")
+      sh(path, w.env, "git", "checkout", "--", "b.txt")
+      expect(trees()).toEqual(before)
+    },
+    30_000,
+  )
+
+  test(
+    "deps brings a workspace's managed lefthook-local.yml up to date and leaves an unmanaged one alone",
+    () => {
+      const { w, path } = hooked("hookfile", "feat/h")
+      const managed = readFileSync(join(w.app, "lefthook-local.yml"), "utf8")
+      const local = join(path, "lefthook-local.yml")
+      const old = managed.replace("run: workrift deps {1}", "run: workrift deps")
+      expect(old).not.toBe(managed)
+      writeFileSync(local, old)
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(readFileSync(local, "utf8")).toBe(managed)
+
+      writeFileSync(local, "# mine\npost-merge:\n  jobs: []\n")
+      expect(w.wr(path, "deps").code).toBe(0)
+      expect(readFileSync(local, "utf8")).toBe("# mine\npost-merge:\n  jobs: []\n")
     },
     30_000,
   )
@@ -658,7 +751,9 @@ describeWork("workrift with the work backend", () => {
       expect(existsSync(join(w.root, ".work/app/.work-trash"))).toBe(false)
       expect(sh(w.app, w.env, "git", "for-each-ref", "refs/work/archive")).toBe("")
     },
-    60_000,
+    // Two prunes over five workspaces each scan /proc and the folders: 46 s alone at load 74 on the workbox
+    // (2026-11-18), past 60 s in a full-file run there, at the parent too.
+    180_000,
   )
 
   /**

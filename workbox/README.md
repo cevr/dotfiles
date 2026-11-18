@@ -148,8 +148,12 @@ before it starts and one with its result, and its output goes to
 run on an unborn branch, or while a rebase, merge, cherry-pick, revert or bisect
 is in progress (a path checkout mid-rebase runs post-checkout over conflict
 markers); post-rewrite passes `rebase` at a rebase's end, so a rebase builds
-once, there. A warm that fails clears the marker, since it may have left the
-output half gone. `git reset`, `git commit`, `git cherry-pick` and
+once, there, and a rebase that only moves HEAD (its todo list empty, so no
+post-rewrite comes) builds at its post-checkout. An amend builds nothing, like
+the commit before it. `deps` also brings a workspace's managed
+`lefthook-local.yml` up to date, so a workspace made before a change to it gets
+today's jobs at its next hook. A warm that fails clears the marker, since it
+may have left the output half gone. `git reset`, `git commit`, `git cherry-pick` and
 `git rebase --abort` run no hook, so run `workrift deps` by hand after them. The
 last installed lock fingerprint is in `.git/workrift-installed-locks`, the last
 warmed tree in `.git/workrift-warmed-tree`.

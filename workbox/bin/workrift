@@ -218,16 +218,21 @@ warmed_tree_file() {
 # or holds unmerged paths: its files may carry conflict markers, and the
 # operation's last step (post-rewrite at a rebase's end) moves HEAD again.
 # Git runs that post-rewrite before it removes the rebase state, so $2 =
-# rebase (post-rewrite's argument) leaves the rebase state out.
+# rebase (post-rewrite's argument) leaves the rebase state out. A rebase whose
+# todo list is empty is ending: one that only moves HEAD (a fast-forward, or
+# every own commit already upstream) runs post-checkout then and no
+# post-rewrite, so it counts as done once no path is unmerged.
 operation_in_progress() {
-  states='rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG'
-  if [ "${2:-}" = rebase ]; then
-    states='MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG'
-  fi
-  for state in $states; do
+  [ -z "$(git -C "$1" ls-files -u)" ] || return 0
+  for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
     [ ! -e "$(git -C "$1" rev-parse --path-format=absolute --git-path "$state")" ] || return 0
   done
-  [ -n "$(git -C "$1" ls-files -u)" ]
+  [ "${2:-}" != rebase ] || return 1
+  [ ! -e "$(git -C "$1" rev-parse --path-format=absolute --git-path rebase-apply)" ] || return 0
+  rebase_dir=$(git -C "$1" rev-parse --path-format=absolute --git-path rebase-merge)
+  [ -e "$rebase_dir" ] || return 1
+  [ -f "$rebase_dir/git-rebase-todo" ] && ! grep -qv -e '^#' -e '^[[:space:]]*$' "$rebase_dir/git-rebase-todo" && return 1
+  return 0
 }
 
 # Build output is only right for the tree it was built from: a workspace whose
@@ -236,17 +241,21 @@ operation_in_progress() {
 # an operation is in progress, or WORKRIFT_WARM=0. The step runs in the
 # foreground, its output in a log in the Git directory. The marker is cleared
 # first: a step that fails may leave the output half gone, so no tree counts as
-# built until one succeeds.
+# built until one succeeds. $2 is the checkout whose Git config holds the warm
+# step (create reads the source's, as before), $3 post-rewrite's argument. An
+# amend changes no file in the working tree, so, like the commit before it
+# (which runs no hook), it builds nothing.
 warm_build() {
   [ "${WORKRIFT_WARM:-1}" != 0 ] || return 0
-  warm=$(warm_command "$1")
+  [ "${3:-}" != amend ] || return 0
+  warm=$(warm_command "$2")
   [ -n "$warm" ] || return 0
   tree=$(git -C "$1" rev-parse -q --verify 'HEAD^{tree}') || return 0
   tree_file=$(warmed_tree_file "$1")
   if [ -f "$tree_file" ] && [ "$(cat "$tree_file")" = "$tree" ]; then
     return 0
   fi
-  ! operation_in_progress "$1" "${2:-}" || return 0
+  ! operation_in_progress "$1" "${3:-}" || return 0
   warm_log=$(git -C "$1" rev-parse --path-format=absolute --git-path workrift-warm.log)
   printf 'workrift: rebuilding changed packages (WORKRIFT_WARM=0 skips)\n' >&2
   : >"$tree_file"
@@ -260,6 +269,25 @@ warm_build() {
 
 dependency_hook_marker='# Managed by workrift: keep dependencies in step with the lock file.'
 
+managed_hook_config() {
+  printf '%s\n' "$dependency_hook_marker"
+  for hook in post-checkout post-merge; do
+    printf '%s:\n  jobs:\n    - name: workrift deps\n      run: workrift deps\n' "$hook"
+  done
+  # post-rewrite's argument (rebase or amend) tells deps a rebase has ended.
+  printf 'post-rewrite:\n  jobs:\n    - name: workrift deps\n      run: workrift deps {1}\n'
+}
+
+# A workspace keeps the lefthook-local.yml its source had when it was made;
+# deps brings a managed one up to date, so its next hook runs today's jobs. The
+# hooks lefthook installed stay: the file changes jobs, not which hooks run.
+sync_dependency_hooks() {
+  local_config="$1/lefthook-local.yml"
+  [ -f "$local_config" ] && grep -qxF "$dependency_hook_marker" "$local_config" || return 0
+  managed=$(managed_hook_config)
+  [ "$(cat "$local_config")" = "$managed" ] || printf '%s\n' "$managed" >"$local_config"
+}
+
 # lefthook merges lefthook-local.yml into the tracked lefthook.yml, and the
 # repository's prepare script regenerates .git/hooks from the merged config.
 install_dependency_hooks() {
@@ -269,14 +297,7 @@ install_dependency_hooks() {
     printf 'workrift: %s is not managed by workrift; dependency hooks not installed\n' "$local_config" >&2
     return 0
   fi
-  {
-    printf '%s\n' "$dependency_hook_marker"
-    for hook in post-checkout post-merge; do
-      printf '%s:\n  jobs:\n    - name: workrift deps\n      run: workrift deps\n' "$hook"
-    done
-    # post-rewrite's argument (rebase or amend) tells deps a rebase has ended.
-    printf 'post-rewrite:\n  jobs:\n    - name: workrift deps\n      run: workrift deps {1}\n'
-  } >"$local_config"
+  managed_hook_config >"$local_config"
   exclude_file=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude)
   mkdir -p "$(dirname "$exclude_file")"
   grep -qxF '/lefthook-local.yml' "$exclude_file" 2>/dev/null || printf '/lefthook-local.yml\n' >>"$exclude_file"
@@ -385,7 +406,7 @@ create_workspace() {
   esac
   # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
-  warm_build "$workspace" >&2
+  warm_build "$workspace" "$source_path" >&2
   printf '%s\n' "$workspace"
 }
 
@@ -424,7 +445,7 @@ advance_source() {
   fi
   git -C "$source_path" merge --ff-only "origin/$main" >&2
   sync_dependencies "$source_path" >&2
-  warm_build "$source_path" >&2
+  warm_build "$source_path" "$source_path" >&2
 }
 
 refresh_source() {
@@ -1001,7 +1022,8 @@ case "$command" in
     else
       sync_dependencies "$top"
     fi
-    warm_build "$top" "${1:-}"
+    sync_dependency_hooks "$top"
+    warm_build "$top" "$top" "${1:-}"
     ;;
   refresh)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
