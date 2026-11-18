@@ -313,8 +313,8 @@ const start = (
       })
     })
     /** The host's retry decision after the pool saw the failed request. */
-    const retry = Effect.fn("PoolServerTest.retry")(function* (decision: unknown = { retry: false }, sessionID = "ses_1") {
-      const event: Record<string, unknown> = { sessionID, agent: "build", model, error: { type: "api" }, attempt: 1, decision }
+    const retry = Effect.fn("PoolServerTest.retry")(function* (decision: unknown = { retry: false }, sessionID = "ses_1", type = "api") {
+      const event: Record<string, unknown> = { sessionID, agent: "build", model, error: { type }, attempt: 1, decision }
       yield* (yield* registered(hooks, "retry"))(event)
       return event.decision
     })
@@ -536,6 +536,17 @@ describe("the hooks", () => {
           { pool: ANTHROPIC, credentialID: "cred-a", needed: true },
           { pool: ANTHROPIC, credentialID: "cred-a", needed: false },
         ])
+      }),
+    ))
+
+  test("a sign-in refusal on a login the pool cannot name (placed before a restart, its mark pruned) goes again, placed afresh; a 429 stays the host's", () =>
+    scenario(
+      Effect.gen(function* () {
+        // A new process: the session's request went out before it, and nothing names its login.
+        const plugin = yield* start()
+        expect(yield* plugin.retry({ retry: false }, "ses_before", "Authentication")).toEqual({ retry: true, delay: 0 })
+        expect(yield* plugin.retry({ retry: false }, "ses_before", "RateLimit")).toEqual({ retry: false })
+        expect(yield* plugin.retry({ retry: true, delay: 2000 }, "ses_before", "RateLimit")).toEqual({ retry: true, delay: 2000 })
       }),
     ))
 
