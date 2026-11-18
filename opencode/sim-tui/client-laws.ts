@@ -104,6 +104,9 @@ const read = <S extends Schema.Decoder<unknown>>(schema: S, answer: Answer) => O
 const shown = (answer: Answer) => Schema.encodeSync(Json)(Option.getOrElse(answer.body, () => ""))
 
 const MessageList = Schema.Struct({ data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String })) })
+const Outline = Schema.Struct({
+  data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String, summary: Schema.optional(Schema.String) })),
+})
 const Active = Schema.Struct({ data: Schema.Record(Schema.String, Schema.Unknown) })
 const Interrupted = Schema.Struct({ interrupted: Schema.Literal(true) })
 const Item = Schema.Struct({ data: Schema.Struct({ id: Schema.String }) })
@@ -385,6 +388,33 @@ export const LAWS: ReadonlyArray<Law> = [
         failures.push(...expectStatus("shell list", running, 200), ...expectStatus("shell list with the exited", all, 200))
         if (listed(running).length !== 0) failures.push(`the shell list holds the ended shell: ${shown(running)}`)
         if (listed(all).length !== 0) failures.push(`the shell list with the exited holds the ended foreground shell: ${shown(all)}`)
+        return failures
+      }),
+  },
+  {
+    name: "a session's outline names its messages oldest first without their bodies, a prompt by its first line and a step by its reply's first sentence; after one, only those that follow",
+    routes: ["session.outline"],
+    kinds: [],
+    run: (server) =>
+      Effect.gen(function* () {
+        const sessionID = yield* server.session
+        yield* prompt(server, sessionID, "Answer briefly.\nNothing more.")
+        yield* server.settle
+        const whole = yield* server.call(get(`/api/session/${sessionID}/outline`))
+        const failures = [...expectStatus("outline", whole, 200)]
+        // The real transcript holds more kinds (its idle marker); the law reads the two the TUI's map draws.
+        const drawn = (answer: Answer) =>
+          Option.match(read(Outline, answer), {
+            onNone: () => [],
+            onSome: (found) => found.data.filter((entry) => entry.type === "user" || entry.type === "assistant"),
+          })
+        const entries = drawn(whole)
+        const said = entries.map((entry) => `${entry.type}: ${entry.summary ?? ""}`).join(" | ")
+        if (said !== "user: Answer briefly. | assistant: Done.") failures.push(`outline: ${shown(whole)}`)
+        const first = entries[0]?.id ?? ""
+        const rest = yield* server.call(get(`/api/session/${sessionID}/outline?after=${first}`))
+        failures.push(...expectStatus("outline after", rest, 200))
+        if (drawn(rest).map((entry) => entry.type).join(",") !== "assistant") failures.push(`outline after the prompt: ${shown(rest)}`)
         return failures
       }),
   },

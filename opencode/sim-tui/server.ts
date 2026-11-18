@@ -166,6 +166,53 @@ interface IdleMessage {
 }
 type Message = AssistantMessage | UserMessage | IdleMessage
 
+/** At most this many characters of a message's line, as real OpenCode's outline caps them (core session/outline.ts). */
+const SUMMARY_LENGTH = 120
+const capped = (text: string) =>
+  Option.match(Option.liftPredicate(text, (each) => each.length <= SUMMARY_LENGTH), { onSome: (each) => each, onNone: () => `${text.slice(0, SUMMARY_LENGTH - 1)}…` })
+/** A text's first line with words in it, its markdown marks dropped, as the real outline reads it. */
+const firstLine = (text: string) =>
+  Option.getOrElse(
+    Arr.findFirst(
+      text.split("\n").map((line) =>
+        line
+          .replace(/^(?:#{1,6}\s+|[-*+]\s+|>\s*|\d+[.)]\s+)/, "")
+          .replace(/\*\*|__|`/g, "")
+          .replace(/\s+/g, " ")
+          .trim(),
+      ),
+      (line) => line !== "",
+    ).pipe(Option.map(capped)),
+    () => "",
+  )
+/** The first sentence of the first line. */
+const firstSentence = (text: string) => {
+  const line = firstLine(text)
+  return Option.getOrElse(Option.map(Option.fromNullishOr(/^.*?[.!?](?=\s|$)/.exec(line)), (found) => found[0]), () => line)
+}
+
+/**
+ * A message as the outline names it (the transcript map's read): its kind and time, a prompt's first line, and a
+ * step's first sentence of its last text, end, tool calls and thoughts with words in them.
+ */
+const outlineEntry = (message: Message) => {
+  const base = { id: message.id, type: message.type, time: message.time.created }
+  if (message.type === "user") return { ...base, summary: firstLine(message.text) }
+  if (message.type === "idle") return base
+  // The step's last text with words in it names it.
+  const last = Arr.findLast(message.content, (part): part is TextPart => part.type === "text" && part.text.trim() !== "")
+  // Keys the schema holds optional are left out when there is nothing to say, as the real server leaves them.
+  const completed = Option.match(Option.fromNullishOr(message.time.completed), { onNone: () => ({}), onSome: (at) => ({ completed: at }) })
+  const summary = Option.match(last, { onNone: () => ({}), onSome: (part) => ({ summary: firstSentence(part.text) }) })
+  return {
+    ...base,
+    ...completed,
+    ...summary,
+    tools: message.content.filter((part) => part.type === "tool").length,
+    thoughts: message.content.filter((part) => part.type === "reasoning" && part.text.trim() !== "").length,
+  }
+}
+
 type Delivery = "steer" | "queue"
 interface Pending {
   readonly id: string
@@ -310,6 +357,7 @@ export const SERVED = [
   "session.active",
   "session.messages",
   "session.message",
+  "session.outline",
   "session.inbox.list",
   "session.inbox.cancel",
   "session.inbox.update",
@@ -982,6 +1030,15 @@ export const make = (options: Options) => {
           onSome: (found) => json("session.message", { data: found }),
         }),
       )
+    },
+    "session.outline": ({ sessionID, query }) => {
+      // Oldest first; `after` reads only the messages after that one.
+      const all = list(sessionID)
+      const from = Option.match(Option.fromNullishOr(query.get("after")), {
+        onNone: () => 0,
+        onSome: (after) => all.findIndex((message) => message.id === after) + 1,
+      })
+      return Effect.succeed(json("session.outline", { data: all.slice(Math.max(0, from)).map(outlineEntry) }))
     },
     "session.inbox.list": ({ sessionID }) => Effect.succeed(json("session.inbox.list", { data: pending(sessionID) })),
     "session.inbox.cancel": ({ sessionID, params }) => {
