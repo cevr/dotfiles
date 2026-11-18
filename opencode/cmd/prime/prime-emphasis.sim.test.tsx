@@ -60,7 +60,8 @@ interface Played {
   readonly stored: ReadonlyArray<string>
 }
 
-const done = (shown: ReadonlyArray<string>) => shown.join("\n").includes("Next:** emphasis-rules") && !shown.join("\n").includes("Executing")
+// The last label drawn, `**` concealed or not (opentui 0.9 conceals without tree-sitter, older drew it as typed here).
+const done = (shown: ReadonlyArray<string>) => shown.join("\n").replaceAll("**", "").includes("Next: emphasis-rules") && !shown.join("\n").includes("Executing")
 
 /** The scenario at `seed`, played once a seed (the tests read the same run). */
 const played = new Map<number, Played>()
@@ -141,7 +142,8 @@ seeded("each chip draws in its tone: a soft one its tone on a tinted ground, a s
 seeded("while it streams, no frame shows a closed pill as typed, and the reply never loses a row", ({ seed, expect }) =>
   Effect.gen(function* () {
     const run = yield* scenario(seed)
-    expect(run.streamed.length).toBeGreaterThan(3)
+    // Streamed, not drawn at once: opentui 0.9 holds an undecided last line, so a seed can draw it in three frames.
+    expect(run.streamed.length).toBeGreaterThan(2)
     expect(run.streamed.flatMap(typed)).toEqual([])
     const rows = run.streamed.flatMap(replyRows)
     expect(rows.length).toBeGreaterThan(0)

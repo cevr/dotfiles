@@ -540,21 +540,15 @@ Disk is at 61% after the cleanup  ● Measured , down from 89%.     ← [[Measur
   to source nothing is drawn. The TUI option `emphasis: false` turns it off.
 
 How it draws, with no fork change: `tui/prose.tsx` wraps the host's
-`ui.Markdown` in a box and, when it mounts (before the first highlight),
-`attach` in `tui/emphasis.ts` hooks the opentui `MarkdownRenderable` under
-it. opentui draws a prose block twice: a preview from marked's tokens while
-it streams (its `renderInlineContent`, which table cells use too), then
-tree-sitter's chunks through each block's `onChunks` (by default the
-renderable's `_linkifyMarkdownChunks`, opentui's `detectLinks`). `attach`
-wraps both: the final path keeps `detectLinks` and replaces the chunks a pill
-or label drew by their source ranges (`finalEdits`), the preview path splits
-marked's runs at the same pills (`previewEdits`), and a table, or a reply
-mounted mid-stream, holding a pill is rebuilt once. Both names are opentui's
-private ones: if one goes in an upgrade that path is skipped and the text
-draws as it did, and `mods/prime/tui/emphasis.test.ts` (which checks both
-names on the pinned opentui) fails the gate. The way out is a public
-inline-chunk transform on `MarkdownRenderable`, covering the preview and
-table cells, asked of opentui (anomalyco/opentui, not filed yet).
+`ui.Markdown` in a box and, when it mounts, `attach` in `tui/emphasis.ts`
+sets the inline hook of the opentui `MarkdownRenderable` under it (public
+since opentui 0.9, which writes every paragraph, heading and table cell
+through it, the streaming preview included). The hook runs after any hook
+the host set there, on blocks whose source holds `[[` or `**`, and splits
+the drawn spans at each pill outside a code span and in front of a lead
+label (`previewEdits`); a pill that closes the streamed text is drawn whole
+though opentui still holds back its last `]`. Setting the hook redraws the
+blocks already shown, so a reply mounted mid-stream needs no rebuild.
 
 `mods/prime/emphasis.test.ts` holds the vocabulary, the splitting on both
 paths and the width law; `mods/prime/tui/emphasis.test.ts` runs `attach` in

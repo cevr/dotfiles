@@ -1,16 +1,15 @@
 // The emphasis adapter on the pinned opentui: a MarkdownRenderable in
-// opentui's test renderer, its real tree-sitter worker and its marked
-// preview, hooked by `attach` as Prose hooks the host's Markdown. The final
+// opentui's test renderer and its native Markdown engine, hooked by `attach` as Prose hooks the host's Markdown. The final
 // frame draws each chip with its colours, a table cell draws one, a streamed
 // reply never shows a closed pill as typed, code and the source view stay as
-// typed, and both private names are still there to hook.
+// typed, and the hook runs after one the host set.
 import { describe, expect } from "bun:test"
 import { MarkdownRenderable, RGBA, SyntaxStyle, TextAttributes, type CapturedSpan } from "@opentui/core"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Effect, Option, Schedule } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { SYMBOLS } from "@dotfiles/opencode-subagents/line"
-import { attach, findMarkdown, INLINE, LINKIFY, type Look } from "./emphasis.ts"
+import { attach, FILTER, findMarkdown, type Look } from "./emphasis.ts"
 
 /** Each test boots a renderer and waits on tree-sitter's worker, in wall time. */
 const TIMEOUT_MS = 20_000
@@ -69,7 +68,7 @@ const markdown = (setup: TestRendererSetup, options: { readonly conceal: boolean
     },
     setup.renderer.nativeScene,
   )
-  const made = new MarkdownRenderable(setup.renderer, { syntaxStyle, internalBlockMode: "top-level", tableOptions: { style: "grid", cellPaddingX: 1 }, ...options })
+  const made = new MarkdownRenderable(setup.renderer, { syntaxStyle, tableOptions: { style: "grid", cellPaddingX: 1 }, ...options })
   setup.renderer.root.add(made)
   return made
 }
@@ -99,13 +98,16 @@ const style = (span: Option.Option<CapturedSpan>) =>
 
 describe("attach on the pinned opentui", () => {
   effectTest(
-    "both private names are there to hook",
+    "runs after the host's own hook, on its blocks and on the ones that may hold a pill or a label",
     Effect.gen(function* () {
       const setup = yield* renderer
-      const made = markdown(setup, { conceal: true, streaming: false, content: "" })
-      expect(made[LINKIFY]).toBeFunction()
-      expect(made[INLINE]).toBeFunction()
-      expect(attach(made, look)).toEqual({ final: true, preview: true })
+      const made = markdown(setup, { conceal: true, streaming: false, content: "ses_x then [[Done]]" })
+      made.inlineHookFilter = ["ses_"]
+      made.inlineHook = (spans) => spans.map((span) => ({ ...span, text: span.text.replace("ses_x", "@Title") }))
+      attach(made, look)
+      expect(made.inlineHookFilter).toEqual(["ses_", ...FILTER])
+      const frame = yield* until(setup, (shown) => shown.includes("@Title"))
+      expect(frame.split("\n")[0]?.trimEnd()).toBe("@Title then  ✓ Done")
       expect(Option.isSome(findMarkdown(setup.renderer.root))).toBe(true)
     }).pipe(Effect.scoped),
     TIMEOUT_MS,
@@ -119,7 +121,7 @@ describe("attach on the pinned opentui", () => {
       attach(made, look)
       const frame = yield* until(setup, (shown) => shown.includes("Done") && shown.includes("Failed"))
       const lines = frame.split("\n").map((line) => line.trimEnd())
-      expect(lines[0]).toBe("Result:  ✓ Done  the build passed. [[Guess]] is code, [acknowledge-before-processing] a")
+      expect(lines[0]).toBe("Result:  ✓ Done  the build passed. [[Guess]] is code, [[acknowledge-before-processing]] a")
       expect(lines).toContain(`- ${SYMBOLS.blocked} Waiting on you: merge 21810.  ! Irreversible`)
       expect(lines).toContain(`- ${SYMBOLS.idle} Next: the deep run  ◌ Skipped`)
       expect(lines.some((line) => line.includes(" ✗ Failed: 3 tests "))).toBe(true)
