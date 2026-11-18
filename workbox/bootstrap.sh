@@ -9,6 +9,7 @@ resolved_config="$workbox_dir/systemd/resolved.conf.d/workbox.conf"
 user_unit_dir="$HOME/.config/systemd/user"
 bite_source=/workspaces/bite
 local_bin_dir="$HOME/.local/bin"
+user_timers="cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer"
 
 if [ "$(uname -s)" = Linux ] && [ -S "/run/user/$(id -u)/bus" ]; then
   XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -36,9 +37,6 @@ check_memory_protection() {
   test "$(systemctl show "$service_name" -p OOMScoreAdjust --value)" -eq "$oom_score_adjust"
 }
 
-# herdr-core (hc) holds the terminals: the same checks as workbox-health. They
-# read hc alone, so they pass with herdr running beside it or stopped.
-# `hc server status` starts the core when none runs, in its own transient unit.
 # An active user timer with its next run set: an active timer can still have
 # none (OnUnitActiveSec after a user manager restart, 2026-11-13).
 check_timer() {
@@ -46,6 +44,8 @@ check_timer() {
   systemctl --user show "$1" -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value | grep -q '[1-9]'
 }
 
+# herdr-core (hc) holds the terminals. `hc server status` starts the core when
+# none runs, in its own transient unit.
 check_hc() {
   hc_status=$(hc server status --json)
   printf '%s' "$hc_status" | jq -e '.pid | type == "number"' >/dev/null
@@ -62,7 +62,7 @@ check_hc() {
 }
 
 check_mode() {
-  for command in btrfs bun curl git hc hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale work workbox-release-valve workbox-rift-storage workrift zsh; do
+  for command in btrfs bun curl git hc hunk jq mongosh node redis-cli sideshow sqlite3 syncthing tailscale work workbox-rift-storage workrift zsh; do
     check_command "$command"
   done
 
@@ -71,7 +71,7 @@ check_mode() {
   test -L "$HOME/.zshrc"
   systemctl --user is-active --quiet sideshow.service
   systemctl --user is-enabled --quiet opencode.service
-  for timer in cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workrift-prune.timer workbox-backup.timer workbox-health.timer workbox-update-report.timer; do
+  for timer in $user_timers; do
     check_timer "$timer"
   done
   systemctl is-active --quiet bite-workbox-sshd.service
@@ -124,14 +124,13 @@ done
 sudo apt-get update
 sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   btrfs-progs \
-  nftables \
   sqlite3 \
   systemd-resolved \
   unattended-upgrades \
   zsh
 
 mkdir -p "$local_bin_dir" "$user_unit_dir" "$HOME/.agents"
-mkdir -p "$HOME/.config/bite-workbox/patches" "$HOME/.config/hunk" "$HOME/.config/orchestrate"
+mkdir -p "$HOME/.config/bite-workbox" "$HOME/.config/hunk" "$HOME/.config/orchestrate"
 
 ln -sfn "$workbox_dir/zshenv" "$HOME/.zshenv"
 ln -sfn "$workbox_dir/zshrc" "$HOME/.zshrc"
@@ -144,18 +143,9 @@ ln -sfn "$workbox_dir/../orchestrate/budget.json" "$HOME/.config/orchestrate/bud
 sudo chsh -s /usr/bin/zsh "$USER"
 
 "$workbox_dir/install-bin.sh"
-rm -rf "$HOME/.config/bite-workbox/bun-tools"
-for tool in "$workbox_dir"/bun-tools/*/; do
-  tool=${tool%/}
-  install -d -m 755 "$HOME/.config/bite-workbox/bun-tools/$(basename "$tool")"
-  install -m 644 "$tool/package.json" "$tool/bun.lock" \
-    "$HOME/.config/bite-workbox/bun-tools/$(basename "$tool")/"
-done
-rm -f "$HOME/.config/bite-workbox/bun-tools.txt"
 install -m 644 "$workbox_dir/hunk-config.toml" "$HOME/.config/hunk/config.toml"
 install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 
-"$local_bin_dir/install-bun-tools"
 "$local_bin_dir/workbox-rift-storage" --apply
 "$local_bin_dir/install-node"
 
@@ -199,13 +189,6 @@ sudo install -m 0644 \
   /etc/systemd/system/systemd-resolved.service.d/20-bite-memory-protection.conf
 sudo install -d -m 0755 /etc/systemd/resolved.conf.d
 sudo install -m 0644 "$resolved_config" /etc/systemd/resolved.conf.d/workbox.conf
-
-# Sideshow is reachable through exe.dev and Tailscale. Older boxes kept a
-# firewall that dropped port 8228 off loopback; remove it.
-sudo systemctl disable --now bite-workbox-sideshow-firewall.service 2>/dev/null || true
-sudo rm -f \
-  /etc/systemd/system/bite-workbox-sideshow-firewall.service \
-  /etc/nftables.d/bite-workbox-sideshow.nft
 
 tailscale_ipv4=$(tailscale ip -4 | head -1)
 sshd_config_file=$(mktemp)
@@ -263,15 +246,8 @@ sudo systemctl enable --now \
   bite-workbox-resolver.service \
   bite-workbox-sshd.service
 sudo systemctl restart bite-workbox-sshd.service
-systemctl --user enable --now \
-  cleanup-mosh-servers.timer \
-  cull-transcript-images.timer \
-  transcript-archive.timer \
-  workrift-prune.timer \
-  sideshow.service \
-  workbox-backup.timer \
-  workbox-health.timer \
-  workbox-update-report.timer
+# shellcheck disable=SC2086 # one word per timer
+systemctl --user enable --now sideshow.service $user_timers
 # hc-core.service brings the core back at boot; starting it now leaves a
 # running core alone (`hc server start` keeps its pid). The OpenCode unit only
 # needs to be enabled: the service may already run, started by hand or by daily.
@@ -283,15 +259,4 @@ if [ -d "$HOME/.config/bite-workbox/settings-source" ]; then
   "$local_bin_dir/apply-agent-settings"
 fi
 
-if ! claude plugin marketplace list 2>/dev/null | grep -q sideshow; then
-  claude plugin marketplace add --scope user modem-dev/sideshow
-fi
-
-if ! claude plugin list 2>/dev/null | grep -q 'sideshow@sideshow'; then
-  claude plugin install --scope user \
-    --config sideshowUrl=http://localhost:8228 \
-    sideshow@sideshow
-fi
-
-"$local_bin_dir/backup-state"
 check_mode

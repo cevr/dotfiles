@@ -1,7 +1,0 @@
-{
-  "name": "workbox-tool-sentry",
-  "private": true,
-  "dependencies": {
-    "sentry": "0.47.0"
-  }
-}

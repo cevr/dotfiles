@@ -1,6 +1,0 @@
-[Unit]
-Description=Verify the Bite workbox
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/workbox-health

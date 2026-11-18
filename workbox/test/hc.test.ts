@@ -103,7 +103,7 @@ const writeHost = (home: string, host: Host) => {
   writeFileSync(join(home, "hc-status.json"), `${statusJson(host)}\n`)
 }
 
-// systemctl answers the values bootstrap and workbox-health expect of a healthy
+// systemctl answers the values bootstrap --check expects of a healthy
 // host, so only the cases under test vary.
 const systemctlBody = `. "$HOME/host.env"
 case "$*" in
@@ -146,13 +146,11 @@ case "$*" in
   *) exit 1 ;;
 esac`
 
-// Every command workbox-health and bootstrap --check call by name, beyond the
-// POSIX tools they share with the Mac.
+// Every command bootstrap --check calls by name, beyond the POSIX tools it
+// shares with the Mac.
 const quietCommands = [
-  "btrfs", "bun", "curl", "git", "hunk", "mongosh", "node", "redis-cli", "rift", "sideshow", "sqlite3",
-  "syncthing", "tailscale", "work", "workbox-release-valve", "workbox-rift-storage", "workrift", "zsh", "getent",
-  "ss", "gh", "aws", "mati-grafana", "install-node", "linear", "sentry", "okra", "codex", "claude", "loginctl",
-  "cmp",
+  "btrfs", "bun", "curl", "git", "hunk", "mongosh", "node", "redis-cli", "sideshow", "sqlite3",
+  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node", "loginctl", "cmp",
 ]
 
 /** The host's commands, made once for each {herdr present, hc present}. */
@@ -190,34 +188,7 @@ const hostHome = (label: string, host: Host) => {
   return home
 }
 
-// ---------------------------------------------------------------- 1. health
-
-const hcLabels = [
-  "hc command",
-  "hc core answers",
-  "hc core 0.1.21 or newer",
-  "hc core keeps running after logout",
-  "hc-core.service enabled",
-  "hc core keeps running after a terminal's OOM",
-]
-
-const runHealth = async (host: Host) => {
-  const home = hostHome("health", host)
-  const log = join(home, "calls.log")
-  const result = await run(["/bin/sh", join(workbox, "bin", "workbox-health")], {
-    HOME: home,
-    PATH: "/usr/bin:/bin",
-    TMPDIR: home,
-  })
-  const lines = result.stdout.split("\n")
-  const hc = Object.fromEntries(
-    hcLabels.map((label) => {
-      const line = lines.find((l) => l.slice(6) === label)
-      return [label, line?.startsWith("PASS") ? "pass" : line?.startsWith("FAIL") ? "fail" : "missing"]
-    }),
-  )
-  return { stdout: result.stdout, hc, calls: calls(log) }
-}
+// ---------------------------------------------------------------- 1. bootstrap
 
 const pool = async <T, R>(items: T[], width: number, f: (item: T) => Promise<R>) => {
   const out: R[] = new Array(items.length)
@@ -245,72 +216,6 @@ const today: Host = {
 }
 const saturday: Host = { ...today, herdrActive: false, herdrPresent: false }
 
-/** The core runs in its own hc-serve unit, which keeps running after a terminal's OOM. */
-const coreUnitSafe = (host: Host) =>
-  host.hcAnswers && /^hc-serve-.*\.service$/.test(host.coreUnit) && host.oomPolicy === "continue"
-
-describe("workbox-health", () => {
-  test("today (herdr and an hc core both running) and Saturday (herdr gone) are green on every hc check", async () => {
-    for (const host of [today, saturday]) {
-      const { hc } = await runHealth(host)
-      expect(hc).toEqual(Object.fromEntries(hcLabels.map((l) => [l, "pass"])))
-    }
-  }, 30_000)
-
-  test("over every host state: the hc checks pass exactly when the core answers at 0.1.21+, keeps running after logout, hc-core.service is enabled and the core's own hc-serve unit has OOMPolicy=continue; no result depends on herdr", async () => {
-    const hosts: Host[] = []
-    for (const herdrActive of [true, false])
-      for (const herdrPresent of [true, false])
-        for (const hcAnswers of [true, false])
-          for (const version of ["0.1.20", "0.1.21"])
-            for (const keeps of [true, false, null] as Keeps[])
-              for (const hcEnabled of [true, false])
-                for (const coreUnit of ["hc-serve-b8ee8d13.service", "app-other.scope"])
-                  for (const oomPolicy of ["continue", "stop"])
-                    hosts.push({ herdrActive, herdrPresent, hcAnswers, version, keeps, hcEnabled, coreUnit, oomPolicy })
-    expect(hosts.length).toBe(384)
-
-    const results = await pool(hosts, 4, runHealth)
-    const byHcState = new Map<string, string>()
-    hosts.forEach((host, i) => {
-      const { hc, stdout, calls } = results[i]!
-      const allPass = Object.values(hc).every((v) => v === "pass")
-      const expected =
-        host.hcAnswers && host.version === "0.1.21" && host.keeps === true && host.hcEnabled && coreUnitSafe(host)
-      expect({ host, allPass }).toEqual({ host, allPass: expected })
-      // Each check reads its own input: the OOM check fails on a wrong unit or policy alone.
-      expect({ host, oom: hc["hc core keeps running after a terminal's OOM"] }).toEqual({
-        host,
-        oom: coreUnitSafe(host) ? "pass" : "fail",
-      })
-      expect(Object.values(hc)).not.toContain("missing")
-      // herdr is never asked, and the whole report is the same whatever herdr's state.
-      expect(calls.filter((c) => c.startsWith("herdr "))).toEqual([])
-      const key = JSON.stringify([host.hcAnswers, host.version, host.keeps, host.hcEnabled, host.coreUnit, host.oomPolicy])
-      const seen = byHcState.get(key)
-      if (seen === undefined) byHcState.set(key, stdout)
-      else expect(stdout).toBe(seen)
-    })
-  }, 600_000)
-
-  test("versions compare as numbers, not text", async () => {
-    const cases: [string, boolean][] = [
-      ["0.1.9", false],
-      ["0.1.100", true],
-      ["0.2.0", true],
-      ["1.0.0", true],
-      ["0.1.21-rc.1", true],
-      ["", false],
-    ]
-    const results = await pool(cases, 4, ([version]) => runHealth({ ...today, version }))
-    cases.forEach(([version, ok], i) => {
-      expect({ version, result: results[i]!.hc["hc core 0.1.21 or newer"] }).toEqual({ version, result: ok ? "pass" : "fail" })
-    })
-  }, 60_000)
-})
-
-// ---------------------------------------------------------------- 2. bootstrap
-
 const bootstrapCheck = async (host: Host) => {
   const home = hostHome("check", host)
   const log = join(home, "calls.log")
@@ -331,7 +236,6 @@ const bootstrapTree = (root: string, log: string) => {
   mkdirSync(box, { recursive: true })
   cpSync(join(workbox, "bootstrap.sh"), join(box, "bootstrap.sh"))
   cpSync(join(workbox, "systemd"), join(box, "systemd"), { recursive: true })
-  cpSync(join(workbox, "bun-tools"), join(box, "bun-tools"), { recursive: true })
   for (const file of ["hunk-config.toml", "backup.env", "zshenv", "zshrc", "herdr-config.toml"])
     cpSync(join(workbox, file), join(box, file))
   for (const name of readdirSync(join(workbox, "bin"))) stub(join(box, "bin"), name, log)
@@ -355,7 +259,6 @@ const runBootstrap = async (host: Host, hcInstalled: boolean) => {
   "ip -4") echo 100.64.0.1 ;;
   "status --json") echo '{"BackendState":"Running"}' ;;
 esac`)
-  stub(stubs, "claude", log, "echo 'sideshow sideshow@sideshow'")
   // herdr.dev's installer, printed by curl and run by sh, puts hc in ~/.local/bin.
   const installer = join(root, "hc-installer")
   writeFileSync(installer, `mkdir -p "$HOME/.local/bin" && cp '${join(hostBin(true), "hc")}' "$HOME/.local/bin/hc"\n`)
@@ -383,14 +286,27 @@ describe("bootstrap", () => {
     }
   }, 30_000)
 
-  test("--check and workbox-health fail when a user timer is active with no next run (2026-11-13: OnUnitActiveSec after a user manager restart)", async () => {
-    const stalled = { ...today, timersArmed: false }
-    const checked = await bootstrapCheck(stalled)
+  test("--check fails when a user timer is active with no next run (2026-11-13: OnUnitActiveSec after a user manager restart)", async () => {
+    const checked = await bootstrapCheck({ ...today, timersArmed: false })
     expect({ code: checked.code === 0 ? 0 : "failed", passed: checked.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
-    const health = await runHealth(stalled)
-    expect(health.stdout).toContain("FAIL  workbox-health.timer next run set")
-    expect((await runHealth(today)).stdout).toContain("PASS  workbox-health.timer next run set")
   }, 30_000)
+
+  test("--check compares hc versions as numbers, not text", async () => {
+    const cases: [string, boolean][] = [
+      ["0.1.9", false],
+      ["0.1.20", false],
+      ["0.1.21", true],
+      ["0.1.100", true],
+      ["0.2.0", true],
+      ["1.0.0", true],
+      ["0.1.21-rc.1", true],
+      ["", false],
+    ]
+    const results = await pool(cases, 4, ([version]) => bootstrapCheck({ ...today, version }))
+    cases.forEach(([version, ok], i) => {
+      expect({ version, passed: results[i]!.code === 0 }).toEqual({ version, passed: ok })
+    })
+  }, 60_000)
 
   test("--check fails on each wrong hc input alone: no core, hc-core.service not enabled, keeps unknown, the core outside an hc-serve unit, OOMPolicy=stop", async () => {
     const wrong: Host[] = [
@@ -430,13 +346,15 @@ describe("bootstrap", () => {
       expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL https://releases.herdr.dev/core/install.sh"])
       expect(existsSync(join(result.home, ".config", "systemd", "user", "hc-core.service"))).toBe(true)
       expect(existsSync(join(result.home, ".config", "systemd", "user", "opencode.service"))).toBe(true)
+      // hc holds the terminals: no herdr server unit is installed.
+      expect(existsSync(join(result.home, ".config", "systemd", "user", "herdr-bite.service"))).toBe(false)
       expect(existsSync(join(result.home, ".config", "herdr", "config.toml"))).toBe(false)
       expect(existsSync(join(result.home, ".config", "bite-workbox", "herdr-plugins.txt"))).toBe(false)
     }
   }, 60_000)
 })
 
-// ---------------------------------------------------------------- 3. backup
+// ---------------------------------------------------------------- 2. backup
 
 const runBackup = async (dirs: string[]) => {
   const root = scratch("backup")
@@ -500,69 +418,10 @@ describe("backup-state", () => {
   })
 })
 
-// ---------------------------------------------------------------- 4. release valve
+// ---------------------------------------------------------------- 3. herdr config (the Mac's)
 
-describe("workbox-release-valve", () => {
-  test("protects the hc core and a terminal's holder, not a workload", async () => {
-    const root = scratch("valve")
-    const stubs = join(root, "stubs")
-    const proc = join(root, "proc")
-    const log = join(root, "calls.log")
-    mkdirSync(join(proc, "pressure"), { recursive: true })
-    writeFileSync(join(proc, "loadavg"), "0.50 0.40 0.30 1/100 999\n")
-    writeFileSync(join(proc, "meminfo"), "MemAvailable: 8388608 kB\nSwapTotal: 1048576 kB\nSwapFree: 1048576 kB\n")
-    writeFileSync(join(proc, "pressure", "memory"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
-    writeFileSync(join(proc, "pressure", "cpu"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
-    // pid ppid pgid comm rss args. The holder's line is the one measured on the
-    // workbox (`ps -eo args`, 2026-11-13). A Bun child shares each protected
-    // group, so each group is a candidate the valve has to skip.
-    const table = [
-      "1 0 1 systemd 9000 /sbin/init",
-      "584 1 584 systemd 9000 /usr/lib/systemd/systemd --user",
-      "210268 584 210268 herdr-core 50000 /home/exedev/.local/bin/herdr-core serve",
-      "210270 210268 210268 bun 40000 bun /home/exedev/core-child.ts",
-      "235769 584 235769 herdr-core 8000 /home/exedev/.local/bin/herdr-core hold --socket /run/user/1000/herdr-core/default.holder.8545ab7e.sock",
-      "235771 235769 235769 bun 40000 bun /home/exedev/holder-child.ts",
-      "300000 584 300000 bun 900000 bun run dev",
-    ]
-    writeFileSync(join(root, "ps.txt"), `${table.join("\n")}\n`)
-    stub(stubs, "uname", log, "echo Linux")
-    stub(stubs, "ps", log, `case "$*" in
-  "-e -o pid=,ppid=,pgid=,comm=,rss=,args=") cat '${join(root, "ps.txt")}' ;;
-  "-o pgid= -p "*) echo ' 99999' ;;
-esac`)
-    const result = await run(["/bin/sh", join(workbox, "bin", "workbox-release-valve")], {
-      HOME: root,
-      PATH: `${stubs}:/usr/bin:/bin`,
-      TMPDIR: root,
-      WORKBOX_PROC_ROOT: proc,
-    })
-    expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" })
-    expect(result.stdout).toContain("mode=preview")
-    expect(result.stdout).toContain("skip_group=210268 reason=protected_process")
-    expect(result.stdout).toContain("skip_group=235769 reason=protected_process")
-    expect(result.stdout).toContain("target_group=300000 ")
-    expect(result.stdout).not.toMatch(/target_group=(210268|235769) /)
-    expect(result.stdout).toContain("target_groups=1")
-  })
-})
-
-// ---------------------------------------------------------------- 5. Hunk plugin gone
-
-describe("the Hunk plugin is gone", () => {
-  test("no plugin list, no installer, no herdr-hunk keys", async () => {
-    const tracked = (await run(["git", "ls-files", "workbox"], { PATH: process.env.PATH ?? "" })).stdout
-    expect(tracked.split("\n").filter((f) => f.includes("herdr-plugins"))).toEqual([])
-    expect(tracked).not.toContain("install-herdr-plugins")
-    for (const file of ["workbox/herdr-config.toml", "install.sh", "workbox/bootstrap.sh", "workbox/bin/workbox-health"])
-      expect({ file, hunk: readFileSync(join(repo, file), "utf8").includes("herdr-hunk") }).toEqual({ file, hunk: false })
-    // Hunk itself stays.
-    expect(readFileSync(join(workbox, "bootstrap.sh"), "utf8")).toMatch(/\bhunk\b/)
-    expect(existsSync(join(workbox, "hunk-config.toml"))).toBe(true)
-    expect((await run(["/bin/sh", "-n", join(repo, "install.sh")], { PATH: "/usr/bin:/bin" })).code).toBe(0)
-  })
-
-  test.skipIf(!which("herdr"))("herdr accepts the new config (a scratch HOME)", async () => {
+describe("herdr-config.toml", () => {
+  test.skipIf(!which("herdr"))("herdr accepts the config (a scratch HOME)", async () => {
     const home = scratch("herdr-config")
     mkdirSync(join(home, ".config", "herdr"), { recursive: true })
     cpSync(join(workbox, "herdr-config.toml"), join(home, ".config", "herdr", "config.toml"))
@@ -575,7 +434,7 @@ describe("the Hunk plugin is gone", () => {
   })
 })
 
-// ---------------------------------------------------------------- 6. units
+// ---------------------------------------------------------------- 4. units
 
 describe("unit files", () => {
   test("hc-core.service is a oneshot at default.target that only runs `hc server start`", () => {

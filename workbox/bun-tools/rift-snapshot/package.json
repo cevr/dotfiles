@@ -1,7 +1,0 @@
-{
-  "name": "workbox-tool-rift-snapshot",
-  "private": true,
-  "dependencies": {
-    "rift-snapshot": "0.0.13"
-  }
-}
