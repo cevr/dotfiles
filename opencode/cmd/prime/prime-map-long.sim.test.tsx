@@ -4,7 +4,9 @@
 // arrives does on a real session). Three pages up, the map opens on the turns
 // that were on screen: the turn at the transcript's top is the one selected
 // and keeps its line, Esc shows the transcript as it was, and Enter unfolds a
-// turn with its start on its collapsed row's line.
+// turn with its start on its collapsed row's line. The wheel scrolls the map
+// as far as it scrolls the transcript, the selection riding with its row, and
+// a click on a prompt unfolds the transcript there.
 import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import { type Model, ranShell, reasoning, stall, text } from "../../sim-tui/server.ts"
@@ -20,6 +22,8 @@ App.bootTest(BOOT)
 const TURNS = 200
 // The transcript's first row, under the one-row top bar (Prime pins the top turn's ask over it).
 const FIRST = 1
+// The line the wheel turns over (the row under it is lit as the mouse is over it).
+const POINTER = 12
 const name = (turn: number) => `n${String(turn).padStart(3, "0")}`
 const ask = (turn: number) => `Ask ${name(turn)}`
 
@@ -35,10 +39,15 @@ const model: Model = ({ text: prompt, step }) => {
 }
 const answer = (turn: string) => `Answer ${turn} is ready. Here is the list.\n\n${[1, 2, 3].map((item) => `- ${turn} item ${item}`).join("\n")}`
 
-/** The map's selected line: the one turn row on a background no other row of its kind (an ask, an answer) has; -1 for none. */
-const selectedLine = (frame: App.Frame) => {
+/**
+ * The map's selected line: the one turn row on a background no other row of its kind (an ask, an answer) has; -1 for
+ * none. The row on line `hovered`, under the mouse, is lit too, so it is left out.
+ */
+const selectedLine = (frame: App.Frame, hovered = -1) => {
   const rows = frame.lines.flatMap((line, index) =>
-    line.spans.filter((each) => /Ask n\d{3}|Answer n\d{3}/.test(each.text)).slice(0, 1).map((span) => ({ index, kind: span.text.includes("Ask"), bg: span.bg })),
+    index === hovered
+      ? []
+      : line.spans.filter((each) => /Ask n\d{3}|Answer n\d{3}/.test(each.text)).slice(0, 1).map((span) => ({ index, kind: span.text.includes("Ask"), bg: span.bg })),
   )
   const unique = rows.filter((row) => rows.filter((other) => other.kind === row.kind && other.bg === row.bg).length === 1)
   return [-1, unique[0]?.index ?? -1][Number(unique.length === 1)] ?? -1
@@ -51,6 +60,16 @@ type Frames = Record<"expanded" | "collapsed" | "restored" | "unfolded", Readonl
   readonly picked: { readonly line: number; readonly ask: string }
   /** How many of the session's messages have an id older than the message before them. */
   readonly unordered: number
+  /** Lines one wheel step moves the transcript, two move the map, and the map's selected line before and after. */
+  readonly wheel: { readonly transcriptStep: number; readonly foldedStep: number; readonly foldedSelected: number; readonly scrolledSelected: number }
+  /** The prompt a click unfolded: its line in the map, its ask, and the transcript after. */
+  readonly clicked: { readonly line: number; readonly ask: string; readonly after: ReadonlyArray<string> }
+}
+
+/** How many lines down the screen moved from `before` to `after`, read off the first answer line both show (0 for none). */
+const moved = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) => {
+  const from = before.findIndex((row, index) => index > FIRST && /Answer n\d{3}/.test(row) && after.includes(row))
+  return from === -1 ? 0 : after.indexOf(before[from] ?? "") - from
 }
 
 const played = new Map<number, Frames>()
@@ -105,7 +124,44 @@ const play = (seed: number) =>
       yield* tui.press({ name: "enter" })
       yield* tui.until("unfolded", (shown) => !isMap(shown))
       yield* tui.advance(500)
-      return { expanded, collapsed, restored, unfolded: tui.text(), selected, picked, unordered } satisfies Frames
+      const unfolded = tui.text()
+
+      // The transcript's wheel step, read off a line that stays on screen across it.
+      const wheel = Effect.gen(function* () {
+        yield* tui.mouse({ action: "scroll", x: 40, y: POINTER, direction: "up" })
+        yield* tui.advance(150)
+      })
+      const before = tui.text()
+      yield* wheel
+      const transcriptStep = moved(before, tui.text())
+      // Folded, the wheel moves the rows as far, and the selection rides with its row: none moves to the line.
+      yield* open
+      const folded = tui.text()
+      const foldedSelected = selectedLine(tui.frame(), POINTER)
+      yield* wheel
+      yield* wheel
+      const scrolled = tui.text()
+      const scrolledSelected = selectedLine(tui.frame(), POINTER)
+      const foldedStep = moved(folded, scrolled)
+      // A click on a prompt unfolds the transcript there, its rail on the line the row was on.
+      const row = scrolled.findIndex((row, index) => index > FIRST + 2 && /┃ Ask n\d{3}/.test(row))
+      const clicked = { line: row, ask: /Ask n\d{3}/.exec(scrolled[row] ?? "")?.[0] ?? "" }
+      yield* tui.mouse({ action: "move", x: 20, y: row })
+      yield* tui.mouse({ action: "down", x: 20, y: row })
+      yield* tui.mouse({ action: "up", x: 20, y: row })
+      yield* tui.until("unfolded by a click", (shown) => !isMap(shown))
+      yield* tui.advance(500)
+      return {
+        expanded,
+        collapsed,
+        restored,
+        unfolded,
+        selected,
+        picked,
+        unordered,
+        wheel: { transcriptStep, foldedStep, foldedSelected, scrolledSelected },
+        clicked: { ...clicked, after: tui.text() },
+      } satisfies Frames
     }),
   )
 
@@ -144,6 +200,17 @@ seeded("Enter on a prompt below the opening turn unfolds it with its start on it
     expect(frames.picked.line).toBeGreaterThan(frames.selected)
     expect(frames.picked.ask).not.toBe("")
     expect(frames.unfolded[frames.picked.line]).toContain(`┃ ${frames.picked.ask}`)
+  }),
+)
+
+seeded("the wheel scrolls the folded transcript as it scrolls the transcript, moving no selection; a click unfolds a turn", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { wheel, clicked } = yield* scenario(seed)
+    expect(wheel.transcriptStep).toBeGreaterThan(0)
+    expect(wheel.foldedStep).toBe(wheel.transcriptStep * 2)
+    expect(wheel.scrolledSelected).toBe(wheel.foldedSelected + wheel.foldedStep)
+    expect(clicked.ask).not.toBe("")
+    expect(clicked.after[clicked.line]).toContain(`┃ ${clicked.ask}`)
   }),
 )
 
