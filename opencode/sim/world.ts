@@ -15,7 +15,7 @@
 // answer, steer, store write and log line, each at its virtual time. It holds
 // no wall-clock value, so two runs on one seed give byte-equal traces.
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Exit, Option, Scope, type Schema } from "effect"
+import { Effect, Exit, Match, Option, Predicate, Scope, type Schema } from "effect"
 import { contextFor, isContext, type Loaded } from "./context.ts"
 import * as Forms from "./forms.ts"
 import { type Asked, type Message, makeHost, type ModelRef, type RpcFault, type Session, type Options, type Process, type Spawned, START } from "./host.ts"
@@ -282,7 +282,7 @@ export const make = (worldOptions: WorldOptions) => {
     /** The owner archives the session from a client. */
     archive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.archive(session)))),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would: by its id, or its definition as a client names it. */
-    rpc: (id: string | { readonly id: string }, method: string, input: Schema.Json) => run(host.callRpc(typeof id === "string" ? id : id.id, method, input)),
+    rpc: (id: string | { readonly id: string }, method: string, input: Schema.Json) => run(host.callRpc(Match.value(id).pipe(Match.when(Predicate.isString, (named) => named), Match.orElse((definition) => definition.id)), method, input)),
     /**
      * The same call as an Effect for a client's own fiber in the world (`runtime.fork`, a TUI's heartbeat): it does
      * not run the world to rest itself, so it never nests a run.

@@ -65,6 +65,8 @@ export const said = (message: World.Message): string => {
       return message.summary
     case "error":
       return message.message
+    case "model-switched":
+      return ""
   }
 }
 

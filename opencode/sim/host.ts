@@ -221,9 +221,7 @@ export interface Session {
   /** Whether it was created on an agent, or a subagent call put it on one: `session.get` names its agent only then (the fork's `agent` is optional). */
   named: boolean
   /** The model it selected, when it selected one; else the host's default. */
-  selected: Option.Option<ModelRef>
-  /** The model its requests go to: its own selection, else the host's default. */
-  readonly model: ModelRef
+  model: Option.Option<ModelRef>
   /** A subagent child's job: each time it goes idle, its parent gets a `<subagent>` notice. */
   job: Option.Option<Job>
   /** None until the first execution asks for one; then the title request's answer. */
@@ -807,7 +805,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const agentFor = (session: Session) => agentsOf(session.directory).get(session.agent) ?? agentOf(session.agent)
 
   /** The model a session's requests go to: its own selection, else the host's default. */
-  const modelOf = (session: Pick<Session, "selected">): ModelRef => Option.getOrElse(session.selected, () => model)
+  const modelOf = (session: Pick<Session, "model">): ModelRef => Option.getOrElse(session.model, () => model)
 
   /** Appends one trace line: its virtual time, its kind, its data as JSON. */
   const record = <A>(kind: string, data: A) => {
@@ -1335,7 +1333,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
               parentID: parent.id,
               title: input.description,
               agent: agent.id,
-              model: Option.getOrUndefined(Option.orElse(override, () => Option.orElse(Option.fromNullishOr(agent.model), () => parent.selected))),
+              model: Option.getOrUndefined(Option.orElse(override, () => Option.orElse(Option.fromNullishOr(agent.model), () => parent.model))),
             }),
           onSome: (found) =>
             Effect.sync(() => {
@@ -1343,7 +1341,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
               const switched = found.agent !== agent.id
               found.agent = agent.id
               found.named = true
-              found.selected = Option.orElse(Option.orElse(override, () => Option.filter(Option.fromNullishOr(agent.model), () => switched)), () => found.selected)
+              found.model = Option.orElse(Option.orElse(override, () => Option.filter(Option.fromNullishOr(agent.model), () => switched)), () => found.model)
               return found
             }),
         })
@@ -1666,7 +1664,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       const previous = modelOf(session)
       const next = { ...ref, variant: ref.variant ?? "default" }
       if (previous.providerID === next.providerID && previous.id === next.id && (previous.variant ?? "default") === next.variant) return Effect.void
-      session.selected = Option.some(next)
+      session.model = Option.some(next)
       session.messages.push({ type: "model-switched", id: mint("msg_"), created: runtime.now(), model: next, previous })
       touch(session)
       record("model-selected", { sessionID: session.id, model: next, previous })
@@ -1709,10 +1707,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         agent: input.agent ?? "build",
         named: input.agent !== void 0,
         // A model selected with no variant is named at its `default`, as the fork's session store records it.
-        selected: Option.map(Option.fromNullishOr(input.model), (ref) => ({ ...ref, variant: ref.variant ?? "default" })),
-        get model() {
-          return modelOf(this)
-        },
+        model: Option.map(Option.fromNullishOr(input.model), (ref) => ({ ...ref, variant: ref.variant ?? "default" })),
         // A child reports each completed round to its parent, however it was made (the fork's session.create).
         job: Option.map(Option.fromNullishOr(input.parentID), (parentID) => ({ parentID, agent: input.agent ?? "subagent", description: input.title ?? "Subagent" })),
         title: Option.fromNullishOr(input.title),
@@ -1747,7 +1742,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       time,
     }
     if (session.named) info.agent = session.agent
-    if (Option.isSome(session.selected)) info.model = { ...session.selected.value }
+    if (Option.isSome(session.model)) info.model = { ...session.model.value }
     if (Option.isSome(session.parentID)) info.parentID = session.parentID.value
     if (Option.isSome(session.title)) info.title = session.title.value
     return info

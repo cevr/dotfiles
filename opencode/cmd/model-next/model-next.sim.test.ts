@@ -8,8 +8,8 @@
 // The test names and what each asserts are binding. The helpers' bodies are the
 // implementor's to finish against the world as it then is (how a small window
 // makes a turn compact mid-turn is `sim/host.ts` `pastCeiling`).
-import { Effect, Option } from "effect"
-import { KEY, MODEL_NEXT } from "@dotfiles/opencode-model-next/pending"
+import { Effect, Option, Schema } from "effect"
+import { Cancelled, KEY, MODEL_NEXT, type ModelRef, Queued, Refused } from "@dotfiles/opencode-model-next/pending"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
@@ -54,10 +54,16 @@ const recorder = () => {
 const boot = (seed: number, window = SMALL) =>
   Effect.gen(function* () {
     const { seen, script } = recorder()
-    const world = World.make({ seed, script, models: modelsOf(window), model: OLD })
+    const made = World.make({ seed, script, models: modelsOf(window), model: OLD })
+    // The sessions as `session.get` reads them: the model a session runs on, its own selection else the default.
+    const sessions = {
+      get: (id: string) =>
+        Option.getOrUndefined(Option.map(Option.fromNullishOr(made.sessions.get(id)), (found) => ({ ...found, model: Option.getOrElse(found.model, () => OLD) }))),
+    }
+    const world = { ...made, sessions }
     const session = yield* world.session(WORK)
     yield* world.load(Plugins.modelNext, { directory: WORK })
-    const rpc = (method: string, input: Record<string, unknown> = {}) => world.rpc(MODEL_NEXT, method, { sessionID: session, ...input })
+    const rpc = (method: string, input: { readonly model?: ModelRef } = {}) => world.rpc(MODEL_NEXT, method, { sessionID: session, ...input })
     const pending = () => world.sessions.get(session)?.metadata?.[KEY]
     // At rest: no execution runs, and the title (asked on a fiber of its own as the first turn starts) has its answer.
     const idle = () =>
@@ -71,7 +77,7 @@ const boot = (seed: number, window = SMALL) =>
 seeded("a queued switch waits: every request before the compaction goes to the old model", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { world, session, seen, rpc, pending } = yield* boot(seed)
-    expect(yield* rpc("queue", { model: NEW })).toMatchObject({ _tag: "Queued" })
+    expect(yield* rpc("queue", { model: NEW })).toSatisfy(Schema.is(Queued))
     expect(pending()).toMatchObject({ sessionID: session, model: NEW })
     expect(world.sessions.get(session)?.model).toMatchObject(OLD)
     expect(seen.filter((request) => request.kind === "primary")).toEqual([])
@@ -134,7 +140,7 @@ seeded("cancel, a direct switch and a failed compaction: none of them applies th
   Effect.gen(function* () {
     const { world, session, rpc, pending } = yield* boot(seed)
     yield* rpc("queue", { model: NEW })
-    expect(yield* rpc("cancel")).toMatchObject({ _tag: "Cancelled" })
+    expect(yield* rpc("cancel")).toSatisfy(Schema.is(Cancelled))
     expect(pending()).toBeUndefined()
     // A direct switch by anyone drops the queued one.
     yield* rpc("queue", { model: NEW })
@@ -152,9 +158,9 @@ seeded("cancel, a direct switch and a failed compaction: none of them applies th
 seeded("refusals name why: the session's own model, a model the catalog lacks, a session that is gone", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { rpc, world } = yield* boot(seed)
-    expect(yield* rpc("queue", { model: OLD })).toMatchObject({ _tag: "Refused", reason: "same-model" })
-    expect(yield* rpc("queue", { model: { providerID: "other", id: "gone" } })).toMatchObject({ _tag: "Refused", reason: "unknown-model" })
-    expect(yield* world.rpc(MODEL_NEXT, "queue", { sessionID: "ses_gone", model: NEW })).toMatchObject({ _tag: "Refused", reason: "no-session" })
+    expect(yield* rpc("queue", { model: OLD })).toEqual(Refused.make({ reason: "same-model" }))
+    expect(yield* rpc("queue", { model: { providerID: "other", id: "gone" } })).toEqual(Refused.make({ reason: "unknown-model" }))
+    expect(yield* world.rpc(MODEL_NEXT, "queue", { sessionID: "ses_gone", model: NEW })).toEqual(Refused.make({ reason: "no-session" }))
   }),
 )
 
