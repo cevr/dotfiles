@@ -22,6 +22,7 @@ import {
   splashModel,
   SPINNER,
   SPINNER_MS,
+  trayModel,
   trayModelQueued,
   usageLabel,
 } from "../chrome.ts"
@@ -299,9 +300,12 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const theme = () => props.host.theme()
   const usage = createMemo(() => (props.sessionID ? usageLabel(props.host.usage(props.sessionID)) : undefined))
   // A switch queued for the session (mods/model-next, in its metadata) shows beside the model until it applies.
-  const model = createMemo(() =>
-    trayModelQueued(props.host.model(), props.sessionID ? pendingIn(props.sessionID, props.host.session(props.sessionID)).pipe(Option.map((queued) => queued.model)) : Option.none()),
-  )
+  const queuedNext = () =>
+    Option.map(
+      Option.flatMap(Option.flatMap(Option.fromNullishOr(props.sessionID), (id) => Option.fromNullishOr(props.host.session(id))), pendingIn),
+      (queued) => trayModel({ providerID: queued.model.providerID, modelID: queued.model.id, variant: queued.model.variant }),
+    )
+  const model = createMemo(() => trayModelQueued(trayModel(props.host.model()), queuedNext()))
   // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
   const busy = useWorking(props.host, () => Option.fromNullishOr(props.sessionID))
   // The count is the family's, in a session and in each of its subagents alike, as the rows under it are: the dock
