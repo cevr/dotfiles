@@ -17,6 +17,32 @@ describe("the opencode launcher", () => {
     expect(run.stdout.toString().trim()).toBe("base=unset insecure=unset home=/home/x args=run hello")
   })
 
+  test("exports the installed Claude Code release the daily install records, and only that", () => {
+    using held = scratchDir("launcher-claude-")
+    const binary = `${held.path}/opencode-fake`
+    put(binary, '#!/bin/sh\necho "installed=${CLAUDE_CODE_INSTALLED_VERSION:-unset}"\n')
+    const link = `${held.path}/opencode`
+    put(link, launcher(binary, "/home/x/resident"))
+    const state = `${held.path}/state`
+    /** What the binary sees when the version file holds `lines` (none: no file), started from a caller that set the variable. */
+    const recorded = (...lines: ReadonlyArray<string>) => {
+      expect(spawnSync(["/bin/sh", "-c", 'mkdir -p "$1/claude-daily" && rm -f "$1/claude-daily/version"', "sh", state]).exitCode).toBe(0)
+      for (const line of lines) put(`${state}/claude-daily/version`, line)
+      const run = spawnSync([link, "run"], { env: { ...env, XDG_STATE_HOME: state, CLAUDE_CODE_INSTALLED_VERSION: "9.9.9" } })
+      return run.stdout.toString().trim()
+    }
+    expect(recorded("2.1.400\n")).toBe("installed=2.1.400")
+    expect(recorded()).toBe("installed=unset")
+    for (const line of ["", "\n", "2.1.400 (Claude Code)\n", "$(touch /nonexistent/loop-probe-x)\n"]) {
+      expect([line, recorded(line)]).toEqual([line, "installed=unset"])
+    }
+    // Without XDG_STATE_HOME, the file is under ~/.local/state.
+    expect(spawnSync(["/bin/sh", "-c", 'mkdir -p "$1"', "sh", `${held.path}/home/.local/state/claude-daily`]).exitCode).toBe(0)
+    put(`${held.path}/home/.local/state/claude-daily/version`, "2.1.401\n")
+    const home = spawnSync([link, "run"], { env: { PATH: env.PATH, HOME: `${held.path}/home` } })
+    expect(home.stdout.toString().trim()).toBe("installed=2.1.401")
+  })
+
   test("after a service start or restart, asks the service for its resident location; a failed start stops there", () => {
     using held = scratchDir("launcher-")
     const binary = `${held.path}/opencode-fake`

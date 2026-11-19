@@ -23,7 +23,7 @@ done
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty
 ln -sf "$DOTFILES_DIR/ghostty/config" ~/Library/Application\ Support/com.mitchellh.ghostty/config
 
-# Weekly jobs
+# Scheduled jobs (mac/launchd)
 mkdir -p ~/Library/LaunchAgents
 for plist in "$DOTFILES_DIR"/mac/launchd/*.plist; do
   label=$(basename "$plist" .plist)

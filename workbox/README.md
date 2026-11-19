@@ -63,6 +63,7 @@ Mac with `--on workbox` and addresses such as `workbox/t7` once
 | --- | --- |
 | `workbox-backup.timer` | `backup-state` each day at 02:30 |
 | `transcript-archive.timer` | Claude and Codex transcripts to the R2 archive each day at 03:15 |
+| `claude-daily.timer` | `claude/bin/claude-daily-install` each day at 05:10: the latest Claude Code, its release recorded for the OpenCode launcher |
 | `cull-transcript-images.timer` | replaces transcript images with a note each Sunday |
 | `cleanup-mosh-servers.timer` | signals disconnected Mosh servers every 15 minutes |
 

@@ -147,20 +147,22 @@ export class Auth extends Context.Service<
 >()("dotfiles-opencode/anthropic-auth/Auth") {}
 
 /**
- * The newest version Anthropic has required in this process. Every setup
- * reads it, so a rejection in one workspace is not met again in the next,
- * and every login of the pool reports the same version.
+ * The lowest version this process reports: the installed Claude Code release
+ * it started with, raised by the newest version Anthropic has required since.
+ * Every setup reads it, so a rejection in one workspace is not met again in
+ * the next, and every login of the pool reports the same version.
  */
 export interface VersionFloor {
   current: Option.Option<string>
 }
 
-export const makeVersionFloor = (): VersionFloor => ({ current: Option.none() })
+/** A process's floor, from the installed release it started with (`installedClaudeCodeVersion`), if newer than the bundled one. */
+export const makeVersionFloor = (installed: Option.Option<string> = Option.none()): VersionFloor => ({ current: installed })
 
 export interface Config {
   /** `ANTHROPIC_CLAUDE_CODE_VERSION` as the process holds it. */
   readonly versionOverride: string | undefined
-  /** The version a rejection raised, shared by every setup in the process (`makeVersionFloor`). */
+  /** The installed release, raised by a rejection, shared by every setup in the process (`makeVersionFloor`). */
   readonly versionFloor: VersionFloor
   /** The refreshes of the whole process (`refresh.ts`). */
   readonly refreshes: Refreshes<OAuthCredential, RefreshFailed>
