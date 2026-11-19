@@ -249,6 +249,8 @@ interface SessionInfo {
   readonly location: { readonly directory: string }
   outcome?: string
   revert?: { readonly messageID: string; readonly files: ReadonlyArray<string> }
+  /** Our plugins' values on the session (mods/model-next's queued switch), as the real record carries them. */
+  metadata?: Readonly<Record<string, unknown>>
 }
 
 /** A shell command as the server's registry holds it (schema/src/shell.ts `Info`). */
@@ -584,7 +586,7 @@ export const make = (options: Options) => {
   }
 
   /** Adds a session (a root, or a child under `parentID`) as the server holds it after `session.create`. */
-  const session = (input: { readonly title?: string; readonly parentID?: string; readonly agent?: string; readonly own?: boolean } = {}) => {
+  const session = (input: { readonly title?: string; readonly parentID?: string; readonly agent?: string; readonly own?: boolean; readonly metadata?: (sessionID: string) => Readonly<Record<string, unknown>> } = {}) => {
     const sessionID = id("ses")
     if (input.own ?? true) {
       chosen.add(`${sessionID} agent`)
@@ -604,6 +606,7 @@ export const make = (options: Options) => {
     }
     if (input.parentID) info.parentID = input.parentID
     if (input.title) info.title = input.title
+    if (input.metadata) info.metadata = input.metadata(sessionID)
     sessions.set(sessionID, info)
     messages.set(sessionID, [])
     inbox.set(sessionID, [])

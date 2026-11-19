@@ -763,6 +763,8 @@ export interface SeedOptions {
   readonly title?: (text: string) => string
   /** Our server plugins' RPCs the seed stands in for (the double's `rpc`). */
   readonly rpc?: Server.Rpc
+  /** The root session's metadata as the server holds it when the TUI first reads it (a plugin's value on it, such as a queued model switch). */
+  readonly metadata?: (sessionID: string) => Readonly<Record<string, unknown>>
 }
 
 const pressOn = (fixture: Fixture, key: Key) => {
@@ -840,7 +842,7 @@ export const seed = <A, E>(options: BootOptions, seedOptions: SeedOptions, body:
       Identifier.create(false, 0)
       const server = Server.make({ draw, now: TuiClock.system.now, model: seedOptions.model, rpc: Option.getOrElse(Option.fromUndefinedOr(seedOptions.rpc), () => Server.noRpc) })
       Option.map(Option.fromUndefinedOr(seedOptions.title), server.retitle)
-      const sessionID = server.session()
+      const sessionID = server.session(seedOptions.metadata === undefined ? {} : { metadata: seedOptions.metadata })
       app.current = server
       const record = (entry: TraceEntry) => app.trace.push(entry)
       const since = () => TuiClock.system.now() - EPOCH
