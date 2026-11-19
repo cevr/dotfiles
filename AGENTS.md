@@ -2,7 +2,7 @@
 
 ## Pacing
 
-- Default to `~/.claude/skills/principle-never-block-on-the-human/SKILL.md` and `~/.claude/skills/principle-redesign-from-first-principles/SKILL.md`. Read principles, don't ask which to apply.
+- Default to `principle-never-block-on-the-human` and `principle-redesign-from-first-principles`. Read principles, don't ask which to apply.
 - Pragmatism is NOT the default. Prefer structurally correct over fast move-in-place; the user invests hours for correctness.
 - Reserve checkpoints for genuine ambiguity (rare) or irreversible/external actions.
 - High-blast-radius work (20+ files across subsystems): split into 3-5 reviewable sub-commits, each compiling + passing gate. Don't ask for approval on strategy or naming.
@@ -14,7 +14,7 @@
 - Workspace: `~/Developer` — `personal/`, `work/`. Dotfiles: `~/Developer/personal/dotfiles`. Skills: `~/.claude/skills` (symlinked from dotfiles/skills).
 - Deletes: `rm` deletes for good; use it for build output, caches, scratch and generated files. `trash` (macOS Trash) is for the owner's data that might be wanted back. The guard hook refuses `rm -rf` on home, root or a repository root, `git reset --hard`, and a forced wide `git clean`.
 - Devbox: the exe devbox `bite-cristian` IS the Bite workbox. Herdr machine `Workbox` (session `bite`) = SSH alias `bite-workbox` (Tailscale, port 2222) = host `bite-cristian`. Use `herdr --machine Workbox …`; never add another herdr machine for it.
-- Principles: the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`) — read before architectural decisions or code review.
+- Principles: the `principle-*` skills, out of the automatic skill list. In OpenCode use the `principles` tool (`list`, `search`, `get`); elsewhere read `~/.claude/skills/principle-*/SKILL.md`. Read them before architectural decisions or code review.
 - Issue tracker: personal repos → GitHub Issues via `gh`; `~/Developer/work` (Bite) → Linear via the `linear` skill.
 - Models: Fable plans, Opus first for the rest. The planner runs on the newest Claude Fable at medium, on Opus when the pool holds Fable; every other role, the verifier too, runs on the newest Claude Opus; never a pinned version, never Sonnet. Codex is the fallback for planners and verifiers only, used only when Opus is held: newest sol at `high` (a verifier at `medium`). Codex never implements: an implementor waits for Opus. A code-review second review runs on the other family (sol for an Opus reviewer, Opus for a Codex one) as an extra reader, not a role swap.
 
@@ -26,7 +26,7 @@
 - New deps: quick health check (recent releases, adoption).
 - Bite PRs: assign and request review from `andrewgoupil`, `antwandaher` and `narminmolina` unless told otherwise.
 - "Undo" reverts only your own last edit to that file. Uncommitted work stays.
-- Orchestration freeze: Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill.
+- Orchestration freeze: Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill. Owner exception (2026-11-19): the `principles` tool in `opencode/mods/orchestrate`.
 
 ## Isolated workspaces
 
