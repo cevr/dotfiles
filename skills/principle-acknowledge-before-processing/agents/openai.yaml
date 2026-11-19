@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Acknowledge Before Processing"
+  short_description: "Acknowledge Before Processing"
+policy:
+  allow_implicit_invocation: false

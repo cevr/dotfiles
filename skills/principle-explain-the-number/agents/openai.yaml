@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Explain the Number"
+  short_description: "Explain the Number"
+policy:
+  allow_implicit_invocation: false

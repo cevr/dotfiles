@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Derive, Don't Sync"
+  short_description: "Derive, Don't Sync"
+policy:
+  allow_implicit_invocation: false

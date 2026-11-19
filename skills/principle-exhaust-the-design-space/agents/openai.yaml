@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Exhaust the Design Space"
+  short_description: "Exhaust the Design Space"
+policy:
+  allow_implicit_invocation: false

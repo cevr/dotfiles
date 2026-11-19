@@ -1,0 +1,26 @@
+---
+name: principle-correctness-over-pragmatism
+description: "Apply when tempted by a shortcut (a cast, a stub, a guard that masks a crash, a downgraded plan): take the structurally correct fix unless the owner explicitly asked for speed."
+disable-model-invocation: true
+---
+
+# Correctness Over Pragmatism
+
+When the road forks between "structurally correct" and "pragmatic shortcut," default to correct. Pragmatism is not the default posture — correctness is. The user invests hours for correctness; shortcuts compound into debt the user never asked for.
+
+**Why:** Shortcuts taken in the name of pragmatism — silencing a type error, stubbing a function, working around broken state instead of fixing it, abandoning an in-flight approach because it got harder — are dead ends dressed up as progress. They leave the codebase in a worse state than before the task started. The user would rather wait for the right fix than ship a wrong one.
+
+**Pattern:**
+
+- **No self-interrupts.** Don't stop mid-task to propose "let's just do the simple version." Finish the correct path, or flag the blocker — don't silently downgrade.
+- **No silent shortcuts.** Casting to `any`, commenting out failing code, stubbing with `throw new Error("not implemented")`, adding a guard to mask a crash — these are symptom fixes. See [fix-root-causes](../principle-fix-root-causes/SKILL.md).
+- **Flag, don't capitulate.** When the correct fix needs significant architectural change, make that change: plan it as reviewable units (the **architect** skill for a new shape), land them, and report the root cause and what the fix changed. Hand the choice to the user only when it is irreversible or external, or when two requirements genuinely conflict so that both answers are correct.
+- **Dead-end detection.** If you find yourself adding workaround on top of workaround, you are in a dead end. Back out. Redesign. See [redesign-from-first-principles](../principle-redesign-from-first-principles/SKILL.md).
+- **Complexity is not a reason to bail.** Bad architecture is. Know the difference. When the work is genuinely hard but the direction is right, keep going. When the direction is wrong, stop and say so.
+
+**Boundaries:**
+
+- "Correct" means structurally sound, not gold-plated. Don't confuse correctness with over-engineering — a simple solution that fixes the root cause is correct. A complex solution that papers over the root cause is not.
+- Time pressure from the user ("just get it working for the demo") is an explicit override, not a default. Without that signal, assume correctness.
+
+**See also:** [fix-root-causes](../principle-fix-root-causes/SKILL.md) — the debugging analogue. [redesign-from-first-principles](../principle-redesign-from-first-principles/SKILL.md) — the integration analogue. [never-block-on-the-human](../principle-never-block-on-the-human/SKILL.md) still applies to reversible execution choices; this principle governs the architectural choices underneath them.

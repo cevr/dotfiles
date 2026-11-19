@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Make Operations Idempotent"
+  short_description: "Make Operations Idempotent"
+policy:
+  allow_implicit_invocation: false

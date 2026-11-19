@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Subtract Before You Add"
+  short_description: "Subtract Before You Add"
+policy:
+  allow_implicit_invocation: false

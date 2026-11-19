@@ -56,7 +56,7 @@ Fix each defect at the highest level that holds, on the **guardrail ladder**:
 4. **Lint rule** (`effect-oxlint` for Effect code) whose message names what to use instead.
 5. **Docs**, for judgement calls only.
 
-For each defect, say why each higher level does not work. Before you propose an API change, read `~/Developer/personal/dotfiles/principles/`, in particular make-impossible-states-unrepresentable, small-interface-deep-implementation, composition-over-flags, subtract-before-you-add and migrate-callers-then-delete-legacy-apis. Use the `codebase-design` skill's words for depth and seams.
+For each defect, say why each higher level does not work. Before you propose an API change, read the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`), in particular make-impossible-states-unrepresentable, small-interface-deep-implementation, composition-over-flags, subtract-before-you-add and migrate-callers-then-delete-legacy-apis. Use the `codebase-design` skill's words for depth and seams.
 
 Done when every defect has its library cause, its consumer evidence, its lens and its ladder level.
 

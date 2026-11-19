@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Central Provider Wiring"
+  short_description: "Central Provider Wiring"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Composition Over Flags"
+  short_description: "Composition Over Flags"
+policy:
+  allow_implicit_invocation: false

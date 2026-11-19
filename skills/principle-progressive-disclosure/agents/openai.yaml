@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Progressive Disclosure"
+  short_description: "Progressive Disclosure"
+policy:
+  allow_implicit_invocation: false

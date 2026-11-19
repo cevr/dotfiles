@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Terminal States Survive Exit Animations"
+  short_description: "Terminal States Survive Exit Animations"
+policy:
+  allow_implicit_invocation: false

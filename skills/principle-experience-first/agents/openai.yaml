@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Experience First"
+  short_description: "Experience First"
+policy:
+  allow_implicit_invocation: false

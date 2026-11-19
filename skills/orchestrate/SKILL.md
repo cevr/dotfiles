@@ -64,7 +64,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - **Focused checks**: a unit's round gate is its changed packages' tests and typecheck, lint of its changed files and its acceptance test, each leg under a minute (`protocol.md`, Rounds). The full gate is the land's merge check; a leg slower than a minute is a tooling unit.
 - **Stateful units start from a model**: a unit that changes behavior over time gets a model-based test as its acceptance check from round 1. A Blocker that repeats an earlier round's class makes a property over that class the next round's first deliverable.
 - **Scope never grows inside a running unit**: new work is a new unit. A rule change reaches a running unit only at its next round boundary, in one message.
-- **Decide small, reversible points** yourself by `~/Developer/personal/dotfiles/principles/`, each in Decisions. **Owner questions never wait in a dialog**: write the question with your recommendation in Owner questions, ask in one short message, and keep the other units running.
+- **Decide small, reversible points** yourself by the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`), each in Decisions. **Owner questions never wait in a dialog**: write the question with your recommendation in Owner questions, ask in one short message, and keep the other units running.
 - **A run's rules file** (`<run dir>/common.md`) holds project facts only ([run-rules](references/run-rules.md)).
 
 ## What blocks, and what is refused

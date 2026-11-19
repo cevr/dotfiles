@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Guard the Context Window"
+  short_description: "Guard the Context Window"
+policy:
+  allow_implicit_invocation: false

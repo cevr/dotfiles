@@ -28,7 +28,7 @@ Done when each answer names the file or command behind it.
 
 ## 2. Build the helpers as repo scripts
 
-A helper is a script in the repo, run as `bun run <name>` from the package that owns the surface (the repo's own runner where it is not Bun), with a test when it holds logic. A helper in a scratch dir is rebuilt by every verifier, as [build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md) records: without one, each round's verifiers write their own driver again. A repo script is allowed by the safety classifier where an ad-hoc `/tmp` script is refused, the gate keeps it alive, and the docs guard checks its name.
+A helper is a script in the repo, run as `bun run <name>` from the package that owns the surface (the repo's own runner where it is not Bun), with a test when it holds logic. A helper in a scratch dir is rebuilt by every verifier, as [build-the-lever](../principle-build-the-lever/SKILL.md) records: without one, each round's verifiers write their own driver again. A repo script is allowed by the safety classifier where an ad-hoc `/tmp` script is refused, the gate keeps it alive, and the docs guard checks its name.
 
 **Write them on the repo's Effect stack.** Our repos are Effect v4 on Bun (see the **effect** skill), so a helper is an Effect program, not a loose script: `effect/cli` for its commands and flags, `ChildProcessSpawner` and `FileSystem` from the platform for processes and files, `Schema` for the JSON it prints and the data it reads, `Effect.timeout` and `Schedule` for readiness waits, and scoped resources so a launched app is stopped when the drive ends. It imports the repo's own services and test layers (fixtures, seeders, the scripted model) instead of rebuilding them. Every command prints one JSON result on success and exits non-zero with a tagged error on failure, so an agent reads the outcome without parsing logs.
 
@@ -52,7 +52,7 @@ Frontmatter: `name: verify-<app>`, and a model-facing `description` that leads w
   - the app answers, and its log holds no request failures;
   - the seed parses;
   - on macOS, no test browser holds the audio output (`pmset -g assertions | grep audio-out`);
-  - the load average is below the core count, or timings claim nothing ([explain-the-number](~/Developer/personal/dotfiles/principles/explain-the-number.md)).
+  - the load average is below the core count, or timings claim nothing ([explain-the-number](../principle-explain-the-number/SKILL.md)).
 
   Run it before the first drive, and again after any surprising result.
 - **Drive.** The conventions every feature file uses: one browse session per run, allowlisted to the app (`browse session new <run> --allow-origin http://127.0.0.1:<port>`), and each step a `browse execute --session <run>`; an ARIA role and accessible name with `exact: true` (`page.getByRole("button", { name: "Cut", exact: true })`; a name match is a substring by default, so `Cut` also matches "Show cuts"), or a stable `data-*` handle, and never a class or a coordinate; the real user path (clicks, keys, fingers), and never an internal setter, a URL-state write or an API call to reach a state. Then a pointer to `features/README.md`.

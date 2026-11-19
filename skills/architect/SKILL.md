@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Architect
 
-Sketch the types, function signatures and module boundaries with `not implemented` bodies and pseudocode. Get one sketch from each model family, synthesize, then fill in code against the chosen sketch. Adapted from pstack (`cursor/plugins`, `pstack/skills/architect`). Principles named here live in `~/Developer/personal/dotfiles/principles/`.
+Sketch the types, function signatures and module boundaries with `not implemented` bodies and pseudocode. Get one sketch from each model family, synthesize, then fill in code against the chosen sketch. Adapted from pstack (`cursor/plugins`, `pstack/skills/architect`). Principles named here live in the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`).
 
 Open a todo list with one entry per phase: Ground, Sketch, Implement, Scrap.
 

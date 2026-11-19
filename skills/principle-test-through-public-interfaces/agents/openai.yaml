@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Test Through Public Interfaces"
+  short_description: "Test Through Public Interfaces"
+policy:
+  allow_implicit_invocation: false

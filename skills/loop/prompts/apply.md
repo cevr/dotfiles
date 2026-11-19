@@ -5,7 +5,7 @@ One agent per batch, in the batch's own workspace. Fill the slots; the work rule
 ```
 Read `~/.claude/skills/loop/safety.md` and `<workspace>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.
 
-Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the principles in `~/Developer/personal/dotfiles/principles/` that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
+Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`) that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
 
 Pass-<N> apply batch `p<N>-<batch>`. Workspace <workspace path> (branch p<N>-<batch>, base main <hash>). Read AGENTS.md (or CLAUDE.md), GLOSSARY.md (or CONTEXT.md) and NORTH_STAR.md there first. The main checkout <main checkout> stays untouched. Apply <item ids> from <report paths>; re-verify each receipt in the source first, since line numbers move. Reject a finding that does not hold, and say why.
 
@@ -23,7 +23,7 @@ Work rules:
 - New code goes into its concern's existing file; a split into fragment files is a finding, not a fix.
 - Comments describe today's behavior.
 - UI changes follow `~/.claude/skills/loop/ui-guidance.md` (shadcn, Graphical, composition and state guidance, mapped onto the repo's framework), on the lines you change only.
-- Decide by the principles in ~/Developer/personal/dotfiles/principles/ and write "decided by <principle>"; the batch runs without check-ins.
+- Decide by the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`) and write "decided by <principle>"; the batch runs without check-ins.
 - Gate: the focused checks only (the touched packages' typecheck and tests, lint of the changed files) into a log with its exit line (`<focused commands> > <pass dir>/gate-<batch>.log 2>&1; echo "GATE EXIT $?" >> <same log>`) before each commit. The orchestrator runs the full gate and e2e once, on every accepted batch merged together. A test that fails once under load and passes on one retry is a flake: retry once, name it, keep its assertions.
 - Every commit passes the hook, without bypass flags or env overrides. When a change cannot pass it in steps, order the steps so each passes, or make it one commit.
 - Commits: Conventional Commits, one logical unit each, staged by exact path. A public API change carries its changeset and README update. No push, no workspace creation or removal, no ledger edits.

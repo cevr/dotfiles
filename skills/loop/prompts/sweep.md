@@ -7,13 +7,13 @@ Fill the slots into `<pass dir>/sweep-brief.md`. Each sweep agent (architecture 
 
 Read `~/.claude/skills/loop/safety.md` and `<repo>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.
 
-Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the principles in `~/Developer/personal/dotfiles/principles/` that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
+Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`) that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
 
 Repo: <repo path>, branch main, HEAD <hash>. Edit, commit and create nothing in the repo; write only your report. Start only what your sweep's method names.
 
 Read first: AGENTS.md (or CLAUDE.md), GLOSSARY.md (or CONTEXT.md), NORTH_STAR.md (whole: north stars, tiebreaks, owner rules, rejected), PRIOR_ART.md (the sources for your sweep, and Settled), and from <ledger path> its Decisions, Rejected, Owner questions, open Carried rows and the last pass's section; grep it for anything older. A done or rejected item returns only with a new receipt. Prior-art repos are at `okra repo path <slug>`.
 
-Goal: <the run's goal from the user, e.g. fewer concepts, less code, fewer files, every valuable feature kept>. Each candidate names the north star it serves, by its name in NORTH_STAR.md. A candidate that trades one north star for another, with no tiebreak that settles it, is an owner question, not a change. Owner questions are only the classes the loop skill reserves for the owner. Every other candidate carries a proposed decision and the principle (`~/Developer/personal/dotfiles/principles/`) behind it.
+Goal: <the run's goal from the user, e.g. fewer concepts, less code, fewer files, every valuable feature kept>. Each candidate names the north star it serves, by its name in NORTH_STAR.md. A candidate that trades one north star for another, with no tiebreak that settles it, is an owner question, not a change. Owner questions are only the classes the loop skill reserves for the owner. Every other candidate carries a proposed decision and the principle (a `principle-*` skill, `~/.claude/skills/principle-*/SKILL.md`) behind it.
 
 Pass <N-1> changed <`git diff --stat <prev base>..HEAD | tail -1`>. Weigh every addition by the deletion test. Review these changes hardest for regressions: <per area, the mechanisms each batch added>.
 

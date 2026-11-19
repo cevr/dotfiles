@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Lifecycle Tasks Cancel on Reentry"
+  short_description: "Lifecycle Tasks Cancel on Reentry"
+policy:
+  allow_implicit_invocation: false

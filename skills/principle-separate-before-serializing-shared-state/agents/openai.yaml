@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Separate Before Serializing Shared State"
+  short_description: "Separate Before Serializing Shared State"
+policy:
+  allow_implicit_invocation: false

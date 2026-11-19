@@ -118,7 +118,7 @@
       "pstack/skills/principle-*"
     ],
     "into": [
-      "principles/"
+      "principle-*"
     ],
     "license": "MIT",
     "folded": {

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Correctness Over Pragmatism"
+  short_description: "Correctness Over Pragmatism"
+policy:
+  allow_implicit_invocation: false

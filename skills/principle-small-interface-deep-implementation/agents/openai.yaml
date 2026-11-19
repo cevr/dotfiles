@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Small Interface, Deep Implementation"
+  short_description: "Small Interface, Deep Implementation"
+policy:
+  allow_implicit_invocation: false

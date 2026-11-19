@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Use the Platform"
+  short_description: "Use the Platform"
+policy:
+  allow_implicit_invocation: false

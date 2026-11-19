@@ -9,7 +9,7 @@ A project already enforces its north stars; they are written down as rules, refu
 - **What the owner said.** The user's prompt for this run, dated owner statements in the agent's memory for this repo, the "why" sections of the README, `AGENTS.md`/`CLAUDE.md`, `GLOSSARY.md` (or `CONTEXT.md`), ADRs and design docs.
 - **What the code enforces.** Lint config and the repo's own lint plugin, guards, boundary checks, the type settings, the test helpers. Each rule is some north star's "breaks when", written as code.
 - **What the history refused.** `git log` for reverts, "refuse", "no-" and "never" commits, and the rejected rows of earlier ledgers or reviews. A reverted change marks a line the owner holds.
-- **The owner's principles** in `~/Developer/personal/dotfiles/principles/`. They hold across projects; a north star is the form one takes in this project, with this project's nouns.
+- **The owner's principles** in the `principle-*` skills (`~/.claude/skills/principle-*/SKILL.md`). They hold across projects; a north star is the form one takes in this project, with this project's nouns.
 
 Done when every source above is read and each item has its receipt.
 

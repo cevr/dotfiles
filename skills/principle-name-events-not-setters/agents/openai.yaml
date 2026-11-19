@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Name Events, Not Setters"
+  short_description: "Name Events, Not Setters"
+policy:
+  allow_implicit_invocation: false

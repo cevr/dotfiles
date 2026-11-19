@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Chase Y, Not X"
+  short_description: "Chase Y, Not X"
+policy:
+  allow_implicit_invocation: false

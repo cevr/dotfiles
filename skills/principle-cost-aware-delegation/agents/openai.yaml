@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Cost-Aware Delegation"
+  short_description: "Cost-Aware Delegation"
+policy:
+  allow_implicit_invocation: false

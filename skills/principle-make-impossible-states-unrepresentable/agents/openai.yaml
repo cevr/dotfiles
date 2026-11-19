@@ -1,0 +1,5 @@
+interface:
+  display_name: "Principle: Make Impossible States Unrepresentable"
+  short_description: "Make Impossible States Unrepresentable"
+policy:
+  allow_implicit_invocation: false
