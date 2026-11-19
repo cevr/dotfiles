@@ -17,11 +17,17 @@ Model state so invalid combinations can't be constructed, not just avoided. The 
 - **Guard transitions at the reducer:** not every action is valid in every state. Invalid transitions no-op or error — they don't silently corrupt
 - **Exhaustive switches:** use `satisfies` / `never` defaults so adding a new state breaks the compile rather than slipping through
 - **Name by lifecycle, not by flag:** `'closed' | 'opening' | 'open' | 'closing'` beats `isOpen + isAnimating + isClosing`
+- **Encode the domain in a structure, not in conditionals:** a state machine instead of scattered booleans or phase checks, a typed model instead of loose parameters, a map, registry or discriminated union instead of branching spread across files, a reducer instead of ad hoc mutations, and an index, queue or normalized collection where the access pattern calls for it
+- **Brand semantic primitives:** when two values share a primitive type but mean different things (`UserId`, `OrderId`), give each its own type and validate once at creation
+- **Derive types from the authoritative schema:** when a schema file owns a shape (protobuf, OpenAPI, a migration, a design-token file), derive the type from it instead of hand-rolling a parallel one
+
+Do not force it. Keep boring code when the shape is clear, local and unlikely to grow, and distrust an abstraction that adds indirection without removing branches or invalid states.
 
 **The Test:**
 
 - "Can I write down a state that compiles but shouldn't exist?" If yes, the model is too loose — collapse to a union
 - "Does every consumer need a `?? null` or `if (data)` guard?" The state shape is lying about what's actually present
 - "Would a junior reading this know which fields are meaningful when?" If not, the discriminant isn't doing its job
+- "Does this feature grow an if/else chain by one more branch, or add a second boolean that must stay in step with the first?" Then the domain is not in the data yet
 
-**See also:** [name-events-not-setters](../principle-name-events-not-setters/SKILL.md) — the transitions between these states should be named as facts, not as field assignments. [derive-dont-sync](../principle-derive-dont-sync/SKILL.md) — once the state space is tight, derived values project from it rather than living alongside.
+**See also:** [name-events-not-setters](../principle-name-events-not-setters/SKILL.md) — the transitions between these states should be named as facts, not as field assignments. [derive-dont-sync](../principle-derive-dont-sync/SKILL.md) — once the state space is tight, derived values project from it rather than living alongside. [boundary-discipline](../principle-boundary-discipline/SKILL.md) — external data is untyped until a parse at the boundary returns this model.
