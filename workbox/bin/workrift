@@ -39,10 +39,19 @@ prune_idle_minutes=2880
 archive_retention_days=30
 backend_file="${WORKRIFT_BACKEND_FILE:-$config_dir/backend}"
 work_bin="${WORK:-work}"
-# Under `work`: idle is two days, as above; the trash keeps a removed workspace
-# for seven, the window in which a switch back to Rift can move it back.
+# Where each process's working folder is read (a test points it at a folder of
+# its own: macOS has no /proc).
+proc_root="${WORKRIFT_PROC:-/proc}"
+# Whether remove deletes a workspace for good (the workbox, Linux) or leaves
+# it in work's trash (the Mac). WORKRIFT_PURGE=1 or 0 overrides.
+case "${WORKRIFT_PURGE:-}" in
+  1) purge_trash=true ;;
+  0) purge_trash=false ;;
+  *) [ "$(uname -s)" = Linux ] && purge_trash=true || purge_trash=false ;;
+esac
+# Under `work`: idle is two days, as above. The workbox keeps no trash (owner,
+# 2026-11-19): remove deletes a workspace for good, and prune empties all of it.
 work_idle=48h
-work_trash_age=168h
 # Held: work's own verify found `work gc -idle -archive` can lose data (an
 # adopted copy with fresh edits, other branches, stashes). Until work's owner
 # clears it, prune calls no work gc. Flip to true then.
@@ -59,8 +68,10 @@ usage: workrift <command>
                               (post-rewrite passes its argument: rebase means a rebase has ended)
   refresh                     update the warm source from its default branch
   list                        list the warm source's workspaces
-  remove [--with-children] [path]
-                              move a workspace to the Rift trash
+  remove [--dry-run] [--with-children] [path]
+                              delete a workspace for good (under rift: move it to
+                              the Rift trash); --dry-run prints the folders it would
+                              delete and deletes nothing
   prune [--dry-run]           archive and remove workspaces idle for two days
   sources                     list warm sources
   check                       check the warm source
@@ -471,13 +482,20 @@ refresh_source() {
 
 remove_workspace() {
   with_children=false
-  if [ "${1:-}" = "--with-children" ]; then
-    with_children=true
+  remove_dry_run=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --with-children) with_children=true ;;
+      --dry-run) remove_dry_run=true ;;
+      -*) usage >&2; exit 2 ;;
+      *) break ;;
+    esac
     shift
-  fi
+  done
+  [ "$#" -le 1 ] || { usage >&2; exit 2; }
   target=${1:-$PWD}
   if [ "$backend" = work ]; then
-    work_remove "$target" "$with_children"
+    work_remove "$target" "$with_children" "$remove_dry_run"
     return
   fi
   children=$(rift list "$target")
@@ -486,17 +504,32 @@ remove_workspace() {
   if [ -n "$children" ] && [ "$with_children" = false ]; then
     fail "$target has child workspaces; pass --with-children to trash them too: $(printf '%s' "$children" | tr '\n' ' ')"
   fi
+  if [ "$remove_dry_run" = true ]; then
+    printf 'would trash: %s\n' "$target"
+    return 0
+  fi
   rift remove "$target"
 }
 
-is_active() {
-  for process_cwd in /proc/[0-9]*/cwd; do
+# The first process whose working folder is $1 or inside it, as `PID COMMAND`;
+# fails when there is none.
+process_in() {
+  for process_cwd in "$proc_root"/[0-9]*/cwd; do
     cwd=$(readlink "$process_cwd" 2>/dev/null || true)
     case "$cwd/" in
-      "$1/"*) return 0 ;;
+      "$1/"*)
+        process_pid=${process_cwd%/cwd}
+        process_pid=${process_pid##*/}
+        printf '%s %s\n' "$process_pid" "$(cat "$proc_root/$process_pid/comm" 2>/dev/null || printf '?')"
+        return 0
+        ;;
     esac
   done
   return 1
+}
+
+is_active() {
+  process_in "$1" >/dev/null
 }
 
 is_recent() {
@@ -861,12 +894,102 @@ work_remove() {
     w_inherited=$(for w_up in $w_above; do git -C "$w_up" stash list --format=%H; done)
     work_require_held "$w_path" "$w_base" "$w_inherited"
   done
+  # A folder a process works in is not deleted under it (a shell, a daemon).
+  w_old_ifs=$IFS
+  IFS='
+'
+  for w_path in $w_doomed; do
+    if w_user=$(process_in "$w_path"); then
+      IFS=$w_old_ifs
+      fail "a process works in $w_path (pid $w_user); end it, then remove again"
+    fi
+  done
+  IFS=$w_old_ifs
+
+  w_verb=trash
+  [ "$purge_trash" = true ] && w_verb=delete
+  if [ "$3" = true ]; then
+    printf '%s\n' "$w_doomed" | sed "s/^/would $w_verb: /"
+    return 0
+  fi
 
   if [ "$w_with_children" = true ]; then
     w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" -tree "$w_name") || fail "work rm failed for $w_target: $w_out"
   else
     w_out=$(work_in "$w_base" --json rm -abandon -expect "$w_id" "$w_name") || fail "work rm failed for $w_target: $w_out"
   fi
+  [ "$purge_trash" = true ] || return 0
+  work_purge "$w_base" "$w_json" "$w_doomed" "$w_out"
+}
+
+# The workbox keeps no trash (owner, 2026-11-19): after `work rm`, each record
+# it trashed is deleted by work itself, `work gc -id ID`, which takes that one
+# record and deletes only its folder (work's PurgingTouchesOneEntry). workrift
+# deletes no path of its own. Before any gc, every record rm answered must be
+# one of the workspaces this removal named ($3, from the list $2 read before
+# it), by a non-empty id that is the answer's only one, and its trash folder
+# must be <that workspace's folder's parent>/.work-trash/<one name>, neither
+# the base, nor holding the base or a workspace that stays. Anything else, and
+# no gc runs: the trash stays, named. $1 is the base, $4 rm's answer. On the
+# Mac (and wherever WORKRIFT_PURGE=0) the trash stays, as before.
+work_purge() {
+  p_base=$1
+  p_list=$2
+  p_doomed=$3
+  p_answer=$4
+  p_rows=$(printf '%s' "$p_answer" | jq -r '.[] | [.id, .trash, .name] | @tsv') ||
+    fail "work rm's answer does not read; nothing deleted: $p_answer"
+  p_trashes=$(printf '%s' "$p_answer" | jq -r '.[].trash')
+  p_left() { fail "$1; nothing deleted, the trash stays: $(printf '%s' "$p_trashes" | tr '\n' ' ')"; }
+  [ -n "$p_rows" ] || p_left "work rm answered no removed workspace"
+  p_ids=$(printf '%s\n' "$p_rows" | cut -f1)
+  [ "$(printf '%s\n' "$p_ids" | sort -u | wc -l)" -eq "$(printf '%s\n' "$p_ids" | wc -l)" ] || p_left "work rm answered one id twice"
+  p_kept=$(printf '%s\n' "$p_base"; printf '%s' "$p_list" | jq -r '.[] | select(.state._tag == "Active") | .path' | grep -vxF "$p_doomed" || true)
+  p_plan=
+  while IFS='	' read -r p_id p_trash p_name; do
+    [ -n "$p_id" ] || p_left "work rm answered $p_name with no id"
+    p_was=$(printf '%s' "$p_list" | jq -r --arg id "$p_id" '[.[] | select(.id == $id and .state._tag == "Active") | .path] | if length == 1 then .[0] else "" end')
+    if [ -z "$p_was" ] || ! printf '%s\n' "$p_doomed" | grep -qxF "$p_was"; then
+      p_left "work rm answered id $p_id, which is none of the workspaces asked for"
+    fi
+    case "$p_trash" in
+      /*) ;;
+      *) p_trash=$p_base/$p_trash ;;
+    esac
+    p_entry=${p_trash##*/}
+    case "$p_entry" in
+      '' | . | ..) p_left "the trash folder of $p_was has no name: $p_trash" ;;
+    esac
+    [ "$p_trash" = "${p_was%/*}/.work-trash/$p_entry" ] ||
+      p_left "the trash folder of $p_was is not beside it: $p_trash"
+    while IFS= read -r p_one; do
+      case "$p_one/" in
+        "$p_trash/"*) p_left "the trash folder $p_trash holds $p_one" ;;
+      esac
+    done <<EOF
+$p_kept
+EOF
+    p_plan="$p_plan$p_id	$p_trash	$p_was
+"
+  done <<EOF
+$p_rows
+EOF
+  p_failed=
+  while IFS='	' read -r p_id p_trash p_was; do
+    [ -n "$p_id" ] || continue
+    if ! p_gc=$(work_in "$p_base" --json gc -id "$p_id"); then
+      printf 'workrift: work gc -id %s failed; its trash stays at %s: %s\n' "$p_id" "$p_trash" "$p_gc" >&2
+      p_failed="$p_failed $p_trash"
+    elif [ -e "$p_trash" ]; then
+      printf 'workrift: work gc -id %s left its trash at %s: %s\n' "$p_id" "$p_trash" "$p_gc" >&2
+      p_failed="$p_failed $p_trash"
+    else
+      printf 'deleted: %s\n' "$p_was"
+    fi
+  done <<EOF
+$p_plan
+EOF
+  [ -z "$p_failed" ] || fail "removed, but not deleted; the trash stays:$p_failed"
 }
 
 # The workspaces of one base (a work_workspaces file) that Rift's prune would
@@ -912,8 +1035,10 @@ work_prune_list() {
 # While work_gc_safe is not true, prune only lists too, and says it is held.
 # Once it is, each other base runs `work gc -idle`, which removes the
 # workspaces no new, ready or sync touched for two days, keeping the work of
-# each in the base at refs/work/archive/NAME/ID (-archive), and empties only
-# trash older than seven days.
+# each in the base at refs/work/archive/NAME/ID (-archive), and empties the
+# base's trash, whatever its age (-older 0s: the workbox keeps no trash). work
+# itself keeps the trash of a workspace gc -idle removes for a day (Ergo's
+# IdleTrash), so the next prune deletes it.
 work_prune() {
   w_dry_run=$1
   w_bases=$(work_bases)
@@ -946,7 +1071,7 @@ work_prune() {
       work_prune_list "$work_dir/workspaces.tsv"
       continue
     fi
-    if ! w_out=$(work_in "$w_base" --json gc -idle "$work_idle" -archive -older "$work_trash_age"); then
+    if ! w_out=$(work_in "$w_base" --json gc -idle "$work_idle" -archive -older 0s); then
       printf 'failed to prune: %s: %s\n' "$w_base" "$w_out" >&2
       w_failures=$((w_failures + 1))
       continue
@@ -1041,7 +1166,7 @@ case "$command" in
     fi
     ;;
   remove)
-    [ "$#" -le 2 ] || { usage >&2; exit 2; }
+    [ "$#" -le 3 ] || { usage >&2; exit 2; }
     remove_workspace "$@"
     ;;
   prune)

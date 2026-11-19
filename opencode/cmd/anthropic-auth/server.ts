@@ -27,7 +27,10 @@
  *
  * Environment: `ANTHROPIC_BASE_URL` (a custom endpoint OAuth may go to),
  * `ANTHROPIC_INSECURE` (warned about: a plugin cannot turn TLS off) and
- * `ANTHROPIC_CLAUDE_CODE_VERSION` (the version reported), read at setup.
+ * `ANTHROPIC_CLAUDE_CODE_VERSION` (the version reported), read at setup; and
+ * `CLAUDE_CODE_INSTALLED_VERSION` (the installed Claude Code release, which the
+ * OpenCode launcher exports), read once per process: the reported version is
+ * at least it.
  */
 import { Agent, Credential, Integration, Plugin } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
@@ -46,7 +49,11 @@ import { isCacheTTL } from "@dotfiles/opencode-anthropic-auth/request-body"
 import { makeRefreshes, type Refreshes } from "@dotfiles/opencode-anthropic-auth/refresh"
 import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credential-sources"
 import { Entropy, type RefreshFailed } from "@dotfiles/opencode-anthropic-auth/service"
-import { ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR } from "@dotfiles/opencode-anthropic-auth/version"
+import {
+  ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR,
+  CLAUDE_CODE_INSTALLED_ENV_VAR,
+  installedClaudeCodeVersion,
+} from "@dotfiles/opencode-anthropic-auth/version"
 
 export const PLUGIN_ID = "ex-machina.anthropic-auth"
 
@@ -72,14 +79,18 @@ export interface Env {
 export interface Shared {
   readonly ownership: Ownership
   readonly refreshes: Refreshes<OAuthCredential, RefreshFailed>
-  /** The Claude Code version a rejection raised: one per process, so no setup meets the same rejection again. */
+  /**
+   * The lowest Claude Code version reported: the installed release the process started with, raised by a
+   * rejection. One per process, so every login reports the same version and no setup meets a rejection again.
+   */
   readonly versionFloor: Model.VersionFloor
 }
 
-export const makeShared = (): Shared => ({
+/** `installed`: `CLAUDE_CODE_INSTALLED_VERSION` as the process started with it; malformed or not newer, the bundled version stands. */
+export const makeShared = (installed: Option.Option<string> = Option.none()): Shared => ({
   ownership: makeOwnership(),
   refreshes: makeRefreshes(),
-  versionFloor: Model.makeVersionFloor(),
+  versionFloor: Model.makeVersionFloor(installedClaudeCodeVersion(installed)),
 })
 
 export interface Options {
@@ -230,10 +241,16 @@ export const make = (options: Options) =>
   })
 
 /** The environment as the process holds it. */
+const hostEnv = process.env
 const processEnv = (): Env => ({
-  baseUrl: process.env.ANTHROPIC_BASE_URL,
-  insecure: process.env.ANTHROPIC_INSECURE,
-  versionOverride: process.env[ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR],
+  baseUrl: hostEnv.ANTHROPIC_BASE_URL,
+  insecure: hostEnv.ANTHROPIC_INSECURE,
+  versionOverride: hostEnv[ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR],
 })
 
-export default make({ fetch: (input, init) => fetch(input, init), env: processEnv, shared: makeShared(), registry: SourcesLive.processRegistry })
+export default make({
+  fetch: (input, init) => fetch(input, init),
+  env: processEnv,
+  shared: makeShared(Option.fromUndefinedOr(hostEnv[CLAUDE_CODE_INSTALLED_ENV_VAR])),
+  registry: SourcesLive.processRegistry,
+})

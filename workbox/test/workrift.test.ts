@@ -8,7 +8,7 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -658,9 +658,10 @@ describeWork("workrift with the work backend", () => {
   )
 
   test(
-    "remove refuses a workspace with uncommitted changes or commits on no remote, and trashes it clean and pushed",
+    "off the workbox (WORKRIFT_PURGE=0, the Mac's default) remove refuses a workspace with uncommitted changes or commits on no remote, and trashes it clean and pushed",
     () => {
-      const w = workBench("remove", work)
+      const w0 = workBench("remove", work)
+      const w = { ...w0, wr: (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, { ...w0.env, WORKRIFT_PURGE: "0" }, [SCRIPT, ...argv]) }
       const path = w.create(w.app, "feat/rm")
       writeFileSync(join(path, "unsaved.txt"), "unsaved\n")
       let ran = w.wr(w.app, "remove", path)
@@ -686,6 +687,186 @@ describeWork("workrift with the work backend", () => {
       expect(w.create(w.app, "feat/rm")).toBe(join(w.root, ".work/app/feat-rm-2"))
     },
     30_000,
+  )
+
+  /**
+   * The workbox's removal (WORKRIFT_PURGE=1; the default on Linux): a bench with three sibling workspaces of `app`, one of
+   * `lib`, a plain folder beside them in app's storage, an unrelated folder beside the bases, and one workspace already
+   * in app's trash (removed with WORKRIFT_PURGE=0). `work` is a shim that logs each call (with the base it names) and
+   * fails a `gc` when the file `fail-gc` is there. `files` is every file under the scratch root but the trash and Git's
+   * folders, with its text, so a test proves that nothing but the removed workspace went.
+   */
+  const purgeBench = (label: string) => {
+    const w = workBench(label, work)
+    const calls = join(w.dir, "work-calls")
+    const failGc = join(w.dir, "fail-gc")
+    const lieTrash = join(w.dir, "lie-trash")
+    exe(
+      join(w.bin, "work-logged"),
+      `#!/bin/sh\nprintf '%s %s\\n' "\${WORK_BASE:-}" "$*" >>'${calls}'\nfor a do\n  [ "$a" = gc ] && [ -e '${failGc}' ] && { echo '{"_tag":"Locked"}'; exit 1; }\n  [ "$a" = rm ] && [ -e '${lieTrash}' ] && { '${work}' "$@" | jq -c --arg t "$(cat '${lieTrash}')" 'map(.trash = $t)'; exit; }\ndone\nexec '${work}' "$@"\n`,
+    )
+    const env: Env = { ...w.env, WORK: join(w.bin, "work-logged"), WORKRIFT_PURGE: "1" }
+    const wr = (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, env, [SCRIPT, ...argv])
+    const lib = w.base("lib")
+    const [one, two, three] = [w.create(w.app, "feat/one"), w.create(w.app, "feat/two"), w.create(w.app, "feat/three")]
+    const other = w.create(lib, "feat/other")
+    for (const path of [one, two, three, other]) writeFileSync(join(path, "mark.txt"), `${path}\n`)
+    for (const path of [one, two, three, other]) sh(path, w.env, "git", "add", "mark.txt")
+    for (const path of [one, two, three, other]) sh(path, w.env, "git", "commit", "-q", "-m", "mark")
+    for (const path of [one, two, three, other]) sh(path, w.env, "git", "push", "-q", "origin", "HEAD")
+    const plain = join(w.root, ".work/app/plain-folder")
+    mkdirSync(join(plain, "inner"), { recursive: true })
+    writeFileSync(join(plain, "inner/keep.txt"), "plain\n")
+    const unrelated = join(w.root, "unrelated")
+    mkdirSync(unrelated)
+    writeFileSync(join(unrelated, "keep.txt"), "unrelated\n")
+    const old = w.create(w.app, "feat/old")
+    const trashed = run(w.app, { ...w.env, WORKRIFT_PURGE: "0" }, [SCRIPT, "remove", old])
+    expect(trashed.code, trashed.err).toBe(0)
+    const trash = join(w.root, ".work/app/.work-trash")
+    const oldTrash = readdirSync(trash)
+    expect(oldTrash.length).toBe(1)
+    writeFileSync(calls, "")
+    const files = (): Record<string, string> => {
+      const out: Record<string, string> = {}
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir)) {
+          const path = join(dir, entry)
+          if (entry === ".git" || entry === ".work-trash" || entry.startsWith(".registry") || entry.startsWith(".lock")) continue
+          if (lstatSync(path).isDirectory()) walk(path)
+          else if (lstatSync(path).isFile()) out[path] = readFileSync(path, "utf8")
+        }
+      }
+      walk(w.root)
+      return out
+    }
+    const without = (all: Record<string, string>, folder: string) =>
+      Object.fromEntries(Object.entries(all).filter(([path]) => !path.startsWith(`${folder}/`)))
+    const gcCalls = () => lines(readFileSync(calls, "utf8")).filter((line) => /\bgc\b/.test(line))
+    return { w, env, wr, lib, one, two, three, other, plain, unrelated, trash, oldTrash, failGc, lieTrash, files, without, gcCalls }
+  }
+
+  test.each([
+    ["the base", (p: ReturnType<typeof purgeBench>) => p.w.app],
+    ["the workspaces' folder", (p: ReturnType<typeof purgeBench>) => join(p.w.root, ".work/app")],
+    ["a sibling workspace", (p: ReturnType<typeof purgeBench>) => p.three],
+    ["a trash entry of another folder", (p: ReturnType<typeof purgeBench>) => join(p.w.root, ".work/lib/.work-trash/x.1")],
+  ] as const)(
+    "a work rm answer whose trash folder is %s runs no gc: nothing is deleted and the trash is named",
+    (_label, at) => {
+      const p = purgeBench("purge-lie")
+      writeFileSync(p.lieTrash, at(p))
+      const before = p.files()
+      const ran = p.wr(p.w.app, "remove", p.two)
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("nothing deleted")
+      expect(p.gcCalls()).toEqual([])
+      // work moved feat-two to its trash; every other file stays.
+      expect(p.files()).toEqual(p.without(before, p.two))
+      expect(existsSync(p.three)).toBe(true)
+      expect(existsSync(p.w.app)).toBe(true)
+    },
+    60_000,
+  )
+
+  test(
+    "on the workbox remove deletes the one workspace for good, by work gc -id: its siblings, the base, another base's workspace, a plain folder beside it, an unrelated folder and a workspace already in the trash all stay",
+    () => {
+      const p = purgeBench("purge")
+      const id = p.w.active(p.w.app).find((each) => each.path === p.two)?.id ?? ""
+      expect(id).not.toBe("")
+      const before = p.files()
+      const ran = p.wr(p.w.app, "remove", p.two)
+      expect(ran.code, ran.err).toBe(0)
+      expect(lines(ran.out)).toEqual([`deleted: ${p.two}`])
+      expect(existsSync(p.two)).toBe(false)
+      // Every other file under the scratch root is there with its text: only feat-two's files went.
+      expect(p.files()).toEqual(p.without(before, p.two))
+      expect(Object.keys(p.without(before, p.two)).length).toBeGreaterThan(5)
+      // The workspace already in the trash stays (gc took that one id), and feat-two left no trash.
+      expect(readdirSync(p.trash)).toEqual(p.oldTrash)
+      expect(p.gcCalls()).toEqual([`${p.w.app} --json gc -id ${id}`])
+      // Its record is gone, not trashed; the others are as they were.
+      expect(p.w.listed(p.w.app).some((each) => each.id === id)).toBe(false)
+      expect(p.w.active(p.w.app).map((each) => each.path).sort()).toEqual([p.one, p.three].sort())
+      expect(p.w.active(p.lib).map((each) => each.path)).toEqual([p.other])
+      // The name is free again: no -2 suffix.
+      expect(p.w.create(p.w.app, "feat/two")).toBe(p.two)
+    },
+    60_000,
+  )
+
+  test(
+    "remove --dry-run prints the exact folders it would delete and changes nothing; --with-children deletes the workspace and the one made on it, each by its own id",
+    () => {
+      const p = purgeBench("purge-tree")
+      const oneName = p.w.active(p.w.app).find((each) => each.path === p.one)?.name ?? ""
+      const nested = (JSON.parse(p.w.inBase(p.w.app, "--json", "new", "-on", oneName, "-branch", "nested", "nested")) as { path: string }).path
+      const before = p.files()
+      const listedBefore = p.w.listed(p.w.app)
+
+      const dry = p.wr(p.w.app, "remove", "--dry-run", p.three)
+      expect(dry.code, dry.err).toBe(0)
+      expect(lines(dry.out)).toEqual([`would delete: ${p.three}`])
+      const dryTree = p.wr(p.w.app, "remove", "--dry-run", "--with-children", p.one)
+      expect(dryTree.code, dryTree.err).toBe(0)
+      expect(lines(dryTree.out)).toEqual([`would delete: ${p.one}`, `would delete: ${nested}`])
+      expect(p.files()).toEqual(before)
+      expect(p.w.listed(p.w.app)).toEqual(listedBefore)
+      expect(p.gcCalls()).toEqual([])
+
+      const ids = [p.one, nested].map((path) => p.w.active(p.w.app).find((each) => each.path === path)?.id ?? "")
+      const ran = p.wr(p.w.app, "remove", "--with-children", p.one)
+      expect(ran.code, ran.err).toBe(0)
+      expect(lines(ran.out).sort()).toEqual([`deleted: ${p.one}`, `deleted: ${nested}`].sort())
+      expect(p.files()).toEqual(p.without(p.without(before, p.one), nested))
+      expect(readdirSync(p.trash)).toEqual(p.oldTrash)
+      expect(p.gcCalls().sort()).toEqual(ids.map((id) => `${p.w.app} --json gc -id ${id}`).sort())
+    },
+    60_000,
+  )
+
+  test(
+    "remove refuses a workspace a process works in, naming the process, and deletes and trashes nothing",
+    () => {
+      const p = purgeBench("purge-busy")
+      // A /proc of one process whose working folder is inside feat-two.
+      const proc = join(p.w.dir, "proc")
+      mkdirSync(join(proc, "4242"), { recursive: true })
+      mkdirSync(join(p.two, "src"))
+      symlinkSync(join(p.two, "src"), join(proc, "4242/cwd"))
+      writeFileSync(join(proc, "4242/comm"), "zsh\n")
+      const before = p.files()
+      const ran = run(p.w.app, { ...p.env, WORKRIFT_PROC: proc }, [SCRIPT, "remove", p.two])
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain(`a process works in ${p.two} (pid 4242 zsh)`)
+      expect(p.files()).toEqual(before)
+      expect(readdirSync(p.trash)).toEqual(p.oldTrash)
+      expect(p.gcCalls()).toEqual([])
+      expect(p.w.active(p.w.app).map((each) => each.path)).toContain(p.two)
+    },
+    60_000,
+  )
+
+  test(
+    "a work gc -id that fails after the rm leaves the trash, names it and exits 1; nothing else is deleted",
+    () => {
+      const p = purgeBench("purge-fail")
+      writeFileSync(p.failGc, "")
+      const before = p.files()
+      const ran = p.wr(p.w.app, "remove", p.two)
+      expect(ran.code).toBe(1)
+      const left = readdirSync(p.trash).filter((entry) => !p.oldTrash.includes(entry))
+      expect(left.length).toBe(1)
+      expect(left[0]).toStartWith("feat-two.")
+      expect(ran.err).toContain(join(p.trash, left[0] ?? ""))
+      expect(ran.err).toContain("not deleted")
+      // The workspace's files are in its trash folder, whole; everything else is where it was.
+      expect(readFileSync(join(p.trash, left[0] ?? "", "mark.txt"), "utf8")).toBe(`${p.two}\n`)
+      expect(p.files()).toEqual(p.without(before, p.two))
+      expect(p.gcCalls().length).toBe(1)
+    },
+    60_000,
   )
 
   test(

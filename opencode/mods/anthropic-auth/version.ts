@@ -77,6 +77,27 @@ export function compareClaudeCodeVersions(candidate: string, baseline: string): 
   return 0
 }
 
+/**
+ * Environment variable holding the Claude Code release installed on the host.
+ *
+ * The OpenCode launcher (`mods/update/filestore/launcher.ts`) exports it from
+ * the file the daily Claude Code install writes
+ * (`claude/bin/claude-daily-install`), so the server process starts with it
+ * and holds it for its whole life: a newer `claude` is reported from the next
+ * server start, never in the middle of a process.
+ */
+export const CLAUDE_CODE_INSTALLED_ENV_VAR = "CLAUDE_CODE_INSTALLED_VERSION"
+
+/**
+ * The installed release, when it is newer than the bundled one.
+ *
+ * Read strictly, untrimmed: the launcher exports the release alone, so
+ * anything else (malformed, older, the same, or unset) is ignored and the
+ * bundled version stands.
+ */
+export const installedClaudeCodeVersion = (raw: Option.Option<string>): Option.Option<string> =>
+  Option.filter(raw, (version) => compareClaudeCodeVersions(version, CLAUDE_CODE_VERSION) === 1)
+
 /** The newer of a version that may be held and a valid baseline. */
 export const newerClaudeCodeVersion = (candidate: Option.Option<string>, baseline: string): string =>
   candidate.pipe(

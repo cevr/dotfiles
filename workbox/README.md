@@ -63,6 +63,7 @@ Mac with `--on workbox` and addresses such as `workbox/t7` once
 | --- | --- |
 | `workbox-backup.timer` | `backup-state` each day at 02:30 |
 | `transcript-archive.timer` | Claude and Codex transcripts to the R2 archive each day at 03:15 |
+| `claude-daily.timer` | `claude/bin/claude-daily-install` each day at 05:10: the latest Claude Code, its release recorded for the OpenCode launcher |
 | `cull-transcript-images.timer` | replaces transcript images with a note each Sunday |
 | `cleanup-mosh-servers.timer` | signals disconnected Mosh servers every 15 minutes |
 
@@ -89,8 +90,16 @@ noncurrent snapshot objects after 14 days.
   file or a dependency patch in `patches/` changed since the last install.
 - `workrift refresh` updates and warms the source from its default branch.
 - `workrift list` lists the source's workspaces; `workrift sources` lists sources.
-- `workrift remove [--with-children] [path]` moves a workspace to the trash.
-  It refuses a workspace with child workspaces unless you pass `--with-children`.
+- `workrift remove [--dry-run] [--with-children] [path]` deletes a workspace for
+  good: the workbox keeps no trash (owner, 2026-11-19). It refuses a workspace
+  with uncommitted changes, stash entries or unpushed commits, one a process
+  works in, and one with child workspaces unless you pass `--with-children`.
+  After `work rm` it has work delete each record it trashed, by
+  `work gc -id <id>`, and only once each trash folder is checked to sit beside
+  that workspace; otherwise, or if that gc fails, it names the trash and exits
+  1. `--dry-run` prints the folders it would delete. Off Linux (or with
+  `WORKRIFT_PURGE=0`) the workspace stays in work's trash; the Rift backend
+  (`.rifts/`, rollback only) still trashes with `rift remove`.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
@@ -116,7 +125,16 @@ workspaces under `.rifts/`.
 On the exe.dev VM the root file system stays on ext4 and the workspace file
 system uses Btrfs inside `/var/lib/bite-workspaces.btrfs`, mounted through
 `/etc/fstab` at `/workspaces`; on the Hetzner box `/workspaces` is a subvolume
-of the root Btrfs.
+of the root Btrfs. On the VM the image's `@home` and `@tmp` mount from the image
+file too, with `loop` (mount reuses `/workspaces`' loop device), never by
+`UUID=`: systemd-udevd is masked there, so a `/dev/disk/by-uuid` link never
+appears and a `UUID=` line fails the boot after 90 s (2026-11-19).
+`workbox-rift-storage --apply` (bootstrap) rewrites such lines, and
+`workbox-rift-storage --fstab` does only that; `--check` fails while one is left.
+`workbox-btrfs-reclaim.service` turns on btrfs dynamic reclaim
+(`allocation/data/dynamic_reclaim`) at each boot for the file system mounted at
+`/workspaces`, found by its device, so nearly empty data chunks go back to
+unallocated space that metadata can grow into.
 
 Each repository has one clean warm source, such as `/workspaces/bite`. Do not
 use a warm source for feature work. `workrift` finds the source from the current

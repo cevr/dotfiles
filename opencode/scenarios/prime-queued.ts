@@ -109,7 +109,9 @@ export default OpenCodeDriver.use(
       yield* ui.press("x", { ctrl: true })
       yield* ui.press("return")
       yield* until("queued", (frame) => frame.includes(`◌ after the turn · ${LATER}`))
-      yield* Effect.sleep("1000 millis")
+      // The row's clock ticks each half second and shows whole seconds, so it reads `1s` from about 1.5 s after the
+      // row appears; the three prompts take a fraction of that, so wait two seconds before framing it.
+      yield* Effect.sleep("2000 millis")
       yield* save("queued")
       yield* until("taken", (frame) => frame.includes("Updating"))
       yield* Effect.sleep("500 millis")

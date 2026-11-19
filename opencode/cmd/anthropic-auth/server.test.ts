@@ -323,12 +323,15 @@ type Mocked = ReturnType<typeof makeMockContext>
 type MockContext = Mocked['ctx']
 const hosts = new WeakMap<MockContext, Mocked>()
 
-/** A process of its own: what a version rejection raises in it reaches no other test. */
-const freshProcess = () =>
+/**
+ * A process of its own: what a version rejection raises in it reaches no other test. `installed`: the
+ * `CLAUDE_CODE_INSTALLED_VERSION` it starts with.
+ */
+const freshProcess = (installed: Option.Option<string> = Option.none()) =>
   make({
     fetch: (input, init) => network.fetch(input, init),
     env: () => ({ ...environment }),
-    shared: makeShared(),
+    shared: makeShared(installed),
     registry: () => sourceRegistry,
   })
 
@@ -1733,6 +1736,70 @@ describe('session http.response hook', () => {
     }),
     5_000,
   )
+
+  describe('the installed Claude Code release (CLAUDE_CODE_INSTALLED_VERSION)', () => {
+    const model = { providerID: 'anthropic', id: 'claude-opus-test' }
+    const request = (sessionID: string): RequestEvent => ({
+      sessionID,
+      agent: 'build',
+      model,
+      request: new Request('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        body: '{"messages":[{"role":"user","content":"installed"}]}',
+      }),
+    })
+    /** Whether a new setup in `proc` reports `version` on its first request, in the user-agent and the billing block. */
+    const reports = (proc: typeof subject, version: string) =>
+      Effect.gen(function* () {
+        const { ctx, sessionHooks } = anthropicOAuthContext()
+        yield* Effect.promise(() => plugin.setup(ctx, proc))
+        const sent = request('session-installed')
+        yield* Effect.promise(() => sessionHooks.get('http.request')(sent))
+        const body = yield* Effect.promise(() => sent.request.clone().text())
+        return sent.request.headers.get('user-agent') === `claude-cli/${version} (external, cli)` && body.includes(`cc_version=${version}.`)
+      })
+
+    effectTest(
+      'a newer installed release is reported from the first request',
+      Effect.gen(function* () {
+        expect(yield* reports(freshProcess(Option.some(V2)), V2)).toBe(true)
+      }),
+      5_000,
+    )
+
+    effectTest(
+      'an older, equal, malformed or absent one leaves the bundled version',
+      Effect.gen(function* () {
+        const installed = ['2.1.99', V0, ` ${V2}`, `${V2}\n`, `v${V2}`, '2.1', `0${V2}`, ''].map(Option.some)
+        for (const value of [...installed, Option.none()]) {
+          expect([value, yield* reports(freshProcess(value), V0)]).toEqual([value, true])
+        }
+      }),
+      5_000,
+    )
+
+    effectTest(
+      'a version rejection still raises the version above the installed release, for the whole process',
+      Effect.gen(function* () {
+        const proc = freshProcess(Option.some(V1))
+        const { ctx, sessionHooks } = anthropicOAuthContext()
+        yield* Effect.promise(() => plugin.setup(ctx, proc))
+        const rejected = request('session-installed-rejected')
+        yield* Effect.promise(() => sessionHooks.get('http.request')(rejected))
+        expect(rejected.request.headers.get('user-agent')).toBe(`claude-cli/${V1} (external, cli)`)
+        const response: ResponseEvent = {
+          ...rejected,
+          request: new Request(rejected.request),
+          response: new Response(versionRejectionBody(V1, V2), { status: 400 }),
+        }
+        yield* Effect.promise(() => sessionHooks.get('http.response')(response))
+        expect(response.response.headers.get('x-should-retry')).toBe('true')
+
+        expect(yield* reports(proc, V2)).toBe(true)
+      }),
+      5_000,
+    )
+  })
 
   test('does not replace or retry an explicit version override', async () => {
     const originalVersion = environment.versionOverride
@@ -3617,6 +3684,25 @@ describe('credential choice, wire extras and quota readings', () => {
       expect(onB.headers.get('user-agent')).toBe(onA.headers.get('user-agent'))
       expect(yield* Effect.promise(() => onA.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
       expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
+    }),
+    5_000,
+  )
+
+  effectTest(
+    'every login of the pool reports the installed release the process started with',
+    Effect.gen(function* () {
+      const [major, minor, patch] = CLAUDE_CODE_VERSION.split('.')
+      const installed = `${major}.${minor}.${Number(patch) + 7}`
+      const { ctx, sessionHooks } = twoAccounts()
+      yield* Effect.promise(() => plugin.setup(ctx, freshProcess(Option.some(installed))))
+
+      const onA = yield* Effect.promise(() => send(sessionHooks, { 'x-opencode-credential-id': 'cred-a' }))
+      const onB = yield* Effect.promise(() => send(sessionHooks, { 'x-opencode-credential-id': 'cred-b' }))
+
+      expect([onA.headers.get('user-agent'), onB.headers.get('user-agent')]).toEqual(
+        Array(2).fill(`claude-cli/${installed} (external, cli)`),
+      )
+      expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${installed}.`)
     }),
     5_000,
   )
