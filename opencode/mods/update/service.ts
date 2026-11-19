@@ -48,14 +48,25 @@ export class Source extends Context.Service<
 >()("dotfiles-opencode/update/Source") {}
 
 /**
- * Builds the target ahead of the restart, from the advanced checkout's own install code (`bun
- * scripts/daily.ts --stage`): the fork at the target's commit, the binary, the config and the
- * installed record. It restarts nothing.
+ * The two halves of an install, split so the live checkout moves only at the restart: the server
+ * and every TUI hot-reload a local plugin when its files change, so a checkout moved ahead of the
+ * build ran the new plugins on the old fork until the restart (2026-11-19: Prime's `ui.Spinner` on
+ * a fork without it, for 7 minutes).
  */
 export class Builder extends Context.Service<
   Builder,
   {
+    /**
+     * Builds the target ahead of the restart from the checkout as it stands, which does not move
+     * (`bun scripts/daily.ts --stage`): the fork at the target's commit, the binary, and the
+     * installed record naming the target's commits. It writes no config and restarts nothing.
+     */
     readonly stage: (target: Target) => Effect.Effect<void, UpdateFailed>
+    /**
+     * Writes the server and TUI configs from the checkout's own install code (`bun
+     * scripts/daily.ts --configure`), once the handoff moved it onto the build's commit.
+     */
+    readonly configure: Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builder") {}
 

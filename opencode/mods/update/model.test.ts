@@ -43,6 +43,9 @@ interface World {
   living: ReadonlyArray<number>
   readonly readings: Array<Reading>
   stageFails: boolean
+  configureFails: boolean
+  /** The commit the live checkout is on: where every running process loads its plugins from. */
+  head: string
   /** How many restarts still fail before one goes through. */
   restartFailures: number
   reinstallFails: boolean
@@ -71,6 +74,8 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   living: [HANDOFF_PID],
   readings: [],
   stageFails: false,
+  configureFails: false,
+  head: PRIOR,
   restartFailures: 0,
   reinstallFails: false,
   pruneFails: false,
@@ -101,12 +106,14 @@ const fakes = (host: World) =>
           host.verifiedDeaths -= 1
           return Effect.die(new Error("git fetch: the origin's ref did not parse"))
         }),
-        head: Effect.succeed(PRIOR),
+        head: Effect.sync(() => host.head),
         advance: (commit) =>
           Effect.suspend((): Effect.Effect<void, UpdateFailed | CheckoutStuck> => {
             host.calls.push(`advance ${commit.slice(0, 1)}`)
             if (host.advanceStuck.includes(commit)) return Effect.fail(new CheckoutStuck({ step: "fast-forward the checkout", message: "untracked files the target tracks with other content: docs/x.md" }))
+            // A failed install moves the checkout back to where it was (`git/source.ts`).
             if (host.advanceFails.includes(commit)) return failure("install the dependencies")
+            host.head = commit
             return Effect.void
           }),
         reinstall: Effect.suspend(() => {
@@ -126,6 +133,11 @@ const fakes = (host: World) =>
             host.record = Option.some(stagedRecord(host.record, NEW, []))
             return Effect.void
           }),
+        configure: Effect.suspend(() => {
+          host.calls.push("configure")
+          if (host.configureFails) return failure("write the configs")
+          return Effect.void
+        }),
       }),
     ),
     Layer.succeed(Handoff, Handoff.of({ start: (reason) => Effect.sync(() => void host.calls.push(`handoff ${reason}`)) })),
@@ -199,7 +211,7 @@ const fakes = (host: World) =>
   )
 
 /** Runs `body` on the fakes under a test clock set to a Wednesday noon. */
-const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log | Heartbeat>) =>
+const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Builder | Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log | Heartbeat>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* TestClock.setTime(WEDNESDAY_NOON)
@@ -239,20 +251,29 @@ const POOL_FAILED = "pool: Cannot find package '@dotfiles/opencode-status'"
 
 const notices = (host: World) => host.calls.filter((call) => call.startsWith("notice "))
 
+/** The handoff's first steps onto the target's build: the running config kept, the live checkout moved, the configs written from it. */
+const MOVE = ["keep config", "advance d", "configure"] as const
+
 describe("the updater on its seams", () => {
-  test("the build is handed off as soon as it is staged: no session holds the restart", () => {
-    const host = world({ record: onGood() })
+  test("S1: the live checkout moves only in the handoff, right before the restart: never while the target builds or waits, and never by the updater", () => {
+    const host = world({ record: onGood(), readings: [healthy] })
     return run(
       host,
       Effect.gen(function* () {
         yield* check("asked")
-        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7", `handoff ${SHORT}`])
-        expect(host.lines).toEqual([`update: ${SHORT}; advancing the dotfiles from ${PRIOR.slice(0, 10)}`, `update: ${SHORT} is built; restarting onto it`, "update: the restart is handed off"])
+        // Built and handed off: every process still loads its plugins from the commit the running build came with.
+        expect(host.calls).toEqual(["stage batch-7", `handoff ${SHORT}`])
+        expect(host.head).toBe(PRIOR)
+        expect(yield* handOff).toBe("proven")
+        expect(host.calls).toEqual(["stage batch-7", `handoff ${SHORT}`, ...MOVE, `record ${NEW.version} good ${GOOD.version}`, "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
+        expect(host.head).toBe(TARGET.dotfiles)
+        expect(host.lines.slice(0, 3)).toEqual([`update: ${SHORT}; building it ahead, the dotfiles stay at ${PRIOR.slice(0, 10)} until the restart`, `update: ${SHORT} is built; restarting onto it`, "update: the restart is handed off"])
+        expect(host.lines).toContain(`handoff: moving the dotfiles from ${PRIOR.slice(0, 10)} to ${TARGET.dotfiles.slice(0, 10)}, right before the restart`)
       }),
     )
   })
 
-  test("the Sabbath rest holds the restart, and it is handed off once the rest ends", () => {
+  test("S2: the Sabbath rest holds the restart with the checkout unmoved, and it is handed off once the rest ends", () => {
     const host = world({ record: onGood() })
     return run(
       host,
@@ -262,11 +283,13 @@ describe("the updater on its seams", () => {
         yield* settle
         yield* TestClock.adjust(GATE_POLL)
         yield* settle
-        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7"])
+        expect(host.calls).toEqual(["stage batch-7"])
+        expect(host.head).toBe(PRIOR)
         expect(host.lines.some((line) => line.startsWith("restart held: the Sabbath rest, until "))).toBe(true)
         yield* TestClock.adjust(Duration.hours(12))
         yield* Fiber.join(fiber)
         expect(host.calls.at(-1)).toBe(`handoff ${SHORT}`)
+        expect(host.head).toBe(PRIOR)
         expect(host.lines.some((line) => /^restart: the Sabbath rest ended after .* of waiting$/.test(line))).toBe(true)
       }),
     )
@@ -278,18 +301,19 @@ describe("the updater on its seams", () => {
       host,
       Effect.gen(function* () {
         yield* check("interval")
-        expect(Option.map(host.record, (record) => [record.version, record.dotfiles, record.staged?.version])).toEqual(Option.some([GOOD.version, PRIOR, NEW.version]))
+        expect(Option.map(host.record, (record) => [record.version, record.dotfiles, record.staged?.version, record.staged?.dotfiles])).toEqual(Option.some([GOOD.version, PRIOR, NEW.version, TARGET.dotfiles]))
       }),
     )
   })
 
-  test("P6: a failed build moves the dotfiles and the config back and rejects the target: later checks build nothing", () => {
+  test("P6, S3: a failed build moves nothing (the checkout and the config stay as they run) and rejects the target: later checks build nothing", () => {
     const host = world({ record: onGood(), stageFails: true })
     return run(
       host,
       Effect.gen(function* () {
         yield* check("interval")
-        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7", "advance c", "restore config", "reject build"])
+        expect(host.calls).toEqual(["stage batch-7", "reject build"])
+        expect(host.head).toBe(PRIOR)
         expect(host.lines.at(-1)).toBe("update failed at build: build exited 1")
         host.calls.length = 0
         yield* check("interval")
@@ -300,55 +324,68 @@ describe("the updater on its seams", () => {
     )
   })
 
-  test("a failed advance (its install) rejects the target too", () => {
-    const host = world({ record: onGood(), advanceFails: [TARGET.dotfiles] })
+  test("a failed move in the handoff (its install; the checkout went back) gives up without a restart and rejects the target", () => {
+    const host = world({ record: stagedTarget(), advanceFails: [TARGET.dotfiles] })
     return run(
       host,
       Effect.gen(function* () {
-        yield* check("interval")
+        expect(yield* handOff).toBe("gave-up")
+        expect(host.calls).toEqual(["keep config", "advance d", "notice advance: install the dependencies: install the dependencies exited 1; the service was not restarted", "reject advance"])
+        expect(host.head).toBe(PRIOR)
         host.calls.length = 0
         yield* check("interval")
         expect(host.calls).toEqual([])
-        expect(Option.map(host.rejected, (rejected) => rejected.step)).toEqual(Option.some("advance"))
       }),
     )
   })
 
-  test("A1: a checkout git refuses to move is no rejection: each check tries again, the notice shows once, and a move that goes through clears it and builds", () => {
-    const host = world({ record: onGood(), advanceStuck: [TARGET.dotfiles] })
-    const held = `update ${SHORT} is held: the dotfiles checkout could not move: untracked files the target tracks with other content: docs/x.md`
+  test("a failed configure moves the checkout and the config back, gives up without a restart, and rejects the target", () => {
+    const host = world({ record: stagedTarget(), configureFails: true })
     return run(
       host,
       Effect.gen(function* () {
-        yield* check("interval")
-        expect(host.calls).toEqual(["advance d", `notice ${held}`])
-        expect(host.rejected).toEqual(Option.none())
-        expect(host.lines.at(-1)).toContain("the dotfiles checkout could not move (fast-forward the checkout: untracked files the target tracks with other content: docs/x.md); nothing changed, the next check tries again")
-        host.calls.length = 0
-        yield* check("interval")
-        yield* check("asked")
-        expect(host.calls).toEqual(["advance d", "advance d"])
-        expect(host.rejected).toEqual(Option.none())
-        host.calls.length = 0
-        host.advanceStuck = []
-        yield* check("interval")
-        expect(host.calls.slice(0, 4)).toEqual(["advance d", "notice cleared", "keep config", "stage batch-7"])
+        expect(yield* handOff).toBe("gave-up")
+        expect(host.calls).toEqual([...MOVE, "advance c", "restore config", "notice configure: write the configs: write the configs exited 1; the service was not restarted", "reject configure"])
+        expect(host.head).toBe(PRIOR)
+        expect(Option.map(host.record, (record) => [record.version, record.staged?.version])).toEqual(Option.some([GOOD.version, NEW.version]))
       }),
     )
   })
 
-  test("A2: a failed build after a stuck check still rejects the target", () => {
-    const host = world({ record: onGood(), advanceStuck: [TARGET.dotfiles], stageFails: true })
+  test("A1: a checkout git refuses to move holds the handoff: no rejection, no restart, the notice; a check after the handoff's limit hands off again, and a move that goes through proves the build and clears the notice", () => {
+    const host = world({ record: stagedTarget(), advanceStuck: [TARGET.dotfiles], readings: [healthy] })
+    const held = `notice update batch-7 is held: the dotfiles checkout could not move: untracked files the target tracks with other content: docs/x.md`
     return run(
       host,
       Effect.gen(function* () {
         yield* check("interval")
-        host.advanceStuck = []
         yield* check("interval")
-        expect(Option.map(host.rejected, (rejected) => rejected.step)).toEqual(Option.some("build"))
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
+        // The handoff's run moves the clock past its limit.
+        expect(yield* handOff).toBe("held")
+        expect(host.calls.slice(1)).toEqual(["keep config", "advance d", held])
+        expect(host.rejected).toEqual(Option.none())
+        expect(host.head).toBe(PRIOR)
+        expect(EXIT_CODES.held).not.toBe(0)
         host.calls.length = 0
         yield* check("interval")
-        expect(host.calls).toEqual([])
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
+        host.calls.length = 0
+        host.advanceStuck = []
+        expect(yield* handOff).toBe("proven")
+        expect(host.calls).toContain("notice cleared")
+        expect(host.head).toBe(TARGET.dotfiles)
+      }),
+    )
+  })
+
+  test("a build by hand, whose checkout is already on its commit, does not move the checkout, and writes the configs", () => {
+    const host = world({ record: stagedTarget(), head: TARGET.dotfiles, readings: [healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.calls.slice(0, 3)).toEqual(["keep config", "configure", `record ${NEW.version} good ${GOOD.version}`])
       }),
     )
   })
@@ -490,7 +527,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
-        expect(host.calls).toEqual([`record ${NEW.version} good ${GOOD.version}`, "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
+        expect(host.calls).toEqual([...MOVE, `record ${NEW.version} good ${GOOD.version}`, "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
         expect(EXIT_CODES.proven).toBe(0)
       }),
     )
@@ -503,6 +540,7 @@ describe("the handoff on its seams", () => {
       Effect.gen(function* () {
         expect(yield* handOff).toBe("rolled-back")
         expect(host.calls).toEqual([
+          ...MOVE,
           `record ${NEW.version} good ${GOOD.version}`,
           "restart",
           "reinstall",
@@ -530,7 +568,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
-        expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
+        expect(host.calls.slice(MOVE.length + 1)).toEqual(["restart", "reinstall", "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
       }),
     )
   })
@@ -541,7 +579,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("gave-up")
-        expect(host.calls.slice(1)).toEqual([
+        expect(host.calls.slice(MOVE.length + 1)).toEqual([
           "restart",
           "reinstall",
           "restart",
@@ -574,7 +612,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("rolled-back")
-        expect(host.calls.slice(1)).toEqual([
+        expect(host.calls.slice(MOVE.length + 1)).toEqual([
           "restart",
           "reinstall",
           "advance c",
@@ -609,7 +647,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("rolled-back")
-        expect(host.calls.slice(1)).toEqual([
+        expect(host.calls.slice(MOVE.length + 1)).toEqual([
           "restart",
           "reinstall",
           "restart",
@@ -632,7 +670,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
-        expect(host.calls.slice(1)).toEqual(["restart", `record ${NEW.version} good ${NEW.version}`, "notice healthy, but no anthropic login: sign in with opencode auth login", `prune ${NEW.version} under the mark`])
+        expect(host.calls.slice(MOVE.length + 1)).toEqual(["restart", `record ${NEW.version} good ${NEW.version}`, "notice healthy, but no anthropic login: sign in with opencode auth login", `prune ${NEW.version} under the mark`])
         expect(host.lines).toContain("handoff (first): healthy, but no anthropic login: sign in with opencode auth login")
       }),
     )
@@ -655,7 +693,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("gave-up")
-        expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `notice ${POOL_FAILED}`, "reject health"])
+        expect(host.calls.slice(MOVE.length + 1)).toEqual(["restart", "reinstall", "restart", `notice ${POOL_FAILED}`, "reject health"])
       }),
     )
   })
@@ -703,7 +741,7 @@ describe("one handoff at a time", () => {
       host,
       Effect.gen(function* () {
         expect(yield* checkDuring("60 seconds")).toBe("rolled-back")
-        expect(host.calls.filter((call) => call.startsWith("stage") || call.startsWith("handoff ") || call === "advance d")).toEqual([])
+        expect(host.calls.filter((call) => call.startsWith("stage") || call.startsWith("handoff "))).toEqual([])
         host.calls.length = 0
         yield* check("interval")
         expect(host.calls).toEqual([])

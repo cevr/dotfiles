@@ -48,11 +48,11 @@ describe("the server config", () => {
     expect(merged.plugins).toEqual([`${CMD}/anthropic-auth`, "/elsewhere/plugin"])
   })
 
-  test("an update's stage drops the deleted web plugin's entries (its cmd/ root and its mod) from both configs before the handoff restarts the service", () => {
-    // The update's install runs `daily.ts --stage` from the advanced checkout (mods/update/process/builder.ts),
-    // the same on the Mac and the workbox, and only then hands off the restart (mods/update/model.test.ts pins
-    // advance, keep config, stage, handoff). A restart that read an entry naming a deleted directory fails
-    // that plugin's load, and the handoff's health check rolls the update back.
+  test("an update's configure drops the deleted web plugin's entries (its cmd/ root and its mod) from both configs before the handoff restarts the service", () => {
+    // The update's handoff runs `daily.ts --configure` from the checkout it just moved onto the build's commit
+    // (mods/update/process/builder.ts), the same on the Mac and the workbox, right before the restart
+    // (mods/update/model.test.ts pins keep config, advance, configure, record, restart). A restart that read an
+    // entry naming a deleted directory fails that plugin's load, and the handoff's health check rolls the update back.
     using scratch = scratchDir("daily-configs-")
     const config = join(scratch.path, ".config/opencode")
     const checkout = join(DOTFILES, "opencode")
@@ -67,18 +67,23 @@ describe("the server config", () => {
     expect(plugins("cli.json")).toEqual([pluginDir("prime"), "/elsewhere/tui"])
   })
 
-  test("daily writes the configs on every run, a stage too: the one write comes before the --stage branch, which only skips the restart", () => {
+  test("only --configure writes the configs: a stage, which builds while the checkout stays where the running build's plugins load from, writes none", () => {
     const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
-    const main = source.slice(source.indexOf("if (import.meta.main)"))
-    const writes = main.split("writeConfigs(").length - 1
-    const stage = main.split('args.has("--stage")')
-    expect({ writes, stageBranches: stage.length - 1, writeBeforeStage: (stage[0] ?? "").includes("writeConfigs(") }).toEqual({ writes: 1, stageBranches: 1, writeBeforeStage: true })
+    const configure = source.slice(source.indexOf("const configureHost = ("), source.indexOf("const forkOf = ("))
+    const main = source.slice(source.indexOf("if (import.meta.main) {"))
+    const dispatch = 'if (args.has("--configure")) await Effect.runPromise(configureHost(home, fork))\n  else {'
+    const stage = main.slice(main.indexOf(dispatch) + dispatch.length)
+    expect({
+      configureWrites: configure.split("writeConfigs(").length - 1,
+      dispatched: main.includes(dispatch),
+      stageWrites: stage.split("writeConfigs(").length - 1 + stage.split("configureHost(").length - 1,
+    }).toEqual({ configureWrites: 1, dispatched: true, stageWrites: 0 })
   })
 
   test("lists Prime's server half before memory, so its reply style precedes memory's digest, which stays last", () => {
     const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
-    const main = source.slice(source.indexOf("if (import.meta.main)"))
-    const server = main.slice(main.indexOf("const server: PluginEntry[] = ["), main.indexOf("BUILTIN_AUTOMATION_OFF"))
+    const configure = source.slice(source.indexOf("const configureHost = ("))
+    const server = configure.slice(configure.indexOf("const server: PluginEntry[] = ["), configure.indexOf("BUILTIN_AUTOMATION_OFF"))
     const at = (name: string) => server.indexOf(`pluginDir("${name}")`)
     expect({ prime: at("prime") >= 0, beforeMemory: at("prime") < at("memory") }).toEqual({ prime: true, beforeMemory: true })
   })

@@ -1,4 +1,5 @@
 import * as Builds from "@dotfiles/opencode-update/filestore/builds"
+import * as Builder from "@dotfiles/opencode-update/process/builder"
 import * as Configs from "@dotfiles/opencode-update/filestore/configs"
 import * as Log from "@dotfiles/opencode-update/filestore/log"
 import * as Notice from "@dotfiles/opencode-update/filestore/notice"
@@ -16,6 +17,7 @@ import { Config, Effect, Layer } from "effect"
 export const live = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string, home: string) =>
   Layer.mergeAll(
     Service.layer(settings, env, registration),
+    Builder.layer(settings, env),
     Builds.layer(Builds.optionsOf(shareDir(home), buildsLock(home), process.platform)),
     Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env, bin: Source.binScript(process.platform) }),
     Records.layer(settings, process.pid),

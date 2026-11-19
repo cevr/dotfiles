@@ -71,7 +71,7 @@ const fakes = (host: World): Externals => {
     live: () =>
       Layer.mergeAll(
         Layer.succeed(Source, Source.of({ verified: Effect.succeed(Option.none()), head: unused("head"), advance: () => unused("advance"), reinstall: unused("reinstall") })),
-        Layer.succeed(Builder, Builder.of({ stage: () => unused("stage") })),
+        Layer.succeed(Builder, Builder.of({ stage: () => unused("stage"), configure: unused("configure") })),
         Layer.succeed(Handoff, Handoff.of({ start: () => unused("handoff") })),
         Layer.succeed(HandoffMark, HandoffMark.of({ hold: Effect.void, release: Effect.void, read: Effect.succeed(Option.none()), alive: () => Effect.succeed(false) })),
         Layer.succeed(Records, Records.of({ read: Effect.succeed(Option.none()), write: () => unused("record") })),

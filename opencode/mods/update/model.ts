@@ -1,10 +1,10 @@
-import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
+import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Result, Schedule } from "effect"
 import { describeGate, Gate, gate } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
 import { Builder, Builds, type CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
-import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
+import { ask, ended, HANDOFF_LIMIT, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
 /** How often a restart the Sabbath rest holds looks at the clock again. */
 export const GATE_POLL = Duration.seconds(30)
@@ -30,8 +30,9 @@ export class Updater extends Context.Service<
   Updater,
   {
     /**
-     * Looks for the verified target and installs it: advance, build, wait for the gate, hand the
-     * restart off. A request while a run goes asks for one more run after it.
+     * Looks for the verified target and installs it: build from the unmoved checkout, wait for
+     * the gate, hand the restart off (which moves the checkout). A request while a run goes asks
+     * for one more run after it.
      */
     readonly check: (reason: string) => Effect.Effect<void>
   }
@@ -58,41 +59,20 @@ export const updaterLayer = (policy: Policy) =>
       const records = yield* Records
       const mark = yield* HandoffMark
       const rejections = yield* Rejections
-      const configs = yield* Configs
       const log = yield* Log
-      const notice = yield* Notice
       const heartbeat = yield* Heartbeat
       const runs = yield* Ref.make(IDLE)
-      const handedOff = yield* Ref.make(Option.none<Target>())
+      /**
+       * The target this copy handed the restart off for, and when. A handoff that ends without a
+       * restart (a checkout git refused to move, a failed configure) leaves this service running:
+       * past `HANDOFF_LIMIT` the hand-off no longer holds the checks, so the next one plans again.
+       */
+      const handedOff = yield* Ref.make(Option.none<{ readonly target: Target; readonly at: number }>())
 
       const reject = (target: Target, step: string, cause: string) =>
         rejections
           .write({ dotfiles: target.dotfiles, fork: target.fork, step, cause })
           .pipe(Effect.andThen(log.line(`update: ${shortTarget(target)} failed at ${step}; it is not tried again until another target comes`)))
-
-      /**
-       * The target whose checkout could not move, for its notice: shown once per target, then only
-       * logged on each check that tries again, and cleared once a move goes through.
-       */
-      const stuckOn = yield* Ref.make(Option.none<string>())
-
-      /** A move git refused: no rejection, a log line on each try, the notice once; the next check tries again. */
-      const held = (target: Target, stuck: CheckoutStuck) =>
-        Effect.gen(function* () {
-          yield* log.line(`update: ${shortTarget(target)}: the dotfiles checkout could not move (${stuck.step}: ${stuck.message}); nothing changed, the next check tries again`)
-          const shown = yield* Ref.getAndSet(stuckOn, Option.some(target.dotfiles))
-          if (Option.exists(shown, (each) => each === target.dotfiles)) return
-          // The line that names the files in the way when there is one, else what git said first.
-          const said = stuck.message.split("\n")
-          const why = Option.getOrElse(Option.orElse(Arr.findFirst(said, (line) => line.startsWith("untracked files")), () => Arr.head(said)), () => stuck.step)
-          yield* notice.show(`update ${shortTarget(target)} is held: the dotfiles checkout could not move: ${why}`)
-        })
-
-      /** A move that went through clears the notice a refused one showed. */
-      const release = Effect.gen(function* () {
-        if (Option.isNone(yield* Ref.getAndSet(stuckOn, Option.none()))) return
-        yield* notice.clear
-      })
 
       const waitForGate = Effect.fn("Updater.waitForGate")(function* (target: Target) {
         const since = yield* Clock.currentTimeMillis
@@ -123,40 +103,30 @@ export const updaterLayer = (policy: Policy) =>
         const waited = yield* waitForGate(target)
         if (waited === "superseded") return true
         yield* handoff.start(shortTarget(target))
-        yield* Ref.set(handedOff, Option.some(target))
+        yield* Ref.set(handedOff, Option.some({ target, at: yield* Clock.currentTimeMillis }))
         yield* log.line("update: the restart is handed off")
         return false
       })
 
+      /**
+       * Builds the target from the checkout as it stands: the checkout and the configs move only in
+       * the handoff, right before the restart (`steps`), since the running service and every open
+       * TUI reload a plugin whose files change. A failed build has moved nothing.
+       */
       const install = Effect.fn("Updater.install")(function* (target: Target) {
-        const prior = yield* source.head
-        yield* log.line(`update: ${shortTarget(target)}; advancing the dotfiles from ${prior.slice(0, 10)}`)
-        const moved = yield* source.advance(target.dotfiles).pipe(
-          Effect.as(true),
-          Effect.tapErrorTag("UpdateFailed", (failed) => reject(target, "advance", failed.message)),
-          Effect.catchTag("CheckoutStuck", (stuck) => held(target, stuck).pipe(Effect.as(false))),
-        )
-        if (!moved) return false
-        yield* release
-        yield* configs.keep
-        yield* builder.stage(target).pipe(
-          Effect.tapError((failed) =>
-            Effect.all([source.advance(prior), configs.restore], { discard: true }).pipe(
-              Effect.andThen(log.line(`update: the dotfiles and the config moved back to ${prior.slice(0, 10)} after the failed build`)),
-              Effect.catch((back) => log.line(`update: moving back after the failed build failed: ${back.message}`)),
-              Effect.andThen(reject(target, "build", failed.message)),
-            ),
-          ),
-        )
+        const at = yield* source.head
+        yield* log.line(`update: ${shortTarget(target)}; building it ahead, the dotfiles stay at ${at.slice(0, 10)} until the restart`)
+        yield* builder.stage(target).pipe(Effect.tapError((failed) => reject(target, "build", failed.message)))
         return yield* restart(target)
       })
 
       const once = Effect.fn("Updater.once")(function* (reason: string) {
-        const waiting = yield* Ref.get(handedOff)
-        if (Option.isSome(waiting)) return yield* log.line(`check (${reason}): the restart onto ${shortTarget(waiting.value)} is handed off`).pipe(Effect.as(false))
+        const now = yield* Clock.currentTimeMillis
+        const waiting = Option.filter(yield* Ref.get(handedOff), (each) => now - each.at < Duration.toMillis(HANDOFF_LIMIT))
+        if (Option.isSome(waiting)) return yield* log.line(`check (${reason}): the restart onto ${shortTarget(waiting.value.target)} is handed off`).pipe(Effect.as(false))
         const held = yield* mark.read
         const alive = yield* Option.match(held, { onNone: () => Effect.succeed(false), onSome: (each) => mark.alive(each.pid) })
-        const running = runningOf(held, alive, yield* Clock.currentTimeMillis)
+        const running = runningOf(held, alive, now)
         const target = yield* source.verified
         const next = plan(target, yield* records.read, yield* rejections.read, running)
         return yield* Plan.$match(next, {
@@ -200,10 +170,10 @@ export const updaterLayer = (policy: Policy) =>
   )
 
 /** How a handoff ended. */
-export type Outcome = "proven" | "rolled-back" | "gave-up"
+export type Outcome = "proven" | "rolled-back" | "gave-up" | "held"
 
 /** The handoff process's exit code for each outcome: only a proven build exits 0. */
-export const EXIT_CODES = { proven: 0, "rolled-back": 2, "gave-up": 1 } satisfies { readonly [outcome in Outcome]: number }
+export const EXIT_CODES = { proven: 0, "rolled-back": 2, "gave-up": 1, held: 3 } satisfies { readonly [outcome in Outcome]: number }
 
 /** Megabytes, to one decimal, for the log. */
 const megabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} MB`
@@ -228,16 +198,40 @@ const pruneBuilds = Effect.gen(function* () {
 /** A step that failed on the restart path, as the health it leaves: sick, for good. */
 const failedStep = (step: string) => (failed: UpdateFailed | CheckoutStuck) => Health.Sick({ plugin: step, cause: failed.message, final: true })
 
+/** Why the checkout did not move onto the build: held (nothing changed, a later check tries again), or failed at `step`. */
+interface Unmoved {
+  readonly held: boolean
+  readonly step: string
+  readonly cause: string
+}
+
 /**
- * The handoff: install the staged build, restart the service, read its health, and recover. A sick
+ * A step before the move that failed, or a move git refused: held. Its cause is the line that names
+ * the files in the way when there is one, else what was said first.
+ */
+const heldBy = (failed: UpdateFailed | CheckoutStuck, what: string = failed.step): Unmoved => {
+  const said = failed.message.split("\n")
+  const why = Option.getOrElse(Option.orElse(Arr.findFirst(said, (line) => line.startsWith("untracked files")), () => Arr.head(said)), () => failed.step)
+  return { held: true, step: failed.step, cause: `${what}: ${why}` }
+}
+
+const failedAt = (step: string, failed: UpdateFailed): Unmoved => ({ held: false, step, cause: `${failed.step}: ${failed.message}` })
+
+/**
+ * The handoff: move the live checkout onto the staged build's dotfiles commit and write its configs
+ * (`moveOnto`), install the staged build, restart the service, read its health, and recover. The
+ * checkout moves here, seconds before the restart, never while the build is made or the Sabbath rest
+ * holds the restart: the running service and every open TUI reload a plugin whose files change, so
+ * an early move ran the new plugins on the old fork (2026-11-19). A sick
  * restart reinstalls the dependencies and restarts once; still sick, it rolls back to the last good
  * build, its dotfiles commit and its config, and restarts onto it. A step that fails (the restart,
  * the reinstall, the rollback's checkout move) is a sick reading, so it goes down the same ladder:
  * the handoff ends healthy, rolled back, or given up with the owner's notice, and never fails. A
  * build that does not end proven is rejected, so no check builds or restarts onto it again.
  */
-const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
+const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds | Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
   const service = yield* Service
+  const builder = yield* Builder
   const source = yield* Source
   const records = yield* Records
   const rejections = yield* Rejections
@@ -293,25 +287,83 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
 
   const canRollBack = records.read.pipe(Effect.map((record) => Option.isSome(Option.flatMap(record, rolledBack))))
 
-  const reject = (build: Option.Option<Build>, failure: Health) =>
-    Effect.forEach(Option.toArray(build), (each) => rejections.write({ dotfiles: each.dotfiles, fork: each.fork, step: "health", cause: describeHealth(failure) }), { discard: true })
+  const reject = (build: Option.Option<Build>, failure: Health, step: string) =>
+    Effect.forEach(Option.toArray(build), (each) => rejections.write({ dotfiles: each.dotfiles, fork: each.fork, step, cause: describeHealth(failure) }), { discard: true })
 
-  const end = Effect.fn("Update.end")(function* (outcome: Exclude<Outcome, "proven">, tried: Option.Option<Build>, failure: Health, said: string) {
+  const end = Effect.fn("Update.end")(function* (outcome: Exclude<Outcome, "proven" | "held">, tried: Option.Option<Build>, failure: Health, said: string, step = "health") {
     yield* notice.show(said)
-    yield* reject(tried, failure)
+    yield* reject(tried, failure, step)
     yield* log.line(`handoff: ${outcome}; ${said}`)
     return outcome
+  })
+
+  /**
+   * Back to the commit `at` and the kept config, after `moveOnto` wrote the configs and the record
+   * then does not install the build. A checkout still at `at` does not move.
+   */
+  const moveBack = (at: string) =>
+    source.head.pipe(
+      Effect.flatMap((now) => Effect.when(source.advance(at), Effect.succeed(now !== at))),
+      Effect.andThen(configs.restore),
+      Effect.andThen(log.line(`handoff: the dotfiles and the config moved back to ${at.slice(0, 10)}`)),
+      Effect.catch((back) => log.line(`handoff: moving back failed: ${back.message}`)),
+    )
+
+  /**
+   * Moves the live checkout onto the build's dotfiles commit and writes the configs from it: the
+   * last steps before the record installs the build and the service restarts, since the running
+   * service and every open TUI reload a plugin whose files change. The config the running build
+   * runs with is kept first, for a rollback. A checkout already there (a build by hand) does not
+   * move. A failure before the move holds the update (nothing changed, nothing is rejected); a
+   * failed move (its install; the checkout went back) or configure (the checkout and the config
+   * go back) fails it.
+   */
+  const moveOnto = Effect.fn("Update.moveOnto")(function* (build: Build) {
+    const at = yield* source.head.pipe(Effect.mapError((failed) => heldBy(failed)))
+    yield* configs.keep.pipe(Effect.mapError((failed) => heldBy(failed)))
+    if (at !== build.dotfiles) {
+      yield* log.line(`handoff: moving the dotfiles from ${at.slice(0, 10)} to ${build.dotfiles.slice(0, 10)}, right before the restart`)
+      yield* source.advance(build.dotfiles).pipe(
+        Effect.catchTags({
+          CheckoutStuck: (stuck) => Effect.fail(heldBy(stuck, "the dotfiles checkout could not move")),
+          UpdateFailed: (failed) => Effect.fail(failedAt("advance", failed)),
+        }),
+      )
+    }
+    yield* builder.configure.pipe(
+      Effect.tapError(() => moveBack(at)),
+      Effect.mapError((failed) => failedAt("configure", failed)),
+    )
+    return at
+  })
+
+  /** A handoff whose checkout did not move onto the build: held with the notice, or failed and rejected; no restart either way. */
+  const unmovedEnd = Effect.fn("Update.unmovedEnd")(function* (unmoved: Unmoved, tried: Option.Option<Build>) {
+    if (!unmoved.held) {
+      const failure = Health.Sick({ plugin: unmoved.step, cause: unmoved.cause, final: true })
+      return yield* end("gave-up", tried, failure, `${describeHealth(failure)}; the service was not restarted`, unmoved.step)
+    }
+    const said = `update ${reason} is held: ${unmoved.cause}`
+    yield* notice.show(said)
+    yield* log.line(`handoff: held; ${said}; nothing changed and the service was not restarted, a later check tries again`)
+    return "held" satisfies Outcome
   })
 
   yield* log.line(`handoff: ${reason}`)
   const before = yield* records.read
   const tried = Option.flatMap(Option.map(before, promoted), buildOf)
+  // Read from the running service before the checkout moves, which reloads its plugins.
+  const hadLogins = yield* loginsBefore
+  const moved = yield* Effect.forEach(Option.toArray(tried), moveOnto).pipe(Effect.map(Arr.head), Effect.result)
+  if (Result.isFailure(moved)) return yield* unmovedEnd(moved.failure, tried)
   const installing = yield* Effect.forEach(Option.toArray(before), (record) => records.write(promoted(record)), { discard: true }).pipe(
     Effect.as(Option.none<Health>()),
     Effect.catch((failed) => Effect.succeed(Option.some(failedStep("installed record")(failed)))),
   )
-  if (Option.isSome(installing)) return yield* end("gave-up", tried, installing.value, `${describeHealth(installing.value)}; the service was not restarted`)
-  const hadLogins = yield* loginsBefore
+  if (Option.isSome(installing)) {
+    yield* Effect.forEach(Option.toArray(moved.success), moveBack, { discard: true })
+    return yield* end("gave-up", tried, installing.value, `${describeHealth(installing.value)}; the service was not restarted`)
+  }
   let stage: Stage = "first"
   let health = yield* restartAndRead(stage, hadLogins)
   let failure = health
@@ -357,5 +409,5 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
  * dropped once its outcome, good or rejected, is recorded. The restarted service's own check reads
  * the mark and waits, so one handoff runs at a time.
  */
-export const handoff = (reason: string): Effect.Effect<Outcome, never, Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log> =>
+export const handoff = (reason: string): Effect.Effect<Outcome, never, Builder | Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log> =>
   HandoffMark.use((mark) => mark.hold.pipe(Effect.andThen(steps(reason)), Effect.ensuring(mark.release)))

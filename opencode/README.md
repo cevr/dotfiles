@@ -90,27 +90,27 @@ only the resident location's copy acts, so a host runs one updater.
   it with `installed.json`. A host on a proven build of the target does
   nothing; a staged build of it, or one installed without its proof, goes
   straight to the wait and the handoff. A target this host failed on (its
-  advance, its build, or its restart, rolled back or given up) is kept in
+  build, its checkout move or configure, or its restart, rolled back or given up) is kept in
   `~/.local/state/opencode-update/rejected.json` and never built or restarted
   onto again until another target comes. One check runs at a time; a newer
   target during a run is the next run.
-- **Advance.** The dotfiles checkout moves to the target's commit
-  (fast-forward on the Mac, back by `reset --keep` when the target is older;
-  on the workbox, a Syncthing follower, a reset that keeps
-  `codex/config.toml`, `skills/.system/` and `workbox/herdr-config.toml` and
-  drops Syncthing's conflict copies), then `bun install --frozen-lockfile` in
-  `opencode/` and the fork's links. A failed install moves the checkout back.
-  Nothing else moves the checkout.
-- **Build ahead.** `bun scripts/daily.ts --stage --fork-target <sha>` from
-  the advanced checkout: the fork to the target's commit (on the Mac, upstream
-  merged first, step 0), the build, the configs and the build `staged` in
-  `installed.json`, with no restart. The launcher stays on the running build:
+- **Build ahead.** `bun scripts/daily.ts --stage --fork-target <sha>
+  --dotfiles-target <sha>` from the checkout as it stands, which does not
+  move: the fork to the target's commit (on the Mac, upstream merged first,
+  step 0), the build, and the build `staged` in `installed.json` under the
+  target's commits, with no config written and no restart. The checkout moves
+  only in the handoff, seconds before the restart: the running service and
+  every open TUI reload a local plugin whose files change, so a checkout moved
+  ahead of the build ran the target's plugins on the running fork until the
+  restart (2026-11-19: Prime called the fork's new `ui.Spinner` on a fork
+  without it, for the 7 minutes of the Mac's build; the same move reloaded the
+  update plugin and cut its own run). The launcher stays on the running build:
   the staged one's client would replace the shared service, since the record
   names neither it nor a build it superseded (workbox, 2026-11-18: each TUI
   opened in the wait restarted the service). Only the record's writes move it,
   the handoff's install and its rollback (`mods/update/filestore/stage.ts`
-  `writeLauncher`). A failed stage moves the dotfiles and the
-  configs back. The build is exactly the target's fork commit, whatever
+  `writeLauncher`). A failed stage has moved nothing and rejects the
+  target. The build is exactly the target's fork commit, whatever
   prime-look's HEAD (which a land's post-land merge moves): daily builds it in
   a detached worktree of the fork pinned there,
   `~/.local/state/opencode-daily/fork-build`, made on first use and moved to
@@ -131,8 +131,23 @@ only the resident location's copy acts, so a host runs one updater.
   background command is gone with no notice (a real restart, 2026-11-18). The
   owner accepts that loss over holding updates for busy roots.
 - **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
-  service it restarts: it names the staged build installed and points the
-  launcher at it, `opencode service restart`, then the health check (every configured local plugin loaded in
+  service it restarts. It reads the running service's logins, then moves the
+  checkout onto the staged build's dotfiles commit: the running config kept
+  aside for a rollback, the move (fast-forward on the Mac, back by `reset
+  --keep` when the target is older; on the workbox, a Syncthing follower, a
+  reset that keeps `codex/config.toml`, `skills/.system/` and
+  `workbox/herdr-config.toml` and drops Syncthing's conflict copies), `bun
+  install --frozen-lockfile` in `opencode/` and the fork's links, then `bun
+  scripts/daily.ts --configure` from the moved checkout, which writes the
+  server and TUI configs and nothing else. A checkout already on that commit
+  (a build by hand) does not move. A move git refuses, or a step before it
+  that fails, holds the update: nothing changed, no rejection, no restart,
+  the notice in the corner, and a check after the handoff's limit hands off
+  again. A failed install (the checkout moves back) or configure (the
+  checkout and the config move back) gives up without a restart and rejects
+  the target. Nothing else moves the checkout. Then it names the staged build
+  installed and points the launcher at it, `opencode service restart`, then
+  the health check (every configured local plugin loaded in
   the resident location, the pool's status answering accounts, which
   spends nothing, and a login, a pool account or a stored credential, for
   each provider the configured models use: the default model, each agent's
