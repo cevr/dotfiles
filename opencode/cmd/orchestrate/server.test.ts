@@ -1836,7 +1836,8 @@ describe("the agents", () => {
   test("each role gets its definition, each role and primary agent the 400k window; compaction keeps the files", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY })
+        // The roles' transform alone: the question tools' swap is a second one (cmd/orchestrate/asking.sim.test.ts).
+        const plugin = yield* start({ now: WEDNESDAY, subagents: "owner" })
         const agents: Record<string, EditedAgent> = {}
         for (const [id, mode] of [["build", "primary"], ["explore", "subagent"], ["planner", "subagent"], ["worker", "subagent"]] as const)
           agents[id] = { id, mode, permissions: [], request: { settings: {} } }
