@@ -89,8 +89,16 @@ noncurrent snapshot objects after 14 days.
   file or a dependency patch in `patches/` changed since the last install.
 - `workrift refresh` updates and warms the source from its default branch.
 - `workrift list` lists the source's workspaces; `workrift sources` lists sources.
-- `workrift remove [--with-children] [path]` moves a workspace to the trash.
-  It refuses a workspace with child workspaces unless you pass `--with-children`.
+- `workrift remove [--dry-run] [--with-children] [path]` deletes a workspace for
+  good: the workbox keeps no trash (owner, 2026-11-19). It refuses a workspace
+  with uncommitted changes, stash entries or unpushed commits, one a process
+  works in, and one with child workspaces unless you pass `--with-children`.
+  After `work rm` it has work delete each record it trashed, by
+  `work gc -id <id>`, and only once each trash folder is checked to sit beside
+  that workspace; otherwise, or if that gc fails, it names the trash and exits
+  1. `--dry-run` prints the folders it would delete. Off Linux (or with
+  `WORKRIFT_PURGE=0`) the workspace stays in work's trash; the Rift backend
+  (`.rifts/`, rollback only) still trashes with `rift remove`.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
