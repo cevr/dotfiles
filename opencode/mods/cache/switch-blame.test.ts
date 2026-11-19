@@ -111,7 +111,7 @@ describe("miss.ts resolve: a switch past the cache's lifetime", () => {
         model: NEW,
         missedTokens: 1_025 + Math.floor(pick(0, 1, 2, 3, 4, 5, 6, 7) * 10_000),
         usage: { promptTokens: 90_000, cacheReadTokens: 0, cacheWriteTokens: pick(0, 60_000) },
-        sinceRefreshMs: lifetime + 1 + pick(0, 1, 2, 3, 4, 5, 6, 7, 8) * 15 * MINUTE,
+        sinceRefreshMs: lifetime + 1 + pick(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10) * 30 * MINUTE + pick(0, 1, 2, 3, 4) * MINUTE,
         modelSwitch: true,
         explicitCache: pick(true, false),
         loginMoved: pick(true, false),
@@ -121,6 +121,10 @@ describe("miss.ts resolve: a switch past the cache's lifetime", () => {
       const resolved = resolve(scanned, lifetime)
       expect(resolved).toEqual(resolve({ ...scanned, modelSwitch: false }, lifetime))
       expect(resolved?.cause).toEqual(scanned.lapse)
+      // With no known lifetime nothing can be said to have expired: off a
+      // compaction's first step (the other law) it stays a model switch.
+      const { compaction: _mark, ...unmarked } = scanned
+      expect(resolveOver(unmarked, Option.none())?.cause._tag).toBe("ModelSwitch")
     }
   })
 
@@ -174,7 +178,7 @@ describe("request-log.ts judge: the first request after a compaction", () => {
     const pick = picker(next)
     const plain: Previous = { sent: sent(0, { ttlMs: 5 * MINUTE }), tokens: { prompt: 292_000, read: 0, write: 292_000 } }
     for (let index = 0; index < CASES; index += 1) {
-      const at = 5 * MINUTE + 1 + Math.floor(next() * 2 * HOUR)
+      const at = 5 * MINUTE + 1 + Math.floor(next() * 5 * HOUR)
       const kind = pick<Sent["kind"]>("primary", "compaction")
       const compacted = pick(true, false)
       const tokens = { prompt: 292_000, read: 0, write: 292_000 }
