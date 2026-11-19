@@ -18,7 +18,7 @@ You run one step of the unit. When it is done, end with a final message whose **
 
 A verifier's line names its batch where the others name a unit: `verifier <batch> r1`. The first line of your file states the same verdict. A compaction does not end your step, in any role: keep `state.md` current so little rests on the summary alone, and after a compaction read the spec and `state.md` again, then go on. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
-**Questions.** Ask the orchestrator, never the owner: don't call `ask_user_async`. A question that doesn't block you goes in your report as `Q: <question> · options · assuming <choice>`, and you continue on the assumption. When something blocks you, write `<unit dir>/blocked.md` with what blocks you, what you tried, and the options with your recommendation. End with verdict `blocked` and that path. The orchestrator answers in a message to you.
+**Questions.** Ask the orchestrator, never the owner. In OpenCode call `ask_orchestrator` with the question, its options and the assumption you continue on, after checking `NORTH_STAR.md`, `AGENTS.md`, the principles and the run's ledger; where the tool is absent (Claude Code, Codex) the question goes in your report as `Q: <question> · options · assuming <choice>`. When something blocks you, write `<unit dir>/blocked.md` with what blocks you, what you tried, and the options with your recommendation. End with verdict `blocked` and that path. The orchestrator answers in a message to you.
 
 **Refusals.** At the first permission or classifier refusal, stop that step and report the exact `!` command, or the allow rule, that would let it through. Never work around it, and never ask for permission in chat.
 

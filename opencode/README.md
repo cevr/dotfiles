@@ -2620,6 +2620,36 @@ it as `tools.ask_user_async(...)`):
   a file or by acting on it, so it leaves the tray); at most 8 stay open
   and a ninth drops the oldest. The receipt names each of these.
 
+A subagent asks its orchestrator, not the owner. The orchestrate plugin
+(`mods/orchestrate/asking.ts`, `opencode/asking.ts`) adds two direct tools
+over the questions server's `put` and `reply` RPC:
+
+- `ask_orchestrator({ questions?, withdraw? })`, the same input: a session
+  with a parent asks, and its questions are put to that parent (`to`). The
+  parent gets one letter per ask that wakes it: each question by its ref
+  (`<asking session>:<id>`), its choices and the assumption, how to answer,
+  and a nudge to answer from the documents that exist (`NORTH_STAR.md`,
+  `AGENTS.md`, `CLAUDE.md` in the asker's directory and its repository root,
+  the checkout's `principles/`) and the run's ledger, and to ask upward
+  itself (`ask_user_async` from a root, `ask_orchestrator` otherwise) what
+  they do not settle. The subagent's receipt carries the same nudge.
+- `answer_subagent({ answers: [{ id, text }] })`: the session a question is
+  put to answers it; the answer reaches the subagent as the owner's would.
+  A ref not open or not put to the caller refuses the whole call.
+- The swap: a subagent agent has `ask_user_async` denied, a primary one
+  `ask_orchestrator`, and the wrong one is refused before it runs whatever
+  the agent. Nothing forwards: a question climbs one level per ask, and only
+  a root's own question reaches the owner. A held question the asker
+  withdraws (or replaces, or drops) is told to its parent in a notice that
+  does not wake it.
+- `open` lists only the owner's questions; the ones put to a session come
+  beside them as `held`, each naming it (`to`). The owner may still answer
+  any over the RPC. A sheet stored before has no `to`: its questions stay
+  the owner's.
+- The orchestrate plugin's option `subagents: "owner"` keeps the old rule:
+  no new tools, no swap, a subagent's `ask_user_async` question is the
+  owner's.
+
 The TUI plugin draws, above the composer (the `session.composer.top` slot),
 one line while the session or any of its subagents has questions open:
 
