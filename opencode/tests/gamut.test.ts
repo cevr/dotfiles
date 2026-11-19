@@ -309,6 +309,8 @@ describe("the run's environment", () => {
     expect(env.OPENCODE_DISABLE_MODELS_FETCH).toBe("1")
     expect(env.BUN_OPTIONS).toContain("--preload=/fork/packages/tui/node_modules/@opentui/solid/scripts/preload.js")
     expect(launch.base).toEqual(["/bin/bun", "/fork/packages/cli/src/index.ts"])
+    // The fork from source runs at the owner's build's flags (scripts/release-flags.ts).
+    expect(env.OPENCODE_FLAGS).toBe("-full_codemode")
     expect(runEnv(caller, paths, launch, false).OPENCODE_DISABLE_MODELS_FETCH).toBeUndefined()
   })
 

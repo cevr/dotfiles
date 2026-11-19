@@ -586,7 +586,7 @@ const realRun = Effect.fn("verify.realRun")(function* (file: string, evidence: s
   const fork = yield* forkDir.pipe(Effect.mapError(failed("fork")))
   const out = join(evidence, basename(file, ".ts"))
   return yield* Match.value(file.startsWith("scenarios/")).pipe(
-    Match.when(true, () => runOne(file, "real", ["bunx", "opencode-drive", "run", file], { SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), OPENCODE_DEV: fork, ...releaseFlags({ OPENCODE_FLAGS: process.env["OPENCODE_FLAGS"] ?? "" }) }, logName(evidence, file, "real"))),
+    Match.when(true, () => runOne(file, "real", ["bunx", "opencode-drive", "run", file], { SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), OPENCODE_DEV: fork, OPENCODE_FLAGS: releaseFlags(process.env["OPENCODE_FLAGS"] || "") }, logName(evidence, file, "real"))),
     Match.orElse(() => runOne(file, "real", ["bun", "test", "--parallel=1", file], { OPENCODE_DEV: fork }, logName(evidence, file, "real"))),
   )
 })

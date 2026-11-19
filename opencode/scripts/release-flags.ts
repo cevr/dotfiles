@@ -9,28 +9,40 @@
 // turns it off too unless its caller names it in `OPENCODE_FLAGS`. The list
 // outranks the config, so a run that wants Code Mode's full tools names
 // `full_codemode` there, not in `experimental.full_codemode`.
+//
+// Every place that starts OpenCode from fork source takes its list from here,
+// through two shared seams and the two launchers outside them: a CLI started
+// as `forkLaunch(...).base` with its `env` (testbeds/gamut/gamut.ts: gamut,
+// verify:launch and every test that starts a service or a TUI itself); any
+// child a test starts through `owned()` (tests/owned.ts: opencode-drive runs,
+// the SDK runners of orchestrate and kernel); `verify:drive`'s scenario runs
+// (scripts/verify.ts); and the law runners, which start OpenCode in their own
+// process on an env of their own (tests/host-laws.test.ts,
+// tests/client-laws.test.ts). Accept and the post-land step start no OpenCode
+// of their own: they run `bun test` files, which use these.
 
-/** The flags a run turns off unless its caller names them: those off in the owner's build that change what a model is offered. */
-export const RELEASE_OFF = ["full_codemode"] as const
+/** The flags a run turns off unless its caller names them: off in the owner's build, and changing what a model is offered. */
+export const RELEASE_OFF: ReadonlyArray<string> = ["full_codemode"]
 
-/** The entries of an `OPENCODE_FLAGS` list (`all,-media_blob`), without their `-`. */
-const named = (flags: string) =>
-  new Set(
-    flags
-      .split(",")
-      .map((entry) => entry.trim().replace(/^-/, ""))
-      .filter((entry) => entry !== ""),
-  )
+/** The flags an `OPENCODE_FLAGS` list (`all,-media_blob`) names, on or off. */
+const named = (flags: string): ReadonlySet<string> => {
+  const names = new Set<string>()
+  for (const entry of flags.split(",")) {
+    const name = entry.trim().replace(/^-/, "")
+    if (name !== "") names.add(name)
+  }
+  return names
+}
 
 /**
- * `env` with `OPENCODE_FLAGS` turning off each of `RELEASE_OFF` it does not name, so a driven OpenCode offers the
- * model the tools the owner's build offers. A flag the caller names, on or off, keeps the caller's word; `all`
- * names none.
+ * The `OPENCODE_FLAGS` list for a driven OpenCode: `flags` (the caller's list, "" for none) with each of
+ * `RELEASE_OFF` it does not name turned off, so the model is offered the tools the owner's build offers. A flag
+ * the caller names, on or off, keeps the caller's word; `all` names none.
  */
-export const releaseFlags = <Value extends string | undefined>(env: Readonly<Record<string, Value>>): Record<string, Value | string> => {
-  const flags = env["OPENCODE_FLAGS"] ?? ""
+export const releaseFlags = (flags: string): string => {
   const own = named(flags)
-  const off = RELEASE_OFF.filter((flag) => !own.has(flag)).map((flag) => `-${flag}`)
-  if (off.length === 0) return { ...env }
-  return { ...env, OPENCODE_FLAGS: [flags, ...off].filter((entry) => entry !== "").join(",") }
+  const entries: Array<string> = []
+  if (flags.trim() !== "") entries.push(flags)
+  for (const flag of RELEASE_OFF) if (!own.has(flag)) entries.push(`-${flag}`)
+  return entries.join(",")
 }

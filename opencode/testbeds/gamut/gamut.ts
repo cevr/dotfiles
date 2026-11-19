@@ -53,6 +53,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
+import { releaseFlags } from "../../scripts/release-flags.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
@@ -435,6 +436,8 @@ export const forkLaunch = (fork: string, bun: string): Launch => ({
   base: [bun, join(fork, "packages/cli/src/index.ts")],
   env: {
     BUN_OPTIONS: `--conditions=browser --preload=${join(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js")}`,
+    // A fork from source is channel local, where every flag defaults on: run at the owner's build's flags instead.
+    OPENCODE_FLAGS: releaseFlags(""),
   },
   fork,
 })

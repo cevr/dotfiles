@@ -89,7 +89,7 @@ export const owned = <
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
   const temp = childTemp(options?.env)
-  const child = Bun.spawn([...command], { ...options, env: releaseFlags(outsidePanes(temp.env, parentEnv)), detached: true })
+  const child = Bun.spawn([...command], { ...options, env: { ...outsidePanes(temp.env, parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || "") }, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)
