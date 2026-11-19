@@ -20,7 +20,8 @@ export const MASKS: ReadonlyArray<readonly [RegExp, string]> = [
   [/(\bcwd )\S+ */g, "$1<directory> "],
   [/ +\S+(:main)$/g, " <directory>$1"],
   // A glyph that moves in wall time: a spinner, the DevTools bar's UI activity dot, a running worker's diamond.
-  [/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /g, "<spinner> "],
+  // The host's spinner stands still as `⋯` with animations off, as the simulated TUI runs it.
+  [/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⋯] /g, "<spinner> "],
   [/[○●⦿] UI\b/g, "<pulse> UI"],
   [/[◆◇] (worker|general)\b/g, "<pulse> $1"],
   // A running call's dot, which pulses ● / ○.
