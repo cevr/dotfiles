@@ -86,6 +86,7 @@ check_mode() {
   test "$(systemctl show "user-$(id -u).slice" -p MemoryMax --value)" -eq 55834574848
   test "$(systemctl show "user-$(id -u).slice" -p MemorySwapMax --value)" -eq 1073741824
   systemctl is-active --quiet workbox-shm-limit.service
+  systemctl is-active --quiet workbox-btrfs-reclaim.service
   findmnt -no OPTIONS /dev/shm | grep -q 'size=8388608k'
   check_memory_protection tailscaled.service 134217728 268435456 -900
   check_memory_protection systemd-resolved.service 33554432 67108864 -800
@@ -176,6 +177,8 @@ sudo install -m 0644 "$system_dir/bite-workbox-sshd.service" /etc/systemd/system
 sudo install -m 0644 "$system_dir/bite-workbox-resolver.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/bite.slice" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/workbox-shm-limit.service" /etc/systemd/system/
+sudo install -m 0644 "$system_dir/workbox-btrfs-reclaim.service" /etc/systemd/system/
+sudo install -m 0755 "$system_dir/workbox-btrfs-reclaim" /usr/local/sbin/workbox-btrfs-reclaim
 sudo install -d -m 0755 /etc/systemd/system/user-.slice.d
 sudo install -m 0644 \
   "$system_dir/user-.slice.d/20-workbox-memory-limit.conf" \
@@ -226,6 +229,7 @@ systemctl --user daemon-reload
 sudo loginctl enable-linger "$USER"
 sudo systemctl enable --now bite.slice
 sudo systemctl enable --now workbox-shm-limit.service
+sudo systemctl enable --now workbox-btrfs-reclaim.service
 sudo systemctl unmask systemd-resolved.service
 sudo systemctl enable --now systemd-resolved.service
 sudo ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf

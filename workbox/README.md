@@ -130,6 +130,10 @@ file too, with `loop` (mount reuses `/workspaces`' loop device), never by
 appears and a `UUID=` line fails the boot after 90 s (2026-11-19).
 `workbox-rift-storage --apply` (bootstrap) rewrites such lines, and
 `workbox-rift-storage --fstab` does only that; `--check` fails while one is left.
+`workbox-btrfs-reclaim.service` turns on btrfs dynamic reclaim
+(`allocation/data/dynamic_reclaim`) at each boot for the file system mounted at
+`/workspaces`, found by its device, so nearly empty data chunks go back to
+unallocated space that metadata can grow into.
 
 Each repository has one clean warm source, such as `/workspaces/bite`. Do not
 use a warm source for feature work. `workrift` finds the source from the current

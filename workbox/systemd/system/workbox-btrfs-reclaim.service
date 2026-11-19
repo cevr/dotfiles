@@ -1,0 +1,12 @@
+[Unit]
+Description=Turn on btrfs dynamic reclaim for the /workspaces file system
+RequiresMountsFor=/workspaces
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/workbox-btrfs-reclaim /workspaces
+
+[Install]
+WantedBy=multi-user.target

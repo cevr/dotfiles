@@ -1,0 +1,37 @@
+#!/bin/sh
+# Turns on btrfs dynamic reclaim for the file system mounted at /workspaces (on
+# the exe VM, the image that also holds /home/exedev and /tmp). Without it a
+# data chunk that deletes leave nearly empty stays allocated, so metadata finds
+# no unallocated space to grow into, and every write waits in btrfs's space
+# reservation (wb-stalls, 2026-11-19: 63.7 GB free inside data chunks, 0
+# unallocated, the OpenCode server stalled for up to 47 s a write). The sysfs
+# knob is lost at each boot; workbox-btrfs-reclaim.service runs this at boot.
+#
+# The file system is found by the device /workspaces is mounted from, not by a
+# fixed UUID: /sys/fs/btrfs/<uuid>/devices/ lists each device of a btrfs. A
+# kernel with no dynamic_reclaim (before 6.11) is left as it is.
+set -eu
+
+mount_path=${1:-/workspaces}
+sysfs_btrfs=${WORKBOX_SYSFS_BTRFS:-/sys/fs/btrfs}
+
+source_device=$(findmnt -n -o SOURCE --mountpoint "$mount_path" | head -n 1 | cut -d '[' -f 1)
+[ -n "$source_device" ] || {
+  printf 'workbox-btrfs-reclaim: nothing is mounted at %s\n' "$mount_path" >&2
+  exit 1
+}
+device_name=$(basename "$source_device")
+for device in "$sysfs_btrfs"/*/devices/"$device_name"; do
+  [ -e "$device" ] || continue
+  fs=$(dirname "$(dirname "$device")")
+  knob=$fs/allocation/data/dynamic_reclaim
+  if [ ! -e "$knob" ]; then
+    printf 'workbox-btrfs-reclaim: this kernel has no %s; left as it is\n' "$knob"
+    exit 0
+  fi
+  printf '1\n' >"$knob"
+  printf 'workbox-btrfs-reclaim: dynamic reclaim is on for %s (%s at %s)\n' "$(basename "$fs")" "$source_device" "$mount_path"
+  exit 0
+done
+printf 'workbox-btrfs-reclaim: %s at %s is no btrfs device in %s\n' "$source_device" "$mount_path" "$sysfs_btrfs" >&2
+exit 1
