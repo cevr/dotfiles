@@ -48,10 +48,9 @@ export interface Family {
   readonly directoryOf: (sessionID: string) => Effect.Effect<string>
 }
 
-/** Where the documents are found: what exists, and the principles folder. */
+/** Where the documents are found: what exists. */
 export interface Docs {
   readonly look: Look
-  readonly principles: string
 }
 
 const failWith = (message: string) => Effect.fail(new Tool.Error({ message }))
@@ -70,7 +69,7 @@ const textOf = (text: string) => ({ content: [{ type: "text" as const, text }] }
 
 /** Register the two tools, the agents' swap and the refusal of the wrong tool. */
 export const install = Effect.fn("Asking.install")(function* (ctx: Plugin.Context, questions: Questions, family: Family, docs: Docs) {
-  const documentsOf = (sessionID: string) => Effect.flatMap(family.directoryOf(sessionID), (directory) => documents(docs.look, docs.principles, directory))
+  const documentsOf = (sessionID: string) => Effect.flatMap(family.directoryOf(sessionID), (directory) => documents(docs.look, directory))
 
   const ask = Effect.fn("Asking.ask")(function* (sessionID: string, input: AskOrchestratorInput) {
     const parent = yield* family.parentOf(sessionID)

@@ -6,7 +6,7 @@
 // that does not decode fails the plugin's start, naming it. Below the plugin,
 // the nudge's words over a memory `Look`, and which ask tool a session has.
 import { Cause, Effect, Exit, Option } from "effect"
-import { ASK_ORCHESTRATOR, ASK_OWNER, HAS_ORCHESTRATOR, letterNudge, NO_ORCHESTRATOR, receipt, toolFor, wrongTool } from "@dotfiles/opencode-orchestrate/asking"
+import { ASK_ORCHESTRATOR, ASK_OWNER, HAS_ORCHESTRATOR, letterNudge, NO_ORCHESTRATOR, PRINCIPLES_NAMED, receipt, toolFor, wrongTool } from "@dotfiles/opencode-orchestrate/asking"
 import { documents, type Look } from "@dotfiles/opencode-orchestrate/documents"
 import * as Plugins from "../../sim/plugins.ts"
 import type { JsonObject } from "../../sim/runtime.ts"
@@ -66,32 +66,33 @@ seeded("an option that does not decode fails the plugin's start, naming it", ({ 
 // memory `Look`: it names the documents that exist and only those, and its words about the ledger stand either way.
 const REPO = "/work/app"
 const PACKAGE = `${REPO}/packages/api`
-const PRINCIPLES = "/dotfiles/principles"
 const LEDGER = "the run's ledger (plan.md"
 const PUT = { ok: true, opened: [{ id: "q1", question: "Which port?", assume: "8080" }] }
 
 /** A file system holding exactly `paths`. */
 const memory = (paths: ReadonlyArray<string>): Look => ({ exists: (path) => Effect.succeed(paths.includes(path)) })
 
-seeded("the nudge names NORTH_STAR.md, AGENTS.md and the principles when they exist, in the receipt and the letter", ({ expect }) =>
+seeded("the nudge names NORTH_STAR.md and AGENTS.md when they exist, and the principles by their tool, in the receipt and the letter", ({ expect }) =>
   Effect.gen(function* () {
-    const look = memory([`${REPO}/.git`, `${REPO}/NORTH_STAR.md`, `${PACKAGE}/AGENTS.md`, PRINCIPLES])
-    const paths = yield* documents(look, PRINCIPLES, PACKAGE)
-    expect(paths).toEqual([`${PACKAGE}/AGENTS.md`, `${REPO}/NORTH_STAR.md`, PRINCIPLES])
+    const look = memory([`${REPO}/.git`, `${REPO}/NORTH_STAR.md`, `${PACKAGE}/AGENTS.md`])
+    const paths = yield* documents(look, PACKAGE)
+    expect(paths).toEqual([`${PACKAGE}/AGENTS.md`, `${REPO}/NORTH_STAR.md`])
     for (const words of [receipt(PUT, paths), letterNudge(paths, Option.none()), letterNudge(paths, Option.some("ses_root"))]) {
       for (const path of paths) expect(words).toContain(path)
       expect(words).toContain(LEDGER)
+      expect(words).toContain(PRINCIPLES_NAMED)
     }
   }),
 )
 
-seeded("with none of them the nudge names no path, and its words about the ledger still stand", ({ expect }) =>
+seeded("with none of them the nudge names no path, and its words about the principles and the ledger still stand", ({ expect }) =>
   Effect.gen(function* () {
-    const paths = yield* documents(memory([]), PRINCIPLES, PACKAGE)
+    const paths = yield* documents(memory([]), PACKAGE)
     expect(paths).toEqual([])
     for (const words of [receipt(PUT, paths), letterNudge(paths, Option.none())]) {
       expect(words).not.toContain("/")
       expect(words).toContain(LEDGER)
+      expect(words).toContain(PRINCIPLES_NAMED)
     }
   }),
 )

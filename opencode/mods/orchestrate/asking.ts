@@ -14,7 +14,7 @@
 //
 // The store, the letters and the answer path are the questions plugin's
 // (`put`, `reply`); this module only words and routes.
-import { Array as Arr, Option, Schema } from "effect"
+import { Option, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 
 export const ASK_ORCHESTRATOR = "ask_orchestrator"
@@ -70,20 +70,22 @@ export type AnswerSubagentInput = typeof AnswerSubagentInput.Type
 /** The run's ledger, named in words: finding a run's plan.md is the run's own business. */
 const LEDGER = "the run's ledger (plan.md, the queue)"
 
-/** `a, b, and the run's ledger (…)`: the documents and the ledger, as one list. */
-const listed = (paths: ReadonlyArray<string>, ledger: string): string =>
-  Arr.match(paths, { onEmpty: () => ledger, onNonEmpty: (some) => `${some.join(", ")}, and ${ledger}` })
+/** The principles, named by the tool that reads them (principles.ts): they are skills, not one file to name. */
+export const PRINCIPLES_NAMED = "the principles (the principles tool: list, search, get)"
+
+/** `a, b, the principles (…), and the run's ledger (…)`: the documents, the principles and the ledger, as one list. */
+const listed = (paths: ReadonlyArray<string>, ledger: string): string => `${[...paths, PRINCIPLES_NAMED].join(", ")}, and ${ledger}`
 
 export const ASK_ORCHESTRATOR_DESCRIPTION = [
   "Ask your orchestrator (the session that started you) questions in the background and continue at once on a stated assumption. Returns immediately; your turn does not wait, and an unanswered question never blocks you.",
-  "Your orchestrator has the wider context: the plan, the other units and the owner's earlier answers. First check the documents yourself (NORTH_STAR.md, AGENTS.md, the principles folder and the run's ledger, plan.md and the queue) and ask only what they do not settle; say in the question what you checked.",
+  "Your orchestrator has the wider context: the plan, the other units and the owner's earlier answers. First check the documents yourself (NORTH_STAR.md, AGENTS.md, the principles with the principles tool, and the run's ledger, plan.md and the queue) and ask only what they do not settle; say in the question what you checked.",
   "Its answer arrives later as a message in this session (it wakes you if you are idle), naming the question, your assumption and the answer, and saying whether they differ; when they differ, revise the work that rests on the assumption. While a question is open, state its assumption in your final answer. Asking the same question again replaces the open one; withdraw one that no longer matters with withdraw: [id]. " +
     `At most ${MAX_OPEN} stay open; past that the oldest drops.`,
 ].join("\n\n")
 
 export const ANSWER_SUBAGENT_DESCRIPTION = [
   "Answer a question one of your subagents put to you (ask_orchestrator), by the ref its letter gives (<session id>:<question id>). The answer reaches the subagent as the owner's would, naming its assumption and whether yours differs.",
-  "Answer from the documents (NORTH_STAR.md, AGENTS.md, the principles, the run's ledger) and your wider context, and cite what you used. What only the owner can decide, ask the owner yourself (ask_user_async, or ask_orchestrator when you have an orchestrator of your own), in your own words, then answer the subagent with what they say.",
+  "Answer from the documents (NORTH_STAR.md, AGENTS.md, the principles through the principles tool, the run's ledger) and your wider context, and cite what you used. What only the owner can decide, ask the owner yourself (ask_user_async, or ask_orchestrator when you have an orchestrator of your own), in your own words, then answer the subagent with what they say.",
   "Only questions put to you can be answered here; anything else is refused and nothing is recorded.",
 ].join("\n\n")
 

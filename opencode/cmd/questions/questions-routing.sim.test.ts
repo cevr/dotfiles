@@ -23,7 +23,6 @@
 //
 // A second test: a directory loaded with `subagents: "owner"` keeps today's
 // rule (a subagent's `ask_user_async` question is the owner's, no letter).
-import { fileURLToPath } from "bun"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import * as Plugins from "../../sim/plugins.ts"
@@ -33,12 +32,12 @@ import * as World from "../../sim/world.ts"
 
 const { seeded } = Seed.runner("cmd/questions/questions-routing.sim.test.ts")
 
+/** The principles, as both nudges name them (asking.ts `PRINCIPLES_NAMED`). */
+const PRINCIPLES_NAMED = "the principles (the principles tool: list, search, get)"
 const DIRECTORY = "/scratch/routing"
 const STRAIGHT = "/scratch/straight"
 const MAX_ASKS = 6
 const SETTLE_MS = 5_000
-/** The principles folder of this checkout: both nudges name it. */
-const PRINCIPLES = fileURLToPath(new URL("../../../principles", import.meta.url))
 
 type Command =
   | { readonly type: "ask"; readonly session: number }
@@ -287,8 +286,8 @@ seeded("a subagent's question goes to the session that started it, one level, an
     // The escalation by hand reached its end: G's question answered by C, C's by R, R's by the owner.
     expect(state.entries.slice(0, 3).map((entry) => entry.answer)).toEqual([ASSUME, `no, says ${root}`, `owner on ${root}:q1`])
     // Both nudges name the documents: the subagent's receipt and the letter its orchestrator reads.
-    expect(receipts[0]).toContain(PRINCIPLES)
-    expect(jsonOf(world.messages(child).map(plain))).toContain(PRINCIPLES)
+    expect(receipts[0]).toContain(PRINCIPLES_NAMED)
+    expect(jsonOf(world.messages(child).map(plain))).toContain(PRINCIPLES_NAMED)
   }),
 )
 

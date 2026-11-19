@@ -1,7 +1,7 @@
 // The documents a question's nudge names, those that exist: NORTH_STAR.md,
 // AGENTS.md and CLAUDE.md in the asking session's directory and in its
-// repository's root (the nearest ancestor holding `.git`), then the principles
-// folder of this dotfiles checkout. Paths are POSIX; `Look` says what exists
+// repository's root (the nearest ancestor holding `.git`). The principles are skills, named in
+// words by the nudge (asking.ts `PRINCIPLES_NAMED`), not as a path. Paths are POSIX; `Look` says what exists
 // (the file system's in OpenCode, a set in the tests).
 import { Effect, Option } from "effect"
 
@@ -33,10 +33,10 @@ export const rootOf = Effect.fn("Documents.rootOf")(function* (look: Look, direc
   return Option.none<string>()
 })
 
-/** The documents that exist for a session in `directory` (none known: ""), and the principles folder when it exists. */
-export const documents = Effect.fn("Documents.documents")(function* (look: Look, principles: string, directory: string) {
+/** The documents that exist for a session in `directory` (none known: ""). */
+export const documents = Effect.fn("Documents.documents")(function* (look: Look, directory: string) {
   const root = yield* rootOf(look, directory)
   const folders = [...new Set([directory, ...Option.toArray(root)].filter((folder) => folder !== ""))]
-  const candidates = [...folders.flatMap((folder) => FILES.map((file) => joined(folder, file))), principles]
+  const candidates = folders.flatMap((folder) => FILES.map((file) => joined(folder, file)))
   return yield* Effect.filter(candidates, look.exists)
 })

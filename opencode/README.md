@@ -1033,6 +1033,26 @@ idle nudge above is its own. The rules are in `skill-drift.ts`, the handler
 `SkillDrifts` in `model.ts`, over the contracts `Skill` (`git/skill.ts`),
 `RunRecords` (`filestore/run-records.ts`) and `Tell` (`opencode/steer.ts`).
 
+### The principles tool
+
+The owner's principles are skills, `principle-<name>/SKILL.md`, kept out of
+the automatic skill list (`disable-model-invocation: true`). The plugin adds
+one direct tool for every session, the role agents included (they allow it in
+`scripts/agents.ts`):
+
+- `principles({ action: "list" })`: every principle with its one-line
+  `Apply when …` description.
+- `principles({ action: "search", query })`: the principles that match, best
+  first (the phrase, then each word, in the name, the description and the
+  text), each with up to three matching lines.
+- `principles({ action: "get", name })`: one principle's full file, by
+  `principle-<name>` or `<name>`; an unknown name fails naming the closest
+  three.
+
+It reads the files beside the orchestrate skill (the `skill` option's
+directory) at each call, synchronously (`filestore/principles.ts`), so there
+is no index to keep in step. The rules are in `principles.ts`.
+
 ### What the plugin keeps, and what still refuses
 
 Until 2026-11-15 the plugin kept a batch machine per root in a ledger and
@@ -2630,7 +2650,7 @@ over the questions server's `put` and `reply` RPC:
   (`<asking session>:<id>`), its choices and the assumption, how to answer,
   and a nudge to answer from the documents that exist (`NORTH_STAR.md`,
   `AGENTS.md`, `CLAUDE.md` in the asker's directory and its repository root,
-  the checkout's `principles/`) and the run's ledger, and to ask upward
+  the principles by the `principles` tool) and the run's ledger, and to ask upward
   itself (`ask_user_async` from a root, `ask_orchestrator` otherwise) what
   they do not settle. The subagent's receipt carries the same nudge.
 - `answer_subagent({ answers: [{ id, text }] })`: the session a question is

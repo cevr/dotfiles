@@ -871,7 +871,7 @@ export const make = (
             parentOf: (sessionID) => Effect.map(family.parentOf(sessionID), Option.fromNullishOr),
             directoryOf: (sessionID) => Effect.map(family.directoryOf(sessionID), (directory) => directory ?? ""),
           },
-          { look: DocumentsLive.look, principles: DocumentsLive.principles },
+          { look: DocumentsLive.look },
         )
       }
 
