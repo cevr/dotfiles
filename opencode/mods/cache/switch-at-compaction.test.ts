@@ -8,15 +8,17 @@
 // on the same model. Controls: a switch inside the lifetime anywhere else, and
 // a summary request on another model, stay model switches.
 import { describe, expect, test } from "bun:test"
+import { Data, Option } from "effect"
 import { classify } from "./audit.ts"
 import { segments } from "./fingerprint.ts"
-import { resolve, scan, type Scanned, type Step, type Timeline } from "./miss.ts"
+import { resolve, scan, type Cause, type Scanned, type Step, type Timeline } from "./miss.ts"
 import { judge, type LedgerLine, type Previous, type Sent } from "./request-log.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const OLD = "anthropic/claude-old"
 const NEW = "anthropic/claude-new"
+const Causes = Data.taggedEnum<Cause>()
 
 /** A seeded generator (mulberry32): the same cases on every run. */
 const random = (seed: number) => () => {
@@ -25,28 +27,35 @@ const random = (seed: number) => () => {
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
   return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296
 }
+/** One of the given values, by the generator. */
+const picker =
+  (next: () => number) =>
+  <A>(first: A, ...rest: ReadonlyArray<A>): A =>
+    [first, ...rest][Math.floor(next() * (rest.length + 1))] ?? first
 const CASES = 500
+
+/** `resolve` with the lifetime as an Option: none when no lifetime is known. */
+const resolveOver = (scanned: Scanned, lifetime: Option.Option<number>) => resolve(scanned, Option.getOrUndefined(lifetime))
 
 describe("miss.ts resolve: the step after a compaction", () => {
   test("on another model it is judged as on the same model, over lifetimes, gaps, caches and logins", () => {
-    const next = random(1)
-    const pick = <A>(items: ReadonlyArray<A>): A => items[Math.floor(next() * items.length)] as A
+    const pick = picker(random(1))
     for (let index = 0; index < CASES; index += 1) {
       const scanned: Scanned = {
         stepID: `step_${index}`,
         startedAt: 1_000_000,
         model: NEW,
-        missedTokens: 1_025 + Math.floor(next() * 80_000),
-        usage: { promptTokens: 90_000, cacheReadTokens: 0, cacheWriteTokens: pick([0, 60_000]) },
-        sinceRefreshMs: Math.floor(next() * 2 * HOUR),
+        missedTokens: 1_025 + Math.floor(pick(0, 1, 2, 3, 4, 5, 6, 7) * 10_000),
+        usage: { promptTokens: 90_000, cacheReadTokens: 0, cacheWriteTokens: pick(0, 60_000) },
+        sinceRefreshMs: pick(0, 1, 2, 3, 4, 5, 6, 7, 8) * 15 * MINUTE + pick(0, 1, 2, 3, 4) * MINUTE,
         modelSwitch: true,
-        explicitCache: pick([true, false]),
+        explicitCache: pick(true, false),
         compaction: "after",
-        loginMoved: pick([true, false]),
-        lapse: { _tag: "Idle", ms: 0 },
+        loginMoved: pick(true, false),
+        lapse: Causes.Idle({ ms: 0 }),
       }
-      const lifetime = pick([undefined, 5 * MINUTE, HOUR])
-      expect(resolve(scanned, lifetime)).toEqual(resolve({ ...scanned, modelSwitch: false }, lifetime))
+      const lifetime = pick(Option.none<number>(), Option.some(5 * MINUTE), Option.some(HOUR))
+      expect(resolveOver(scanned, lifetime)).toEqual(resolveOver({ ...scanned, modelSwitch: false }, lifetime))
     }
   })
 
@@ -61,14 +70,14 @@ describe("miss.ts resolve: the step after a compaction", () => {
       modelSwitch: true,
       explicitCache: true,
       loginMoved: false,
-      lapse: { _tag: "Idle", ms: 0 },
+      lapse: Causes.Idle({ ms: 0 }),
     }
-    expect(resolve(base, HOUR)?.cause).toEqual({ _tag: "ModelSwitch" })
-    expect(resolve({ ...base, compaction: "request" }, HOUR)?.cause).toEqual({ _tag: "ModelSwitch" })
+    expect(resolve(base, HOUR)?.cause._tag).toBe("ModelSwitch")
+    expect(resolve({ ...base, compaction: "request" }, HOUR)?.cause._tag).toBe("ModelSwitch")
   })
 
   test("a session's timeline: old model, its summary request, the compaction, then the new model writes the summary", () => {
-    const step = (id: string, at: number, model: string, usage: { prompt: number; read: number; write: number }, compaction?: true): Step => ({
+    const step = (id: string, at: number, model: string, usage: { prompt: number; read: number; write: number }): Step => ({
       type: "step",
       id,
       model,
@@ -78,38 +87,36 @@ describe("miss.ts resolve: the step after a compaction", () => {
       tools: [],
       opener: { id: "msg_prompt", kind: "prompt" },
       closes: false,
-      ...(compaction === undefined ? {} : { compaction }),
     })
     const timeline: Timeline = [
       step("a", 0, OLD, { prompt: 292_000, read: 0, write: 292_000 }),
-      step("summary", MINUTE, OLD, { prompt: 292_500, read: 292_000, write: 500 }, true),
+      { ...step("summary", MINUTE, OLD, { prompt: 292_500, read: 292_000, write: 500 }), compaction: true },
       { type: "compaction" },
       step("b", 2 * MINUTE, NEW, { prompt: 64_000, read: 0, write: 64_000 }),
     ]
     const found = scan(timeline)
     expect(found.map((miss) => miss.stepID)).toEqual(["b"])
-    expect(found.map((miss) => resolve(miss, HOUR)?.cause)).toEqual([{ _tag: "Compaction", request: false }])
+    expect(found.map((miss) => resolve(miss, HOUR)?.cause)).toEqual([Causes.Compaction({ request: false })])
   })
 })
 
 describe("miss.ts resolve: a switch past the cache's lifetime", () => {
   test("on another model it is judged as on the same model: the lapse's, wherever it lands", () => {
-    const next = random(3)
-    const pick = <A>(items: ReadonlyArray<A>): A => items[Math.floor(next() * items.length)] as A
+    const pick = picker(random(3))
     for (let index = 0; index < CASES; index += 1) {
-      const lifetime = pick([5 * MINUTE, HOUR])
+      const lifetime = pick(5 * MINUTE, HOUR)
       const scanned: Scanned = {
         stepID: `step_${index}`,
         startedAt: 1_000_000,
         model: NEW,
-        missedTokens: 1_025 + Math.floor(next() * 80_000),
-        usage: { promptTokens: 90_000, cacheReadTokens: 0, cacheWriteTokens: pick([0, 60_000]) },
-        sinceRefreshMs: lifetime + 1 + Math.floor(next() * 2 * HOUR),
+        missedTokens: 1_025 + Math.floor(pick(0, 1, 2, 3, 4, 5, 6, 7) * 10_000),
+        usage: { promptTokens: 90_000, cacheReadTokens: 0, cacheWriteTokens: pick(0, 60_000) },
+        sinceRefreshMs: lifetime + 1 + pick(0, 1, 2, 3, 4, 5, 6, 7, 8) * 15 * MINUTE,
         modelSwitch: true,
-        explicitCache: pick([true, false]),
-        loginMoved: pick([true, false]),
-        lapse: pick([{ _tag: "Idle", ms: 0 } as const, { _tag: "Paused", ms: 0 } as const, { _tag: "Child", ms: 0 } as const]),
-        ...pick([{}, { compaction: "request" as const }, { compaction: "after" as const }]),
+        explicitCache: pick(true, false),
+        loginMoved: pick(true, false),
+        lapse: pick<Cause>(Causes.Idle({ ms: lifetime }), Causes.Paused({ ms: lifetime }), Causes.Child({ ms: lifetime })),
+        ...pick({}, { compaction: "request" as const }, { compaction: "after" as const }),
       }
       const resolved = resolve(scanned, lifetime)
       expect(resolved).toEqual(resolve({ ...scanned, modelSwitch: false }, lifetime))
@@ -128,10 +135,10 @@ describe("miss.ts resolve: a switch past the cache's lifetime", () => {
       modelSwitch: true,
       explicitCache: true,
       loginMoved: false,
-      lapse: { _tag: "Idle", ms: 2 * HOUR },
+      lapse: Causes.Idle({ ms: 2 * HOUR }),
     }
-    expect(resolve(base, undefined)?.cause).toEqual({ _tag: "ModelSwitch" })
-    expect(resolve({ ...base, sinceRefreshMs: HOUR }, HOUR)?.cause).toEqual({ _tag: "ModelSwitch" })
+    expect(resolveOver(base, Option.none())?.cause._tag).toBe("ModelSwitch")
+    expect(resolve({ ...base, sinceRefreshMs: HOUR }, HOUR)?.cause._tag).toBe("ModelSwitch")
   })
 })
 
@@ -164,11 +171,12 @@ describe("request-log.ts judge: the first request after a compaction", () => {
 
   test("past the lifetime a switch is judged as on the same model, `expired`, a summary request too", () => {
     const next = random(4)
+    const pick = picker(next)
     const plain: Previous = { sent: sent(0, { ttlMs: 5 * MINUTE }), tokens: { prompt: 292_000, read: 0, write: 292_000 } }
     for (let index = 0; index < CASES; index += 1) {
       const at = 5 * MINUTE + 1 + Math.floor(next() * 2 * HOUR)
-      const kind = next() < 0.5 ? "primary" : "compaction"
-      const compacted = next() < 0.5
+      const kind = pick<Sent["kind"]>("primary", "compaction")
+      const compacted = pick(true, false)
       const tokens = { prompt: 292_000, read: 0, write: 292_000 }
       const switched = judge(plain, sent(at, { model: NEW, kind }), tokens, compacted)
       expect(switched).toEqual(judge(plain, sent(at, { kind }), tokens, compacted))

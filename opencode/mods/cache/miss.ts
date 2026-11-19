@@ -247,7 +247,7 @@ export const scan = (timeline: Timeline, waits: ReadonlyArray<Span> = []): Reado
  */
 export const resolve = (scanned: Scanned, lifetimeMs: number | undefined): Miss | undefined => {
   const { sinceRefreshMs, modelSwitch, explicitCache, lapse, agent: _agent, compaction, loginMoved, ...miss } = scanned
-  const expired = lifetimeMs !== undefined && sinceRefreshMs > lifetimeMs
+  const expired = sinceRefreshMs > (lifetimeMs ?? Number.POSITIVE_INFINITY)
   if (modelSwitch && compaction !== "after" && !expired) return { ...miss, cause: { _tag: "ModelSwitch" } }
   if (lifetimeMs === undefined) return undefined
   if (expired) return { ...miss, cause: lapse }
