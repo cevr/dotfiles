@@ -2484,6 +2484,54 @@ per session. It asks the `Sessions` contract in `service.ts`, implemented in
 `opencode/`, with the laws in `laws.ts`. `tests/idle-compact.test.ts` runs it
 in real OpenCode on a 20 s cache.
 
+## Model at the next compaction
+
+Switching a long session's model mid-conversation makes the new model write
+the whole context into its cache at full price. A queued switch waits for a
+moment where that write is paid anyway:
+
+- **After the next completed compaction.** The outgoing model writes the
+  summary (its cache holds the prefix, read at the read rate), and the very
+  next step is the new model's, on the short summary.
+- **At the next wake after the cache expired.** As the session starts a turn
+  (a prompt, or a synthetic message that wakes it) past the last request's
+  start plus its cache lifetime plus a grace (60 s), the switch lands before
+  the turn's first request. Inside the lifetime it never applies; when any
+  fact is unknown (no request since the last compaction, an uncached request,
+  a lifetime the catalog cannot say) it waits for the compaction instead.
+
+Ways in:
+
+- `/model-next` in a session: the catalog's models, then the variant when the
+  model has any. With a switch queued, its first option is `Cancel the queued
+  switch`. `compact now` (ctrl+o) queues the highlighted model and compacts at
+  once.
+- The model picker (leader then m): `at next compaction` (ctrl+g, the TUI
+  plugin's option `bind`) queues the highlighted model.
+- An agent: the `model_next` tool (`action: queue | cancel | status`, `model:
+  provider/model[#variant]`, `session` defaulting to its own), the same rule
+  as the other two, in plain words back. Which model a session runs on is the
+  owner's call: an agent queues one only when asked.
+
+Prime's tray under the composer reads `old → new queued` while one waits.
+A refusal is a toast saying why: the session's own model, a model (or variant)
+the catalog lacks, no such session, or a session on native compaction (the next
+model could not replay its window). Any direct model switch drops the queued
+one; a failed compaction keeps it; a restart keeps it (it lives in the
+session's metadata, key `modelNext`, naming its session, so a subagent's copy
+of its parent's metadata is ignored). A target the catalog lost by the time it
+applies stays queued, with a warning in the log.
+
+Options (server): `ttlSeconds` (a lifetime for every model, as idle
+compaction's) and `graceSeconds` (default 60). It applies only inside the
+host's awaited hooks `experimental.compaction.ended` and `experimental.wake`
+(`prime-look`): a plugin acting on the compaction's event or a timer at the
+expiry lets a request through first (`mods/model-next/model_next.qnt`). The
+wake hook does not run for a steer into a running turn, nor for a
+continuation after a restart, so a cache that expires during a long tool call
+switches at the next compaction or fresh turn. Idle compaction is unchanged:
+when it compacts, its compaction applies the switch.
+
 ## Auto-title
 
 `cmd/auto-title` keeps a long root session's title on its work: as the session goes idle, OpenCode's own title path

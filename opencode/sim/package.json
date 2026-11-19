@@ -14,6 +14,7 @@
     "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
     "@dotfiles/opencode-cmd-orchestrate": "workspace:*",
     "@dotfiles/opencode-cmd-mail": "workspace:*",
+    "@dotfiles/opencode-cmd-model-next": "workspace:*",
     "@dotfiles/opencode-cmd-pool": "workspace:*",
     "@dotfiles/opencode-cmd-queue": "workspace:*",
     "@dotfiles/opencode-cmd-questions": "workspace:*",

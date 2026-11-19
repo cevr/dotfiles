@@ -1178,6 +1178,107 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
+    name: LAW.switchModel,
+    operations: ["session.switchModel", "session.get", "session.prompt", "session.hook", "event.subscribe"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const asked = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* ctx.session.hook("model.request", (event) =>
+          Effect.when(
+            Ref.update(asked, (all) => [...all, `${event.kind} ${event.model.providerID}/${event.model.id}`]),
+            Effect.succeed(event.sessionID === session.id && event.kind === "primary"),
+          ),
+        )
+        const selected = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.model.selected"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.when(
+                Ref.update(selected, (all) => [...all, `${event.data.model.providerID}/${event.data.model.id}`]),
+                Effect.succeed(event.data.sessionID === session.id),
+              ),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the switch" }))
+        const sol = { providerID: Provider.ID.make("sim"), id: Model.ID.make(LAW_SOL.id) }
+        yield* ctx.session.switchModel({ sessionID: session.id, model: sol })
+        yield* waitFor(Ref.get(selected).pipe(Effect.map((all) => all.length > 0)), "switchModel published no session.model.selected")
+        const info = yield* ctx.session.get({ sessionID: session.id })
+        yield* ensure(info.model?.providerID === "sim" && info.model.id === LAW_SOL.id, `get answers the model ${info.model?.providerID}/${info.model?.id}`)
+        // The same model again, at its default variant named, changes nothing.
+        yield* ctx.session.switchModel({ sessionID: session.id, model: { ...sol, variant: Model.VariantID.make("default") } })
+        yield* settle
+        const events = (yield* Ref.get(selected)).join(",")
+        yield* ensure(events === `sim/${LAW_SOL.id}`, `the selections published were ${events}`)
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: after the switch" }))
+        const requests = (yield* Ref.get(asked)).join(",")
+        yield* ensure(requests === `primary sim/sim-model,primary sim/${LAW_SOL.id}`, `the requests went to ${requests}`)
+      }),
+  },
+  {
+    name: LAW.compactionEnded,
+    operations: ["session.hook", "session.compact", "session.switchModel"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        const sol = { providerID: Provider.ID.make("sim"), id: Model.ID.make(LAW_SOL.id) }
+        yield* ctx.session.hook("model.request", (event) =>
+          Effect.when(
+            Ref.update(seen, (all) => [...all, `${event.kind} ${event.model.id}`]),
+            Effect.succeed(event.sessionID === session.id && event.kind !== "title"),
+          ),
+        )
+        yield* ctx.session.hook("experimental.compaction.ended", (event) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id) return
+            yield* Ref.update(seen, (all) => [...all, `ended ${event.reason} ${event.agent} ${event.model.id}`])
+            yield* ctx.session.switchModel({ sessionID: session.id, model: sol })
+          }).pipe(Effect.orDie),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the compaction that switches" }))
+        yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id }))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: after the compaction that switched" }))
+        const order = (yield* Ref.get(seen)).join(",")
+        yield* ensure(
+          order === `primary sim-model,compaction sim-model,ended manual build sim-model,primary ${LAW_SOL.id}`,
+          `the requests and the hook came as ${order}`,
+        )
+      }),
+  },
+  {
+    name: LAW.wake,
+    operations: ["session.hook", "session.prompt", "session.synthetic", "session.switchModel"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        const sol = { providerID: Provider.ID.make("sim"), id: Model.ID.make(LAW_SOL.id) }
+        yield* ctx.session.hook("model.request", (event) =>
+          Effect.when(Ref.update(seen, (all) => [...all, `${event.kind} ${event.model.id}`]), Effect.succeed(event.sessionID === session.id && event.kind === "primary")),
+        )
+        yield* ctx.session.hook("experimental.wake", (event) =>
+          Effect.gen(function* () {
+            if (event.sessionID !== session.id) return
+            const woken = (yield* Ref.get(seen)).filter((entry) => entry === "wake").length
+            yield* Ref.update(seen, (all) => [...all, "wake"])
+            // The second wake switches: the request it starts is the new model's.
+            if (woken === 1) yield* ctx.session.switchModel({ sessionID: session.id, model: sol })
+          }).pipe(Effect.orDie),
+        )
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: the first wake" }))
+        yield* probe.turn(
+          session.id,
+          ctx.session.synthetic({ sessionID: session.id, text: "law: the second wake", description: "law", resume: true }),
+        )
+        const order = (yield* Ref.get(seen)).join(",")
+        yield* ensure(order === `wake,primary sim-model,wake,primary ${LAW_SOL.id}`, `the wakes and requests came as ${order}`)
+      }),
+  },
+  {
     name: LAW.move,
     operations: ["session.move", "session.get", "session.prompt", "session.context", "event.subscribe"],
     // The test host makes the folder beside the law folder (tests/host-laws/real.ts); the world keeps no folders.

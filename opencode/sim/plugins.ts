@@ -10,6 +10,7 @@ import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credent
 import { make as makeAuth, makeShared } from "@dotfiles/opencode-cmd-anthropic-auth/server"
 import { make as makeGuard, sessionsOf } from "@dotfiles/opencode-cmd-guard/server"
 import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
+import ModelNext from "@dotfiles/opencode-cmd-model-next/server"
 import type { ProcessInfo } from "@dotfiles/opencode-guard/kill"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
 import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
@@ -329,6 +330,9 @@ export const draftClient = (world: World, client = "tui-1") => {
 
 /** The idle compaction plugin as OpenCode loads it: `cmd/idle-compact/server.ts`'s default export, wholly on the plugin context. */
 export const idleCompact = IdleCompact
+
+/** The queued model switch as OpenCode loads it: `cmd/model-next/server.ts`'s default export, wholly on the plugin context. */
+export const modelNext = ModelNext
 
 /** The questions plugin as OpenCode loads it: `cmd/questions/server.ts`'s default export, wholly on the plugin context. */
 export const questions = Questions

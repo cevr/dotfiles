@@ -55,6 +55,14 @@ export function trayModel(current: CurrentModel | undefined) {
   return current.variant ? `${current.modelID}:${current.variant}` : current.modelID
 }
 
+/**
+ * The tray's model with a queued switch beside it: `claude-opus:high → claude-fable queued`, until the
+ * switch applies (at the next compaction, or the wake after the cache expired) or is cancelled; the model alone else.
+ */
+export function trayModelQueued(now: string, next: Option.Option<string>) {
+  return Option.match(next, { onNone: () => now, onSome: (queued) => `${now || "?"} → ${queued} queued` })
+}
+
 /** `1 shell`, `2 shells`. */
 export function plural(count: number, word: string) {
   return `${count} ${word}${count === 1 ? "" : "s"}`

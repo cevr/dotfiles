@@ -54,6 +54,7 @@ export const OPERATIONS = [
   "session.prompt",
   "session.update",
   "session.move",
+  "session.switchModel",
   "model.list",
   "model.default",
   "provider.list",
@@ -103,6 +104,10 @@ const UpdateInput = Schema.Struct({
   archived: Schema.optional(Schema.Boolean),
 })
 const MoveInput = Schema.Struct({ sessionID: Schema.String, directory: Schema.String })
+const SwitchModelInput = Schema.Struct({
+  sessionID: Schema.String,
+  model: Schema.Struct({ providerID: Schema.String, id: Schema.String, variant: Schema.optional(Schema.String) }),
+})
 const ListInput = Schema.Struct({
   parentID: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.optional(Schema.String),
@@ -530,6 +535,11 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         MoveInput,
         "session.move",
       )(input).pipe(Effect.flatMap((parsed) => host.sessionOr(parsed.sessionID).pipe(Effect.flatMap((found) => host.move(found, parsed.directory))))),
+    switchModel: <I>(input: I) =>
+      parse(
+        SwitchModelInput,
+        "session.switchModel",
+      )(input).pipe(Effect.flatMap((parsed) => host.sessionOr(parsed.sessionID).pipe(Effect.flatMap((found) => host.switchModel(found, parsed.model))))),
   }
 
   /** The directory a catalog read is of: the one it names, else the plugin's. */

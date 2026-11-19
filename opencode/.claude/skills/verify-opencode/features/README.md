@@ -59,3 +59,4 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Kernel](kernel.md): the persistent TypeScript kernel, its tool calls, calls in parallel.
 - [Prompt cache](cache.md): a turn's priced miss row and its cause, the compaction's row, the sidebar sum, the keepalive.
 - [Rex panes](rex.md): `rex-show` in a showcase pane beside the caller's, the pane a subagent's shell names.
+- [Model at the next compaction](model-next.md): `/model-next`, the picker's `at next compaction`, the tray line, the apply at a compaction or an expired cache's wake.

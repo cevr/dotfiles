@@ -119,6 +119,13 @@
         "@dotfiles/opencode-memory": "workspace:*",
       },
     },
+    "cmd/model-next": {
+      "name": "@dotfiles/opencode-cmd-model-next",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-model-next": "workspace:*",
+      },
+    },
     "cmd/orchestrate": {
       "name": "@dotfiles/opencode-cmd-orchestrate",
       "version": "0.0.0",
@@ -346,6 +353,14 @@
         "@dotfiles/decider": "workspace:*",
       },
     },
+    "mods/model-next": {
+      "name": "@dotfiles/opencode-model-next",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-idle-compact": "workspace:*",
+      },
+    },
     "mods/orchestrate": {
       "name": "@dotfiles/opencode-orchestrate",
       "version": "0.0.0",
@@ -368,6 +383,7 @@
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-cache": "workspace:*",
+        "@dotfiles/opencode-model-next": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
@@ -461,6 +477,7 @@
         "@dotfiles/opencode-cmd-guard": "workspace:*",
         "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
         "@dotfiles/opencode-cmd-mail": "workspace:*",
+        "@dotfiles/opencode-cmd-model-next": "workspace:*",
         "@dotfiles/opencode-cmd-orchestrate": "workspace:*",
         "@dotfiles/opencode-cmd-pool": "workspace:*",
         "@dotfiles/opencode-cmd-questions": "workspace:*",
@@ -522,6 +539,8 @@
 
     "@dotfiles/opencode-cmd-memory": ["@dotfiles/opencode-cmd-memory@workspace:cmd/memory"],
 
+    "@dotfiles/opencode-cmd-model-next": ["@dotfiles/opencode-cmd-model-next@workspace:cmd/model-next"],
+
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
@@ -569,6 +588,8 @@
     "@dotfiles/opencode-mail": ["@dotfiles/opencode-mail@workspace:mods/mail"],
 
     "@dotfiles/opencode-memory": ["@dotfiles/opencode-memory@workspace:mods/memory"],
+
+    "@dotfiles/opencode-model-next": ["@dotfiles/opencode-model-next@workspace:mods/model-next"],
 
     "@dotfiles/opencode-orchestrate": ["@dotfiles/opencode-orchestrate@workspace:mods/orchestrate"],
 

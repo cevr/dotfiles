@@ -164,6 +164,14 @@ export type Message =
       readonly reason: Reason
     }
   | {
+      /** The session's model changed (`session.model.selected`): the transcript's record, read by no request. */
+      readonly type: "model-switched"
+      readonly id: string
+      readonly created: number
+      readonly model: ModelRef
+      readonly previous: ModelRef
+    }
+  | {
       /** A step that failed and was not retried: the error the transcript shows. */
       readonly type: "error"
       readonly id: string
@@ -393,9 +401,24 @@ export interface RetryInput {
   decision: RetryDecision
 }
 
+/** A completed compaction, as `experimental.compaction.ended` sees it: the model it ran under and its recorded reason. */
+export interface CompactionEndedInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly reason: Reason
+  readonly model: ModelRef
+}
+
+/** An execution starting on input, as `experimental.wake` sees it. */
+export interface WakeInput {
+  readonly sessionID: string
+}
+
 export type HookInput =
   | ModelRequestInput
   | IdleInput
+  | CompactionEndedInput
+  | WakeInput
   | HttpRequestInput
   | HttpResponseInput
   | RetryInput
@@ -716,7 +739,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   /** Every command the shell spawned, in order. */
   const spawned: Array<Spawned> = []
   const latency = options.latency ?? [100, 2_000]
-  const models = options.models ?? [SIM_MODEL]
+  /** The catalog: a test may change an entry (`forgetLifetime`). */
+  const models: Array<CatalogModel> = [...(options.models ?? [SIM_MODEL])]
+  /** The sessions whose next compaction fails (a world fault), by id. */
+  const failing = new Set<string>()
   const model = options.model ?? MODEL
   const state = { up: true, counter: 0 }
   /** The faults a test put into the host (sim/faults.ts). */
@@ -779,7 +805,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const agentFor = (session: Session) => agentsOf(session.directory).get(session.agent) ?? agentOf(session.agent)
 
   /** The model a session's requests go to: its own selection, else the host's default. */
-  const modelOf = (session: Session): ModelRef => Option.getOrElse(session.model, () => model)
+  const modelOf = (session: Pick<Session, "model">): ModelRef => Option.getOrElse(session.model, () => model)
 
   /** Appends one trace line: its virtual time, its kind, its data as JSON. */
   const record = <A>(kind: string, data: A) => {
@@ -890,6 +916,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
         return `compaction: ${message.summary}`
       case "error":
         return `error ${message.tag}: ${message.message}`
+      // The transcript's record of a switch: a request carries it only as an effort change between variants (the
+      // fork's to-llm-message `modelSwitched`), which the world does not model.
+      case "model-switched":
+        return ""
     }
   }
 
@@ -945,6 +975,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       case "compaction":
         return [{ role: "user", content: [{ type: "text", text: message.summary }] }]
       case "error":
+      case "model-switched":
         return []
       case "tool":
         return [{ role: "user", content: [{ type: "tool_result", tool_use_id: message.callID, content: message.output }] }]
@@ -1346,14 +1377,26 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       yield* publish({ type: "session.compaction.started", data: { sessionID: session.id, reason, inputID: item.id } })
       const held = session.held
       session.held = Option.none()
+      // The model the compaction runs under: the hook's event names it (`trigger.context.model.ref`).
+      const under = modelOf(session)
       let summary = ""
       if (Option.isSome(held)) {
         summary = held.value
         record("held-summary-used", { sessionID: session.id })
       } else summary = textOf((yield* request(session, "compaction", "summarize the conversation above")).reply)
+      // A compaction the test made fail (`failNextCompaction`): its request went out and its summary is dropped, as
+      // the fork's `publish` records `Compaction.Failed`; no completed compaction, no hook.
+      if (failing.delete(session.id)) {
+        record("compaction-failed", { sessionID: session.id })
+        return yield* publish({ type: "session.compaction.failed", data: { sessionID: session.id, reason, inputID: item.id } })
+      }
       session.messages.push({ type: "compaction", id: item.id, created: runtime.now(), status: "completed", summary, reason })
       record("compacted", { sessionID: session.id })
       yield* publish({ type: "session.compaction.ended", data: { sessionID: session.id, reason, text: summary } })
+      // Awaited after the compaction is recorded and before the next request is built, from the session as the hooks
+      // left it (the fork's compaction.ts `ended`): a model switched there serves the next request.
+      const ended: CompactionEndedInput = { sessionID: session.id, agent: requestAgent(session), reason, model: under }
+      yield* runHooks("experimental.compaction.ended", session, ended)
     })
 
   /** Takes the inbox up to its first compaction into the conversation, each one delivered. */
@@ -1502,6 +1545,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       session.busy = Option.some(runtime.now())
       const from = session.messages.length
       yield* publish({ type: "session.execution.started", data: { sessionID: session.id } })
+      // An execution here always starts on input (`wake` starts one only for resumable inbox work): the hooks run
+      // once, awaited, before any delivery or request (the fork's runner/llm.ts `drain`). A continuation of this
+      // execution after `experimental.idle` runs none.
+      yield* runHooks("experimental.wake", session, { sessionID: session.id })
       let ended: "control" | "model" | "failed" = yield* turn(session)
       while (ended === "model") {
         yield* runHooks("experimental.idle", session, { sessionID: session.id, background: backgroundOf(session) })
@@ -1606,6 +1653,41 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     const id = mint("msg_")
     return admit(session, { id, type: "compaction", reason, resume: true }).pipe(Effect.as({ id }))
   }
+
+  /**
+   * The session's model selected (packages/core/src/session/session.ts `switchModel`): the same model at the same
+   * variant changes nothing; another publishes `session.model.selected` with the one before, the transcript records
+   * a `model-switched` message, and the next request goes to it. The catalog is not checked.
+   */
+  const switchModel = (session: Session, ref: ModelRef) =>
+    Effect.suspend(() => {
+      const previous = modelOf(session)
+      const next = { ...ref, variant: ref.variant ?? "default" }
+      if (previous.providerID === next.providerID && previous.id === next.id && (previous.variant ?? "default") === next.variant) return Effect.void
+      session.model = Option.some(next)
+      session.messages.push({ type: "model-switched", id: mint("msg_"), created: runtime.now(), model: next, previous })
+      touch(session)
+      record("model-selected", { sessionID: session.id, model: next, previous })
+      return publish({ type: "session.model.selected", data: { sessionID: session.id, model: next, previous: { ...previous } } })
+    })
+
+  /** The session's next compaction fails after its request (a world fault). */
+  const failNextCompaction = (session: Session) =>
+    Effect.sync(() => {
+      failing.add(session.id)
+      record("compaction-fault", { sessionID: session.id })
+    })
+
+  /** The model loses its configured cache lifetime (a world change): its provider's default, if any, stands. */
+  const forgetLifetime = (ref: { readonly providerID: string; readonly id: string }) =>
+    Effect.sync(() => {
+      const at = models.findIndex((entry) => entry.providerID === ref.providerID && entry.id === ref.id)
+      const entry = models[at]
+      if (entry === void 0) return
+      const { cache: _cache, ...settings } = entry.settings ?? {}
+      models[at] = { ...entry, settings }
+      record("lifetime-forgotten", { providerID: ref.providerID, id: ref.id })
+    })
 
   const createSession = (input: {
     readonly id?: string
@@ -1800,6 +1882,9 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     admit,
     sessionOr,
     compact,
+    switchModel,
+    failNextCompaction,
+    forgetLifetime,
     createSession,
     infoOf,
     viewOf,
