@@ -157,6 +157,9 @@ import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
+import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
+import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
+import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
 import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
@@ -229,6 +232,9 @@ const Planner = Schema.Struct({
   model: Schema.String.check(Schema.isPattern(/^[^/#\s]+\/[^#\s]+$/)),
 })
 
+/** Who a subagent asks unless the options say: its orchestrator. */
+export const SUBAGENTS: Subagents = "orchestrator"
+
 /** The options. An older config's `ledger`, `cadence`, `guard` and `drops` are extra keys, ignored as any is. */
 export const Options = Schema.Struct({
   log: Schema.String.pipe(withDefault(DEFAULT_LOG)),
@@ -240,6 +246,8 @@ export const Options = Schema.Struct({
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
   fleet: Schema.optional(Schema.Struct({ dotfiles: Schema.String, fork: Schema.String })),
+  /** Who a subagent's question goes to: its orchestrator (`ask_orchestrator`, mods/orchestrate/asking.ts), or `owner` as before. */
+  subagents: Subagents.pipe(withDefault<Subagents>(SUBAGENTS)),
 })
 export type Options = typeof Options.Type
 
@@ -845,6 +853,21 @@ export const make = (
           })
         }
       })
+
+      // A subagent asks its orchestrator, not the owner (owner's exception to the freeze, 2026-11-19): the two tools,
+      // the swap and the documents' nudge (mods/orchestrate/opencode/asking.ts) over the questions plugin's RPC.
+      if (options.subagents === "orchestrator") {
+        const family = Context.get(services, Sessions)
+        yield* Asking.install(
+          ctx,
+          { put: (input) => ctx.rpc(QUESTIONS).put(input), reply: (input) => ctx.rpc(QUESTIONS).reply(input) },
+          {
+            parentOf: (sessionID) => Effect.map(family.parentOf(sessionID), Option.fromNullishOr),
+            directoryOf: (sessionID) => Effect.map(family.directoryOf(sessionID), (directory) => directory ?? ""),
+          },
+          { look: DocumentsLive.look, principles: DocumentsLive.principles },
+        )
+      }
 
       // A turn the server resumed after a restart inside the Sabbath rest (a crash, a restart by hand) makes no
       // model request until the rest ends (restart-hold.ts); any other request, and every one outside it, goes at once.

@@ -11,6 +11,12 @@ import { Effect, Layer, Option } from "effect"
 import { UnitLogs } from "../service.ts"
 import type { Transition } from "../unit-log.ts"
 
+/**
+ * Whether a path exists, file or folder. Also the documents' look (node/documents.ts): one synchronous stat, which the
+ * simulated host runs as plain plugin code, where an awaited read would wait outside its world.
+ */
+export const pathExists = (path: string): boolean => existsSync(path)
+
 /** log.ts has this long to write a line. */
 const TIMEOUT_MS = 10_000
 

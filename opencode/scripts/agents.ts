@@ -38,9 +38,13 @@ const WRITTEN = "Written by dotfiles opencode/scripts/agents.ts from the orchest
  * todo, glob/grep tool or MCP tool. Edit and Write are the `edit` permission
  * (edit, write and patch); Monitor and TaskStop are background `shell` work.
  * Reading a .env file still asks, as for every built-in agent.
- * `ask_user_async` (the questions plugin) stays: a subagent's background
- * question shows in its root session's tray and form, and the answer comes
- * back to the subagent.
+ * The question tools stay: `ask_orchestrator` and `answer_subagent` (the
+ * orchestrate plugin, mods/orchestrate/asking.ts), so a role asks its
+ * orchestrator and answers its own subagents, and `ask_user_async` (the
+ * questions plugin) for the owner. Which of the two ask tools a session sees
+ * is the orchestrate plugin's `subagents` option: by default a subagent agent
+ * has `ask_user_async` denied after these rules, and with `subagents: "owner"`
+ * it asks the owner as before.
  */
 export const PERMISSIONS = [
   { action: "*", resource: "*", effect: "deny" },
@@ -55,6 +59,8 @@ export const PERMISSIONS = [
   { action: "websearch", resource: "*", effect: "allow" },
   { action: "external_directory", resource: "*", effect: "allow" },
   { action: "ask_user_async", resource: "*", effect: "allow" },
+  { action: "ask_orchestrator", resource: "*", effect: "allow" },
+  { action: "answer_subagent", resource: "*", effect: "allow" },
 ] as const
 
 export interface Built {

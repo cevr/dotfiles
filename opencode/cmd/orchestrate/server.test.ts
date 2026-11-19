@@ -42,7 +42,7 @@ import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { eventuallyPasses } from "../../tests/wait.ts"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, SKILL_DIR, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, SKILL_DIR, SUBAGENTS, type StepHostSession, stepSessionOf, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -2134,6 +2134,7 @@ describe("the options", () => {
     codex: { providers: ["openai"], script: CODEX_BUDGET },
     unitLog: UNIT_LOG,
     skill: SKILL_DIR,
+    subagents: SUBAGENTS,
   }
 
   test("each absent option takes its default; an undefined one is absent", () => {
@@ -2154,7 +2155,9 @@ describe("the options", () => {
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
       unitLog: UNIT_LOG,
       skill: SKILL_DIR,
+      subagents: "orchestrator",
     })
+    expect(decode({ subagents: "owner" }).subagents).toBe("owner")
     expect(decode({ skill: "/s" }).skill).toBe("/s")
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
