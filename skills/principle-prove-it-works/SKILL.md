@@ -6,17 +6,9 @@ disable-model-invocation: true
 
 # Prove It Works
 
-Every task output must be verified by checking the real thing directly — not by inferring from proxies, self-reports, or "it compiles."
+Verify every output by checking the real thing directly: run the feature, read the actual value, inspect the diff. Proxies (file mtimes, self-reports, cached output, "it compiles") do not count. When a check fails, suspect the observation method before the system.
 
-**Why:** Unverified work has unknown correctness. Indirect verification (file mtimes, output freshness, agent self-reports, cached screenshots) feels cheaper than direct observation, but acting on a wrong inference costs far more than checking the source.
-
-**Pattern:** After completing any task, ask: "How do I prove this actually works?"
-
-Check the real thing, not a proxy:
-
-- Check process liveness directly, not indirectly through derived state
-- Read the actual value, not a cached or derived representation
-- When verification fails, suspect the observation method before suspecting the system
+Script the check when you can. A deterministic script that reruns the comparison beats a one-time look. Keep its output where the human can see it, and commit it only when the trail must be auditable later.
 
 Code / Features:
 
