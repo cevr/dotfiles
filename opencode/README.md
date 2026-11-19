@@ -1822,6 +1822,9 @@ previous request's agent asked for: its own `request.settings.cacheTTL`
 (the roles' 5 minutes) over a model or provider `settings.cache.ttl`, as the
 auth plugin applies it, else that setting, else 5 minutes for Anthropic and 30
 minutes for OpenAI. A provider with neither counts only model switches. A
+switch the old model's cache could not have served, on the first step after
+a compaction (the summary is new on either model) or past the lifetime, is
+the compaction's or the wait's, in the rows, the ledger and the audit alike. A
 miss is priced at the cache-write rate for the tokens the request wrote back
 and the input rate for the rest, less the read rate it would have paid.
 

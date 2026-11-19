@@ -39,7 +39,10 @@ export interface Tokens {
  * - `hit`: the cache read the previous prompt (all but the noise floor); its
  *   writes are the prompt's new end.
  * - `uncached`: neither it nor the request before reported any cache activity.
- * - `model`: it went to another model than the request before.
+ * - `model`: it went to another model than the request before, inside its
+ *   lifetime. The first primary request after a compaction (its prefix is the
+ *   new summary on either model) and a request past the lifetime (the old
+ *   cache had expired) are judged as on the same model.
  * - `expired`: it went out after the previous request's lifetime ran out.
  * - `login`: inside the lifetime, the pool sent it on another login.
  * - `compaction`: inside the lifetime, it is a compaction's summary request, or
@@ -148,7 +151,7 @@ export interface Judgement {
 export const judge = (previous: Previous | undefined, sent: Sent, tokens: Tokens, compacted: boolean): Judgement => {
   if (previous === undefined) return { cause: "first" }
   const gapMs = Math.max(0, sent.at - previous.sent.at)
-  if (sent.model !== previous.sent.model) return { cause: "model", gapMs }
+  if (sent.model !== previous.sent.model && !(compacted && sent.kind === "primary") && gapMs <= previous.sent.ttlMs) return { cause: "model", gapMs }
   if (tokens.read + tokens.write === 0 && previous.tokens.read + previous.tokens.write === 0) return { cause: "uncached", gapMs }
   const missed = Math.min(previous.tokens.prompt, tokens.prompt) - tokens.read
   if (missed <= NOISE_FLOOR_TOKENS) return { cause: "hit", gapMs }

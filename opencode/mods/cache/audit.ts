@@ -32,7 +32,8 @@ export const writeMultiplier = (ttlMs: number): number => (ttlMs >= HOUR_MS ? PR
 
 /**
  * Why a session's cache read fell, first match wins:
- * - `model-switch`: the request went to another model.
+ * - `model-switch`: the request went to another model, inside the lifetime and
+ *   not as the first request after a compaction.
  * - `compaction`: it is a compaction's summary request, or the first after one.
  * - `ttl-expiry`: it went out after the previous request's lifetime ran out (an idle gap).
  * - `login-move`: the pool sent it on another login (a cache belongs to one organisation).
@@ -88,11 +89,28 @@ export interface Break {
   readonly head?: string
 }
 
-/** Why the read fell from `previous` to `line`, by the order `BreakCause` gives. */
+/** `line` went out past the lifetime `previous` asked for. */
+const expired = (previous: LedgerLine, line: LedgerLine): boolean => line.at - previous.at > previous.ttlMs
+
+/**
+ * `line` is the first primary request after a compaction: the request before
+ * it is the summary request, or the server judged it `compaction` (a
+ * compaction whose summary request left no line). Old lines a server judged
+ * `model` after a summary line count by the first mark, with no rewrite.
+ */
+const afterCompaction = (previous: LedgerLine, line: LedgerLine): boolean =>
+  line.kind === "primary" && (previous.kind === "compaction" || line.cause === "compaction")
+
+/**
+ * Why the read fell from `previous` to `line`, by the order `BreakCause` gives.
+ * A model switch on the first request after a compaction, or past the
+ * lifetime, is classified as the same request on the same model: the old
+ * model's cache held nothing it could have read.
+ */
 export const classify = (previous: LedgerLine, line: LedgerLine): BreakCause => {
-  if (line.model !== previous.model) return "model-switch"
+  if (line.model !== previous.model && !afterCompaction(previous, line) && !expired(previous, line)) return "model-switch"
   if (line.kind === "compaction" || previous.kind === "compaction" || line.cause === "compaction") return "compaction"
-  if (line.at - previous.at > previous.ttlMs) return "ttl-expiry"
+  if (expired(previous, line)) return "ttl-expiry"
   if (line.login !== undefined && previous.login !== undefined && line.login !== previous.login) return "login-move"
   if (line.ttlMs !== previous.ttlMs) return "ttl-switch"
   if (line.cause === "first" || line.restored === true) return "restart"

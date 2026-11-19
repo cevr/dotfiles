@@ -234,9 +234,12 @@ export const scan = (timeline: Timeline, waits: ReadonlyArray<Span> = []): Reado
 
 /**
  * The miss and its cause by the cache lifetime the previous request asked for
- * (its agent's, else its model's: ledger.ts). A model switch always counts.
- * Time past the lifetime since the previous request started is the lapse's
- * doing. Inside it only an explicit cache's miss counts: an implicit cache
+ * (its agent's, else its model's: ledger.ts). A model switch counts unless
+ * the old model's cache held nothing the step could have read: on the first
+ * step after a compaction (its prefix is the new summary on either model) or
+ * past the lifetime (the cache had expired), the step is judged as on the
+ * same model. Time past the lifetime since the previous request started is
+ * the lapse's doing. Inside it only an explicit cache's miss counts: an implicit cache
  * (OpenAI) reads only when the request reaches a server that holds the
  * prefix, so a miss there is no evidence. Such a miss is the pool's move to
  * another login, else the compaction around it, else a changed prefix. With
@@ -244,9 +247,10 @@ export const scan = (timeline: Timeline, waits: ReadonlyArray<Span> = []): Reado
  */
 export const resolve = (scanned: Scanned, lifetimeMs: number | undefined): Miss | undefined => {
   const { sinceRefreshMs, modelSwitch, explicitCache, lapse, agent: _agent, compaction, loginMoved, ...miss } = scanned
-  if (modelSwitch) return { ...miss, cause: { _tag: "ModelSwitch" } }
+  const expired = lifetimeMs !== undefined && sinceRefreshMs > lifetimeMs
+  if (modelSwitch && compaction !== "after" && !expired) return { ...miss, cause: { _tag: "ModelSwitch" } }
   if (lifetimeMs === undefined) return undefined
-  if (sinceRefreshMs > lifetimeMs) return { ...miss, cause: lapse }
+  if (expired) return { ...miss, cause: lapse }
   if (!explicitCache) return undefined
   if (loginMoved) return { ...miss, cause: { _tag: "LoginMoved" } }
   if (compaction !== undefined) return { ...miss, cause: { _tag: "Compaction", request: compaction === "request" } }
