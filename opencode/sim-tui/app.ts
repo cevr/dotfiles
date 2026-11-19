@@ -109,8 +109,9 @@ export interface TraceEntry {
   readonly value: string
 }
 
-/** More of the TUI config: `session.verbosity`, and the session tabs (off unless a file turns them on). */
+/** More of the TUI config: `session.verbosity`, the session tabs (off unless a file turns them on), and animations (off unless a file turns them on). */
 export interface TuiConfig {
+  readonly animations?: boolean
   readonly session?: { readonly verbosity: "low" | "medium" | "high" }
   readonly tabs?: { readonly mode?: "auto" | "on" | "off"; readonly scope?: "global" | "cwd" | "window" }
 }

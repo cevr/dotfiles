@@ -20,8 +20,6 @@ import {
   queueItem,
   splashAgent,
   splashModel,
-  SPINNER,
-  SPINNER_MS,
   trayModel,
   trayModelQueued,
   usageLabel,
@@ -588,34 +586,27 @@ export function Queued(props: { host: Host; sessionID: string }) {
 }
 
 /**
- * While a turn runs: a blank row, then a braille spinner in the primary
- * accent (Prime #7c6faf) and `Executing · 13s` (Prime's loader row), timed
- * as pending.ts `loader` says. While the run compacts it draws nothing: the
- * compaction's own row spins and counts (`Automatic compaction · 4s`).
+ * While a turn runs: a blank row, then the host's spinner in the primary
+ * accent (Prime #7c6faf), turning with every other spinner on screen, and
+ * `Executing · 13s` (Prime's loader row), timed as pending.ts `loader` says.
+ * While the run compacts it draws nothing: the compaction's own row spins and
+ * counts (`Automatic compaction · 4s`).
  */
 export function Working(props: { host: Host; sessionID: string }) {
   const running = createMemo(() => props.host.status(props.sessionID) === "running")
   const shown = createMemo(() => loader(props.host.messages(props.sessionID), props.host.pending(props.sessionID)))
-  const [now, setNow] = createSignal(TuiClock.now())
+  // The time counts on the shared clock, which ticks only while the turn runs.
+  const now = useNow(running)
   const [seen, setSeen] = createSignal(TuiClock.now())
-  const [frame, setFrame] = createSignal(0)
-  // The spinner turns only while the turn runs; an idle session sets no timer.
   createEffect(() => {
-    if (!running()) return
-    setNow(TuiClock.now())
-    setSeen(TuiClock.now())
-    const stop = TuiClock.every(SPINNER_MS, () => {
-      setNow(TuiClock.now())
-      setFrame((value) => (value + 1) % SPINNER.length)
-    })
-    onCleanup(stop)
+    if (running()) setSeen(TuiClock.now())
   })
   return (
     <Show when={running() ? shown() : undefined}>
       {(loader) => (
-        <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>
+        <box paddingLeft={GUTTER} marginTop={1} flexShrink={0} flexDirection="row" gap={1}>
+          <props.host.Spinner color={props.host.theme().hue.accent[300]} />
           <text wrapMode="none" fg={props.host.theme().text.muted}>
-            <span style={{ fg: props.host.theme().hue.accent[300] }}>{SPINNER[frame()]} </span>
             Executing · {elapsed(now() - (loader().since ?? seen()))}
           </text>
         </box>
