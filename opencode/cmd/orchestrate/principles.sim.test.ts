@@ -115,7 +115,7 @@ seeded("get answers the skill file's full text, by either name", ({ seed, expect
   }),
 )
 
-seeded("get of an unknown name fails and names the closest principles", ({ seed, expect }) =>
+seeded("get of an unknown name fails and names the closest principle first", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { skills } = yield* disk
     const run = yield* boot(seed, skills)
@@ -123,6 +123,6 @@ seeded("get of an unknown name fails and names the closest principles", ({ seed,
     const got = yield* run.call(root, { action: "get", name: "subtract-before-add" })
     expect(got.error).toBe(true)
     expect(got.text).toContain("no principle subtract-before-add")
-    expect(got.text).toContain("principle-subtract-before-you-add")
+    expect(got.text).toContain("Closest: principle-subtract-before-you-add,")
   }),
 )
