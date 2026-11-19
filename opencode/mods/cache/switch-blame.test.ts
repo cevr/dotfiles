@@ -173,6 +173,17 @@ describe("request-log.ts judge: the first request after a compaction", () => {
     expect(judge(plain, sent(MINUTE, { kind: "compaction", model: NEW }), { prompt: 292_500, read: 0, write: 292_500 }, false).cause).toBe("model")
   })
 
+  test("a summary request on another model right after a compaction is still a model switch: only the primary request after it is exempt", () => {
+    // Two compactions in a row, the second on the new model: its request wrote the whole context on that model.
+    const next = random(3)
+    for (let index = 0; index < CASES; index += 1) {
+      const at = Math.floor(next() * HOUR)
+      const read = Math.floor(next() * 64_000)
+      const tokens = { prompt: 64_500, read, write: 64_500 - read }
+      expect(judge(before, sent(at, { kind: "compaction", model: NEW }), tokens, true)).toEqual({ cause: "model", gapMs: at })
+    }
+  })
+
   test("past the lifetime a switch is judged as on the same model, `expired`, a summary request too", () => {
     const next = random(4)
     const pick = picker(next)
