@@ -265,6 +265,22 @@ interface ShellInfo {
   time: { readonly started: number; completed?: number }
 }
 
+/**
+ * A background job as the server's job registry lists it (schema/src/job.ts `Info`): the double's only
+ * background work is a subagent's child, the job's id the child's (core session/subagent-job.ts).
+ */
+interface JobInfo {
+  readonly kind: "subagent"
+  readonly id: string
+  readonly sessionID: string
+  status: "running" | "completed"
+  readonly title: string
+  time: { readonly started: number; completed?: number }
+  readonly childSessionID: string
+  readonly agent: string
+  readonly description: string
+}
+
 interface Running {
   readonly sessionID: string
   readonly prompt: string
@@ -385,6 +401,7 @@ export const SERVED = [
   "provider.list",
   "server.info",
   "shell.list",
+  "job.list",
 ] as const
 export type Served = (typeof SERVED)[number]
 const isServed = (identifier: string): identifier is Served => SERVED.some((each) => each === identifier)
@@ -439,6 +456,7 @@ export const EVENTS = [
   "session.viewed",
   "shell.created",
   "shell.exited",
+  "experimental.job.updated",
   "form.created",
 ] as const
 export type EventKind = (typeof EVENTS)[number]
@@ -538,6 +556,8 @@ export const make = (options: Options) => {
   const shellExits: Array<"killed"> = []
   /** The shell commands the shell tool started, by id, as the server's shell registry lists them. */
   const shells = new Map<string, ShellInfo>()
+  /** The background jobs, by id, as the server's job registry holds them: none until a background subagent starts. */
+  const jobs = new Map<string, JobInfo>()
   /** The forms made in each session, pending (no reply route is served), as the server's Form service holds them. */
   const forms = new Map<string, Array<unknown>>()
   const events: Array<string> = []
@@ -795,8 +815,23 @@ export const make = (options: Options) => {
     part.state = { status: "completed", input: step.input, content, metadata }
     part.time = { ...part.time, completed: now() }
     enqueue(child, `You are a subagent spawned by another session.\n${String(step.input.prompt ?? "")}`, "steer")
+    // As core's subagent tool once the child is prompted (SubagentJob.start): a background job, listed and announced.
+    const description = String(step.input.description ?? "")
+    const job: JobInfo = { kind: "subagent", id: child, sessionID: run.sessionID, status: "running", title: description, time: { started: now() }, childSessionID: child, agent: step.agent, description }
+    jobs.set(child, job)
+    emit("experimental.job.updated", { info: job })
     emit("session.tool.success", { ...ref, content, metadata, executed: false })
   }
+
+  /** A subagent's child ended its run: its job settles `completed` (core Job's settle) and says so. */
+  const settleJob = (sessionID: string) =>
+    Option.map(
+      Option.filter(Option.fromUndefinedOr(jobs.get(sessionID)), (job) => job.status === "running"),
+      (job) => {
+        Object.assign(job, { status: "completed", time: { ...job.time, completed: now() } })
+        emit("experimental.job.updated", { info: job })
+      },
+    )
 
   const endStep = (run: Running, finished: "stop" | "tool-calls") => {
     endText(run)
@@ -818,6 +853,7 @@ export const make = (options: Options) => {
     // As core's projector records the run's end (session/projector.ts projectIdle).
     const info = sessions.get(run.sessionID)
     if (info) info.outcome = "succeeded"
+    settleJob(run.sessionID)
     settled(run.sessionID)
     if (pending(run.sessionID).length > 0) start(run.sessionID)
   }
@@ -1106,6 +1142,16 @@ export const make = (options: Options) => {
     // The running shells; with `exited=true`, the ended ones too (server/src/handlers/shell.ts).
     "shell.list": ({ query }) =>
       Effect.succeed(json("shell.list", { location: catalogLocation, data: Array.from(shells.values()).filter((info) => info.status === "running" || query.get("exited") === "true") })),
+    // The background jobs (server/src/handlers/persistent-pty.ts → core job/list.ts): by owning session, with
+    // `descendants` its subagents' too, by kind and by status; none until a background subagent starts.
+    "job.list": ({ query }) => {
+      const owners = Option.map(Option.fromNullishOr(query.get("sessionID")), (sessionID) => [[sessionID], family(sessionID)][Number(query.get("descendants") === "true")] ?? [])
+      const asked = (key: string, value: string) => Option.match(Option.fromNullishOr(query.get(key)), { onNone: () => true, onSome: (want) => want === value })
+      const kept = Array.from(jobs.values()).filter(
+        (job) => Option.match(owners, { onNone: () => true, onSome: (each) => each.includes(job.sessionID) }) && asked("kind", job.kind) && asked("status", job.status),
+      )
+      return Effect.succeed(json("job.list", { data: kept }))
+    },
     "agent.list": () => Effect.succeed(json("agent.list", { location: catalogLocation, data: AGENTS })),
     "model.list": () => Effect.succeed(json("model.list", { location: catalogLocation, data: [MODEL] })),
     "provider.list": () => Effect.succeed(json("provider.list", { location: catalogLocation, data: [PROVIDER] })),
