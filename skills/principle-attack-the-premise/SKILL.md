@@ -14,7 +14,8 @@ When two fixes that rest on one premise have failed the same check, suspect the 
 
 - **Write the premise.** One sentence that every failed fix assumed. If you cannot write it, you have not found what the fixes share.
 - **Take a census.** List every trigger that reaches the bad state, not only the ones that failed so far. Keep it as a rerunnable test or script ([build-the-lever](../principle-build-the-lever/SKILL.md)).
-- **Read the census.** If every trigger enters through one assumption (state read back from layout, a cache kept in sync by events, an order the scheduler never promised), that assumption is the next "why" ([fix-root-causes](../principle-fix-root-causes/SKILL.md)).
+- **Read the census.** If every trigger enters through one assumption (state read back from layout, a cache kept in sync by events, an order the scheduler never promised), that assumption is the next "why" ([fix-root-causes](../principle-fix-root-causes/SKILL.md)). Look at how the failures are distributed, not only at how large they are.
+- **Remove the condition, don't compensate.** If one part always lands on the losing side, change what puts it there instead of adding a mechanism that cleans up after it.
 - **Replace the premise, or keep it on proof.** Either the property test proves the premise holds for every trigger in the census, or the design stops depending on it. Another trigger fix on the same premise is not progress.
 - **Sweep for survivors.** A replaced premise often lives on in one corner of the design. Check each trigger in the census against the new premise.
 
