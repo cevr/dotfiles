@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-model-next",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A model switch queued for a session's next compaction, or its next wake once its prompt cache has expired: the session's next request after either is the new model's first, and it writes nothing it would not have written anyway.",
+  "exports": {
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-idle-compact": "workspace:*"
+  }
+}

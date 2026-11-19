@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-model-next",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The queued model switch's OpenCode plugins, the queue RPC and its two apply points (server) and /model-next with the model picker's action (tui), and the CLI an agent queues through: the composition root of @dotfiles/opencode-model-next.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-model-next": "workspace:*"
+  }
+}
