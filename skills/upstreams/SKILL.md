@@ -37,6 +37,7 @@ Done when every commit in the scan has a sort. A new upstream skill that deserve
 - Put each rule where its single source of truth already lives in our skill; extend that passage instead of adding a parallel one. Follow `writing-for-agents`.
 - **License**: MIT text may be adapted with the credit line the skill already carries. A source with no license is restated in our own words, never copied.
 - One commit per target skill: `docs(<skill>): fold <source>: <what changed>`, with the upstream range (`abc1234..def5678`) in the body.
+- **Keep our rules.** Upstream cutting a rule is not a reason to cut ours: take its new rules and sharper wording, never its deletions. Before the commit, `bun ~/.claude/skills/upstreams/scripts/lost-sentences.ts <base> <old files> <target files>` (for example `HEAD principles/ skills/principle-*/SKILL.md`) lists each old sentence no target still holds; put each one back, or name it in the report as a pure rewording and where its words now live. It exits 0 when none is lost.
 
 ## 5. Mark and ship
 
