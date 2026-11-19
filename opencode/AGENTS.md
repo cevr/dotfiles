@@ -66,7 +66,7 @@ All of them need `OPENCODE_DEV` pointing at the fork checkout.
 - Without `OPENCODE_DEV` it drives the installed `opencode2`.
 - `SCENARIO_LABEL` names the frame and screenshot; `SCENARIO_THEME` picks the theme; `SCENARIO_DUMP=1` writes each model request as `request-<n>.json`.
 - The simulated model is offered `patch`, not `edit`, and `shell`, not `bash`.
-- A fork run from source is channel `local`, where every flag defaults on, `full_codemode` too (upstream 77b322ceae), which moves `shell`, `read`, `edit`, `write`, `patch` and `websearch` behind Code Mode's `execute`. Tests (`tests/owned.ts`) and `verify:drive` run with the flag off, as the owner's `latest` build has it, adding `-full_codemode` to `OPENCODE_FLAGS` unless the caller names the flag (`scripts/release-flags.ts`); by hand, set `OPENCODE_FLAGS=-full_codemode`.
+- A fork run from source is channel `local`, where every flag defaults on, `full_codemode` too (upstream 77b322ceae), which moves `shell`, `read`, `edit`, `write`, `patch` and `websearch` behind Code Mode's `execute`. Everything here that starts the fork from source (`forkLaunch`'s env in `testbeds/gamut/gamut.ts`, `tests/owned.ts`, `verify:drive`, the law runners) runs with the flag off, as the owner's `latest` build has it, adding `-full_codemode` to `OPENCODE_FLAGS` unless the caller names the flag (`scripts/release-flags.ts`); by hand, set `OPENCODE_FLAGS=-full_codemode`.
 
 ## Reference
 - Prime Agent (MIT, Rust, ratatui): renders of its current UI and the design notes are the target for the look.
