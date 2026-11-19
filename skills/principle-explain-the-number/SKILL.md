@@ -22,6 +22,8 @@ Before you measure, write down the result that would change a decision. Before y
 
 **Keep the evidence with the number:** the run count, the spread, the load and the limiter, in the report or a linked file. A claim with none of these is a guess with a unit.
 
+**Eval results** take the same questions over the trials: did every run do the task, does the gap hold across trials and models, and does the scenario matter.
+
 **Example:** bible-tools p5. The task notification's token count read as each agent's spend; it was the agent's final context, 50 to 1000 times under its real spend (now read from the transcript by `orchestrate/scripts/agent-cost.ts`). The laptop e2e failures (base 799/28, sheet R2 845/18) read as unit regressions; they were load timeouts at a load of 38 to 45 on 12 cores, and each passed when rerun alone.
 
 **See also:** [prove-it-works](../principle-prove-it-works/SKILL.md) checks that an output is real; this checks that a measurement measured the work. [fix-root-causes](../principle-fix-root-causes/SKILL.md): when verification fails, suspect the observation first.
