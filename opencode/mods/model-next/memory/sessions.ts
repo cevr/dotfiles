@@ -24,15 +24,14 @@ export const layer = (held: Store) =>
       record: (sessionID) => Effect.sync(() => Option.fromUndefinedOr(held.records.get(sessionID))),
       setMetadata: (sessionID, metadata) =>
         Effect.sync(() => {
-          const found = held.records.get(sessionID)
-          if (found !== undefined) held.records.set(sessionID, { ...found, metadata: { ...metadata } })
+          for (const found of Option.toArray(Option.fromUndefinedOr(held.records.get(sessionID)))) held.records.set(sessionID, { ...found, metadata: { ...metadata } })
         }),
       switchModel: (sessionID, model) =>
         Effect.sync(() => {
-          const found = held.records.get(sessionID)
-          if (found === undefined) return
-          held.records.set(sessionID, { ...found, model })
-          held.switched.push({ sessionID, model })
+          for (const found of Option.toArray(Option.fromUndefinedOr(held.records.get(sessionID)))) {
+            held.records.set(sessionID, { ...found, model })
+            held.switched.push({ sessionID, model })
+          }
         }),
       entry: (_sessionID, model) => Effect.sync(() => Option.fromUndefinedOr(held.catalog.get(label({ providerID: model.providerID, id: model.id })))),
       cache: (sessionID) => Effect.sync(() => held.cache.get(sessionID) ?? NO_CACHE),

@@ -7,7 +7,7 @@
  *
  * - RPC `queue({ sessionID, model })`, `cancel({ sessionID })`, `show({ sessionID })`
  *   (`MODEL_NEXT` in `/pending`): the TUI's `/model-next` command and model
- *   picker action, `cmd/model-next/cli.ts` and an agent through it.
+ *   picker action; the agent's `model_next` tool calls the same handlers.
  * - `experimental.compaction.ended`: a completed compaction applies the queued
  *   switch before the next request is built; the outgoing model wrote the summary.
  * - `experimental.wake`: an execution starting on input applies it once the
@@ -27,12 +27,13 @@
  * - `ttlSeconds`: a cache lifetime for every model, over the providers' own (as idle compaction's); default none.
  * - `graceSeconds`: how long past the lifetime the cache counts as expired; default 60.
  */
-import { Plugin } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Plugin, Tool } from "@opencode/plugin/effect"
+import { Context, Effect, Layer, Match, Option, Schema, Stream } from "effect"
 import * as Model from "@dotfiles/opencode-model-next/model"
 import * as OpenCodeSessions from "@dotfiles/opencode-model-next/opencode/sessions"
-import { GRACE_SECONDS, MODEL_NEXT, ModelRef, type Policy } from "@dotfiles/opencode-model-next/pending"
+import { GRACE_SECONDS, MODEL_NEXT, ModelRef, parseRef, type Policy, Refused } from "@dotfiles/opencode-model-next/pending"
 import type { Sessions } from "@dotfiles/opencode-model-next/service"
+import { answerLine, DESCRIPTION, NAME, shownLine, ToolInput } from "@dotfiles/opencode-model-next/tool"
 
 const withDefault =
   <A>(fallback: A) =>
@@ -49,9 +50,11 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 export const policyOf = (options: Options): Policy => ({
-  ttl: options.ttlSeconds === undefined ? Option.none() : Option.some(options.ttlSeconds * 1_000),
+  ttl: Option.map(Option.fromUndefinedOr(options.ttlSeconds), (seconds) => seconds * 1_000),
   grace: options.graceSeconds * 1_000,
 })
+
+class InvalidOptions extends Schema.TaggedError<InvalidOptions>()("InvalidOptions", { message: Schema.String }) {}
 
 const QueueInput = Schema.Struct({ sessionID: Schema.String, model: ModelRef })
 const SessionInput = Schema.Struct({ sessionID: Schema.String })
@@ -66,11 +69,36 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<Externals>)
     id: MODEL_NEXT.id,
     effect: Effect.fn("ModelNext.plugin")(function* (ctx) {
       const options = yield* Schema.decodeUnknownEffect(Options)(ctx.options).pipe(
-        Effect.mapError((error) => new Error(`${MODEL_NEXT.id}: invalid options: ${error.message}`)),
+        Effect.mapError((error) => new InvalidOptions({ message: `${MODEL_NEXT.id}: invalid options: ${error.message}` })),
         Effect.orDie,
       )
       const services = yield* Layer.build(Model.layer(policyOf(options)).pipe(Layer.provide(externals(ctx))))
       const next = Context.get(services, Model.ModelNext)
+
+      // The agent's way in: a direct tool, so a kernel cell reaches it as `tools.model_next(...)`.
+      yield* ctx.tool.transform((editor) => {
+        editor.add({
+          name: NAME,
+          description: DESCRIPTION,
+          input: ToolInput,
+          options: { codemode: false },
+          execute: (input, context) => {
+            const sessionID = Option.getOrElse(Option.fromUndefinedOr(input.session), () => context.sessionID)
+            const said = Match.value(input.action).pipe(
+              Match.when("status", () => next.show(sessionID).pipe(Effect.map(shownLine))),
+              Match.when("cancel", () => next.cancel(sessionID).pipe(Effect.map(answerLine))),
+              Match.when("queue", () =>
+                Option.match(parseRef(Option.getOrElse(Option.fromUndefinedOr(input.model), () => "")), {
+                  onNone: () => Effect.fail(new Tool.Error({ message: "queue needs model: provider/model or provider/model#variant" })),
+                  onSome: (model) => next.queue(sessionID, model).pipe(Effect.map(answerLine)),
+                }),
+              ),
+              Match.exhaustive,
+            )
+            return said.pipe(Effect.map((text) => ({ content: [{ type: "text" as const, text }] })))
+          },
+        })
+      })
 
       yield* ctx.session.hook("experimental.compaction.ended", (event) => next.compacted(event.sessionID))
       yield* ctx.session.hook("experimental.wake", (event) => next.woke(event.sessionID))
@@ -92,12 +120,12 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<Externals>)
         queue: (input) =>
           Schema.decodeUnknownEffect(QueueInput)(input).pipe(
             Effect.flatMap(({ sessionID, model }) => next.queue(sessionID, model)),
-            Effect.orElseSucceed(() => ({ _tag: "Refused" as const, reason: "no-session" as const })),
+            Effect.orElseSucceed(() => Refused.make({ reason: "no-session" })),
           ),
         cancel: (input) =>
           Schema.decodeUnknownEffect(SessionInput)(input).pipe(
             Effect.flatMap(({ sessionID }) => next.cancel(sessionID)),
-            Effect.orElseSucceed(() => ({ _tag: "Refused" as const, reason: "no-session" as const })),
+            Effect.orElseSucceed(() => Refused.make({ reason: "no-session" })),
           ),
         show: (input) =>
           Schema.decodeUnknownEffect(SessionInput)(input).pipe(

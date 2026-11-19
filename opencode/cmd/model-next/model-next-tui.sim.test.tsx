@@ -6,8 +6,8 @@
 // a known model, and records each call. The double's catalog holds one model,
 // the session's own, so the stand-in answers whatever the rule would say for
 // another one: the TUI's half is what runs here.
-import { Effect, Option } from "effect"
-import { KEY, MODEL_NEXT } from "@dotfiles/opencode-model-next/pending"
+import { Effect, Option, Schema } from "effect"
+import { Cancelled, KEY, MODEL_NEXT, ModelRef, Queued } from "@dotfiles/opencode-model-next/pending"
 import * as App from "../../sim-tui/app.ts"
 import { MODEL_REF, type Model, type Rpc, text } from "../../sim-tui/server.ts"
 
@@ -22,17 +22,16 @@ App.bootTest(BOOT)
 const model: Model = () => [text("Done.")]
 const NEXT = { providerID: "anthropic", id: "claude-fable-5-2" }
 
+const readQueue = Schema.decodeUnknownOption(Schema.Struct({ model: ModelRef }))
+
 type Call = { readonly method: string; readonly input: unknown }
 /** The RPC's stand-in: `queue` answers Queued from the session's model, `cancel` Cancelled; every call is kept. */
 const standIn = (calls: Array<Call>): Rpc => (call) => {
   if (call.rpcID !== MODEL_NEXT.id) return Option.none()
   calls.push({ method: call.method, input: call.input })
-  if (call.method === "queue") {
-    const input = call.input as { readonly model: unknown }
-    return Option.some({ _tag: "Queued", model: input.model, from: MODEL_REF })
-  }
-  if (call.method === "cancel") return Option.some({ _tag: "Cancelled", had: true })
-  return Option.none()
+  if (call.method === "cancel") return Option.some(Cancelled.make({ had: true }))
+  if (call.method !== "queue") return Option.none()
+  return Option.map(readQueue(call.input), (input) => Queued.make({ model: input.model, from: MODEL_REF }))
 }
 
 const has = (needle: string) => (shown: ReadonlyArray<string>) => shown.some((line) => line.includes(needle))

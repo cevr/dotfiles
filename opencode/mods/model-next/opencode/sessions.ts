@@ -21,13 +21,12 @@
 import { Sessions as CacheSessions } from "@dotfiles/opencode-idle-compact/service"
 import * as CacheReads from "@dotfiles/opencode-idle-compact/opencode/sessions"
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Layer, Option, Schema } from "effect"
-import type { CacheFacts, CatalogEntry, ModelRef } from "../pending.ts"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
+import { SessionID } from "@opencode/schema/session-id"
+import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { type CacheFacts, type CatalogEntry, type ModelRef, readMetadata } from "../pending.ts"
 import { CatalogUnreadable, Sessions, SessionUnreadable, SessionUnwritable } from "../service.ts"
-
-type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
-type SwitchInput = Parameters<Plugin.Context["session"]["switchModel"]>[0]
-type UpdateInput = Parameters<Plugin.Context["session"]["update"]>[0]
 
 const messageOf = CacheReads.messageOf
 
@@ -35,17 +34,28 @@ const messageOf = CacheReads.messageOf
 const NotFound = Schema.Struct({ _tag: Schema.Literals(["Session.NotFoundError", "NotFoundError"]) })
 const isNotFound = Schema.is(NotFound)
 
-/** What the entry reads of a catalog model: its variants and its compaction kind. */
-interface CatalogModel {
-  readonly providerID: string
-  readonly id: string
-  readonly variants?: ReadonlyArray<{ readonly id: string }>
-  readonly settings?: { readonly compaction?: { readonly type?: string } }
-}
-interface CatalogProvider {
-  readonly id: string
-  readonly settings?: { readonly compaction?: { readonly type?: string } }
-}
+/** What the entry reads of the catalog: a model's or a provider's compaction kind, and a model's variants. */
+const Compaction = Schema.optional(Schema.Struct({ compaction: Schema.optional(Schema.Struct({ type: Schema.optional(Schema.String) })) }))
+const CatalogModel = Schema.Struct({
+  providerID: Schema.String,
+  id: Schema.String,
+  variants: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String }))),
+  settings: Compaction,
+})
+const CatalogProvider = Schema.Struct({ id: Schema.String, settings: Compaction })
+const readModels = Schema.decodeUnknownOption(Schema.Array(CatalogModel))
+const readProviders = Schema.decodeUnknownOption(Schema.Array(CatalogProvider))
+
+/** A compaction kind as settings name it, when they name one. */
+const kindOf = (settings: typeof CatalogModel.Type.settings): Option.Option<string> =>
+  Option.flatMap(Option.fromUndefinedOr(settings), (set) => Option.flatMap(Option.fromUndefinedOr(set.compaction), (compaction) => Option.fromUndefinedOr(compaction.type)))
+
+/** A reference as the host's `switchModel` takes it. */
+const hostRef = (model: ModelRef) =>
+  Option.match(Option.fromUndefinedOr(model.variant), {
+    onNone: () => ({ providerID: Provider.ID.make(model.providerID), id: Model.ID.make(model.id) }),
+    onSome: (variant) => ({ providerID: Provider.ID.make(model.providerID), id: Model.ID.make(model.id), variant: Model.VariantID.make(variant) }),
+  })
 
 export const fromContext = (ctx: Plugin.Context): Layer.Layer<Sessions> => {
   const cacheReads = CacheReads.fromContext(ctx)
@@ -54,34 +64,33 @@ export const fromContext = (ctx: Plugin.Context): Layer.Layer<Sessions> => {
     Effect.gen(function* () {
       const cache = yield* CacheSessions
       const directoryOf = (sessionID: string) =>
-        ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
+        ctx.session.get({ sessionID: SessionID.make(sessionID) }).pipe(
           Effect.map((info) => info.location.directory),
           Effect.orElseSucceed(() => ctx.location.directory),
         )
+      const modelOf = (selected: Option.Option<ModelRef>) =>
+        Option.match(selected, {
+          onSome: (model) => Effect.succeed<ModelRef>(model),
+          onNone: () =>
+            ctx.model.default().pipe(
+              Effect.flatMap((found) => Effect.fromNullishOr(found.data)),
+              Effect.map((data): ModelRef => ({ providerID: data.providerID, id: data.id })),
+            ),
+        })
       return Sessions.of({
         record: (sessionID) =>
-          ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
-            Effect.flatMap((info) =>
-              Option.match(Option.fromUndefinedOr(info.model), {
-                onSome: (model) => Effect.succeed<ModelRef>(model),
-                onNone: () =>
-                  ctx.model.default().pipe(
-                    Effect.flatMap((found) => Effect.fromNullishOr(found.data)),
-                    Effect.map((data): ModelRef => ({ providerID: data.providerID, id: data.id })),
-                  ),
-              }).pipe(Effect.map((model) => Option.some({ model, metadata: { ...info.metadata } }))),
-            ),
-            Effect.catch((cause) =>
-              isNotFound(cause) ? Effect.succeed(Option.none()) : Effect.fail(new SessionUnreadable({ sessionID, message: messageOf(cause) })),
-            ),
+          ctx.session.get({ sessionID: SessionID.make(sessionID) }).pipe(
+            Effect.flatMap((info) => modelOf(Option.fromUndefinedOr(info.model)).pipe(Effect.map((model) => Option.some({ model, metadata: Option.getOrElse(readMetadata(info.metadata), () => ({})) })))),
+            Effect.catchIf(isNotFound, () => Effect.succeedNone),
+            Effect.mapError((cause) => new SessionUnreadable({ sessionID, message: messageOf(cause) })),
           ),
         setMetadata: (sessionID, metadata) =>
-          ctx.session.update({ sessionID: sessionID as SessionID, metadata: metadata as UpdateInput["metadata"] }).pipe(
+          ctx.session.update({ sessionID: SessionID.make(sessionID), metadata: { ...metadata } }).pipe(
             Effect.asVoid,
             Effect.mapError((cause) => new SessionUnwritable({ sessionID, message: messageOf(cause) })),
           ),
         switchModel: (sessionID, model) =>
-          ctx.session.switchModel({ sessionID: sessionID as SessionID, model: model as SwitchInput["model"] }).pipe(
+          ctx.session.switchModel({ sessionID: SessionID.make(sessionID), model: hostRef(model) }).pipe(
             Effect.asVoid,
             Effect.mapError((cause) => new SessionUnwritable({ sessionID, message: messageOf(cause) })),
           ),
@@ -89,19 +98,25 @@ export const fromContext = (ctx: Plugin.Context): Layer.Layer<Sessions> => {
           Effect.gen(function* () {
             const directory = yield* directoryOf(sessionID)
             const [models, providers] = yield* Effect.all([ctx.model.list({ location: { directory } }), ctx.provider.list({ location: { directory } })])
-            const listed: ReadonlyArray<CatalogModel> = models.data
-            const found = listed.find((entry) => entry.providerID === model.providerID && entry.id === model.id)
-            if (found === undefined) return Option.none<CatalogEntry>()
-            const provider: CatalogProvider | undefined = (providers.data as ReadonlyArray<CatalogProvider>).find((entry) => entry.id === model.providerID)
-            const kind = found.settings?.compaction?.type ?? provider?.settings?.compaction?.type
-            return Option.some<CatalogEntry>({ variants: (found.variants ?? []).map((variant) => variant.id), native: kind === "native" })
+            const listed = Option.getOrElse(readModels(models.data), () => [])
+            const provider = Arr.findFirst(Option.getOrElse(readProviders(providers.data), () => []), (entry) => entry.id === model.providerID)
+            return Option.map(
+              Arr.findFirst(listed, (entry) => entry.providerID === model.providerID && entry.id === model.id),
+              (found): CatalogEntry => ({
+                variants: Arr.map(Option.getOrElse(Option.fromUndefinedOr(found.variants), () => []), (variant) => variant.id),
+                native: Option.contains(
+                  Option.orElse(kindOf(found.settings), () => Option.flatMap(provider, (entry) => kindOf(entry.settings))),
+                  "native",
+                ),
+              }),
+            )
           }).pipe(Effect.mapError((cause) => new CatalogUnreadable({ message: messageOf(cause) }))),
         cache: (sessionID) =>
           cache.facts(sessionID).pipe(
             Effect.map(
               (facts): CacheFacts => ({
                 compacted: facts.compacted,
-                last: Option.map(facts.last, (last) => ({ startedAt: last.startedAt, cached: last.cached, ttl: last.ttl, unresolved: last.unresolved })),
+                last: Option.map(facts.last, (last) => ({ startedAt: last.startedAt, cached: last.cached, ttl: last.ttl, unresolved: Option.fromUndefinedOr(last.unresolved) })),
               }),
             ),
             Effect.mapError((error) => new SessionUnreadable({ sessionID, message: error.message })),

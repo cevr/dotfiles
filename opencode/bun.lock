@@ -123,7 +123,6 @@
       "name": "@dotfiles/opencode-cmd-model-next",
       "version": "0.0.0",
       "dependencies": {
-        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-model-next": "workspace:*",
       },
     },
@@ -358,6 +357,7 @@
       "name": "@dotfiles/opencode-model-next",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-idle-compact": "workspace:*",
       },
     },

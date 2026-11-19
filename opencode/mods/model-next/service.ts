@@ -3,7 +3,7 @@
 // model, and what the session's data says of its cache. Each operation states
 // its failure; `laws.ts` states what every implementation owes.
 import { Context, type Effect, type Option, Schema } from "effect"
-import type { CacheFacts, CatalogEntry, ModelRef } from "./pending.ts"
+import type { CacheFacts, CatalogEntry, Metadata, ModelRef } from "./pending.ts"
 
 /** The host could not say what a session holds. */
 export class SessionUnreadable extends Schema.TaggedError<SessionUnreadable>()("SessionUnreadable", {
@@ -27,7 +27,7 @@ export interface SessionRecord {
   /** The model its next request goes to: its selection, else the host's default. */
   readonly model: ModelRef
   /** Its metadata, whole: a write replaces it whole, so a writer merges into what this read. */
-  readonly metadata: Readonly<Record<string, unknown>>
+  readonly metadata: Metadata
 }
 
 export class Sessions extends Context.Service<
@@ -36,7 +36,7 @@ export class Sessions extends Context.Service<
     /** The session's record; none when the host has no such session. */
     readonly record: (sessionID: string) => Effect.Effect<Option.Option<SessionRecord>, SessionUnreadable>
     /** Replaces the session's metadata whole (the host's `session.update`). */
-    readonly setMetadata: (sessionID: string, metadata: Readonly<Record<string, unknown>>) => Effect.Effect<void, SessionUnwritable>
+    readonly setMetadata: (sessionID: string, metadata: Metadata) => Effect.Effect<void, SessionUnwritable>
     /** Selects the session's model (the host's `switchModel`): its next request goes there. The catalog is not checked. */
     readonly switchModel: (sessionID: string, model: ModelRef) => Effect.Effect<void, SessionUnwritable>
     /** The catalog's entry for the model, in the session's location; none when the catalog lacks it. */

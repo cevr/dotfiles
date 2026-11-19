@@ -2,7 +2,7 @@
 // host's two awaited hooks and the model-selection event, and nothing else.
 //
 // - `queue` / `cancel` / `show`: the RPC the TUI (the `/model-next` command
-//   and the picker's action), the CLI and an agent call. A refusal is an
+//   and the picker's action), and the agent's `model_next` tool call. A refusal is an
 //   answer (pending.ts `Answer`).
 // - `compacted` (`experimental.compaction.ended`): a completed compaction of
 //   the session. The outgoing model wrote the summary; switch now, before the
@@ -27,27 +27,35 @@ import { Clock, Context, Effect, Layer, Option, Semaphore } from "effect"
 import {
   type Answer,
   Apply,
+  Cancelled,
   atCompaction,
   atWake,
   label,
+  type Metadata,
   type ModelRef,
   type Pending,
   pendingOf,
   type Policy,
   present,
   queue as decideQueue,
+  Queued,
   Queueing,
+  Refused,
   sameModel,
   endedBy,
   type Shown,
+  type WaitReason,
   withPending,
 } from "./pending.ts"
 import { Sessions } from "./service.ts"
 
 const LOG = { Info: Effect.logInfo, Warning: Effect.logWarning, Debug: Effect.logDebug } as const
 
+/** How loud a wait at the wake is: a lost target is news, a warm cache is every turn's answer. */
+const WAIT_LEVEL = { "target-gone": "Warning", "no-request": "Debug", compacted: "Debug", uncached: "Debug", "ttl-unknown": "Debug", warm: "Debug" } as const satisfies Record<WaitReason, keyof typeof LOG>
+
 /** One log line with its fields as annotations. */
-const note = (level: keyof typeof LOG, message: string, fields: Record<string, unknown>) => LOG[level](message).pipe(Effect.annotateLogs(fields))
+const note = (level: keyof typeof LOG, message: string, fields: Readonly<Record<string, string | boolean>>) => LOG[level](message).pipe(Effect.annotateLogs(fields))
 
 export class ModelNext extends Context.Service<
   ModelNext,
@@ -71,18 +79,17 @@ export const layer = (policy: Policy) =>
 
       /** The session's queued switch and its metadata as read now; none when the session is gone. */
       const read = (sessionID: string) =>
-        sessions.record(sessionID).pipe(Effect.map(Option.map((record) => ({ record, pending: pendingOf(sessionID, record.metadata) }))))
+        sessions.record(sessionID).pipe(Effect.map(Option.map((record) => ({ record, pending: pendingOf(sessionID, Option.some(record.metadata)) }))))
 
       /** The session's metadata with `pending` set or taken out, every other key as read. */
-      const write = (sessionID: string, metadata: Readonly<Record<string, unknown>>, pending: Option.Option<Pending>) =>
-        sessions.setMetadata(sessionID, withPending(metadata, pending))
+      const write = (sessionID: string, metadata: Metadata, pending: Option.Option<Pending>) => sessions.setMetadata(sessionID, withPending(Option.some(metadata), pending))
 
       /** Switch to the queued model: the value goes first, so the selection event finds nothing to end. */
-      const apply = (sessionID: string, metadata: Readonly<Record<string, unknown>>, pending: Pending, at: "compaction" | "wake") =>
+      const apply = (sessionID: string, metadata: Metadata, pending: Pending, at: "compaction" | "wake") =>
         Effect.gen(function* () {
           yield* write(sessionID, metadata, Option.none())
           yield* sessions.switchModel(sessionID, pending.model)
-          yield* note("Info", "model-next: switched", { sessionID, at, from: pending.from === undefined ? "" : label(pending.from), to: label(pending.model) })
+          yield* note("Info", "model-next: switched", { sessionID, at, from: Option.match(Option.fromUndefinedOr(pending.from), { onNone: () => "", onSome: label }), to: label(pending.model) })
         })
 
       const logged = (what: string, sessionID: string) => <A, E>(effect: Effect.Effect<A, E>) =>
@@ -95,23 +102,23 @@ export const layer = (policy: Policy) =>
         serial(
           Effect.gen(function* () {
             const found = yield* read(sessionID)
-            if (Option.isNone(found)) return { _tag: "Refused", reason: "no-session" } satisfies Answer
+            if (Option.isNone(found)) return Refused.make({ reason: "no-session" })
             const current = found.value.record.model
             const [target, own] = yield* Effect.all([sessions.entry(sessionID, model), sessions.entry(sessionID, current)])
             const decided = decideQueue(sessionID, model, { current: Option.some(current), target, own }, yield* Clock.currentTimeMillis)
             return yield* Queueing.$match(decided, {
-              Refuse: ({ reason }) => Effect.succeed<Answer>({ _tag: "Refused", reason }),
+              Refuse: ({ reason }) => Effect.succeed<Answer>(Refused.make({ reason })),
               Keep: ({ pending }) =>
                 write(sessionID, found.value.record.metadata, Option.some(pending)).pipe(
                   Effect.tap(() => note("Info", "model-next: queued", { sessionID, from: label(current), to: label(model) })),
-                  Effect.as<Answer>({ _tag: "Queued", model, from: current }),
+                  Effect.as<Answer>(Queued.make({ model, from: current })),
                 ),
             })
           }),
         ).pipe(
           // A host that could not be read or written answers as no session: the TUI says so, nothing is queued.
           Effect.catchCause((cause) =>
-            note("Warning", "model-next: queue failed", { sessionID, cause: String(cause) }).pipe(Effect.as<Answer>({ _tag: "Refused", reason: "no-session" })),
+            note("Warning", "model-next: queue failed", { sessionID, cause: String(cause) }).pipe(Effect.as<Answer>(Refused.make({ reason: "no-session" }))),
           ),
         )
 
@@ -119,14 +126,14 @@ export const layer = (policy: Policy) =>
         serial(
           Effect.gen(function* () {
             const found = yield* read(sessionID)
-            if (Option.isNone(found)) return { _tag: "Refused", reason: "no-session" } satisfies Answer
+            if (Option.isNone(found)) return Refused.make({ reason: "no-session" })
             const had = Option.isSome(found.value.pending)
             if (had) yield* write(sessionID, found.value.record.metadata, Option.none())
-            return { _tag: "Cancelled", had } satisfies Answer
+            return Cancelled.make({ had })
           }),
         ).pipe(
           Effect.catchCause((cause) =>
-            note("Warning", "model-next: cancel failed", { sessionID, cause: String(cause) }).pipe(Effect.as<Answer>({ _tag: "Refused", reason: "no-session" })),
+            note("Warning", "model-next: cancel failed", { sessionID, cause: String(cause) }).pipe(Effect.as<Answer>(Refused.make({ reason: "no-session" }))),
           ),
         )
 
@@ -135,7 +142,8 @@ export const layer = (policy: Policy) =>
           Effect.map(
             Option.match({
               onNone: (): Shown => ({}),
-              onSome: ({ record, pending }): Shown => ({ current: record.model, ...Option.match(pending, { onNone: () => ({}), onSome: (value) => ({ pending: value }) }) }),
+              onSome: ({ record, pending }): Shown =>
+                Option.match(pending, { onNone: (): Shown => ({ current: record.model }), onSome: (value): Shown => ({ current: record.model, pending: value }) }),
             }),
           ),
           Effect.orElseSucceed((): Shown => ({})),
@@ -166,10 +174,7 @@ export const layer = (policy: Policy) =>
             const decided = atWake(pending, cache, policy, present(pending.model, entry), yield* Clock.currentTimeMillis)
             yield* Apply.$match(decided, {
               Switch: () => apply(sessionID, found.value.record.metadata, pending, "wake"),
-              Wait: ({ reason }) =>
-                reason === "target-gone"
-                  ? note("Warning", "model-next: not switched at the wake", { sessionID, reason, to: label(pending.model) })
-                  : note("Debug", "model-next: not switched at the wake", { sessionID, reason }),
+              Wait: ({ reason }) => note(WAIT_LEVEL[reason], "model-next: not switched at the wake", { sessionID, reason, to: label(pending.model) }),
             })
           }),
         ).pipe(logged("the wake's switch", sessionID))

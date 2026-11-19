@@ -1,63 +1,95 @@
 // The handlers on memory: the other keys of the session's metadata (wake's
 // latch mark) survive queue, cancel and both applies.
-import { expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { expect } from "bun:test"
+import { Clock, Effect, Layer, Option } from "effect"
+import { effectTest } from "../../sim-tui/effect-test.ts"
 import { layer as modelLayer, ModelNext } from "./model.ts"
 import { layer, store } from "./memory/sessions.ts"
-import { KEY } from "./pending.ts"
+import { Cancelled, KEY, Queued } from "./pending.ts"
 
 const OLD = { providerID: "sim", id: "old" }
 const NEW = { providerID: "other", id: "new" }
 const LATCH = { id: "latch_1", opensAt: 5 }
+const CASE_MS = 5_000
+const cachedAt = (startedAt: number) => ({ last: Option.some({ startedAt, cached: true, ttl: Option.some(300_000), unresolved: Option.none() }), compacted: false })
 
+/** A session on OLD with a latch mark, both models in the catalog, and the handlers over it. */
 const bench = () => {
   const held = store()
   held.records.set("ses_a", { model: OLD, metadata: { latch: LATCH } })
   held.catalog.set("sim/old", { variants: [], native: false })
   held.catalog.set("other/new", { variants: [], native: false })
-  const run = <A>(body: (next: typeof ModelNext.Service) => Effect.Effect<A>) =>
-    Effect.runPromise(ModelNext.use(body).pipe(Effect.provide(modelLayer({ ttl: Option.none(), grace: 60_000 })), Effect.provide(layer(held))))
-  return { held, run }
+  return { held, handlers: modelLayer({ ttl: Option.none(), grace: 60_000 }).pipe(Layer.provide(layer(held))) }
 }
 
-test("queue, cancel and an apply at the compaction keep the latch mark", async () => {
-  const { held, run } = bench()
-  expect(await run((next) => next.queue("ses_a", NEW))).toMatchObject({ _tag: "Queued" })
-  expect(held.records.get("ses_a")?.metadata).toMatchObject({ latch: LATCH, [KEY]: { model: NEW } })
-  expect(await run((next) => next.cancel("ses_a"))).toEqual({ _tag: "Cancelled", had: true })
-  expect(held.records.get("ses_a")?.metadata).toEqual({ latch: LATCH })
-  await run((next) => next.queue("ses_a", NEW))
-  await run((next) => next.compacted("ses_a"))
-  expect(held.records.get("ses_a")?.metadata).toEqual({ latch: LATCH })
-  expect(held.switched).toEqual([{ sessionID: "ses_a", model: NEW }])
-})
+const metadataOf = (held: ReturnType<typeof store>) => Option.map(Option.fromUndefinedOr(held.records.get("ses_a")), (record) => record.metadata)
 
-test("an apply at the wake past the expiry keeps the latch mark; a warm cache keeps the switch queued", async () => {
-  const { held, run } = bench()
-  await run((next) => next.queue("ses_a", NEW))
-  held.cache.set("ses_a", { last: Option.some({ startedAt: Date.now(), cached: true, ttl: Option.some(300_000) }), compacted: false })
-  await run((next) => next.woke("ses_a"))
-  expect(held.switched).toEqual([])
-  held.cache.set("ses_a", { last: Option.some({ startedAt: 0, cached: true, ttl: Option.some(300_000) }), compacted: false })
-  await run((next) => next.woke("ses_a"))
-  expect(held.switched).toEqual([{ sessionID: "ses_a", model: NEW }])
-  expect(held.records.get("ses_a")?.metadata).toEqual({ latch: LATCH })
-})
+{
+  const { held, handlers } = bench()
+  effectTest(
+    "queue, cancel and an apply at the compaction keep the latch mark",
+    Effect.gen(function* () {
+      const next = yield* ModelNext
+      expect(yield* next.queue("ses_a", NEW)).toEqual(Queued.make({ model: NEW, from: OLD }))
+      expect(metadataOf(held)).toMatchObject(Option.some({ latch: LATCH, [KEY]: { model: NEW } }))
+      expect(yield* next.cancel("ses_a")).toEqual(Cancelled.make({ had: true }))
+      expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
+      yield* next.queue("ses_a", NEW)
+      yield* next.compacted("ses_a")
+      expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
+      expect(held.switched).toEqual([{ sessionID: "ses_a", model: NEW }])
+    }).pipe(Effect.provide(handlers)),
+    CASE_MS,
+  )
+}
 
-test("a target the catalog lost stays queued at the compaction", async () => {
-  const { held, run } = bench()
-  await run((next) => next.queue("ses_a", NEW))
-  held.catalog.delete("other/new")
-  await run((next) => next.compacted("ses_a"))
-  expect(held.switched).toEqual([])
-  expect(held.records.get("ses_a")?.metadata).toMatchObject({ [KEY]: { model: NEW } })
-})
+{
+  const { held, handlers } = bench()
+  effectTest(
+    "an apply at the wake past the expiry keeps the latch mark; a warm cache keeps the switch queued",
+    Effect.gen(function* () {
+      const next = yield* ModelNext
+      yield* next.queue("ses_a", NEW)
+      held.cache.set("ses_a", cachedAt(yield* Clock.currentTimeMillis))
+      yield* next.woke("ses_a")
+      expect(held.switched).toEqual([])
+      held.cache.set("ses_a", cachedAt(0))
+      yield* next.woke("ses_a")
+      expect(held.switched).toEqual([{ sessionID: "ses_a", model: NEW }])
+      expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
+    }).pipe(Effect.provide(handlers)),
+    CASE_MS,
+  )
+}
 
-test("a selection of another model drops it; one of the model it was queued from does not", async () => {
-  const { held, run } = bench()
-  await run((next) => next.queue("ses_a", NEW))
-  await run((next) => next.selected("ses_a", OLD))
-  expect(held.records.get("ses_a")?.metadata).toMatchObject({ [KEY]: { model: NEW } })
-  await run((next) => next.selected("ses_a", { providerID: "sim", id: "third" }))
-  expect(held.records.get("ses_a")?.metadata).toEqual({ latch: LATCH })
-})
+{
+  const { held, handlers } = bench()
+  effectTest(
+    "a target the catalog lost stays queued at the compaction",
+    Effect.gen(function* () {
+      const next = yield* ModelNext
+      yield* next.queue("ses_a", NEW)
+      held.catalog.delete("other/new")
+      yield* next.compacted("ses_a")
+      expect(held.switched).toEqual([])
+      expect(metadataOf(held)).toMatchObject(Option.some({ [KEY]: { model: NEW } }))
+    }).pipe(Effect.provide(handlers)),
+    CASE_MS,
+  )
+}
+
+{
+  const { held, handlers } = bench()
+  effectTest(
+    "a selection of another model drops it; one of the model it was queued from does not",
+    Effect.gen(function* () {
+      const next = yield* ModelNext
+      yield* next.queue("ses_a", NEW)
+      yield* next.selected("ses_a", OLD)
+      expect(metadataOf(held)).toMatchObject(Option.some({ [KEY]: { model: NEW } }))
+      yield* next.selected("ses_a", { providerID: "sim", id: "third" })
+      expect(metadataOf(held)).toEqual(Option.some({ latch: LATCH }))
+    }).pipe(Effect.provide(handlers)),
+    CASE_MS,
+  )
+}

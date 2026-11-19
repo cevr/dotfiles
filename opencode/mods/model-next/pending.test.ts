@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { atCompaction, atWake, type CacheFacts, endedBy, KEY, parseRef, type Pending, pendingOf, present, queue, withPending } from "./pending.ts"
+import { Apply, atCompaction, atWake, type CacheFacts, endedBy, KEY, parseRef, type Pending, pendingOf, present, queue, Queueing, withPending } from "./pending.ts"
 
 const OLD = { providerID: "sim", id: "old" }
 const NEW = { providerID: "other", id: "new" }
@@ -9,7 +9,7 @@ const TTL = 300_000
 const GRACE = 60_000
 const policy = { ttl: Option.none<number>(), grace: GRACE }
 const cached = (startedAt: number, extra: Partial<CacheFacts> = {}): CacheFacts => ({
-  last: Option.some({ startedAt, cached: true, ttl: Option.some(TTL) }),
+  last: Option.some({ startedAt, cached: true, ttl: Option.some(TTL), unresolved: Option.none() }),
   compacted: false,
   ...extra,
 })
@@ -17,23 +17,23 @@ const entry = { variants: ["high"], native: false }
 
 describe("the value in the session's metadata", () => {
   test("is read only for the session it names: a child's copy of its parent's is absent", () => {
-    expect(pendingOf("ses_a", { [KEY]: PENDING })).toEqual(Option.some(PENDING))
-    expect(pendingOf("ses_child", { [KEY]: PENDING })).toEqual(Option.none())
-    expect(pendingOf("ses_a", { [KEY]: { sessionID: "ses_a" } })).toEqual(Option.none())
-    expect(pendingOf("ses_a", undefined)).toEqual(Option.none())
+    expect(pendingOf("ses_a", Option.some({ [KEY]: PENDING }))).toEqual(Option.some(PENDING))
+    expect(pendingOf("ses_child", Option.some({ [KEY]: PENDING }))).toEqual(Option.none())
+    expect(pendingOf("ses_a", Option.some({ [KEY]: { sessionID: "ses_a" } }))).toEqual(Option.none())
+    expect(pendingOf("ses_a", Option.none())).toEqual(Option.none())
   })
 
   test("is set and taken out with every other key kept", () => {
-    const set = withPending({ latch: { id: "l1" }, other: 2 }, Option.some(PENDING))
+    const set = withPending(Option.some({ latch: { id: "l1" }, other: 2 }), Option.some(PENDING))
     expect(set).toEqual({ latch: { id: "l1" }, other: 2, [KEY]: PENDING })
-    expect(withPending(set, Option.none())).toEqual({ latch: { id: "l1" }, other: 2 })
+    expect(withPending(Option.some(set), Option.none())).toEqual({ latch: { id: "l1" }, other: 2 })
   })
 })
 
 describe("queueing", () => {
   const facts = { current: Option.some(OLD), target: Option.some(entry), own: Option.some({ variants: [], native: false }) }
   test("keeps the target with the model it was queued from", () => {
-    expect(queue("ses_a", NEW, facts, 5)).toMatchObject({ _tag: "Keep", pending: { sessionID: "ses_a", model: NEW, from: OLD, queuedAt: 5 } })
+    expect(queue("ses_a", NEW, facts, 5)).toEqual(Queueing.Keep({ pending: { sessionID: "ses_a", model: NEW, from: OLD, queuedAt: 5 } }))
   })
   test("refuses with why", () => {
     expect(queue("ses_a", NEW, { ...facts, current: Option.none() }, 0)).toMatchObject({ reason: "no-session" })
@@ -58,7 +58,7 @@ describe("a model selection", () => {
 describe("at a completed compaction", () => {
   test("switches, unless the catalog lost the target", () => {
     expect(atCompaction(PENDING, true)._tag).toBe("Switch")
-    expect(atCompaction(PENDING, false)).toMatchObject({ _tag: "Wait", reason: "target-gone" })
+    expect(atCompaction(PENDING, false)).toEqual(Apply.Wait({ reason: "target-gone" }))
     expect(present(NEW, Option.none())).toBe(false)
   })
 })
@@ -74,10 +74,10 @@ describe("at a wake", () => {
     const late = 24 * 3_600_000
     expect(atWake(PENDING, { last: Option.none(), compacted: false }, policy, true, late)).toMatchObject({ reason: "no-request" })
     expect(atWake(PENDING, cached(0, { compacted: true }), policy, true, late)).toMatchObject({ reason: "compacted" })
-    expect(atWake(PENDING, { last: Option.some({ startedAt: 0, cached: false, ttl: Option.some(TTL) }), compacted: false }, policy, true, late)).toMatchObject({ reason: "uncached" })
-    expect(atWake(PENDING, { last: Option.some({ startedAt: 0, cached: true, ttl: Option.none() }), compacted: false }, policy, true, late)).toMatchObject({ reason: "ttl-unknown" })
+    expect(atWake(PENDING, { last: Option.some({ startedAt: 0, cached: false, ttl: Option.some(TTL), unresolved: Option.none() }), compacted: false }, policy, true, late)).toMatchObject({ reason: "uncached" })
+    expect(atWake(PENDING, { last: Option.some({ startedAt: 0, cached: true, ttl: Option.none(), unresolved: Option.none() }), compacted: false }, policy, true, late)).toMatchObject({ reason: "ttl-unknown" })
     expect(
-      atWake(PENDING, { last: Option.some({ startedAt: 0, cached: true, ttl: Option.some(TTL), unresolved: "the catalog cannot be read" }), compacted: false }, policy, true, late),
+      atWake(PENDING, { last: Option.some({ startedAt: 0, cached: true, ttl: Option.some(TTL), unresolved: Option.some("the catalog cannot be read") }), compacted: false }, policy, true, late),
     ).toMatchObject({ reason: "ttl-unknown" })
     expect(atWake(PENDING, cached(0), policy, false, late)).toMatchObject({ reason: "target-gone" })
   })
@@ -87,7 +87,7 @@ describe("at a wake", () => {
   })
 })
 
-describe("a reference as the CLI writes it", () => {
+describe("a reference as the tool takes it", () => {
   test("reads provider/id and an optional #variant", () => {
     expect(parseRef("anthropic/claude-fable-5-2")).toEqual(Option.some({ providerID: "anthropic", id: "claude-fable-5-2" }))
     expect(parseRef("anthropic/claude-fable-5-2#high")).toEqual(Option.some({ providerID: "anthropic", id: "claude-fable-5-2", variant: "high" }))
