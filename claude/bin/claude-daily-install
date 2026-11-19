@@ -1,0 +1,46 @@
+#!/bin/sh
+# Installs the latest Claude Code once a day and records the installed release.
+#
+# Run by mac/launchd/com.cvr.claude-daily.plist (the Mac, install.sh loads it) and
+# workbox/systemd/user/claude-daily.timer (the workbox, bootstrap.sh enables it).
+# `claude install latest` replaces the native binary at ~/.local/bin/claude; a running
+# session keeps the release it started with.
+#
+# It then writes the release `claude --version` reports, when it reads strictly as
+# major.minor.patch, to $XDG_STATE_HOME/claude-daily/version (default ~/.local/state).
+# The OpenCode launcher exports it as CLAUDE_CODE_INSTALLED_VERSION
+# (opencode/mods/update/filestore/launcher.ts), so the Anthropic auth plugin reports
+# at least that release from the next service start.
+#
+# Everything goes to $XDG_STATE_HOME/claude-daily/install.log (its last 500 lines are
+# kept). A failed install leaves the binary and the recorded release as they were and
+# exits with the install's status; nothing else depends on it. No credential is read.
+set -u
+umask 077
+
+claude=${CLAUDE_DAILY_BINARY:-$HOME/.local/bin/claude}
+state=${XDG_STATE_HOME:-$HOME/.local/state}/claude-daily
+log=$state/install.log
+mkdir -p "$state" || exit 1
+
+{
+  printf '%s claude install latest\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "$claude" install latest </dev/null
+  status=$?
+  printf 'install exit %s\n' "$status"
+} >>"$log" 2>&1
+
+release=$("$claude" --version </dev/null 2>/dev/null) || release=
+release=${release%% *}
+case $release in
+'' | *[!0-9.]*) release= ;;
+esac
+if [ -n "$release" ] && printf '%s\n' "$release" | grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'; then
+  printf '%s\n' "$release" >"$state/version.$$" && mv -f "$state/version.$$" "$state/version"
+  printf 'installed release %s\n' "$release" >>"$log"
+else
+  printf 'claude --version gave no release; the recorded one stays\n' >>"$log"
+fi
+
+tail -n 500 "$log" >"$log.$$" && mv -f "$log.$$" "$log"
+exit "$status"

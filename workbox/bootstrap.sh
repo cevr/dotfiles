@@ -11,7 +11,7 @@ user_unit_dir="$HOME/.config/systemd/user"
 workspaces_dir=${WORKBOX_WORKSPACES_DIR:-/workspaces}
 bite_source="$workspaces_dir/bite"
 local_bin_dir="$HOME/.local/bin"
-user_timers="cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer"
+user_timers="claude-daily.timer cleanup-mosh-servers.timer cull-transcript-images.timer transcript-archive.timer workbox-backup.timer"
 
 if [ "$(uname -s)" = Linux ] && [ -S "/run/user/$(id -u)/bus" ]; then
   XDG_RUNTIME_DIR="/run/user/$(id -u)"
