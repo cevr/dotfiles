@@ -53,6 +53,8 @@ export const Step = Schema.TaggedUnion({
    * of the text file at `path` holding `output`, each answered as the fork's tool answers it.
    */
   Ran: { id: Schema.String, tool: Schema.Literals(["shell", "read"]), target: Schema.String, output: Schema.String },
+  /** Any other tool called with `input`, answered within its step with `output` as its text. */
+  Called: { id: Schema.String, tool: Schema.String, input: Schema.Record(Schema.String, Schema.Json), output: Schema.String },
   /** A background subagent call: a child session starts on `input.prompt`; the model answers it as any session (by `Asked.sessionID`). */
   Subagent: {
     id: Schema.String,
@@ -64,7 +66,7 @@ export const Step = Schema.TaggedUnion({
 })
 export type Step = typeof Step.Type
 /** A step that calls a tool and has its answer within the step: the step ends `tool-calls`. */
-const callsTool = Predicate.or(Predicate.isTagged("Subagent"), Predicate.isTagged("Ran"))
+const callsTool = Predicate.or(Predicate.or(Predicate.isTagged("Subagent"), Predicate.isTagged("Ran")), Predicate.isTagged("Called"))
 type Subagent = typeof Step.cases.Subagent.Type
 
 /** The model streams `text`. */
@@ -81,6 +83,10 @@ export const longShell = (input: { readonly id: string; readonly command: string
 export const ranShell = (input: { readonly id: string; readonly command: string; readonly output: string }): Step =>
   Step.cases.Ran.make({ id: input.id, tool: "shell", target: input.command, output: input.output })
 /** A read call of the text file at `path`, which holds `output`, within its step. */
+/** A call of any other tool, answered within its step with `output`. */
+export const called = (input: { readonly id: string; readonly tool: string; readonly input: Readonly<Record<string, Schema.Json>>; readonly output: string }): Step =>
+  Step.cases.Called.make(input)
+
 export const ranRead = (input: { readonly id: string; readonly path: string; readonly output: string }): Step =>
   Step.cases.Ran.make({ id: input.id, tool: "read", target: input.path, output: input.output })
 /** A background subagent call. */
@@ -111,7 +117,7 @@ export type Handler = (url: URL, request: Request) => Promise<Option.Option<Resp
 /** A random source: an integer in [0, n). */
 export type Draw = (n: number) => number
 
-type Input = Readonly<Record<string, string | boolean>>
+type Input = Readonly<Record<string, Schema.Json>>
 type Tokens = { readonly input: number; readonly output: number; readonly reasoning: number; readonly cache: { readonly read: number; readonly write: number } }
 type ErrorInfo = { readonly type: string; readonly message: string }
 
@@ -678,6 +684,12 @@ export const make = (options: Options) => {
         return
       }
       if (step._tag === "Ran") ran(run, { ...step, id: own(step.id) })
+      if (step._tag === "Called") {
+        const part = toolPart(own(step.id), step.tool, step.input)
+        run.message.content.push(part)
+        called(run, part, step.input)
+        answered(run, part, { content: [textPart(step.output)], metadata: {} })
+      }
       if (step._tag === "Shell") {
         const input = Option.match(Option.fromUndefinedOr(step.description), {
           onNone: () => ({ command: step.command }),
