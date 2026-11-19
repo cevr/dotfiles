@@ -131,6 +131,11 @@ export const LAW = {
   shell: "the shell's create.before hooks see each command the host spawns, before it runs",
   compaction:
     "a compaction hook's message added after the conversation goes in the compaction request before the summary prompt; its start and end are one event each with an id of its own, the end's carrying the summary",
+  switchModel:
+    "a session's model selected publishes session.model.selected once, get answers it, and the next request goes to it; selecting the same model again publishes nothing",
+  compactionEnded:
+    "experimental.compaction.ended runs once after a completed compaction, after its summary request and with its reason, agent and the model it ran under; a model switched there serves the next request",
+  wake: "experimental.wake runs once as each execution starts on input, a prompt or a synthetic message, before its first request; a model switched there serves that request",
   move: "an idle session moved to another directory moves with no turn, is there, and is decided by that location's hooks until it moves back; each move publishes session.moved",
   window: "a session on an agent whose compactionWindow its prompt passed is compacted automatically; one on an agent without the window is not",
   options: "a plugin's options are the ones it was configured with, and its location the directory it serves",

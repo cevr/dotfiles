@@ -255,6 +255,19 @@ export const make = (worldOptions: WorldOptions) => {
     /** The owner sends `text` to the session: a prompt, which wakes it. */
     prompt: (sessionID: string, text: string) =>
       sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "prompt", text, resume: true })))),
+    /** A synthetic message steered into the session that wakes it (a job's end letter, a notice): no prompt. */
+    synthetic: (sessionID: string, text: string) =>
+      sessionOf(sessionID).pipe(
+        Effect.flatMap((session) => run(host.admit(session, { id: host.mint("msg_"), type: "synthetic", text, description: "notice", metadata: {}, resume: true }))),
+      ),
+    /** The owner asks for a compaction (`/compact`): one inbox item, which wakes the session. */
+    compact: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.compact(session, Option.some("manual"))))),
+    /** The owner picks a model for the session (`session.switchModel`): `session.model.selected`, and its next request goes there. */
+    switchModel: (sessionID: string, model: ModelRef) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.switchModel(session, model)))),
+    /** The session's next compaction fails after its request: no completed compaction, `session.compaction.failed`. */
+    failNextCompaction: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.failNextCompaction(session)))),
+    /** The model loses its configured `cache.ttl`: its lifetime is its provider's default, none for a provider with no known one. */
+    forgetLifetime: (model: { readonly providerID: string; readonly id: string }) => run(host.forgetLifetime(model)),
     /** The owner takes the session's newest queued prompt back into the composer: it is cancelled, never delivered. */
     takeBack: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.takeBack(session)))),
     /** The owner takes inbox item `inboxID` back from a client (`session.inbox.cancel`): it is cancelled, never delivered. */
@@ -268,8 +281,8 @@ export const make = (worldOptions: WorldOptions) => {
       run(Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => Effect.void, onSome: host.removeSession })),
     /** The owner archives the session from a client. */
     archive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.archive(session)))),
-    /** Calls an RPC method as a client of the host (the TUI, another plugin) would. */
-    rpc: (id: string, method: string, input: Schema.Json) => run(host.callRpc(id, method, input)),
+    /** Calls an RPC method as a client of the host (the TUI, another plugin) would: by its id, or its definition as a client names it. */
+    rpc: (id: string | { readonly id: string }, method: string, input: Schema.Json) => run(host.callRpc(typeof id === "string" ? id : id.id, method, input)),
     /**
      * The same call as an Effect for a client's own fiber in the world (`runtime.fork`, a TUI's heartbeat): it does
      * not run the world to rest itself, so it never nests a run.
