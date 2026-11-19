@@ -124,7 +124,12 @@ workspaces under `.rifts/`.
 On the exe.dev VM the root file system stays on ext4 and the workspace file
 system uses Btrfs inside `/var/lib/bite-workspaces.btrfs`, mounted through
 `/etc/fstab` at `/workspaces`; on the Hetzner box `/workspaces` is a subvolume
-of the root Btrfs.
+of the root Btrfs. On the VM the image's `@home` and `@tmp` mount from the image
+file too, with `loop` (mount reuses `/workspaces`' loop device), never by
+`UUID=`: systemd-udevd is masked there, so a `/dev/disk/by-uuid` link never
+appears and a `UUID=` line fails the boot after 90 s (2026-11-19).
+`workbox-rift-storage --apply` (bootstrap) rewrites such lines, and
+`workbox-rift-storage --fstab` does only that; `--check` fails while one is left.
 
 Each repository has one clean warm source, such as `/workspaces/bite`. Do not
 use a warm source for feature work. `workrift` finds the source from the current
