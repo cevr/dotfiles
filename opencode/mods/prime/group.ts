@@ -169,8 +169,38 @@ type Kind = { readonly key: string; readonly past: string; readonly running: str
 const plural = (word: string) => (count: number) => `${count} ${word}${count === 1 ? "" : "s"}`
 const times = (word: string) => (count: number) => `${word} ${count}×`
 
+/** A single call adds no count to a kind that names whom. */
+const ONCE: ReadonlyMap<number, string> = new Map([[1, ""]])
+
+/**
+ * A kind whose verb names whom, in the header and on its rows alike: `Asked the orchestrator`, `Asked the
+ * orchestrator 2×` (calls), `Asking the orchestrator` while one runs.
+ */
+const whom = (key: string, verb: string, object: string): Kind => ({
+  key,
+  past: `${verb} ${object}`,
+  running: `${verb.replace(/ed$/, "ing")} ${object}`,
+  unit: (count) => ONCE.get(count) ?? `${count}×`,
+})
+
+/**
+ * The background-question tools, one family: a session asks the owner (`ask_user_async`, the questions plugin) or
+ * its orchestrator (`ask_orchestrator`), and an orchestrator answers its subagent (`answer_subagent`, both the
+ * orchestrate plugin's). Each header names whom; each row shows the first question or answered ref (call.ts).
+ */
+export const BACKGROUND_QUESTIONS: ReadonlyMap<string, Kind> = new Map([
+  ["ask_user_async", whom("ask_user_async", "Asked", "the owner")],
+  ["ask_orchestrator", whom("ask_orchestrator", "Asked", "the orchestrator")],
+  ["answer_subagent", whom("answer_subagent", "Answered", "a subagent")],
+])
+
 /** What a call does, in words: one kind per tool family, as the header names them. */
 export function kind(tool: string, part?: ToolPart): Kind {
+  return BACKGROUND_QUESTIONS.get(tool) ?? builtInKind(tool, part)
+}
+
+/** The kinds of the host's own tools, and of any other tool by its name. */
+function builtInKind(tool: string, part?: ToolPart): Kind {
   if (tool === "read") return { key: "read", past: "Read", running: "Reading", unit: plural("file") }
   if (tool === "grep" || tool === "glob")
     return { key: "search", past: "Searched", running: "Searching", unit: plural("pattern") }
@@ -291,7 +321,7 @@ export function headerRuns(calls: ReadonlyArray<Call>, width = Number.POSITIVE_I
   const phrase = (entry: { kind: Kind; count: number }, running: boolean, first: boolean) => {
     const verb = running ? entry.kind.running : entry.kind.past
     if (!verb) return entry.kind.unit(entry.count)
-    return `${first ? verb : verb.toLowerCase()} ${entry.kind.unit(entry.count)}`
+    return `${first ? verb : verb.toLowerCase()} ${entry.kind.unit(entry.count)}`.trimEnd()
   }
   const ended = counts(false).toSorted((a, b) => b.count - a.count)
   const phrases = [

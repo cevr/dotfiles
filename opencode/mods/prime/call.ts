@@ -1,8 +1,10 @@
 // One tool call as a transcript row reads it, without rendering: its tool
 // under the host's canonical name, how it stands, the words that stand for
 // it (its preview, its line counts, its time) and what it touched.
+import { Option } from "effect"
 import { shellAction } from "@dotfiles/opencode-subagents/shell"
 import { toolsInCode } from "./kernel.ts"
+import { questionSource } from "./question-call.ts"
 import type { Fields, ToolPart } from "./session.ts"
 
 /**
@@ -105,10 +107,13 @@ export function toolSource(tool: string, input: Fields) {
   if (tool === "subagent") return text(input.prompt) ?? text(input.description) ?? ""
   if (tool === "shell_read" || tool === "shell_kill") return text(input.id) ?? ""
   if (tool === "shell_list") return "shells"
-  return Object.entries(input)
-    .filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
-    .map(([key, value]) => `${key}=${String(value)}`)
-    .join(", ")
+  // A background question by its first question or answer (question-call.ts); any other tool by its scalar fields.
+  return Option.getOrElse(questionSource(tool, input), () =>
+    Object.entries(input)
+      .filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+      .map(([key, value]) => `${key}=${String(value)}`)
+      .join(", "),
+  )
 }
 
 /**

@@ -46,6 +46,9 @@ const rowJson = (row: Row): Schema.Json => {
     const { dismissed, ...kept } = row.answered
     json.answered = Option.match(Option.fromNullishOr(dismissed), { onNone: () => kept, onSome: (mark) => ({ ...kept, dismissed: mark }) })
   }
+  // A question put to a session keeps whom, and its letter.
+  Option.map(Option.fromNullishOr(row.to), (to) => (json.to = to))
+  Option.map(Option.fromNullishOr(row.letter), (letter) => (json.letter = { delivery: letter.delivery, sent: letter.sent, nudge: letter.nudge }))
   return json
 }
 

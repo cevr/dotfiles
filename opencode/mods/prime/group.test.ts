@@ -102,6 +102,24 @@ describe("the group header", () => {
     expect(runs.at(-1)).toEqual({ text: "1 failed", tone: "error" })
   })
 
+  test("names the background-question tools as one family, each header naming whom, each row by its first question", () => {
+    const ask = (tool: string) => call(tool, { questions: [{ question: "Which port?", assume: "8080" }, { question: "Keep --legacy?", assume: "yes" }] })
+    const answer = call("answer_subagent", { answers: [{ id: "ses_c:q1", text: "3000" }] })
+    // Side by side: the owner's, the orchestrator's, and the orchestrator's answer read alike.
+    expect([ask("ask_user_async"), ask("ask_orchestrator"), answer].map((part) => words(calls(part)))).toEqual([
+      "Asked the owner",
+      "Asked the orchestrator",
+      "Answered a subagent",
+    ])
+    expect(words(calls(ask("ask_orchestrator"), ask("ask_orchestrator")))).toBe("Asked the orchestrator 2×")
+    expect(words(calls(call("ask_orchestrator", { questions: [{ question: "Q?", assume: "y" }] }, "running")))).toBe("Asking the orchestrator")
+    expect(rows(calls(ask("ask_user_async"), answer, call("ask_orchestrator", { withdraw: ["q1"] }))).map((row) => `${verb(row)} ${subject(row)}`)).toEqual([
+      "Asked the owner Which port?",
+      "Answered a subagent ses_c:q1: 3000",
+      "Asked the orchestrator withdraw q1",
+    ])
+  })
+
   test("names the background-shell tools, and their rows by the shell", () => {
     const list = calls(
       call("shell_list", {}),

@@ -34,16 +34,16 @@ test("one answer that differs tells the agent to revise, naming question, assump
 test("one answer that is the assumption tells the agent to carry on", () => {
   const letter = letterOf([{ question: { ...port, header: undefined }, answer: " 8080" }])
   expect(letter.text.split("\n").at(-1)).toBe("This is what you assumed: carry on.")
-  expect(letter.metadata.answers[0]?.matches).toBe(true)
-  expect(letter.metadata.answers[0]).not.toHaveProperty("header")
+  expect(letter.metadata.answers?.[0]?.matches).toBe(true)
+  expect(letter.metadata.answers?.[0]).not.toHaveProperty("header")
 })
 
 test("an answer that is the choice the assumption names is the assumption: carry on", () => {
   const recommended = { ...port, options: [{ label: "8080 (Recommended)" }, { label: "3000" }], assume: "8080, the dev default" }
   const letter = letterOf([{ question: recommended, answer: "8080 (Recommended)" }])
   expect(letter.text.split("\n").at(-1)).toBe("This is what you assumed: carry on.")
-  expect(letter.metadata.answers[0]?.matches).toBe(true)
-  expect(letterOf([{ question: recommended, answer: "3000" }]).metadata.answers[0]?.matches).toBe(false)
+  expect(letter.metadata.answers?.[0]?.matches).toBe(true)
+  expect(letterOf([{ question: recommended, answer: "3000" }]).metadata.answers?.[0]?.matches).toBe(false)
 })
 
 test("three answers are one letter: each question, assumption and answer, and one line naming what to revise", () => {
@@ -75,7 +75,7 @@ test("three answers are one letter: each question, assumption and answer, and on
     ].join("\n"),
   )
   expect(letter.description).toBe("answered 3 · Which port should the dev ser… → 3000 · Keep the --legacy flag? → Yes · Which test runner? → vitest")
-  expect(letter.metadata.answers.map((answer) => [answer.id, answer.matches])).toEqual([
+  expect(letter.metadata.answers?.map((answer) => [answer.id, answer.matches])).toEqual([
     ["q1", false],
     ["q2", true],
     ["q4", false],
@@ -107,7 +107,7 @@ test("a question dismissed beside an answer is named after it, in the same messa
   )
   expect(letter.description).toBe("answered · Which port should the dev server use? → 3000 · q4 dismissed")
   expect(letter.metadata.dismissed).toEqual(["q4"])
-  expect(letter.metadata.answers.map((answer) => answer.id)).toEqual(["q1"])
+  expect(letter.metadata.answers?.map((answer) => answer.id)).toEqual(["q1"])
 })
 
 test("with several answers, the dismissed ones follow the line naming what to revise", () => {
