@@ -237,6 +237,36 @@ seeded("inside the lifetime, and inside the grace after it, the next turn stays 
   }),
 )
 
+seeded("no request since the last compaction never counts as expired: the switch waits until a request after it has expired", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    // The summary request refreshed the cache, and the newest request with usage is from before it: the wake cannot
+    // tell when the cache was last written, so it waits, however long the session sat idle.
+    const { world, session, seen, rpc, pending, idle } = yield* boot(seed, LARGE)
+    yield* world.prompt(session, "Do the work.")
+    yield* idle()
+    yield* world.compact(session)
+    yield* idle()
+    yield* rpc("queue", { model: NEW })
+    seen.length = 0
+    yield* world.advance(24 * 60 * 60_000)
+    yield* world.prompt(session, "Go on.")
+    yield* idle()
+    const waited = seen.filter((request) => request.kind === "primary")
+    expect(waited.length).toBeGreaterThan(0)
+    expect(waited.every((request) => request.model === "sim/old")).toBe(true)
+    expect(pending()).toMatchObject({ model: NEW })
+    // That turn's request is after the compaction: once its cache has expired, the next wake applies the switch.
+    seen.length = 0
+    yield* world.advance(TTL_MS + GRACE_MS + 1_000)
+    yield* world.prompt(session, "Go on.")
+    yield* idle()
+    const applied = seen.filter((request) => request.kind === "primary")
+    expect(applied.length).toBeGreaterThan(0)
+    expect(applied.every((request) => request.model === "other/new")).toBe(true)
+    expect(pending()).toBeUndefined()
+  }),
+)
+
 seeded("a lifetime that cannot be read never counts as expired: the switch waits for a compaction", ({ seed, expect }) =>
   Effect.gen(function* () {
     // The model loses its configured `cache.ttl`, and its provider has no default: no lifetime is known.
