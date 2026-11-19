@@ -15,13 +15,13 @@ A session's model can be switched later instead of now: `/model-next`, or `at ne
 
 - `/model-next` in a session (the command palette's `Switch the model at the next compaction`).
 - The host's model picker (leader then m): highlight a model, ctrl+g (`at next compaction`; the plugin option `bind` changes the key).
-- An agent or a shell: `bun cmd/model-next/cli.ts queue <sessionID> <provider/model[#variant]> [--directory <dir>]`, `cancel <sessionID>`, `show <sessionID>`, from `opencode/`, against the running service.
+- An agent: the `model_next` tool, `{ action: "queue", model: "anthropic/claude-fable-5-2" }` (also `cancel`, `status`; `session` names another session than its own).
 
 ## Driving it with the world
 
 - **Preconditions:** none. The server half runs on the simulated host with the model-next plugin; the TUI half on the simulated TUI (`sim-tui/`), the fork's real TUI with Prime and the model-next plugin, the queue RPC a stand-in on the double.
 - **States:** default (queued, applied), refused (same model, unknown model, native compaction), and the waits (warm cache, unknown lifetime, failed compaction). Loading, empty and error are `n/a`.
-- **World suites:** `cmd/model-next/model-next.sim.test.ts`, `cmd/model-next/model-next-tui.sim.test.tsx`
+- **World suites:** `cmd/model-next/model-next.sim.test.ts`, `cmd/model-next/model-next-tui.sim.test.tsx`, `cmd/model-next/model-next-tool.sim.test.ts`
 - **Code:** `mods/model-next/`, `cmd/model-next/`, `mods/prime/chrome.ts`, `mods/prime/tui/chrome.tsx`, `sim/`, `sim-tui/`
 - **Regression:** `mods/model-next/pending.test.ts` (the rules: the expiry boundary, each unknown, the selection that ends it), `mods/model-next/model.test.ts` (the other metadata keys survive), `mods/model-next/memory/sessions.test.ts` (the contract's laws), `mods/prime/chrome.test.ts` (the tray's words), `sim/host-laws.test.ts` (`switchModel`, `compactionEnded`, `wake`).
 

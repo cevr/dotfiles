@@ -2508,17 +2508,10 @@ Ways in:
   once.
 - The model picker (leader then m): `at next compaction` (ctrl+g, the TUI
   plugin's option `bind`) queues the highlighted model.
-- A shell or an agent, against the running service:
-
-  ```
-  bun cmd/model-next/cli.ts queue <sessionID> <provider/model[#variant]> [--directory <dir>]
-  bun cmd/model-next/cli.ts cancel <sessionID>
-  bun cmd/model-next/cli.ts show <sessionID>
-  ```
-
-  It reads the service file (`$XDG_STATE_HOME/opencode/service.json`) and
-  calls the plugin's `queue`, `cancel` or `show` RPC; it exits 0 on success,
-  1 on a refusal, 2 on a usage or connection error.
+- An agent: the `model_next` tool (`action: queue | cancel | status`, `model:
+  provider/model[#variant]`, `session` defaulting to its own), the same rule
+  as the other two, in plain words back. Which model a session runs on is the
+  owner's call: an agent queues one only when asked.
 
 Prime's tray under the composer reads `old → new queued` while one waits.
 A refusal is a toast saying why: the session's own model, a model (or variant)
