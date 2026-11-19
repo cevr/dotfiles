@@ -1,5 +1,6 @@
 // The Claude Code version the plugin reports to Anthropic, the override that
 // replaces it, and the server's "version too old" rejection that raises it.
+import { Option } from "effect"
 import { parseJson } from "./json.ts"
 
 /**
@@ -10,9 +11,11 @@ import { parseJson } from "./json.ts"
  * newer than the reported client returns a 400 `claude_code_version_too_old`
  * (e.g. "Claude Code 2.1.87 does not support this model; version 2.1.251 or
  * newer is required"). Keep this at or above the latest published
- * `@anthropic-ai/claude-code` release, otherwise new models are unreachable.
+ * `@anthropic-ai/claude-code` release, otherwise new models are unreachable;
+ * between bumps, a rejection raises the reported version once per process
+ * (`Model.VersionFloor`).
  */
-export const CLAUDE_CODE_VERSION = "2.1.280"
+export const CLAUDE_CODE_VERSION = "2.1.318"
 export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli"
 
 /**
@@ -73,6 +76,13 @@ export function compareClaudeCodeVersions(candidate: string, baseline: string): 
   if (patch !== basePatch) return patch < basePatch ? -1 : 1
   return 0
 }
+
+/** The newer of a version that may be held and a valid baseline. */
+export const newerClaudeCodeVersion = (candidate: Option.Option<string>, baseline: string): string =>
+  candidate.pipe(
+    Option.filter((version) => compareClaudeCodeVersions(version, baseline) === 1),
+    Option.getOrElse(() => baseline),
+  )
 
 /**
  * Outcome of reading the version override.

@@ -38,7 +38,7 @@ describe('resolveClaudeCodeVersion', () => {
 
   test.each([
     ['equal to the bundled version', CLAUDE_CODE_VERSION],
-    ['higher patch', '2.1.281'],
+    ['higher patch', '2.1.319'],
     ['higher minor', '2.2.0'],
     ['higher major that sorts lower lexically', '10.0.0'],
     ['component beyond Number.MAX_SAFE_INTEGER', '9007199254740993.0.0'],
