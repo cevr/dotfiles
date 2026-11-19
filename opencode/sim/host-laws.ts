@@ -1268,7 +1268,10 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id })).pipe(Effect.ignore)
         yield* settle
         const messages = yield* ctx.session.context({ sessionID: session.id })
-        const kinds = messages.map((message) => (message.type === "compaction" ? `compaction ${message.status}` : message.type))
+        const kinds = messages.map((message) => {
+          if (message.type === "compaction") return `compaction ${message.status}`
+          return message.type
+        })
         // After the turn's answer; real OpenCode also keeps its idle marks there, which the world does not model.
         yield* ensure(kinds.lastIndexOf("compaction failed") > kinds.lastIndexOf("assistant"), `the context is ${kinds.join(",")}`)
         yield* ensure(!kinds.includes("compaction completed"), `the context holds ${kinds.join(",")}`)

@@ -169,6 +169,8 @@ export type Message =
       readonly id: string
       readonly created: number
       readonly status: "failed"
+      /** None was written: empty, so a reader of every compaction's summary reads nothing from it. */
+      readonly summary: ""
       readonly reason: Reason
     }
   | {
@@ -1407,7 +1409,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       // and it stays in the transcript as failed, as the fork's `publish` records `Compaction.Failed` and its
       // message-updater keeps the message; no completed compaction, no hook.
       if (failing.delete(session.id) || failed) {
-        session.messages.push({ type: "compaction", id: item.id, created: runtime.now(), status: "failed", reason })
+        session.messages.push({ type: "compaction", id: item.id, created: runtime.now(), status: "failed", summary: "", reason })
         record("compaction-failed", { sessionID: session.id })
         return yield* publish({ type: "session.compaction.failed", data: { sessionID: session.id, reason, inputID: item.id } })
       }
