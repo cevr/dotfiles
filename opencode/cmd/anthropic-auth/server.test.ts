@@ -12,6 +12,7 @@ import {
   ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR,
   CLAUDE_CODE_VERSION,
 } from '@dotfiles/opencode-anthropic-auth/version'
+import { effectTest } from '../../sim-tui/effect-test.ts'
 import Plugin, { type Env, type Fetch, make, makeShared } from './server.ts'
 
 type Host = Parameters<(typeof Plugin)['effect']>[0]
@@ -322,13 +323,25 @@ type Mocked = ReturnType<typeof makeMockContext>
 type MockContext = Mocked['ctx']
 const hosts = new WeakMap<MockContext, Mocked>()
 
-/** The plugin as the tests start it: on a mock context, answering its cleanup. */
+/**
+ * A process of its own: what a version rejection raises in it reaches no other test. `installed`: the
+ * `CLAUDE_CODE_INSTALLED_VERSION` it starts with.
+ */
+const freshProcess = (installed: Option.Option<string> = Option.none()) =>
+  make({
+    fetch: (input, init) => network.fetch(input, init),
+    env: () => ({ ...environment }),
+    shared: makeShared(installed),
+    registry: () => sourceRegistry,
+  })
+
+/** The plugin as the tests start it: on a mock context (in `proc`, else the shared process), answering its cleanup. */
 const plugin = {
-  setup: async (ctx: MockContext): Promise<() => Promise<void>> => {
+  setup: async (ctx: MockContext, proc: typeof subject = subject): Promise<() => Promise<void>> => {
     const mocked = hosts.get(ctx)
     if (mocked === undefined) throw new Error('not a mock context')
     const scope = Scope.makeUnsafe()
-    await mocked.run(subject.effect(mocked.host).pipe(Scope.provide(scope)))
+    await mocked.run(proc.effect(mocked.host).pipe(Scope.provide(scope)))
     return () => Effect.runPromise(Scope.close(scope, Exit.void))
   },
 }
@@ -1579,6 +1592,15 @@ describe('session http.response hook', () => {
     return mocked
   }
 
+  /** The bundled version, and the next two patch releases a rejection may require. */
+  const nextPatch = (steps: number) => {
+    const [major, minor, patch] = CLAUDE_CODE_VERSION.split('.')
+    return `${major}.${minor}.${Number(patch) + steps}`
+  }
+  const V0 = CLAUDE_CODE_VERSION
+  const V1 = nextPatch(1)
+  const V2 = nextPatch(2)
+
   function versionRejectionBody(
     rejectedVersion: string,
     requiredVersion: string,
@@ -1603,7 +1625,7 @@ describe('session http.response hook', () => {
 
     try {
       const { ctx, sessionHooks } = anthropicOAuthContext()
-      await plugin.setup(ctx)
+      await plugin.setup(ctx, freshProcess())
       const model = { providerID: 'anthropic', id: 'claude-opus-test' }
       const requestHook = sessionHooks.get('http.request')
       const responseHook = sessionHooks.get('http.response')
@@ -1622,13 +1644,13 @@ describe('session http.response hook', () => {
       const initial: RequestEvent = makeRequest()
       await requestHook(initial)
       expect(initial.request.headers.get('user-agent')).toBe(
-        'claude-cli/2.1.280 (external, cli)',
+        `claude-cli/${V0} (external, cli)`,
       )
       expect(
         JSON.parse(await initial.request.clone().text()).system[0].text,
-      ).toContain('cc_version=2.1.280.')
+      ).toContain(`cc_version=${V0}.`)
 
-      const firstBody = versionRejectionBody('2.1.280', '2.1.281')
+      const firstBody = versionRejectionBody(V0, V1)
       const firstResponse: ResponseEvent = {
         sessionID: initial.sessionID,
         agent: initial.agent,
@@ -1646,18 +1668,18 @@ describe('session http.response hook', () => {
       const retried: RequestEvent = makeRequest()
       await requestHook(retried)
       expect(retried.request.headers.get('user-agent')).toBe(
-        'claude-cli/2.1.281 (external, cli)',
+        `claude-cli/${V1} (external, cli)`,
       )
       expect(
         JSON.parse(await retried.request.clone().text()).system[0].text,
-      ).toContain('cc_version=2.1.281.')
+      ).toContain(`cc_version=${V1}.`)
 
       const secondResponse: ResponseEvent = {
         sessionID: retried.sessionID,
         agent: retried.agent,
         model,
         request: new Request(retried.request),
-        response: new Response(versionRejectionBody('2.1.281', '2.1.282'), {
+        response: new Response(versionRejectionBody(V1, V2), {
           status: 400,
         }),
       }
@@ -1667,11 +1689,116 @@ describe('session http.response hook', () => {
       const laterRequest: RequestEvent = makeRequest()
       await requestHook(laterRequest)
       expect(laterRequest.request.headers.get('user-agent')).toBe(
-        'claude-cli/2.1.282 (external, cli)',
+        `claude-cli/${V2} (external, cli)`,
       )
     } finally {
       restoreVersionOverride(originalVersion)
     }
+  })
+
+  // Every test leaves the override unset, so this one reads the bundled version without setting it.
+  effectTest(
+    'a version rejection in one setup is not met again by another setup in the process',
+    Effect.gen(function* () {
+      const proc = freshProcess()
+      const model = { providerID: 'anthropic', id: 'claude-opus-test' }
+      const request = (sessionID: string): RequestEvent => ({
+        sessionID,
+        agent: 'build',
+        model,
+        request: new Request('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          body: '{"messages":[{"role":"user","content":"two setups"}]}',
+        }),
+      })
+
+      // A workspace's setup meets the rejection and recovers.
+      const first = anthropicOAuthContext()
+      yield* Effect.promise(() => plugin.setup(first.ctx, proc))
+      const rejected = request('session-first-workspace')
+      yield* Effect.promise(() => first.sessionHooks.get('http.request')(rejected))
+      expect(rejected.request.headers.get('user-agent')).toBe(`claude-cli/${V0} (external, cli)`)
+      const response: ResponseEvent = {
+        ...rejected,
+        request: new Request(rejected.request),
+        response: new Response(versionRejectionBody(V0, V1), { status: 400 }),
+      }
+      yield* Effect.promise(() => first.sessionHooks.get('http.response')(response))
+      expect(response.response.headers.get('x-should-retry')).toBe('true')
+
+      // The next workspace's setup sends the required version from its first request.
+      const second = anthropicOAuthContext()
+      yield* Effect.promise(() => plugin.setup(second.ctx, proc))
+      const sent = request('session-second-workspace')
+      yield* Effect.promise(() => second.sessionHooks.get('http.request')(sent))
+      expect(sent.request.headers.get('user-agent')).toBe(`claude-cli/${V1} (external, cli)`)
+      expect(yield* Effect.promise(() => sent.request.clone().text())).toContain(`cc_version=${V1}.`)
+    }),
+    5_000,
+  )
+
+  describe('the installed Claude Code release (CLAUDE_CODE_INSTALLED_VERSION)', () => {
+    const model = { providerID: 'anthropic', id: 'claude-opus-test' }
+    const request = (sessionID: string): RequestEvent => ({
+      sessionID,
+      agent: 'build',
+      model,
+      request: new Request('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        body: '{"messages":[{"role":"user","content":"installed"}]}',
+      }),
+    })
+    /** Whether a new setup in `proc` reports `version` on its first request, in the user-agent and the billing block. */
+    const reports = (proc: typeof subject, version: string) =>
+      Effect.gen(function* () {
+        const { ctx, sessionHooks } = anthropicOAuthContext()
+        yield* Effect.promise(() => plugin.setup(ctx, proc))
+        const sent = request('session-installed')
+        yield* Effect.promise(() => sessionHooks.get('http.request')(sent))
+        const body = yield* Effect.promise(() => sent.request.clone().text())
+        return sent.request.headers.get('user-agent') === `claude-cli/${version} (external, cli)` && body.includes(`cc_version=${version}.`)
+      })
+
+    effectTest(
+      'a newer installed release is reported from the first request',
+      Effect.gen(function* () {
+        expect(yield* reports(freshProcess(Option.some(V2)), V2)).toBe(true)
+      }),
+      5_000,
+    )
+
+    effectTest(
+      'an older, equal, malformed or absent one leaves the bundled version',
+      Effect.gen(function* () {
+        const installed = ['2.1.99', V0, ` ${V2}`, `${V2}\n`, `v${V2}`, '2.1', `0${V2}`, ''].map(Option.some)
+        for (const value of [...installed, Option.none()]) {
+          expect([value, yield* reports(freshProcess(value), V0)]).toEqual([value, true])
+        }
+      }),
+      5_000,
+    )
+
+    effectTest(
+      'a version rejection still raises the version above the installed release, for the whole process',
+      Effect.gen(function* () {
+        const proc = freshProcess(Option.some(V1))
+        const { ctx, sessionHooks } = anthropicOAuthContext()
+        yield* Effect.promise(() => plugin.setup(ctx, proc))
+        const rejected = request('session-installed-rejected')
+        yield* Effect.promise(() => sessionHooks.get('http.request')(rejected))
+        expect(rejected.request.headers.get('user-agent')).toBe(`claude-cli/${V1} (external, cli)`)
+        const response: ResponseEvent = {
+          ...rejected,
+          request: new Request(rejected.request),
+          response: new Response(versionRejectionBody(V1, V2), { status: 400 }),
+        }
+        yield* Effect.promise(() => sessionHooks.get('http.response')(response))
+        expect(response.response.headers.get('x-should-retry')).toBe('true')
+
+        expect(yield* reports(proc, V2)).toBe(true)
+      }),
+      5_000,
+    )
   })
 
   test('does not replace or retry an explicit version override', async () => {
@@ -1727,7 +1854,7 @@ describe('session http.response hook', () => {
 
     try {
       const { ctx, sessionHooks } = anthropicOAuthContext()
-      await plugin.setup(ctx)
+      await plugin.setup(ctx, freshProcess())
       const model = { providerID: 'anthropic', id: 'claude-opus-test' }
       const requestHook = sessionHooks.get('http.request')
       const responseHook = sessionHooks.get('http.response')
@@ -1746,23 +1873,23 @@ describe('session http.response hook', () => {
       await requestHook(first)
       await requestHook(second)
       expect(first.request.headers.get('user-agent')).toBe(
-        'claude-cli/2.1.280 (external, cli)',
+        `claude-cli/${V0} (external, cli)`,
       )
       expect(second.request.headers.get('user-agent')).toBe(
-        'claude-cli/2.1.280 (external, cli)',
+        `claude-cli/${V0} (external, cli)`,
       )
 
       const firstResponse: ResponseEvent = {
         ...first,
         request: new Request(first.request),
-        response: new Response(versionRejectionBody('2.1.280', '2.1.281'), {
+        response: new Response(versionRejectionBody(V0, V1), {
           status: 400,
         }),
       }
       const secondResponse: ResponseEvent = {
         ...second,
         request: new Request(second.request),
-        response: new Response(versionRejectionBody('2.1.280', '2.1.282'), {
+        response: new Response(versionRejectionBody(V0, V2), {
           status: 400,
         }),
       }
@@ -1777,7 +1904,7 @@ describe('session http.response hook', () => {
       const later: RequestEvent = makeRequest('session-version-gate-after-concurrent')
       await requestHook(later)
       expect(later.request.headers.get('user-agent')).toBe(
-        'claude-cli/2.1.282 (external, cli)',
+        `claude-cli/${V2} (external, cli)`,
       )
     } finally {
       restoreVersionOverride(originalVersion)
@@ -1791,7 +1918,7 @@ describe('session http.response hook', () => {
 
     try {
       const { ctx, sessionHooks } = anthropicOAuthContext()
-      await plugin.setup(ctx)
+      await plugin.setup(ctx, freshProcess())
       const model = { providerID: 'anthropic', id: 'claude-opus-test' }
       const requestEvent: RequestEvent = {
         sessionID: 'session-malformed-version-override',
@@ -1810,7 +1937,7 @@ describe('session http.response hook', () => {
         model,
         request: new Request(requestEvent.request),
         response: new Response(
-          versionRejectionBody(CLAUDE_CODE_VERSION, '2.1.281'),
+          versionRejectionBody(V0, V1),
           { status: 400 },
         ),
       }
@@ -3543,6 +3670,42 @@ describe('credential choice, wire extras and quota readings', () => {
     expect(sent.headers.has('x-opencode-credential-id')).toBe(false)
     expect(ctx.integration.connection.active).not.toHaveBeenCalled()
   })
+
+  effectTest(
+    'every login of the pool reports the same Claude Code version',
+    Effect.gen(function* () {
+      const { ctx, sessionHooks } = twoAccounts()
+      yield* Effect.promise(() => plugin.setup(ctx))
+
+      const onA = yield* Effect.promise(() => send(sessionHooks, { 'x-opencode-credential-id': 'cred-a' }))
+      const onB = yield* Effect.promise(() => send(sessionHooks, { 'x-opencode-credential-id': 'cred-b' }))
+
+      expect(onA.headers.get('user-agent')).toBe(`claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`)
+      expect(onB.headers.get('user-agent')).toBe(onA.headers.get('user-agent'))
+      expect(yield* Effect.promise(() => onA.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
+      expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
+    }),
+    5_000,
+  )
+
+  effectTest(
+    'every login of the pool reports the installed release the process started with',
+    Effect.gen(function* () {
+      const [major, minor, patch] = CLAUDE_CODE_VERSION.split('.')
+      const installed = `${major}.${minor}.${Number(patch) + 7}`
+      const { ctx, sessionHooks } = twoAccounts()
+      yield* Effect.promise(() => plugin.setup(ctx, freshProcess(Option.some(installed))))
+
+      const onA = yield* Effect.promise(() => send(sessionHooks, { 'x-opencode-credential-id': 'cred-a' }))
+      const onB = yield* Effect.promise(() => send(sessionHooks, { 'x-opencode-credential-id': 'cred-b' }))
+
+      expect([onA.headers.get('user-agent'), onB.headers.get('user-agent')]).toEqual(
+        Array(2).fill(`claude-cli/${installed} (external, cli)`),
+      )
+      expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${installed}.`)
+    }),
+    5_000,
+  )
 
   describe('the cache-lifetime header', () => {
     const fiveMinutes = { type: 'ephemeral', ttl: '5m' }

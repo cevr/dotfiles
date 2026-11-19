@@ -88,6 +88,13 @@ const SHOWS_WITHIN = { ready: START_MS, down: BACK_WITHIN_MS, booting: BACK_WITH
 const WAITING = /Waiting for the OpenCode server/
 /** OpenCode's home page: its prompt suggestions. */
 const HOME = /Fix a TODO in the codebase|What is the tech stack of this project\?|Fix broken tests/
+/**
+ * The session picker is open: its "Sessions" title (the classic design), its
+ * "Search sessions" placeholder in the title row (the new designs, on by
+ * default), or its rename action, which stays in the footer once a query
+ * replaces the placeholder.
+ */
+const PICKER = /\bSessions\b|Search sessions|rename\s+ctrl\+r/
 /** What a TUI that gives up on an unreachable or booting service shows. */
 const GAVE_UP = /Could not reach|Unable to connect|did not provide|UnexpectedStatus|cli process failed/
 /** How often a wait looks again. */
@@ -828,7 +835,7 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
       yield* chord(socket, screen, "n", HOME, "home")
     }
     yield* until(screen, (text) => HOME.test(text), (last) => `home did not load:\n${last}`, 20_000)
-    yield* chord(socket, screen, "l", /\bSessions\b/, "session picker")
+    yield* chord(socket, screen, "l", PICKER, "session picker")
     if (/all projects\s+ctrl\+a/.test(yield* screen)) yield* Effect.promise(() => hostCall(socket, { op: "keys", names: ["ctrl+a"] }))
     yield* until(screen, (text) => text.includes("Reconnect parent"), (last) => `session picker has no parent row:\n${last}`, 20_000)
     yield* Effect.promise(() => hostCall(socket, { op: "type", text: "Reconnect parent" }))
@@ -841,7 +848,7 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
     // Down: nothing listens when the selection is made; the service comes back after a while, still booting.
     if (cache === "down") yield* proxy.down
     yield* Effect.promise(() => hostCall(socket, { op: "keys", names: ["enter"] }))
-    yield* until(screen, (text) => /Connection lost|Reconnecting to the server/.test(text) || (!/\bSessions\b/.test(text) && /sim-model/.test(text)), (last) => `selection did not leave the picker or wait for reconnection:\n${last}`, BACK_WITHIN_MS)
+    yield* until(screen, (text) => /Connection lost|Reconnecting to the server/.test(text) || (!PICKER.test(text) && /sim-model/.test(text)), (last) => `selection did not leave the picker or wait for reconnection:\n${last}`, BACK_WITHIN_MS)
     const marker = `opened-during-boot-${cache}-marker`
     const submit = Effect.promise(() => hostCall(socket, { op: "type", text: `say ${marker}` })).pipe(Effect.andThen(Effect.promise(() => hostCall(socket, { op: "keys", names: ["enter"] }))))
     if (cache !== "uncached") yield* submit
@@ -851,7 +858,7 @@ export const selectWhileBooting = (fixture: Fixture, cache: "cached" | "uncached
     yield* Effect.forkScoped(reach(servesAt - BOOTING_MS / 2, "half the booting window", BOOTING_MS).pipe(Effect.andThen(proxy.up)))
     yield* reach(servesAt, "the booting window", BOOTING_MS + 1_000)
     if (cache === "uncached") {
-      yield* until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !/\bSessions\b|Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
+      yield* until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !PICKER.test(text) && !/Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
       yield* submit
     }
     // Earlier transcript text can scroll off screen as turns accumulate.

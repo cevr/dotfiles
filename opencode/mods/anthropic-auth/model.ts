@@ -3,7 +3,7 @@
 // Claude Code version reported, and the sign-in and refresh of a Claude
 // Pro/Max login. The HTTP hooks (`fetch/exchange.ts`) and the composition
 // root (`cmd/anthropic-auth/server.ts`) call it.
-import { Clock, Context, Deferred, Effect, Exit, Layer } from "effect"
+import { Clock, Context, Deferred, Effect, Exit, Layer, Option } from "effect"
 import type { SourcedCredential } from "./credential-source.ts"
 import {
   AUTHORIZE_INSTRUCTIONS,
@@ -59,6 +59,7 @@ import {
   CLAUDE_CODE_VERSION,
   compareClaudeCodeVersions,
   formatUserAgent,
+  newerClaudeCodeVersion,
   resolveClaudeCodeVersion,
 } from "./version.ts"
 
@@ -145,9 +146,24 @@ export class Auth extends Context.Service<
   }
 >()("dotfiles-opencode/anthropic-auth/Auth") {}
 
+/**
+ * The lowest version this process reports: the installed Claude Code release
+ * it started with, raised by the newest version Anthropic has required since.
+ * Every setup reads it, so a rejection in one workspace is not met again in
+ * the next, and every login of the pool reports the same version.
+ */
+export interface VersionFloor {
+  current: Option.Option<string>
+}
+
+/** A process's floor, from the installed release it started with (`installedClaudeCodeVersion`), if newer than the bundled one. */
+export const makeVersionFloor = (installed: Option.Option<string> = Option.none()): VersionFloor => ({ current: installed })
+
 export interface Config {
   /** `ANTHROPIC_CLAUDE_CODE_VERSION` as the process holds it. */
   readonly versionOverride: string | undefined
+  /** The installed release, raised by a rejection, shared by every setup in the process (`makeVersionFloor`). */
+  readonly versionFloor: VersionFloor
   /** The refreshes of the whole process (`refresh.ts`). */
   readonly refreshes: Refreshes<OAuthCredential, RefreshFailed>
 }
@@ -173,14 +189,21 @@ export const layer = (config: Config) =>
       const events = yield* QuotaEvents
 
       // Resolved once, so user-agent and billing agree for every request this
-      // location handles.
+      // location handles, whatever login of the pool sends it; only a
+      // rejection raises it, and for the whole process at once.
       const resolution = resolveClaudeCodeVersion(config.versionOverride)
       if (resolution.type === "invalid") yield* Effect.logError(`${LOG_PREFIX} ${resolution.error}`)
       else if (resolution.type === "outdated") yield* Effect.logWarning(`${LOG_PREFIX} ${resolution.warning}`)
-      let version = resolution.type === "invalid" ? CLAUDE_CODE_VERSION : resolution.version
+      const resolvedVersion = resolution.type === "invalid" ? CLAUDE_CODE_VERSION : resolution.version
       // A valid explicit override is absolute; adoption is only the fallback
       // for an unset (or malformed and so ignored) value.
       const explicitVersion = config.versionOverride !== undefined && resolution.type !== "invalid"
+      const floor = config.versionFloor
+      const currentVersion = (): string =>
+        newerClaudeCodeVersion(
+          Option.filter(floor.current, () => !explicitVersion),
+          resolvedVersion,
+        )
       // An at-most-once limiter. On overflow, recovery fails closed rather
       // than forgetting old entries.
       const recoveries = new Set<string>()
@@ -307,7 +330,7 @@ export const layer = (config: Config) =>
           const active = yield* usageLogin(credentialID)
           if (active === undefined) return undefined
           if (active.type === "skip") return readings.get(credentialID)
-          const answer = yield* usageEndpoint.read(active.access, formatUserAgent(version))
+          const answer = yield* usageEndpoint.read(active.access, formatUserAgent(currentVersion()))
           const now = yield* Clock.currentTimeMillis
           if (answer.status === "unauthorized") {
             const source = yield* sources.find(credentialID)
@@ -416,11 +439,11 @@ export const layer = (config: Config) =>
 
       return Auth.of({
         login,
-        version: Effect.sync(() => version),
+        version: Effect.sync(currentVersion),
         explicitVersion,
         recoverVersion: (required, key) =>
           Effect.sync(() => {
-            if (compareClaudeCodeVersions(required, version) === 1) version = required
+            if (compareClaudeCodeVersions(required, currentVersion()) === 1) floor.current = Option.some(required)
             if (recoveries.has(key) || recoveries.size >= MAX_VERSION_GATE_RECOVERIES) return false
             recoveries.add(key)
             return true
@@ -465,7 +488,7 @@ export const layer = (config: Config) =>
               onSuccess: (resolved) =>
                 resolved === undefined
                   ? Effect.succeed<ClaimAnswer>({ outcome: "signed-out", message: "no Claude Pro/Max login" })
-                  : usageEndpoint.reset(resolved.access, formatUserAgent(version), grantID, requestID).pipe(
+                  : usageEndpoint.reset(resolved.access, formatUserAgent(currentVersion()), grantID, requestID).pipe(
                       Effect.tap((answer) =>
                         Effect.sync(() => {
                           const held = readings.get(credentialID)

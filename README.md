@@ -10,7 +10,7 @@ My personal dotfiles.
 | `zshenv` | Laptop PATH setup, including the Claude launcher |
 | `workbox/` | Reproducible Bite workbox configuration and services |
 | `mac/developer-volume/` | Moves `~/Developer` onto its own APFS volume with no Spotlight and no FSEvents log |
-| `mac/launchd/` | Mac jobs that `install.sh` loads: the weekly transcript image cull and the daily transcript backup |
+| `mac/launchd/` | Mac jobs that `install.sh` loads: the weekly transcript image cull, the daily transcript backup, the weekly upstreams scan and the daily Claude Code install |
 | `transcripts/` | R2 archive of Claude and Codex transcripts (Alchemy stack, `archive.ts push`/`pull`, `credentials.ts`) |
 | `gitconfig` | Git configuration |
 | `gitignore_global` | Global gitignore |

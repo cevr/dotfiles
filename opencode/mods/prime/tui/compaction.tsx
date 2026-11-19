@@ -4,9 +4,7 @@
 // row; a failure or cancel in the warning tone. At All (Ctrl+O)
 // it is everything the host draws today: a rule with its label and usage,
 // then the summary or the error (compaction.ts).
-import * as TuiClock from "@dotfiles/decider/tui-clock"
-import { createMemo, createSignal, For, Match, onCleanup, Show, Switch, type Accessor } from "solid-js"
-import { SPINNER, SPINNER_MS } from "../chrome.ts"
+import { createMemo, For, Match, Show, Switch, type Accessor } from "solid-js"
 import { compactionAt, compactionBlock, compactionLine } from "../compaction.ts"
 import type { Detail } from "../detail.ts"
 import { useNow } from "./clock.ts"
@@ -15,20 +13,9 @@ import { Prose } from "./prose.tsx"
 import { toneColor } from "./tone.ts"
 import { GUTTER } from "./transcript.tsx"
 
-/** A braille spinner frame that turns while `on` holds. */
-function useSpinner(on: Accessor<boolean>) {
-  const [frame, setFrame] = createSignal(0)
-  const stop = TuiClock.every(SPINNER_MS, () => {
-    if (on()) setFrame((value) => (value + 1) % SPINNER.length)
-  })
-  onCleanup(stop)
-  return () => SPINNER[frame()] ?? ""
-}
-
 export function Compaction(props: { host: Host; sessionID: string; messageID: string; detail: Accessor<Detail>; emphasis: boolean }) {
   const found = createMemo(() => compactionAt(props.host.messages(props.sessionID), props.messageID))
   const running = () => found()?.message.status === "running"
-  const spinner = useSpinner(running)
   // While it runs the row is the wait's only one, so it counts its own time on the shared clock.
   const now = useNow(running)
   return (
@@ -36,23 +23,23 @@ export function Compaction(props: { host: Host; sessionID: string; messageID: st
       {(at) => (
         <Show
           when={props.detail() === "all"}
-          fallback={<Line host={props.host} line={compactionLine(at().message, at().next, now())} spinner={spinner} />}
+          fallback={<Line host={props.host} line={compactionLine(at().message, at().next, now())} />}
         >
-          <Block host={props.host} block={compactionBlock(at().message, now())} spinner={spinner} emphasis={props.emphasis} />
+          <Block host={props.host} block={compactionBlock(at().message, now())} emphasis={props.emphasis} />
         </Show>
       )}
     </Show>
   )
 }
 
-function Line(props: { host: Host; line: ReturnType<typeof compactionLine>; spinner: Accessor<string> }) {
+function Line(props: { host: Host; line: ReturnType<typeof compactionLine> }) {
   const color = () => toneColor(props.host.theme(), props.line.tone)
   return (
-    <box paddingLeft={GUTTER} flexShrink={0}>
+    <box paddingLeft={GUTTER} flexShrink={0} flexDirection="row" gap={1}>
+      <Show when={props.line.glyph === "spinner"} fallback={<text flexShrink={0} fg={color()}>{props.line.glyph}</text>}>
+        <props.host.Spinner color={props.host.theme().hue.accent[300]} />
+      </Show>
       <text wrapMode="none" truncate fg={color()}>
-        <span style={{ fg: props.line.glyph === "spinner" ? props.host.theme().hue.accent[300] : color() }}>
-          {props.line.glyph === "spinner" ? props.spinner() : props.line.glyph}{" "}
-        </span>
         {props.line.text}
       </text>
     </box>
@@ -60,7 +47,7 @@ function Line(props: { host: Host; line: ReturnType<typeof compactionLine>; spin
 }
 
 /** The host's compaction block, as the fork draws it (packages/tui/src/routes/session/index.tsx, CompactionMessage). */
-function Block(props: { host: Host; block: ReturnType<typeof compactionBlock>; spinner: Accessor<string>; emphasis: boolean }) {
+function Block(props: { host: Host; block: ReturnType<typeof compactionBlock>; emphasis: boolean }) {
   const theme = () => props.host.theme()
   const color = () => (props.block.failed ? theme().text.feedback.error.base : theme().text.muted)
   return (
@@ -70,7 +57,7 @@ function Block(props: { host: Host; block: ReturnType<typeof compactionBlock>; s
         <box flexDirection="row" gap={1} paddingLeft={1} paddingRight={1}>
           <Switch>
             <Match when={props.block.running}>
-              <text fg={color()}>{props.spinner()}</text>
+              <props.host.Spinner color={color()} />
             </Match>
             <Match when={props.block.failed}>
               <text fg={color()}>✗</text>

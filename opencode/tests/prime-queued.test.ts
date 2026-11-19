@@ -4,7 +4,7 @@
 // two steers and one prompt sent to the queue wait in one list above the
 // composer, oldest first, in place of the host's `N queued · …` box, out of
 // the transcript with no blank row left there, while the compaction's own
-// row spins and counts (`Automatic compaction · 4s`) with no loader beside
+// row draws the host spinner and counts (`Automatic compaction · 4s`) with no loader beside
 // it; the steers enter the transcript in the order sent under
 // `Executing`, timed from the turn's start, the queued prompt still listed;
 // once that turn ends the queued prompt enters too and the list is empty.
@@ -32,7 +32,9 @@ const hintAt = (frame: ReadonlyArray<string>) => {
 }
 /** The rows above Prime's hint line (the transcript, then the queued rows), blank rows dropped. */
 const above = (frame: ReadonlyArray<string>) => withoutTurnTime(frame.slice(0, hintAt(frame))).filter((line) => line.trim() !== "")
-const LOADER = (label: string) => new RegExp(`^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} · (\\d+)s$`)
+// The row's glyph is the host's ui.Spinner, which the scenario's `animations: false` draws as its still `⋯`
+// (a default TUI turns it through the braille frames, on the clock the host's own spinners share).
+const LOADER = (label: string) => new RegExp(`^ {2}⋯ ${label} · (\\d+)s$`)
 const LATER = "  ◌ after the turn · Afterwards tag the release."
 
 describe.skipIf(!fork)("prompts sent during a compaction wait above the composer as one list, in the Prime look (OPENCODE_DEV)", () => {

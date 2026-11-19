@@ -1,5 +1,6 @@
 // The Claude Code version the plugin reports to Anthropic, the override that
 // replaces it, and the server's "version too old" rejection that raises it.
+import { Option } from "effect"
 import { parseJson } from "./json.ts"
 
 /**
@@ -10,9 +11,11 @@ import { parseJson } from "./json.ts"
  * newer than the reported client returns a 400 `claude_code_version_too_old`
  * (e.g. "Claude Code 2.1.87 does not support this model; version 2.1.251 or
  * newer is required"). Keep this at or above the latest published
- * `@anthropic-ai/claude-code` release, otherwise new models are unreachable.
+ * `@anthropic-ai/claude-code` release, otherwise new models are unreachable;
+ * between bumps, a rejection raises the reported version once per process
+ * (`Model.VersionFloor`).
  */
-export const CLAUDE_CODE_VERSION = "2.1.280"
+export const CLAUDE_CODE_VERSION = "2.1.318"
 export const CLAUDE_CODE_ENTRYPOINT = "sdk-cli"
 
 /**
@@ -73,6 +76,34 @@ export function compareClaudeCodeVersions(candidate: string, baseline: string): 
   if (patch !== basePatch) return patch < basePatch ? -1 : 1
   return 0
 }
+
+/**
+ * Environment variable holding the Claude Code release installed on the host.
+ *
+ * The OpenCode launcher (`mods/update/filestore/launcher.ts`) exports it from
+ * the file the daily Claude Code install writes
+ * (`claude/bin/claude-daily-install`), so the server process starts with it
+ * and holds it for its whole life: a newer `claude` is reported from the next
+ * server start, never in the middle of a process.
+ */
+export const CLAUDE_CODE_INSTALLED_ENV_VAR = "CLAUDE_CODE_INSTALLED_VERSION"
+
+/**
+ * The installed release, when it is newer than the bundled one.
+ *
+ * Read strictly, untrimmed: the launcher exports the release alone, so
+ * anything else (malformed, older, the same, or unset) is ignored and the
+ * bundled version stands.
+ */
+export const installedClaudeCodeVersion = (raw: Option.Option<string>): Option.Option<string> =>
+  Option.filter(raw, (version) => compareClaudeCodeVersions(version, CLAUDE_CODE_VERSION) === 1)
+
+/** The newer of a version that may be held and a valid baseline. */
+export const newerClaudeCodeVersion = (candidate: Option.Option<string>, baseline: string): string =>
+  candidate.pipe(
+    Option.filter((version) => compareClaudeCodeVersions(version, baseline) === 1),
+    Option.getOrElse(() => baseline),
+  )
 
 /**
  * Outcome of reading the version override.

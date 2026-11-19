@@ -1,0 +1,11 @@
+[Unit]
+Description=Install the latest Claude Code and record its release
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+Environment=PATH=%h/.local/bin:/usr/bin:/bin
+ExecStart=/bin/sh %h/Developer/personal/dotfiles/claude/bin/claude-daily-install

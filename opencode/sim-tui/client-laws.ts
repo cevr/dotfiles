@@ -130,6 +130,9 @@ const ToolSuccess = Schema.Struct({
     metadata: Schema.Struct({ id: Schema.optional(Schema.String), exit: Schema.optional(Schema.Number), status: Schema.optional(Schema.String) }),
   }),
 })
+const JobInfo = Schema.Struct({ kind: Schema.String, id: Schema.String, sessionID: Schema.String, status: Schema.String, childSessionID: Schema.optional(Schema.String) })
+const JobUpdated = Schema.Struct({ type: Schema.Literal("experimental.job.updated"), data: Schema.Struct({ info: JobInfo }) })
+const JobList = Schema.Struct({ data: Schema.Array(JobInfo) })
 const ShellList = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })) })
 const toJsonText = Schema.encodeSync(Json)
 const Unavailable = Schema.Struct({ _tag: Schema.Literal("RpcError"), type: Schema.Literal("rpc.unavailable") })
@@ -358,6 +361,38 @@ export const LAWS: ReadonlyArray<Law> = [
         const created = (yield* server.sent).filter((event) => event.type === "session.created" && dataOf(event).parentID === sessionID)
         if (created.length !== 1) failures.push(`${created.length} children created`)
         failures.push(...expectStatus("family requests", yield* server.call(get(`/api/session/${sessionID}/family/request`)), 200))
+        return failures
+      }),
+  },
+  {
+    name: "a session lists no background job until a background subagent starts; then its child is a running subagent job of the session, announced experimental.job.updated and listed with the session's descendants",
+    routes: ["job.list"],
+    kinds: ["experimental.job.updated"],
+    run: (server) =>
+      Effect.gen(function* () {
+        const sessionID = yield* server.session
+        // As the TUI asks when a session loads (packages/tui session/index.tsx, data.job.sync).
+        const path = `/api/experimental/job?sessionID=${sessionID}&descendants=true&status=running`
+        const before = yield* server.call(get(path))
+        const failures = [...expectStatus("job list", before, 200)]
+        if (!Option.exists(read(JobList, before), (found) => found.data.length === 0)) failures.push(`a fresh session's jobs: ${shown(before)}`)
+        const from = (yield* server.sent).length
+        yield* prompt(server, sessionID, "spawn a worker")
+        yield* server.settle
+        const sent = (yield* server.sent).slice(from)
+        const childID = Option.getOrElse(
+          Option.flatMap(
+            Arr.findFirst(sent, (event) => event.type === "session.created" && dataOf(event).parentID === sessionID),
+            (event) => Option.fromUndefinedOr(dataOf(event).sessionID),
+          ),
+          () => "",
+        )
+        const updates = sent.flatMap((event) => Option.toArray(Schema.decodeUnknownOption(JobUpdated)(event))).map((event) => event.data.info)
+        const own = (info: typeof JobInfo.Type) => info.kind === "subagent" && info.sessionID === sessionID && info.childSessionID === childID
+        if (childID === "" || !updates.some((info) => own(info) && info.status === "running")) failures.push(`no running job announced for the child ${childID}: ${updates.map((info) => toJsonText(info)).join(", ")}`)
+        const after = yield* server.call(get(path))
+        failures.push(...expectStatus("job list after the spawn", after, 200))
+        if (!Option.exists(read(JobList, after), (found) => found.data.filter(own).length === 1)) failures.push(`the session's jobs after the spawn: ${shown(after)}`)
         return failures
       }),
   },

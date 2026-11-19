@@ -98,9 +98,3 @@ export function queueItem(tally: { readonly open: number; readonly needsYou: num
     needs: Option.map(Option.liftPredicate(tally.needsYou, (needs) => needs > 0), (needs) => `${needs} ${verb} you`),
   }))
 }
-
-/** The loader's spinner frames, a braille turn. */
-export const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-
-/** How often the loader's spinner and clock move. */
-export const SPINNER_MS = 100

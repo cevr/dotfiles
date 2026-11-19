@@ -186,4 +186,6 @@ export interface Host {
   readonly Markdown: (props: { readonly content: string; readonly streaming?: boolean }) => JSX.Element
   /** The host's code renderer, for source that reads like the transcript's. */
   readonly Code: (props: { readonly content: string; readonly path?: string }) => JSX.Element
+  /** The host's spinner glyph, on the renderer's clock, so it turns with every other spinner on screen. */
+  readonly Spinner: (props: { readonly color?: RGBA }) => JSX.Element
 }

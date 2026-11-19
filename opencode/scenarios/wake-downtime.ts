@@ -88,8 +88,10 @@ export default defineScript({
       const after = yield* tuis.launch("after")
       // The new TUI opens on the home screen: open the one session there is
       // (listed under its title, or under the default name if titling lost the race).
+      // The picker's title row reads "Sessions for <project>" in the classic
+      // design and "Search sessions in <project>" in the new designs.
       yield* after.ui.submit("/sessions")
-      yield* until(after.ui, (frame) => frame.includes("Sessions for") && (frame.includes("Downtime fixture") || frame.includes("New session -")))
+      yield* until(after.ui, (frame) => /Sessions for|Search sessions in/.test(frame) && (frame.includes("Downtime fixture") || frame.includes("New session -")))
       yield* after.ui.press("return")
       yield* until(after.ui, (frame) => frame.includes("Woke late on zeta.") || frame.includes("Woke on zeta, not late."), 600)
       yield* keep(after.ui, "late")
