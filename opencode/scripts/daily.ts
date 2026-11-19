@@ -454,6 +454,7 @@ if (import.meta.main) {
     pluginDir("queue"),
     pluginDir("git"),
     pluginDir("idle-compact"),
+    pluginDir("model-next"),
     pluginDir("auto-title"),
     mailEntry(pluginDir("mail"), { host: hostname(), tailscale: await tailscaleAddress() }),
     pluginDir("questions"),
@@ -477,7 +478,7 @@ if (import.meta.main) {
   rmSync(loader, { recursive: true, force: true })
   const config = join(home, ".config/opencode")
   const models = roleModels(catalog)
-  const tui = [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("rex"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF]
+  const tui = [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("rex"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("model-next"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF]
   writeConfigs({ config, server, cli: tui, models, owned: ownedDirs(share) })
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
