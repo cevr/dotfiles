@@ -87,6 +87,12 @@ export const pendingOf = (sessionID: string, metadata: unknown): Option.Option<P
     (pending) => pending.sessionID === sessionID,
   )
 
+const decodeHolder = Schema.decodeUnknownOption(Schema.Struct({ metadata: Schema.optional(Schema.Unknown) }))
+
+/** The switch queued on a session record as a client holds it (any object with `metadata`): what Prime's tray reads. */
+export const pendingIn = (sessionID: string, session: unknown): Option.Option<Pending> =>
+  Option.flatMap(decodeHolder(session), (held) => pendingOf(sessionID, held.metadata))
+
 /** The session's metadata with the queued switch set, or taken out: every other key as it was. */
 export const withPending = (metadata: unknown, pending: Option.Option<Pending>): Record<string, unknown> => {
   const read: Readonly<Record<string, unknown>> = Option.getOrElse(decodeMetadata(metadata ?? {}), () => ({}))

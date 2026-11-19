@@ -123,6 +123,7 @@
       "name": "@dotfiles/opencode-cmd-model-next",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-model-next": "workspace:*",
       },
     },
@@ -382,6 +383,7 @@
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-cache": "workspace:*",
+        "@dotfiles/opencode-model-next": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
