@@ -1,8 +1,21 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { dockShown, queueItem, usageLabel } from "./chrome.ts"
+import { dockShown, queueItem, trayModelQueued, usageLabel } from "./chrome.ts"
 
 const none = { subagents: 0, shells: 0, jobs: 0, wakes: 0, monitors: 0, notices: 0, queued: 0 }
+
+describe("the tray's model with a switch queued", () => {
+  const current = { providerID: "anthropic", modelID: "claude-opus-5-5", variant: "high" }
+  test("names the model now, the one queued and that it waits", () => {
+    expect(trayModelQueued(current, Option.some({ providerID: "anthropic", id: "claude-fable-5-2" }))).toBe("claude-opus-5-5:high → claude-fable-5-2 queued")
+    expect(trayModelQueued(current, Option.some({ providerID: "anthropic", id: "claude-fable-5-2", variant: "max" }))).toBe(
+      "claude-opus-5-5:high → claude-fable-5-2:max queued",
+    )
+  })
+  test("is the model alone with nothing queued", () => {
+    expect(trayModelQueued(current, Option.none())).toBe("claude-opus-5-5:high")
+  })
+})
 
 describe("the tray's usage", () => {
   test("adds the latest turn's cache share after the context share", () => {

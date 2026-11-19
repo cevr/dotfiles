@@ -55,6 +55,21 @@ export function trayModel(current: CurrentModel | undefined) {
   return current.variant ? `${current.modelID}:${current.variant}` : current.modelID
 }
 
+/** A model a switch is queued to (mods/model-next's value, read by the caller through `@dotfiles/opencode-model-next/pending`). */
+export type QueuedModel = { readonly providerID: string; readonly id: string; readonly variant?: string | undefined }
+
+/**
+ * The tray's model with a queued switch beside it: `claude-opus:high → claude-fable queued`, until the
+ * switch applies (at the next compaction, or the wake after the cache expired) or is cancelled; the model alone else.
+ */
+export function trayModelQueued(current: CurrentModel | undefined, queued: Option.Option<QueuedModel>) {
+  const now = trayModel(current)
+  return Option.match(queued, {
+    onNone: () => now,
+    onSome: (next) => `${now || "?"} → ${trayModel({ providerID: next.providerID, modelID: next.id, variant: next.variant })} queued`,
+  })
+}
+
 /** `1 shell`, `2 shells`. */
 export function plural(count: number, word: string) {
   return `${count} ${word}${count === 1 ? "" : "s"}`

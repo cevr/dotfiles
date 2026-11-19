@@ -5,6 +5,7 @@
 // is active) and a live row per subagent under it. The words are
 // chrome.ts's; this file draws them.
 import * as TuiClock from "@dotfiles/decider/tui-clock"
+import { pendingIn } from "@dotfiles/opencode-model-next/pending"
 import { board } from "@dotfiles/opencode-queue/board"
 import { tally } from "@dotfiles/opencode-queue/plan"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
@@ -21,7 +22,7 @@ import {
   splashModel,
   SPINNER,
   SPINNER_MS,
-  trayModel,
+  trayModelQueued,
   usageLabel,
 } from "../chrome.ts"
 import { inboxOf, LEADER_REST, leaderLabel, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
@@ -297,7 +298,10 @@ const DOCK_SEP = "  ·  "
 export function Dock(props: { host: Host; sessionID?: string }) {
   const theme = () => props.host.theme()
   const usage = createMemo(() => (props.sessionID ? usageLabel(props.host.usage(props.sessionID)) : undefined))
-  const model = createMemo(() => trayModel(props.host.model()))
+  // A switch queued for the session (mods/model-next, in its metadata) shows beside the model until it applies.
+  const model = createMemo(() =>
+    trayModelQueued(props.host.model(), props.sessionID ? pendingIn(props.sessionID, props.host.session(props.sessionID)).pipe(Option.map((queued) => queued.model)) : Option.none()),
+  )
   // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
   const busy = useWorking(props.host, () => Option.fromNullishOr(props.sessionID))
   // The count is the family's, in a session and in each of its subagents alike, as the rows under it are: the dock
