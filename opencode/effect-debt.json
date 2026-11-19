@@ -760,7 +760,7 @@
     "mods/questions/memory/courier.ts": {"effect/noNullish":3,"effect/noTernary":1,"effect/preferServiceOf":2},
     "mods/questions/memory/model.test.ts": {"effect/noAsyncFunction":134,"effect/noEffectRunInTests":3,"effect/noFixedWaitInTests":1,"effect/noGlobals":1,"effect/noNewError":1,"effect/noNullish":3,"effect/noThrowStatement":1,"effect/preferServiceOf":4},
     "mods/questions/memory/store.ts": {"effect/noNullish":1,"effect/noTernary":1,"effect/preferServiceOf":1},
-    "mods/questions/model.ts": {"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":9,"effect/noTernary":9,"effect/preferServiceOf":1},
+    "mods/questions/model.ts": {"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":7,"effect/noTernary":8,"effect/preferServiceOf":1},
     "mods/questions/opencode/courier.test.ts": {"effect/noAs":1,"effect/noAsyncFunction":6,"effect/noEffectRunInTests":3,"effect/noNewError":2,"effect/noNullish":1,"effect/preferTaggedConstructors":1},
     "mods/questions/opencode/courier.ts": {"effect/noAs":2,"effect/noGlobals":2,"effect/noNullish":3,"effect/noRuntimeTypeof":5,"effect/noTernary":1,"effect/noUnsafeDictionaryType":1,"effect/preferServiceOf":1},
     "mods/questions/opencode/family.test.ts": {"effect/noAsyncFunction":4,"effect/noEffectRunInTests":1,"effect/noKnownValueWidening":1,"effect/noTernary":1,"effect/preferTaggedConstructors":1},

@@ -8,7 +8,15 @@
 // transcript draws the description as one notice line,
 // `answered · <question> → <answer>`. The metadata names the source and keeps
 // the answers' fields for anything that reads the transcript.
-import { matches, type Question } from "./question.ts"
+//
+// A subagent's questions put to its orchestrator go to it as a question
+// letter (`askedLetterOf`): one per ask, each question by its ref, what the
+// subagent assumes, how to answer it, and the asker's nudge (which documents
+// to answer from, and whom to ask when they do not settle it). A question put
+// to a session that closes unanswered is a one-line notice to it
+// (`withdrawnOf`), which does not wake it.
+import { Array as Arr, Option, Predicate } from "effect"
+import { type Choice, MAX_OPEN, matches, type Question, type Reason, refOf, type Row } from "./question.ts"
 
 /** A question and the answer the owner gave it. */
 export interface Answered {
@@ -27,7 +35,12 @@ export interface Letter {
     readonly notice?: { readonly sessionID: string; readonly asker: string }
     /** The ids of the questions dismissed beside the answers, when there are any. */
     readonly dismissed?: ReadonlyArray<string>
-    readonly answers: ReadonlyArray<{
+    /** On a question letter, to the session the questions are put to: who asked, and each question by its ref. */
+    readonly asked?: Asking
+    /** On the notice that a question put to the session closed unanswered: who asked, its ref and why. */
+    readonly withdrawn?: { readonly sessionID: string; readonly asker: string; readonly ref: string; readonly reason: string }
+    /** On an answer letter: the answers it carries. */
+    readonly answers?: ReadonlyArray<{
       readonly id: string
       readonly question: string
       readonly header?: string
@@ -182,3 +195,97 @@ export const letterOf = (given: ReadonlyArray<Answered>): Letter => {
     },
   }
 }
+
+/** One question of a question letter, as its metadata keeps it. */
+export interface AskedQuestion {
+  readonly ref: string
+  readonly id: string
+  readonly question: string
+  readonly header?: string
+  readonly options?: ReadonlyArray<Choice>
+  readonly assume: string
+}
+
+/** A question letter's metadata: the session that asked, its name, and its questions. */
+export interface Asking {
+  readonly sessionID: string
+  readonly asker: string
+  readonly questions: ReadonlyArray<AskedQuestion>
+}
+
+/** A row as a question letter names it: its ref, and what was asked. */
+export const askedOf = (row: Row): AskedQuestion => {
+  const { answered: _answered, letter: _letter, sessionID: _sessionID, askedAt: _askedAt, from: _from, to: _to, ...asked } = row
+  return { ref: refOf(row), ...asked }
+}
+
+/** A choice as the letter lists it: its label, and what it means when it says. */
+const choiceOf = (choice: Choice): string =>
+  Option.match(Option.fromNullishOr(choice.description), { onNone: () => choice.label, onSome: (description) => `${choice.label} (${description})` })
+
+/** One question's lines in a letter: the question, its choices when it has any, and the assumption it goes on. */
+const askedLines = (row: Row): ReadonlyArray<string> => [
+  `Q: ${row.question}`,
+  ...Arr.match(row.options ?? [], { onEmpty: () => [], onNonEmpty: (choices) => [`Options: ${choices.map(choiceOf).join(" · ")}`] }),
+  `It assumes: ${row.assume}, and continues on it.`,
+]
+
+/** How much of the assumption the transcript's line keeps. */
+export const LINE_ASSUME = 40
+
+/** The block of each question when a letter carries several. */
+const askedBlock = (row: Row): string => [`${refOf(row)} (asked ${asked(row)}):`, ...askedLines(row)].join("\n")
+
+/** The call that answers `rows`, as the letter shows it. */
+const callOf = (rows: ReadonlyArray<Row>): string => `answer_subagent({ answers: [${rows.map((row) => `{ id: "${refOf(row)}", text: "…" }`).join(", ")}] })`
+
+/** The text of a question letter of one question. */
+const textOfAsked = (asker: Asker, row: Row): string =>
+  [`Question from your subagent ${asker.name} (${refOf(row)}, asked ${asked(row)}):`, ...askedLines(row), "", `Answer it with ${callOf([row])}; the answer reaches it as the owner's would.`].join(
+    "\n",
+  )
+
+/** The text of a question letter of several questions. */
+const textOfAskedMany = (asker: Asker, rows: ReadonlyArray<Row>): string =>
+  [
+    `Questions from your subagent ${asker.name}:`,
+    ...rows.map((row) => `\n${askedBlock(row)}`),
+    "",
+    `Answer them with ${callOf(rows)}; each answer reaches it as the owner's would.`,
+  ].join("\n")
+
+/**
+ * The letter that puts `rows` (one ask's questions, at least one) to the session they are `to`: who asked, each
+ * question by its ref with its choices and the assumption the subagent goes on, how to answer, then `nudge` (the
+ * asker's: which documents to answer from, and whom to ask when they do not settle it).
+ */
+export const askedLetterOf = (asker: Asker, rows: ReadonlyArray<Row>, nudge: string): Letter => {
+  const metadata = { source: "questions" as const, asked: { sessionID: asker.sessionID, asker: asker.name, questions: rows.map(askedOf) } }
+  const [only] = rows
+  if (rows.length === 1 && Predicate.isNotUndefined(only))
+    return {
+      text: [textOfAsked(asker, only), nudge].join("\n"),
+      description: `question · ${asker.name} · ${excerpt(only.question, LINE_QUESTION)} · assuming ${excerpt(only.assume, LINE_ASSUME)}`,
+      metadata,
+    }
+  return {
+    text: [textOfAskedMany(asker, rows), nudge].join("\n"),
+    description: `questions ${rows.length} · ${asker.name} · ${rows.map((row) => excerpt(row.question, LINE_QUESTION_OF_MANY)).join(" · ")}`,
+    metadata,
+  }
+}
+
+const CLOSED_VERB: Record<Reason, string> = {
+  withdrawn: "withdrew",
+  superseded: "replaced (asked again)",
+  dropped: `dropped (more than ${MAX_OPEN} open)`,
+  dismissed: "dismissed",
+  delivered: "closed",
+}
+
+/** The notice that the question `ref` put to the session closed unanswered: one line, which does not wake it. */
+export const withdrawnOf = (asker: Asker, ref: string, reason: Reason): Letter => ({
+  text: `${asker.name} ${CLOSED_VERB[reason]} its question ${ref}.`,
+  description: `question ${CLOSED_VERB[reason]} · ${asker.name} · ${ref}`,
+  metadata: { source: "questions", withdrawn: { sessionID: asker.sessionID, asker: asker.name, ref, reason } },
+})

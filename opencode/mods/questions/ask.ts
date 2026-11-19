@@ -76,5 +76,7 @@ export const explain = (rejection: Rejection): string => {
       return `Question ${rejection.id} is not open.`
     case "EmptyAnswer":
       return `The answer to ${rejection.id} is empty.`
+    case "NotHeld":
+      return `No open question ${rejection.ids.join(", ") || "named"} is put to you. Yours to answer: ${rejection.held.join(", ") || "none"}. Nothing was answered.`
   }
 }

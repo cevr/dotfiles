@@ -84,7 +84,7 @@ describe("QuestionsModel", () => {
     expect(done).toEqual({ answered: ["q1", "q2", "q3"], dismissed: [], skipped: [] })
     expect(texts("ses_a")).toHaveLength(1)
     expect(texts("ses_a")[0]).toStartWith("Answers to your background questions q1, q2 and q3:")
-    expect(sessions.inboxes.get("ses_a")?.[0]?.letter.metadata.answers.map((answer) => answer.id)).toEqual(["q1", "q2", "q3"])
+    expect(sessions.inboxes.get("ses_a")?.[0]?.letter.metadata.answers?.map((answer) => answer.id)).toEqual(["q1", "q2", "q3"])
     expect((await run((model) => model.open(["ses_a"]))).map((question) => question.id)).toEqual(["q4"])
   })
 
@@ -131,7 +131,7 @@ describe("QuestionsModel", () => {
     expect(texts("ses_a")).toEqual([])
     await run((model) => model.answer("ses_a", [{ id: "q3", answer: "vitest" }]))
     // The older submit first, as it was given; then the new one.
-    expect(sessions.inboxes.get("ses_a")?.map((message) => [message.id, message.letter.metadata.answers.map((answer) => answer.id)])).toEqual([
+    expect(sessions.inboxes.get("ses_a")?.map((message) => [message.id, message.letter.metadata.answers?.map((answer) => answer.id)])).toEqual([
       ["msg_000000000001", ["q1", "q2"]],
       ["msg_000000000002", ["q3"]],
     ])

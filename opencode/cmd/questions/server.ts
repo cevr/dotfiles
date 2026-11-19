@@ -31,13 +31,13 @@
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Ref, Schema, Stream } from "effect"
-import { AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencode-questions/ask"
+import { AskedQuestion, AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencode-questions/ask"
 import * as Model from "@dotfiles/opencode-questions/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
 import * as OpenCodeFamily from "@dotfiles/opencode-questions/opencode/family"
 import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
 import { replyOf } from "@dotfiles/opencode-questions/form"
-import { AskFor, Choice, Given, type Open, type PluginAsked, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
+import { AskFor, Choice, Given, type Open, type PluginAsked, type Put, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
 import { Changes, type Courier, type DeliveryRefused, type Family, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
 
 /** The live externals: the plugin's storage, the session inbox, and who each session is. */
@@ -64,6 +64,14 @@ const AskForInput = Schema.Struct({
   options: Schema.optional(Schema.Array(Choice)),
   assume: Schema.String,
 })
+const PutInput = Schema.Struct({
+  sessionID: Schema.String,
+  to: Schema.String,
+  nudge: Schema.String,
+  questions: Schema.optional(Schema.Array(AskedQuestion)),
+  withdraw: Schema.optional(Schema.Array(Schema.String)),
+})
+const ReplyInput = Schema.Struct({ by: Schema.String, answers: Schema.Array(Schema.Struct({ id: Schema.String, text: Schema.String })) })
 const PluginInput = Schema.Struct({ plugin: Schema.String })
 const WithdrawForInput = Schema.Struct({ plugin: Schema.String, key: Schema.String })
 
@@ -128,9 +136,30 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
         .register(QUESTIONS, {
           open: (input) =>
             Schema.decodeUnknownEffect(OpenInput)(input).pipe(
-              Effect.flatMap(({ sessionIDs }) => questions.open(sessionIDs)),
-              Effect.map((open): Open => ({ questions: [...open] })),
-              Effect.orElseSucceed((): Open => ({ questions: [] })),
+              Effect.flatMap(({ sessionIDs }) => Effect.zipWith(questions.open(sessionIDs), questions.held(sessionIDs), (open, held): Open => ({ questions: [...open], held: [...held] }))),
+              Effect.orElseSucceed((): Open => ({ questions: [], held: [] })),
+            ),
+          put: (input) =>
+            Schema.decodeUnknownEffect(PutInput)(input).pipe(
+              Effect.matchEffect({
+                onFailure: (error) => Effect.succeed(malformed(error)),
+                onSuccess: ({ sessionID, to, nudge, ...asked }) =>
+                  questions.put(sessionID, asked, to, nudge).pipe(
+                    Effect.map((done): Put => ({ ok: true, opened: [...done.opened], closed: [...done.closed] })),
+                    Effect.catch((failure) => Effect.succeed(refused(failure))),
+                  ),
+              }),
+            ),
+          reply: (input) =>
+            Schema.decodeUnknownEffect(ReplyInput)(input).pipe(
+              Effect.matchEffect({
+                onFailure: (error) => Effect.succeed(malformed(error)),
+                onSuccess: ({ by, answers }) =>
+                  questions.reply(by, answers).pipe(
+                    Effect.map((refs): Reply => ({ ok: true, message: `Answered ${refs.join(", ")}; each answer went to the subagent that asked.` })),
+                    Effect.catch((failure) => Effect.succeed(refused(failure))),
+                  ),
+              }),
             ),
           answer: (input) =>
             Schema.decodeUnknownEffect(AnswerInput)(input).pipe(
