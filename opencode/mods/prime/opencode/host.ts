@@ -113,5 +113,6 @@ export function host(
     leader: () => pendingLeader(context.keymap.pending()),
     Markdown: context.ui.Markdown,
     Code: context.ui.Code,
+    Spinner: context.ui.Spinner,
   }
 }
