@@ -60,6 +60,13 @@ const reachOf = (seed: string) => {
  */
 const LINT_TOOL = [/^scripts\/effect-debt(-merge)?\.ts$/, /^(@[^/]+\/)?oxlint/]
 const NATIVE_PARSER = [/^(@[^/]+\/)?oxc-parser([@/]|$)/]
+/**
+ * The fork's packages OpenCode does not hand a server plugin: it provides `effect` and
+ * `@opencode/plugin` only, and any other `@opencode/*` resolves through the checkout's fork links
+ * (scripts/link-fork.ts), which a copy of the checkout lacks, so one value import stops the whole
+ * plugin from loading ("Cannot find package '@opencode/schema'"). Import those for types only.
+ */
+const FORK_ONLY = [/^@opencode\/(?!plugin(\/|$))/]
 
 /** Whether `target`, reached from the checkout at `root`, is one of `forbidden`. */
 const forbiddenAt = (root: string, target: string, forbidden: ReadonlyArray<RegExp>) => {
@@ -80,6 +87,8 @@ const sources = (pattern: string) => [...new Bun.Glob(pattern).scanSync({ cwd: R
 
 const SCENARIOS = sources("scenarios/*.ts")
 const PLUGINS = [...sources("mods/**/*.{ts,tsx}"), ...sources("cmd/**/*.{ts,tsx}")]
+/** The server plugin entries OpenCode loads: each `cmd/` package's `server.ts`. */
+const SERVERS = sources("cmd/*/server.ts")
 
 describe("runtime imports", () => {
   test("a checkout in a directory named oxlint-* is not the lint tool", () => {
@@ -94,6 +103,11 @@ describe("runtime imports", () => {
     expect(lintTool("effect")).toBe(false)
     expect(forbiddenAt(root, "oxc-parser", NATIVE_PARSER)).toBe(true)
     expect(forbiddenAt(root, `${root}/mods/oxc-parser-notes.ts`, NATIVE_PARSER)).toBe(false)
+    expect(forbiddenAt(root, "@opencode/schema/session-id", FORK_ONLY)).toBe(true)
+    expect(forbiddenAt(root, "@opencode/client", FORK_ONLY)).toBe(true)
+    expect(forbiddenAt(root, "@opencode/plugin/effect", FORK_ONLY)).toBe(false)
+    expect(forbiddenAt(root, "@opencode/plugin", FORK_ONLY)).toBe(false)
+    expect(forbiddenAt(root, "@opencode/plugins", FORK_ONLY)).toBe(true)
   })
 
   test("no scenario, and not bun run daily, reaches the lint tool or oxc-parser", () => {
@@ -104,5 +118,10 @@ describe("runtime imports", () => {
   test("no plugin source reaches the lint tool", () => {
     expect(PLUGINS.length).toBeGreaterThan(0)
     expect(PLUGINS.flatMap((seed) => breaches(seed, LINT_TOOL))).toEqual([])
+  })
+
+  test("no server plugin reaches a fork package OpenCode does not provide", () => {
+    expect(SERVERS.length).toBeGreaterThan(0)
+    expect(SERVERS.flatMap((seed) => breaches(seed, FORK_ONLY))).toEqual([])
   })
 })
