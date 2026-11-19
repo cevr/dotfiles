@@ -43,9 +43,10 @@ import {
   testSummary,
   WAIT_START,
   waitStep,
+  writeProjectConfig,
 } from "../testbeds/gamut/gamut.ts"
 import { replyEvents, SIM_COMMAND, SIM_TITLE, simReply } from "../testbeds/gamut/sim-model.ts"
-import { scratch } from "./scratch.ts"
+import { type ChildEnv, scratch } from "./scratch.ts"
 
 const root = join(import.meta.dir, "..")
 
@@ -174,6 +175,11 @@ describe("the run's config", () => {
     expect(config.agents.build.model).toBe("sim/sim-model")
     expect(config.agents.general.model).toBe("sim/sim-model")
     expect(config.agents.verifier.model).toBe("sim/sim-model")
+    // Every other provider is denied: no fallback reaches a hosted model.
+    expect(config.policies).toEqual([
+      { action: "provider.use", resource: "*", effect: "deny" },
+      { action: "provider.use", resource: "sim", effect: "allow" },
+    ])
     expect(() => projectConfig(sim)).toThrow("needs the sim model's port")
   })
 
@@ -311,6 +317,8 @@ describe("the run's environment", () => {
     expect(launch.base).toEqual(["/bin/bun", "/fork/packages/cli/src/index.ts"])
     // The fork from source runs at the owner's build's flags (scripts/release-flags.ts).
     expect(env.OPENCODE_FLAGS).toBe("-full_codemode")
+    // OpenCode's free hosted models stay hidden, live preset or sim.
+    expect(env.OPENCODE_DISABLE_FREE_MODELS).toBe("1")
     expect(runEnv(caller, paths, launch, false).OPENCODE_DISABLE_MODELS_FETCH).toBeUndefined()
   })
 
@@ -484,9 +492,9 @@ describe("the scripted model", () => {
 const OWNER = String(process.pid)
 const e2eEnv = (state: string) => ({ ...process.env, GAMUT_STATE: state, GAMUT_OWNER: OWNER })
 
-/** Runs `argv` to its end in the e2e run's environment, its output read. */
-const runSync = (argv: ReadonlyArray<string>, env: ReturnType<typeof e2eEnv>) => {
-  const run = Bun.spawnSync([...argv], { env, stdout: "pipe", stderr: "pipe" })
+/** Runs `argv` to its end in `env` (the e2e run's, or a run's own), its output read. */
+const runSync = (argv: ReadonlyArray<string>, env: ChildEnv, where: { readonly cwd?: string; readonly timeout?: number } = {}) => {
+  const run = Bun.spawnSync([...argv], { env, stdout: "pipe", stderr: "pipe", ...where })
   return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() }
 }
 
@@ -513,6 +521,22 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
     if (existsSync(state)) gamut("down")
     rmSync(join(state, ".."), { recursive: true, force: true })
   })
+
+  // The guard for the run that reached OpenCode's free hosted model (9ed8d7bc's deep run: the TUI sent the prompt on
+  // opencode/big-pickle, the first model it lists, before it had the config's sim/sim-model). A sim run's OpenCode
+  // lists the sim model alone, so no fallback, the TUI's or the server's, can pick a hosted one. It asks for the list,
+  // so it sends nothing to any model.
+  test("a sim run's OpenCode offers the sim model alone, so no turn can fall back to a hosted one", () => {
+    using dir = scratch("ocg-gamut-models-")
+    const paths = runPaths(dir.path)
+    for (const each of [paths.work, paths.home, paths.config, paths.data]) mkdirSync(each, { recursive: true })
+    // Port 9 (discard) answers nothing: listing the models sends no request to the sim model either.
+    writeProjectConfig(paths.work, resolvePreset(PRESETS.sim!, {}), 9)
+    // As `up` starts it: the fork from source in the run's own environment, here from the e2e caller's.
+    const launch = forkLaunch(String(fork), "bun")
+    const listed = runSync([...launch.base, "models", "--standalone"], runEnv(e2eEnv(state), paths, launch, true), { cwd: paths.work, timeout: 60_000 })
+    expect({ code: listed.code, models: listed.out.trim().split("\n") }).toEqual({ code: 0, models: ["sim/sim-model"] })
+  }, 90_000)
 
   test(
     "up, wait, read, send, status and down drive OpenCode with the Prime look",

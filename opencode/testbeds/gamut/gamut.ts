@@ -53,7 +53,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
-import { releaseFlags } from "../../scripts/release-flags.ts"
+import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
@@ -270,12 +270,27 @@ export const loadCatalog = async (fork: string | undefined): Promise<Catalog> =>
 
 // ── Config writers ──────────────────────────────────────────────────────
 
-/** A permission rule, as OpenCode's config writes it. */
+/** A policy statement, as OpenCode's config `policies` writes it. */
 interface Rule {
   readonly action: string
   readonly resource: string
   readonly effect: "allow" | "deny" | "ask"
 }
+
+/**
+ * A sim run's policies: every provider the preset does not name is denied, so
+ * OpenCode lists the preset's models alone and no fallback can pick another,
+ * hosted one. The TUI sends `--prompt` on the first model it lists when it
+ * does not yet have the config's model (the fork's
+ * packages/tui/src/context/local.tsx `fallbackModel`): opencode/big-pickle,
+ * OpenCode's free hosted model, in 9ed8d7bc's deep run. The sim provider and
+ * this denial come in the same config, so the TUI never lists one without the
+ * other.
+ */
+export const presetOnly = (preset: ResolvedPreset): ReadonlyArray<Rule> => [
+  { action: "provider.use", resource: "*", effect: "deny" },
+  ...[...new Set(ROLES.map((role) => preset[role].provider))].map((provider): Rule => ({ action: "provider.use", resource: provider, effect: "allow" })),
+]
 
 /** The sim provider's entry: an OpenAI-compatible endpoint on the run's own port. */
 export const simProvider = (port: number) => ({
@@ -340,7 +355,7 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins:
   return {
     model: selection(preset.orchestrator),
     ...(plugins.length === 0 ? {} : { plugins }),
-    ...(simPort === undefined ? {} : { providers: { [SIM_PROVIDER]: simProvider(simPort) } }),
+    ...(simPort === undefined ? {} : { providers: { [SIM_PROVIDER]: simProvider(simPort) }, policies: presetOnly(preset) }),
     agents: {
       build: orchestrator,
       plan: orchestrator,
@@ -356,6 +371,10 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins:
     },
   }
 }
+
+/** Writes the run's `opencode.json` (`projectConfig`) into `work`. */
+export const writeProjectConfig = (work: string, preset: ResolvedPreset, simPort?: number, plugins: ReadonlyArray<PluginEntry> = []): void =>
+  writeFileSync(join(work, "opencode.json"), `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`)
 
 /** Whether the package in `dir` has a TUI entry: its `package.json` exports `./tui`. */
 const exportsTui = (dir: string): boolean => {
@@ -438,6 +457,7 @@ export const forkLaunch = (fork: string, bun: string): Launch => ({
     BUN_OPTIONS: `--conditions=browser --preload=${join(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js")}`,
     // A fork from source is channel local, where every flag defaults on: run at the owner's build's flags instead.
     OPENCODE_FLAGS: releaseFlags(""),
+    ...NO_FREE_MODELS,
   },
   fork,
 })
@@ -897,10 +917,7 @@ const prepareAndLaunch = async (
     { package: join(CMD, "queue"), options: { dir: join(paths.home, ".local/state/opencode-queue") } },
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, loginStore) : [poolPlugin]),
   ]
-  await Bun.write(
-    join(paths.work, "opencode.json"),
-    `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,
-  )
+  writeProjectConfig(paths.work, preset, simPort, plugins)
   // Every TUI plugin is a cmd/ composition root, Prime first. cmd/btw's /btw replaces the fork's built-in one, which
   // "-opencode.btw" turns off.
   await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
