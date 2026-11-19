@@ -9,7 +9,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Clock, Config, Deferred, Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { releaseFlags } from "../scripts/release-flags.ts"
+import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { KEPT, NAMES, outcome } from "../sim/law-names.ts"
 
 /** opencode/: the tests run from it. */
@@ -46,6 +46,7 @@ const boot = (probe: string) => Effect.gen(function* () {
       OPENCODE_DISABLE_MODELS_FETCH: "1",
       // The runner starts the fork in its own process: at the owner's build's flags (scripts/release-flags.ts).
       OPENCODE_FLAGS: releaseFlags(""),
+      ...NO_FREE_MODELS,
       SIM_REAL_BASE: base,
       SIM_REAL_FORK: path.resolve(fork),
       SIM_REAL_PROBE: probe,

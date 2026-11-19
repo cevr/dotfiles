@@ -26,7 +26,7 @@
 // `opencode.env` (scenarios/herdr.ts).
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
-import { releaseFlags } from "../scripts/release-flags.ts"
+import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
 import { type ChildTemp, childTemp, parentEnv } from "./scratch.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
@@ -89,7 +89,7 @@ export const owned = <
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
   const temp = childTemp(options?.env)
-  const child = Bun.spawn([...command], { ...options, env: { ...outsidePanes(temp.env, parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || "") }, detached: true })
+  const child = Bun.spawn([...command], { ...options, env: { ...outsidePanes(temp.env, parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS }, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)

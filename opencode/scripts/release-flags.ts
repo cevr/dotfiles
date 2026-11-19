@@ -20,6 +20,16 @@
 // process on an env of their own (tests/host-laws.test.ts,
 // tests/client-laws.test.ts). Accept and the post-land step start no OpenCode
 // of their own: they run `bun test` files, which use these.
+//
+// The same seams take `NO_FREE_MODELS`: a driven OpenCode on a scripted model
+// must never reach a hosted one, and signed out, OpenCode's free hosted models
+// are the ones it lists (the fork's packages/core/src/model.ts `preferFree`),
+// so the first a client falls back to (opencode/big-pickle, in 9ed8d7bc's deep
+// run, which spent the owner's daily free quota). With it, a run lists only
+// the models its config and logins give it.
+
+/** The environment that hides OpenCode's free hosted models from a driven OpenCode. */
+export const NO_FREE_MODELS = { OPENCODE_DISABLE_FREE_MODELS: "1" } as const
 
 /** The flags a run turns off unless its caller names them: off in the owner's build, and changing what a model is offered. */
 export const RELEASE_OFF: ReadonlyArray<string> = ["full_codemode"]
