@@ -33,7 +33,8 @@ const WRITTEN = "Written by dotfiles opencode/scripts/agents.ts from the orchest
 
 /**
  * The tools Claude Code gives these agents (Bash, Read, Edit, Write, Skill,
- * Monitor, TaskStop, WebFetch, WebSearch) as OpenCode permissions. Everything
+ * Monitor, TaskStop, WebFetch, WebSearch) as OpenCode permissions, with the
+ * orchestrate plugin's `principles` tool (list, search, get). Everything
  * else is denied, as the built-in explore agent does: no subagent, question,
  * todo, glob/grep tool or MCP tool. Edit and Write are the `edit` permission
  * (edit, write and patch); Monitor and TaskStop are background `shell` work.
@@ -53,6 +54,7 @@ export const PERMISSIONS = [
   { action: "skill", resource: "*", effect: "allow" },
   { action: "webfetch", resource: "*", effect: "allow" },
   { action: "websearch", resource: "*", effect: "allow" },
+  { action: "principles", resource: "*", effect: "allow" },
   { action: "external_directory", resource: "*", effect: "allow" },
   { action: "ask_user_async", resource: "*", effect: "allow" },
 ] as const

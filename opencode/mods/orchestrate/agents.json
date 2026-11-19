@@ -56,6 +56,11 @@
           "effect": "allow"
         },
         {
+          "action": "principles",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
           "action": "external_directory",
           "resource": "*",
           "effect": "allow"
@@ -120,6 +125,11 @@
         },
         {
           "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "principles",
           "resource": "*",
           "effect": "allow"
         },
@@ -192,6 +202,11 @@
           "effect": "allow"
         },
         {
+          "action": "principles",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
           "action": "external_directory",
           "resource": "*",
           "effect": "allow"
@@ -256,6 +271,11 @@
         },
         {
           "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "principles",
           "resource": "*",
           "effect": "allow"
         },

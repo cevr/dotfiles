@@ -105,6 +105,10 @@
  *   unanswered hand-back, its wakes and jobs) and the re-read. An older config's `ledger`, `cadence`, `guard` and `drops`, and a
  *   call's `departs`, `(departs: …)` and `(folds: …)`, still decode and mean
  *   nothing.
+ * - The `principles` tool (mods/orchestrate/principles.ts): list, search and
+ *   get over the owner's principle skills, `principle-*\/SKILL.md` in the
+ *   directory that holds the orchestrate skill (`skill`), read at each call.
+ *   Roots and subagents alike.
  * - Fleet: a verifier's `accepted` hand-back records the verified target its
  *   batch file names (`fleet`), once per verdict, however often its session
  *   goes idle after. After a restart the same verdict may be read again: the
@@ -122,7 +126,7 @@
  * in a reading.
  */
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
 import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
@@ -142,6 +146,8 @@ import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-re
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
+import * as PrincipleFiles from "@dotfiles/opencode-orchestrate/filestore/principles"
+import * as Principles from "@dotfiles/opencode-orchestrate/principles"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
 import { Draft, IDLE, MARK, type Run as RunTable } from "@dotfiles/opencode-orchestrate/idle"
@@ -1071,6 +1077,24 @@ export const make = (
                 Match.exhaustive,
               )
               return { content: [{ type: "text" as const, text }], metadata: { action: input.action } }
+            }),
+        }),
+      )
+
+      // The `principles` tool (mods/orchestrate/principles.ts): the principle skills beside the orchestrate skill,
+      // read at each call, for roots and subagents alike.
+      const principlesDir = dirname(options.skill)
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: Principles.PRINCIPLES,
+          description: Principles.PRINCIPLES_DESCRIPTION,
+          input: Principles.PrinciplesInput,
+          options: { codemode: false },
+          execute: (input) =>
+            Effect.gen(function* () {
+              const answered = Principles.answer(input, yield* PrincipleFiles.read(principlesDir))
+              if ("refused" in answered) return yield* failWith(answered.refused)
+              return { content: [{ type: "text" as const, text: answered.text }], metadata: { action: input.action } }
             }),
         }),
       )
