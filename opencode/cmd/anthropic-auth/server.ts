@@ -72,9 +72,15 @@ export interface Env {
 export interface Shared {
   readonly ownership: Ownership
   readonly refreshes: Refreshes<OAuthCredential, RefreshFailed>
+  /** The Claude Code version a rejection raised: one per process, so no setup meets the same rejection again. */
+  readonly versionFloor: Model.VersionFloor
 }
 
-export const makeShared = (): Shared => ({ ownership: makeOwnership(), refreshes: makeRefreshes() })
+export const makeShared = (): Shared => ({
+  ownership: makeOwnership(),
+  refreshes: makeRefreshes(),
+  versionFloor: Model.makeVersionFloor(),
+})
 
 export interface Options {
   readonly fetch: Fetch
@@ -122,7 +128,11 @@ export const make = (options: Options) =>
       const emit = QuotaLive.makeEmitCell()
       const integrationID = Integration.ID.make(INTEGRATION_ID)
       const services = yield* Layer.build(
-        Model.layer({ versionOverride: env.versionOverride, refreshes: options.shared.refreshes }).pipe(
+        Model.layer({
+          versionOverride: env.versionOverride,
+          versionFloor: options.shared.versionFloor,
+          refreshes: options.shared.refreshes,
+        }).pipe(
           Layer.provideMerge(
             Layer.mergeAll(
               EntropyLive.layer,
