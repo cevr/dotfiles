@@ -135,6 +135,8 @@ export const LAW = {
     "a session's model selected publishes session.model.selected once, get answers it, and the next request goes to it; selecting the same model again publishes nothing",
   compactionEnded:
     "experimental.compaction.ended runs once after a completed compaction, after its summary request and with its reason, agent and the model it ran under; a model switched there serves the next request",
+  compactionFailed:
+    "a compaction whose request fails stays in the session's context as a failed compaction after the conversation, which it does not cut; experimental.compaction.ended does not run",
   wake: "experimental.wake runs once as each execution starts on input, a prompt or a synthetic message, before its first request; a model switched there serves that request",
   move: "an idle session moved to another directory moves with no turn, is there, and is decided by that location's hooks until it moves back; each move publishes session.moved",
   window: "a session on an agent whose compactionWindow its prompt passed is compacted automatically; one on an agent without the window is not",

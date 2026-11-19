@@ -164,6 +164,14 @@ export type Message =
       readonly reason: Reason
     }
   | {
+      /** A compaction that failed (session-message.ts `CompactionFailed`): kept in the transcript, never a context's start, read by no request. */
+      readonly type: "compaction"
+      readonly id: string
+      readonly created: number
+      readonly status: "failed"
+      readonly reason: Reason
+    }
+  | {
       /** The session's model changed (`session.model.selected`): the transcript's record, read by no request. */
       readonly type: "model-switched"
       readonly id: string
@@ -913,6 +921,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       case "tool":
         return `tool ${message.callID} ${message.name}: ${message.output}`
       case "compaction":
+        if (message.status === "failed") return ""
         return `compaction: ${message.summary}`
       case "error":
         return `error ${message.tag}: ${message.message}`
@@ -928,7 +937,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     session.messages.slice(
       Math.max(
         0,
-        session.messages.findLastIndex((message) => message.type === "compaction"),
+        session.messages.findLastIndex((message) => message.type === "compaction" && message.status === "completed"),
       ),
     )
 
@@ -973,6 +982,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       case "synthetic":
         return [{ role: "user", content: [{ type: "text", text: message.text }] }]
       case "compaction":
+        // A failed compaction is no message to the model (the fork's to-llm-message skips all but a completed one).
+        if (message.status === "failed") return []
         return [{ role: "user", content: [{ type: "text", text: message.summary }] }]
       case "error":
       case "model-switched":
@@ -1110,14 +1121,17 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return { outcome, startedAt }
     })
 
-  /** One model request that must answer (a compaction's, a title's): a failure answers nothing, a hook that died too. */
+  /**
+   * One model request that must answer (a compaction's, a title's): a failure answers nothing, a hook that died too;
+   * `failed` says it failed.
+   */
   const request = (session: Session, kind: Kind, extra = "") =>
     attempt(session, kind, extra).pipe(
-      Effect.map(({ outcome, startedAt }) => ({ reply: Result.getOrElse(outcome, (): Reply => ({ items: [] })), startedAt })),
+      Effect.map(({ outcome, startedAt }) => ({ reply: Result.getOrElse(outcome, (): Reply => ({ items: [] })), startedAt, failed: Result.isFailure(outcome) })),
       Effect.catchDefect((defect) => {
         if (!(defect instanceof HookDied)) return Effect.die(defect)
         record("request-failed", { sessionID: session.id, requestKind: kind, tag: "Unknown", message: defect.message })
-        return Effect.succeed({ reply: { items: [] } satisfies Reply, startedAt: runtime.now() })
+        return Effect.succeed({ reply: { items: [] } satisfies Reply, startedAt: runtime.now(), failed: true })
       }),
     )
 
@@ -1380,13 +1394,20 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       // The model the compaction runs under: the hook's event names it (`trigger.context.model.ref`).
       const under = modelOf(session)
       let summary = ""
+      let failed = false
       if (Option.isSome(held)) {
         summary = held.value
         record("held-summary-used", { sessionID: session.id })
-      } else summary = textOf((yield* request(session, "compaction", "summarize the conversation above")).reply)
-      // A compaction the test made fail (`failNextCompaction`): its request went out and its summary is dropped, as
-      // the fork's `publish` records `Compaction.Failed`; no completed compaction, no hook.
-      if (failing.delete(session.id)) {
+      } else {
+        const asked = yield* request(session, "compaction", "summarize the conversation above")
+        summary = textOf(asked.reply)
+        failed = asked.failed
+      }
+      // A compaction whose request failed, or one the test made fail (`failNextCompaction`): its summary is dropped
+      // and it stays in the transcript as failed, as the fork's `publish` records `Compaction.Failed` and its
+      // message-updater keeps the message; no completed compaction, no hook.
+      if (failing.delete(session.id) || failed) {
+        session.messages.push({ type: "compaction", id: item.id, created: runtime.now(), status: "failed", reason })
         record("compaction-failed", { sessionID: session.id })
         return yield* publish({ type: "session.compaction.failed", data: { sessionID: session.id, reason, inputID: item.id } })
       }

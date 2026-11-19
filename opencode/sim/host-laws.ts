@@ -1250,6 +1250,33 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
+    name: LAW.compactionFailed,
+    operations: ["session.hook", "session.compact", "session.context"],
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const ended = yield* Ref.make(0)
+        // The summary request is refused as a bad request: no retry, the compaction fails.
+        yield* ctx.session.hook("http.response", (event) =>
+          Effect.sync(() => {
+            if (event.sessionID !== session.id || event.kind !== "compaction") return
+            event.response = new Response(`{"error":{"message":"law: the summary is refused"}}`, { status: 400, headers: { "content-type": "application/json" } })
+          }),
+        )
+        yield* ctx.session.hook("experimental.compaction.ended", (event) => Effect.when(Ref.update(ended, (n) => n + 1), Effect.succeed(event.sessionID === session.id)))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: before the failed compaction" }))
+        yield* probe.turn(session.id, ctx.session.compact({ sessionID: session.id })).pipe(Effect.ignore)
+        yield* settle
+        const messages = yield* ctx.session.context({ sessionID: session.id })
+        const kinds = messages.map((message) => (message.type === "compaction" ? `compaction ${message.status}` : message.type))
+        // After the turn's answer; real OpenCode also keeps its idle marks there, which the world does not model.
+        yield* ensure(kinds.lastIndexOf("compaction failed") > kinds.lastIndexOf("assistant"), `the context is ${kinds.join(",")}`)
+        yield* ensure(!kinds.includes("compaction completed"), `the context holds ${kinds.join(",")}`)
+        yield* ensure(count(yield* contextText(ctx, session.id), "law: before the failed compaction") === 1, "the failed compaction cut the conversation")
+        yield* ensure((yield* Ref.get(ended)) === 0, "experimental.compaction.ended ran for a failed compaction")
+      }),
+  },
+  {
     name: LAW.wake,
     operations: ["session.hook", "session.prompt", "session.synthetic", "session.switchModel"],
     check: (ctx, probe) =>
