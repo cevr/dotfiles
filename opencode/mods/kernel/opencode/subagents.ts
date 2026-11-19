@@ -16,13 +16,23 @@
 // It has no wait: a subagent reports when it is done, as a message to its
 // parent, so a parent never blocks on one (a blocked parent queues the
 // owner's messages behind the wait).
+//
+// At run time a plugin gets only `effect` and `@opencode/plugin` from
+// OpenCode; any other package comes from the checkout's own node_modules,
+// links that point nowhere in a copy of it. So this file imports
+// `@opencode/schema` for its types only and brands a session id itself, as
+// the queue's host does (mods/queue/opencode/host.ts).
 import { type Plugin, Tool } from "@opencode/plugin/effect"
 import type { SessionMessage } from "@opencode/schema/session-message"
-import { SessionID } from "@opencode/schema/session-id"
+import type { SessionID as HostSessionID } from "@opencode/schema/session-id"
 import { DateTime, Effect, Match, Option, Schema } from "effect"
 import { Listed, make, type Host, type Session, type Subagents, type View } from "../subagents.ts"
 
 export const name = "subagents"
+
+/** A session id as the host's calls take it, branded here (see the header). */
+const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const sessionIDOf = (sessionID: string): HostSessionID => SessionID.make(sessionID)
 
 /** Why there is no wait, as the tool says it: a finished subagent's report arrives on its own. */
 export const NO_WAIT = "A finished subagent's report arrives as your next message, so don't wait on it: go on with other work or end your turn."
@@ -79,22 +89,22 @@ export const sessionOf = (info: Info): Session => ({
 /** The host's sessions, through the plugin context. A session it cannot read is none; a list it cannot read is empty. */
 export const hostOf = (ctx: Plugin.Context): Host => ({
   get: (sessionID) =>
-    ctx.session.get({ sessionID: SessionID.make(sessionID) }).pipe(
+    ctx.session.get({ sessionID: sessionIDOf(sessionID) }).pipe(
       Effect.map((info) => Option.some(sessionOf(info))),
       Effect.catchCause(() => Effect.succeed(Option.none<Session>())),
     ),
   children: (sessionID) =>
-    ctx.session.list({ parentID: SessionID.make(sessionID), order: "desc", limit: 100 }).pipe(
+    ctx.session.list({ parentID: sessionIDOf(sessionID), order: "desc", limit: 100 }).pipe(
       Effect.map((page) => page.data.map(sessionOf)),
       Effect.catchCause(() => Effect.succeed<ReadonlyArray<Session>>([])),
     ),
   stop: (sessionID) =>
-    ctx.session.stop({ sessionID: SessionID.make(sessionID) }).pipe(
+    ctx.session.stop({ sessionID: sessionIDOf(sessionID) }).pipe(
       Effect.map((result) => result.interrupted),
       Effect.catchCause((cause) => Effect.as(Effect.logWarning("subagents: a stop of a session failed", { sessionID, cause }), false)),
     ),
   lastWords: (sessionID) =>
-    ctx.session.context({ sessionID: SessionID.make(sessionID) }).pipe(
+    ctx.session.context({ sessionID: sessionIDOf(sessionID) }).pipe(
       Effect.map(wordsOf),
       Effect.catchCause(() => Effect.succeed("")),
     ),

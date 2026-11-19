@@ -17,8 +17,14 @@
 //   without that (before the fork's `feat/plugin-title-regenerate`) renames to
 //   "" instead: the title is put back and the attempt fails, and the two
 //   renames read as the owner's, so the session is pinned and not tried again.
+//
+// At run time a plugin gets only `effect` and `@opencode/plugin` from
+// OpenCode; any other package comes from the checkout's own node_modules,
+// links that point nowhere in a copy of it. So this file imports
+// `@opencode/schema` for its types only and brands a session id itself, as
+// the queue's host does (mods/queue/opencode/host.ts).
 import type { Plugin } from "@opencode/plugin/effect"
-import { SessionID } from "@opencode/schema/session-id"
+import type { SessionID as HostSessionID } from "@opencode/schema/session-id"
 import { DateTime, Effect, Layer, Option, Schema } from "effect"
 import { Sessions, SessionUnreadable, TitleFailed } from "../service.ts"
 
@@ -76,11 +82,15 @@ class NoRegenerate extends Schema.TaggedError<NoRegenerate>()("NoRegenerate", { 
 
 const millis = (time: Option.Option<DateTime.Utc>) => Option.map(time, DateTime.toEpochMillis)
 
+/** A session id as the host's calls take it, branded here (see the header). */
+const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const sessionIDOf = (sessionID: string): HostSessionID => SessionID.make(sessionID)
+
 /** The host through the plugin context. */
 export const hostOf = (ctx: Pick<Plugin.Context, "location" | "session">): Host => ({
   location: { directory: ctx.location.directory, workspaceID: Option.fromUndefinedOr(ctx.location.workspaceID) },
   session: (sessionID) =>
-    ctx.session.get({ sessionID: SessionID.make(sessionID) }).pipe(
+    ctx.session.get({ sessionID: sessionIDOf(sessionID) }).pipe(
       Effect.map((session) => ({
         child: Option.isSome(Option.fromNullishOr(session.parentID)),
         directory: session.location.directory,
@@ -90,7 +100,7 @@ export const hostOf = (ctx: Pick<Plugin.Context, "location" | "session">): Host 
       })),
     ),
   retitle: Effect.fn("Sessions.retitle")(function* (sessionID: string) {
-    const id = SessionID.make(sessionID)
+    const id = sessionIDOf(sessionID)
     const before = (yield* ctx.session.get({ sessionID: id })).title
     yield* ctx.session.update({ sessionID: id, title: "" })
     if ((yield* ctx.session.get({ sessionID: id })).title !== "") return
