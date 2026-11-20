@@ -21,7 +21,7 @@ export interface GitRunner {
  */
 export const unpushed = Effect.fn("unpushed")(function* (runner: GitRunner, path: string, tips: ReadonlyArray<string>, hasHead: boolean) {
   const found = runner
-    .git(path, "rev-list", ...(hasHead ? ["HEAD"] : []), "--branches", "--ignore-missing", "--not", "--remotes", ...tips)
+    .git(path, "rev-list", ...["HEAD"].filter(() => hasHead), "--branches", "--ignore-missing", "--not", "--remotes", ...tips)
     .pipe(Effect.map(lines))
   if ((yield* found).length === 0) return []
   yield* runner.spawn(["git", "-C", path, "fetch", "--quiet", "--no-tags", "origin"], path, { GIT_TERMINAL_PROMPT: "0" })
