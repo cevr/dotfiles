@@ -11,6 +11,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
 import { emphasisOn } from "@dotfiles/opencode-prime/emphasis"
+import { asks } from "@dotfiles/opencode-prime/opencode/asks"
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { readUpstream } from "@dotfiles/opencode-prime/filestore/upstream"
 import { builds } from "@dotfiles/opencode-prime/opencode/build"
@@ -38,7 +39,9 @@ export default Plugin.define({
   setup(context) {
     const goal = goals(context)
     const build = builds(context, () => readUpstream())
-    const h = host(context, goal.read, build)
+    // Each session's prompts, read apart from its transcript window for the pinned ask (opencode/asks.ts).
+    const prompts = asks(context)
+    const h = host(context, goal.read, build, prompts)
     const [detail, setDetail] = createSignal<Detail>("details")
     // The owner's time zone, for when each turn ended (mods/prime/turn-time.ts).
     const zone = ownerZone(context.options)
@@ -302,6 +305,7 @@ export default Plugin.define({
     return () => {
       goal.stop()
       build.stop()
+      prompts.stop()
       stopQueue()
     }
   },

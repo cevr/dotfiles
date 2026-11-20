@@ -9,6 +9,7 @@ import type { Family } from "@dotfiles/opencode-subagents/family"
 import type { RGBA } from "@opentui/core"
 import type { Option } from "effect"
 import type { Accessor, JSX } from "solid-js"
+import type { AskIndex } from "../ask.ts"
 import type { CurrentModel, Usage } from "../chrome.ts"
 import type { Goal } from "../goal.ts"
 import type { Jobs } from "../jobs.ts"
@@ -91,6 +92,12 @@ export interface Host {
   messages(sessionID: string): ReadonlyArray<Message>
   message(sessionID: string, messageID: string): Message | undefined
   part(sessionID: string, messageID: string, partID: string): Part | undefined
+  /** The session's prompts read apart from its transcript window (ask.ts AskIndex): empty until a read. Reactive. */
+  asks(sessionID: string): AskIndex
+  /** Reads the session's first page of prompts, or its next older one; one read at a time, none past the session's start. */
+  readAsks(sessionID: string): void
+  /** Puts the window's prompts newer than the index's head at its head (ask.ts withLoaded). */
+  learnAsks(sessionID: string, loaded: ReadonlyArray<Message>): void
   cost(sessionID: string): number
   status(sessionID: string): "idle" | "running"
   usage(sessionID: string): Usage | undefined
