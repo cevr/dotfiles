@@ -9,6 +9,7 @@ import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
+import { SERVER_PLUGINS } from "../mods/update/trees.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
@@ -71,21 +72,19 @@ describe("the server config", () => {
     const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
     const configure = source.slice(source.indexOf("const configureHost = ("), source.indexOf("const forkOf = ("))
     const main = source.slice(source.indexOf("if (import.meta.main) {"))
-    const dispatch = 'if (args.has("--configure")) await Effect.runPromise(configureHost(home, fork))\n  else {'
+    const dispatch = "if (Option.isSome(only)) await Effect.runPromise(only.value)\n  else {"
     const stage = main.slice(main.indexOf(dispatch) + dispatch.length)
+    const calls = (text: string, names: ReadonlyArray<string>) => names.reduce((sum, name) => sum + text.split(`${name}(`).length - 1, 0)
     expect({
-      configureWrites: configure.split("writeConfigs(").length - 1,
+      configureWrites: calls(configure.slice(0, configure.indexOf("const writeTree = (")), ["configured"]),
       dispatched: main.includes(dispatch),
-      stageWrites: stage.split("writeConfigs(").length - 1 + stage.split("configureHost(").length - 1,
+      stageWrites: calls(stage, ["writeConfigs", "configured", "configureHost", "writeTree"]),
     }).toEqual({ configureWrites: 1, dispatched: true, stageWrites: 0 })
   })
 
   test("lists Prime's server half before memory, so its reply style precedes memory's digest, which stays last", () => {
-    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
-    const configure = source.slice(source.indexOf("const configureHost = ("))
-    const server = configure.slice(configure.indexOf("const server: PluginEntry[] = ["), configure.indexOf("BUILTIN_AUTOMATION_OFF"))
-    const at = (name: string) => server.indexOf(`pluginDir("${name}")`)
-    expect({ prime: at("prime") >= 0, beforeMemory: at("prime") < at("memory") }).toEqual({ prime: true, beforeMemory: true })
+    const at = (name: string) => SERVER_PLUGINS.indexOf(name)
+    expect({ prime: at("prime") >= 0, beforeMemory: at("prime") < at("memory"), memoryLast: at("memory") > at("cache") }).toEqual({ prime: true, beforeMemory: true, memoryLast: true })
   })
 
   test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
@@ -283,8 +282,7 @@ describe("the workspace plugin: work replaces rift", () => {
   const count = (config: ReturnType<typeof mergeServer>, dir: string) => pathsOf(config).filter((path) => path === dir).length
 
   test("daily's server list names work, not rift", () => {
-    const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
-    expect([source.split('pluginDir("work")').length - 1, source.split('pluginDir("rift")').length - 1]).toEqual([1, 0])
+    expect([SERVER_PLUGINS.filter((name) => name === "work").length, SERVER_PLUGINS.filter((name) => name === "rift").length]).toEqual([1, 0])
     expect(pluginDir("work").endsWith("/opencode/cmd/work")).toBe(true)
   })
 
