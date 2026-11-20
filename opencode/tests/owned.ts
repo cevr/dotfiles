@@ -26,8 +26,10 @@
 // `opencode.env` (scenarios/herdr.ts).
 //
 // Each child runs outside the installed build the test started under: the plugin binding a tree
-// build sets in its shells (scripts/bound-env.ts) leaves the environment it is given, so a scenario
-// driving OpenCode from source loads its own plugins and not the installed tree's.
+// build before fork 07bb11e0 set in its shells (scripts/bound-env.ts) leaves the environment it is
+// given, so a scenario driving OpenCode from source loads its own plugins and not the installed
+// tree's. A newer build keeps its binding out of the environment and drops an inherited one itself;
+// this stays for shells of older installed builds and for children the fork does not reach.
 import { outsideBuild } from "../scripts/bound-env.ts"
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"

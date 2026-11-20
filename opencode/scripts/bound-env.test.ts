@@ -1,4 +1,4 @@
-// The plugin binding an installed tree build sets in its shells, and the spawn helper the tests use
+// The plugin binding an older installed tree build (before fork 07bb11e0) set in its shells, and the spawn helper the tests use
 // (tests/owned.ts) leaving it out of a child's environment, so a scenario that drives OpenCode from
 // source loads its own plugins even when the test ran in an agent's shell under the installed build.
 import { Effect, Stream } from "effect"
