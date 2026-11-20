@@ -17,6 +17,8 @@ const WORK = "/scratch/project"
 const PIN = "2026-11-04T15:00:00Z"
 /** The skill's rule the section carries word for word. */
 const RULE = "**Never block on the shell.**"
+/** How many times a request's system carries the orchestrator's section: one, never two. */
+const sections = (request: World.Request) => request.system.split(orchestrator.section).length - 1
 
 /** A world with the orchestrate plugin loaded, recording each request the model gets. */
 const boot = Effect.fn("Orchestrator.boot")(function* (seed: number, host: { readonly defaultAgent?: string } = {}, after: ReadonlyArray<Plugin.Plugin> = []) {
@@ -73,16 +75,20 @@ seeded("a new session runs as the orchestrator with its section after build's pr
     const asked = yield* run.turn(root)
     expect(asked.map((request) => [request.kind, request.agent])).toContainEqual(["primary", ORCHESTRATOR])
     for (const request of asked.filter((request) => request.kind === "primary")) {
-      expect(request.system).toContain(orchestrator.section)
+      expect(sections(request)).toBe(1)
       expect(request.system).toContain(RULE)
     }
-    // The summary request carries the same section, so it keeps the turn's cached prefix.
+    // The summary request carries the same section, once, so it keeps the turn's cached prefix.
     const from = run.requests.length
     yield* run.world.compact(root)
     yield* run.world.until(() => run.requests.slice(from).some((request) => request.kind === "compaction"), 60_000)
     const summary = run.requests.slice(from).find((request) => request.kind === "compaction")
     expect(summary?.agent).toBe(ORCHESTRATOR)
-    expect(summary?.system).toContain(orchestrator.section)
+    expect(summary === undefined ? 0 : sections(summary)).toBe(1)
+    // And so does each turn's request after the compaction.
+    const after = (yield* run.turn(root)).filter((request) => request.kind === "primary")
+    expect(after.length).toBeGreaterThan(0)
+    for (const request of after) expect([request.agent, sections(request)]).toEqual([ORCHESTRATOR, 1])
 
     const child = yield* run.world.session(WORK, { parentID: root, agent: "implementor" })
     const childAsked = yield* run.turn(child)
