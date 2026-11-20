@@ -55,7 +55,7 @@ import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
 import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
-import { builtForTree, flagValue, headOf, programForHand, refusals, restartThroughHandoff, settingsFor, treeStage, updateEntry } from "../mods/update/process/install.ts"
+import { builtForTree, flagValue, headOf, programForHand, refusals, restartThroughHandoff, settingsFor, stagedLine, treeStage, updateEntry } from "../mods/update/process/install.ts"
 import { buildsLock, shareDir } from "../mods/update/settings.ts"
 import { stageBuild } from "../mods/update/filestore/stage.ts"
 import { RETIRED_PLUGINS } from "../mods/update/filestore/configs.ts"
@@ -653,7 +653,7 @@ if (import.meta.main) {
     console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
     console.log(`opencode -> ${binary} (${reported})`)
-    if (args.has("--stage")) console.log("staged: the update plugin's handoff moves the checkout, writes the configs and restarts the service (after the Sabbath rest, in it)")
+    if (args.has("--stage")) console.log(stagedLine(fromTree.kind === "tree"))
     else {
       const code = restartThroughHandoff(settings, "daily by hand", programForHand(settings, (path) => readFileSync(path, "utf8"), existsSync))
       console.log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`)

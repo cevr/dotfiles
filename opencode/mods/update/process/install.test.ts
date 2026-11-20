@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
 import { type Build, nextRecord, proven, recordText, stagedRecord } from "../record.ts"
-import { builtForTree, configPaths, flagValue, programForHand, refusals, settingsFor, treeStage } from "./install.ts"
+import { builtForTree, configPaths, flagValue, programForHand, refusals, settingsFor, stagedLine, treeStage } from "./install.ts"
 
 const HOST = { host: "bite-cristian", home: "/h", state: "/h/.local/state", checkout: "/h/dotfiles", fork: "/h/opencode", bun: "/h/.local/bin/bun", resident: "/h/.local/state/opencode-prime/resident", launcher: "/h/.local/bin/opencode" }
 const VERSION = "2.3.0-prime.056a7066.1c82e080"
@@ -28,6 +28,12 @@ describe("daily's part of the update", () => {
     const paths = configPaths(settingsFor(HOST), HOST.home)
     expect(paths.server).toBe("/h/.config/opencode/opencode.json")
     expect(paths.owned.dirs).toEqual(["/h/dotfiles/opencode/mods", "/h/dotfiles/opencode/cmd", "/h/.local/share/opencode-prime/anthropic-auth"])
+  })
+
+  test("daily's staged line says what the handoff of that scheme does: a tree build's moves no checkout and writes no config", () => {
+    expect(stagedLine(true)).toContain("no checkout moves and no config is written")
+    expect(stagedLine(true)).not.toContain("writes the configs")
+    expect(stagedLine(false)).toContain("moves the checkout, writes the configs")
   })
 
   test("strips the TUI config late, the one named cli.json, by the same directories and the TUI's built-ins off", () => {

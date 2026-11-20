@@ -73,6 +73,16 @@ export const configPaths = (settings: Settings, home: string) => ({
   tuiOwned: tuiOursOf(settings.checkout, shareDir(home)),
 })
 
+/**
+ * What daily says once it staged a build: what the handoff will do with it. A tree build's handoff
+ * writes the record and restarts, and moves no checkout and writes no config (but the first tree
+ * install's strip of our server entries); the old scheme's moves the checkout and writes the configs.
+ */
+export const stagedLine = (fromTree: boolean): string =>
+  fromTree
+    ? "staged: the update plugin's handoff installs it in the record and restarts the service onto it (after the Sabbath rest, in it); no checkout moves and no config is written, but for a host's first tree install, which takes our entries out of the server config"
+    : "staged: the update plugin's handoff moves the checkout, writes the configs and restarts the service (after the Sabbath rest, in it)"
+
 /** The last part of a path. */
 const lastPart = (path: string): string => Option.getOrElse(Arr.last(path.split("/")), () => path)
 
