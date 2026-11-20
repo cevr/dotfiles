@@ -26,7 +26,6 @@
 - New deps: quick health check (recent releases, adoption).
 - Bite PRs: assign and request review from `andrewgoupil`, `antwandaher` and `narminmolina` unless told otherwise.
 - "Undo" reverts only your own last edit to that file. Uncommitted work stays.
-- Orchestration freeze: Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill. Owner exceptions (2026-11-19): the `ask_orchestrator` / `answer_subagent` tools and the `principles` tool in `opencode/mods/orchestrate`; (2026-11-20): the `orchestrator` primary agent as OpenCode's default (its agents.json entry, and the orchestrate plugin's `context`/`generate` hooks and its `compaction` hook that append its section to build's prompt).
 
 ## Isolated workspaces
 

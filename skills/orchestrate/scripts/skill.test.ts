@@ -91,15 +91,6 @@ describe('the kept rules', () => {
   });
 });
 
-test('the freeze is the same sentence in SKILL.md and AGENTS.md, naming its folders', () => {
-  const line = skill.split('\n').find((each) => each.includes('2026-11-29'));
-  expect(line).toBeDefined();
-  const sentence = line!.slice(line!.indexOf('Until 2026-11-29'));
-  expect(sentence.startsWith('Until 2026-11-29')).toBe(true);
-  expect(read(join(REPO, 'AGENTS.md'))).toContain(sentence);
-  for (const folder of ['opencode/mods/orchestrate', 'opencode/cmd/orchestrate', 'opencode/mods/rift', 'skills/orchestrate']) expect(sentence).toContain(`\`${folder}\``);
-});
-
 describe('nothing names what was deleted', () => {
   const deleted: ReadonlyArray<RegExp> = [
     /\bdeparts:/,

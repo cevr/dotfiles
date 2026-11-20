@@ -78,7 +78,7 @@ Every method has a JSON Schema (`rex api describe M --json`, doc 2370-2386). The
 | Device stream through a proxy | `simctl io screenshot` loop on the Mac, drawn in a pane of a Mac session |
 | Few tools; the how-to arrives on open | Keep the skill short; the viewer prints its own usage |
 | Human and agent share control | Not needed while the pane is view-only |
-| MCP orchestration, event log | Does not map. Our orchestrate mod already owns this and is frozen until 2026-11-29 |
+| MCP orchestration, event log | Does not map. Our orchestrate mod already owns this |
 | Electron webview + CDP relay | Does not map. Rex has no web view. The owner's real Chrome through `browse` is our equivalent |
 
 ## 3. Sideshow, and hosting it in Rex
@@ -149,7 +149,6 @@ Sideshow in the browser stays the full showcase (owner note: auditions go on Sid
 - Rex is a preview. The two hosts already differ (API 14 and 16), and `rex resize` and `rex block new` are not implemented (skill guide). Pin nothing to undocumented behavior.
 - Every `rex -S` call costs about 1.5 s. Keep cross-host work in one long-lived script.
 - A Rex connection has full power over the server's account. Do not add `--allow-anonymous` listeners. Giving the workbox control of the Mac (option 2) widens what a workbox agent can reach.
-- The orchestration freeze runs until 2026-11-29. Nothing here touches the frozen folders, and no new tool or hook is proposed.
 
 **Not confirmed.**
 
