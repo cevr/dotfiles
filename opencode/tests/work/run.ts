@@ -127,11 +127,12 @@ const run = Effect.gen(function* () {
   yield* git(work, "push", "-q", "-u", "origin", "main")
   yield* fs.writeFileString(path.join(work, ".git/info/exclude"), "work.toml\n")
   yield* sh(work, [bin, "--json", "init"], { WORK_BASE: work })
-  // The repository's checks for a land: a gate and a slower accept that reports the batch's base.
+  // The repository's checks for a land: a gate and a slower accept that reports the batch's base and fails, since
+  // only a failed accept check wakes the session (a green one says nothing).
   yield* git(work, "config", "user.name", "work")
   yield* git(work, "config", "user.email", "work@example.com")
   yield* git(work, "config", "rift.gate", 'echo " 2 pass"')
-  yield* git(work, "config", "rift.accept", 'sleep 1 && echo " 1 pass since $RIFT_LAND_BASE"')
+  yield* git(work, "config", "rift.accept", 'sleep 1 && echo " 1 fail since $RIFT_LAND_BASE" && exit 1')
   const workspaces = path.join(path.dirname(work), ".work", path.basename(work))
   const workspace = path.join(workspaces, "feat-x")
   const integration = path.join(workspaces, "integrate")

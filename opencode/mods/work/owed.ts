@@ -10,7 +10,7 @@
 // passed since its last run; it does what a loaded host allows (RIFT_POST_LAND_LOAD=loaded) and stays owed.
 // This file holds the rules and the words; model.ts runs them.
 import { Array as Arr, Duration, Option, Schema } from "effect"
-import type { HostLoad, Unit } from "./land.ts"
+import { type HostLoad, LAND, type Unit } from "./land.ts"
 
 /** How often the plugin reads the load while a post-land step is owed. */
 export const CHECK_EVERY = Duration.minutes(1)
@@ -202,7 +202,7 @@ const loadWords = (load: HostLoad, readings: Readings, now: number): string => {
  */
 export const loadedLine = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
   [
-    `rift land: the post-land step after ${branches(unitsOf(owed))} ran loaded (${loadWords(load, readings, now)}): it ran what a loaded host allows, and the rest still waits, so the step stays owed.`,
+    `${LAND}: the post-land step after ${branches(unitsOf(owed))} ran loaded (${loadWords(load, readings, now)}): it ran what a loaded host allows, and the rest still waits, so the step stays owed.`,
     `It runs in full once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes, or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; until then the next land, or every ${minutesOf(LOADED_EVERY)} minutes the minute check, runs it loaded again.`,
   ].join(" ")
 
@@ -211,4 +211,4 @@ export const loadedLine = (owed: OwedPostLand, load: HostLoad, readings: Reading
  * the reading now when it is at or past the cores, else the earlier one that held the step back.
  */
 export const forcedLine = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
-  `rift land: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${loadWords(load, readings, now)}), nice'd like every check.`
+  `${LAND}: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${loadWords(load, readings, now)}), nice'd like every check.`

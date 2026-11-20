@@ -18,6 +18,8 @@ import {
   landCallOf,
   laneAnswer,
   laneBranchOf,
+  laneNote,
+  lanePathOf,
   laneDecision,
   lanesOf,
   type MainBatch,
@@ -176,8 +178,24 @@ describe("the orchestrate tool's description", () => {
   })
 
   test("names the two subagent calls with their description forms", () => {
-    expect(paragraphs[headings.indexOf("implement")]).toContain('subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)"')
+    expect(paragraphs[headings.indexOf("implement")]).toContain('subagent({ agent: "implementor", description: "implementor <unit> r1 (lane: <path>)"')
     expect(paragraphs[headings.indexOf("verify")]).toContain('subagent({ agent: "verifier", description: "verifier <batch> r1"')
+  })
+
+  test("a lane's answer ends with the (lane: <path>) note its implementor's description takes; the note's reader takes the old (rift: <path>) too", () => {
+    const lane: Lane = { path: "/code/.work/app/auth", branch: "run/auth", head: "abc1234", state: "clean" }
+    const answer = laneAnswer("auth", lane, true)
+    expect(answer.split("\n").slice(-2)).toEqual([
+      'Start its implementor: subagent({ agent: "implementor", description: "implementor auth r1 (lane: /code/.work/app/auth)", prompt, background: true }).',
+      "(lane: /code/.work/app/auth)",
+    ])
+    expect(laneNote(lane.path)).toBe("(lane: /code/.work/app/auth)")
+    expect(answer).not.toContain("(rift:")
+    expect([lanePathOf(answer), lanePathOf("implementor auth r1 (rift: /code/.rifts/app/auth)"), lanePathOf("implementor auth r1 (Opus)")]).toEqual([
+      Option.some("/code/.work/app/auth"),
+      Option.some("/code/.rifts/app/auth"),
+      Option.none(),
+    ])
   })
 
   test("is at most 4,000 characters, with no line over 700", () => {
@@ -190,6 +208,8 @@ describe("the orchestrate tool's description", () => {
     for (const sentence of [
       "A named unit that is not ready lands with a warning.",
       "A land does not wait for the deep run or the post-land step:",
+      "they run in the background and wake you only when one fails or needs action:",
+      "no notice means green.",
       "A lane that exists is answered, never made again by hand.",
       "The work tool is for a session that runs no units;",
     ])

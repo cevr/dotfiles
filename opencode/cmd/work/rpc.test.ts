@@ -282,16 +282,17 @@ describe("the rift RPC of the work plugin", () => {
   )
 
   effectTest(
-    "the RPC and the tool share one model: a land over the RPC wakes the session once with its accept check, and a malformed ask is refused in words",
+    "the RPC and the tool share one model: a land over the RPC runs its accept check, which wakes no one when it passes, and a malformed ask is refused in words",
     Effect.scoped(
       Effect.gen(function* () {
-        const { rpc, woken } = yield* start(worldOf())
+        const world = worldOf()
+        const { rpc, woken } = yield* start(world)
         const landed = yield* Schema.decodeUnknownEffect(LandAnswered)(yield* rpc("land", { sessionID: SESSION, rifts: [{ path: "/code/.work/app/feat-x", unit: "x" }] }))
         expect(textOf(landed)).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
-        expect(woken.map((wake) => [wake.sessionID, wake.notice.description])).toEqual([[SESSION, "rift land · accept passed"]])
+        expect([world.landing.steps.some((step) => step.startsWith("accept ")), woken]).toEqual([true, []])
         const malformed = yield* Schema.decodeUnknownEffect(LandAnswered)(yield* rpc("land", { sessionID: SESSION }))
-        expect(malformed).toEqual({ outcome: "failed", message: expect.stringContaining("not a rift land") })
+        expect(malformed).toEqual({ outcome: "failed", message: expect.stringContaining("not a work land") })
       }),
     ),
     TIMEOUT_MS,

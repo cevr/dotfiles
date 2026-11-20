@@ -15,10 +15,11 @@ import {
   ACCEPT,
   GateMissing,
   INTEGRATION,
+  LAND,
   LandRefused,
   LandStopped,
   POST_LAND,
-  acceptedText,
+  acceptFailedText,
   checkAcceptedText,
   checkedText,
   digest,
@@ -288,7 +289,10 @@ export const layer = Layer.effect(
       )
     }
 
-    /** The batch's accept check in the integration Rift (or `checking`, a land by receipts' own), then the wake. Runs in the background. */
+    /**
+     * The batch's accept check in the integration Rift (or `checking`, a land by receipts' own), then the wake when
+     * it failed or did not run: a green one wakes no one (its log stays). Runs in the background.
+     */
     const accept = (
       sessionID: string,
       integration: string,
@@ -301,23 +305,20 @@ export const layer = Layer.effect(
         .withPermits(1)(checking)
         .pipe(
           Effect.flatMap((ran) =>
-            notices.wake(sessionID, {
-              text: acceptedText(units, ran),
-              description: `rift land · accept ${ran.code === 0 ? "passed" : "failed"}`,
-            }),
+            ran.code === 0 ? Effect.void : notices.wake(sessionID, { text: acceptFailedText(units, ran), description: `${LAND} · accept FAILED` }),
           ),
           Effect.catch((failure: RiftFailed) =>
             notices.wake(sessionID, {
-              text: `rift land: the accept check for ${units.map((unit) => unit.branch).join(", ")} did not run: ${failureText(failure)}. The batch is already pushed.`,
-              description: "rift land · accept did not run",
+              text: `${LAND}: the accept check for ${units.map((unit) => unit.branch).join(", ")} did not run: ${failureText(failure)}. The batch is already pushed.`,
+              description: `${LAND} · accept did not run`,
             }),
           ),
         )
 
     /** The wake of a post-land step that could not run. */
     const notRun = (units: ReadonlyArray<Unit>, failure: RiftFailed) => ({
-      text: `rift land: the post-land step after ${branchList(units)} did not run: ${failureText(failure)}. The batch is already pushed; the next land runs it again.`,
-      description: "rift land · post-land did not run",
+      text: `${LAND}: the post-land step after ${branchList(units)} did not run: ${failureText(failure)}. The batch is already pushed; the next land runs it again.`,
+      description: `${LAND} · post-land did not run`,
     })
 
     /** The source's owed post-land step, if any. */
@@ -357,7 +358,7 @@ export const layer = Layer.effect(
      * post-land Rift runs under it. Its phase (`phase`, owed.ts) is its RIFT_POST_LAND_LOAD: on a host loaded
      * past its cores a land runs it `loaded`, and so does the minute check every LOADED_EVERY; a loaded run
      * does what a loaded host allows and leaves it owed. Any other run pays it, unless a newer land owes one
-     * meanwhile. A loaded run that exits 0 with an empty report wakes no one.
+     * meanwhile. A run that exits 0 with an empty report (or none) wakes no one.
      */
     const runOwed = (source: string, trigger: Trigger) => {
       const step = Effect.gen(function* () {
@@ -383,13 +384,14 @@ export const layer = Layer.effect(
         yield* changeOwed((all) => Option.match(Option.liftPredicate(decided, pays), { onNone: () => ran(all, source, ended), onSome: () => pay(all, source, headOf(owed)) }))
         if (result._tag === "Failure") return yield* notices.wake(owed.sessionID, notRun(unitsOf(owed), result.failure))
         const done = result.success
-        const blank = Option.exists(Option.fromUndefinedOr(done.report), (report) => report.trim() === "")
-        if (decided === "loaded" && done.code === 0 && blank) return
+        // A green step wakes no one unless its report has something to say: the step writes one only when work needs doing.
+        const said = Option.exists(Option.fromUndefinedOr(done.report), (report) => report.trim() !== "")
+        if (done.code === 0 && !said) return
         const lines = [postLandedText(unitsOf(owed), done)]
         if (decided === "forced") lines.unshift(forcedLine(owed, load, readings, now))
         if (decided === "loaded") lines.unshift(loadedLine(owed, load, readings, now))
-        const how = { run: "", forced: "", loaded: " loaded" }[decided]
-        yield* notices.wake(owed.sessionID, { text: lines.join("\n"), description: `rift land · post-land ${done.code === 0 ? "ran" : "failed"}${how}` })
+        const how = { run: "", forced: "", loaded: " (loaded)" }[decided]
+        yield* notices.wake(owed.sessionID, { text: lines.join("\n"), description: `${LAND} · post-land ${done.code === 0 ? "needs action" : "FAILED"}${how}` })
       })
       if (trigger === "land") return claim.hold(step)
       return Effect.asVoid(claim.holdIfFree(step))
@@ -416,7 +418,7 @@ export const layer = Layer.effect(
       const { readings, now } = yield* reading
       const due = all.filter((owed) => phase(owed, readings, now, "settled") !== "wait")
       yield* Effect.forEach(due, (owed) => runOwed(owed.source, "settled"), { discard: true })
-    }).pipe(Effect.catch((failure) => Effect.logWarning("rift: the post-land check failed", failure)))
+    }).pipe(Effect.catch((failure) => Effect.logWarning("work: the post-land check failed", failure)))
     yield* Effect.forkIn(Effect.forever(Effect.andThen(Effect.sleep(CHECK_EVERY), check)), scope)
 
     /** Each Rift green, its own branch pushed when `pushBranches` is set; a refused push is named, never fatal. */
@@ -449,15 +451,16 @@ export const layer = Layer.effect(
               Effect.flatMap((outcomes) =>
                 notices.wake(sessionID, {
                   text: checkAcceptedText(config.main, merged, ran, inOrder(units, [...outcomes, ...reds])),
-                  description: `rift land · accept ${ran.code === 0 ? "passed" : "failed"}`,
+                  // A checked land's green result still wakes: its workspaces were pending, and their PRs wait on it.
+                  description: `${LAND} · accept ${ran.code === 0 ? "passed, not pushed" : "FAILED"}`,
                 }),
               ),
             ),
           ),
           Effect.catch((failure: RiftFailed) =>
             notices.wake(sessionID, {
-              text: `rift land: the accept check for ${branchList(merged)} did not run: ${failureText(failure)}. ${config.main} was not pushed; land again.`,
-              description: "rift land · accept did not run",
+              text: `${LAND}: the accept check for ${branchList(merged)} did not run: ${failureText(failure)}. ${config.main} was not pushed; land again.`,
+              description: `${LAND} · accept did not run`,
             }),
           ),
         )

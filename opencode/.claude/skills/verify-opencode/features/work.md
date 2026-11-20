@@ -7,7 +7,7 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 - `work-create`: `{ action: "create", branch }` answers `Created the workspace <path> from <base>, on branch <branch>.`, the workspace under `.work/<repo>/` beside the base (on the workbox, `workrift create <branch>`). A create cut off by an interrupt (a plugin reload) leaves its `work new` to finish, and a create of a name whose record still says `creating` waits for it and answers that workspace, never a `-2` (`mods/work/process/work.test.ts`, the interrupted mid-clone case). When that `work new` is gone (its `.lock-<id>` free: a reboot, a crash), the create fails at once naming `work rm <name>`; a live one that outlasts the wait fails naming it too.
 - `work-list`: `{ action: "list" }` answers `Workspaces of <base>:` with each one's branch and `clean` or its unsaved work.
 - `work-remove`: `{ action: "remove", name }` moves a workspace to the trash; one holding work found nowhere else is refused, naming it, unless `force: true`.
-- `work-land`: `{ action: "land", workspaces }` answers `Landed <n> workspace(s) as one push: <sha> …`, and the accept check wakes the session after the turn.
+- `work-land`: `{ action: "land", workspaces }` answers `Landed <n> workspace(s) as one push: <sha> …`; a failed accept check wakes the session after the turn with `lane land: …` (a green one sends no notice).
 - `work-alias`: a `rift` call takes the same input and gets the same answer as `work`.
 - `no-worktree-tools`: no request offers `opencode_worktree_create`, `_list` or `_remove`.
 
@@ -20,7 +20,7 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 ## Driving it with the world
 
 - **Preconditions:** the work plugin loaded on its memory doubles (one base, a landing config with a gate and an accept check), never beside the rift plugin.
-- **States:** default (create, list by the alias, land) and the accept check's wake. Open, loading, empty, refused and error are `n/a` here: the refusals are in `cmd/work/server.test.ts`.
+- **States:** default (create, list by the alias, land) and a failed accept check's wake. Open, loading, empty, refused and error are `n/a` here: the refusals are in `cmd/work/server.test.ts`.
 - **World suites:** `cmd/work/work.sim.test.ts`
 - **Code:** `cmd/work/`, `tests/plugin-start.test.ts` (its real check that the bare entry starts with the work binary on PATH, among daily's server plugins)
 

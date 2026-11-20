@@ -24,7 +24,7 @@ export const layer = (synthetic: (input: Synthetic) => Effect.Effect<unknown, un
           synthetic({ sessionID, text: notice.text, description: notice.description, metadata: { rift: "land" }, delivery: "steer", resume: true }),
         ).pipe(
           Effect.asVoid,
-          Effect.catchCause((cause) => Effect.logWarning(`rift: could not wake ${sessionID}`, Cause.squash(cause))),
+          Effect.catchCause((cause) => Effect.logWarning(`work: could not wake ${sessionID}`, Cause.squash(cause))),
           Effect.withSpan("Notices.wake"),
         ),
     }),
