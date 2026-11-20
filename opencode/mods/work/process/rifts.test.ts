@@ -9,7 +9,7 @@ import { join, resolve } from "node:path"
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
-import { check, riftsLaws } from "../laws.ts"
+import { check, riftsLaws, savedWorkCase } from "../laws.ts"
 import { Rifts } from "../service.ts"
 import * as ProcessRifts from "./rifts.ts"
 
@@ -66,6 +66,8 @@ const bench = (workrift: boolean) =>
       mkdirSync(plain)
       return {
         scratch,
+        origin,
+        git: (cwd: string, ...args: ReadonlyArray<string>) => Effect.sync(() => sh(cwd, env, "git", ...args)),
         layer: ProcessRifts.layer({ workrift, env }),
         source: sh(source, env, "pwd", "-P").trim(),
         inside: join(source, "src"),
@@ -195,6 +197,11 @@ test("workrift's init, create, refresh and deps run at nice 10 and in the idle I
 if (runnable) {
   riftsLaws("process Rifts on rift", () => bench(false), 30_000)
   riftsLaws("process Rifts on workrift", () => bench(true), 30_000)
+  test(
+    "inspect: a commit a land put on origin's main from elsewhere, or a clean merge of pushed parents, is not unpushed; a commit behind such a merge is",
+    () => check(() => bench(false), savedWorkCase),
+    30_000,
+  )
   test(
     "a pack the source's multi-pack index names and the copy dropped is in the new Rift, which reads every object",
     () =>

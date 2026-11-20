@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schedule, Schema } from "effect"
 import { gitClone, gitInit, withProcessEnv } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
-import { check, riftsLaws } from "../laws.ts"
+import { check, riftsLaws, savedWorkCase } from "../laws.ts"
 import * as MemoryRifts from "../memory/rifts.ts"
 import { Landing, RiftFailed, Rifts } from "../service.ts"
 import type { Workspace } from "../workspace.ts"
@@ -486,6 +486,12 @@ if (runnable) {
             expect(yield* out(made, `${made.root}/code/.work/app/.work-trash/${trashed[0] ?? ""}`, "git", "log", "-1", "--format=%s")).toBe("after the inspect")
           }),
         ),
+      TIMEOUT,
+    )
+
+    test(
+      "inspect: a commit a land put on origin's main from elsewhere, or a clean merge of pushed parents, is not unpushed; a commit behind such a merge is",
+      () => check(plain, (made) => savedWorkCase({ source: made.base, origin: made.origin, scratch: made.root, git: (cwd, ...args) => made.sh(cwd, "git", ...args) })),
       TIMEOUT,
     )
 

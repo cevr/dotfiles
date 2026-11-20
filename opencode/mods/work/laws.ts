@@ -43,6 +43,59 @@ export const check = <B extends { readonly layer: Layer.Layer<Rifts> }, A, E>(
     ),
   )
 
+/** What the saved-work case needs of a process bench: Git in any folder, the source's origin, and a scratch folder. */
+export interface GitBench {
+  readonly source: string
+  readonly origin: string
+  readonly scratch: string
+  readonly git: (cwd: string, ...args: ReadonlyArray<string>) => Effect.Effect<string>
+}
+
+/**
+ * A workspace whose commit a land in another checkout put on origin's main, and one whose only commit found nowhere
+ * else is a clean merge of pushed parents, have nothing unpushed; a commit hidden behind such a merge still is, by
+ * name (remove refused both, 2026-11-20). For a process implementation, whose workspaces are Git checkouts.
+ */
+export const savedWorkCase = (made: GitBench) =>
+  Effect.gen(function* () {
+    const rifts = yield* Rifts
+    const git = made.git
+    const elsewhere = `${made.scratch}/elsewhere`
+    yield* git(made.scratch, "clone", "-q", made.origin, elsewhere)
+    const advanceMain = (message: string) =>
+      Effect.gen(function* () {
+        yield* git(elsewhere, "commit", "-q", "--allow-empty", "-m", message)
+        yield* git(elsewhere, "push", "-q", "origin", "HEAD:refs/heads/main")
+      })
+    const mergeMain = (path: string) =>
+      git(path, "fetch", "-q", "origin").pipe(Effect.andThen(git(path, "merge", "-q", "--no-edit", "origin/main")))
+    const subjects = (path: string) => rifts.inspect(path).pipe(Effect.map((workspace) => workspace.unpushed.map((line) => line.slice(line.indexOf(" ") + 1))))
+
+    // Landed: its branch never pushed; the land merged it elsewhere and pushed main from there.
+    const landed = yield* rifts.create({ source: made.source, from: made.source, name: "landed", branch: "landed" })
+    yield* git(landed, "commit", "-q", "--allow-empty", "-m", "landed")
+    yield* git(elsewhere, "fetch", "-q", landed, "landed")
+    yield* git(elsewhere, "merge", "-q", "--no-ff", "--no-edit", "FETCH_HEAD")
+    yield* git(elsewhere, "push", "-q", "origin", "HEAD:refs/heads/main")
+    expect(yield* subjects(landed)).toEqual([])
+
+    // Merged: its branch pushed, then origin's newer main merged in here, cleanly, and not pushed.
+    const merged = yield* rifts.create({ source: made.source, from: made.source, name: "merged", branch: "merged" })
+    yield* git(merged, "commit", "-q", "--allow-empty", "-m", "merged")
+    yield* git(merged, "push", "-q", made.origin, "HEAD:refs/heads/merged")
+    yield* advanceMain("later")
+    yield* mergeMain(merged)
+    expect(yield* git(merged, "rev-list", "--count", "HEAD", "--not", "--remotes")).toBe("1\n")
+    expect(yield* subjects(merged)).toEqual([])
+
+    // A commit only here, then a clean merge of pushed main over it: the commit is still unpushed.
+    const hidden = yield* rifts.create({ source: made.source, from: made.source, name: "hidden", branch: "hidden" })
+    yield* git(hidden, "commit", "-q", "--allow-empty", "-m", "only here behind a merge")
+    yield* advanceMain("again")
+    yield* mergeMain(hidden)
+    expect(yield* subjects(hidden)).toEqual(["only here behind a merge"])
+  })
+
 /** `bench` makes a fresh implementation over a fresh warm source. */
 export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, timeout = 5_000) =>
   describe(`${name} keeps the Rifts laws`, () => {
