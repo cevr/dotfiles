@@ -8,7 +8,7 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -214,7 +214,18 @@ describe("workrift with no backend file", () => {
       // step once more, its last call, and with none set does nothing else. That call is the only difference.
       const deps = after.find((step) => step.argv === "deps")
       expect(deps?.calls.at(-1)).toMatch(/^git \[-C\] \[[^\]]+\] \[config\] \[--get\] \[workrift\.warm\]$/)
-      expect(after.map((step) => (step === deps ? { ...step, calls: step.calls.slice(0, -1) } : step))).toEqual(before)
+      // refresh and create now say once when the source has no warm step and never warmed (Bite base re-created
+      // cold, 2026-11-19): that line, and the two reads it makes (the warm step, the marker's path), are theirs.
+      const note = "workrift: <S>/root/app has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold\n"
+      const marker = "git [-C] [<S>/root/app] [rev-parse] [--path-format=absolute] [--git-path] [workrift-warmed-tree]"
+      const withoutNote = (step: (typeof after)[number]) => {
+        if (step.argv !== "refresh" && !step.argv.startsWith("create ")) return step
+        expect(step.err.split(note).length - 1, step.argv).toBe(1)
+        const at = step.calls.indexOf(marker)
+        expect(step.calls[at - 1], step.argv).toBe("git [-C] [<S>/root/app] [config] [--get] [workrift.warm]")
+        return { ...step, err: step.err.replace(note, ""), calls: step.calls.filter((_, i) => i !== at && i !== at - 1) }
+      }
+      expect(after.map((step) => (step === deps ? { ...step, calls: step.calls.slice(0, -1) } : withoutNote(step)))).toEqual(before)
     },
     60_000,
   )
@@ -506,6 +517,107 @@ describeWork("workrift with the work backend", () => {
       const ran = w.wr(path, "deps")
       expect(ran.code, ran.err).toBe(0)
       expect(existsSync(warmed) ? readFileSync(warmed, "utf8") : "").toBe(before)
+    },
+    30_000,
+  )
+
+  /** The Bite row of workrift's table, for a bench: its warm step and the file its .env links to. */
+  const biteSettings = (w: ReturnType<typeof workBench>) => ({
+    warm: `TURBO_CACHE=local:rw TURBO_CACHE_DIR=${w.root}/.cache/turbo bun run compile`,
+    env: join(w.home, ".config/bite-workbox/bite-env/.env"),
+  })
+  /** A `bun` first on PATH that logs where it ran, its turbo cache folder and its arguments. */
+  const fakeBun = (w: ReturnType<typeof workBench>) => {
+    const log = join(w.dir, "bun-calls")
+    exe(join(w.bin, "bun"), `#!/bin/sh\nprintf '%s %s %s\\n' "$(pwd -P)" "$TURBO_CACHE_DIR" "$*" >>'${log}'\n`)
+    return () => lines(existsSync(log) ? readFileSync(log, "utf8") : "")
+  }
+
+  test(
+    "init of a work base (no .rift) the table names gives it its warm step and .env link, then warms it (Bite base re-created cold, 2026-11-19)",
+    () => {
+      const w = workBench("init-bite", work)
+      const bun = fakeBun(w)
+      const want = biteSettings(w)
+      const bite = join(w.root, "bite")
+      const ran = w.wr(w.dir, "init", w.origin, bite)
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(join(bite, ".rift"))).toBe(false)
+      expect(sh(bite, w.env, "git", "config", "--get", "workrift.warm").trim()).toBe(want.warm)
+      expect(lstatSync(join(bite, ".env")).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(join(bite, ".env"))).toBe(want.env)
+      // The refresh init ends with ran the warm step in the base, with the shared turbo cache.
+      expect(bun()).toEqual([`${bite} ${w.root}/.cache/turbo run compile`])
+      expect(ran.err).not.toContain("start cold")
+      // The link is no change of the base: a create runs, and no note of a cold base.
+      expect(sh(bite, w.env, "git", "status", "--porcelain")).toBe("")
+      const made = w.wr(bite, "create", "feat/warm")
+      expect(made.code, made.err).toBe(0)
+      expect(made.err).not.toContain("start cold")
+    },
+    30_000,
+  )
+
+  test(
+    "a base with no warm step and no marker: refresh and create say in one line that its workspaces start cold, and succeed",
+    () => {
+      const w = workBench("cold", work)
+      const refreshed = w.wr(w.app, "refresh")
+      expect(refreshed.code, refreshed.err).toBe(0)
+      const note = `workrift: ${w.app} has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold`
+      expect(lines(refreshed.err).filter((line) => line.includes("start cold"))).toEqual([note])
+      const made = w.wr(w.app, "create", "feat/cold")
+      expect(made.code, made.err).toBe(0)
+      expect(lines(made.err).filter((line) => line.includes("start cold"))).toEqual([note])
+      // A base the table does not name gets nothing from init.
+      expect(run(w.app, w.env, ["git", "config", "--get", "workrift.warm"]).code).not.toBe(0)
+      expect(existsSync(join(w.app, ".env"))).toBe(false)
+    },
+    30_000,
+  )
+
+  test(
+    "bootstrap's path: check finds a work base with no .rift, and settings gives it the same warm step and link as init",
+    () => {
+      const w = workBench("bootstrap-path", work)
+      const want = biteSettings(w)
+      const bite = w.base("bite")
+      const env = { ...w.env, WORKRIFT_SOURCE: bite }
+      // As bootstrap.sh runs them, from no checkout.
+      expect(run(w.dir, env, [SCRIPT, "check"]).code).toBe(0)
+      const ran = run(w.dir, env, [SCRIPT, "settings"])
+      expect(ran.code, ran.err).toBe(0)
+      expect(ran.err).toBe("")
+      expect(sh(bite, w.env, "git", "config", "--get", "workrift.warm").trim()).toBe(want.warm)
+      expect(readlinkSync(join(bite, ".env"))).toBe(want.env)
+      // Again: nothing changes, nothing is said.
+      const again = run(w.dir, env, [SCRIPT, "settings"])
+      expect({ code: again.code, err: again.err }).toEqual({ code: 0, err: "" })
+      expect(sh(bite, w.env, "git", "status", "--porcelain")).toBe("")
+      // bootstrap carries no copy of its own and no .rift test: it asks workrift.
+      const bootstrap = readFileSync(join(repo, "workbox/bootstrap.sh"), "utf8")
+      expect(bootstrap).not.toContain("workrift.warm")
+      expect(bootstrap).not.toContain(".rift")
+      expect(bootstrap).toContain(`"$local_bin_dir/workrift" settings`)
+    },
+    30_000,
+  )
+
+  test(
+    "settings keeps a warm step set to something else and an .env of its own, and reports each",
+    () => {
+      const w = workBench("kept", work)
+      const want = biteSettings(w)
+      const bite = w.base("bite")
+      sh(bite, w.env, "git", "config", "workrift.warm", "make warm")
+      writeFileSync(join(bite, ".env"), "own\n")
+      const ran = run(w.dir, { ...w.env, WORKRIFT_SOURCE: bite }, [SCRIPT, "settings"])
+      expect(ran.code, ran.err).toBe(0)
+      expect(sh(bite, w.env, "git", "config", "--get", "workrift.warm").trim()).toBe("make warm")
+      expect(ran.err).toContain(`${bite} keeps its warm step 'make warm'; workrift's table has '${want.warm}'`)
+      expect(lstatSync(join(bite, ".env")).isSymbolicLink()).toBe(false)
+      expect(readFileSync(join(bite, ".env"), "utf8")).toBe("own\n")
+      expect(ran.err).toContain(`${bite}/.env is a file of its own`)
     },
     30_000,
   )

@@ -20,7 +20,8 @@
 #   workrift.main     default branch (default: origin HEAD)
 #   workrift.install  dependency install (default: from the lock file)
 #   workrift.warm     build step after the install, run by refresh and create
-#                     (default: none)
+#                     (default: none; init and `settings` set it from the
+#                     table in base_settings)
 #
 # The backend is one word in the backend file, `rift` (also when the file is
 # absent) or `work`. Under `work` (Ergo's workspaces, the binary $WORK, else
@@ -77,6 +78,8 @@ usage: workrift <command>
   prune [--dry-run]           archive and remove workspaces idle for two days
   sources                     list warm sources
   check                       check the warm source
+  settings                    give the warm source its host settings from workrift's
+                              table (warm step, .env link); init does it too
 
 The warm source is WORKRIFT_SOURCE, else the Rift root of the current
 directory, else the warm source with the same origin as the current checkout.
@@ -419,6 +422,7 @@ create_workspace() {
   esac
   # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
+  note_cold "$source_path"
   warm_build "$workspace" "$source_path" >&2
   printf '%s\n' "$workspace"
 }
@@ -435,7 +439,56 @@ initialize_source() {
   else
     rift init --here "$source_path"
   fi
+  apply_base_settings "$source_path"
   refresh_source "$source_path"
+}
+
+# A base's host settings, by its path: the warm step (base_warm) and the file
+# its .env links to (base_env); both empty for a base the table does not name.
+# Goes away once Ergo's work declares the warm step in the base's work.toml.
+base_settings() {
+  base_warm=
+  base_env=
+  case "$1" in
+    "$workrift_root/bite")
+      base_warm="TURBO_CACHE=local:rw TURBO_CACHE_DIR=$workrift_root/.cache/turbo bun run compile"
+      base_env="$HOME/.config/bite-workbox/bite-env/.env"
+      ;;
+  esac
+}
+
+# The one writer of a base's host settings, run by init and by bootstrap
+# (`workrift settings`): the .env link and workrift.warm, from base_settings.
+# A warm step or an .env already set to something else stays, and is reported.
+apply_base_settings() {
+  base_settings "$1"
+  if [ -n "$base_env" ]; then
+    if [ -e "$1/.env" ] && [ ! -L "$1/.env" ]; then
+      printf 'workrift: %s/.env is a file of its own; left as it is, not linked to %s\n' "$1" "$base_env" >&2
+    else
+      ln -sfn "$base_env" "$1/.env"
+      # The link is the host's, never a change of the base's.
+      exclude_file=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude)
+      mkdir -p "$(dirname "$exclude_file")"
+      grep -qxF '/.env' "$exclude_file" 2>/dev/null || printf '/.env\n' >>"$exclude_file"
+    fi
+  fi
+  if [ -n "$base_warm" ]; then
+    current=$(warm_command "$1")
+    if [ -z "$current" ]; then
+      git -C "$1" config workrift.warm "$base_warm"
+    elif [ "$current" != "$base_warm" ]; then
+      printf "workrift: %s keeps its warm step '%s'; workrift's table has '%s'\n" "$1" "$current" "$base_warm" >&2
+    fi
+  fi
+}
+
+# One line when the base has no warm step and never warmed: its workspaces
+# start cold (no build output).
+note_cold() {
+  if [ -z "$(warm_command "$1")" ] && [ ! -s "$(warmed_tree_file "$1")" ]; then
+    printf 'workrift: %s has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold\n' "$1" >&2
+  fi
 }
 
 # One writer at a time: a snapshot taken while another command moves the source
@@ -478,6 +531,8 @@ refresh_source() {
     : >"$(warmed_tree_file "$source_path")"
     run_warm "$source_path" "$warm"
     git -C "$source_path" rev-parse 'HEAD^{tree}' >"$(warmed_tree_file "$source_path")"
+  else
+    note_cold "$source_path"
   fi
   printf 'Warm source is ready at %s.\n' "$source_path"
 }
@@ -1473,6 +1528,12 @@ case "$command" in
   check)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
     check_source
+    ;;
+  settings)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    source_path=$(resolve_source)
+    require_source "$source_path"
+    apply_base_settings "$source_path"
     ;;
   --help | -h)
     usage
