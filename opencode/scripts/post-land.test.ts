@@ -94,7 +94,7 @@ const afterGreen = (text: string) => {
 }
 
 const UP_TO_DATE = ["upstream: up to date; prime-look has every commit of upstream/dev.", "upstream.json: 0 commits past the fork's checkout.", "fork work: none."]
-const MERGED: Outcome = { kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12, pushed: true }
+const MERGED: Outcome = { kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12 }
 const MERGED_LINE = "upstream: merged 12 commits into prime-look (aaaaaaaaaa -> bbbbbbbbbb) and pushed prime-look; the next install builds it."
 const HELD = "upstream: held; the deep run is red at c0ffee000000, and a merge would make every file due again. The next land tries again."
 
@@ -192,7 +192,7 @@ describe("the post-land step", () => {
       ...NONE,
       droppable: [{ commit: "80da76e442", pr: 63209, what: "a subagent waiting on its own background work", by: "abcdef1234567", merged: true }],
     }
-    const { steps, calls } = stand({ kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12, pushed: true }, { work })
+    const { steps, calls } = stand({ kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12 }, { work })
     const text = await postLand(steps)
     expect(afterGreen(text).slice(0, 3)).toEqual([
       "upstream: merged 12 commits into prime-look (aaaaaaaaaa -> bbbbbbbbbb) and pushed prime-look; the next install builds it.",
@@ -203,9 +203,11 @@ describe("the post-land step", () => {
     expect(calls.at(-2)).toBe("work before0000 true")
   })
 
-  test("a merged but unpushed fork says to push it", async () => {
-    const { steps } = stand({ kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 2, pushed: false })
-    expect(afterGreen(await postLand(steps))[0]).toBe("upstream: merged 2 commits into prime-look (aaaaaaaaaa -> bbbbbbbbbb), but the push to origin failed; push prime-look from the fork.")
+  test("a merge origin refused says why, once, and hands the held merge on", async () => {
+    const { steps } = stand({ kind: "stuck", reason: "the push to origin failed: ! [remote rejected] prime-look (pre-receive hook declined)", merge: "bbbbbbbbbbbb", upstream: "u" })
+    const lines = afterGreen(await postLand(steps))
+    expect(lines[0]).toBe(`upstream: the merge is green but did not land (the push to origin failed: ! [remote rejected] prime-look (pre-receive hook declined)); kept on daily/upstream-merge. Report: ${REPORT}`)
+    expect(lines.filter((line) => line.includes("pre-receive hook declined"))).toHaveLength(1)
   })
 
   test("a conflict names its files and report, and hands the orchestrator a fork Rift unit", async () => {

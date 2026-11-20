@@ -2,13 +2,14 @@
 // `prime-look` before the build.
 //
 // The merge happens in a worktree of the fork of its own (detached, kept between runs so its
-// node_modules stay warm), never in the checkout `OPENCODE_DEV` builds. A conflict is aborted; a
-// clean merge must pass the fork's typecheck (packages/tui, core, plugin) and the dotfiles
-// acceptance tests most exposed to host changes, run against the merged worktree with the mods linked
-// to it, on a calm host, a failed file rerun once (`acceptance`). Only then does
-// `prime-look` fast-forward to the merge and go to origin. A conflict or a red check leaves
-// `prime-look` where it was and writes the report an agent resolves it from; the install goes on
-// with the fork as it is, so the merge never blocks it.
+// node_modules stay warm), never in the checkout `OPENCODE_DEV` builds, and starts from origin's
+// prime-look. A conflict is aborted; a clean merge must pass the fork's `bun run check` (lint and
+// typecheck, what its pre-push hook runs) and the dotfiles acceptance tests most exposed to host
+// changes, run against the merged worktree with the mods linked to it, on a calm host, a failed file
+// rerun once (`acceptance`). Only then does the merge go to origin, and only once origin holds it does
+// `prime-look` fast-forward to it; when origin moved meanwhile, the merge starts over from its head. A
+// conflict, a red check or a push that fails leaves `prime-look` where it was and writes the report an
+// agent resolves it from; the install goes on with the fork as it is, so the merge never blocks it.
 //
 // Only the fork's owner runs it (the Mac, `FORK_OWNER`); the workbox pulls origin prime-look.
 // Before it, on every host, `syncFork` fast-forwards prime-look to origin/prime-look, so the merge
@@ -40,7 +41,7 @@ export type Outcome =
   | { readonly kind: "conflict"; readonly files: ReadonlyArray<string>; readonly upstream: string }
   | { readonly kind: "red"; readonly check: string; readonly merge: string; readonly upstream: string }
   | { readonly kind: "stuck"; readonly reason: string; readonly merge: string; readonly upstream: string }
-  | { readonly kind: "merged"; readonly from: string; readonly merge: string; readonly commits: number; readonly pushed: boolean }
+  | { readonly kind: "merged"; readonly from: string; readonly merge: string; readonly commits: number }
 
 export interface Options {
   /** The fork checkout (`OPENCODE_DEV`); its repository gets the worktree, its remotes are read. */
@@ -94,18 +95,32 @@ const runner = (env: GitEnv = process.env) => {
 type Runner = ReturnType<typeof runner>
 
 /**
- * Pushes `BRANCH` to origin by origin's fetch URL, never forced, and moves `origin/<BRANCH>` to `merge` as a push
- * by the remote's name would. By the URL, not the name: an adopted copy (the fork, prime-look) has the push URL
- * work gives every workspace, which refuses each push (`no-push:workspaces-never-push-origin`); the land pushes
- * the same way (mods/work/process/landing.ts `pushToOrigin`).
+ * Pushes the commit `merge` to origin's `BRANCH` by origin's fetch URL, never forced, so origin refuses it once
+ * it has moved past where the merge started, and moves `origin/<BRANCH>` to `merge` as a push by the remote's
+ * name would. By the URL, not the name: an adopted copy (the fork, prime-look) has the push URL work gives every
+ * workspace, which refuses each push (`no-push:workspaces-never-push-origin`); the land pushes the same way
+ * (mods/work/process/landing.ts `pushToOrigin`). With `--no-verify`: the fork's pre-push hook runs `bun run
+ * check` (lint and typecheck, which `forkChecks` already ran on this merge) and a check of the pusher's Bun
+ * version, which says nothing of the merge.
  */
 const pushOrigin = ({ git }: Runner, fork: string, merge: string) => {
   const origin = git(fork, "remote", "get-url", "origin")
   if (!origin.ok) return origin
-  const pushed = git(fork, "push", "--quiet", origin.out, `refs/heads/${BRANCH}:refs/heads/${BRANCH}`)
+  const pushed = git(fork, "push", "--no-verify", origin.out, `${merge}:refs/heads/${BRANCH}`)
   if (pushed.ok) git(fork, "update-ref", `refs/remotes/origin/${BRANCH}`, merge)
   return pushed
 }
+
+/** Fetches origin's `BRANCH` into `origin/<BRANCH>`, forced as a fetch by the remote's name is. */
+const fetchOrigin = ({ git }: Runner, fork: string) => git(fork, "fetch", "--quiet", "origin", `+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}`)
+
+/** The lines of git's stderr that say why a push failed: its hints and its `To <url>` line left out. */
+const pushCause = (err: string) =>
+  err
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("hint:") && !line.startsWith("To "))
+    .join(" · ")
 
 /** The worktree that has `refs/heads/<branch>` checked out, if any. */
 const checkedOut = ({ must }: Runner, fork: string, branch: string): string | undefined => {
@@ -117,14 +132,14 @@ const checkedOut = ({ must }: Runner, fork: string, branch: string): string | un
   return undefined
 }
 
-/** A detached worktree of the fork at `BRANCH`: the one from the last run when it is still there. */
-const prepareWorktree = ({ git, must }: Runner, fork: string, dir: string) => {
+/** A worktree of the fork detached at `base`: the one from the last run when it is still there. */
+const prepareWorktree = ({ git, must }: Runner, fork: string, dir: string, base: string) => {
   const registered = must(fork, "worktree", "list", "--porcelain")
     .split("\n")
     .some((line) => line === `worktree ${dir}`)
   if (registered && existsSync(join(dir, ".git"))) {
     git(dir, "merge", "--abort")
-    must(dir, "checkout", "--detach", "--force", BRANCH)
+    must(dir, "checkout", "--detach", "--force", base)
     return
   }
   // A directory left without its registration (or the reverse) is ours: start it over. Never the
@@ -133,7 +148,7 @@ const prepareWorktree = ({ git, must }: Runner, fork: string, dir: string) => {
   rmSync(dir, { recursive: true, force: true })
   must(fork, "worktree", "prune")
   mkdirSync(dirname(dir), { recursive: true })
-  must(fork, "worktree", "add", "--detach", dir, BRANCH)
+  must(fork, "worktree", "add", "--detach", dir, base)
 }
 
 const writeReport = (options: Options, lines: ReadonlyArray<string>) => {
@@ -148,7 +163,7 @@ const reportHeader = (options: Options, title: string, upstream: string, base: s
   `Written by \`bun run daily\` (dotfiles/opencode/scripts/upstream.ts) on ${new Date().toISOString()}.`,
   "",
   `- fork: ${options.fork}`,
-  `- ${BRANCH}: ${base} (unchanged; the install built the fork as it was)`,
+  `- origin ${BRANCH}: ${base} (where the merge started; the fork checkout unchanged, the install built it as it was)`,
   `- ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}: ${upstream}`,
   "",
 ]
@@ -156,110 +171,186 @@ const reportHeader = (options: Options, title: string, upstream: string, base: s
 /** `Options.landing` with no lock: the step runs as is. */
 export const unlocked = <A>(step: () => A): A => step()
 
-/** Runs the step; never throws for a merge that cannot land, only for a broken fork checkout. */
-export const mergeUpstream = async (options: Options): Promise<Outcome> => {
-  const { fork, log } = options
-  if (options.skip) return { kind: "skipped", reason: "--no-upstream" }
-  if (!ownsFork(options.host)) return { kind: "skipped", reason: `${options.host} does not own the fork; it pulls origin ${BRANCH}` }
-  const run = runner(options.env)
-  const { git, must } = run
+/** How many merges the step starts, each from origin's head, while origin keeps moving under them. */
+export const ATTEMPTS = 3
 
-  const fetched = git(fork, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
+/** One try's answer: an outcome, or `moved` when origin moved past where the merge started and refused it. */
+type Try = Outcome | { readonly kind: "moved"; readonly from: string; readonly to: string; readonly merge: string }
+
+/** Where one try's merge stands: its upstream, origin's head it started from, and prime-look's commit then. */
+interface Start {
+  readonly upstream: string
+  readonly base: string
+  readonly local: string
+}
+
+/** Keeps `merge` on `HELD_BRANCH` and writes the report that says why it did not land. */
+const holdMerge = (options: Options, run: Runner, start: Start, merge: string, title: string, detail: ReadonlyArray<string>) => {
+  run.must(options.fork, "branch", "--force", HELD_BRANCH, merge)
+  writeReport(options, [...reportHeader(options, title, start.upstream, start.base), `The merge is kept on branch \`${HELD_BRANCH}\` (${merge}).`, "", ...detail])
+}
+
+/** Aborts a merge that conflicts, puts the worktree back at the base and reports the files. */
+const reportConflict = (options: Options, run: Runner, start: Start, said: string): Outcome => {
+  const { git, must } = run
+  const files = git(options.worktree, "diff", "--name-only", "--diff-filter=U").out.split("\n").filter((file) => file !== "")
+  git(options.worktree, "merge", "--abort")
+  must(options.worktree, "checkout", "--detach", "--force", start.base)
+  options.log(`upstream: the merge conflicts in ${files.length} files; ${BRANCH} unchanged`)
+  for (const file of files) options.log(`  ${file}`)
+  writeReport(options, [
+    ...reportHeader(options, `Upstream merge conflicts in ${files.length} files`, start.upstream, start.base),
+    "## Conflicting files",
+    "",
+    ...(files.length === 0 ? [`(none listed; git said: ${said})`] : files.map((file) => `- ${file}`)),
+    "",
+    "## To resolve",
+    "",
+    `In a checkout of ${BRANCH} (not the one a build is using): \`git fetch ${UPSTREAM_REMOTE} && git merge ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}\`, resolve, run the checks, push origin ${BRANCH}. The next \`bun run daily\` then finds ${BRANCH} current.`,
+    "",
+    "Prefer upstream (opencode/AGENTS.md): where upstream now does what a fork change does, take upstream's and drop ours, keeping only a difference the owner relies on; tell the owner what changes for them before dropping ours, and list each dropped or slimmed fork change in the hand-back.",
+  ])
+  return { kind: "conflict", files, upstream: start.upstream }
+}
+
+/**
+ * Lands a green merge: origin first, then prime-look, so the checkout only ever moves to a commit origin
+ * holds. A push origin refused because it moved past the base answers `moved`; any other failed push is
+ * reported once with its cause, prime-look unchanged.
+ */
+const landMerge = (options: Options, run: Runner, start: Start, merge: string, commits: number): Try => {
+  const { fork, log } = options
+  const { git, must } = run
+  const pushed = pushOrigin(run, fork, merge)
+  if (!pushed.ok) {
+    const now = fetchOrigin(run, fork).ok ? must(fork, "rev-parse", `refs/remotes/origin/${BRANCH}`) : start.base
+    if (now !== start.base) return { kind: "moved", from: start.base, to: now, merge }
+    const reason = `the push to origin failed: ${pushCause(pushed.err || pushed.out)}`
+    log(`upstream: the merge is green but did not land: ${reason}; ${BRANCH} unchanged`)
+    holdMerge(options, run, start, merge, "Upstream merge is green but its push to origin failed", ["## Why", "", "```", pushed.err || pushed.out, "```"])
+    return { kind: "stuck", reason, merge, upstream: start.upstream }
+  }
+  // Fast-forward prime-look where it is checked out (the working tree follows), else the ref alone,
+  // compared against where it was so a branch that moved meanwhile is never overwritten.
+  const holder = checkedOut(run, fork, BRANCH)
+  const moved = options.landing(() => {
+    const forwarded = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, merge, start.local) : git(holder, "merge", "--ff-only", merge)
+    // The checkout's packages follow its new lockfile: the dotfiles tests run against the checkout load them.
+    if (forwarded.ok && holder !== undefined && existsSync(join(holder, "bun.lock"))) {
+      const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, env: { ...run.env }, stdout: "pipe", stderr: "pipe" })
+      if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed after the fast-forward: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
+    }
+    return forwarded
+  })
+  if (!moved.ok) {
+    const reason = `origin has the merge, but ${BRANCH} could not fast-forward to it${holder === undefined ? "" : ` in ${holder}`}: ${moved.err || moved.out}`
+    log(`upstream: the merge is green but ${reason}`)
+    holdMerge(options, run, start, merge, "Upstream merge is on origin but the fork checkout did not follow", ["## Why", "", reason])
+    return { kind: "stuck", reason, merge, upstream: start.upstream }
+  }
+  rmSync(options.report, { force: true })
+  log(`upstream: ${BRANCH} ${start.base.slice(0, 10)} -> ${merge.slice(0, 10)}, pushed to origin`)
+  return { kind: "merged", from: start.base, merge, commits }
+}
+
+/** Where a try starts, or why it does not: origin's head, unless prime-look has commits origin lacks. */
+const startOf = (options: Options, run: Runner, upstream: string): Start | Outcome => {
+  const { fork, log } = options
+  const { must } = run
+  const fetched = fetchOrigin(run, fork)
   if (!fetched.ok) {
-    log(`upstream: fetch failed, building the fork as it is: ${fetched.err}`)
+    log(`upstream: fetching origin ${BRANCH} failed, building the fork as it is: ${fetched.err}`)
     return { kind: "fetch-failed", error: fetched.err }
   }
-  const tracking = `refs/remotes/${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`
-  const upstream = must(fork, "rev-parse", tracking)
-  const base = must(fork, "rev-parse", `refs/heads/${BRANCH}`)
-  const commits = Number(must(fork, "rev-list", "--count", `${base}..${upstream}`))
+  // The merge starts from origin's head, so what it pushes is a fast-forward of origin. A prime-look with
+  // commits origin lacks is left alone: the merge would publish them, or the checkout could not follow it.
+  const base = must(fork, "rev-parse", `refs/remotes/origin/${BRANCH}`)
+  const local = must(fork, "rev-parse", `refs/heads/${BRANCH}`)
+  const unpublished = Number(must(fork, "rev-list", "--count", `${base}..${local}`))
+  if (unpublished === 0) return { upstream, base, local }
+  const reason = `${BRANCH} has ${plural(unpublished, "commit")} not on origin; push or drop them, and the next run merges`
+  log(`upstream: skipped: ${reason}`)
+  return { kind: "skipped", reason }
+}
+
+/** A clean merge in the worktree, not yet checked: where it started, its commit, and the upstream commits it brings. */
+interface Made {
+  readonly start: Start
+  readonly merge: string
+  readonly commits: number
+}
+
+/** One try's merge: upstream into origin's head in the worktree, or the outcome that ends the step before any check. */
+const makeMerge = (options: Options, run: Runner, upstream: string): Made | Outcome => {
+  const { log } = options
+  const { git, must } = run
+  const start = startOf(options, run, upstream)
+  if ("kind" in start) return start
+  const commits = Number(must(options.fork, "rev-list", "--count", `${start.base}..${upstream}`))
   if (commits === 0) {
     log(`upstream: ${BRANCH} has every commit of ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`)
     if (!options.dryRun) rmSync(options.report, { force: true })
     return { kind: "up-to-date" }
   }
   if (options.dryRun) {
-    log(`upstream: would merge ${commits} commits of ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH} (${upstream.slice(0, 10)}) into ${BRANCH} (${base.slice(0, 10)})`)
+    log(`upstream: would merge ${commits} commits of ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH} (${upstream.slice(0, 10)}) into ${BRANCH} (${start.base.slice(0, 10)})`)
     return { kind: "would-merge", commits, upstream }
   }
-
-  log(`upstream: merging ${commits} commits of ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH} into ${BRANCH} in ${options.worktree}`)
-  prepareWorktree(run, fork, options.worktree)
+  log(`upstream: merging ${commits} commits of ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH} into ${BRANCH} (${start.base.slice(0, 10)}) in ${options.worktree}`)
+  prepareWorktree(run, options.fork, options.worktree, start.base)
   const merged = git(options.worktree, "merge", "--no-edit", upstream)
-  if (!merged.ok) {
-    const files = git(options.worktree, "diff", "--name-only", "--diff-filter=U").out.split("\n").filter((file) => file !== "")
-    git(options.worktree, "merge", "--abort")
-    must(options.worktree, "checkout", "--detach", "--force", BRANCH)
-    log(`upstream: the merge conflicts in ${files.length} files; ${BRANCH} unchanged`)
-    for (const file of files) log(`  ${file}`)
-    writeReport(options, [
-      ...reportHeader(options, `Upstream merge conflicts in ${files.length} files`, upstream, base),
-      "## Conflicting files",
-      "",
-      ...(files.length === 0 ? [`(none listed; git said: ${merged.err || merged.out})`] : files.map((file) => `- ${file}`)),
-      "",
-      "## To resolve",
-      "",
-      `In a checkout of ${BRANCH} (not the one a build is using): \`git fetch ${UPSTREAM_REMOTE} && git merge ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}\`, resolve, run the checks, push origin ${BRANCH}. The next \`bun run daily\` then finds ${BRANCH} current.`,
-      "",
-      "Prefer upstream (opencode/AGENTS.md): where upstream now does what a fork change does, take upstream's and drop ours, keeping only a difference the owner relies on; tell the owner what changes for them before dropping ours, and list each dropped or slimmed fork change in the hand-back.",
-    ])
-    return { kind: "conflict", files, upstream }
-  }
+  if (!merged.ok) return reportConflict(options, run, start, merged.err || merged.out)
+  return { start, merge: must(options.worktree, "rev-parse", "HEAD"), commits }
+}
 
-  const merge = must(options.worktree, "rev-parse", "HEAD")
-  const hold = (title: string, detail: ReadonlyArray<string>) => {
-    must(fork, "branch", "--force", HELD_BRANCH, merge)
-    writeReport(options, [
-      ...reportHeader(options, title, upstream, base),
-      `The merge is kept on branch \`${HELD_BRANCH}\` (${merge}).`,
-      "",
-      ...detail,
-    ])
-  }
+/** A checked merge: landed when its checks are green, else held and reported. */
+const judgeMerge = (options: Options, run: Runner, made: Made, result: CheckResult): Try => {
+  if (result.ok) return landMerge(options, run, made.start, made.merge, made.commits)
+  options.log(`upstream: the merge is red (${result.check}); ${BRANCH} unchanged`)
+  holdMerge(options, run, made.start, made.merge, `Upstream merge is red: ${result.check}`, [
+    "## Failing check",
+    "",
+    `\`${result.check}\`, run against the merged worktree ${options.worktree}:`,
+    "",
+    "```",
+    result.log,
+    "```",
+  ])
+  return { kind: "red", check: result.check, merge: made.merge, upstream: made.start.upstream }
+}
 
-  const result = await options.checks(options.worktree)
-  if (!result.ok) {
-    log(`upstream: the merge is red (${result.check}); ${BRANCH} unchanged`)
-    hold(`Upstream merge is red: ${result.check}`, [
-      "## Failing check",
-      "",
-      `\`${result.check}\`, run against the merged worktree ${options.worktree}:`,
-      "",
-      "```",
-      result.log,
-      "```",
-    ])
-    return { kind: "red", check: result.check, merge, upstream }
+/**
+ * Runs the step; never throws for a merge that cannot land, only for a broken fork checkout. Each try
+ * merges upstream into origin's head, checks the merge, pushes it to origin, and only then fast-forwards
+ * prime-look; a try origin moved under (the push refused, origin no longer where the merge started)
+ * starts over from origin's new head, at most `ATTEMPTS` times.
+ */
+export const mergeUpstream = async (options: Options): Promise<Outcome> => {
+  const { fork, log } = options
+  if (options.skip) return { kind: "skipped", reason: "--no-upstream" }
+  if (!ownsFork(options.host)) return { kind: "skipped", reason: `${options.host} does not own the fork; it pulls origin ${BRANCH}` }
+  const run = runner(options.env)
+  const fetched = run.git(fork, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
+  if (!fetched.ok) {
+    log(`upstream: fetch failed, building the fork as it is: ${fetched.err}`)
+    return { kind: "fetch-failed", error: fetched.err }
   }
-
-  // Fast-forward prime-look where it is checked out (the working tree follows), else the ref alone,
-  // compared against where the merge started so a branch that moved meanwhile is never overwritten.
-  const holder = checkedOut(run, fork, BRANCH)
-  const moved = options.landing(() => {
-    const forwarded = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, merge, base) : git(holder, "merge", "--ff-only", merge)
-    // The push runs the fork's pre-push check (lint, typecheck) in the checkout, whose packages are
-    // still the old merge's: install the merged lockfile first, or a package upstream changed fails it.
-    if (forwarded.ok && holder !== undefined && existsSync(join(holder, "bun.lock"))) {
-      const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, env: { ...run.env }, stdout: "pipe", stderr: "pipe" })
-      if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed before the push: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
+  const upstream = run.must(fork, "rev-parse", `refs/remotes/${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`)
+  for (let attempt = 1; ; attempt++) {
+    const made = makeMerge(options, run, upstream)
+    if ("kind" in made) return made
+    const tried = judgeMerge(options, run, made, await options.checks(options.worktree))
+    if (tried.kind !== "moved") return tried
+    const moved = `${tried.from.slice(0, 10)} -> ${tried.to.slice(0, 10)}`
+    if (attempt < ATTEMPTS) {
+      log(`upstream: origin ${BRANCH} moved ${moved} during the merge; starting over from it`)
+      continue
     }
-    return forwarded
-  })
-  if (!moved.ok) {
-    const reason = `could not fast-forward ${BRANCH}${holder === undefined ? "" : ` in ${holder}`}: ${moved.err || moved.out}`
-    log(`upstream: the merge is green but ${reason}`)
-    hold("Upstream merge is green but did not land", ["## Why", "", reason])
-    return { kind: "stuck", reason, merge, upstream }
+    const reason = `origin ${BRANCH} moved during each of ${ATTEMPTS} merges, last ${moved}`
+    log(`upstream: the merge is green but did not land: ${reason}; ${BRANCH} unchanged`)
+    holdMerge(options, run, { upstream, base: tried.from, local: tried.from }, tried.merge, "Upstream merge is green but origin kept moving", ["## Why", "", `${reason}. The next run merges again from origin's head.`])
+    return { kind: "stuck", reason, merge: tried.merge, upstream }
   }
-  rmSync(options.report, { force: true })
-  const pushed = pushOrigin(run, fork, merge)
-  log(
-    pushed.ok
-      ? `upstream: ${BRANCH} ${base.slice(0, 10)} -> ${merge.slice(0, 10)}, pushed to origin`
-      : `upstream: ${BRANCH} ${base.slice(0, 10)} -> ${merge.slice(0, 10)}; push to origin failed: ${pushed.err}`,
-  )
-  return { kind: "merged", from: base, merge, commits, pushed: pushed.ok }
 }
 
 /** `flock(2)`'s operations; the same numbers on macOS and Linux. */
@@ -453,8 +544,8 @@ export const acceptance = async (files: ReadonlyArray<string>, run: TestRun, hos
 }
 
 /**
- * The real checks, each niced: the merged lockfile installs as committed, packages/tui, core and
- * plugin typecheck, and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
+ * The real checks, each niced: the merged lockfile installs as committed, the fork's `bun run check`
+ * (lint, and typecheck of every package) passes, and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
  * without the caller's Anthropic routing (`acceptance`: on a calm host, a failed file rerun once).
  */
 export const forkChecks =
@@ -467,9 +558,11 @@ export const forkChecks =
       const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
       return { code, log: tail(`${out}\n${err}`) }
     }
+    // `bun run check` is the fork's lint and typecheck of every package, what its pre-push hook runs, so the
+    // push may skip the hook (`pushOrigin`).
     const steps: ReadonlyArray<readonly [string, string, ReadonlyArray<string>]> = [
       ["bun install --frozen-lockfile", dir, ["bun", "install", "--frozen-lockfile"]],
-      ...["tui", "core", "plugin"].map((name) => [`typecheck packages/${name}`, join(dir, "packages", name), ["bun", "run", "typecheck"]] as const),
+      ["bun run check", dir, ["bun", "run", "check"]],
     ]
     for (const [check, cwd, command] of steps) {
       const ran = await spawn(cwd, command)
