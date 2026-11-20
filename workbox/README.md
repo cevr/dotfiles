@@ -99,7 +99,14 @@ noncurrent snapshot objects after 14 days.
   that workspace; otherwise, or if that gc fails, it names the trash and exits
   1. `--dry-run` prints the folders it would delete. Off Linux (or with
   `WORKRIFT_PURGE=0`) the workspace stays in work's trash; the Rift backend
-  (`.rifts/`, rollback only) still trashes with `rift remove`.
+  (`.rifts/`, rollback only) still trashes with `rift remove`. A commit
+  counts as unpushed only after a fetch of origin (a land pushes main from
+  another workspace), and a clean merge of pushed parents counts as none.
+  A half-made workspace (a create cut mid-way: a folder in `.work/<repo>/` with
+  no `.git` and no record) is removed by its exact absolute path: remove says
+  what it is and deletes it for good (one `btrfs subvolume delete` when it is
+  a subvolume), and refuses any other folder, a mount, a link, one a process
+  uses, and one while a create holds the base's lock.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
