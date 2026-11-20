@@ -10,6 +10,8 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { Match } from "effect"
+import { unresolvedImports } from "../mods/update/filestore/trees.ts"
+import { SEEDS } from "../mods/update/trees.ts"
 
 const ROOT = process.cwd()
 const typescript = new Bun.Transpiler({ loader: "ts" })
@@ -123,5 +125,15 @@ describe("runtime imports", () => {
   test("no server plugin reaches a fork package OpenCode does not provide", () => {
     expect(SERVERS.length).toBeGreaterThan(0)
     expect(SERVERS.flatMap((seed) => breaches(seed, FORK_ONLY))).toEqual([])
+  })
+
+  // A build's plugin tree (mods/update/filestore/trees.ts) holds its own install and no link into the
+  // fork: what a process of it imports, its host serves, or that install holds. The same check gates
+  // each tree's make; here it gates the change, over this checkout, the fork's links passed over.
+  test("every process a plugin tree runs imports only what its host serves or an install with no fork links holds", () => {
+    const seeds = SEEDS.flatMap(({ glob }) => sources(glob))
+    expect(SEEDS.every(({ glob }) => sources(glob).length > 0)).toBe(true)
+    expect(seeds).toContain("cmd/update/handoff.ts")
+    expect(unresolvedImports(ROOT)).toEqual([])
   })
 })
