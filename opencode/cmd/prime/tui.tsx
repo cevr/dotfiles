@@ -20,6 +20,8 @@ import { arrowMoves } from "@dotfiles/opencode-prime/subagent"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { hints as jobHints, JobTab } from "@dotfiles/opencode-prime/tui/jobs"
+import { JOBS_TAB } from "@dotfiles/opencode-prime/jobs"
+import { TAB_ID as WAKE_TAB_ID } from "@dotfiles/opencode-prime/wakes"
 import { hints as queueHints, QUEUE_TAB, QueueTab } from "@dotfiles/opencode-prime/tui/queue"
 import { Dock, GoalLine, HintLine, Queued, Splash, StartingNotice, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { PanelFooter, PanelRow, PanelTabs } from "@dotfiles/opencode-prime/tui/panel"
@@ -164,16 +166,16 @@ export default Plugin.define({
     })
 
     // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab; an older build has none).
-    for (const [id, title, tab] of [["wakes", "Wakes", "alarm"], ["monitors", "Monitors", "monitor"]] as const)
+    for (const [title, tab] of [["Wakes", "alarm"], ["Monitors", "monitor"]] as const)
       context.ui.composerTab?.({
-        id,
+        id: WAKE_TAB_ID[tab],
         title,
         hints: () => wakeHints,
         render: (input) => <WakeTab host={h} sessionID={input.sessionID} tab={tab} close={input.close} />,
       })
     // The Jobs tab: the session's jobs (the wake mod's long commands), running and lately ended, the highlighted one's log tail, kill.
     context.ui.composerTab?.({
-      id: "jobs",
+      id: JOBS_TAB,
       title: "Jobs",
       hints: () => jobHints,
       render: (input) => <JobTab host={h} sessionID={input.sessionID} close={input.close} />,

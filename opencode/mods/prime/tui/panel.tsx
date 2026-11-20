@@ -32,8 +32,8 @@ import {
   type Line,
   type Widths,
 } from "../panel.ts"
-import { jobsOf, runningJobs } from "../jobs.ts"
-import { tabEntries } from "../wakes.ts"
+import { JOBS_TAB, jobsOf, runningJobs } from "../jobs.ts"
+import { TAB_ID as WAKE_TAB_ID, tabEntries } from "../wakes.ts"
 import { useNow } from "./clock.ts"
 import { useOthers } from "./family.ts"
 import type { Host } from "./host.ts"
@@ -104,9 +104,9 @@ export function PanelTabs(props: { readonly host: Host; readonly input: TabsInpu
       new Map([
         ["subagents", others()],
         ["shell", props.host.shells(props.input.sessionID)],
-        ["wakes", tabEntries(wakes(), "alarm").length],
-        ["monitors", tabEntries(wakes(), "monitor").length],
-        ["jobs", runningJobs(jobsOf(jobs()))],
+        [WAKE_TAB_ID.alarm, tabEntries(wakes(), "alarm").length],
+        [WAKE_TAB_ID.monitor, tabEntries(wakes(), "monitor").length],
+        [JOBS_TAB, runningJobs(jobsOf(jobs()))],
         ["queue", queued()],
       ]),
   )

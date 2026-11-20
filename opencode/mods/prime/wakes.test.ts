@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import { EMPTY, sameWakeItem, span, tabEntries, wakeDetail, wakeItem, wakeRow, type WakeEntry, type Wakes } from "./wakes.ts"
 
 const NOW = new Date(2026, 10, 5, 13, 0).getTime()
@@ -24,7 +25,15 @@ describe("the dock's wake item", () => {
       ],
       1,
     )
-    expect(wakeItem(pending, 80)).toEqual({ text: "2 wakes · 1 monitor · 1 notice", tone: "success" })
+    expect(wakeItem(pending, 80)).toEqual({
+      text: "2 wakes · 1 monitor · 1 notice",
+      parts: [
+        { text: "2 wakes", tab: Option.some("alarm") },
+        { text: "1 monitor", tab: Option.some("monitor") },
+        { text: "1 notice", tab: Option.none() },
+      ],
+      tone: "success",
+    })
   })
 
   test("only monitors", () => {
@@ -32,7 +41,7 @@ describe("the dock's wake item", () => {
   })
 
   test("only notices unread: the warning colour", () => {
-    expect(wakeItem(wakes([], 1), 80)).toEqual({ text: "1 notice", tone: "warning" })
+    expect(wakeItem(wakes([], 1), 80)).toEqual({ text: "1 notice", parts: [{ text: "1 notice", tab: Option.none() }], tone: "warning" })
   })
 
   test("parts drop from the right as the width shrinks, keeping the first", () => {
