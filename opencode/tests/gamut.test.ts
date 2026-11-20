@@ -378,18 +378,31 @@ const runDb = (release: boolean) => {
   db.run(`CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
     seq INTEGER NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL)`)
   db.run(`CREATE TABLE ${release ? "session_pending" : "session_inbox"} (id TEXT PRIMARY KEY, session_id TEXT NOT NULL)`)
+  // The fork writes each assistant part as its own row (upstream #65039) and leaves the message's content empty.
+  if (!release) {
+    db.run(`CREATE TABLE session_part (message_id TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+      type TEXT NOT NULL, call_id TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
+      PRIMARY KEY (message_id, ordinal))`)
+  }
   return db
 }
 
-const message = (db: Database, session: string, seq: number, type: string, time: number, data: unknown) =>
-  db.run(`INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)`, [
-    `${session}-${seq}`,
-    session,
-    type,
-    seq,
-    time,
-    JSON.stringify(data),
-  ])
+/** A stored message; `parts` go in as its session_part rows, in order. */
+const message = (
+  db: Database,
+  session: string,
+  seq: number,
+  type: string,
+  time: number,
+  data: unknown,
+  parts: ReadonlyArray<{ readonly type: string; readonly text?: string; readonly name?: string; readonly state?: object }> = [],
+) => {
+  const [body = "", ...rows] = [data, ...parts].map((value) => JSON.stringify(value))
+  db.run(`INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)`, [`${session}-${seq}`, session, type, seq, time, body])
+  rows.forEach((row, ordinal) =>
+    db.run(`INSERT INTO session_part VALUES (?, ?, ?, ?, NULL, ?, ?, ?)`, [`${session}-${seq}`, session, ordinal, parts[ordinal]!.type, time, time, row]),
+  )
+}
 
 describe("the run's database", () => {
   test("a turn is open from its start until its idle time, or while a message waits", () => {
@@ -419,6 +432,7 @@ describe("the run's database", () => {
     db.run(`INSERT INTO session_v2 VALUES ('root', NULL, 'Fix tasks', 'build', 0.0123, 1500, 200, 1, 9, 2, 9),
       ('child', 'root', 'Task 1', 'general', 0.001, 300, 40, 3, 9, 4, 9)`)
     const model = { id: "deepseek-v4.1-flash", providerID: "opencode-go", variant: "high" }
+    // The root's reply is in the inline layout (parts in the message), the child's in part rows.
     message(db, "root", 1, "user", 1, { text: "go" })
     message(db, "root", 2, "assistant", 2, {
       model,
@@ -430,11 +444,10 @@ describe("the run's database", () => {
     })
     message(db, "root", 3, "idle", 3, { outcome: "succeeded" })
     message(db, "child", 1, "user", 3, { text: "task 1" })
-    message(db, "child", 2, "assistant", 4, {
-      model,
-      content: [{ type: "tool", name: "patch", state: { status: "error", error: "no match\nin file" } }],
-      error: { type: "api", message: "rate limited" },
-    })
+    message(db, "child", 2, "assistant", 4, { model, content: [], error: { type: "api", message: "rate limited" } }, [
+      { type: "text", text: "trying" },
+      { type: "tool", name: "patch", state: { status: "error", error: "no match\nin file" } },
+    ])
     message(db, "child", 3, "idle", 5, { outcome: "failed" })
     const report = runReport(db)
     expect(report.models).toEqual({ "opencode-go/deepseek-v4.1-flash#high": 2 })
