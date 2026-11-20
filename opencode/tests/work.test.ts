@@ -14,7 +14,7 @@ import { Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { withProcessEnv } from "./git-repo.ts"
-import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result } from "./work/sim.ts"
+import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, MOVE_ONLY, Result } from "./work/sim.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -87,14 +87,14 @@ if (runnable)
           for (const request of offered) {
             expect(request.tools).toContain("work")
             expect(request.tools).toContain("rift")
-            // session_move, offered beside them, is still in the request: they are gone, not merely unlisted.
-            expect(request.named).toEqual(["session_move"])
+            // The session move tool, offered beside them, is still in the request: they are gone, not merely unlisted.
+            expect(MOVE_ONLY).toContainEqual(request.named)
           }
           const [create, commit, list, refused, forced, ...rest] = result.calls
           expect(rest).toEqual([])
           expect([create?.name, create?.status]).toEqual(["work", "completed"])
           expect(create?.said).toContain(`Created the workspace ${result.workspace} from ${result.source}, on branch ${BRANCH}.`)
-          expect(create?.said).toContain(`session_move tool (directory: "${result.workspace}")`)
+          expect(create?.said).toContain(`opencode_session_move tool (directory: "${result.workspace}")`)
           expect(commit?.status).toBe("completed")
           expect(list?.said).toContain(`Workspaces of ${result.source}:`)
           expect(list?.said).toContain(`- ${result.workspace} · branch ${BRANCH} · 1 unpushed`)

@@ -2222,7 +2222,7 @@ instead (The orchestrate tool). `cmd/work`, not enabled yet, is the same tool ov
   local branch, else `origin/<branch>`, else a new one from the source's
   HEAD; default: the name), named after the branch as `workrift` names it
   (`feat/x` → `feat-x`). It answers the workspace's directory and branch and how
-  to move there (`session_move`); it never moves the session itself. On the
+  to move there (`opencode_session_move`); it never moves the session itself. On the
   Mac it runs `work new -branch <branch> <name>` in the base (the workspace
   goes under `.work/<repo>/` beside it; on Rift, `rift create <source>
   --copy-all --name <name>` and a branch switch); on the workbox, `workrift create <branch>` from the session's

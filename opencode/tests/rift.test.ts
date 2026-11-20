@@ -13,7 +13,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./rift/run.ts"
-import { BRANCH, COMMIT_SUBJECT, DONE, LAND_SUBJECT, LAND_TASK, TASK } from "./rift/sim.ts"
+import { BRANCH, COMMIT_SUBJECT, DONE, LAND_SUBJECT, LAND_TASK, MOVE_ONLY, TASK } from "./rift/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -91,15 +91,15 @@ describe.skipIf(!fork || !riftHere)("in real OpenCode, on the scripted model and
       const result = await run("flow")
       const offered = result.seen.find((item) => item.task.endsWith(TASK))
       expect(offered?.tools).toContain("rift")
-      // session_move, offered beside them, is still in the request: they are gone, not merely unlisted.
-      expect(offered?.named).toEqual(["session_move"])
+      // The session move tool, offered beside them, is still in the request: they are gone, not merely unlisted.
+      expect(MOVE_ONLY).toContainEqual(offered?.named)
 
       const [create, commit, list, refused, forced, misspelled, worktree, ...rest] = toolParts(result.messages)
       expect(rest).toEqual([])
       expect(create?.name).toBe("rift")
       expect(create?.state.status).toBe("completed")
       expect(said(create)).toContain(`Created the workspace ${result.rift} from ${result.source}, on branch ${BRANCH}.`)
-      expect(said(create)).toContain(`session_move tool (directory: "${result.rift}")`)
+      expect(said(create)).toContain(`opencode_session_move tool (directory: "${result.rift}")`)
       expect(commit?.state.status).toBe("completed")
       expect(said(list)).toContain(`- ${result.rift} · branch ${BRANCH} · 1 unpushed`)
       expect(refused?.state.status).toBe("error")

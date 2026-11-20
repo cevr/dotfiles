@@ -76,7 +76,7 @@ describe("the rift tool", () => {
     expect(await call(state, { action: "create", branch: "feat/x" })).toBe(
       [
         `Created the workspace ${FEAT} from ${SOURCE}, on branch feat/x.`,
-        `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
+        `This session still runs in its own directory. To work in the workspace, move the session there with the opencode_session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
       ].join("\n"),
     )
     expect(state.rifts.get(FEAT)?.branch).toBe("feat/x")
@@ -496,7 +496,7 @@ describe("land", () => {
       [
         "Landed 2 workspace(s) as one push: abc1234 Merge into trunk to trunk (merged feat/x, feat/y; the gate passed in 3s).",
         `To the trash: ${OTHER}.`,
-        `Kept ${FEAT}: This session runs in ${FEAT}/src, inside ${FEAT}. Move the session out first (session_move to the source), then remove it.`,
+        `Kept ${FEAT}: This session runs in ${FEAT}/src, inside ${FEAT}. Move the session out first (opencode_session_move to the source), then remove it.`,
         "No rift.accept is configured, so no check runs after the push.",
       ].join("\n"),
     )

@@ -1,6 +1,6 @@
 # Work
 
-An agent makes, lists, removes and lands isolated workspaces (copy-on-write copies of a repository's base) with the `work` tool, never with OpenCode's worktree tools, which are gone from its tool list. `create` answers the workspace's directory and branch and how to `session_move` there; `list` names each workspace's branch and unsaved work; `remove` trashes one, refusing one that holds work found nowhere else unless `force`; `land` merges a batch onto main, gates once, pushes, trashes the workspaces and wakes the session with the accept check. The tool answers to `rift` as an alias, with the same input and answers, until 2026-12-06.
+An agent makes, lists, removes and lands isolated workspaces (copy-on-write copies of a repository's base) with the `work` tool, never with OpenCode's worktree tools, which are gone from its tool list. `create` answers the workspace's directory and branch and how to move there (`opencode_session_move`); `list` names each workspace's branch and unsaved work; `remove` trashes one, refusing one that holds work found nowhere else unless `force`; `land` merges a batch onto main, gates once, pushes, trashes the workspaces and wakes the session with the accept check. The tool answers to `rift` as an alias, with the same input and answers, until 2026-12-06.
 
 ## Sub-features
 

@@ -20,8 +20,15 @@ export const BRANCH = "feat/x"
 export const COMMIT_SUBJECT = "only here"
 export const LAND_SUBJECT = "feat: land me"
 
-/** The names the test looks for in each request: the worktree tools, and a sibling of theirs that stays. */
-export const WATCHED = ["worktree_create", "worktree_list", "worktree_remove", "session_move"]
+/**
+ * The names the test looks for in each request: the worktree tools, and a sibling of theirs that stays, the
+ * session move tool. Code Mode calls it `opencode.session_move` up to the fork's upstream merge of 8e50929d0d
+ * and `opencode.session.move` from it (`opencode_session_move` without Code Mode, before and after).
+ */
+export const WATCHED = ["worktree_create", "worktree_list", "worktree_remove", "session_move", "session.move"]
+
+/** What `named` holds for a request that offers no worktree tool and the session move tool: one of its two names. */
+export const MOVE_ONLY: ReadonlyArray<ReadonlyArray<string>> = [["session_move"], ["session.move"]]
 
 /** What the test reads back about one request. */
 export const Seen = Schema.Struct({
