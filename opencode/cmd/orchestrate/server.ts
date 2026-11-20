@@ -847,6 +847,8 @@ export const make = (
       // The orchestrator (owner's exception to the freeze, 2026-11-20) is build as the host's plugins defined it, under
       // its own name and description, and the default a new session opens with. It is defined before the windows, so
       // it gets its own; the config's plugin runs after, so its `default_agent` and an `orchestrator` file still win.
+      // For the same reason a config's `agents.build` entry does not reach it: the config pins it as `agents.orchestrator`
+      // (the host runs transforms in registration order, package plugins before the config's: plugin/supervisor.ts).
       // Its section goes after build's prompt in the context, compaction and generate hooks (`withSection`).
       yield* ctx.agent.transform((editor) => {
         const build = Option.fromUndefinedOr(editor.get(BUILD))

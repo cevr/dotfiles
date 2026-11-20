@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
-import { effort, ROLES } from "../mods/orchestrate/role.ts"
+import { effort, ORCHESTRATOR, orchestrator, ROLES } from "../mods/orchestrate/role.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
@@ -104,9 +104,20 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
     "units: an implementor's start and its hand-back move its unit in the run's log.md",
     async () => {
-      const result = await run("units", { scenario: "units", now: WEDNESDAY })
+      // The config pins build to `max`: that entry does not reach the orchestrator, which is made from build first.
+      const result = await run("units", { scenario: "units", now: WEDNESDAY, agents: { build: { model: "sim/sim-model#max" } } })
       expect(result.children.map((child) => child.agent)).toEqual(["implementor"])
       expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → ready r1 round-1-request.md ready"])
+      // A new root session opens on the orchestrator, on the config's model, and its requests carry the section
+      // after build's prompt; the implementor's carry none.
+      const said = JSON.stringify(result.root?.messages)
+      expect(said).toContain(`"agent":"${ORCHESTRATOR}"`)
+      expect(said).not.toContain(`"variant":"max"`)
+      const withRule = result.seen.filter((request) => request.system.includes(orchestrator.section))
+      expect(withRule.length).toBeGreaterThan(0)
+      const implementor = result.seen.filter((request) => request.system.includes("You are the implementor of"))
+      expect(implementor.length).toBeGreaterThan(0)
+      for (const request of implementor) expect(request.system).not.toContain("Never block on the shell")
     },
     RUN_MS,
   )
@@ -114,7 +125,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
     "lane: three implementors, each landed as it hands back, a verifier named for a unit while another runs, and nothing refused",
     () =>
-      expect(run("lane", { scenario: "lane", now: WEDNESDAY })).resolves.toMatchObject({
+      // The config's `agents.orchestrator` entry pins the root's model (here its `low` variant).
+      expect(run("lane", { scenario: "lane", now: WEDNESDAY, agents: { [ORCHESTRATOR]: { model: "sim/sim-model#low" } } })).resolves.toMatchObject({
+        root: { messages: expect.arrayContaining([expect.objectContaining({ agent: ORCHESTRATOR, model: expect.objectContaining({ variant: "low" }) })]) },
         lane: {
           riftLands: [["alpha"], ["beta"], ["gamma"]],
           agents: ["implementor", "implementor", "implementor", "verifier", "verifier"],

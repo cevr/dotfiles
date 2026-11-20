@@ -39,6 +39,8 @@ export interface Spec {
   readonly promptTokens?: number | Readonly<Record<string, number>>
   /** The root session's model, such as the sim model at `max`; the config's default when absent. */
   readonly rootModel?: Child["model"]
+  /** The config's `agents` entries, by agent id. */
+  readonly agents?: Readonly<Record<string, { readonly model: string }>>
 }
 
 export interface Child {
@@ -130,6 +132,7 @@ if (spec.codex !== undefined) {
 const codexOption = spec.codex === undefined ? {} : { codex: { providers: ["sim"], script: codexScript } }
 const content = {
   model: "sim/sim-model",
+  ...(spec.agents === undefined ? {} : { agents: spec.agents }),
   providers: {
     sim: {
       name: "Sim",

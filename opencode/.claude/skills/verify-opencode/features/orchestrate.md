@@ -4,7 +4,7 @@ A root that runs the orchestrate skill starts role agents (planner, implementor,
 
 ## Sub-features
 
-- `orchestrator-agent`: a new session opens on the primary `orchestrator` agent: build's permissions, model and prompt under its own name, the 400k window, and after build's prompt a section (agents.json's, from the skill) that ends with the skill's "Never block on the shell" rule. The config's `default_agent` still wins, an agent file for `orchestrator` still overrides its fields, a session already on build keeps it, and a subagent never gets the section.
+- `orchestrator-agent`: a new session opens on the primary `orchestrator` agent: build's permissions, model and prompt under its own name, the 400k window, and after build's prompt a section (agents.json's, from the skill) that ends with the skill's "Never block on the shell" rule. The config's `default_agent` still wins, an `agents.orchestrator` entry or agent file still overrides its fields (an `agents.build` entry does not reach it: it is made from build before the config applies), a session already on build keeps it, and a subagent never gets the section.
 - `role-start`: a role call starts the role's agent on its model, its start and hand-back logged to the unit's `log.md`.
 - `no-batch-refusal`: no call is refused for a batch rule: a verifier named for a unit, a second verifier while one runs, a land of one unit that just handed back, a land while a verifier runs, `(departs: …)` and `(folds: …)` all pass; only a subagent's `lane`/`land`/`verify`, a malformed input, the Sabbath, a latched child and a Codex implementor are refused.
 - `stateless-restart`: after a restart, and from a new root session, `status` gives the same answer and a land of a unit the old root laned lands its workspace.
