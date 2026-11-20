@@ -30,6 +30,8 @@ export interface Workspace {
   readonly unpushed: ReadonlyArray<string>
   /** How many stash entries it holds of its own: ones not inherited from the workspaces it was copied from (ownStashes). */
   readonly stashes: number
+  /** Its branch's description (`branch.<branch>.description`, Git's own record of what a branch is for): a lane's one-line purpose; none when unset or detached. */
+  readonly purpose?: string
 }
 
 /**

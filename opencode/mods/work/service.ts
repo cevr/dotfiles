@@ -50,6 +50,11 @@ export class Rifts extends Context.Service<
     readonly list: (source: string) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
     /** What `path` holds. Fails when `path` is no Rift workspace. */
     readonly inspect: (path: string) => Effect.Effect<Workspace, RiftFailed>
+    /**
+     * Sets the description of the branch checked out at `path` (`branch.<branch>.description` in its Git config) to
+     * `purpose`, which `inspect` then answers as the workspace's purpose. Fails on a detached Rift.
+     */
+    readonly describe: (path: string, purpose: string) => Effect.Effect<void, RiftFailed>
     /** Moves the Rift at `path` to Rift's trash; with `withChildren`, its own Rifts go with it. */
     readonly remove: (path: string, options?: { readonly withChildren?: boolean }) => Effect.Effect<void, RiftFailed>
   }

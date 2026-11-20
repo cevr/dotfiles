@@ -38,6 +38,7 @@ import {
   CreateAsk,
   type Created,
   type Failed,
+  DescribeAsk,
   InspectAsk,
   type Inspected,
   type LandAnswered,
@@ -114,6 +115,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           create: (input) => answering("create", Schema.decodeUnknownEffect(CreateAsk)(input), answers.create),
           list: (input) => answering("list", Schema.decodeUnknownEffect(ListAsk)(input), answers.list),
           inspect: (input) => answering("inspect", Schema.decodeUnknownEffect(InspectAsk)(input), answers.inspect),
+          describe: (input) => answering("describe", Schema.decodeUnknownEffect(DescribeAsk)(input), answers.describe),
           land: (input) => answering("land", Schema.decodeUnknownEffect(LandAsk)(input), answers.land),
         })
         .pipe(Effect.orDie)
@@ -122,7 +124,12 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
 
 /** A Rift as the RPC answers carry it. */
 const laneOf = (workspace: Workspace): Lane => {
-  const lane = { path: workspace.path, head: workspace.head, state: stateOf(workspace) }
+  const lane = {
+    path: workspace.path,
+    head: workspace.head,
+    state: stateOf(workspace),
+    ...Option.match(Option.fromUndefinedOr(workspace.purpose), { onNone: () => ({}), onSome: (purpose) => ({ purpose }) }),
+  }
   return Option.match(Option.fromUndefinedOr(workspace.branch), { onNone: () => lane, onSome: (branch) => ({ ...lane, branch }) })
 }
 
@@ -139,11 +146,20 @@ const rpcHandlers = (rift: typeof Model.RiftTool.Service, rifts: typeof Rifts.Se
     sessions.directoryOf(sessionID).pipe(
       Effect.flatMap((directory) => rifts.source(Option.match(source, { onNone: () => directory, onSome: (asked) => Model.resolvePath(directory, asked) }))),
     )
-  const created = ({ sessionID, at, ...asked }: CreateAsk) =>
+  const created = ({ sessionID, at, purpose, ...asked }: CreateAsk) =>
     rift.run(sessionID, { action: "create", ...asked }, Option.fromUndefinedOr(at)).pipe(
+      Effect.tap((answer) => Effect.forEach(Option.toArray(Option.fromUndefinedOr(purpose)), (text) => rifts.describe(answer.metadata.path ?? "", text), { discard: true })),
       Effect.flatMap((answer) => rifts.inspect(answer.metadata.path ?? "").pipe(Effect.map((workspace): Created => ({ outcome: "answered", text: answer.text, rift: laneOf(workspace) })))),
       Effect.catch((failure) => Effect.succeed<Created>(failedOf(failure))),
     )
+  const described = (ask: DescribeAsk) =>
+    Effect.gen(function* () {
+      const directory = yield* sessions.directoryOf(ask.sessionID)
+      const path = Model.resolvePath(directory, ask.path)
+      yield* rifts.describe(path, ask.purpose)
+      const workspace = yield* rifts.inspect(path)
+      return { outcome: "answered", text: listed(directory, [workspace]).split("\n").at(-1) ?? "", rift: laneOf(workspace) } satisfies Inspected
+    }).pipe(Effect.catch((failure) => Effect.succeed<Inspected>(failedOf(failure))))
   const listedOf = ({ sessionID, ...asked }: ListAsk) =>
     Effect.gen(function* () {
       const answer = yield* rift.run(sessionID, { action: "list", ...asked })
@@ -164,7 +180,7 @@ const rpcHandlers = (rift: typeof Model.RiftTool.Service, rifts: typeof Rifts.Se
       Effect.map((answer): LandAnswered => ({ outcome: "answered", text: answer.text })),
       Effect.catch((failure) => Effect.succeed<LandAnswered>(failedOf(failure))),
     )
-  return { create: created, list: listedOf, inspect: inspected, land: landed }
+  return { create: created, list: listedOf, inspect: inspected, describe: described, land: landed }
 }
 
 /** An ask decoded, then answered; one that does not decode is refused in words. */
