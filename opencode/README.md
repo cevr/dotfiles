@@ -893,7 +893,7 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
 `status.ts`, through `Runs`) and the base's workspace list (the rift RPC's
 `list`), so a restart or another root session gets the same answer.
 
-- `orchestrate({ action: "lane", unit, run?, branch?, source? })`: the unit's
+- `orchestrate({ action: "lane", unit, run?, branch?, source?, purpose? })`: the unit's
   workspace, named for the unit (on the workbox as `workrift` names it, after the
   branch) on `branch`, else `<run>/<unit>`, else `feat/<unit>`. A unit whose
   workspace exists is answered that workspace, and nothing is made. A workspace is a unit's
@@ -902,11 +902,28 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   read as a unit (unit `feat-y` is never given unit `y`'s `feat-y`). The
   answer ends with the `(lane: <path>)` its implementor's description takes
   (`laneNote`; `lanePathOf` reads it, and the `(rift: <path>)` notes wrote
-  before the rename).
+  before the rename). One lane is one unit's, on one branch, for its life: a
+  lane whose checked-out branch is not the one its name was made for (on the
+  Mac the branch's last segment is not its folder, `<name>-2` to `-9` aside; on
+  the workbox its folder is not workrift's for the branch; or it is detached)
+  is reused (`reusedOf`), and `lane` of its unit refuses, naming both branches
+  and the fix (a lane for the unit the branch names, which is then made). A
+  `branch` whose last segment is not the unit is refused with `<prefix>/<unit>`.
+  `purpose` (one line, at most 80 characters, the outcome in words) is kept as
+  the lane's branch description (`branch.<branch>.description`, set over the
+  rift RPC's `create` or `describe`, read back by `list`), shown in the answer
+  (`Purpose: …`, else a hint to give one: allowed missing for this release),
+  in the implementor's description `implementor <unit> r1 — <purpose> (lane:
+  <path>)` and in `status`. The answer starts with a warning, never a refusal,
+  for a unit name that ends in a round (`-r2`), is only a code (no word of
+  four letters) or starts with a segment every other lane shares
+  (`namingWarnings`), each naming what to use instead.
 - `orchestrate({ action: "land", units?, departs? })`: the work plugin's land
   of the named units. A name resolves to the one workspace that is that unit's;
   `{ unit, path }` is taken as given; an unknown name, or one two workspaces read
-  as, is refused with the `{ unit, path }` form. With no `units` it lands
+  as, is refused with the `{ unit, path }` form. A reused lane is never landed:
+  by name or by path the land refuses with the fix, and a land with no units
+  and `next:` leave it out. With no `units` it lands
   every unit the run tables show `ready` that has a lane, and with none it
   says what to name. A named unit in another state than `ready` lands, its
   answer starting `orchestrate: warning: <unit> is <state>, not ready; landed
@@ -937,7 +954,8 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   default branch head, read then), and the `subagent` call that starts it.
   Any unit-name-shaped batch (`batch-<k>`, a unit, `main-<sha>`) is taken.
 - `orchestrate({ action: "status" })`: each run's open units with their
-  states, each one's lane, and one `next:` line: the land call when a unit is
+  states, each one's lane with its purpose (a reused one flagged `REUSED:`
+  with the fix), and one `next:` line: the land call when a unit is
   ready with a lane, else the verify of main when it is due, else a wait for
   the implementors' hand-backs, else none.
 
