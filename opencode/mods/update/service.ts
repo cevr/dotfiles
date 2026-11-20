@@ -23,15 +23,18 @@ export class CheckoutStuck extends Schema.TaggedError<CheckoutStuck>()("Checkout
 }) {}
 
 /**
- * The dotfiles checkout the host runs its plugins from (its warm source), and the verified target
- * on its origin. Nothing else moves the checkout: `advance` is the one move, the commit and the
- * dependencies together.
+ * The live dotfiles checkout, and the verified target on its origin. With trees (`trees.ts`) the
+ * checkout is only an object store: `fetch` brings a commit into it and nothing moves it. The old
+ * scheme, which ran every plugin from the checkout, kept while the good build's fork binds no tree
+ * (`model.ts`), moves it with `advance`, the one move, the commit and the dependencies together.
  */
 export class Source extends Context.Service<
   Source,
   {
     /** Fetches the verified target; none while the origin names none. */
     readonly verified: Effect.Effect<Option.Option<Target>, UpdateFailed>
+    /** Brings `commit` into the checkout's object store, when it lacks it; never moves the checkout. */
+    readonly fetch: (commit: string) => Effect.Effect<void, UpdateFailed>
     /** The commit the checkout is on. */
     readonly head: Effect.Effect<string, UpdateFailed>
     /**
@@ -57,14 +60,28 @@ export class Builder extends Context.Service<
   Builder,
   {
     /**
-     * Builds the target ahead of the restart from the checkout as it stands, which does not move
-     * (`bun scripts/daily.ts --stage`): the fork at the target's commit, the binary, and the
-     * installed record naming the target's commits. It writes no config and restarts nothing.
+     * The version the target builds as with its own tree (`process/pin.ts` `versionOf`, ending `.tree`),
+     * read from the fork checkout's object store at the target's fork commit, which it fetches when it
+     * lacks it: the name its tree is made under before the build, never the name of a build without one.
      */
-    readonly stage: (target: Target) => Effect.Effect<void, UpdateFailed>
+    readonly version: (target: Target) => Effect.Effect<string, UpdateFailed>
     /**
-     * Writes the server and TUI configs from the checkout's own install code (`bun
-     * scripts/daily.ts --configure`), once the handoff moved it onto the build's commit.
+     * Whether a build of fork commit `fork` binds the tree beside its executable (the fork's
+     * `packages/cli/src/adjacent-config.ts`). A build that does not runs its plugins from the global
+     * configs, as the old scheme wrote them.
+     */
+    readonly binds: (fork: string) => Effect.Effect<boolean, UpdateFailed>
+    /**
+     * Builds the target ahead of the restart (`daily.ts --stage`): the fork at the target's commit,
+     * the binary, and the staged record naming the target's commits. With `tree`, daily runs from the
+     * build's own tree (its build logic is the target's) and touches no checkout; with none (the old
+     * scheme), from the live checkout as it stands, which does not move. It writes no config and
+     * restarts nothing.
+     */
+    readonly stage: (target: Target, tree: Option.Option<string>) => Effect.Effect<void, UpdateFailed>
+    /**
+     * The old scheme's step: writes the server and TUI configs from the checkout's own install code
+     * (`bun scripts/daily.ts --configure`), once the handoff moved it onto the build's commit.
      */
     readonly configure: Effect.Effect<void, UpdateFailed>
   }
@@ -141,6 +158,14 @@ export class Trees extends Context.Service<
     readonly make: (version: string, commit: string) => Effect.Effect<string, UpdateFailed>
     /** Fails, naming each, when a process of the tree at `tree` would import something its install lacks. */
     readonly check: (tree: string) => Effect.Effect<void, UpdateFailed>
+    /** Whether build `version` has its tree beside it (its overlay there): a build with none runs on the old scheme's global configs. */
+    readonly has: (version: string) => Effect.Effect<boolean>
+    /**
+     * Deletes the tree of build `version`, which a stage that failed made: nothing will run that build,
+     * so nothing is left that a later start could bind. Never fails; a tree it could not delete the next
+     * prune takes, since no record names its build.
+     */
+    readonly remove: (version: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/update/Trees") {}
 
@@ -231,8 +256,10 @@ export class Service extends Context.Service<
 >()("dotfiles-opencode/update/Service") {}
 
 /**
- * The server config a staged build wrote, and the one it replaced: a rollback puts the replaced
- * one back with the build it belongs to.
+ * The global configs (`~/.config/opencode`): the old scheme writes our plugin entries there, and a
+ * rollback puts the replaced ones back with the build they belong to. With trees, the first tree
+ * install strips our entries from the server config (the migration), a kept copy first; after it, no
+ * update writes them.
  */
 export class Configs extends Context.Service<
   Configs,
@@ -241,6 +268,10 @@ export class Configs extends Context.Service<
     readonly keep: Effect.Effect<void, UpdateFailed>
     /** Puts the kept config back. */
     readonly restore: Effect.Effect<void, UpdateFailed>
+    /** Whether the server config still lists plugin entries of ours (by the old writer's ownership rule): the migration is to do. */
+    readonly ours: Effect.Effect<boolean, UpdateFailed>
+    /** Removes our plugin entries from the server config, every other key and entry kept; the TUI config is left alone. */
+    readonly strip: Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Configs") {}
 

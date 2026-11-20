@@ -1,18 +1,93 @@
-import { Effect, Layer, Option } from "effect"
-import { Configs } from "../service.ts"
+import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { Configs, UpdateFailed } from "../service.ts"
+import { SERVER_OFF } from "../trees.ts"
 import { readText, remove, writeText } from "./files.ts"
+
+/** Server plugin entries the host no longer has, dropped from the config: the automation plugin's name before upstream's rename (2026-11-16). */
+export const RETIRED_PLUGINS: ReadonlyArray<string> = ["-opencode.tool.schedule"]
+
+/** The old writer's ownership rule (`scripts/daily.ts` `mergeServer`): the plugin directories daily owns, and our entries that name none. */
+export interface Ours {
+  readonly dirs: ReadonlyArray<string>
+  readonly names: ReadonlyArray<string>
+}
 
 /** The config files a stage writes (`~/.config/opencode`), and where the replaced ones are kept. */
 export interface Paths {
   readonly config: ReadonlyArray<string>
   readonly kept: string
+  /** The server config (`opencode.json`), the one the first tree install strips. */
+  readonly server: string
+  /** What is ours in it (`oursOf`). */
+  readonly owned: Ours
 }
 
-const keptOf = (paths: Paths, path: string): string => `${paths.kept}/${path.split("/").at(-1) ?? path}`
+/**
+ * What is ours in a host's server config whose live dotfiles checkout is `checkout` and share
+ * directory `share`, as `scripts/daily.ts` `ownedDirs` and its plugin lists say: the checkout's
+ * `opencode/mods` and `opencode/cmd`, the auth plugin's old loader directory, the built-ins the server
+ * turns off, and the retired names.
+ */
+export const oursOf = (checkout: string, share: string): Ours => ({
+  dirs: [`${checkout}/opencode/mods`, `${checkout}/opencode/cmd`, `${share}/anthropic-auth`],
+  names: [...SERVER_OFF, ...RETIRED_PLUGINS],
+})
+
+/** A plugin entry: a package path or name, or one with options. */
+const decodeName = Schema.decodeUnknownOption(Schema.String)
+const decodeWithOptions = Schema.decodeUnknownOption(Schema.Struct({ package: Schema.String }))
+
+/** Whether a package path is ours by the old writer's rule: under a directory daily owns, or one of our names. */
+export const ownsPath = (owned: Ours, path: string): boolean => owned.names.includes(path) || owned.dirs.some((dir) => path === dir || path.startsWith(`${dir}/`))
+
+/** The server config, each key kept as it is, written as daily writes a config (two-space JSON). */
+const ServerConfig = Schema.Record(Schema.String, Schema.Unknown)
+type ServerConfig = Schema.Schema.Type<typeof ServerConfig>
+const ServerJson = Schema.fromJsonString(ServerConfig, { space: 2 })
+const decodeServer = Schema.decodeUnknownEffect(ServerJson)
+const encodeServer = Schema.encodeSync(ServerJson)
+const decodePlugins = Schema.decodeUnknownOption(Schema.Array(Schema.Unknown))
+
+/** The server config's plugin entries; none when it lists none. */
+const pluginsOf = (config: ServerConfig) => Option.getOrElse(Option.flatMap(Option.fromNullishOr(config["plugins"]), decodePlugins), () => Arr.empty())
+
+/** The server config's plugin entries, each with whether it is ours (the package it names, none for anything else, is ours by `ownsPath`). */
+const entriesOf = (config: ServerConfig, owned: Ours) =>
+  pluginsOf(config).map((entry) => ({
+    entry,
+    ours: Option.exists(
+      Option.orElse(decodeName(entry), () => Option.map(decodeWithOptions(entry), (each) => each.package)),
+      (path) => ownsPath(owned, path),
+    ),
+  }))
+
+/** The plugin entries of the server config that are not ours, in order; every other key stays as it was. */
+export const stripped = (config: ServerConfig, owned: Ours): ServerConfig => ({
+  ...config,
+  plugins: entriesOf(config, owned).flatMap((each) => Option.toArray(Option.liftPredicate(each.entry, () => !each.ours))),
+})
+
+/** Whether the server config lists an entry of ours. */
+export const listsOurs = (config: ServerConfig, owned: Ours): boolean => entriesOf(config, owned).some((each) => each.ours)
+
+const keptOf = (paths: Pick<Paths, "kept">, path: string): string => `${paths.kept}/${Option.getOrElse(Arr.last(path.split("/")), () => path)}`
+
+/** The server config, none when the file is absent; a file that is not one JSON object fails. */
+const readServer = (path: string) =>
+  readText(path).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.succeed(Option.none<ServerConfig>()),
+        onSome: (text) => decodeServer(text).pipe(Effect.map(Option.some), Effect.mapError((cause) => new UpdateFailed({ step: "read the server config", message: `${path} is not one JSON object: ${cause.message}` }))),
+      }),
+    ),
+  )
 
 /**
- * Configs over the files: keep copies them aside (a file absent then has no copy), restore puts the
- * copies back and leaves a file with no copy as it is.
+ * Configs over the files: keep copies them aside (a file absent then has no copy); restore puts each
+ * copy back where its file differs and leaves a file with no copy as it is, so a file the update did
+ * not change is not written (a TUI watches its config). `ours` and `strip` read the server config by
+ * the old writer's ownership rule; a strip with nothing of ours writes nothing.
  */
 export const layer = (paths: Paths) =>
   Layer.succeed(
@@ -31,10 +106,20 @@ export const layer = (paths: Paths) =>
       restore: Effect.forEach(
         paths.config,
         (path) =>
-          readText(keptOf(paths, path)).pipe(
-            Effect.flatMap((text) => Option.match(text, { onNone: () => Effect.void, onSome: (each) => writeText("restore the config", path, each) })),
+          Effect.all([readText(keptOf(paths, path)), readText(path)]).pipe(
+            Effect.flatMap(([kept, now]) =>
+              Option.match(Option.filter(kept, (each) => !Option.contains(now, each)), { onNone: () => Effect.void, onSome: (each) => writeText("restore the config", path, each) }),
+            ),
           ),
         { discard: true },
+      ),
+      ours: readServer(paths.server).pipe(Effect.map(Option.exists((config) => listsOurs(config, paths.owned)))),
+      strip: readServer(paths.server).pipe(
+        Effect.flatMap((config) =>
+          Effect.forEach(Option.toArray(Option.filter(config, (each) => listsOurs(each, paths.owned))), (each) => writeText("strip the server config", paths.server, `${encodeServer(stripped(each, paths.owned))}\n`), {
+            discard: true,
+          }),
+        ),
       ),
     }),
   )

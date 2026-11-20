@@ -3,8 +3,10 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { readText } from "../filestore/files.ts"
 import type { Listed } from "../health.ts"
 import { Placement } from "../placement.ts"
+import { buildOf, parseRecord } from "../record.ts"
 import { Service, UpdateFailed } from "../service.ts"
 import type { Settings } from "../settings.ts"
+import { treeOf } from "../trees.ts"
 import { run } from "./run.ts"
 
 const PluginList = Schema.Struct({
@@ -165,6 +167,23 @@ export const asker = (client: HttpClient.HttpClient, registration: string, resid
  * finish activating, so a plugin list read mid-activation is never taken for a plugin that did
  * not load.
  */
+/**
+ * The server configs the installed build reads, by the record's text: the global one, and the build's
+ * tree's (`<build>.plugins/config/opencode.json`, which the fork's adjacent binding adds over it) when
+ * the record names a build. Once the first tree install strips our entries from the global config,
+ * only the tree's names our plugins, so a check of the global alone would check none of them.
+ */
+export const serverConfigsOf = (server: string, recordText: Option.Option<string>): ReadonlyArray<string> => [
+  server,
+  ...Option.toArray(Option.map(Option.flatMap(Option.flatMap(recordText, parseRecord), buildOf), (build) => `${treeOf(build.command[0])}/config/opencode.json`)),
+]
+
+/** What the configs (their texts, absent ones none) name together: their local plugins and the providers their models use, each once. */
+export const configuredBy = (texts: ReadonlyArray<string>) => ({
+  configured: [...new Set(texts.flatMap(configuredOf))],
+  providers: [...new Set(texts.flatMap(providersOf))],
+})
+
 export const layer = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string) => {
   const place = { cwd: settings.checkout, env }
   const server = settings.config.find((path) => path.endsWith("/opencode.json")) ?? ""
@@ -198,12 +217,13 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
           const listed = listedOf(plugins)
           if (Option.isNone(listed)) return yield* new UpdateFailed({ step: "list the plugins", message: plugins.slice(0, 500) })
           const answer = yield* pool
-          const config = Option.getOrElse(yield* readText(server), () => "")
+          const texts = yield* Effect.forEach(serverConfigsOf(server, yield* readText(settings.record)), readText)
+          const { configured, providers } = configuredBy(texts.flatMap(Option.toArray))
           return {
-            configured: configuredOf(config),
+            configured,
             listed: listed.value,
             accounts: Option.flatMap(answer, accountsOf),
-            providers: providersOf(config),
+            providers,
             logins: yield* loginsWith(answer),
             placement: Option.flatMap(yield* optional(rpc("ask where the service runs", "dotfiles-opencode.update/placement")), answeredPlacement),
           }

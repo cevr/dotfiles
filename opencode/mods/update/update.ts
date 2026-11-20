@@ -58,20 +58,37 @@ export type Plan = Data.TaggedEnum<{
 export const Plan = Data.taggedEnum<Plan>()
 
 /**
- * The run's plan: the target against the installed record and the rejected target. A handoff
- * that runs holds every run. A build is current only once proven: installed and good. A host with
- * no record installs.
+ * What the plan knows of trees (`trees.ts`): whether this host's builds want one (the tree scheme:
+ * the good build's fork binds a tree), and whether the installed build has its tree beside it.
  */
-export const plan = (target: Option.Option<Target>, record: Option.Option<Record>, rejected: Option.Option<Rejected>, running: Option.Option<Running>): Plan => {
+export interface TreeFacts {
+  readonly wanted: boolean
+  readonly installed: boolean
+}
+
+/** The old scheme's facts: no build needs a tree. */
+export const NO_TREES: TreeFacts = { wanted: false, installed: false }
+
+/**
+ * The run's plan: the target against the installed record and the rejected target. A handoff
+ * that runs holds every run. A staged build of the target restarts through the handoff. A build is
+ * current only once proven, installed and good, and, where builds want a tree, with its tree beside
+ * it: a build installed with none (the old scheme's last install) is built again, as a tree build of
+ * the same commits, so the first tree install comes by itself. A host with no record installs.
+ */
+export const plan = (target: Option.Option<Target>, record: Option.Option<Record>, rejected: Option.Option<Rejected>, running: Option.Option<Running>, trees: TreeFacts = NO_TREES): Plan => {
   if (Option.isSome(running)) return Plan.HandingOff({ running: running.value })
   if (Option.isNone(target)) return Plan.NoTarget()
   const wanted = target.value
   const failed = rejectionOf(wanted, rejected)
   if (Option.isSome(failed)) return Plan.Rejected({ target: wanted, rejected: failed.value })
   const on = (build: Option.Option<{ readonly dotfiles: string; readonly fork: string }>) => Option.exists(build, (each) => sameCommits(each, wanted))
+  // A staged build of the target first: a tree build of the installed build's own commits is staged under its own version (`.tree`), with the same commits.
+  if (on(Option.flatMap(record, stagedOf))) return Plan.Restart({ target: wanted })
   const installed = Option.flatMap(record, buildOf)
+  if (on(installed) && trees.wanted && !trees.installed) return Plan.Update({ target: wanted })
   if (on(installed) && on(Option.flatMap(record, goodOf))) return Plan.Current({ target: wanted })
-  if (on(installed) || on(Option.flatMap(record, stagedOf))) return Plan.Restart({ target: wanted })
+  if (on(installed)) return Plan.Restart({ target: wanted })
   return Plan.Update({ target: wanted })
 }
 

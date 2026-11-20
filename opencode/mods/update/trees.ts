@@ -125,8 +125,27 @@ export const BUILTIN_AUTOMATION_OFF = "-opencode.tool.automation"
 /** The server's built-ins turned off, after its plugins. */
 export const SERVER_OFF: ReadonlyArray<string> = [BUILTIN_AUTOMATION_OFF]
 
-/** The TUI's plugins, Prime first. */
-export const TUI_PLUGINS: ReadonlyArray<string> = ["prime", "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
+/** A plugin package's TUI part, as its `package.json` exports it. */
+const TuiManifest = Schema.Struct({ exports: Schema.Struct({ "./tui": Schema.optionalKey(Schema.String) }) })
+const decodeTuiManifest = Schema.decodeUnknownOption(Schema.fromJsonString(TuiManifest))
+
+/** Whether the plugin package whose `package.json` is `manifest` has a TUI part (it exports `./tui`). */
+export const hasTuiPart = (manifest: string): boolean => Option.exists(decodeTuiManifest(manifest), (plugin) => Option.isSome(Option.fromUndefinedOr(plugin.exports["./tui"])))
+
+/** The TUI plugin that loads first: Prime, whose look the others draw into. */
+export const TUI_FIRST = "prime"
+
+/**
+ * The TUI's plugins, derived from the packages themselves (`packages`: each plugin directory's name and
+ * its `package.json`): every one that exports `./tui`, Prime first, then by name. Derived, never kept
+ * by hand: a TUI part reached the TUI under the old scheme also through the server's listing (gap 5),
+ * which a tree's server entries no longer carry, so a plugin missing here would drop out of every TUI
+ * (2026-11-20: the Queue sidebar section, `cmd/queue`).
+ */
+export const tuiPluginsOf = (packages: ReadonlyArray<{ readonly name: string; readonly manifest: string }>): ReadonlyArray<string> =>
+  packages
+    .flatMap((each) => [each.name].filter(() => hasTuiPart(each.manifest)))
+    .toSorted((left, right) => Number(right === TUI_FIRST) - Number(left === TUI_FIRST) || Number(left > right) - Number(left < right))
 
 /** Turns off the fork's built-in /btw (`opencode.btw`), so /btw is the btw mod's (cmd/btw). */
 export const BUILTIN_BTW_OFF = "-opencode.btw"

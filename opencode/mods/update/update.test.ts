@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Duration, Option } from "effect"
 import { type Build, nextRecord, proven, type Record, rolledBack, stagedRecord } from "./record.ts"
 import { messageOf, type Target, tagObject, targetOfTag } from "./target.ts"
-import { ask, ended, HANDOFF_LIMIT, IDLE, Plan, plan, type Rejected, runningOf, superseded } from "./update.ts"
+import { ask, ended, HANDOFF_LIMIT, IDLE, NO_TREES, Plan, plan, type Rejected, runningOf, superseded } from "./update.ts"
 
 const TARGET: Target = { dotfiles: "a".repeat(40), fork: "b".repeat(40), batch: "batch-k" }
 const TAGGER = { name: "orchestrate", email: "orchestrate@localhost", at: 1_794_416_400 }
@@ -37,6 +37,17 @@ describe("an update run's plan", () => {
     const old = proven(record("c".repeat(40), "c".repeat(40)))
     expect(plan(Option.some(TARGET), Option.some(stagedRecord(Option.some(old), TARGET_BUILD, [])), Option.none(), Option.none())).toEqual(Plan.Restart({ target: TARGET }))
     expect(plan(Option.some(TARGET), Option.some(nextRecord(Option.some(old), TARGET_BUILD, [])), Option.none(), Option.none())).toEqual(Plan.Restart({ target: TARGET }))
+  })
+
+  test("where builds want a tree, a proven build of the target installed with none is built again; staged, with its tree, or on the old scheme it is not", () => {
+    const installed = proven(record(TARGET.dotfiles, TARGET.fork))
+    const wanted = { wanted: true, installed: false }
+    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), wanted)).toEqual(Plan.Update({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), { wanted: true, installed: true })).toEqual(Plan.Current({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), NO_TREES)).toEqual(Plan.Current({ target: TARGET }))
+    // Its tree build staged under the same version: the handoff restarts onto it, not another build.
+    const rebuilt = stagedRecord(Option.some(installed), { ...TARGET_BUILD, version: installed.version, command: installed.command }, [])
+    expect(plan(Option.some(TARGET), Option.some(rebuilt), Option.none(), Option.none(), wanted)).toEqual(Plan.Restart({ target: TARGET }))
   })
 
   test("P1, P6: after a failed build, a failed advance, a rollback or a give-up, the plan is never to build or restart onto that target again", () => {

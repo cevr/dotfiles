@@ -4,6 +4,7 @@
 // change, and the change's own run of `--configure` before and after it, in two scratch homes on one
 // host, wrote the same bytes but for the home's path.
 import { describe, expect, test } from "bun:test"
+import { Glob } from "bun"
 import { Option } from "effect"
 import { settingsFor } from "../mods/update/process/install.ts"
 import { CLI, EXISTING, SERVER } from "./daily-configure.golden.ts"
@@ -45,5 +46,13 @@ describe("the global configs --configure writes", () => {
     const written = configured(EXISTING, FACTS, `${HOME}/.local/share/opencode-prime`)
     expect(jsonText(written.server).replaceAll(ROOT, "<opencode>")).toBe(SERVER)
     expect(jsonText(written.cli).replaceAll(ROOT, "<opencode>")).toBe(CLI)
+  })
+
+  test("list every plugin with a TUI part in the TUI's config: a tree's server entries carry none, so a TUI gets a TUI part only from it", () => {
+    // Read straight off the tree of plugins, not through the derivation: each `cmd/<name>` with a TUI entry file.
+    const withTui = [...new Glob("cmd/*/tui.{ts,tsx}").scanSync(ROOT)].map((path) => `${ROOT}/${path.slice(0, path.lastIndexOf("/"))}`)
+    const tui = jsonText(configured(EXISTING, FACTS, `${HOME}/.local/share/opencode-prime`).cli)
+    expect(withTui.filter((dir) => !tui.includes(`"${dir}"`))).toEqual([])
+    expect(withTui.length).toBeGreaterThan(10)
   })
 })

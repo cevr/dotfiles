@@ -1,9 +1,34 @@
-import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { exclusivelySync } from "@dotfiles/opencode-work/process/flock"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
+import { exclusivelySync, holding } from "@dotfiles/opencode-work/process/flock"
+import { Effect, Layer } from "effect"
 import { buildName, stagingName } from "../builds.ts"
 import { parseRecord, type Record, recordText, stagedRecord } from "../record.ts"
+import { Trees, UpdateFailed } from "../service.ts"
+import { TREE_SUFFIX, treeOf } from "../trees.ts"
+import { removeMaking } from "./builds.ts"
 import { launcher } from "./launcher.ts"
+import { check, make, type Options as TreeOptions } from "./trees.ts"
+
+/**
+ * The Trees over the share directory (`filestore/trees.ts`), each make under the builds lock `lock`,
+ * which daily's stage takes for its copy and record and a prune for its read and deletes: two stages
+ * at once (daily by hand during the updater's) never make one tree twice, and a prune never meets a
+ * tree half placed. `has` reads whether a build's overlay stands beside it.
+ */
+export const treesLayer = (options: TreeOptions & { readonly lock: string }) =>
+  Layer.succeed(
+    Trees,
+    Trees.of({
+      make: (version, commit) =>
+        holding([[options.lock, "exclusive"]], make(options, version, commit)).pipe(
+          Effect.catchTag("RiftFailed", (failed) => Effect.fail(new UpdateFailed({ step: "take the builds lock", message: failed.message }))),
+        ),
+      check,
+      has: (version) => Effect.sync(() => existsSync(join(options.share, treeOf(buildName(version)), "config", "opencode.json"))),
+      remove: (version) => holding([[options.lock, "exclusive"]], removeMaking(join(options.share, treeOf(buildName(version))))).pipe(Effect.ignore),
+    }),
+  )
 
 /** One build daily stages: the file it built, where it goes, and what the record says of it. */
 export interface Stage {
@@ -69,4 +94,27 @@ export const writeLauncher = (path: string, resident: string, record: Record, pi
   writeFileSync(next, launcher(record.command[0], resident))
   chmodSync(next, 0o755)
   renameSync(next, path)
+  writeCurrentTree(record.command[0], pid)
+}
+
+/** The link beside the builds that names the installed build's tree (`currentTree`). */
+export const CURRENT_TREE = "current.plugins"
+
+/**
+ * Points `<share>/current.plugins` at the tree of `binary`, the build the record installs, written with
+ * the launcher at each record write: a path that outlives a process (a pending wake's job, a command
+ * link) goes through it rather than into one build's tree, which a prune deletes with its build. A
+ * relative link, made beside its path and renamed over it; a build with no tree (the old scheme's)
+ * leaves no link, as nothing of it is in a tree.
+ */
+export const writeCurrentTree = (binary: string, pid: number): void => {
+  const tree = `${binary}${TREE_SUFFIX}`
+  const link = join(dirname(binary), CURRENT_TREE)
+  if (!existsSync(join(tree, "config"))) {
+    rmSync(link, { force: true })
+    return
+  }
+  rmSync(`${link}.${pid}`, { force: true })
+  symlinkSync(basename(tree), `${link}.${pid}`)
+  renameSync(`${link}.${pid}`, link)
 }
