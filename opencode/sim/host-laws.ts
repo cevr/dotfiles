@@ -376,6 +376,9 @@ export const LAWS: ReadonlyArray<Law> = [
     operations: ["session.hook"],
     check: (ctx, probe) =>
       Effect.gen(function* () {
+        // A host's own requests (a goal check, cache warming) run the `generate` hook, which a plugin may hold; the world
+        // makes none of them, so only the hook's registration is the law here.
+        yield* ctx.session.hook("generate", () => Effect.void)
         const session = yield* fresh(ctx)
         yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: hooked" }))
         const kinds = (yield* probe.requests).filter((request) => request.sessionID === session.id).map((request) => request.kind)

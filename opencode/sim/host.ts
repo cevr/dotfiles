@@ -492,6 +492,8 @@ export interface Options {
    * it alike). Default: every directory is outside a repository, the fork's `global` project.
    */
   readonly projects?: (directory: string) => string
+  /** The config's `default_agent`: it wins over a plugin's choice, as the fork's config agent plugin runs last. */
+  readonly defaultAgent?: string
 }
 
 /** The fork's project for a directory outside any repository (packages/schema/src/project-id.ts `global`). */
@@ -792,13 +794,21 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   /** Each copy's agent transform, in load order: the agents are rebuilt from them for each read. */
   const agentTransforms: Array<{ readonly instance: number; readonly callback: (editor: AgentEditor) => void }> = []
 
-  /** The agents of a location: build, then each of the location's copies' transforms in load order (packages/core/src/agent.ts). */
+  /**
+   * The agents of a location: build, then each of the location's copies' transforms in load order, then the config's
+   * `default_agent` (the config's agent plugin runs after every package plugin: packages/core/src/plugin/supervisor.ts).
+   * The default comes first, as the fork's `Agent.list` puts it: the one a transform or the config chose when it is
+   * primary and shown, else build, else the first such agent (packages/core/src/agent.ts `selectedDefault`).
+   */
   const agentsOf = (directory: string) => {
     const all = new Map<string, MutableAgent>([["build", agentOf("build")]])
+    let chosen: string | undefined
     const editor: AgentEditor = {
       list: () => [...all.values()],
       get: (id) => all.get(id),
-      default: () => void 0,
+      default: (id) => {
+        chosen = id
+      },
       update: (id, change) => {
         const current = all.get(id) ?? agentOf(id)
         all.set(id, current)
@@ -808,11 +818,19 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       remove: (id) => void all.delete(id),
     }
     for (const transform of agentTransforms) if (directories.get(transform.instance) === directory) transform.callback(editor)
-    return all
+    if (options.defaultAgent !== void 0) chosen = options.defaultAgent
+    const selectable = (agent: MutableAgent | undefined) => (agent !== void 0 && agent.mode !== "subagent" && !agent.hidden ? agent : void 0)
+    const selected =
+      selectable(chosen === void 0 ? void 0 : all.get(chosen)) ?? selectable(all.get("build")) ?? [...all.values()].find((agent) => selectable(agent) !== void 0)
+    if (selected === void 0) return all
+    return new Map([[selected.id as string, selected], ...[...all].filter(([id]) => id !== selected.id)])
   }
 
+  /** The agent a session created on none runs as: its location's default, read at each request (the fork's `Agent.select()`). */
+  const defaultAgentOf = (directory: string) => agentsOf(directory).keys().next().value ?? "build"
+
   /** The agent a session runs as, or the default one when its own is gone. */
-  const agentFor = (session: Session) => agentsOf(session.directory).get(session.agent) ?? agentOf(session.agent)
+  const agentFor = (session: Session) => agentsOf(session.directory).get(requestAgent(session)) ?? agentOf(requestAgent(session))
 
   /** The model a session's requests go to: its own selection, else the host's default. */
   const modelOf = (session: Pick<Session, "model">): ModelRef => Option.getOrElse(session.model, () => model)
@@ -840,8 +858,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     session.updated = runtime.now()
   }
 
-  /** The agent a session's requests run as. */
-  const requestAgent = (session: Session) => session.agent
+  /** The agent a session's requests run as: its own when it was created on one or switched, else its location's default. */
+  const requestAgent = (session: Session) => (session.named ? session.agent : defaultAgentOf(session.directory))
   /** The model a session's requests run on (`modelOf`). */
   const requestModel = modelOf
 

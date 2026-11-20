@@ -217,6 +217,8 @@ export const make = (worldOptions: WorldOptions) => {
     /** The session's context, as `session.context` answers it, before the views. */
     context: (sessionID: string): ReadonlyArray<Message> =>
       Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => [], onSome: host.contextOf }),
+    /** A location's agents as `agent.list` answers them: its default first. */
+    agents: (directory: string) => [...host.agentsOf(directory).values()],
     /** Every message the session holds, before its newest compaction too. */
     messages: (sessionID: string): ReadonlyArray<Message> => host.sessions.get(sessionID)?.messages ?? [],
     /** Loads a plugin for a directory, as OpenCode does for each location it serves, and starts it. */
