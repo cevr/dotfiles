@@ -6,6 +6,7 @@
 // node per worker); the first notice of the burst draws it and the rest draw
 // nothing. A worker that finished well shows its header alone below All; a
 // click opens its whole answer in place and a second closes it.
+import { answered } from "@dotfiles/opencode-subagents/envelope"
 import { close, stretch } from "./burst.ts"
 import type { Detail } from "./detail.ts"
 import type { LeadTone, Run } from "./group.ts"
@@ -35,11 +36,8 @@ export function noticeBurst(messages: ReadonlyArray<Message>, messageID: string)
 
 const titlecase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
 
-/** What a notice says the program answered: the text inside its `<subagent …>`/`<shell …>` envelope, else all of it. */
-export function noticeResult(text: string): string {
-  const inside = /<(subagent|shell)\b[^>]*>\n?([\s\S]*?)\n?<\/\1>/.exec(text)
-  return (inside?.[2] ?? text).trim()
-}
+/** What a notice says the program answered: the text inside its envelope (either form, envelope.ts), else all of it. */
+export const noticeResult = answered
 
 /** One node of a notice's tree: a worker (named in a burst, unnamed alone, the header names it) and what it answered. */
 export type NoticeNode = {

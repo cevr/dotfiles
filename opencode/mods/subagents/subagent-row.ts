@@ -37,6 +37,7 @@
 // The time is how long it has been in that state, not since it started.
 import { described as stepOf } from "@dotfiles/opencode-orchestrate/described"
 import { canonical, firstSentence, lastHeard, lastSentence, liveCall, once, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
+import { unwrap } from "./envelope.ts"
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
@@ -152,7 +153,7 @@ const stepCount = once((messages: ReadonlyArray<Message>) => messages.filter((me
 
 /** The short reason a failure gives: the first sentence of its message, past the host's envelope and prefix. */
 function reason(text: string): string {
-  const body = text.replace(/^<\/?subagent\b[^>]*>\n?/gm, "").trim()
+  const body = unwrap(text, "subagent").trim()
   return firstSentence(body.split("\n")[0] ?? "").replace(/^Subagent failed( \(sessionID: [^)]*\))?:?\s*/, "")
 }
 

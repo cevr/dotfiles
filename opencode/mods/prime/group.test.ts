@@ -343,6 +343,14 @@ describe("what hangs under a call at the all level", () => {
     expect(callBody(started)).toEqual({ files: [], reply: false, output: "Started." })
   })
 
+  test("a subagent's reply shows without the host's envelope, in either form", () => {
+    const wrapped = (text: string) => one(said(call("task", { agent: "code-reviewer", prompt: "Review." }), text))
+    expect(callBody(wrapped('<background-result kind="subagent" sessionID="ses_c" state="completed" description="Review">\nApproved.\n</background-result>')).output).toBe(
+      "Approved.",
+    )
+    expect(callBody(wrapped('<subagent sessionID="ses_c" state="completed" description="Review">\nApproved.\n</subagent>')).output).toBe("Approved.")
+  })
+
   test("a failed read with no output hangs nothing, so no rail is drawn under it", () => {
     expect(hasBody(callBody(missing))).toBe(false)
   })
@@ -550,7 +558,7 @@ describe("a notice as a tool-call group", () => {
     time: { created: 0 },
   })
   const envelope = (state: string, body: string) =>
-    `<subagent sessionID="ses_1" state="${state}" description="Fix money parsing">\n${body}\n</subagent>`
+    `<background-result kind="subagent" sessionID="ses_1" state="${state}" description="Fix money parsing">\n${body}\n</background-result>`
   const worker = (state: string, body: string, id = "n1") =>
     notice(id, envelope(state, body), { source: "subagent", state, agent: "worker", childID: `ses_${id}` })
   const header = (group: ReturnType<typeof noticeGroup>) => group!.header.map((run) => run.text).join("")
@@ -558,6 +566,11 @@ describe("a notice as a tool-call group", () => {
 
   test("its answer is what the envelope holds", () => {
     expect(noticeResult(envelope("completed", "Fixed.\nAll green."))).toBe("Fixed.\nAll green.")
+    expect(
+      noticeResult(`The following shell command was executed by the user:\n<background-result kind="shell" id="s" state="completed" command="ls">\na\nb\n</background-result>`),
+    ).toBe("a\nb")
+    // A stored session keeps the notices of the fork before upstream e51247f626: a tag per kind.
+    expect(noticeResult(`<subagent sessionID="ses_1" state="completed" description="Fix money parsing">\nFixed.\n</subagent>`)).toBe("Fixed.")
     expect(noticeResult(`The following shell command was executed by the user:\n<shell id="s" state="completed" command="ls">\na\nb\n</shell>`)).toBe("a\nb")
     expect(noticeResult("User shell command failed to start:\nls")).toBe("User shell command failed to start:\nls")
   })
@@ -635,7 +648,7 @@ describe("a notice as a tool-call group", () => {
     const cancelled = noticeGroup([worker("cancelled", "Subagent cancelled")], "n1")!
     expect(cancelled.folds).toBe(false)
     expect(drawn(noticeLines(cancelled, "details"))).toEqual(["└ Subagent cancelled"])
-    const shell = noticeGroup([notice("s1", "<shell id=\"s\" state=\"completed\" command=\"ls\">\na\nb\n</shell>", { source: "shell", state: "completed" }, "ls")], "s1")!
+    const shell = noticeGroup([notice("s1", "<background-result kind=\"shell\" id=\"s\" state=\"completed\" command=\"ls\">\na\nb\n</background-result>", { source: "shell", state: "completed" }, "ls")], "s1")!
     expect(shell.folds).toBe(false)
     expect(drawn(noticeLines(shell, "details"))).toEqual(["└ a", "  b"])
   })
@@ -649,13 +662,13 @@ describe("a notice as a tool-call group", () => {
     const cancelled = noticeGroup([worker("cancelled", "Subagent cancelled")], "n1")!
     expect(cancelled.glyph).toEqual({ char: "●", tone: "warning" })
     expect(cancelled.header[1]).toEqual({ text: "cancelled", tone: "warning" })
-    const shell = noticeGroup([notice("s1", "<shell id=\"s\" state=\"error\" command=\"bun test\">\n1 fail\n</shell>", { source: "shell", state: "error" }, "bun test")], "s1")!
+    const shell = noticeGroup([notice("s1", "<background-result kind=\"shell\" id=\"s\" state=\"error\" command=\"bun test\">\n1 fail\n</background-result>", { source: "shell", state: "error" }, "bun test")], "s1")!
     expect(header(shell)).toBe("Shell failed · bun test")
   })
 
   test("below All a shell's long answer shows its head and counts the rest; All shows it whole", () => {
     const body = Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n")
-    const shell = `<shell id="s" state="completed" command="seq 9">\n${body}\n</shell>`
+    const shell = `<background-result kind="shell" id="s" state="completed" command="seq 9">\n${body}\n</background-result>`
     const group = noticeGroup([notice("s1", shell, { source: "shell", state: "completed" }, "seq 9")], "s1")!
     expect(drawn(noticeLines(group, "details"))).toEqual([
       "└ line 1",
@@ -678,7 +691,7 @@ describe("a notice as a tool-call group", () => {
   })
 
   test("a notice right under another notice's group opens a blank row; one under anything else does not", () => {
-    const shell = notice("s1", "<shell id=\"s\" state=\"completed\" command=\"ls\">\nok\n</shell>", { source: "shell", state: "completed" }, "ls")
+    const shell = notice("s1", "<background-result kind=\"shell\" id=\"s\" state=\"completed\" command=\"ls\">\nok\n</background-result>", { source: "shell", state: "completed" }, "ls")
     expect(noticeApart([shell, worker("completed", "ok")], "n1")).toBe(true)
     expect(noticeApart([step("m1", [{ type: "text", text: "Waiting." }]), worker("completed", "ok")], "n1")).toBe(false)
     // A folded notice's group is drawn by the burst's first, which looks above the burst.
