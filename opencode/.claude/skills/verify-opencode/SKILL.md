@@ -37,6 +37,8 @@ pilotty spawn --name verify-$PORT bun run verify:tui --root $ROOT
 pilotty wait-for -s verify-$PORT "Ask anything" -t 60000
 ```
 
+The launch runs the fork from source, never the installed binary. An installed build (`~/.local/share/opencode-prime/opencode-<version>`) binds the plugin tree beside it (`<binary>.plugins/config/`) over any config you give it, so it never runs by its path in a harness: copy it under another name first (`testbeds/gamut/gamut.ts` `unboundBuild`, which `scripts/perf/plugin-start.ts` uses), and `tests/owned.ts` refuses to start one.
+
 `verify:launch` runs until `verify:stop` (or its shell is killed): start it as a background shell, read its ready line (`{"ok":true,"ready":true,…}`), and leave it. Ready means the line *and* `GET /api/info` answering with the run's secret, which the launch waits for. The server loads the plugins `verify:seed` named (by default orchestrate, status, queue, wake with `backstop: "off"`, guard, mail, questions, escape, tool-names, skills); `update`, `rift`, `work`, `pool` and `anthropic-auth` are refused, since they act on the owner's checkouts or logins: drive those on the world. Every TUI plugin of `cmd/` loads through the run's `cli.json`, Prime first.
 
 ## Doctor

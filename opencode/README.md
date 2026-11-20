@@ -172,10 +172,32 @@ only the resident location's copy acts, so a host runs one updater.
   at its make, so there is no reinstall rung): a record write naming the last
   good build installed, and a restart on it; when that build has no tree, the
   kept configs go back first. It ends proven, rolled back or given up as
-  below, and a proven handoff prunes. The steady state's effects, in order:
-  fetch, make the tree, stage, hand off; record, restart, record (good),
-  prune. The first tree install adds the keep and the strip before the
-  record, and its rollback the restore before the record of the good build.
+  below, and a proven handoff prunes, then strips the TUI config late (below)
+  and runs the host's commands script from the checkout as it stands
+  (`local-bin.sh` on the Mac, `workbox/install-bin.sh --apply` on the
+  workbox), as a checkout move did: `rex-show`, part of the plugins, links
+  through `current.plugins`, so it runs from the installed build. The steady
+  state's effects, in order: fetch, make the tree, stage, hand off; record,
+  restart, record (good), prune, the host's commands. The first tree install
+  adds the keep and the strip before the record, and its rollback the restore
+  before the record of the good build. A handoff killed between the strip and
+  the record leaves the old build installed with none of our server plugins,
+  the updater among them, and nothing of ours runs at the next launch to heal
+  it (the launcher is written by that record write): the log's strip line
+  says the repair, `bun run daily` in the checkout, which writes our entries
+  back. The span is under a millisecond, and a host meets it only on a first
+  tree install (both hosts are past theirs; a by-hand old-scheme daily makes
+  another).
+- **The late strip.** The first tree install leaves our entries in the global
+  `cli.json`: an open TUI of the old scheme reads its plugins there until it
+  moves. The first proven handoff that finds no running executable an
+  old-format build (a build of the share directory with no tree beside it,
+  `builds.ts` `oldFormat`) keeps a copy of `cli.json`
+  (`~/.local/state/opencode-update/config-kept/cli.json.before-late-strip`),
+  then takes our entries out of it, every other key and entry kept; from then
+  no update writes either global config. A TUI of a tree build never reads
+  that list (its overlay replaces it). A rollback never strips; a TUI that
+  never moves holds the strip (the model's I8).
   Between a config write (the strip, the restore) and the restart that
   follows it, two writes and a call apart, a service started by the launcher
   or after a crash by its unit can hold none of our plugins or both lists;
@@ -184,8 +206,11 @@ only the resident location's copy acts, so a host runs one updater.
   `mods/update/model.test.ts` `plugin trees`).
 - **The TUI's plugins.** A tree's `config/cli.json` and the old scheme's
   global `cli.json` list every plugin package that exports `./tui`
-  (`cmd/*/package.json`), Prime first, then by name: `trees.ts`
-  `tuiPluginsOf`, derived, never a list kept by hand. A tree's server entries
+  (`cmd/*/package.json`): `trees.ts` `tuiPluginsOf`, derived, never a list
+  kept by hand. Their order is the TUI's load order, so the order the sidebar
+  draws its sections in: `TUI_ORDER`, the old scheme's list (Prime first,
+  status with the pool's section second), and a plugin it does not list after
+  those, by name (Queue). A tree's server entries
   carry no TUI part, so a plugin missing there drops out of every TUI
   (2026-11-20: the Queue sidebar, which the old scheme's TUIs had only through
   the server's listing). An old TUI that stays open through the first tree
@@ -3124,6 +3149,16 @@ before the job's call lands) removes the job a few seconds later, since
 removing a running launchd job kills it mid-call. Each run appends a line to
 `$XDG_STATE_HOME/opencode-wake/backstop.log`. On start the plugin removes the
 `opencode-wake-*` jobs that no entry names.
+
+A job may fire weeks after it was set, when the build whose plugin tree set it
+is pruned. So a job's entry file names the script through the share
+directory's `current.plugins` link (the installed build's tree, moved with
+each install record) whenever the plugin runs from a tree and the link holds
+the script (`mods/wake/cron/backstop.ts` `stableScript`); a job set from a
+checkout names the checkout's. Each start's listing points an entry file
+written before this at the link too (`relinked`). A `job`'s runner is the
+opposite: it starts at once as `bun <tree>/opencode/cmd/wake/job.ts`, so the
+prune keeps that tree while it runs, and it ends on the code it started with.
 
 The job calls the server rather than `opencode run --session`: `run` would
 add a prompt of its own, under an id the entry never recorded, so a fire the
