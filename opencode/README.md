@@ -3216,8 +3216,10 @@ renamed from `experimental.schedules` and its schedule tools on 2026-11-16 and
 still reads under the old key) fire an automation by prompting its session
 with its whole action: a real user message each
 time, kilobytes for a watch that fires on every change. The wake plugin takes
-them out of the registry for every agent (`AUTOMATION_TOOLS` in
-`cmd/wake/server.ts`, as the work plugin takes the worktree tools), so a wake
+them out of the registry for every agent (`AUTOMATION_IDS` in
+`mods/wake/automations.ts`, by both ids a fork gives them: `automation_*`
+since upstream 2002222d13, `opencode_automation_*` before it; as the work
+plugin takes the worktree tools), so a wake
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The
