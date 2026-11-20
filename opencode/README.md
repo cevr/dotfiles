@@ -902,12 +902,23 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   read as a unit (unit `feat-y` is never given unit `y`'s `feat-y`). The
   answer ends with the `(lane: <path>)` its implementor's description takes
   (`laneNote`; `lanePathOf` reads it, and the `(rift: <path>)` notes wrote
-  before the rename). One lane is one unit's, on one branch, for its life: a
-  lane whose checked-out branch is not the one its name was made for (on the
-  Mac the branch's last segment is not its folder, `<name>-2` to `-9` aside; on
-  the workbox its folder is not workrift's for the branch; or it is detached)
-  is reused (`reusedOf`), and `lane` of its unit refuses, naming both branches
-  and the fix (a lane for the unit the branch names, which is then made). A
+  before the rename). One lane is one unit's, on one branch, for its life. A
+  lane `lane` makes is marked on its branch (`branch.<branch>.orchestrate-lane`
+  set to the lane's path, beside the purpose, over the rift RPC's `create` with
+  `mark`; `list` reads it back as `madeOn`, through merges, rebases and
+  switches; a copy of the lane never reads it, since it names another path). A
+  marked lane now on another branch is reused (`reusedOf`): `lane` of its unit
+  refuses, naming both branches and the fix (a lane for the unit the branch
+  names, which is then made). A marked lane that is detached (a rebase or merge
+  stopped part way) is still its unit's: `lane` answers it with a warning, and
+  a land refuses with "finish or abort the rebase or merge". An unmarked lane
+  (made before the rule, by `work` or workrift by hand, or by another run)
+  whose branch is not the one its name would be made for (on the Mac the
+  branch's last segment is not its folder, `<name>-2` to `-9` aside; on the
+  workbox its folder is not workrift's for the branch; or detached) is only
+  warned of (`strayOf`): `lane` answers it and a land lands it, each with the
+  warning and the fix. A land's and a verify's own checkouts (`integrate`,
+  `post-land`, `land-accept`, `verify-*`) are never flagged. A
   `branch` whose last segment is not the unit is refused with `<prefix>/<unit>`.
   `purpose` (one line, at most 80 characters, the outcome in words) is kept as
   the lane's branch description (`branch.<branch>.description`, set over the
@@ -921,9 +932,9 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
 - `orchestrate({ action: "land", units?, departs? })`: the work plugin's land
   of the named units. A name resolves to the one workspace that is that unit's;
   `{ unit, path }` is taken as given; an unknown name, or one two workspaces read
-  as, is refused with the `{ unit, path }` form. A reused lane is never landed:
-  by name or by path the land refuses with the fix, and a land with no units
-  and `next:` leave it out. With no `units` it lands
+  as, is refused with the `{ unit, path }` form. A marked lane off its branch is
+  never landed: by name or by path the land refuses with the fix, and a land
+  with no units and `next:` leave it out; an unmarked one lands with a warning. With no `units` it lands
   every unit the run tables show `ready` that has a lane, and with none it
   says what to name. A named unit in another state than `ready` lands, its
   answer starting `orchestrate: warning: <unit> is <state>, not ready; landed
@@ -954,8 +965,8 @@ from the run tables (the status mod's `STATUS` RPC over the skill's
   default branch head, read then), and the `subagent` call that starts it.
   Any unit-name-shaped batch (`batch-<k>`, a unit, `main-<sha>`) is taken.
 - `orchestrate({ action: "status" })`: each run's open units with their
-  states, each one's lane with its purpose (a reused one flagged `REUSED:`
-  with the fix), and one `next:` line: the land call when a unit is
+  states, each one's lane with its purpose (a marked one off its branch flagged
+  `REUSED:` or `DETACHED:`, an unmarked one `warning:`, each with the fix), and one `next:` line: the land call when a unit is
   ready with a lane, else the verify of main when it is due, else a wait for
   the implementors' hand-backs, else none.
 
