@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-digest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The digest: one JSONL line per fact a run writes (a lane, a hand-back, a verdict, a land, a queue item, a question, an install), folded with no model call into projects and their messages.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

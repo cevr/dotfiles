@@ -281,6 +281,10 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "mods/digest": {
+      "name": "@dotfiles/opencode-digest",
+      "version": "0.0.0",
+    },
     "mods/escape": {
       "name": "@dotfiles/opencode-escape",
       "version": "0.0.0",
@@ -560,6 +564,8 @@
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
 
     "@dotfiles/opencode-cmd-work": ["@dotfiles/opencode-cmd-work@workspace:cmd/work"],
+
+    "@dotfiles/opencode-digest": ["@dotfiles/opencode-digest@workspace:mods/digest"],
 
     "@dotfiles/opencode-escape": ["@dotfiles/opencode-escape@workspace:mods/escape"],
 

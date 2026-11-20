@@ -695,6 +695,31 @@
     },
     {
       "files": [
+        "mods/digest/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The digest domain fence: the event format, the fold, the backfill and the messages import effect, the digest mod's own root files and bun:test only; never @opencode/*, node:*, bun or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/cache/opencode/*.ts"
       ],
       "rules": {
