@@ -36,7 +36,10 @@
 import { $ } from "bun"
 import { Database } from "bun:sqlite"
 import {
+  chmodSync,
   closeSync,
+  constants,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -466,10 +469,32 @@ export const forkLaunch = (fork: string, bun: string): Launch => ({
   fork,
 })
 
+/**
+ * Whether the fork binds a plugin tree to `binary`: an installed build with its tree beside it
+ * (`<binary>.plugins/config/`, the fork's `packages/cli/src/adjacent-config.ts`). Started by that path,
+ * it loads the tree's plugins on top of a harness's own config, whatever the harness sets.
+ */
+export const bindsTree = (binary: string): boolean => existsSync(`${binary}.plugins/config`)
+
+/**
+ * The build a harness runs for `binary`: itself, or for a build that binds a tree (`bindsTree`), a
+ * clone of it in `dir` under another name, which has no tree beside it and so binds none. A clone on
+ * APFS and btrfs, a copy elsewhere. A harness never starts an installed build by its path.
+ */
+export const unboundBuild = (binary: string, dir: string): string => {
+  if (!bindsTree(binary)) return binary
+  mkdirSync(dir, { recursive: true })
+  const clone = join(dir, "opencode-clone")
+  copyFileSync(binary, clone, constants.COPYFILE_FICLONE)
+  chmodSync(clone, 0o755)
+  return clone
+}
+
 const resolveLaunch = (installed: boolean, callerEnv: Readonly<Record<string, string | undefined>>): Launch => {
   if (installed) {
     const bin = Bun.which(OWNER_OPENCODE)
     if (bin === null) throw new Error(`no ${OWNER_OPENCODE} on PATH for --installed`)
+    if (bindsTree(realpathSync(bin))) throw new Error(`${bin} is a build with a plugin tree beside it, which would load over the run's config; run a clone of it (unboundBuild)`)
     return { kind: "installed", base: [bin], env: {} }
   }
   const fork = resolve(callerEnv.OPENCODE_DEV || DEFAULT_FORK)

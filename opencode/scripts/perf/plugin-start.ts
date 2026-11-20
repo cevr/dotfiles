@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../../testbeds/anthropic-auth.ts"
-import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
+import { forkLaunch, unboundBuild } from "../../testbeds/gamut/gamut.ts"
 import { BUILTIN_AUTOMATION_OFF, pluginDir } from "../daily.ts"
 import { Data, Effect, Option, Result, Schedule } from "effect"
 import { spawnSync } from "bun"
@@ -98,7 +98,7 @@ export interface Measure {
   readonly plugins: ReadonlyArray<string>
 }
 
-/** The owner's installed binary: the one `~/.local/bin/opencode` execs. */
+/** The owner's installed binary: the one `~/.local/bin/opencode` execs. `measure` runs a clone of it (`unboundBuild`). */
 export const installedBinary = (): string => {
   const launcher = readFileSync(join(homedir(), ".local/bin/opencode"), "utf8")
   const binary = /^exec '([^']+)'/m.exec(launcher)?.[1]
@@ -171,6 +171,16 @@ export const groupCpu = (group: number): number => {
     .reduce((total, [, time]) => total + psTime(time ?? "0:00"), 0)
 }
 
+/**
+ * The scratch service's command for the launch `base` in the scratch directory `root`: an installed
+ * build runs as a clone under `<root>/bin` (`unboundBuild`), since by its own path it would bind its
+ * plugin tree over the scratch config.
+ */
+export const serviceCommand = (base: ReadonlyArray<string>, root: string): Array<string> => {
+  const [program = "", ...rest] = base
+  return [unboundBuild(program, join(root, "bin")), ...rest, "serve", "--service"]
+}
+
 export const measure = async (options: Options): Promise<Measure> => {
   const plugins = options.plugins ?? SERVER_PLUGINS
   const { root = mkdtempSync(join(tmpdir(), "plugin-start-")) } = options
@@ -237,7 +247,7 @@ export const measure = async (options: Options): Promise<Measure> => {
   const started = performance.now()
   const t0 = Date.now()
   // Its own process group, stopped below whatever happens.
-  const child = Bun.spawn([...options.launch.base, "serve", "--service"], { cwd: directories[0], env, stdout: Bun.file(logFile), stderr: Bun.file(logFile), detached: true })
+  const child = Bun.spawn(serviceCommand(options.launch.base, root), { cwd: directories[0], env, stdout: Bun.file(logFile), stderr: Bun.file(logFile), detached: true })
   const since = () => performance.now() - started
   const deadline = Date.now() + 90_000
   const until = async <A>(read: () => Promise<A | undefined>, label: () => string): Promise<A> => {

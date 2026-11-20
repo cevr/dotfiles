@@ -1,6 +1,49 @@
 // The service's CPU time as plugin-start.ts reads it: `ps`'s `time` on macOS, `/proc/<pid>/stat` on Linux.
+// And the harnesses' rule that no harness starts an installed build by its path.
 import { describe, expect, test } from "bun:test"
-import { groupCpu, procStat, psTime } from "./plugin-start.ts"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { bindsTree, unboundBuild } from "../../testbeds/gamut/gamut.ts"
+import { owned } from "../../tests/owned.ts"
+import { groupCpu, procStat, psTime, serviceCommand } from "./plugin-start.ts"
+
+describe("a harness and an installed build", () => {
+  /** A scratch share directory holding a build with its plugin tree beside it, as the update installs one. */
+  const installed = () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-clone-"))
+    const binary = join(root, "share", "opencode-2.3.0-prime.aaaaaaaa.11111111.tree")
+    mkdirSync(`${binary}.plugins/config`, { recursive: true })
+    writeFileSync(`${binary}.plugins/config/opencode.json`, "{}\n")
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    return { root, binary, [Symbol.dispose]: () => rmSync(root, { recursive: true, force: true }) }
+  }
+
+  test("plugin-start's service runs a clone of an installed build in its scratch directory, never the build by its path", () => {
+    using share = installed()
+    const command = serviceCommand([share.binary], join(share.root, "run"))
+    const [program = ""] = command
+    expect(program).not.toBe(share.binary)
+    expect(dirname(program)).toBe(join(share.root, "run", "bin"))
+    expect(bindsTree(program)).toBe(false)
+    expect(readFileSync(program, "utf8")).toBe(readFileSync(share.binary, "utf8"))
+    expect(command.slice(1)).toEqual(["serve", "--service"])
+  })
+
+  test("a build with no tree beside it, and the fork from source, run as they are", () => {
+    using share = installed()
+    rmSync(`${share.binary}.plugins`, { recursive: true })
+    expect(serviceCommand([share.binary], share.root)).toEqual([share.binary, "serve", "--service"])
+    expect(serviceCommand([process.execPath, "/fork/packages/cli/src/index.ts"], share.root)).toEqual([process.execPath, "/fork/packages/cli/src/index.ts", "serve", "--service"])
+    expect(unboundBuild(share.binary, share.root)).toBe(share.binary)
+    expect(existsSync(join(share.root, "opencode-clone"))).toBe(false)
+  })
+
+  test("a test's owned child refuses an installed build by its path", () => {
+    using share = installed()
+    expect(() => owned([share.binary, "serve"])).toThrow(/plugin tree beside it/)
+  })
+})
 
 describe("the service's CPU time", () => {
   test("ps's time reads as ms, minutes and hours and days included", () => {

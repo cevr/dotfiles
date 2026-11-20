@@ -24,6 +24,7 @@
 // draws the same whether the test ran from a herdr pane, a Rex pane or a plain shell (tui-cpu passed
 // or failed by an inherited HERDR_ENV); a scenario that wants a pane sets it in its driver's
 // `opencode.env` (scenarios/herdr.ts).
+import { existsSync } from "node:fs"
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
@@ -88,6 +89,8 @@ export const owned = <
   command: ReadonlyArray<string>,
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
+  // An installed build by its own path binds its plugin tree over the test's config: a test runs a clone (gamut's `unboundBuild`).
+  if (existsSync(`${command[0] ?? ""}.plugins/config`)) throw new Error(`owned: ${command[0]} is a build with a plugin tree beside it; run a clone of it (testbeds/gamut unboundBuild)`)
   const temp = childTemp(options?.env)
   const child = Bun.spawn([...command], { ...options, env: { ...outsidePanes(temp.env, parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS }, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
