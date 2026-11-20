@@ -74,8 +74,18 @@ export const OwedAccept = Schema.Struct({
 })
 export type OwedAccept = typeof OwedAccept.Type
 
-/** What a resumed accept check runs before `rift.accept`, so its receipt names it a resumed run. */
-export const RESUMED = "RIFT_ACCEPT_RESUMED=1"
+/**
+ * The variable a resumed accept check (a minute check's, after a restart) runs with, set to 1 in its
+ * environment: `rift.accept` itself runs as it is, so a command that opens with `(`, `if` or `{` stays one.
+ */
+export const RESUMED = "RIFT_ACCEPT_RESUMED"
+
+/**
+ * The command a receipt names for a run of `command` with `env`: a resumed run's says so on a comment line of
+ * its own after it, which leaves the text a command sh runs the same.
+ */
+export const receiptCommand = (command: string, env: Readonly<Record<string, string>>): string =>
+  [command, ...Arr.filter([`# ${RESUMED}=1: a resumed run`], () => env[RESUMED] === "1")].join("\n")
 
 /**
  * What the store keeps: the owed steps, the owed accept checks (none in a file written before them), and the

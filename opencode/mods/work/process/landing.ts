@@ -17,6 +17,7 @@ import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Clock, Console, DateTime, Effect, Layer, Match, Option, Predicate, Result, Schema } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
+import { receiptCommand } from "../owed.ts"
 import { type LandRecord, LandRecordJson, type Receipt, ReceiptJson, type Snapshot, standing as standingOf } from "../receipt.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
@@ -471,7 +472,7 @@ export const layer = (options: Options) => {
   const receipted = Effect.fn("Landing.receipted")(function* (path: string, kind: "round" | "merge" | "accept", command: string, env: Readonly<Record<string, string>>) {
     const at = yield* kept.snapshot(path)
     const ran = yield* check(path, LABEL[kind], command, env)
-    const receipt = yield* kept.made(path, at, kind, [{ command, code: ran.code, seconds: ran.seconds }])
+    const receipt = yield* kept.made(path, at, kind, [{ command: receiptCommand(command, env), code: ran.code, seconds: ran.seconds }])
     yield* kept.write(receipt)
     return { ran, receipt }
   })

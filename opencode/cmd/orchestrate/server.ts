@@ -1020,6 +1020,7 @@ export const make = (
         readonly source?: string
         readonly at?: string
         readonly purpose?: string
+        readonly mark?: boolean
       }) => riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
       /** A Rift's purpose set, by the rift plugin's describe: its branch's description. */
       const describeRift = (ask: { readonly sessionID: string; readonly path: string; readonly purpose: string }) =>
@@ -1061,9 +1062,10 @@ export const make = (
               onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
             })
             yield* noteLane(sessionID, unit, lane)
-            return Tools.laneAnswer(unit, lane, false, warnings)
+            return Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)])
           }
-          const ask = { sessionID, branch, name: decided.make, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
+          // `mark`: the lane is marked as made here, on its branch, so a later switch to another branch is refused.
+          const ask = { sessionID, branch, name: decided.make, mark: true, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
           yield* noteLane(sessionID, unit, created.rift)
           return Tools.laneAnswer(unit, created.rift, true, warnings)

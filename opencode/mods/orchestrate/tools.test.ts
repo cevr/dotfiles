@@ -27,6 +27,9 @@ import {
   PURPOSE_MAX,
   purposeHint,
   reusedOf,
+  strayOf,
+  laneWarnings,
+  isInternal,
   workriftFolderOf,
   type MainBatch,
   type MainSince,
@@ -449,37 +452,67 @@ describe("the lane name rule", () => {
   })
 })
 
-// ── One lane, one unit, one branch ──
+// ── One lane, one unit, one branch, for a lane orchestrate lane made ──
 
-describe("a lane is one unit's for its life", () => {
+describe("a lane is one unit's for its life, once orchestrate lane made it", () => {
   const decode = Schema.decodeUnknownSync(OrchestrateInput)
-  // The Ergo run's measured case (facts.md): the lane ui-input holds branch wf10/ui-hover-areas.
-  const reused = laneAt("/code/.rifts/app/ui-input", Option.some("wf10/ui-hover-areas"))
+  // The Ergo run's measured case (facts.md): the lane ui-input holds branch wf10/ui-hover-areas. Made before the rule,
+  // it has no mark; `reused` is the same switch in a lane orchestrate lane made, and marked, on feat/ui-input.
+  const stray = laneAt("/code/.work/app/ui-input", Option.some("wf10/ui-hover-areas"))
+  const reused: Lane = { ...stray, madeOn: "feat/ui-input" }
+  const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "ui-input", state: "ready" }, { unit: "ui-hover-areas", state: "ready" }] }]
+  /** A lane orchestrate lane made on the branch it holds. */
+  const marked = (lane: Lane): Lane => ({ ...lane, madeOn: Option.getOrElse(Option.fromUndefinedOr(lane.branch), () => "") })
 
-  test("a lane of a unit whose lane now holds another unit's branch is refused, naming both, on either host", () => {
+  test("a lane of a unit whose marked lane now holds another branch is refused, naming both, on either host", () => {
     const mac = laneDecision("ui-input", "feat/ui-input", "ui-input", false, [reused])
-    expect(mac).toEqual({ refused: expect.stringContaining("ui-input's lane /code/.rifts/app/ui-input holds branch wf10/ui-hover-areas") })
+    expect(mac).toEqual({ refused: expect.stringContaining("ui-input's lane /code/.work/app/ui-input holds branch wf10/ui-hover-areas, not feat/ui-input, the branch orchestrate lane made it on") })
     expect(mac).toEqual({ refused: expect.stringContaining('orchestrate({ action: "lane", unit: "ui-hover-areas" })') })
-    const box = laneAt("/code/.rifts/app/feat-ui-input", Option.some("wf10/ui-hover-areas"))
+    const box: Lane = { ...laneAt("/code/.work/app/feat-ui-input", Option.some("wf10/ui-hover-areas")), madeOn: "feat/ui-input" }
     expect(laneDecision("ui-input", "feat/ui-input", "feat-ui-input", true, [box])).toEqual({ refused: expect.stringContaining("holds branch wf10/ui-hover-areas") })
-    const detached = laneAt("/code/.rifts/app/ui-input", Option.none(), "def5678")
-    expect(laneDecision("ui-input", "feat/ui-input", "ui-input", false, [detached])).toEqual({ refused: expect.stringContaining("no branch (detached at def5678)") })
   })
 
-  test("a second round of the same unit gets its own lane back, on any prefix of its branch", () => {
-    for (const workrift of [false, true]) {
-      const own = laneOf("billing", workrift)
-      expect(laneDecision("billing", "feat/billing", riftNameOf("billing", workrift), workrift, [own, reused])).toEqual({ found: own })
+  test("an unmarked lane holding another branch is taken as before the rule: lane answers it, land lands it, each with the warning and the fix", () => {
+    expect(laneDecision("ui-input", "feat/ui-input", "ui-input", false, [stray])).toEqual({ found: stray })
+    expect(laneWarnings("ui-input", stray, false)).toEqual([expect.stringContaining("orchestrate: warning: ui-input's lane /code/.work/app/ui-input holds branch wf10/ui-hover-areas, not ui-input's; orchestrate lane did not make it")])
+    expect(laneWarnings("ui-input", stray, false)).toEqual([expect.stringContaining('orchestrate({ action: "lane", unit: "ui-hover-areas" })')])
+    expect(laneAnswer("ui-input", stray, false, laneWarnings("ui-input", stray, false)).split("\n")[0]).toContain("orchestrate: warning: ui-input's lane")
+    for (const units of [["ui-input"], [{ unit: "ui-input", path: stray.path }]]) {
+      const landed = resolveLand({ action: "land", units }, runs, [stray], false)
+      expect(landed).toEqual({ rifts: [{ unit: "ui-input", path: stray.path }], warnings: [expect.stringContaining("so it is taken as before the one-lane rule")] })
     }
-    const pc = laneAt("/code/.rifts/app/billing", Option.some("pc/billing"))
+    // A land of no units lands it too, warned; status flags it with a warning, never REUSED, and names the land.
+    expect(resolveLand({ action: "land" }, [{ name: "app", units: [{ unit: "ui-input", state: "ready" }] }], [stray], false)).toEqual({
+      rifts: [{ unit: "ui-input", path: stray.path }],
+      warnings: [expect.stringContaining("orchestrate: warning: ui-input's lane")],
+    })
+    const text = statusAnswer([{ name: "app", units: [{ unit: "ui-input", state: "ready" }] }], [stray], false)
+    expect(text).toContain(`- ui-input: ready · lane ${stray.path} (branch wf10/ui-hover-areas) · warning: it holds branch wf10/ui-hover-areas, not ui-input's; orchestrate lane did not make it, so it lands as asked.`)
+    expect(text).not.toContain("REUSED")
+    expect(text).toContain('next: orchestrate({ action: "land" })')
+    // On the workbox, an unmarked detached lane is warned of and still landed.
+    const detached = laneAt("/code/.work/app/feat-ui-input", Option.none(), "def5678")
+    expect(resolveLand({ action: "land", units: [{ unit: "ui-input", path: detached.path }] }, runs, [detached], true)).toEqual({
+      rifts: [{ unit: "ui-input", path: detached.path }],
+      warnings: [expect.stringContaining("is detached at def5678, on no branch")],
+    })
+  })
+
+  test("a marked lane's second round gets its own lane back, on any prefix of its branch", () => {
+    for (const workrift of [false, true]) {
+      const own = marked(laneOf("billing", workrift))
+      expect(laneDecision("billing", "feat/billing", riftNameOf("billing", workrift), workrift, [own, reused])).toEqual({ found: own })
+      expect(laneWarnings("billing", own, workrift)).toEqual([])
+    }
+    const pc = marked(laneAt("/code/.work/app/billing", Option.some("pc/billing")))
     expect(laneDecision("billing", "custom/billing", "billing", false, [pc])).toEqual({ found: pc })
     // A lane made again under a suffix after its name's lane was removed (`billing-2`) is still billing's.
-    const again = laneAt("/code/.rifts/app/billing-2", Option.some("feat/billing"))
-    expect(reusedOf(again, false)).toEqual(Option.none())
+    const again = marked(laneAt("/code/.work/app/billing-2", Option.some("feat/billing")))
+    expect([reusedOf(again), strayOf(again, false)]).toEqual([Option.none(), Option.none()])
     expect(laneDecision("billing", "feat/billing", "billing", false, [again])).toEqual({ found: again })
   })
 
-  test("the unit whose branch a reused lane holds is made a lane of its own", () => {
+  test("the unit whose branch a marked reused lane holds is made a lane of its own", () => {
     expect(laneDecision("ui-hover-areas", "feat/ui-hover-areas", "ui-hover-areas", false, [reused])).toEqual({ make: "ui-hover-areas" })
   })
 
@@ -489,8 +522,7 @@ describe("a lane is one unit's for its life", () => {
     for (const branch of ["cristian/billing", "feat/billing", "billing"]) expect(nameRefusal(decode({ action: "lane", unit: "billing", branch }))).toEqual(Option.none())
   })
 
-  test("a land of a reused lane refuses with the fix, by name or by path; a land of no units leaves it out", () => {
-    const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "ui-input", state: "ready" }, { unit: "ui-hover-areas", state: "ready" }] }]
+  test("a land of a marked reused lane refuses with the fix, by name or by path; a land of no units leaves it out", () => {
     for (const unit of ["ui-input", "ui-hover-areas"]) {
       const resolved = resolveLand({ action: "land", units: [unit] }, runs, [reused], false)
       expect(resolved).toEqual({ refused: expect.stringContaining("a lane is never reused for another unit") })
@@ -499,18 +531,38 @@ describe("a lane is one unit's for its life", () => {
     expect(resolveLand({ action: "land", units: [{ unit: "ui-input", path: reused.path }] }, runs, [reused], false)).toEqual({ refused: expect.stringContaining("holds branch wf10/ui-hover-areas") })
     expect(resolveLand({ action: "land" }, runs, [reused], false)).toEqual({ nothing: expect.stringContaining("no unit is ready with a lane") })
     // Once the unit has its own lane, it lands from it, and the reused one is left alone.
-    const own = laneOf("ui-hover-areas", false)
+    const own = marked(laneOf("ui-hover-areas", false))
     expect(resolveLand({ action: "land", units: ["ui-hover-areas"] }, runs, [reused, own], false)).toEqual({ rifts: [{ unit: "ui-hover-areas", path: own.path }], warnings: [] })
     expect(readyWithLane(runs, [reused, own], false)).toEqual(["ui-hover-areas"])
   })
 
-  test("status flags a reused lane under each unit that reads it, and the next call skips it", () => {
-    const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "ui-input", state: "ready" }] }]
-    const text = statusAnswer(runs, [reused], false)
-    expect(text).toContain(`- ui-input: ready · lane ${reused.path} (branch wf10/ui-hover-areas) · REUSED: branch wf10/ui-hover-areas is not ui-input's; a land of it refuses.`)
-    expect(text).toContain("next: none")
-    expect(reusedOf(laneOf("ui-input", false), false)).toEqual(Option.none())
-    expect(reusedOf(laneOf("ui-input", true), true)).toEqual(Option.none())
+  test("a marked lane detached mid-rebase: status flags it, land refuses with finish or abort the rebase, never another unit; lane still answers it", () => {
+    const rebasing: Lane = { ...laneAt("/code/.work/app/ui-input", Option.none(), "def5678"), madeOn: "feat/ui-input" }
+    const resolved = resolveLand({ action: "land", units: ["ui-input"] }, runs, [rebasing], false)
+    expect(resolved).toEqual({ refused: expect.stringContaining("is detached at def5678, off feat/ui-input, the branch orchestrate lane made it on: a rebase or merge stopped part way") })
+    expect(resolved).toEqual({ refused: expect.stringContaining("Finish or abort the rebase or merge in progress there") })
+    expect(resolved).not.toEqual({ refused: expect.stringContaining("another unit") })
+    expect(resolveLand({ action: "land", units: [{ unit: "ui-input", path: rebasing.path }] }, runs, [rebasing], false)).toEqual(resolved)
+    expect(statusAnswer(runs, [rebasing], false)).toContain(`lane ${rebasing.path} (detached at def5678) · DETACHED: detached at def5678, off feat/ui-input, the branch orchestrate lane made it on; a land of it refuses until it is back on its branch.`)
+    expect(laneDecision("ui-input", "feat/ui-input", "ui-input", false, [rebasing])).toEqual({ found: rebasing })
+    expect(laneWarnings("ui-input", rebasing, false)).toEqual([expect.stringContaining("orchestrate: warning: ui-input's lane /code/.work/app/ui-input is detached at def5678")])
+  })
+
+  test("a land's and a verify's own workspaces are never flagged, detached or on any branch, marked or not", () => {
+    const internal = ["verify-batch-1", "verify-batch-2026-11-20p", "integrate", "post-land", "land-accept", "integrate-2"].flatMap((name) => [
+      laneAt(`/code/.work/app/${name}`, Option.none(), "def5678"),
+      laneAt(`/code/.work/app/${name}`, Option.some("main")),
+      { ...laneAt(`/code/.work/app/${name}`, Option.none(), "def5678"), madeOn: "feat/x" },
+    ])
+    for (const workrift of [false, true])
+      for (const lane of internal) {
+        expect([lane.path, reusedOf(lane), strayOf(lane, workrift), laneWarnings("x", lane, workrift)]).toEqual([lane.path, Option.none(), Option.none(), []])
+      }
+    // Status of units named as they are reads them, unflagged.
+    const named: ReadonlyArray<Run> = [{ name: "app", units: ["integrate", "post-land", "land-accept", "verify-batch-1"].map((unit) => ({ unit, state: "implement" })) }]
+    const text = statusAnswer(named, internal, false)
+    expect([text.includes("REUSED"), text.includes("DETACHED"), text.includes("warning")]).toEqual([false, false, false])
+    expect(isInternal(laneAt("/code/.work/app/integrate-notices", Option.some("feat/integrate-notices")))).toBe(false)
   })
 })
 

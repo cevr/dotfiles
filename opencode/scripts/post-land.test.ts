@@ -9,7 +9,7 @@ import type { ForkWork } from "./fork-work.ts"
 import { Effect, Option } from "effect"
 import { it } from "effect-bun-test"
 import type { DeepReport } from "./accept-ledger.ts"
-import { type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
+import { landReport, type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
 import { FORK_OWNER, type Outcome, withUpstreamLock } from "./upstream.ts"
 
 const NONE: ForkWork = { candidates: [], closed: [], unread: 0, droppable: [] }
@@ -34,10 +34,13 @@ const deepReport = (red: number): DeepReport => ({
 /** Steps answering `outcome`, recording each call; the deep run answers `deep` (default green), and a merge moves the fork when `moved`. */
 const stand = (
   outcome: Outcome | undefined,
-  options: { readonly host?: string; readonly work?: ForkWork; readonly deep?: Option.Option<DeepReport>; readonly moved?: boolean } = {},
+  options: { readonly host?: string; readonly work?: ForkWork; readonly deep?: Option.Option<DeepReport>; readonly after?: Option.Option<DeepReport>; readonly moved?: boolean } = {},
 ) => {
   const calls: Array<string> = []
   const { deep = Option.some(deepReport(0)) } = options
+  // The deep runs' reports in turn: the first `deep`, every later one `after` (default `deep`).
+  const after = Option.getOrElse(Option.fromUndefinedOr(options.after), () => deep)
+  let runs = 0
   let merged = false
   const fork = () => (merged && options.moved && MOVED) || "before0000"
   const steps: Steps = {
@@ -54,7 +57,8 @@ const stand = (
     },
     deep: async (ask) => {
       calls.push(`deep ${(ask.settled && "settled") || "loaded"} ${Option.getOrElse(ask.width, () => "pool")}`)
-      return { report: deep, log: "/logs/head" }
+      runs += 1
+      return { report: (runs === 1 && deep) || after, log: "/logs/head" }
     },
     checkout: () => CHECKOUT,
     refresh: () => {
@@ -270,6 +274,24 @@ describe("the post-land step", () => {
       ).toEqual({ redDeep: true, noOutcome: true, redLoaded: true, redWorkbox: true, conflict: true, redMerge: true, stuck: true, forkWork: true })
     }),
   )
+
+  it.effect("a deep run green before the merge and red after it needs action, with no fork work: the merge broke the fork (lane-land T2)", () =>
+    Effect.gen(function* () {
+      const { steps, calls } = stand(MERGED, { moved: true, after: Option.some(deepReport(2)) })
+      const got = yield* Effect.promise(() => reportOf(steps))
+      expect(got.action).toBe(true)
+      expect(got.text.split("\n").slice(-RED.length)).toEqual(RED)
+      expect(calls.filter((call) => call.startsWith("deep"))).toEqual(["deep settled pool", "deep settled pool"])
+      // The same merge with the second run green needs none.
+      expect((yield* Effect.promise(() => reportOf(stand(MERGED, { moved: true }).steps))).action).toBe(false)
+    }),
+  )
+
+  test("the report file the land reads holds a report that needs action, and nothing for one that does not (lane-land T1)", () => {
+    expect(landReport({ text: "accept deep: RED …", action: true })).toBe("accept deep: RED …\n")
+    expect(landReport({ text: "accept deep: green …\nfork work: none.", action: false })).toBe("")
+    expect(landReport({ text: "", action: false })).toBe("")
+  })
 })
 
 describe("the upstream lock", () => {

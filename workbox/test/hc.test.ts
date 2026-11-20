@@ -124,6 +124,8 @@ type Host = {
   oomPolicy: string
   /** Whether each user timer has its next run set; false as a timer on OnUnitActiveSec after a user manager restart. */
   timersArmed?: boolean
+  /** The live fs.inotify.max_user_watches; the sysctl.d file's value when unset. */
+  inotifyWatches?: number
 }
 
 const statusJson = (host: Host) =>
@@ -153,6 +155,7 @@ const writeHost = (home: string, host: Host) => {
       `HC_UNIT=${host.coreUnit}`,
       `HC_OOM=${host.oomPolicy}`,
       `TIMER_NEXT='${host.timersArmed === false ? "" : "Tue 2026-11-17 06:00:00 UTC"}'`,
+      `INOTIFY_WATCHES=${host.inotifyWatches ?? 4194304}`,
       "",
     ].join("\n"),
   )
@@ -196,6 +199,13 @@ case "$*" in
 esac
 exit 0`
 
+const sysctlBody = `. "$HOME/host.env"
+case "$*" in
+  "-n fs.inotify.max_user_watches") echo "$INOTIFY_WATCHES" ;;
+  "-n fs.inotify.max_user_instances") echo 1024 ;;
+  *) exit 1 ;;
+esac`
+
 const psBody = `. "$HOME/host.env"
 case "$*" in
   "-o uunit= -p 4242") echo " $HC_UNIT" ;;
@@ -220,6 +230,7 @@ const hostBin = (herdrPresent: boolean, hcPresent = true) => {
   stub(dir, "systemctl", null, systemctlBody)
   if (hcPresent) stub(dir, "hc", null, hcBody)
   stub(dir, "ps", null, psBody)
+  stub(dir, "sysctl", null, sysctlBody)
   stub(dir, "df", null, "printf 'Use%%\\n 50%%\\n'")
   stub(dir, "swapon", null, "echo /swapfile")
   stub(dir, "findmnt", null, "echo rw,nosuid,nodev,size=8388608k")
@@ -352,6 +363,16 @@ describe("bootstrap", () => {
     expect({ code: checked.code === 0 ? 0 : "failed", passed: checked.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
   }, 30_000)
 
+  test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {
+    const low = await bootstrapCheck({ ...today, inotifyWatches: 8192 })
+    expect({ code: low.code, passed: low.stdout.includes("checks passed") }).toEqual({ code: 0, passed: true })
+    expect(low.stderr.trim().split("\n")).toEqual([
+      expect.stringMatching(/^workbox bootstrap: warning: fs\.inotify\.max_user_watches is 8192, below 4194304 in .*\/90-inotify\.conf \(sudo sysctl -p \/etc\/sysctl\.d\/90-inotify\.conf\)$/),
+    ])
+    const high = await bootstrapCheck({ ...today, inotifyWatches: 8388608 })
+    expect({ code: high.code, stderr: high.stderr }).toEqual({ code: 0, stderr: "" })
+  }, 30_000)
+
   test("--check compares hc versions as numbers, not text", async () => {
     const cases: [string, boolean][] = [
       ["0.1.9", false],
@@ -403,6 +424,12 @@ describe("bootstrap", () => {
       expect(all).not.toMatch(/^hc server (stop|restart)/m)
       expect(result.calls).toContain("systemctl --user enable --now hc-core.service")
       expect(result.calls).toContain("systemctl --user enable opencode.service")
+      // The inotify limits from the one sysctl.d file provision.sh installs too, applied by that file alone.
+      const sysctlCalls = result.calls.filter((c) => c.includes("90-inotify.conf"))
+      expect(sysctlCalls).toEqual([
+        expect.stringMatching(/^sudo install -m 0644 .*\/workbox\/systemd\/sysctl\.d\/90-inotify\.conf \/etc\/sysctl\.d\/90-inotify\.conf$/),
+        "sudo sysctl -p /etc/sysctl.d/90-inotify.conf",
+      ])
       const installs = result.calls.filter((c) => c.includes("releases.herdr.dev/core/install.sh"))
       expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL https://releases.herdr.dev/core/install.sh"])
       expect(existsSync(join(result.home, ".config", "systemd", "user", "hc-core.service"))).toBe(true)
