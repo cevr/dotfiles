@@ -203,14 +203,10 @@ writeFileSync(dir + "/config/cli.json", JSON.stringify({ plugins: [] }))
 
 /** daily's settings writer, loaded at run time: daily runs on the root package's Effect, this test on the update's. */
 interface Daily {
-  readonly writeSettings: (home: string, models: globalThis.Record<string, string>) => void
-  readonly roleModels: (catalog: typeof CATALOG) => globalThis.Record<string, string>
+  readonly writeSettings: (home: string) => void
 }
 /** Held in a binding, so the typecheck of this package leaves the root package's file alone. */
 const DAILY = "../../../scripts/daily.ts"
-
-/** A catalog of one Opus, the role models' source. */
-const CATALOG = { anthropic: { models: { "claude-opus-5-5": { family: "claude-opus", release_date: "2026-09-22" } } } }
 
 /** A record write as one effect: `record (good)` once it names its installed build good. */
 const recordEffect = (next: Record) =>
@@ -224,7 +220,7 @@ const ran = (argv: ReadonlyArray<string>, cwd: string) => {
 }
 
 describe("daily by hand on a from-scratch host", () => {
-  test("A2: no build, no record, no config: the checkout's HEAD installs as a tree build through the real handoff, the configs get the settings and no plugin entry, and a second run writes neither config", () =>
+  test("A2: no build, no record, no config: the checkout's HEAD installs as a tree build through the real handoff, the server config gets what no tree carries and no plugin entry, cli.json is not written, and a second run writes nothing", () =>
     Effect.runPromise(
       Effect.acquireUseRelease(
         Effect.sync(() => ran(["realpath", ran(["mktemp", "-d", "-t", "update-by-hand"], "/").trim()], "/").trim()),
@@ -319,7 +315,7 @@ describe("daily by hand on a from-scratch host", () => {
                     }),
                   ),
                 settings: () => {
-                  daily.writeSettings(home, daily.roleModels(CATALOG))
+                  daily.writeSettings(home)
                   effects.push("settings")
                 },
                 handoff: () => {
@@ -340,17 +336,18 @@ describe("daily by hand on a from-scratch host", () => {
             expect(sh(`readlink '${share}/current.plugins'`).stdout.toString().trim()).toBe(treeOf(buildName(version)))
             // The tree holds the commit's file, never the edit.
             expect(sh(`cat '${tree}/opencode/x.txt'`).stdout.toString()).toBe("committed\n")
-            // The settings, and no plugin entry of any kind.
-            const [server, cli] = settings.config
+            // What no tree carries, and no plugin entry of any kind; the role models, the theme's name and the
+            // tab scope are the tree's (scripts/daily.ts `treeSettings`), so cli.json is not written.
+            const [server = "", cli = ""] = settings.config
             const json = (file: string) => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(sh(`cat '${file}'`).stdout.toString())
-            const roles = { model: "anthropic/claude-opus-5-5" }
-            expect(json(Option.getOrElse(Option.fromNullishOr(server), () => ""))).toEqual({ autoupdate: false, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } }, agents: { planner: roles, implementor: roles, verifier: roles, worker: roles } })
-            expect(json(Option.getOrElse(Option.fromNullishOr(cli), () => ""))).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+            expect(json(server)).toEqual({ autoupdate: false })
+            expect(exists(cli)).toBe(false)
+            const written = [server, `${home}/.config/opencode/themes/prime.json`, `${settings.resident}/opencode.json`]
 
-            // A second run with no new commit writes neither config.
-            // Both dated far back first: a write would date them now.
-            for (const file of settings.config) expect(sh(`touch -t 200001010000 '${file}'`).exitCode).toBe(0)
-            const stamps = () => settings.config.map((file) => sh(`cat '${file}' && date -r '${file}' +%s`).stdout.toString())
+            // A second run with no new commit writes nothing.
+            // Each dated far back first: a write would date it now.
+            for (const file of written) expect(sh(`touch -t 200001010000 '${file}'`).exitCode).toBe(0)
+            const stamps = () => written.map((file) => sh(`cat '${file}' && date -r '${file}' +%s`).stdout.toString())
             const before = stamps()
             const treeFiles = () => sh(`cd '${tree}' && find . -type f | sort | xargs cat`).stdout.toString()
             const whole = treeFiles()

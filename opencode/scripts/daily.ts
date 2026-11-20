@@ -28,14 +28,15 @@
 //    client (mods/update/filestore/launcher.ts, `residentDir`). `~/.local/bin` comes before `~/.bun/bin` on
 //    PATH; `opencode2` stays the stock release. It restarts nothing and writes no config, and runs no fork
 //    link, install or upstream merge (the tree is sealed; the post-land step merges upstream).
-// 3. By hand only, the host's settings: the role agents' models, Claude's cache lifetime and no auto-update in
-//    `~/.config/opencode/opencode.json`, the Prime theme and the window tab scope in `cli.json`, every other
-//    key and every plugin entry kept as it is, each file written only when its text changes
-//    (`writeSettings`). No plugin entry: each build's plugins are in its tree. The plugin lists are data
-//    (mods/update/trees.ts), which `--tree <dir> --at <place> [--checkout <live checkout>] [--host <name>]`
-//    reads: it writes a build's plugin tree's server entries and overlay (`config/opencode.json`,
-//    `config/cli.json`) into the tree in the making `dir`, every path naming `place`, and nothing else
-//    (mods/update/filestore/trees.ts).
+// 3. By hand only, what no build's tree can carry, the same for every build: no auto-update in
+//    `~/.config/opencode/opencode.json`, the Prime theme's file beside it and the resident location's config,
+//    every other key and every plugin entry kept as it is, each file written only when its text changes
+//    (`writeSettings`). The rest follows each update in the build's own tree: its plugins, and the role
+//    agents' models, Claude's cache lifetime, the theme's name and the window tab scope (`treeSettings`), which
+//    win over the same keys in the global files. The plugin lists are data (mods/update/trees.ts), which
+//    `--tree <dir> --at <place> [--checkout <live checkout>] [--host <name>]` reads: it writes a build's
+//    plugin tree's server entries and overlay (`config/opencode.json`, `config/cli.json`) into the tree in
+//    the making `dir`, every path naming `place`, and nothing else (mods/update/filestore/trees.ts).
 // 4. By hand, restarts the service through the build's own handoff (mods/update: the record, the restart,
 //    the health check, the rollback), at once; the update plugin's handoff does it after the Sabbath rest.
 //    The staged stage writes upstream/dev's lead for the TUI's corner first (`upstreamReading`).
@@ -221,45 +222,35 @@ const retired = (existing: Json) => {
 }
 
 /**
- * The global server config with the host's settings in it: each role's model (its other fields kept),
- * Claude's cache lifetime, the retired `experimental.background_compaction` removed (`retired`), and
- * auto-update off so the stock release never replaces the fork. Every other key stays, `plugins`
- * untouched: each build's plugins are in its tree.
+ * The settings each build carries in its tree's overlay (`writeTree`), derived at the tree's make from the
+ * catalog it reads then, so a new model release reaches the roles with the next update and nothing writes
+ * the owner's files. The fork loads the tree's `config/opencode.json` after the global config and before a
+ * project's, folding each agent field by field and provider settings key by key (core `config.ts` `load`,
+ * `config/plugin/agent.ts`, `Provider.mergeOverlay`), and the TUI deep-merges the tree's `cli.json` over
+ * its own (cli `config/config.ts`). So these keys, and only these, are the build's over the owner's global
+ * files: each role's model, Claude's cache lifetime, the Prime theme's name and the window tab scope. Every
+ * other key, and every other field of those objects, stays the owner's, and a project's config wins over
+ * both.
  */
-export const mergeServer = (existing: Json, models: Record<string, string>): Json => {
-  const agents = (typeof existing.agents === "object" && existing.agents !== null ? existing.agents : {}) as Record<string, Json>
-  const providers = record(existing.providers)
-  const anthropic = record(providers.anthropic)
-  const settings = record(anthropic.settings)
-  return {
-    ...retired(existing),
-    autoupdate: false,
+export const treeSettings = (catalog: Catalog) => ({
+  server: {
+    agents: Object.fromEntries(Object.entries(roleModels(catalog)).map(([role, model]) => [role, { model }])),
     // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
     // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
-    providers: { ...providers, anthropic: { ...anthropic, settings: { ...settings, cache: { ...record(settings.cache), ttl: CLAUDE_CACHE_TTL } } } },
-    agents: {
-      ...agents,
-      ...Object.fromEntries(Object.entries(models).map(([role, model]) => [role, { ...agents[role], model }])),
-    },
-  }
-}
-
-/** The object at `key` of a config, or an empty one when the key holds none. */
-const objectAt = (config: Json, key: string): object => {
-  const value = config[key]
-  return typeof value === "object" && value !== null ? value : {}
-}
+    providers: { anthropic: { settings: { cache: { ttl: CLAUDE_CACHE_TTL } } } },
+  },
+  // The fork's `window` tab scope: a window's tabs are the sessions opened in it, never those of the other
+  // TUIs on the machine, since herdr gives each session its own space (owner, q61).
+  cli: { theme: { name: "prime" }, tabs: { scope: "window" } },
+})
 
 /**
- * The TUI config with the host's settings in it: the Prime theme, and the fork's `window` tab scope:
- * a window's tabs are the sessions opened in it, never those of the other TUIs on the machine, since
- * herdr gives each session its own space (owner, q61). Every other key stays, `plugins` untouched.
+ * The global server config with what no tree can carry in it: auto-update off, so the stock release never
+ * replaces the fork (the fork's CLI reads that policy from the global config directory alone, cli
+ * `services/updater.ts` `readPolicy`), and the retired `experimental.background_compaction` removed
+ * (`retired`). Every other key stays, the role models and `plugins` untouched: the build's tree carries both.
  */
-export const mergeCli = (existing: Json): Json => {
-  const theme = objectAt(existing, "theme")
-  const tabs = objectAt(existing, "tabs")
-  return { ...existing, theme: { ...theme, name: "prime" }, tabs: { ...tabs, scope: "window" } }
-}
+export const hostServer = (existing: Json): Json => ({ ...retired(existing), autoupdate: false })
 
 const readJson = (path: string): Json => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {})
 /** A config's text, as daily writes every JSON file. */
@@ -277,18 +268,18 @@ const writeChanged = (path: string, text: string) => {
 }
 
 /**
- * Step 3, by hand only: the host's settings in its global configs under `home` (`mergeServer` with the
- * role `models`, `mergeCli`), the Prime theme's file beside them and the resident location's config,
- * each written only when its text changes. Both configs are read before either is written, so one that
- * does not read stops daily with neither changed. No plugin entry is written or removed.
+ * Step 3, by hand only: what the build's tree cannot carry, each the same for every build and written only
+ * when its text changes: auto-update off in the global server config (`hostServer`), the Prime theme's file
+ * in the global config directory (the TUI finds theme files there and in a project's `.opencode/`, never in
+ * a tree, tui `theme/discovery.ts`), and the resident location's config (a location's own file). The config
+ * is read before anything is written, so one that does not read stops daily with nothing changed. `cli.json`,
+ * the role models and every plugin entry are left as they are: the build's tree carries them (`treeSettings`).
  */
-export const writeSettings = (home: string, models: Record<string, string>) => {
+export const writeSettings = (home: string) => {
   const config = join(home, ".config/opencode")
-  const server = mergeServer(readJson(join(config, "opencode.json")), models)
-  const cli = mergeCli(readJson(join(config, "cli.json")))
+  const server = hostServer(readJson(join(config, "opencode.json")))
   writeChanged(join(residentDir(home), "opencode.json"), jsonText(residentConfig))
   writeChanged(join(config, "opencode.json"), jsonText(server))
-  writeChanged(join(config, "cli.json"), jsonText(cli))
   writeChanged(join(config, "themes/prime.json"), readFileSync(THEME, "utf8"))
 }
 
@@ -431,21 +422,37 @@ export const pluginPackages = (root: string): ReadonlyArray<{ readonly name: str
  */
 export const tuiEntries = (root: string, dirOf: (name: string) => string): ReadonlyArray<string> => [...tuiPluginsOf(pluginPackages(root)).map(dirOf), ...TUI_OFF]
 
-/** Step 3 by hand: the host's settings (`writeSettings`), and what they say. */
-const settingsByHand = (home: string, catalog: Catalog) => {
-  writeSettings(home, roleModels(catalog))
-  const planner = plannerModel(catalog)
-  console.log(`roles: ${Object.entries(roleModels(catalog)).map(([role, model]) => `${role} ${model}`).join(", ")}`)
-  console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
-}
+/** Step 3 by hand: the host's settings the tree cannot carry (`writeSettings`). */
+const settingsByHand = (home: string) => writeSettings(home)
+
+const RoleOverlay = Schema.Struct({ agents: Schema.Record(Schema.String, Schema.Struct({ model: Schema.String })), plugins: Schema.Array(Schema.Unknown) })
+const decodeRoleOverlay = Schema.decodeUnknownOption(Schema.fromJsonString(RoleOverlay))
+const decodePlanner = Schema.decodeUnknownOption(Schema.Struct({ options: Schema.Struct({ planner: Schema.Struct({ model: Schema.String }) }) }))
+
+/**
+ * The stage's lines (the update's stage log) naming the role models the build's tree carries and the
+ * planner's first model, read from its overlay (`<tree>/config/opencode.json`): the one place an update
+ * says that a role model set by hand in the global config loses to the build's.
+ */
+export const roleLines = (overlay: string): ReadonlyArray<string> =>
+  Option.match(decodeRoleOverlay(overlay), {
+    onNone: () => ["roles: the tree's overlay names none"],
+    onSome: (config) => {
+      const planner = Option.firstSomeOf(config.plugins.map((entry) => Option.map(decodePlanner(entry), (each) => each.options.planner.model)))
+      return [
+        `roles (this build's, over a role model set by hand in ~/.config/opencode/opencode.json): ${Object.entries(config.agents).map(([role, agent]) => `${role} ${agent.model}`).join(", ")}`,
+        Option.match(planner, { onNone: () => "planner first: none (no Fable in the catalog), so Opus", onSome: (model) => `planner first: ${model}, then Opus, then Codex when the pool holds it` }),
+      ]
+    },
+  })
 
 /**
  * `--tree <dir> --at <place>`: writes a tree's server entries and its overlay (`trees.ts`) into `dir`,
  * the tree in the making, whose `opencode/` holds the plugins; every path names `place`, where the tree
  * stands once renamed. The server lists each plugin's generated entry (`entries/server/<name>`, no TUI
- * part), the TUI each plugin's own directory. Only the plugin entries: the global configs keep the role
- * models, the theme and every other key. `where` names the live dotfiles checkout, which the update
- * plugin fetches into and orchestrate records the verified target from, and the host whose fleet the
+ * part), the TUI each plugin's own directory. Beside the entries, the settings the build carries
+ * (`treeSettings`), from the catalog read now; the global configs keep every other key. `where` names
+ * the live dotfiles checkout, which the update plugin fetches into and orchestrate records the verified target from, and the host whose fleet the
  * pool and mail join (a host outside `FLEET`, such as a test's, joins none).
  */
 const writeTree = (home: string, fork: string, tree: { readonly dir: string; readonly at: string; readonly where: Where }) =>
@@ -465,8 +472,9 @@ const writeTree = (home: string, fork: string, tree: { readonly dir: string; rea
       writeFileSync(join(dir, "package.json"), entry.manifest)
       for (const file of entry.files) writeFileSync(join(dir, file.name), file.text)
     }
-    writeJson(join(tree.dir, "config/opencode.json"), { plugins: serverEntries(facts, (name) => serverEntryDir(tree.at, name)) })
-    writeJson(join(tree.dir, "config/cli.json"), { plugins: tuiEntries(opencode, (name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
+    const settings = treeSettings(facts.catalog)
+    writeJson(join(tree.dir, "config/opencode.json"), { ...settings.server, plugins: serverEntries(facts, (name) => serverEntryDir(tree.at, name)) })
+    writeJson(join(tree.dir, "config/cli.json"), { ...settings.cli, plugins: tuiEntries(opencode, (name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
   })
 
 /** The fork checkout daily builds and configures from: `OPENCODE_DEV`, else the default, checked. */
@@ -572,7 +580,6 @@ if (import.meta.main) {
           const head = headOf(settings.checkout)
           const forkCommit = yield* forkHead
           const cli = decodeCliPackage(yield* Effect.promise(() => $`git -C ${fork} show ${forkCommit}:packages/cli/package.json`.text()))
-          const catalog = yield* Effect.promise(() => loadCatalog(fork))
           const variables = stepEnv(settings, Option.getOrElse(Option.fromNullishOr(env.PATH), () => ""))
           const passed = ["--skip-build", "--no-upstream"].filter((flag) => args.has(flag))
           return yield* Effect.promise(() =>
@@ -587,7 +594,7 @@ if (import.meta.main) {
                   .cwd(join(tree, "opencode"))
                   .env(environment(variables))
                   .then(() => undefined),
-              settings: () => settingsByHand(home, catalog),
+              settings: () => settingsByHand(home),
               // The restart's line is said where it runs: the no-op (the build installed and proven) restarts nothing.
               handoff: (tree) =>
                 Effect.runPromise(
@@ -638,6 +645,9 @@ if (import.meta.main) {
     log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
     log(`opencode -> ${binary} (${reported})`)
+    // The settings this build carries, from its tree's overlay beside this `opencode/` (`treeSettings`).
+    const overlay = join(ROOT, "../config/opencode.json")
+    for (const line of roleLines(existsSync(overlay) ? readFileSync(overlay, "utf8") : "")) log(line)
     log(STAGED_LINE)
   }
 }

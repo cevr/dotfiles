@@ -82,6 +82,11 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         const cli = yield* fs.readFileString(`${tree}/config/cli.json`)
         const tui = (yield* decodeOverlay(cli)).plugins.map(pathOf).filter((entry) => !entry.startsWith("-"))
         expect(tui.every((entry) => entry.startsWith(`${tree}/opencode/cmd/`))).toBe(true)
+        // Beside the entries, the settings the build carries (scripts/daily.ts `treeSettings`; tests/settings-follow.test.ts folds them).
+        const settings = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ agents: Schema.Record(Schema.String, Schema.Struct({ model: Schema.String })), providers: Schema.Unknown })))(yield* fs.readFileString(`${tree}/config/opencode.json`))
+        expect(Object.keys(settings.agents).toSorted()).toEqual(["implementor", "planner", "verifier", "worker"])
+        expect(settings.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
+        expect(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ theme: Schema.Unknown, tabs: Schema.Unknown })))(cli)).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
 
         // The service and the TUI from source, bound to the tree's overlay as the binary binds its own.
         const launch = forkLaunch(fork, process.execPath)

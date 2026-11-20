@@ -1,15 +1,15 @@
 // `bun run daily`'s settings in the global configs (never a plugin entry), its entries, and its fork steps.
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
-import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
+import { type Catalog, loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeSettings } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, hostServer, installDotfiles, installedFile, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -29,22 +29,140 @@ const random = (seed: number) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296
 }
 
+/** A catalog of two Opus releases and a Fable: the role models' source. */
+const CATALOG = {
+  anthropic: { models: {
+    "claude-opus-5-0": { family: "claude-opus", release_date: "2026-03-01" },
+    "claude-opus-5-5": { family: "claude-opus", release_date: "2026-09-22" },
+    "claude-fable-5-2": { family: "claude-fable", release_date: "2026-11-09" },
+  } },
+} satisfies Catalog
+
+/** A config as JSON, its objects by key. */
+type Json = Schema.Json
+const JsonObject = Schema.Record(Schema.String, Schema.Json)
+const isObject = Schema.is(JsonObject)
+
+/** Every leaf of a config by its dotted path; an empty object holds none, an array is one leaf. */
+const leaves = (value: Json, path: ReadonlyArray<string> = []): ReadonlyArray<readonly [string, Json]> =>
+  Option.match(Option.liftPredicate(value, isObject), {
+    onNone: () => [[path.join("."), value] as const],
+    onSome: (object) => Object.entries(object).flatMap(([key, each]) => leaves(each, [...path, key])),
+  })
+
+/**
+ * The fold of the tree's document over the owner's global one, leaf by leaf, the tree's leaf winning at its
+ * path: the fork's fold for these shapes, proven on fork 07bb11e0 and by tests/settings-follow.test.ts. The
+ * server folds each agent field by field (core `config/plugin/agent.ts`) and a provider's settings key by key
+ * (`Provider.mergeOverlay`); the TUI deep-merges records key by key (cli `config/config.ts` `mergeRecords`).
+ */
+const fold = (owner: Json, tree: Json): ReadonlyMap<string, Json> => new Map([...leaves(owner), ...leaves(tree)])
+const valueAt = (config: Json, path: string): Option.Option<Json> => Option.fromIterable(leaves(config).filter(([at]) => at === path).map(([, value]) => value))
+
+const ROLES = ["planner", "implementor", "verifier", "worker"]
+/** The keys a build names, and wins: each role's model and Claude's cache lifetime; the theme's name and the tab scope. */
+const SERVER_NAMED = [...ROLES.map((role) => `agents.${role}.model`), "providers.anthropic.settings.cache.ttl"]
+const CLI_NAMED = ["theme.name", "tabs.scope"]
+
+/** One of `values`, by the generator. */
+const pickOf = (next: () => number) => <A>(values: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(values, (next() * values.length) | 0))
+/** Each field of `fields` or not, by the generator. */
+const someOf = (next: () => number) => (fields: { readonly [key: string]: Json }): Json => Object.fromEntries(Object.entries(fields).filter(() => next() < 0.5))
+
+/** A generated owner's server config: hand-set role fields and models, other agents, provider settings, unrelated keys. */
+const ownerServer = (next: () => number): Json => {
+  const [pick, some] = [pickOf(next), someOf(next)]
+  const agent = () => some({ model: pick(["anthropic/claude-opus-4-1", "openai/sol-6", "anthropic/claude-opus-5-5"]), steps: pick([3, 9]), description: "mine", temperature: pick([0.2, 0.7]), color: "#123456" })
+  return some({
+    model: pick(["anthropic/claude-opus-5-5#medium", "openai/sol-6"]),
+    autoupdate: pick([false, true, "notify"]),
+    mcp: { local: { type: "local", command: ["x"] } },
+    plugins: ["/elsewhere/plugin"],
+    agents: some({ planner: agent(), implementor: agent(), verifier: agent(), worker: agent(), build: agent(), orchestrator: agent() }),
+    providers: some({
+      anthropic: some({ name: "Claude", settings: some({ timeout: 60_000, cache: some({ ttl: pick(["5m", "1h"]), other: 1 }) }) }),
+      openai: { settings: { reasoningEffort: "high" } },
+    }),
+  })
+}
+
+/** A generated owner's TUI config. */
+const ownerCli = (next: () => number): Json => {
+  const some = someOf(next)
+  return some({ theme: some({ name: "system", mode: "dark" }), tabs: some({ scope: "cwd", layout: "vertical" }), session: { sidebar: "auto" }, plugin: ["x"] })
+}
+
+describe("the settings a build carries in its tree", () => {
+  test("over generated owner configs, the tree's overlay folded over the owner's global files gives the build's value for each key it names and the owner's for every other", () => {
+    const build = treeSettings(CATALOG)
+    for (let seed = 1; seed <= 400; seed++) {
+      const next = random(seed)
+      for (const [owner, tree, named] of [
+        [ownerServer(next), build.server, SERVER_NAMED],
+        [ownerCli(next), build.cli, CLI_NAMED],
+      ] as const) {
+        const folded = fold(owner, tree)
+        // The build names exactly these keys.
+        expect([seed, leaves(tree).map(([path]) => path).toSorted()]).toEqual([seed, named.toSorted()])
+        // The build's value for each, over whatever the owner set.
+        expect([seed, named.map((path) => folded.get(path))]).toEqual([seed, named.map((path) => Option.getOrThrow(valueAt(tree, path)))])
+        // The owner's for every other leaf, his hand-set role fields among them.
+        const others = leaves(owner).filter(([path]) => !named.includes(path))
+        expect([seed, others.map(([path]) => [path, folded.get(path)])]).toEqual([seed, others])
+      }
+    }
+  })
+
+  test("are each role's newest Opus, Claude's hour-long cache, the Prime theme and the window tab scope, and nothing else", () => {
+    const opus = { model: "anthropic/claude-opus-5-5" }
+    expect(treeSettings(CATALOG)).toEqual({
+      server: { agents: { planner: opus, implementor: opus, verifier: opus, worker: opus }, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } } },
+      cli: { theme: { name: "prime" }, tabs: { scope: "window" } },
+    })
+  })
+
+  test("follow a new Opus release: two catalogs that differ in the newest Opus give two builds two role models", () => {
+    const later = { anthropic: { models: { ...CATALOG.anthropic.models, "claude-opus-6-0": { family: "claude-opus", release_date: "2026-12-01" } } } } satisfies Catalog
+    expect([treeSettings(CATALOG), treeSettings(later)].map((settings) => valueAt(settings.server, "agents.worker.model"))).toEqual([Option.some("anthropic/claude-opus-5-5"), Option.some("anthropic/claude-opus-6-0")])
+  })
+
+  test("today's host config: folding the build's overlay over it changes no effective value", () => {
+    // The Mac's global configs as they stand (their shape, read 2026-11-20; no secret in them).
+    const opus = { model: "anthropic/claude-opus-5-5" }
+    const server = { agents: { planner: opus, implementor: opus, verifier: opus, worker: opus }, autoupdate: false, mcp: { local: { type: "local" } }, model: "anthropic/claude-opus-5-5#medium", plugins: ["/elsewhere/plugin"], providers: { anthropic: { settings: { cache: { ttl: "1h" } } } } }
+    const cli = { $schema: "https://opencode.ai/tui.json", session: { sidebar: "auto" }, tabs: { scope: "window" }, theme: { name: "prime" } }
+    const build = treeSettings(CATALOG)
+    expect([[...fold(server, build.server)], [...fold(cli, build.cli)]]).toEqual([[...leaves(server)], [...leaves(cli)]])
+    // The one change on purpose: a role model set by hand in the global file loses to the build's.
+    const handSet = { ...server, agents: { ...server.agents, worker: { model: "openai/sol-6", steps: 4 } } }
+    const folded = fold(handSet, build.server)
+    expect([folded.get("agents.worker.model"), folded.get("agents.worker.steps")]).toEqual(["anthropic/claude-opus-5-5", 4])
+  })
+
+  test("the stage says which role models the build carries, and that they win over a hand-set one", () => {
+    const overlay = jsonOf({ ...treeSettings(CATALOG).server, plugins: [orchestrateEntry("/t/orchestrate", CHECKOUTS, plannerModel(CATALOG))] })
+    expect(roleLines(overlay)).toEqual([
+      "roles (this build's, over a role model set by hand in ~/.config/opencode/opencode.json): planner anthropic/claude-opus-5-5, implementor anthropic/claude-opus-5-5, verifier anthropic/claude-opus-5-5, worker anthropic/claude-opus-5-5",
+      "planner first: anthropic/claude-fable-5-2, then Opus, then Codex when the pool holds it",
+    ])
+    expect(roleLines("")).toEqual(["roles: the tree's overlay names none"])
+  })
+})
+
 describe("the server config", () => {
-  test("gets each role's model (its other fields kept), Claude's cache lifetime and no auto-update, every other key kept", () => {
+  test("by hand gets no auto-update alone, every other key kept as it is: the role models, the providers, the plugins", () => {
     const existing = {
       model: "openai/gpt-6.1-sol",
       plugins: [`${MODS}/codex`, "/elsewhere/plugin"],
-      agents: { verifier: { description: "mine" }, build: { model: "x/y" } },
+      agents: { verifier: { description: "mine", model: "openai/x" }, build: { model: "x/y" } },
+      providers: { anthropic: { settings: { cache: { ttl: "5m" } } } },
     }
-    const merged = mergeServer(existing, { verifier: "openai/gpt-6.1-sol" })
-    expect(merged.agents).toEqual({ verifier: { description: "mine", model: "openai/gpt-6.1-sol" }, build: { model: "x/y" } })
-    expect(merged.model).toBe("openai/gpt-6.1-sol")
-    expect(merged.autoupdate).toBe(false)
-    expect(merged.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
+    const merged = hostServer(existing)
+    expect(merged).toEqual({ ...existing, autoupdate: false })
     expect(merged.plugins).toBe(existing.plugins)
   })
 
-  test("neither writer changes plugins: over generated configs, ours and foreign entries, bare and with options, any order or none, the plugin list comes out as it went in", () => {
+  test("the writer never changes plugins: over generated configs, ours and foreign entries, bare and with options, any order or none, the plugin list comes out as it went in", () => {
     const ENTRIES: ReadonlyArray<PluginEntry> = [
       pluginDir("guard"),
       { package: pluginDir("pool"), options: { cacheLifeMs: 1 } },
@@ -60,11 +178,11 @@ describe("the server config", () => {
       const plugins = ENTRIES.filter(() => next() < 0.5).toSorted(() => next() - 0.5)
       const existing = { plugins, theme: { name: "x" }, agents: { worker: { model: "a/b" } } }
       const before = jsonOf(existing)
-      expect([seed, mergeServer(existing, { worker: "anthropic/c" }).plugins, mergeCli(existing).plugins]).toEqual([seed, plugins, plugins])
+      expect([seed, hostServer(existing).plugins]).toEqual([seed, plugins])
       expect(jsonOf(existing)).toBe(before)
     }
     // A config with no plugins key gets none.
-    expect([mergeServer({}, { worker: "anthropic/c" }), mergeCli({})].map((config) => "plugins" in config)).toEqual([false, false])
+    expect("plugins" in hostServer({})).toBe(false)
   })
 
   test("a stage writes no global config; a by-hand run writes the settings and no plugin entry", () => {
@@ -79,24 +197,24 @@ describe("the server config", () => {
       byHand: calls(byHand, ["settingsByHand"]),
       stage: calls(stage, ["settingsByHand", "writeSettings", "writeTree"]),
       writerNamesPlugins: writer.includes("plugins"),
-    }).toEqual({ byHand: 1, stage: 0, writerNamesPlugins: false })
+      writerNamesCli: writer.includes("cli.json"),
+    }).toEqual({ byHand: 1, stage: 0, writerNamesPlugins: false, writerNamesCli: false })
   })
 
-  test("a from-scratch host's settings: the role models, the cache lifetime, no auto-update, the theme and tab scope, and no plugins key; a second write with nothing changed touches no file", () => {
+  test("a from-scratch host's settings by hand: no auto-update, the theme's file and the resident config, no cli.json, no role model and no plugins key; a second write with nothing changed touches no file", () => {
     using scratch = scratchDir("daily-settings-")
     const home = realpathSync(scratch.path)
-    writeSettings(home, { worker: "anthropic/claude-opus-5-5" })
+    writeSettings(home)
     const config = join(home, ".config/opencode")
     const server = join(config, "opencode.json")
-    const cli = join(config, "cli.json")
-    const files = [server, cli, join(config, "themes/prime.json"), join(residentDir(home), "opencode.json")]
+    const files = [server, join(config, "themes/prime.json"), join(residentDir(home), "opencode.json")]
     const read = (path: string) => readFileSync(path, "utf8")
-    expect(parseJson(read(server))).toEqual({ autoupdate: false, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } }, agents: { worker: { model: "anthropic/claude-opus-5-5" } } })
-    expect(parseJson(read(cli))).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+    expect(parseJson(read(server))).toEqual({ autoupdate: false })
+    expect(existsSync(join(config, "cli.json"))).toBe(false)
     // Each dated far back first: a write would date it now.
     for (const path of files) utimesSync(path, 946684800, 946684800)
     const stamps = files.map((path) => [read(path), statSync(path).mtimeMs])
-    writeSettings(home, { worker: "anthropic/claude-opus-5-5" })
+    writeSettings(home)
     expect(files.map((path) => [read(path), statSync(path).mtimeMs])).toEqual(stamps)
   })
 
@@ -105,27 +223,28 @@ describe("the server config", () => {
     expect({ prime: at("prime") >= 0, beforeMemory: at("prime") < at("memory"), memoryLast: at("memory") > at("cache") }).toEqual({ prime: true, beforeMemory: true, memoryLast: true })
   })
 
-  test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
+  test("the build sets Claude's prompt cache to an hour, and the fold keeps the owner's other provider settings", () => {
     const existing = {
       providers: {
         openai: { settings: { reasoningEffort: "high" } },
         anthropic: { name: "Claude", settings: { timeout: 60_000, cache: { ttl: "5m" } } },
       },
     }
-    const merged = mergeServer(existing, {})
     expect(CLAUDE_CACHE_TTL).toBe("1h")
-    expect(merged.providers).toEqual({
-      openai: { settings: { reasoningEffort: "high" } },
-      anthropic: { name: "Claude", settings: { timeout: 60_000, cache: { ttl: "1h" } } },
-    })
+    expect([...fold(existing, treeSettings(CATALOG).server)].filter(([path]) => path.startsWith("providers."))).toEqual([
+      ["providers.openai.settings.reasoningEffort", "high"],
+      ["providers.anthropic.name", "Claude"],
+      ["providers.anthropic.settings.timeout", 60_000],
+      ["providers.anthropic.settings.cache.ttl", "1h"],
+    ])
   })
 })
 
 describe("background compaction", () => {
   test("is default on in the fork (upstream #64290): daily removes the retired flag it wrote, and keeps the other experimental settings", () => {
-    expect(mergeServer({ experimental: { todo: true, background_compaction: true } }, {}).experimental).toEqual({ todo: true })
-    expect(mergeServer({ experimental: { background_compaction: true } }, {})).not.toHaveProperty("experimental")
-    expect(mergeServer({}, {})).not.toHaveProperty("experimental")
+    expect(hostServer({ experimental: { todo: true, background_compaction: true } }).experimental).toEqual({ todo: true })
+    expect(hostServer({ experimental: { background_compaction: true } })).not.toHaveProperty("experimental")
+    expect(hostServer({})).not.toHaveProperty("experimental")
   })
 
   const fork = process.env.OPENCODE_DEV
@@ -138,7 +257,7 @@ describe("background compaction", () => {
 describe("the pool's entry", () => {
   test("gives the pool the cache lifetime the config gives Claude, so a session stays on its cache's login as long as the cache lives", () => {
     const entry = poolEntry(`${MODS}/pool`, undefined)
-    const ttl = (mergeServer({}, {}).providers as { anthropic: { settings: { cache: { ttl: string } } } }).anthropic.settings.cache.ttl
+    const ttl = Option.getOrThrow(Option.filter(valueAt(treeSettings(CATALOG).server, "providers.anthropic.settings.cache.ttl"), Schema.is(Schema.String)))
     expect(entry).toEqual({ package: `${MODS}/pool`, options: { cacheLifeMs: 3_600_000 } })
     // The ttl as OpenCode's cache settings write it, read by the cache mods' own parser.
     expect(parseTTL(ttl)).toMatchObject({ _tag: "Some", value: 3_600_000 })
@@ -218,13 +337,14 @@ describe("the pool's fleet", () => {
 })
 
 describe("the TUI config", () => {
-  test("sets the Prime theme and keeps the other keys", () => {
-    const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] })
-    expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, tabs: { scope: "window" }, plugins: [`${MODS}/prime`, "/x"] })
+  test("the build sets the Prime theme over the owner's, and the fold keeps his other keys", () => {
+    const owner = { theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }
+    expect(treeSettings(CATALOG).cli).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+    expect(new Map(fold(owner, treeSettings(CATALOG).cli))).toEqual(new Map(leaves({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"], tabs: { scope: "window" } })))
   })
 
   test("keeps each window's tabs its own, keeping the other tab settings", () => {
-    expect(mergeCli({ tabs: { scope: "cwd", layout: "vertical" } }).tabs).toEqual({ scope: "window", layout: "vertical" })
+    expect([...fold({ tabs: { scope: "cwd", layout: "vertical" } }, treeSettings(CATALOG).cli)].filter(([path]) => path.startsWith("tabs."))).toEqual([["tabs.scope", "window"], ["tabs.layout", "vertical"]])
   })
 })
 
