@@ -602,6 +602,38 @@ describe("the upstream merge", () => {
     expect(sync({ fork: f.fork, dryRun: false, log: () => {} })).toEqual({ kind: "current" })
   })
 
+  // 2026-11-20: prime-look moved to a commit with another lockfile and no install; its old packages
+  // hung Code Mode and turned tests/image.test.ts red.
+  test("a fast-forward whose bun.lock changed installs it in the checkout, and one whose bun.lock did not installs nothing", async () => {
+    using f = fixture()
+    commitTo(f.origin, "prime-look", { "bun.lock": "{ lock: 1 }\n" })
+    git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
+    const installs: string[] = []
+    const install = (dir: string) => {
+      installs.push(`${dir} ${readFileSync(join(dir, "bun.lock"), "utf8").trim()}`)
+      return { ok: true, err: "" }
+    }
+    commitTo(f.origin, "prime-look", { "c.txt": "no lock change\n" })
+    expect(sync({ fork: f.fork, dryRun: false, log: () => {}, install })).toMatchObject({ kind: "fast-forwarded" })
+    expect(installs).toEqual([])
+    commitTo(f.origin, "prime-look", { "bun.lock": "{ lock: 2 }\n" })
+    expect(sync({ fork: f.fork, dryRun: false, log: () => {}, install })).toMatchObject({ kind: "fast-forwarded" })
+    expect(installs).toEqual([`${f.fork} { lock: 2 }`])
+    // A failed install is said, and the move stands.
+    commitTo(f.origin, "prime-look", { "bun.lock": "{ lock: 3 }\n" })
+    const lines: string[] = []
+    const failing = () => ({ ok: false, err: "error: lockfile had changes, but lockfile is frozen" })
+    expect(sync({ fork: f.fork, dryRun: false, log: (line) => lines.push(line), install: failing })).toMatchObject({ kind: "fast-forwarded" })
+    expect(f.head(f.fork, "prime-look")).toBe(f.head(f.origin, "prime-look"))
+    expect(lines.join("\n")).toContain(`bun install --frozen-lockfile in ${f.fork} failed`)
+    // The merge's fast-forward installs the same way: upstream's lockfile change reaches the checkout.
+    using g = fixture()
+    commitTo(g.upstream, "dev", { "bun.lock": "{ lock: upstream }\n" })
+    installs.length = 0
+    expect(await mergeUpstream(g.options({ install }))).toMatchObject({ kind: "merged" })
+    expect(installs).toEqual([`${g.fork} { lock: upstream }`])
+  })
+
   test("a fork with local commits or tracked changes is left alone, and says so", () => {
     using f = fixture()
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })

@@ -64,6 +64,8 @@ export interface Options {
   readonly log: (line: string) => void
   /** The env of every git child (and the pre-push install); the process's when absent. A test hands a hermetic one. */
   readonly env?: GitEnv
+  /** The install after the fast-forward, when the lockfile moved; `bunInstall` when absent. */
+  readonly install?: Install
 }
 
 /** An environment for the git children: names to values, unset where undefined. */
@@ -92,6 +94,28 @@ const runner = (env: GitEnv = process.env) => {
   return { git, must, env }
 }
 type Runner = ReturnType<typeof runner>
+
+/** Installs the checkout `dir`'s lockfile as committed: whether it did, and the error's last line. */
+export type Install = (dir: string, env: GitEnv) => { readonly ok: boolean; readonly err: string }
+
+/** `bun install --frozen-lockfile` in `dir`. */
+export const bunInstall: Install = (dir, env) => {
+  const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: dir, env: { ...env }, stdout: "pipe", stderr: "pipe" })
+  return { ok: installed.exitCode === 0, err: installed.stderr.toString().trim().split("\n").at(-1) ?? "" }
+}
+
+/**
+ * After the checkout `holder` moved from `from` to `to`, installs the new lockfile when it differs:
+ * a checkout whose packages are the old commit's runs the new source against them (2026-11-20:
+ * prime-look moved off a merge that installed psychoscript 0.2.1 to a commit pinning 0.1.2, with
+ * no install; Code Mode's `execute` hung and tests/image.test.ts went red). scripts/fork.ts
+ * `staleInstall` refuses such a fork to every script that takes it.
+ */
+const installMoved = ({ git, env }: Runner, install: Install, holder: string, from: string, to: string, log: (line: string) => void) => {
+  if (!existsSync(join(holder, "bun.lock")) || git(holder, "diff", "--quiet", from, to, "--", "bun.lock").ok) return
+  const installed = install(holder, env)
+  if (!installed.ok) log(`upstream: bun install --frozen-lockfile in ${holder} failed after its move to ${to.slice(0, 10)}: ${installed.err}`)
+}
 
 /**
  * Pushes `BRANCH` to origin by origin's fetch URL, never forced, and moves `origin/<BRANCH>` to `merge` as a push
@@ -240,10 +264,7 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
     const forwarded = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, merge, base) : git(holder, "merge", "--ff-only", merge)
     // The push runs the fork's pre-push check (lint, typecheck) in the checkout, whose packages are
     // still the old merge's: install the merged lockfile first, or a package upstream changed fails it.
-    if (forwarded.ok && holder !== undefined && existsSync(join(holder, "bun.lock"))) {
-      const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, env: { ...run.env }, stdout: "pipe", stderr: "pipe" })
-      if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed before the push: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
-    }
+    if (forwarded.ok && holder !== undefined) installMoved(run, options.install ?? bunInstall, holder, base, merge, log)
     return forwarded
   })
   if (!moved.ok) {
@@ -337,9 +358,18 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
  * would redo merges origin already holds and build old code. Only a fast-forward: a branch with
  * commits origin lacks, or a checkout with uncommitted tracked changes, is left as it is and the
  * run goes on with it. Untracked files never stop it. With `to` (a commit origin's branch holds:
- * the update's verified fork commit), it goes no further than that commit.
+ * the update's verified fork commit), it goes no further than that commit. A checkout it moves to a
+ * commit whose bun.lock differs gets that lockfile installed (`installMoved`), so post-land's sync
+ * leaves no checkout running new source on old packages.
  */
-export const syncFork = (options: { readonly fork: string; readonly dryRun: boolean; readonly to?: string; readonly log: (line: string) => void; readonly env?: GitEnv }): SyncOutcome => {
+export const syncFork = (options: {
+  readonly fork: string
+  readonly dryRun: boolean
+  readonly to?: string
+  readonly log: (line: string) => void
+  readonly env?: GitEnv
+  readonly install?: Install
+}): SyncOutcome => {
   const { fork, log } = options
   const run = runner(options.env)
   const { git, must } = run
@@ -367,6 +397,7 @@ export const syncFork = (options: { readonly fork: string; readonly dryRun: bool
   }
   const moved = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, remote, local) : git(holder, "merge", "--ff-only", "--quiet", remote)
   if (!moved.ok) return leave(`the fast-forward failed: ${moved.err || moved.out}`)
+  if (holder !== undefined) installMoved(run, options.install ?? bunInstall, holder, local, remote, log)
   log(`fork: fast-forwarded ${BRANCH} ${local.slice(0, 10)} -> ${remote.slice(0, 10)} (${plural(behind, "commit")} from origin)`)
   return { kind: "fast-forwarded", from: local, to: remote, commits: behind }
 }
