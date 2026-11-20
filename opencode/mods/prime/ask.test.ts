@@ -1,6 +1,7 @@
 // The pinned ask: which prompt governs the top of the view, and its one line.
 import { describe, expect, test } from "bun:test"
-import { EMPTY_INDEX, governingAsk, isAsk, oneLine, pinnedAsk, PROMPT_LENGTH, promptOf, withLoaded, withPage, type Message } from "./ask.ts"
+import { Option } from "effect"
+import { EMPTY_INDEX, governingAsk, isAsk, NO_PIN, oneLine, pinnedAsk, PROMPT_LENGTH, promptOf, withLoaded, withPage, type Message, type Pin } from "./ask.ts"
 
 const user = (id: string, text = `ask ${id}`): Message => ({ id, type: "user", text })
 const other = (id: string, type: string): Message => ({ id, type })
@@ -95,40 +96,44 @@ describe("the ask pinned over the transcript", () => {
     ]
     const prompt = (id: string, time: number) => ({ id, time, text: `ask ${id}` })
     const page = [prompt("u9", 9), prompt("u8", 8)]
+    const more = Option.some("cursor-2")
+    const pinned = (id: string, text = `ask ${id}`): Pin => ({ ask: Option.some({ id, text }), wants: false })
+    /** The pinned prompt's id, or `none`. */
+    const named = (pin: Pin) => Option.getOrElse(Option.map(pin.ask, (ask) => ask.id), () => "none")
 
     test("the pin is the newest prompt the window does not hold; before the first page it asks for one", () => {
-      expect(pinnedAsk(window, rows, EMPTY_INDEX)).toEqual({ ask: undefined, wants: true })
-      const index = withPage(EMPTY_INDEX, page, "cursor-2")
-      expect(pinnedAsk(window, rows, index)).toEqual({ ask: prompt("u9", 9), wants: false })
-      // At the bottom of the view nothing above the top changes it; above every mounted row nothing pins.
-      expect(pinnedAsk(window, [], index)).toEqual({ ask: undefined, wants: false })
+      expect(pinnedAsk(window, rows, EMPTY_INDEX)).toEqual({ ask: Option.none(), wants: true })
+      const index = withPage(EMPTY_INDEX, page, more)
+      expect(pinnedAsk(window, rows, index)).toEqual(pinned("u9"))
+      // Above every mounted row nothing pins, and nothing is read.
+      expect(pinnedAsk(window, [], index)).toEqual(NO_PIN)
     })
 
     test("a loaded ask above the top still wins, and one at the top shows itself", () => {
       const loaded = [user("u9"), ...window]
-      const index = withPage(EMPTY_INDEX, page, undefined)
-      expect(pinnedAsk(loaded, [{ messageID: "u9", row: -9 }, ...rows], index).ask?.id).toBe("u9")
-      expect(pinnedAsk(loaded, [{ messageID: "u9", row: 0 }, { messageID: "s27", row: 3 }], index).ask).toBeUndefined()
+      const index = withPage(EMPTY_INDEX, page, Option.none())
+      expect(named(pinnedAsk(loaded, [{ messageID: "u9", row: -9 }, ...rows], index))).toBe("u9")
+      expect(pinnedAsk(loaded, [{ messageID: "u9", row: 0 }, { messageID: "s27", row: 3 }], index)).toEqual(NO_PIN)
     })
 
     test("once the window holds every prompt in the index it reads a page more, until the session's start", () => {
       const loaded = [user("u8"), other("a8", "assistant"), user("u9"), ...window]
-      const top = [{ messageID: "u8", row: -1 }]
       // u8's own row is above the top: the loaded rule.
-      expect(pinnedAsk(loaded, top, withPage(EMPTY_INDEX, page, "cursor-2")).ask?.id).toBe("u8")
+      expect(named(pinnedAsk(loaded, [{ messageID: "u8", row: -1 }], withPage(EMPTY_INDEX, page, more)))).toBe("u8")
       // The window's oldest message is a step whose prompt is u7, not loaded and not yet read.
       const deeper = [other("a7", "assistant"), ...loaded]
-      const index = withPage(EMPTY_INDEX, page, "cursor-2")
-      expect(pinnedAsk(deeper, [{ messageID: "a7", row: -1 }], index)).toEqual({ ask: undefined, wants: true })
-      const more = withPage(index, [prompt("u7", 7), prompt("u8", 8)], undefined)
-      expect(more.prompts.map((each) => each.id)).toEqual(["u9", "u8", "u7"])
-      expect(pinnedAsk(deeper, [{ messageID: "a7", row: -1 }], more)).toEqual({ ask: prompt("u7", 7), wants: false })
+      const top = [{ messageID: "a7", row: -1 }]
+      const index = withPage(EMPTY_INDEX, page, more)
+      expect(pinnedAsk(deeper, top, index)).toEqual({ ask: Option.none(), wants: true })
+      const older = withPage(index, [prompt("u7", 7), prompt("u8", 8)], Option.none())
+      expect(older.prompts.map((each) => each.id)).toEqual(["u9", "u8", "u7"])
+      expect(pinnedAsk(deeper, top, older)).toEqual(pinned("u7"))
       // The session's start was read: nothing more to ask for.
-      expect(pinnedAsk([other("a0", "assistant")], [{ messageID: "a0", row: -1 }], withPage(EMPTY_INDEX, [], undefined))).toEqual({ ask: undefined, wants: false })
+      expect(pinnedAsk([other("a0", "assistant")], [{ messageID: "a0", row: -1 }], withPage(EMPTY_INDEX, [], Option.none()))).toEqual(NO_PIN)
     })
 
     test("a new prompt joins the index's head, and stays once the window no longer holds it", () => {
-      const index = withPage(EMPTY_INDEX, page, "cursor-2")
+      const index = withPage(EMPTY_INDEX, page, more)
       const arrived = withLoaded(index, [
         { ...user("u9"), time: { created: 9 } },
         { ...other("a9", "assistant"), time: { created: 9.5 } },
@@ -138,16 +143,17 @@ describe("the ask pinned over the transcript", () => {
       expect(arrived.prompts.map((each) => each.id)).toEqual(["u10", "u9", "u8"])
       expect(withLoaded(arrived, [{ ...user("u10"), time: { created: 10 } }])).toBe(arrived)
       // A re-read window of only u10's steps: the pin still names u10.
-      expect(pinnedAsk(window, rows, arrived).ask?.text).toBe("the new ask")
+      expect(pinnedAsk(window, rows, arrived)).toEqual(pinned("u10", "the new ask"))
       // Before the first page nothing is kept: that page brings them.
       expect(withLoaded(EMPTY_INDEX, [{ ...user("u10"), time: { created: 10 } }])).toBe(EMPTY_INDEX)
     })
 
     test("the index keeps a prompt on one line, cut short, and no prompt without words", () => {
       const long = "x".repeat(500)
-      expect(promptOf({ id: "u", type: "user", text: `fix\n\n  it ${long}`, time: { created: 1 } })?.text).toHaveLength(PROMPT_LENGTH)
-      expect(promptOf({ id: "u", type: "user", text: "fix\n it", time: { created: 1 } })).toEqual({ id: "u", time: 1, text: "fix it" })
-      expect(promptOf({ id: "u", type: "user", text: " " })).toBeUndefined()
+      const text = (written: Parameters<typeof promptOf>[0]) => Option.map(promptOf(written), (each) => each.text)
+      expect(Option.map(text({ id: "u", type: "user", text: `fix\n\n  it ${long}`, time: { created: 1 } }), (each) => each.length)).toEqual(Option.some(PROMPT_LENGTH))
+      expect(promptOf({ id: "u", type: "user", text: "fix\n it", time: { created: 1 } })).toEqual(Option.some({ id: "u", time: 1, text: "fix it" }))
+      expect(promptOf({ id: "u", type: "user", text: " " })).toEqual(Option.none())
     })
   })
 

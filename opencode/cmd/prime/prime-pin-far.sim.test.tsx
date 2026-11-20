@@ -5,10 +5,7 @@
 // apart from the transcript (mods/prime/opencode/asks.ts). A click on the pin reads the transcript back to that
 // prompt and shows it at the top (the fork's overlay reveal); a little further up, the pin is the turn before's
 // prompt. The prompts are read once, one page, not once a scroll frame.
-// With PIN_FAR_FRAMES naming a folder, each saved frame's text is written there.
-import { Effect } from "effect"
-import { writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import type { Model } from "../../sim-tui/server.ts"
 
@@ -43,18 +40,16 @@ interface Played {
 
 const played = new Map<number, Played>()
 const scenario = (seed: number) =>
-  played.has(seed) ? Effect.succeed(played.get(seed) as Played) : play(seed).pipe(Effect.tap((run) => Effect.sync(() => played.set(seed, run))))
+  Option.match(Option.fromUndefinedOr(played.get(seed)), {
+    onSome: Effect.succeed,
+    onNone: () => play(seed).pipe(Effect.tap((run) => Effect.sync(() => played.set(seed, run)))),
+  })
 
 const play = (seed: number) =>
   App.seed(BOOT, { key: "prime-pin-far", seed, model, pagedMessages: true }, (tui) =>
     Effect.gen(function* () {
       const frames: Record<Name, ReadonlyArray<string>> = { "far-bottom": [], "far-pinned": [], "far-revealed": [], "far-crossed": [] }
-      const save = (name: Name) =>
-        Effect.sync(() => {
-          frames[name] = tui.text()
-          const folder = process.env.PIN_FAR_FRAMES
-          if (folder) writeFileSync(join(folder, `${name}.txt`), tui.text().join("\n"))
-        })
+      const save = (name: Name) => Effect.sync(() => (frames[name] = tui.text()))
       const far = tui.server.session({ title: "The survey" })
       tui.server.history(far, [
         { ask: ASK_ONE, steps: steps("one", 3) },
@@ -95,7 +90,7 @@ const play = (seed: number) =>
       return {
         frames,
         promptReads: reads.filter(prompts).length,
-        pages: reads.filter((request) => !prompts(request)).map((request) => (new URLSearchParams(request.query).has("cursor") ? "cursor" : "newest")),
+        pages: reads.filter((request) => !prompts(request)).map((request) => ["newest", "cursor"][Number(new URLSearchParams(request.query).has("cursor"))] ?? ""),
       }
     }),
   )

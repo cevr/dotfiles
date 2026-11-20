@@ -228,6 +228,8 @@ const MessageCursor = Schema.fromJsonString(
 const encodeCursor = (id: string, order: "asc" | "desc", direction: "previous" | "next") =>
   Buffer.from(Schema.encodeSync(MessageCursor)({ id, order, direction })).toString("base64url")
 const decodeCursor = (text: string) => Schema.decodeUnknownOption(MessageCursor)(Buffer.from(text, "base64url").toString("utf8"))
+const ORDERS: ReadonlyArray<"asc" | "desc"> = ["asc", "desc"]
+const DEFAULT_ORDER: "asc" | "desc" = "desc"
 /** The real server's page when `limit` is not given. */
 const MESSAGE_PAGE = 50
 
@@ -242,13 +244,17 @@ const pageOf = <M extends { readonly id: string }>(messages: ReadonlyArray<M>, q
   const given = Option.fromNullishOr(query.get("cursor"))
   const cursor = Option.flatMap(given, decodeCursor)
   if (Option.isSome(given) && Option.isNone(cursor)) return Option.none()
-  const order = Option.match(cursor, { onNone: () => (query.get("order") === "asc" ? "asc" : "desc"), onSome: (each) => each.order })
-  const sequence = order === "asc" ? messages : messages.toReversed()
+  const order = Option.match(cursor, {
+    onNone: () => Option.getOrElse(Arr.findFirst(ORDERS, (each) => each === query.get("order")), () => DEFAULT_ORDER),
+    onSome: (each) => each.order,
+  })
+  const sequence = { asc: messages, desc: messages.toReversed() }[order]
   const anchored = Option.map(cursor, (each) => ({ at: sequence.findIndex((message) => message.id === each.id), direction: each.direction }))
   if (Option.isSome(anchored) && anchored.value.at === -1) return Option.none()
   const data = Option.match(anchored, {
     onNone: () => sequence.slice(0, limit),
-    onSome: ({ at, direction }) => (direction === "next" ? sequence.slice(at + 1, at + 1 + limit) : sequence.slice(Math.max(0, at - limit), at)),
+    onSome: ({ at, direction }) =>
+      ({ next: () => sequence.slice(at + 1, at + 1 + limit), previous: () => sequence.slice(Math.max(0, at - limit), at) })[direction](),
   })
   const first = Arr.head(data)
   const last = Arr.last(data)
@@ -543,6 +549,10 @@ export interface Options {
    */
   readonly pagedMessages?: boolean
 }
+
+/** How a played step ends: a step before the turn's last calls on, the last stops. */
+const ENDS: ReadonlyArray<"stop" | "tool-calls"> = ["tool-calls", "stop"]
+const CALLS_ON: "stop" | "tool-calls" = "tool-calls"
 
 /** A turn played before the TUI opened its session (`history`): the prompt and the text of each step answering it. */
 export interface PlayedTurn {
@@ -1138,8 +1148,8 @@ export const make = (options: Options) => {
     "session.messages": ({ sessionID, query }) => {
       // `type` keeps the messages of that kind, as the real server's does. Pages (`limit`, `order`, `cursor`) only
       // when the seed asks for them (`pagedMessages`); else every message, newest first, in one answer.
-      const kind = query.get("type")
-      const kept = list(sessionID).filter((message) => kind === null || message.type === kind)
+      const kind = Option.fromNullishOr(query.get("type"))
+      const kept = list(sessionID).filter((message) => Option.match(kind, { onNone: () => true, onSome: (type) => message.type === type }))
       if (!options.pagedMessages) return Effect.succeed(json("session.messages", { data: kept.toReversed(), cursor: {} }))
       return Effect.succeed(
         Option.match(pageOf(kept, query), {
@@ -1344,7 +1354,7 @@ export const make = (options: Options) => {
       for (const turn of turns) {
         list(sessionID).push({ id: id("msg"), time: { created: now() }, text: turn.ask, type: "user" })
         turn.steps.forEach((step, index) => {
-          const finished = index === turn.steps.length - 1 ? "stop" : "tool-calls"
+          const finished = Option.getOrElse(Arr.get(ENDS, Number(index === turn.steps.length - 1)), () => CALLS_ON)
           list(sessionID).push({
             id: id("msg"),
             type: "assistant",
