@@ -44,9 +44,9 @@ const JsonObject = Schema.Record(Schema.String, Schema.Json)
 const isObject = Schema.is(JsonObject)
 
 /** Every leaf of a config by its dotted path; an empty object holds none, an array is one leaf. */
-const leaves = (value: Json, path: ReadonlyArray<string> = []): ReadonlyArray<readonly [string, Json]> =>
+const leaves = (value: Json, path: ReadonlyArray<string> = []): Array<[string, Json]> =>
   Option.match(Option.liftPredicate(value, isObject), {
-    onNone: () => [[path.join("."), value] as const],
+    onNone: (): Array<[string, Json]> => [[path.join("."), value]],
     onSome: (object) => Object.entries(object).flatMap(([key, each]) => leaves(each, [...path, key])),
   })
 
