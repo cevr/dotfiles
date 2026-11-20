@@ -270,8 +270,8 @@ const judge = (seed: number, world: World) => {
     owed: world.debts.debts.owed.length,
     running: world.seen.running,
     saidForced: saidForced(world),
-    notRun: described(world, "rift land · post-land did not run"),
-    loadedWakesPastRuns: described(world, "rift land · post-land ran loaded") > world.seen.loaded.length,
+    notRun: described(world, "lane land · post-land did not run"),
+    loadedWakesPastRuns: described(world, "lane land · post-land needs action (loaded)") > world.seen.loaded.length,
   }).toEqual({
     seed,
     violations: [],
@@ -289,12 +289,12 @@ const judge = (seed: number, world: World) => {
 const described = (world: World, description: string): number => world.woken.filter((woken) => woken.notice.description === description).length
 
 /** The forced report's first words: a land ran the step past the max wait, whatever the load. */
-const FORCED = "rift land: the post-land step was owed for "
+const FORCED = "lane land: the post-land step was owed for "
 
 /** For each report of a run that ended, in order: whether it says the land ran it whatever the load. */
 const saidForced = (world: World): ReadonlyArray<boolean> =>
   world.woken
-    .filter((woken) => woken.notice.description === "rift land · post-land ran" || woken.notice.description === "rift land · post-land failed")
+    .filter((woken) => woken.notice.description === "lane land · post-land needs action" || woken.notice.description === "lane land · post-land FAILED")
     .map((woken) => woken.notice.text.startsWith(FORCED))
 
 describe("an owed post-land step", () => {
@@ -346,9 +346,9 @@ describe("an owed post-land step", () => {
           { head: "h1", at: 34 },
         ])
         expect(world.woken.map((woken) => woken.notice.description).filter((description) => description.includes("post-land"))).toEqual([
-          "rift land · post-land ran loaded",
-          "rift land · post-land ran loaded",
-          "rift land · post-land ran",
+          "lane land · post-land needs action (loaded)",
+          "lane land · post-land needs action (loaded)",
+          "lane land · post-land needs action",
         ])
         expect(world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded", "loaded", "settled"])
         judge(1, world)
@@ -404,8 +404,8 @@ describe("an owed post-land step", () => {
         expect(world.seen.started).toEqual(["h3"])
         expect(world.seen.forced).toBe(1)
         expect(world.woken.map((woken) => woken.notice.text.split("\n").slice(0, 2)).at(-1)).toEqual([
-          "rift land: the post-land step was owed for 370 minutes, past the 6-hour wait, so this land ran it whatever the load (the 1-minute load is 40.0, at or past the host's 12 cores), nice'd like every check.",
-          "rift land: the post-land step after l/l1, l/l2, l/l3 ran in 4s. Log: /logs/post-land.log",
+          "lane land: the post-land step was owed for 370 minutes, past the 6-hour wait, so this land ran it whatever the load (the 1-minute load is 40.0, at or past the host's 12 cores), nice'd like every check.",
+          "lane land: the post-land step after l/l1, l/l2, l/l3 ran in 4s. Log: /logs/post-land.log",
         ])
         judge(2, world)
       }),
@@ -427,7 +427,7 @@ describe("an owed post-land step", () => {
         const world = yield* play(3, ops)
         expect(world.seen.started).toEqual(["h2"])
         expect(world.seen.forced).toBe(0)
-        expect(world.woken.map((woken) => woken.notice.text.split("\n")[0]).at(-1)).toEqual("rift land: the post-land step after l/l1, l/l2 ran in 4s. Log: /logs/post-land.log")
+        expect(world.woken.map((woken) => woken.notice.text.split("\n")[0]).at(-1)).toEqual("lane land: the post-land step after l/l1, l/l2 ran in 4s. Log: /logs/post-land.log")
         judge(3, world)
       }),
     ))
@@ -447,7 +447,7 @@ describe("an owed post-land step", () => {
         expect(world.seen.started).toEqual(["h2"])
         expect(world.seen.forced).toBe(1)
         expect(world.woken.map((woken) => woken.notice.text.split("\n")[0]).at(-1)).toEqual(
-          "rift land: the post-land step was owed for 368 minutes, past the 6-hour wait, so this land ran it whatever the load (the 1-minute load is 2.0, but it was at or past the host's 12 cores 2 min ago), nice'd like every check.",
+          "lane land: the post-land step was owed for 368 minutes, past the 6-hour wait, so this land ran it whatever the load (the 1-minute load is 2.0, but it was at or past the host's 12 cores 2 min ago), nice'd like every check.",
         )
         judge(4, world)
       }),
@@ -463,8 +463,8 @@ describe("an owed post-land step", () => {
         expect(world.landing.steps.filter((step) => step.includes(POST_LAND))).toEqual([...run, ...run])
         expect(world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded", "settled"])
         expect(world.woken.map((woken) => woken.notice.description).filter((description) => description.includes("post-land"))).toEqual([
-          "rift land · post-land ran loaded",
-          "rift land · post-land ran",
+          "lane land · post-land needs action (loaded)",
+          "lane land · post-land needs action",
         ])
         judge(5, world)
       }),

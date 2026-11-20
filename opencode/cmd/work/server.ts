@@ -159,7 +159,7 @@ const laneOf = (workspace: Workspace): Lane => {
 const failedOf = (failure: Model.Failure): Failed => ({ outcome: "failed", message: Model.explain(failure) })
 
 /** An ask that does not decode, in words, which the orchestrate plugin reads. */
-const malformed = (method: string) => (error: { readonly message: string }) => Effect.succeed<Failed>({ outcome: "failed", message: `not a rift ${method}: ${error.message}` })
+const malformed = (method: string) => (error: { readonly message: string }) => Effect.succeed<Failed>({ outcome: "failed", message: `not a work ${method}: ${error.message}` })
 
 /** The RPC's handlers: each runs the tool's own model on the ask, and reads the workspaces it names for the answer's data. */
 const rpcHandlers = (tool: typeof Model.RiftTool.Service, rifts: typeof Rifts.Service, sessions: typeof SessionDirectories.Service, options: Options) => {

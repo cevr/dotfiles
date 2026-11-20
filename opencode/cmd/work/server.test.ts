@@ -314,7 +314,7 @@ describe("the work plugin", () => {
   )
 
   effectTest(
-    "lands workspaces as one batch, wakes the session with the accept check's result, and says the workbox's commands need the workbox",
+    "lands workspaces as one batch, runs its accept check, which wakes no one when it passes, and says the workbox's commands need the workbox",
     Effect.scoped(
       Effect.gen(function* () {
         const world = worldOf([MemoryRifts.clean("/code/.work/app/feat-x", "feat/x")], GATED)
@@ -323,7 +323,7 @@ describe("the work plugin", () => {
           "Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).",
         )
         yield* settle
-        expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
+        expect([world.landing.steps.some((step) => step.startsWith("accept ")), woken]).toEqual([true, []])
         expect(yield* call({ action: "land", workspaces: ["nope"] })).toStartWith("error: The base /code/app has no workspace named nope.")
         // An orchestrate run names each workspace with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
         const named = MemoryRifts.clean("/code/.work/app/db-2", "p5/db-2")
@@ -355,7 +355,7 @@ describe("the work plugin", () => {
         yield* settle
         const loads = () => world.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])
         const postLandWakes = () => woken.map((wake) => wake.notice.description).filter((description) => description.includes("post-land"))
-        expect({ loads: loads(), wakes: postLandWakes(), owed: world.debts.debts.owed.length }).toEqual({ loads: ["loaded"], wakes: ["rift land · post-land ran loaded"], owed: 1 })
+        expect({ loads: loads(), wakes: postLandWakes(), owed: world.debts.debts.owed.length }).toEqual({ loads: ["loaded"], wakes: ["lane land · post-land needs action (loaded)"], owed: 1 })
         // A server restart: the step is still owed, and the new server's minute check runs it settled once the
         // load has stayed under the cores for the settle window.
         yield* Scope.close(first, Exit.void)
@@ -368,7 +368,7 @@ describe("the work plugin", () => {
         }
         expect({ loads: loads(), wakes: [...postLandWakes(), ...again.woken.map((wake) => wake.notice.description)], owed: world.debts.debts.owed.length }).toEqual({
           loads: ["loaded", "settled"],
-          wakes: ["rift land · post-land ran loaded", "rift land · post-land ran"],
+          wakes: ["lane land · post-land needs action (loaded)", "lane land · post-land needs action"],
           owed: 0,
         })
         yield* Scope.close(second, Exit.void)

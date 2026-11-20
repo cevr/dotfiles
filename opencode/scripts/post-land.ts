@@ -12,8 +12,9 @@
 // On the Mac that owns the fork (`FORK_OWNER`) it fast-forwards prime-look to origin (`syncFork`),
 // merges upstream/dev into it with `mergeUpstream` (the same merge, checks and report as
 // `bun run daily`'s step 0, under the same lock), refreshes `upstream.json` for the TUI's corner,
-// and writes one outcome line with the fork work (scripts/fork-work.ts) to `RIFT_POST_LAND_REPORT`
-// (stdout without it): the report the land's session is woken with. On any other host (the
+// and writes one outcome line with the fork work (scripts/fork-work.ts) to stdout (the step's log), and
+// to `RIFT_POST_LAND_REPORT` only when it needs action (`Report`): the report the land's session is woken
+// with. A green report leaves that file empty, and the session is not woken. On any other host (the
 // workbox) it runs the deep run, merges nothing and says so. Under a land it holds the land's locks (mods/work/process/flock.ts): the checks lock for each change to prime-look, which the land's gate and accept read, and the accept lock for the fork's tests, so they never run beside an accept check.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname, tmpdir } from "node:os"
@@ -89,11 +90,11 @@ const outcomeWork = (outcome: Outcome, report: string): ReadonlyArray<string> =>
   switch (outcome.kind) {
     case "conflict":
       return [
-        `- resolve the conflicts as a fork unit: a Rift of the fork on a branch off ${BRANCH}, \`git merge ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}\`, resolve ${outcome.files.join(", ")} preferring upstream (opencode/AGENTS.md), the fork's checks green; the merge joins the next batch and its verifier. Report: ${report}`,
+        `- resolve the conflicts as a fork unit: a lane of the fork on a branch off ${BRANCH}, \`git merge ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}\`, resolve ${outcome.files.join(", ")} preferring upstream (opencode/AGENTS.md), the fork's checks green; the merge joins the next batch and its verifier. Report: ${report}`,
       ]
     case "red":
     case "stuck":
-      return [`- make the merge land as a fork unit: start a fork Rift from daily/upstream-merge (${outcome.merge.slice(0, 10)}), fix it, the merge joins the next batch and its verifier. Report: ${report}`]
+      return [`- make the merge land as a fork unit: start a fork lane from daily/upstream-merge (${outcome.merge.slice(0, 10)}), fix it, the merge joins the next batch and its verifier. Report: ${report}`]
     default:
       return []
   }
@@ -104,14 +105,14 @@ const upstream = Effect.fn("PostLand.upstream")(function* (steps: Steps) {
   yield* Effect.promise(async () => steps.sync())
   const before = steps.head()
   const merged = Option.fromUndefinedOr(yield* Effect.promise(steps.merge))
-  if (Option.isNone(merged)) return { text: "upstream: skipped; bun run daily is merging upstream now, and the next land runs this again.", moved: false }
+  if (Option.isNone(merged)) return { text: "upstream: skipped; bun run daily is merging upstream now, and the next land runs this again.", moved: false, todo: false }
   const outcome = merged.value
   const refreshed = steps.refresh()
   const tried = outcome.kind === "merged" || outcome.kind === "conflict" || outcome.kind === "red" || outcome.kind === "stuck"
   const work = yield* Effect.promise(() => steps.work(before, tried))
   const todo = [...outcomeWork(outcome, steps.report), ...forkWorkText(work)]
   const workLines = Arr.match(todo, { onEmpty: () => ["fork work: none."], onNonEmpty: (items) => ["fork work (report only; nothing dropped or asked yet):", ...items] })
-  return { text: [outcomeLine(outcome, steps.report), refreshed, ...workLines].join("\n"), moved: steps.head() !== before }
+  return { text: [outcomeLine(outcome, steps.report), refreshed, ...workLines].join("\n"), moved: steps.head() !== before, todo: todo.length > 0 }
 })
 
 /**
@@ -169,28 +170,48 @@ const missingBlock = (head: string, host: string, log: string) => [
   `  log: ${log}`,
 ]
 
+/**
+ * The step's report, and whether it needs action: a red deep run (before or after the merge), or work for the
+ * orchestrator (a conflict, a red or stuck merge, fork work). Only a report that needs action goes to the land,
+ * which wakes the session on it; a green one goes to the step's log alone.
+ */
+export interface Report {
+  readonly text: string
+  readonly action: boolean
+}
+
 /** Runs the step at `load`; answers the report (empty for a `loaded` run that ran no file). */
-export const postLand = (steps: Steps, load: Load = "settled"): Promise<string> => Effect.runPromise(step(steps, load))
+export const postLand = (steps: Steps, load: Load = "settled"): Promise<string> => reportOf(steps, load).then((report) => report.text)
+
+/** Runs the step at `load`; answers the report and whether it needs action. */
+export const reportOf = (steps: Steps, load: Load = "settled"): Promise<Report> => Effect.runPromise(step(steps, load))
+
+/** Whether a deep run is red: it failed a file, or wrote no outcome. */
+const redOf = (report: Option.Option<DeepReport>) => Option.match(report, { onNone: () => true, onSome: (read) => failedOf(read).length > 0 })
 
 const step = Effect.fn("PostLand.step")(function* (steps: Steps, load: Load) {
   const deep = yield* Effect.promise(() => steps.deep(deepOf(load)))
   const block = Option.match(deep.report, { onNone: () => missingBlock(steps.checkout(), steps.host, deep.log), onSome: deepBlock })
-  const red = Option.match(deep.report, { onNone: () => true, onSome: (report) => failedOf(report).length > 0 })
+  const red = redOf(deep.report)
+  const report = (lines: ReadonlyArray<string>, action: boolean): Report => ({ text: lines.join("\n"), action })
   if (load === "loaded") {
-    if (!red && !Option.exists(deep.report, ranAny)) return ""
-    return [...block, "upstream: waits for a settled host"].join("\n")
+    if (!red && !Option.exists(deep.report, ranAny)) return report([], false)
+    return report([...block, "upstream: waits for a settled host"], red)
   }
-  if (!ownsFork(steps.host)) return [...block, `post-land: nothing to do on ${steps.host}; the fork's owner merges upstream.`].join("\n")
+  if (!ownsFork(steps.host)) return report([...block, `post-land: nothing to do on ${steps.host}; the fork's owner merges upstream.`], red)
   if (red)
-    return [
-      ...block,
-      `upstream: held; the deep run is red at ${short(Option.match(deep.report, { onNone: steps.checkout, onSome: (report) => report.head }))}, and a merge would make every file due again. The next land tries again.`,
-    ].join("\n")
+    return report(
+      [
+        ...block,
+        `upstream: held; the deep run is red at ${short(Option.match(deep.report, { onNone: steps.checkout, onSome: (read) => read.head }))}, and a merge would make every file due again. The next land tries again.`,
+      ],
+      true,
+    )
   const merged = yield* upstream(steps)
-  if (!merged.moved) return [...block, merged.text].join("\n")
+  if (!merged.moved) return report([...block, merged.text], merged.todo)
   const again = yield* Effect.promise(() => steps.deep(deepOf(load)))
   const after = Option.match(again.report, { onNone: () => missingBlock(steps.checkout(), steps.host, again.log), onSome: deepBlock })
-  return [...block, merged.text, `accept deep after the merge, on the fork's new head ${short(steps.head())}:`, ...after].join("\n")
+  return report([...block, merged.text, `accept deep after the merge, on the fork's new head ${short(steps.head())}:`, ...after], merged.todo || redOf(again.report))
 })
 
 if (import.meta.main) {
@@ -215,7 +236,7 @@ if (import.meta.main) {
   const checkout = () => run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
   // Each deep run's receipt, for the next batch's verifier: in the land's receipts folder, else this host's.
   const logs = env.RIFT_LAND_LOGS || landLogs(env)
-  const text = await postLand({
+  const { text, action } = await reportOf({
     // The deep run takes the machine's accept lock itself and yields it to a land's run; it never holds the
     // land's accept flock (RIFT_LAND_ACCEPT_LOCK), which a land's check takes before its own run starts.
     deep: (ask) => {
@@ -275,7 +296,7 @@ if (import.meta.main) {
     report,
   }, loadOf(env.RIFT_POST_LAND_LOAD))
   const out = env.RIFT_POST_LAND_REPORT
-  if (out === undefined || out === "") log(text)
-  // A loaded run that ran no file writes an empty report, and wakes no one.
-  else writeFileSync(out, Arr.filter([`${text}\n`], () => text !== "").join(""))
+  // The report goes to the step's log; only one that needs action goes to the land, and an empty one wakes no one.
+  if (text !== "") log(text)
+  if (out !== undefined && out !== "") writeFileSync(out, Arr.filter([`${text}\n`], () => action).join(""))
 }

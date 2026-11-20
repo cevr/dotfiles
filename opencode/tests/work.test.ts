@@ -5,7 +5,7 @@
 // nowhere else, and removes it with force; calls `shll` and is told by cmd/tool-names, loaded beside it, to call
 // `shell`; no request offers or names OpenCode's worktree tools. In a second run it
 // commits in a workspace and lands it: one push to the bare origin's main from an integration workspace work
-// made, the workspace trashed, and the accept check's wake after the turn. A third run lists through the alias
+// made, the workspace trashed, and a failed accept check's wake after the turn (a green one wakes no one). A third run lists through the alias
 // `rift`, with cmd/work listed bare (no options) as daily lists it, so it finds `work` on PATH (the binary's
 // folder first). The plugin on its own is tested beside its code in cmd/work. Without a work binary (WORK_BIN, or
 // `work` on PATH as the install puts it) and OPENCODE_DEV these do not run.
@@ -115,10 +115,10 @@ if (runnable)
     )
 
     it.live.layer(BunServices.layer)(
-      "an agent lands a workspace: one push to main from the integration workspace work made, the workspace trashed, then the accept check's wake",
+      "an agent lands a workspace: one push to main from the integration workspace work made, the workspace trashed, then a failed accept check's wake",
       () =>
         Effect.gen(function* () {
-          const result = yield* boot(LAND, Option.some("rift land: the accept check for"))
+          const result = yield* boot(LAND, Option.some("lane land: the accept check for"))
           const [create, commit, land, ...rest] = result.calls
           expect(rest).toEqual([])
           expect([create?.status, commit?.status, land?.status]).toEqual(["completed", "completed", "completed"])
@@ -130,7 +130,7 @@ if (runnable)
           // The branch's commit is origin's main; the workspace went, the integration workspace stays for the next batch.
           expect(result.originMain).toBe(LAND_SUBJECT)
           expect([result.workspaceThere, result.integrationThere]).toEqual([false, true])
-          expect(result.transcript).toMatch(/rift land: the accept check for feat\/x passed in \d+s\./)
+          expect(result.transcript).toMatch(/lane land: the accept check for feat\/x FAILED \(exit 1\) in \d+s\. The batch is already pushed: fix forward\./)
           expect(result.transcript).toContain(DONE)
         }),
       RUN_MS,
