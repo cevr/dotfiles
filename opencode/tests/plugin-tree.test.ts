@@ -86,7 +86,8 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         const settings = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ agents: Schema.Record(Schema.String, Schema.Struct({ model: Schema.String })), providers: Schema.Unknown })))(yield* fs.readFileString(`${tree}/config/opencode.json`))
         expect(Object.keys(settings.agents).toSorted()).toEqual(["implementor", "planner", "verifier", "worker"])
         expect(settings.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
-        expect(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ theme: Schema.Unknown, tabs: Schema.Unknown })))(cli)).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+        // The TUI overlay lists plugins alone: the theme and the tab scope are the owner's, picked in the TUI.
+        expect(Object.keys(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)))(cli))).toEqual(["plugins"])
 
         // The service and the TUI from source, bound to the tree's overlay as the binary binds its own.
         const launch = forkLaunch(fork, process.execPath)
@@ -147,6 +148,8 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         // The home screen's status bar names the service once the TUI is connected.
         yield* until((seen) => seen.some((row) => row.includes("✓ Server")), "the TUI never connected")
         yield* Effect.promise(() => hostCall(socket, { op: "type", text: "/plugins" }))
+        // Enter only once the composer's command list has caught up with the text: under load an earlier one is swallowed.
+        yield* until((seen) => seen.filter((row) => row.includes("/plugins")).length >= 2 && !seen.some((row) => row.includes("No results found")), "the composer never listed /plugins")
         yield* Effect.promise(() => hostCall(socket, { op: "keys", names: ["enter"] }))
         const shown = yield* until((seen) => seen.includes("TUI") && seen.includes("Server"), "the plugins dialog never showed")
         // One row per plugin of the TUI's overlay, each loaded from its local path: a failed one shows its error instead.

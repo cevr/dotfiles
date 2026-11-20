@@ -28,12 +28,13 @@
 //    client (mods/update/filestore/launcher.ts, `residentDir`). `~/.local/bin` comes before `~/.bun/bin` on
 //    PATH; `opencode2` stays the stock release. It restarts nothing and writes no config, and runs no fork
 //    link, install or upstream merge (the tree is sealed; the post-land step merges upstream).
-// 3. By hand only, what no build's tree can carry, the same for every build: no auto-update in
-//    `~/.config/opencode/opencode.json`, the Prime theme's file beside it and the resident location's config,
+// 3. By hand only, what no build's tree carries, the same for every build: no auto-update in
+//    `~/.config/opencode/opencode.json`, the Prime theme and the window tab scope in `cli.json` only where it
+//    has none (the owner picks both in the TUI), the Prime theme's file and the resident location's config,
 //    every other key and every plugin entry kept as it is, each file written only when its text changes
 //    (`writeSettings`). The rest follows each update in the build's own tree: its plugins, and the role
-//    agents' models, Claude's cache lifetime, the theme's name and the window tab scope (`treeSettings`), which
-//    win over the same keys in the global files. The plugin lists are data (mods/update/trees.ts), which
+//    agents' models and Claude's cache lifetime (`treeSettings`), which win over the same keys in the global
+//    config. The plugin lists are data (mods/update/trees.ts), which
 //    `--tree <dir> --at <place> [--checkout <live checkout>] [--host <name>]` reads: it writes a build's
 //    plugin tree's server entries and overlay (`config/opencode.json`, `config/cli.json`) into the tree in
 //    the making `dir`, every path naming `place`, and nothing else (mods/update/filestore/trees.ts).
@@ -222,26 +223,33 @@ const retired = (existing: Json) => {
 }
 
 /**
- * The settings each build carries in its tree's overlay (`writeTree`), derived at the tree's make from the
- * catalog it reads then, so a new model release reaches the roles with the next update and nothing writes
+ * The settings each build carries in its tree's server overlay (`writeTree`), derived at the tree's make from
+ * the catalog it reads then, so a new model release reaches the roles with the next update and nothing writes
  * the owner's files. The fork loads the tree's `config/opencode.json` after the global config and before a
  * project's, folding each agent field by field and provider settings key by key (core `config.ts` `load`,
- * `config/plugin/agent.ts`, `Provider.mergeOverlay`), and the TUI deep-merges the tree's `cli.json` over
- * its own (cli `config/config.ts`). So these keys, and only these, are the build's over the owner's global
- * files: each role's model, Claude's cache lifetime, the Prime theme's name and the window tab scope. Every
- * other key, and every other field of those objects, stays the owner's, and a project's config wins over
- * both.
+ * `config/plugin/agent.ts`, `Provider.mergeOverlay`). So these keys, and only these, are the build's over the
+ * owner's global config: each role's model and Claude's cache lifetime, which nothing but a build sets (no TUI
+ * or command writes either). Every other key, and every other field of those objects, stays the owner's, and a
+ * project's config wins over both. The theme and the tab scope are the owner's, picked in the TUI, so the
+ * tree's `cli.json` lists only plugins (`hostCli`).
  */
 export const treeSettings = (catalog: Catalog) => ({
-  server: {
-    agents: Object.fromEntries(Object.entries(roleModels(catalog)).map(([role, model]) => [role, { model }])),
-    // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
-    // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
-    providers: { anthropic: { settings: { cache: { ttl: CLAUDE_CACHE_TTL } } } },
-  },
-  // The fork's `window` tab scope: a window's tabs are the sessions opened in it, never those of the other
-  // TUIs on the machine, since herdr gives each session its own space (owner, q61).
-  cli: { theme: { name: "prime" }, tabs: { scope: "window" } },
+  agents: Object.fromEntries(Object.entries(roleModels(catalog)).map(([role, model]) => [role, { model }])),
+  // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
+  // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
+  providers: { anthropic: { settings: { cache: { ttl: CLAUDE_CACHE_TTL } } } },
+})
+
+/**
+ * The owner's TUI config with the host's defaults in what it lacks: the Prime theme, and the fork's `window`
+ * tab scope (a window's tabs are the sessions opened in it, never those of the other TUIs on the machine, since
+ * herdr gives each session its own space; owner, q61). A value already there stays, whoever wrote it: the
+ * owner picks both in the TUI (`/themes`, `/settings`), which writes them here, and a pick must last.
+ */
+export const hostCli = (existing: Json) => ({
+  ...existing,
+  theme: { name: "prime", ...record(existing.theme) },
+  tabs: { scope: "window", ...record(existing.tabs) },
 })
 
 /**
@@ -267,19 +275,25 @@ const writeChanged = (path: string, text: string) => {
   writeFileSync(path, text, { mode: 0o600 })
 }
 
+/** Whether the TUI config lacks a default `hostCli` adds: only then is it written, so a file that has both is never rewritten, nor its text reformatted. */
+export const lacksCliDefault = (existing: Json): boolean => !Object.hasOwn(record(existing.theme), "name") || !Object.hasOwn(record(existing.tabs), "scope")
+
 /**
- * Step 3, by hand only: what the build's tree cannot carry, each the same for every build and written only
- * when its text changes: auto-update off in the global server config (`hostServer`), the Prime theme's file
- * in the global config directory (the TUI finds theme files there and in a project's `.opencode/`, never in
- * a tree, tui `theme/discovery.ts`), and the resident location's config (a location's own file). The config
- * is read before anything is written, so one that does not read stops daily with nothing changed. `cli.json`,
- * the role models and every plugin entry are left as they are: the build's tree carries them (`treeSettings`).
+ * Step 3, by hand only: what the build's tree does not carry, each the same for every build: auto-update off in
+ * the global server config (`hostServer`), the Prime theme and the window tab scope in `cli.json` where it has
+ * none (`hostCli`), the Prime theme's file in the global config directory (the TUI finds theme files there and
+ * in a project's `.opencode/`, never in a tree, tui `theme/discovery.ts`), and the resident location's config
+ * (a location's own file). Each file is written only when its text changes, `cli.json` only when a default is
+ * added. Both configs are read before anything is written, so one that does not read stops daily with nothing
+ * changed. The role models and every plugin entry are left as they are: the build's tree carries them.
  */
 export const writeSettings = (home: string) => {
   const config = join(home, ".config/opencode")
   const server = hostServer(readJson(join(config, "opencode.json")))
+  const cli = readJson(join(config, "cli.json"))
   writeChanged(join(residentDir(home), "opencode.json"), jsonText(residentConfig))
   writeChanged(join(config, "opencode.json"), jsonText(server))
+  if (lacksCliDefault(cli)) writeJson(join(config, "cli.json"), hostCli(cli))
   writeChanged(join(config, "themes/prime.json"), readFileSync(THEME, "utf8"))
 }
 
@@ -472,9 +486,8 @@ const writeTree = (home: string, fork: string, tree: { readonly dir: string; rea
       writeFileSync(join(dir, "package.json"), entry.manifest)
       for (const file of entry.files) writeFileSync(join(dir, file.name), file.text)
     }
-    const settings = treeSettings(facts.catalog)
-    writeJson(join(tree.dir, "config/opencode.json"), { ...settings.server, plugins: serverEntries(facts, (name) => serverEntryDir(tree.at, name)) })
-    writeJson(join(tree.dir, "config/cli.json"), { ...settings.cli, plugins: tuiEntries(opencode, (name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
+    writeJson(join(tree.dir, "config/opencode.json"), { ...treeSettings(facts.catalog), plugins: serverEntries(facts, (name) => serverEntryDir(tree.at, name)) })
+    writeJson(join(tree.dir, "config/cli.json"), { plugins: tuiEntries(opencode, (name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
   })
 
 /** The fork checkout daily builds and configures from: `OPENCODE_DEV`, else the default, checked. */

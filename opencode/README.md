@@ -64,43 +64,50 @@ session mail, background questions, wakes, the image tool, skills, the rift
 tool and tool names, the cache, and in the TUI's list Prime, status, the queue
 and background questions.
 
-The settings follow each update in the build's own tree, beside its plugin
-entries (`scripts/daily.ts` `treeSettings`, derived when the tree is made from
-the model catalog read then): each role agent's model (planner, implementor,
-verifier, worker: the newest Opus), a one-hour prompt cache for Claude
-(`providers.anthropic.settings.cache.ttl: "1h"`) in the tree's
-`config/opencode.json`, and the Prime theme's name and the `window` tab scope
-(a TUI window's tabs are the sessions opened in it, not every TUI's on the
-machine) in its `config/cli.json`. So a new Opus release reaches the role
-agents with the next update, and no update writes `~/.config/opencode`. The
-rule for a key set by hand: for the keys a build names
+The settings that belong to a build follow each update in its own tree,
+beside its plugin entries (`scripts/daily.ts` `treeSettings`, derived when the
+tree is made from the model catalog read then): each role agent's model
+(planner, implementor, verifier, worker: the newest Opus) and a one-hour prompt
+cache for Claude (`providers.anthropic.settings.cache.ttl: "1h"`), in the
+tree's `config/opencode.json`. So a new Opus release reaches the role agents
+with the next update, and no update writes `~/.config/opencode`. The rule for
+a key set by hand: for the keys a build names
 (`agents.{planner,implementor,verifier,worker}.model`,
-`providers.anthropic.settings.cache.ttl`, `theme.name`, `tabs.scope`) the
-build's value wins over the owner's global files, as daily overwrote them at
-every install before. Every other key, and every other field of those objects,
-is the owner's. A project's config still wins over both. The fork folds them
-so: the tree's `opencode.json` loads after the global one and before a
-project's, each agent folded field by field and a provider's settings key by
-key, and the TUI deep-merges the tree's `cli.json` over its own. A role model
-set by hand in the global `opencode.json` therefore loses to the build's; the
-stage log names the build's roles each update (`roles (this build's, over a
-role model set by hand …)`). The orchestrator's own model is not one of them:
-it stays the global `model` or `agents.orchestrator`. The update's health
-check counts the providers of the models in effect, by the same fold (the last
-config's model per agent). A TUI of one build attached to the service of the
-next keeps its own build's theme and tab scope and sees the next build's role
-models: each process reads its own build's tree. Then, by hand only, daily
-writes what no tree can carry, the same for every build, never a plugin entry:
-`autoupdate: false` in `~/.config/opencode/opencode.json` (the fork's CLI
-reads its update policy from the global config directory alone; daily also
-removes the retired `experimental.background_compaction` an earlier run
-wrote), the Prime theme's file in `~/.config/opencode/themes/` (the TUI finds
-theme files there and in a project's `.opencode/`, never in a tree, so a
-changed theme file reaches a host by a by-hand run), and the resident
-location's config. `cli.json` is not written, and the role models, the cache
-lifetime, the theme's name and the tab scope an earlier run wrote into the
-global files stay there, overridden by the tree. Every other key and every
-plugin entry is kept, and each file is written only when its text changes.
+`providers.anthropic.settings.cache.ttl`) the build's value wins over the
+owner's global `opencode.json`, as daily overwrote them at every install
+before; no TUI or command writes either (the TUI's model picker keeps its
+choice in `~/.local/state/opencode/model.json`, the server's config update
+writes only `shell`). Every other key, and every other field of those
+objects, is the owner's. A project's config still wins over both. The fork
+folds them so: the tree's `opencode.json` loads after the global one and
+before a project's, each agent folded field by field and a provider's settings
+key by key. A role model set by hand in the global `opencode.json` therefore
+loses to the build's; the stage log names the build's roles each update
+(`roles (this build's, over a role model set by hand …)`). The orchestrator's
+own model is not one of them: it stays the global `model` or
+`agents.orchestrator`. The update's health check counts the providers of the
+models in effect, by the same fold (the last config's model per agent). A TUI
+of one build attached to the service of the next sees the next build's role
+models: each process reads its own build's tree. The tree's `config/cli.json`
+lists TUI plugins alone: the theme and the tab scope are the owner's, picked in
+the TUI (`/themes`, `/settings`), which writes them to
+`~/.config/opencode/cli.json`, and a pick lasts into every later TUI (the
+TUI deep-merges the tree's `cli.json` over its own, so a key there would win).
+Then, by hand only, daily writes what no tree carries, the same for every
+build, never a plugin entry: `autoupdate: false` in
+`~/.config/opencode/opencode.json` (the fork's CLI reads its update policy
+from the global config directory alone; daily also removes the retired
+`experimental.background_compaction` an earlier run wrote), the Prime theme's
+name and the `window` tab scope (a TUI window's tabs are the sessions opened
+in it, not every TUI's on the machine) in `~/.config/opencode/cli.json`, each
+only where that file has none, never over a value there, whoever wrote it, the
+Prime theme's file in `~/.config/opencode/themes/` (the TUI finds theme files
+there and in a project's `.opencode/`, never in a tree, so a changed theme
+file reaches a host by a by-hand run), and the resident location's config. The
+role models and the cache lifetime an earlier run wrote into the global
+`opencode.json` stay there, overridden by the tree. Every other key and every
+plugin entry is kept, and each file is written only when its text changes
+(`cli.json` only when a default is added).
 Rerun it after a fork change. The stage writes what the
 host now runs to `~/.local/state/opencode/installed.json`, OpenCode's own
 record of the installed build (the version, the binary, the builds it

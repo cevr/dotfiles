@@ -1,15 +1,20 @@
-// The settings follow an update: each build's tree carries the role models, Claude's cache lifetime, the
-// theme's name and the tab scope (scripts/daily.ts `treeSettings`), so a new model release reaches the role
-// agents with the next build and no update writes the owner's files.
+// The settings follow an update: each build's tree carries the role models and Claude's cache lifetime
+// (scripts/daily.ts `treeSettings`), so a new model release reaches the role agents with the next build and no
+// update writes the owner's files. The theme's name and the tab scope are the owner's choices, made in the TUI:
+// by-hand daily sets each only when his `cli.json` lacks it (`hostCli`), and a pick lasts.
 //
 // Real OpenCode from source on a scratch HOME, as plugin-tree.test.ts runs it: two trees whose catalogs
 // differ in the newest Opus, each an overlay `config/opencode.json` and `config/cli.json` with the settings
-// `--tree` writes there (the plugin entries beside them are plugin-tree.test.ts's; these trees list none).
+// `--tree` writes there (the plugin entries beside them are plugin-tree.test.ts's; these trees list none, and
+// their `cli.json` holds nothing else).
 // The fork from source binds no overlay beside its executable (packages/cli/src/adjacent-config.ts), so the
 // test sets the two variables that binding sets. The owner's global `opencode.json` sets a role's model and
-// other fields by hand, and another agent; his `cli.json` is empty. A service on tree A reports A's model
-// for each role and the owner's other fields; on tree B, B's; a new TUI on B shows the Prime theme and the
-// window tab scope. Both of the owner's files are byte-identical throughout. No model is called.
+// other fields by hand, and another agent; he has no `cli.json` yet, so the by-hand run writes Prime and the
+// window scope there. A service on tree A reports A's model for each role and the owner's other fields; on
+// tree B, B's; a new TUI on B shows the Prime theme and the window tab scope. The owner then picks another
+// theme and tab scope in that TUI: a second TUI shows his picks, and a later by-hand run writes nothing over
+// them. His `opencode.json` is byte-identical throughout, and his `cli.json` changes only by his picks.
+// No model is called.
 import { describe } from "bun:test"
 import { Data, Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import { expect, it } from "effect-bun-test"
@@ -55,7 +60,7 @@ const authorization = (service: Service) => ({ authorization: `Basic ${Base64.en
 describe.skipIf(!forkRuns)("the settings follow an update, from each build's tree", () => {
   const kept = keptScratch(forkRuns, "settings-follow-")
   it.scopedLive.layer(Platform)(
-    "a service on tree A has A's role models and the owner's other fields; on tree B, B's; a TUI on B shows the Prime theme and the window tab scope; the owner's files never change",
+    "a service on tree A has A's role models and the owner's other fields; on tree B, B's; a TUI shows the Prime theme and window scope by-hand daily set, the owner's picks of both last into the next TUI and past a later by-hand run",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
@@ -68,20 +73,19 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         for (const dir of ["work", "a/config", "b/config", "home/.config/opencode", "home/.local/state/opencode"]) yield* fs.makeDirectory(`${root}/${dir}`, { recursive: true })
         const work = `${root}/work`
 
-        // The owner's files, and what by-hand daily writes beside them (the theme's file, no auto-update: no tree carries these).
+        // The owner's server config, and what a from-scratch by-hand daily writes beside it: no tree carries these.
         yield* fs.writeFileString(`${config}/opencode.json`, jsonText(OWNER))
-        yield* fs.writeFileString(`${config}/cli.json`, "{}\n")
         writeSettings(home)
         const owner = Effect.all([fs.readFileString(`${config}/opencode.json`), fs.readFileString(`${config}/cli.json`)])
         const before = yield* owner
-        expect(before).toEqual([jsonText(OWNER), "{}\n"])
+        expect(before).toEqual([jsonText(OWNER), jsonText({ theme: { name: "prime" }, tabs: { scope: "window" } })])
 
         // Two builds' trees, whose catalogs differ in the newest Opus.
         const trees = { a: "claude-opus-5-5", b: "claude-opus-6-0" }
         for (const [tree, newest] of Object.entries(trees)) {
           const settings = treeSettings(catalogWith(newest))
-          yield* fs.writeFileString(`${root}/${tree}/config/opencode.json`, jsonText({ ...settings.server, plugins: [] }))
-          yield* fs.writeFileString(`${root}/${tree}/config/cli.json`, jsonText({ ...settings.cli, plugins: [] }))
+          yield* fs.writeFileString(`${root}/${tree}/config/opencode.json`, jsonText({ ...settings, plugins: [] }))
+          yield* fs.writeFileString(`${root}/${tree}/config/cli.json`, jsonText({ plugins: [] }))
         }
 
         const launch = forkLaunch(fork, process.execPath)
@@ -147,7 +151,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         expect(Option.map(byId(b.agents, "worker"), (worker) => [worker.description, worker.steps])).toEqual(Option.some(["the owner's worker", 7]))
         expect(Option.map(byId(b.agents, "build"), (build) => build.description)).toEqual(Option.some("the owner's build"))
 
-        // A new TUI on tree B: its settings dialog shows the Prime theme and the window tab scope, from the tree alone.
+        // A new TUI on tree B: its settings dialog shows the Prime theme and the window tab scope, as by-hand daily set them.
         const socket = `${root}/tui.sock`
         yield* Effect.acquireRelease(
           Effect.sync(() => serve({ socket, cwd: work, command: [...launch.base], env: { ...b.env, OPENCODE_PASSWORD: b.service.password }, cols: 160, rows: 80 })),
@@ -161,14 +165,62 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
             Effect.orDie,
           )
-        yield* until((seen) => seen.some((row) => row.includes("✓ Server")), "the TUI never connected")
-        yield* Effect.promise(() => hostCall(socket, { op: "type", text: "/settings" }))
-        yield* Effect.promise(() => hostCall(socket, { op: "keys", names: ["enter"] }))
-        const shown = yield* until((seen) => seen.some((row) => /\bTheme\b.*\bprime\b/.test(row)) && seen.some((row) => /\bScope\b.*\bthis window\b/.test(row)), "the settings dialog never showed the Prime theme and the window tab scope")
-        expect(shown.filter((row) => /\bTheme\b.*\bprime\b|\bScope\b.*\bthis window\b/.test(row)).length).toBe(2)
+        const call = (request: Parameters<typeof hostCall>[1]) => Effect.asVoid(Effect.promise(() => hostCall(socket, request)))
+        /** A slash command, typed once no dialog is open, entered once the composer's command list has caught up with it. */
+        const command = (slash: string) =>
+          Effect.gen(function* () {
+            yield* until((seen) => !seen.some((row) => /Search (settings|themes)/.test(row)), `a dialog stayed open before ${slash}`)
+            yield* call({ op: "type", text: slash })
+            yield* until((seen) => seen.filter((row) => row.includes(slash)).length >= 2 && !seen.some((row) => row.includes("No results found")), `the composer never listed ${slash}`)
+            yield* call({ op: "keys", names: ["enter"] })
+          })
+        /** The settings dialog's Theme and Scope rows, once both show `theme` and `scope`. */
+        const settingsShow = (theme: string, scope: string) =>
+          Effect.gen(function* () {
+            yield* until((seen) => seen.some((row) => row.includes("✓ Server")), "the TUI never connected")
+            yield* command("/settings")
+            const [themeRow, scopeRow] = [new RegExp(`\\bTheme\\b\\s.*\\b${theme}\\b`), new RegExp(`\\bScope\\b\\s.*\\b${scope}\\b`)]
+            const shown = yield* until((seen) => seen.some((row) => themeRow.test(row)) && seen.some((row) => scopeRow.test(row)), `the settings dialog never showed the theme ${theme} and the tab scope ${scope}`)
+            expect(shown.filter((row) => themeRow.test(row) || scopeRow.test(row)).length).toBe(2)
+            yield* call({ op: "keys", names: ["esc"] })
+          })
+        yield* settingsShow("prime", "this window")
 
-        // The owner's files, byte for byte.
-        expect(yield* owner).toEqual(before)
+        // The owner picks another theme (/themes) and another tab scope (/settings, Scope, → from "this window" to "current directory").
+        yield* command("/themes")
+        yield* until((seen) => seen.some((row) => row.includes("Search themes")), "the themes dialog never opened")
+        yield* call({ op: "type", text: "classic" })
+        // The owner's cli.json, once it holds `theme` and `scope`: the TUI writes a pick there.
+        const Picked = Schema.fromJsonString(Schema.Struct({ theme: Schema.Struct({ name: Schema.String }), tabs: Schema.Struct({ scope: Schema.String }) }))
+        const saved = (theme: string, scope: string) =>
+          fs.readFileString(`${config}/cli.json`).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Picked)),
+            Effect.filterOrFail((cli) => cli.theme.name === theme && cli.tabs.scope === scope, (cli) => new NotYet({ message: `cli.json never held the theme ${theme} and the scope ${scope}: ${JSON.stringify(cli)}` })),
+            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+            Effect.orDie,
+          )
+        // Each key only once the dialog shows what it acts on: under load an earlier one lands elsewhere.
+        yield* until((seen) => seen.some((row) => /^┃\s+opencode-classic\b/.test(row)), "the themes dialog never selected opencode-classic")
+        yield* call({ op: "keys", names: ["enter"] })
+        yield* saved("opencode-classic", "window")
+        yield* command("/settings")
+        yield* until((seen) => seen.some((row) => row.includes("Search settings")), "the settings dialog never opened")
+        yield* call({ op: "type", text: "Scope" })
+        yield* until((seen) => seen.filter((row) => /^┃\s+Scope\b\s.*\bthis window\b/.test(row)).length === 1 && !seen.some((row) => /^(┃\s+)?Theme\b/.test(row)), "the settings search never narrowed to the Scope row")
+        yield* call({ op: "keys", names: ["right"] })
+        yield* until((seen) => seen.some((row) => /^┃\s+Scope\b\s.*\bcurrent directory\b/.test(row)), "the Scope row never moved to current directory")
+        expect(yield* saved("opencode-classic", "cwd")).toMatchObject({ theme: { name: "opencode-classic" }, tabs: { scope: "cwd" } })
+        yield* call({ op: "keys", names: ["esc"] })
+
+        // A second TUI, as after a restart or the next day: the owner's picks, not Prime and the window scope.
+        yield* call({ op: "restart", command: [...launch.base] })
+        yield* settingsShow("opencode-classic", "current directory")
+
+        // A later by-hand run writes nothing over the picks, and the owner's server config never changed.
+        const afterPicks = yield* owner
+        writeSettings(home)
+        expect(yield* owner).toEqual(afterPicks)
+        expect(afterPicks[0]).toBe(before[0])
       }),
     TIMEOUT_MS,
   )

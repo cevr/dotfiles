@@ -9,7 +9,7 @@ import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, hostServer, installDotfiles, installedFile, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -42,6 +42,10 @@ const CATALOG = {
 type Json = Schema.Json
 const JsonObject = Schema.Record(Schema.String, Schema.Json)
 const isObject = Schema.is(JsonObject)
+/** A config's top-level object; none for a value that is not one. */
+const asObject = (value: Json) => Option.getOrElse(Option.liftPredicate(value, isObject), () => ({}))
+/** The owner's TUI config with by-hand daily's defaults in what it lacks (`hostCli`), as JSON. */
+const cliWith = (owner: Json): Json => Schema.decodeUnknownSync(Schema.Json)(hostCli(asObject(owner)))
 
 /** Every leaf of a config by its dotted path; an empty object holds none, an array is one leaf. */
 const leaves = (value: Json, path: ReadonlyArray<string> = []): Array<[string, Json]> =>
@@ -60,9 +64,10 @@ const fold = (owner: Json, tree: Json): ReadonlyMap<string, Json> => new Map([..
 const valueAt = (config: Json, path: string): Option.Option<Json> => Option.fromIterable(leaves(config).filter(([at]) => at === path).map(([, value]) => value))
 
 const ROLES = ["planner", "implementor", "verifier", "worker"]
-/** The keys a build names, and wins: each role's model and Claude's cache lifetime; the theme's name and the tab scope. */
+/** The keys a build names, and wins: each role's model and Claude's cache lifetime. */
 const SERVER_NAMED = [...ROLES.map((role) => `agents.${role}.model`), "providers.anthropic.settings.cache.ttl"]
-const CLI_NAMED = ["theme.name", "tabs.scope"]
+/** The keys by-hand daily sets in the owner's TUI config only where it has none. */
+const CLI_DEFAULTS: Array<[string, Json]> = [["theme.name", "prime"], ["tabs.scope", "window"]]
 
 /** One of `values`, by the generator. */
 const pickOf = (next: () => number) => <A>(values: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(values, (next() * values.length) | 0))
@@ -89,63 +94,71 @@ const ownerServer = (next: () => number): Json => {
 /** A generated owner's TUI config. */
 const ownerCli = (next: () => number): Json => {
   const some = someOf(next)
-  return some({ theme: some({ name: "system", mode: "dark" }), tabs: some({ scope: "cwd", layout: "vertical" }), session: { sidebar: "auto" }, plugin: ["x"] })
+  return some({ $schema: "https://opencode.ai/tui.json", theme: some({ mode: "dark", name: "opencode-classic" }), tabs: some({ layout: "vertical", scope: "cwd" }), session: { sidebar: "auto" }, plugin: ["x"] })
 }
 
 describe("the settings a build carries in its tree", () => {
-  test("over generated owner configs, the tree's overlay folded over the owner's global files gives the build's value for each key it names and the owner's for every other", () => {
-    const build = treeSettings(CATALOG)
+  test("over generated owner configs, the tree's overlay folded over the owner's global config gives the build's value for each key it names and the owner's for every other", () => {
+    const tree = treeSettings(CATALOG)
     for (let seed = 1; seed <= 400; seed++) {
-      const next = random(seed)
-      for (const [owner, tree, named] of [
-        [ownerServer(next), build.server, SERVER_NAMED],
-        [ownerCli(next), build.cli, CLI_NAMED],
-      ] as const) {
-        const folded = fold(owner, tree)
-        // The build names exactly these keys.
-        expect([seed, leaves(tree).map(([path]) => path).toSorted()]).toEqual([seed, named.toSorted()])
-        // The build's value for each, over whatever the owner set.
-        expect([seed, named.map((path) => folded.get(path))]).toEqual([seed, named.map((path) => Option.getOrThrow(valueAt(tree, path)))])
-        // The owner's for every other leaf, his hand-set role fields among them.
-        const others = leaves(owner).filter(([path]) => !named.includes(path))
-        expect([seed, others.map(([path]) => [path, folded.get(path)])]).toEqual([seed, others])
-      }
+      const owner = ownerServer(random(seed))
+      const folded = fold(owner, tree)
+      // The build names exactly these keys.
+      expect([seed, leaves(tree).map(([path]) => path).toSorted()]).toEqual([seed, SERVER_NAMED.toSorted()])
+      // The build's value for each, over whatever the owner set.
+      expect([seed, SERVER_NAMED.map((path) => folded.get(path))]).toEqual([seed, SERVER_NAMED.map((path) => Option.getOrThrow(valueAt(tree, path)))])
+      // The owner's for every other leaf, his hand-set role fields among them.
+      const others = leaves(owner).filter(([path]) => !SERVER_NAMED.includes(path))
+      expect([seed, others.map(([path]) => [path, folded.get(path)])]).toEqual([seed, others])
     }
   })
 
-  test("are each role's newest Opus, Claude's hour-long cache, the Prime theme and the window tab scope, and nothing else", () => {
+  test("are each role's newest Opus and Claude's hour-long cache, and nothing else: no theme, no tab scope", () => {
     const opus = { model: "anthropic/claude-opus-5-5" }
-    expect(treeSettings(CATALOG)).toEqual({
-      server: { agents: { planner: opus, implementor: opus, verifier: opus, worker: opus }, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } } },
-      cli: { theme: { name: "prime" }, tabs: { scope: "window" } },
-    })
+    expect(treeSettings(CATALOG)).toEqual({ agents: { planner: opus, implementor: opus, verifier: opus, worker: opus }, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } } })
   })
 
   test("follow a new Opus release: two catalogs that differ in the newest Opus give two builds two role models", () => {
     const later = { anthropic: { models: { ...CATALOG.anthropic.models, "claude-opus-6-0": { family: "claude-opus", release_date: "2026-12-01" } } } } satisfies Catalog
-    expect([treeSettings(CATALOG), treeSettings(later)].map((settings) => valueAt(settings.server, "agents.worker.model"))).toEqual([Option.some("anthropic/claude-opus-5-5"), Option.some("anthropic/claude-opus-6-0")])
+    expect([treeSettings(CATALOG), treeSettings(later)].map((settings) => valueAt(settings, "agents.worker.model"))).toEqual([Option.some("anthropic/claude-opus-5-5"), Option.some("anthropic/claude-opus-6-0")])
   })
 
-  test("today's host config: folding the build's overlay over it changes no effective value", () => {
+  test("today's host config: folding the build's overlay over it changes no effective value, and by-hand daily adds nothing to its cli.json", () => {
     // The Mac's global configs as they stand (their shape, read 2026-11-20; no secret in them).
     const opus = { model: "anthropic/claude-opus-5-5" }
     const server = { agents: { planner: opus, implementor: opus, verifier: opus, worker: opus }, autoupdate: false, mcp: { local: { type: "local" } }, model: "anthropic/claude-opus-5-5#medium", plugins: ["/elsewhere/plugin"], providers: { anthropic: { settings: { cache: { ttl: "1h" } } } } }
     const cli = { $schema: "https://opencode.ai/tui.json", session: { sidebar: "auto" }, tabs: { scope: "window" }, theme: { name: "prime" } }
-    const build = treeSettings(CATALOG)
-    expect([[...fold(server, build.server)], [...fold(cli, build.cli)]]).toEqual([[...leaves(server)], [...leaves(cli)]])
+    expect([...fold(server, treeSettings(CATALOG))]).toEqual([...leaves(server)])
+    expect([lacksCliDefault(cli), cliWith(cli)]).toEqual([false, cli])
     // The one change on purpose: a role model set by hand in the global file loses to the build's.
     const handSet = { ...server, agents: { ...server.agents, worker: { model: "openai/sol-6", steps: 4 } } }
-    const folded = fold(handSet, build.server)
+    const folded = fold(handSet, treeSettings(CATALOG))
     expect([folded.get("agents.worker.model"), folded.get("agents.worker.steps")]).toEqual(["anthropic/claude-opus-5-5", 4])
   })
 
   test("the stage says which role models the build carries, and that they win over a hand-set one", () => {
-    const overlay = jsonOf({ ...treeSettings(CATALOG).server, plugins: [orchestrateEntry("/t/orchestrate", CHECKOUTS, plannerModel(CATALOG))] })
+    const overlay = jsonOf({ ...treeSettings(CATALOG), plugins: [orchestrateEntry("/t/orchestrate", CHECKOUTS, plannerModel(CATALOG))] })
     expect(roleLines(overlay)).toEqual([
       "roles (this build's, over a role model set by hand in ~/.config/opencode/opencode.json): planner anthropic/claude-opus-5-5, implementor anthropic/claude-opus-5-5, verifier anthropic/claude-opus-5-5, worker anthropic/claude-opus-5-5",
       "planner first: anthropic/claude-fable-5-2, then Opus, then Codex when the pool holds it",
     ])
     expect(roleLines("")).toEqual(["roles: the tree's overlay names none"])
+  })
+})
+
+describe("the TUI config by hand", () => {
+  test("over generated owner configs: the Prime theme and the window scope only where he has none, every value he has kept, nothing else added, and a write only when a default is added", () => {
+    for (let seed = 1; seed <= 400; seed++) {
+      const owner = ownerCli(random(seed))
+      const next = new Map(leaves(cliWith(owner)))
+      // Every value of his stays, a picked theme or scope among them.
+      expect([seed, leaves(owner).map(([path]) => [path, next.get(path)])]).toEqual([seed, leaves(owner)])
+      // A default only where he has none, and nothing else added.
+      const missing = CLI_DEFAULTS.filter(([path]) => Option.isNone(valueAt(owner, path)))
+      expect([seed, Object.fromEntries([...next].filter(([path]) => Option.isNone(valueAt(owner, path))))]).toEqual([seed, Object.fromEntries(missing)])
+      // Written only when one is added.
+      expect([seed, lacksCliDefault(asObject(owner))]).toEqual([seed, missing.length > 0])
+    }
   })
 })
 
@@ -197,25 +210,32 @@ describe("the server config", () => {
       byHand: calls(byHand, ["settingsByHand"]),
       stage: calls(stage, ["settingsByHand", "writeSettings", "writeTree"]),
       writerNamesPlugins: writer.includes("plugins"),
-      writerNamesCli: writer.includes("cli.json"),
-    }).toEqual({ byHand: 1, stage: 0, writerNamesPlugins: false, writerNamesCli: false })
+    }).toEqual({ byHand: 1, stage: 0, writerNamesPlugins: false })
   })
 
-  test("a from-scratch host's settings by hand: no auto-update, the theme's file and the resident config, no cli.json, no role model and no plugins key; a second write with nothing changed touches no file", () => {
+  test("a from-scratch host's settings by hand: no auto-update, the Prime theme and the window scope, the theme's file and the resident config, no role model and no plugins key; a second write touches no file, nor one over the owner's own picks", () => {
     using scratch = scratchDir("daily-settings-")
     const home = realpathSync(scratch.path)
     writeSettings(home)
     const config = join(home, ".config/opencode")
-    const server = join(config, "opencode.json")
-    const files = [server, join(config, "themes/prime.json"), join(residentDir(home), "opencode.json")]
+    const [server, cli] = [join(config, "opencode.json"), join(config, "cli.json")]
+    const files = [server, cli, join(config, "themes/prime.json"), join(residentDir(home), "opencode.json")]
     const read = (path: string) => readFileSync(path, "utf8")
     expect(parseJson(read(server))).toEqual({ autoupdate: false })
-    expect(existsSync(join(config, "cli.json"))).toBe(false)
+    expect(parseJson(read(cli))).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
     // Each dated far back first: a write would date it now.
-    for (const path of files) utimesSync(path, 946684800, 946684800)
-    const stamps = files.map((path) => [read(path), statSync(path).mtimeMs])
+    const stamped = () => {
+      for (const path of files) utimesSync(path, 946684800, 946684800)
+      return files.map((path) => [read(path), statSync(path).mtimeMs])
+    }
+    const stamps = stamped()
     writeSettings(home)
     expect(files.map((path) => [read(path), statSync(path).mtimeMs])).toEqual(stamps)
+    // The owner picks another theme and scope in the TUI, which writes cli.json in its own format: a later run writes nothing over them.
+    writeFileSync(cli, `{\n    "$schema": "https://opencode.ai/tui.json",\n    "tabs": { "scope": "cwd" },\n    "theme": { "mode": "dark", "name": "opencode-classic" }\n}\n`)
+    const picked = stamped()
+    writeSettings(home)
+    expect(files.map((path) => [read(path), statSync(path).mtimeMs])).toEqual(picked)
   })
 
   test("lists Prime's server half before memory, so its reply style precedes memory's digest, which stays last", () => {
@@ -231,7 +251,7 @@ describe("the server config", () => {
       },
     }
     expect(CLAUDE_CACHE_TTL).toBe("1h")
-    expect([...fold(existing, treeSettings(CATALOG).server)].filter(([path]) => path.startsWith("providers."))).toEqual([
+    expect([...fold(existing, treeSettings(CATALOG))].filter(([path]) => path.startsWith("providers."))).toEqual([
       ["providers.openai.settings.reasoningEffort", "high"],
       ["providers.anthropic.name", "Claude"],
       ["providers.anthropic.settings.timeout", 60_000],
@@ -257,7 +277,7 @@ describe("background compaction", () => {
 describe("the pool's entry", () => {
   test("gives the pool the cache lifetime the config gives Claude, so a session stays on its cache's login as long as the cache lives", () => {
     const entry = poolEntry(`${MODS}/pool`, undefined)
-    const ttl = Option.getOrThrow(Option.filter(valueAt(treeSettings(CATALOG).server, "providers.anthropic.settings.cache.ttl"), Schema.is(Schema.String)))
+    const ttl = Option.getOrThrow(Option.filter(valueAt(treeSettings(CATALOG), "providers.anthropic.settings.cache.ttl"), Schema.is(Schema.String)))
     expect(entry).toEqual({ package: `${MODS}/pool`, options: { cacheLifeMs: 3_600_000 } })
     // The ttl as OpenCode's cache settings write it, read by the cache mods' own parser.
     expect(parseTTL(ttl)).toMatchObject({ _tag: "Some", value: 3_600_000 })
@@ -336,15 +356,14 @@ describe("the pool's fleet", () => {
   })
 })
 
-describe("the TUI config", () => {
-  test("the build sets the Prime theme over the owner's, and the fold keeps his other keys", () => {
-    const owner = { theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }
-    expect(treeSettings(CATALOG).cli).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
-    expect(new Map(fold(owner, treeSettings(CATALOG).cli))).toEqual(new Map(leaves({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"], tabs: { scope: "window" } })))
+describe("the TUI config's defaults", () => {
+  test("set the Prime theme only where the owner has none, and keep his other theme keys", () => {
+    expect(cliWith({ theme: { mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] })).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"], tabs: { scope: "window" } })
+    expect(cliWith({ theme: { name: "system", mode: "dark" }, tabs: { scope: "cwd" } })).toEqual({ theme: { name: "system", mode: "dark" }, tabs: { scope: "cwd" } })
   })
 
-  test("keeps each window's tabs its own, keeping the other tab settings", () => {
-    expect([...fold({ tabs: { scope: "cwd", layout: "vertical" } }, treeSettings(CATALOG).cli)].filter(([path]) => path.startsWith("tabs."))).toEqual([["tabs.scope", "window"], ["tabs.layout", "vertical"]])
+  test("keep each window's tabs its own where the owner chose no scope, keeping the other tab settings", () => {
+    expect(cliWith({ tabs: { layout: "vertical" } })).toEqual({ tabs: { scope: "window", layout: "vertical" }, theme: { name: "prime" } })
   })
 })
 

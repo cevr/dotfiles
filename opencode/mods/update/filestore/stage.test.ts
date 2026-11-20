@@ -220,7 +220,7 @@ const ran = (argv: ReadonlyArray<string>, cwd: string) => {
 }
 
 describe("daily by hand on a from-scratch host", () => {
-  test("A2: no build, no record, no config: the checkout's HEAD installs as a tree build through the real handoff, the server config gets what no tree carries and no plugin entry, cli.json is not written, and a second run writes nothing", () =>
+  test("A2: no build, no record, no config: the checkout's HEAD installs as a tree build through the real handoff, the server config gets what no tree carries and no plugin entry, cli.json the Prime theme and the window scope it lacks, and a second run writes nothing", () =>
     Effect.runPromise(
       Effect.acquireUseRelease(
         Effect.sync(() => ran(["realpath", ran(["mktemp", "-d", "-t", "update-by-hand"], "/").trim()], "/").trim()),
@@ -336,13 +336,13 @@ describe("daily by hand on a from-scratch host", () => {
             expect(sh(`readlink '${share}/current.plugins'`).stdout.toString().trim()).toBe(treeOf(buildName(version)))
             // The tree holds the commit's file, never the edit.
             expect(sh(`cat '${tree}/opencode/x.txt'`).stdout.toString()).toBe("committed\n")
-            // What no tree carries, and no plugin entry of any kind; the role models, the theme's name and the
-            // tab scope are the tree's (scripts/daily.ts `treeSettings`), so cli.json is not written.
+            // What no tree carries, and no plugin entry of any kind: the role models are the tree's (scripts/daily.ts
+            // `treeSettings`); the theme's name and the tab scope are the owner's, set only where cli.json has none.
             const [server = "", cli = ""] = settings.config
             const json = (file: string) => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(sh(`cat '${file}'`).stdout.toString())
             expect(json(server)).toEqual({ autoupdate: false })
-            expect(exists(cli)).toBe(false)
-            const written = [server, `${home}/.config/opencode/themes/prime.json`, `${settings.resident}/opencode.json`]
+            expect(json(cli)).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+            const written = [server, cli, `${home}/.config/opencode/themes/prime.json`, `${settings.resident}/opencode.json`]
 
             // A second run with no new commit writes nothing.
             // Each dated far back first: a write would date it now.
