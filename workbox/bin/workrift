@@ -432,14 +432,21 @@ create_workspace() {
     printf 'Imported gh stack metadata from %s.\n' "$gh_stack_metadata" >&2
   fi
 
-  # `work new` installs by the base's work.toml [deps] when it finds the lock
-  # changed; then workrift does not install a second time.
+  # The install is decided from the workspace's final head: work_new may have
+  # fast-forwarded the branch to origin's after `work new` installed, and the
+  # hook that merge fired deferred (WORKRIFT_CREATING). `work new` installs
+  # by the base's work.toml [deps] when it finds the lock changed (Installed):
+  # then the deps step `workrift deps` runs (work deps, by work's record of
+  # what it installed) brings it to the lock the workspace ends with, and
+  # installs nothing when that is the lock work installed. Otherwise workrift
+  # installs when the final lock differs from what the copy carries.
   phase 'workspace: install if its lock file changed'
   # Untrusted: work installed nothing (its work.toml's commands are not
   # trusted on this host), so workrift installs with its own fixed command,
   # as for NoDeps (trust_note).
   case "$work_deps_tag" in
     '' | NoDeps | Unchanged | Untrusted) sync_dependencies "$workspace" >&2 ;;
+    Installed) workspace_deps "$source_path" "$workspace" >&2 ;;
   esac
   [ "$backend" != work ] || trust_note "$source_path" "$work_deps_tag"
   # The copied build output matches the source's tree, not the branch's. A warm
@@ -1644,8 +1651,13 @@ work_prune() {
 # installs with its own fixed command, never the untrusted file's. Any other
 # failure of work deps (DepsFailed: its install ran and failed) fails.
 work_deps() {
-  w_top=$1
-  w_base=$(resolve_source)
+  workspace_deps "$(resolve_source)" "$1"
+}
+
+# The deps step of the checkout $2 of the base $1, as `workrift deps` runs it.
+workspace_deps() {
+  w_base=$1
+  w_top=$2
   if ! work_installs "$w_base" || [ "$w_base" = "$w_top" ]; then
     sync_dependencies "$w_top"
     return

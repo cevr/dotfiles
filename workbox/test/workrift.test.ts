@@ -1941,7 +1941,15 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       ran = w.wr(w.dir, "remove", "no/such")
       expect(ran.code).toBe(1)
       expect(ran.err).toContain("no-such")
-      expect(w.active(w.app).map((each) => each.path).sort()).toEqual([a, one].sort())
+
+      // A workspace named like a suffixed one (feat-y-2) but made for another branch (feat/y-2) is not feat/y's.
+      const y2 = w.create(w.app, "feat/y-2")
+      expect(y2).toBe(join(w.root, ".work/app/feat-y-2"))
+      ran = w.wr(w.dir, "remove", "feat/y")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("no active workspace of any work base is named feat-y")
+      expect(existsSync(y2)).toBe(true)
+      expect(w.active(w.app).map((each) => each.path).sort()).toEqual([a, one, y2].sort())
     },
     60_000,
   )
@@ -2074,4 +2082,95 @@ describeWork("workrift over a base whose work.toml commands work does not trust"
     },
     60_000,
   )
+})
+
+/**
+ * What a create installs is decided from the workspace's final head (batch 2026-11-20n, M1): `work_new` can
+ * fast-forward a branch the base holds locally to origin's after `work new` installed, and the post-merge hook that
+ * fires defers while the create runs. The install command records the lock it installed in the checkout's Git
+ * directory (`installed-lock`), which a copy carries with the installed packages.
+ */
+describeWork("workrift create installs for the lock the workspace ends with", () => {
+  const work = WORK_BIN ?? "work"
+  const record = `cat bun.lock >"$(git rev-parse --absolute-git-dir)/installed-lock"`
+
+  /** A base `lib` whose install is work's ([deps] in a tracked work.toml) or workrift's own, both recording; refreshed. */
+  const installing = (label: string, by: "work" | "workrift") => {
+    const w = workBench(label, work)
+    const byWork = join(w.dir, "by-work")
+    const files: Record<string, string> = { "bun.lock": "main-0\n" }
+    if (by === "work") files["work.toml"] = `[deps]\nlock = "bun.lock"\ninstall = 'cat bun.lock >>"${byWork}"; ${record}'\n`
+    w.push("main", files)
+    const lib = w.base("lib")
+    sh(lib, w.env, "git", "config", "workrift.install", record)
+    // The managed hooks as plain Git hooks: post-merge runs `workrift deps`, as lefthook-local.yml has it.
+    exe(join(lib, ".git/hooks/post-merge"), `#!/bin/sh\nexec '${SCRIPT}' deps\n`)
+    const ran = w.wr(lib, "refresh")
+    expect(ran.code, ran.err).toBe(0)
+    const installed = (path: string) => readFileSync(join(path, ".git/installed-lock"), "utf8")
+    const lock = (path: string) => readFileSync(join(path, "bun.lock"), "utf8")
+    const byWorkLines = () => lines(existsSync(byWork) ? readFileSync(byWork, "utf8") : "")
+    return { w, lib, installed, lock, byWorkLines }
+  }
+
+  test(
+    "a branch the base holds locally, which origin has moved to a newer lock, ends installed for that lock (the verifier's P1)",
+    () => {
+      const { w, lib, installed, lock, byWorkLines } = installing("p1", "work")
+      w.push("feat/local", { "bun.lock": "v2\n" })
+      sh(lib, w.env, "git", "fetch", "-q", "origin")
+      sh(lib, w.env, "git", "branch", "-q", "feat/local", "origin/feat/local")
+      w.push("feat/local", { "bun.lock": "v3\n" })
+      const ran = run(lib, { ...w.env, WORKRIFT_SOURCE: lib }, [SCRIPT, "create", "feat/local"])
+      expect(ran.code, ran.err).toBe(0)
+      const path = lines(ran.out).at(-1) ?? ""
+      expect(lines(ran.out)).toEqual([path])
+      expect(lock(path)).toBe("v3\n")
+      expect(installed(path)).toBe("v3\n")
+      // work installed v2 at the copy, then v3 for the head the fast-forward brought: once each.
+      expect(byWorkLines()).toEqual(["v2", "v3"])
+    },
+    60_000,
+  )
+
+  for (const by of ["work", "workrift"] as const)
+    test(
+      `property: whatever the branch's kind, origin's lead and the advance window, the installed lock is the final one (install by ${by})`,
+      () => {
+        const { w, lib, installed, lock } = installing(`final-${by}`, by)
+        const stamp = sh(lib, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-advanced-at").trim()
+        let n = 0
+        for (const kind of ["local", "remote", "both"] as const)
+          for (const lead of ["lock changed", "lock unchanged"] as const)
+            for (const window of ["inside", "outside"] as const) {
+              n++
+              const branch = `feat/c${n}`
+              const what = `${kind}, ${lead}, ${window} the window`
+              // main moved: the base is behind, and advances only outside the window.
+              w.push("main", { "bun.lock": `main-${n}\n` })
+              writeFileSync(stamp, `${Math.floor(Date.now() / 1000) - (window === "inside" ? 0 : 601)}\n`)
+              if (kind !== "remote") {
+                w.push(branch, { "bun.lock": `${branch}-v2\n` })
+                sh(lib, w.env, "git", "fetch", "-q", "origin")
+                sh(lib, w.env, "git", "branch", "-q", branch, `origin/${branch}`)
+              }
+              if (kind === "local") {
+                sh(w.dir, w.env, "git", "--git-dir", w.origin, "branch", "-q", "-D", branch)
+                sh(lib, w.env, "git", "fetch", "-q", "--prune", "origin")
+              } else {
+                w.push(branch, lead === "lock changed" ? { "bun.lock": `${branch}-v3\n` } : { [`other-${n}.txt`]: `${n}\n` })
+              }
+              const ran = w.wr(lib, "create", branch)
+              if (ran.code !== 0) {
+                // A create that cannot install the final lock fails, and says why.
+                expect(ran.err, what).toMatch(/install|deps/i)
+                continue
+              }
+              const path = lines(ran.out).at(-1) ?? ""
+              expect(lines(ran.out), what).toEqual([path])
+              expect({ what, installed: installed(path) }).toEqual({ what, installed: lock(path) })
+            }
+      },
+      120_000,
+    )
 })
