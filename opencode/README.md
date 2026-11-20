@@ -127,7 +127,11 @@ only the resident location's copy acts, so a host runs one updater.
   on a fork without it, for the 7 minutes of the Mac's build; the same move
   reloaded the update plugin and cut its own run). Each process binds its own
   build's tree at its start (the fork's `adjacent-config.ts`), so a process
-  holds only its build's plugins, for its life. A failed tree or stage writes
+  holds only its build's plugins, for its life. An edit in the live checkout
+  therefore loads in no normal session (the owner's choice, 2026-11-20: a
+  fixed copy per build); it hot-reloads only on a scratch service run from
+  source, `bun run verify:launch` and `verify:tui`
+  (`.claude/skills/verify-opencode`). A failed tree or stage writes
   nothing and rejects the target; a failed stage deletes the tree it made
   (`Trees.remove`), so no tree is left beside no build. A host whose good build's fork has no
   adjacent binding stays on the old scheme (the checkout's move, `--configure`
