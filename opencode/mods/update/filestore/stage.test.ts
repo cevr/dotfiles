@@ -173,6 +173,7 @@ const onConfigs = <E>(body: (paths: ConfigPaths, text: (path: string) => string)
           config: [`${dir}/opencode.json`, `${dir}/cli.json`],
           kept: `${dir}/kept`,
           server: `${dir}/opencode.json`,
+          under: "/h/dotfiles/opencode",
           owned: oursOf("/h/dotfiles", "/h/.local/share/opencode-prime"),
           tui: `${dir}/cli.json`,
           tuiOwned: tuiOursOf("/h/dotfiles", "/h/.local/share/opencode-prime"),
@@ -185,6 +186,28 @@ const onConfigs = <E>(body: (paths: ConfigPaths, text: (path: string) => string)
 
 /** Writes `text` at `path`, through the shell. */
 const put = (path: string, text: string) => expect(spawnSync(["/bin/sh", "-c", 'printf "%s" "$1" > "$2"', "sh", text, path]).exitCode).toBe(0)
+
+describe("the handoff's read of the server config, on files (R2)", () => {
+  test("names the file and the checkout's opencode/ when it lists an entry of ours, none when it lists only foreign ones or is absent, fails when it does not read; it never writes the file", () =>
+    onConfigs((paths, text) =>
+      Effect.gen(function* () {
+        const configs = yield* Configs
+        expect(yield* configs.ours).toEqual(Option.none())
+        expect(exists(paths.server)).toBe(false)
+        const listing = `{\n  "model": "anthropic/x",\n  "plugins": ["/mine/plugin", { "package": "/h/dotfiles/opencode/cmd/pool", "options": {} }]\n}\n`
+        put(paths.server, listing)
+        expect(yield* configs.ours).toEqual(Option.some({ file: paths.server, under: "/h/dotfiles/opencode" }))
+        expect(text(paths.server)).toBe(listing)
+        const foreign = `{ "plugins": ["/mine/plugin", "/elsewhere/dotfiles/opencode/cmd/pool"] }\n`
+        put(paths.server, foreign)
+        expect(yield* configs.ours).toEqual(Option.none())
+        const broken = `{ // a comment\n "plugins": [] }\n`
+        put(paths.server, broken)
+        expect(yield* Effect.flip(configs.ours)).toMatchObject({ step: "read the server config" })
+        expect(text(paths.server)).toBe(broken)
+      }),
+    ))
+})
 
 describe("the late strip of the TUI config, on files", () => {
   test("keeps the TUI config byte for byte under its own name, then drops our entries (the checkout's, the built-ins off) and keeps every other key and entry", () =>
@@ -332,9 +355,7 @@ describe("daily by hand on a from-scratch host", () => {
                 Builder,
                 Builder.of({
                   version: () => Effect.die("a handoff builds nothing"),
-                  binds: () => Effect.die("a handoff builds nothing"),
                   stage: () => Effect.die("a handoff builds nothing"),
-                  configure: Effect.die("a tree build's handoff writes no config"),
                 }),
               ),
             )

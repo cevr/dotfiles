@@ -1,5 +1,5 @@
 import { file, spawn } from "bun"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Result, Schema } from "effect"
 import { readText } from "../filestore/files.ts"
 import { buildOf, parseRecord, promoted } from "../record.ts"
 import { Handoff, UpdateFailed } from "../service.ts"
@@ -15,25 +15,34 @@ export interface Program {
   readonly cwd: string
 }
 
-/** The handoff's program in the live checkout: the old scheme's, and a build's that has no tree. */
-export const checkoutProgram = (settings: Settings): Program => ({ path: `${settings.checkout}/opencode/cmd/update/handoff.ts`, cwd: settings.checkout })
-
 /** The handoff's program in the plugin tree `tree` of a build (`trees.ts`). */
 export const treeProgram = (tree: string): Program => ({ path: `${tree}/opencode/cmd/update/handoff.ts`, cwd: `${tree}/opencode` })
 
 /**
  * The handoff the record's next build runs (the staged build, else the installed one): its own, from
- * the tree beside its executable when it has one, so the restart, the health check and the recovery
- * are the target's code; else the live checkout's (the old scheme). `exists` is the file system's, but
- * for a test.
+ * the tree beside its executable, so the restart, the health check and the recovery are the target's
+ * code. A build with no handoff in a tree (no record, or a tree deleted by hand) fails the start,
+ * naming the build: nothing else runs a handoff. `exists` is the file system's, but for a test.
  */
-export const programOf = (settings: Settings, recordText: Option.Option<string>, exists: (path: string) => boolean): Program =>
-  Option.flatMap(recordText, parseRecord).pipe(
-    Option.flatMap((record) => buildOf(promoted(record))),
-    Option.map((build) => treeProgram(treeOf(build.command[0]))),
-    Option.filter((program) => exists(program.path)),
-    Option.getOrElse(() => checkoutProgram(settings)),
+export const programOf = (recordText: Option.Option<string>, exists: (path: string) => boolean): Result.Result<Program, UpdateFailed> => {
+  const build = Option.flatMap(Option.flatMap(recordText, parseRecord), (record) => buildOf(promoted(record)))
+  return Option.match(
+    Option.filter(
+      Option.map(build, (each) => treeProgram(treeOf(each.command[0]))),
+      (program) => exists(program.path),
+    ),
+    {
+      onSome: Result.succeed,
+      onNone: () =>
+        Result.fail(
+          new UpdateFailed({
+            step: "start the handoff",
+            message: `${Option.match(build, { onNone: () => "the record names no build", onSome: (each) => `the build ${each.version} has no handoff in a plugin tree beside it` })}; nothing restarts`,
+          }),
+        ),
+    },
   )
+}
 
 /** `programOf` over the files: the record as it reads now, and whether the tree's handoff is there. */
 const programNow = (settings: Settings) =>
@@ -41,7 +50,7 @@ const programNow = (settings: Settings) =>
     const text = yield* readText(settings.record)
     const tree = Option.map(Option.flatMap(Option.flatMap(text, parseRecord), (record) => buildOf(promoted(record))), (build) => treeProgram(treeOf(build.command[0])).path)
     const there = yield* Effect.forEach(Option.toArray(tree), (path) => Effect.tryPromise(() => file(path).exists()).pipe(Effect.orElseSucceed(() => false)))
-    return programOf(settings, text, () => there.includes(true))
+    return yield* Effect.fromResult(programOf(text, () => there.includes(true)))
   })
 
 /** The handoff's command: its program, the reason to log. */

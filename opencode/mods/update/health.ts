@@ -86,15 +86,13 @@ export const usable = (health: Health): boolean => !Health.$is("Sick")(health)
 export const final = (health: Health): boolean => Health.$match(health, { Healthy: () => true, Unsigned: () => true, Sick: (sick) => sick.final })
 
 /** Where the recovery after a restart stands. */
-export type Stage = "first" | "reinstalled" | "rolled-back"
+export type Stage = "first" | "rolled-back"
 
 /** What follows a health check. */
 export type Recovery = Data.TaggedEnum<{
   /** The build is healthy: record it as the good build. */
   Proven: {}
-  /** Install the dependencies again and restart once more. */
-  Reinstall: {}
-  /** Go back to the last good build and dotfiles commit, and restart onto it. */
+  /** Go back to the last good build, and restart onto it. */
   RollBack: {}
   /** The rollback is healthy; the failed build stays recorded as superseded. */
   RolledBack: {}
@@ -104,21 +102,14 @@ export type Recovery = Data.TaggedEnum<{
 export const Recovery = Data.taggedEnum<Recovery>()
 
 /**
- * The recovery after a restart's health check. On the old scheme (`reinstall`), a sick first restart
- * reinstalls the live checkout's dependencies and restarts once. A tree build has no such rung: its
- * tree was installed fresh and checked at the stage, and reinstalling would write under running
- * processes. Then, still sick, it rolls back to the last good build (when there is one other than
- * this); a sick rollback gives up.
+ * The recovery after a restart's health check. A sick first restart rolls back to the last good build
+ * (when there is one other than this, and it can run: `canRollBack`); there is no reinstall rung, since
+ * a build's tree was installed fresh and checked at its stage, and reinstalling would write under
+ * running processes. A sick rollback gives up.
  */
-export const recover = (stage: Stage, health: Health, canRollBack: boolean, reinstall = true): Recovery => {
+export const recover = (stage: Stage, health: Health, canRollBack: boolean): Recovery => {
   const healthy = usable(health)
   if (stage === "first") {
-    if (healthy) return Recovery.Proven()
-    if (reinstall) return Recovery.Reinstall()
-    if (canRollBack) return Recovery.RollBack()
-    return Recovery.GaveUp()
-  }
-  if (stage === "reinstalled") {
     if (healthy) return Recovery.Proven()
     if (canRollBack) return Recovery.RollBack()
     return Recovery.GaveUp()

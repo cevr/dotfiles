@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Duration, Option } from "effect"
 import { type Build, nextRecord, proven, type Record, rolledBack, stagedRecord } from "./record.ts"
 import { messageOf, type Target, tagObject, targetOfTag } from "./target.ts"
-import { ask, ended, HANDOFF_LIMIT, IDLE, NO_TREES, Plan, plan, type Rejected, runningOf, superseded } from "./update.ts"
+import { ask, ended, HANDOFF_LIMIT, IDLE, Plan, plan, type Rejected, runningOf, superseded } from "./update.ts"
 
 const TARGET: Target = { dotfiles: "a".repeat(40), fork: "b".repeat(40), batch: "batch-k" }
 const TAGGER = { name: "orchestrate", email: "orchestrate@localhost", at: 1_794_416_400 }
@@ -27,38 +27,36 @@ describe("the verified target", () => {
 
 describe("an update run's plan", () => {
   test("waits for a target, does nothing on a proven build of it, and updates a host off it or with no record", () => {
-    expect(plan(Option.none(), Option.none(), Option.none(), Option.none())).toEqual(Plan.NoTarget())
-    expect(plan(Option.some(TARGET), Option.some(proven(record(TARGET.dotfiles, TARGET.fork))), Option.none(), Option.none())).toEqual(Plan.Current({ target: TARGET }))
-    expect(plan(Option.some(TARGET), Option.some(proven(record(TARGET.dotfiles, "c".repeat(40)))), Option.none(), Option.none())).toEqual(Plan.Update({ target: TARGET }))
-    expect(plan(Option.some(TARGET), Option.none(), Option.none(), Option.none())).toEqual(Plan.Update({ target: TARGET }))
+    expect(plan(Option.none(), Option.none(), Option.none(), Option.none(), true)).toEqual(Plan.NoTarget())
+    expect(plan(Option.some(TARGET), Option.some(proven(record(TARGET.dotfiles, TARGET.fork))), Option.none(), Option.none(), true)).toEqual(Plan.Current({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(proven(record(TARGET.dotfiles, "c".repeat(40)))), Option.none(), Option.none(), true)).toEqual(Plan.Update({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.none(), Option.none(), Option.none(), true)).toEqual(Plan.Update({ target: TARGET }))
   })
 
   test("a staged build of the target, or one installed without its proof, restarts through the handoff and is never current", () => {
     const old = proven(record("c".repeat(40), "c".repeat(40)))
-    expect(plan(Option.some(TARGET), Option.some(stagedRecord(Option.some(old), TARGET_BUILD, [])), Option.none(), Option.none())).toEqual(Plan.Restart({ target: TARGET }))
-    expect(plan(Option.some(TARGET), Option.some(nextRecord(Option.some(old), TARGET_BUILD, [])), Option.none(), Option.none())).toEqual(Plan.Restart({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(stagedRecord(Option.some(old), TARGET_BUILD, [])), Option.none(), Option.none(), true)).toEqual(Plan.Restart({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(nextRecord(Option.some(old), TARGET_BUILD, [])), Option.none(), Option.none(), true)).toEqual(Plan.Restart({ target: TARGET }))
   })
 
-  test("where builds want a tree, a proven build of the target installed with none is built again; staged, with its tree, or on the old scheme it is not", () => {
+  test("a proven build of the target installed with no tree is not current: it is built again; with its tree, or staged, it is not", () => {
     const installed = proven(record(TARGET.dotfiles, TARGET.fork))
-    const wanted = { wanted: true, installed: false }
-    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), wanted)).toEqual(Plan.Update({ target: TARGET }))
-    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), { wanted: true, installed: true })).toEqual(Plan.Current({ target: TARGET }))
-    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), NO_TREES)).toEqual(Plan.Current({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), false)).toEqual(Plan.Update({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(installed), Option.none(), Option.none(), true)).toEqual(Plan.Current({ target: TARGET }))
     // Its tree build staged under the same version: the handoff restarts onto it, not another build.
     const rebuilt = stagedRecord(Option.some(installed), { ...TARGET_BUILD, version: installed.version, command: installed.command }, [])
-    expect(plan(Option.some(TARGET), Option.some(rebuilt), Option.none(), Option.none(), wanted)).toEqual(Plan.Restart({ target: TARGET }))
+    expect(plan(Option.some(TARGET), Option.some(rebuilt), Option.none(), Option.none(), false)).toEqual(Plan.Restart({ target: TARGET }))
   })
 
-  test("P1, P6: after a failed build, a failed advance, a rollback or a give-up, the plan is never to build or restart onto that target again", () => {
+  test("P1, P6: after a failed build, a refusal, a rollback or a give-up, the plan is never to build or restart onto that target again", () => {
     const old = proven(record("c".repeat(40), "c".repeat(40)))
     const staged = stagedRecord(Option.some(old), TARGET_BUILD, [])
     const installed = nextRecord(Option.some(old), TARGET_BUILD, [])
     const records: ReadonlyArray<Option.Option<Record>> = [Option.none(), Option.some(old), Option.some(staged), Option.some(installed), rolledBack(installed)]
     for (const step of ["advance", "build", "health"]) {
       const rejected: Rejected = { dotfiles: TARGET.dotfiles, fork: TARGET.fork, step, cause: "exit 1" }
-      for (const each of records) expect(plan(Option.some(TARGET), each, Option.some(rejected), Option.none())._tag).toBe("Rejected")
-      expect(plan(Option.some({ ...TARGET, fork: "e".repeat(40), batch: "batch-8" }), Option.some(old), Option.some(rejected), Option.none())._tag).toBe("Update")
+      for (const each of records) expect(plan(Option.some(TARGET), each, Option.some(rejected), Option.none(), true)._tag).toBe("Rejected")
+      expect(plan(Option.some({ ...TARGET, fork: "e".repeat(40), batch: "batch-8" }), Option.some(old), Option.some(rejected), Option.none(), true)._tag).toBe("Update")
     }
   })
 
@@ -73,8 +71,8 @@ describe("an update run's plan", () => {
       { ...TARGET, fork: "e".repeat(40), batch: "batch-8" },
     ]
     for (const state of states) {
-      expect(plan(Option.some(TARGET), state, Option.some(rejected), Option.none())._tag).toBe("Rejected")
-      for (const target of newer) expect(plan(Option.some(target), state, Option.some(rejected), Option.none())).toEqual(Plan.Update({ target }))
+      expect(plan(Option.some(TARGET), state, Option.some(rejected), Option.none(), true)._tag).toBe("Rejected")
+      for (const target of newer) expect(plan(Option.some(target), state, Option.some(rejected), Option.none(), true)).toEqual(Plan.Update({ target }))
     }
   })
 
@@ -90,7 +88,7 @@ describe("an update run's plan", () => {
     const rejected: Rejected = { dotfiles: TARGET.dotfiles, fork: TARGET.fork, step: "health", cause: "exit 1" }
     for (const target of [Option.none(), Option.some(TARGET)])
       for (const each of records)
-        for (const rejection of [Option.none(), Option.some(rejected)]) expect(plan(target, each, rejection, Option.some(running))).toEqual(Plan.HandingOff({ running }))
+        for (const rejection of [Option.none(), Option.some(rejected)]) expect(plan(target, each, rejection, Option.some(running), true)).toEqual(Plan.HandingOff({ running }))
   })
 
   test("B1: a handoff's mark holds only while its process lives and within the handoff's limit; a stale one holds nothing", () => {

@@ -42,7 +42,7 @@ describe("the logins the configured models need, after a restart", () => {
     )
     expect(describeHealth(health)).toContain("no anthropic login")
     expect(final(health)).toBe(false)
-    expect(steps([health, health], true)).toEqual(["Reinstall", "RollBack"])
+    expect(steps([health, health], true)).toEqual(["RollBack", "GaveUp"])
   })
 
   test("a provider that had no login before the restart either is reported, not rolled back", () => {
@@ -81,12 +81,12 @@ describe("where the restarted service runs", () => {
     const health = healthOf({ ...ready, placement: Option.some(Placement.cases.Unplaced.make({ cgroup: herdr, cause: "Access denied" })) }, [])
     expect(health).toEqual(Health.Sick({ plugin: "placement", cause: `the service runs outside its scope, in ${herdr}: Access denied`, final: true }))
     expect(final(health)).toBe(true)
-    expect(steps([health, health], true)).toEqual(["Reinstall", "RollBack"])
+    expect(steps([health, health], true)).toEqual(["RollBack", "GaveUp"])
   })
 })
 
 const steps = (healths: ReadonlyArray<Health>, canRollBack: boolean): ReadonlyArray<Recovery["_tag"]> => {
-  const stages: ReadonlyArray<Stage> = ["first", "reinstalled", "rolled-back"]
+  const stages: ReadonlyArray<Stage> = ["first", "rolled-back"]
   return healths.map((health, index) => recover(stages[index] ?? "rolled-back", health, canRollBack)._tag)
 }
 
@@ -97,22 +97,12 @@ describe("the recovery after a health check", () => {
     expect(recover("first", Health.Healthy(), true)).toEqual(Recovery.Proven())
   })
 
-  test("a tree build has no reinstall rung: a sick first restart rolls back, or gives up with nothing to roll back to", () => {
-    expect(recover("first", sick, true, false)).toEqual(Recovery.RollBack())
-    expect(recover("first", sick, false, false)).toEqual(Recovery.GaveUp())
-    expect(recover("first", Health.Healthy(), true, false)).toEqual(Recovery.Proven())
+  test("there is no reinstall rung: a sick first restart rolls back, and a healthy rollback ends there", () => {
+    expect(steps([sick, Health.Healthy()], true)).toEqual(["RollBack", "RolledBack"])
   })
 
-  test("a sick restart reinstalls the dependencies and restarts once, and a healthy one then proves the build", () => {
-    expect(steps([sick, Health.Healthy()], true)).toEqual(["Reinstall", "Proven"])
-  })
-
-  test("still sick after the reinstall, it rolls back to the last good build, and a healthy rollback ends there", () => {
-    expect(steps([sick, sick, Health.Healthy()], true)).toEqual(["Reinstall", "RollBack", "RolledBack"])
-  })
-
-  test("a sick rollback, or no good build to go back to, gives up", () => {
-    expect(steps([sick, sick, sick], true)).toEqual(["Reinstall", "RollBack", "GaveUp"])
-    expect(steps([sick, sick], false)).toEqual(["Reinstall", "GaveUp"])
+  test("a sick rollback, or no good build it can go back to, gives up", () => {
+    expect(steps([sick, sick], true)).toEqual(["RollBack", "GaveUp"])
+    expect(steps([sick], false)).toEqual(["GaveUp"])
   })
 })

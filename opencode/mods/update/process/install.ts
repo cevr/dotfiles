@@ -70,18 +70,15 @@ export const configPaths = (settings: Settings, home: string) => ({
   config: settings.config,
   kept: files(settings).kept,
   server: Option.getOrElse(Arr.head(settings.config), () => `${home}/.config/opencode/opencode.json`),
+  under: `${settings.checkout}/opencode`,
   owned: oursOf(settings.checkout, shareDir(home)),
   tui: Option.getOrElse(Arr.findFirst(settings.config, (path) => lastPart(path) === "cli.json"), () => `${home}/.config/opencode/cli.json`),
   tuiOwned: tuiOursOf(settings.checkout, shareDir(home)),
 })
 
-/**
- * What daily says once it staged a build: what a handoff will do with it. It writes the record and
- * restarts, and moves no checkout and writes no config (but the first tree install's strip of our
- * server entries).
- */
+/** What daily says once it staged a build: what a handoff will do with it. It writes the record and restarts, and moves no checkout and writes no config. */
 export const STAGED_LINE =
-  "staged: a handoff installs it in the record and restarts the service onto it (the update plugin's after the Sabbath rest, daily by hand's at once); no checkout moves and no config is written, but for a host's first tree install, which takes our entries out of the server config"
+  "staged: a handoff installs it in the record and restarts the service onto it (the update plugin's after the Sabbath rest, daily by hand's at once); no checkout moves and no config is written"
 
 /** The last part of a path. */
 const lastPart = (path: string): string => Option.getOrElse(Arr.last(path.split("/")), () => path)

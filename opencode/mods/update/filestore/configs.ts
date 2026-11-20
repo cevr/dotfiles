@@ -16,8 +16,10 @@ export interface Ours {
 export interface Paths {
   readonly config: ReadonlyArray<string>
   readonly kept: string
-  /** The server config (`opencode.json`), the one the first tree install strips. */
+  /** The server config (`opencode.json`), the one the handoff reads for entries of ours. */
   readonly server: string
+  /** The live checkout's `opencode/`, under which the old writer's entries are. */
+  readonly under: string
   /** What is ours in it (`oursOf`). */
   readonly owned: Ours
   /** The TUI config (`cli.json`), the one the late strip strips. */
@@ -147,7 +149,9 @@ export const layer = (paths: Paths) =>
           ),
         { discard: true },
       ),
-      ours: readServer(paths.server).pipe(Effect.map(Option.exists((config) => listsOurs(config, paths.owned)))),
+      ours: readServer(paths.server).pipe(
+        Effect.map((config) => Option.map(Option.filter(config, (each) => listsOurs(each, paths.owned)), () => ({ file: paths.server, under: paths.under }))),
+      ),
       strip: readServer(paths.server).pipe(
         Effect.flatMap((config) =>
           Effect.forEach(Option.toArray(Option.filter(config, (each) => listsOurs(each, paths.owned))), (each) => writeText("strip the server config", paths.server, `${encodeServer(stripped(each, paths.owned))}\n`), {

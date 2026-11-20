@@ -23,10 +23,8 @@ export class CheckoutStuck extends Schema.TaggedError<CheckoutStuck>()("Checkout
 }) {}
 
 /**
- * The live dotfiles checkout, and the verified target on its origin. With trees (`trees.ts`) the
- * checkout is only an object store: `fetch` brings a commit into it and nothing moves it. The old
- * scheme, which ran every plugin from the checkout, kept while the good build's fork binds no tree
- * (`model.ts`), moves it with `advance`, the one move, the commit and the dependencies together.
+ * The live dotfiles checkout, and the verified target on its origin. The checkout is only an object
+ * store (`trees.ts`): `fetch` brings a commit into it, and no update moves it.
  */
 export class Source extends Context.Service<
   Source,
@@ -56,12 +54,7 @@ export class Source extends Context.Service<
   }
 >()("dotfiles-opencode/update/Source") {}
 
-/**
- * The two halves of an install, split so the live checkout moves only at the restart: the server
- * and every TUI hot-reload a local plugin when its files change, so a checkout moved ahead of the
- * build ran the new plugins on the old fork until the restart (2026-11-19: Prime's `ui.Spinner` on
- * a fork without it, for 7 minutes).
- */
+/** A target's build, made ahead of the restart beside its own plugin tree: nothing running loads from it. */
 export class Builder extends Context.Service<
   Builder,
   {
@@ -72,24 +65,11 @@ export class Builder extends Context.Service<
      */
     readonly version: (target: Target) => Effect.Effect<string, UpdateFailed>
     /**
-     * Whether a build of fork commit `fork` binds the tree beside its executable (the fork's
-     * `packages/cli/src/adjacent-config.ts`). A build that does not runs its plugins from the global
-     * configs, as the old scheme wrote them.
+     * Builds the target ahead of the restart (`daily.ts --stage --from-tree`), from the build's own tree
+     * `tree` (its build logic is the target's): the fork at the target's commit, the binary, and the staged
+     * record naming the target's commits. It touches no checkout, writes no config and restarts nothing.
      */
-    readonly binds: (fork: string) => Effect.Effect<boolean, UpdateFailed>
-    /**
-     * Builds the target ahead of the restart (`daily.ts --stage`): the fork at the target's commit,
-     * the binary, and the staged record naming the target's commits. With `tree`, daily runs from the
-     * build's own tree (its build logic is the target's) and touches no checkout; with none (the old
-     * scheme), from the live checkout as it stands, which does not move. It writes no config and
-     * restarts nothing.
-     */
-    readonly stage: (target: Target, tree: Option.Option<string>) => Effect.Effect<void, UpdateFailed>
-    /**
-     * The old scheme's step: writes the server and TUI configs from the checkout's own install code
-     * (`bun scripts/daily.ts --configure`), once the handoff moved it onto the build's commit.
-     */
-    readonly configure: Effect.Effect<void, UpdateFailed>
+    readonly stage: (target: Target, tree: string) => Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builder") {}
 
@@ -267,12 +247,15 @@ export class Service extends Context.Service<
   }
 >()("dotfiles-opencode/update/Service") {}
 
+/** A server config that lists plugin entries of ours: the file, and the checkout's `opencode/` whose entries it names. */
+export interface ListedOurs {
+  readonly file: string
+  readonly under: string
+}
+
 /**
- * The global configs (`~/.config/opencode`): the old scheme writes our plugin entries there, and a
- * rollback puts the replaced ones back with the build they belong to. With trees, the first tree
- * install strips our entries from the server config (the migration), a kept copy first; the TUI config
- * keeps its entries for the open TUIs of the old scheme until a proven handoff finds no old-format build
- * running, which strips them too (the late strip), its own copy kept first. After that, no update writes them.
+ * The global configs (`~/.config/opencode`). No update writes them: a build's plugins come from its
+ * tree. The handoff only reads whether the server config still lists entries of ours, and refuses then.
  */
 export class Configs extends Context.Service<
   Configs,
@@ -281,8 +264,8 @@ export class Configs extends Context.Service<
     readonly keep: Effect.Effect<void, UpdateFailed>
     /** Puts the kept config back. */
     readonly restore: Effect.Effect<void, UpdateFailed>
-    /** Whether the server config still lists plugin entries of ours (by the old writer's ownership rule): the migration is to do. */
-    readonly ours: Effect.Effect<boolean, UpdateFailed>
+    /** The server config, when it lists plugin entries of ours (by the old writer's ownership rule); none when it lists none. */
+    readonly ours: Effect.Effect<Option.Option<ListedOurs>, UpdateFailed>
     /** Removes our plugin entries from the server config, every other key and entry kept; the TUI config is left alone. */
     readonly strip: Effect.Effect<void, UpdateFailed>
     /** Whether the TUI config (`cli.json`) still lists plugin entries of ours: the late strip is to do. */

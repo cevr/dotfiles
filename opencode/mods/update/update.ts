@@ -4,7 +4,7 @@ import type { Target } from "./target.ts"
 
 /**
  * A target this host failed on, kept in the update's own directory (`rejected.json`): the step that
- * failed (`advance`, `build`, `health`) and why. The host never builds or restarts onto it again;
+ * failed (`build`, `tree`, `config`, `health`; an older run's may name another) and why. The host never builds or restarts onto it again;
  * a target with other commits clears it.
  */
 export const Rejected = Schema.Struct({ dotfiles: Schema.String, fork: Schema.String, step: Schema.String, cause: Schema.String })
@@ -27,8 +27,8 @@ export const Running = Schema.Struct({ pid: Schema.Number, at: Schema.Number })
 export interface Running extends Schema.Schema.Type<typeof Running> {}
 
 /**
- * The longest a handoff runs: three restarts with their health reads (`HEALTH_DEADLINE` each), a
- * reinstall and a rollback's install. A mark older than this is stale, whatever its pid.
+ * The longest a handoff runs: its restarts with their health reads (`HEALTH_DEADLINE` each) and a
+ * rollback's record write, with room to spare. A mark older than this is stale, whatever its pid.
  */
 export const HANDOFF_LIMIT = Duration.minutes(20)
 
@@ -58,25 +58,12 @@ export type Plan = Data.TaggedEnum<{
 export const Plan = Data.taggedEnum<Plan>()
 
 /**
- * What the plan knows of trees (`trees.ts`): whether this host's builds want one (the tree scheme:
- * the good build's fork binds a tree), and whether the installed build has its tree beside it.
- */
-export interface TreeFacts {
-  readonly wanted: boolean
-  readonly installed: boolean
-}
-
-/** The old scheme's facts: no build needs a tree. */
-export const NO_TREES: TreeFacts = { wanted: false, installed: false }
-
-/**
  * The run's plan: the target against the installed record and the rejected target. A handoff
  * that runs holds every run. A staged build of the target restarts through the handoff. A build is
- * current only once proven, installed and good, and, where builds want a tree, with its tree beside
- * it: a build installed with none (the old scheme's last install) is built again, as a tree build of
- * the same commits, so the first tree install comes by itself. A host with no record installs.
+ * current only once proven, installed and good, with its tree beside it (`treed`, `trees.ts`): a build
+ * installed with none is built again, as a tree build of the same commits. A host with no record installs.
  */
-export const plan = (target: Option.Option<Target>, record: Option.Option<Record>, rejected: Option.Option<Rejected>, running: Option.Option<Running>, trees: TreeFacts = NO_TREES): Plan => {
+export const plan = (target: Option.Option<Target>, record: Option.Option<Record>, rejected: Option.Option<Rejected>, running: Option.Option<Running>, treed: boolean): Plan => {
   if (Option.isSome(running)) return Plan.HandingOff({ running: running.value })
   if (Option.isNone(target)) return Plan.NoTarget()
   const wanted = target.value
@@ -86,7 +73,7 @@ export const plan = (target: Option.Option<Target>, record: Option.Option<Record
   // A staged build of the target first: a tree build of the installed build's own commits is staged under its own version (`.tree`), with the same commits.
   if (on(Option.flatMap(record, stagedOf))) return Plan.Restart({ target: wanted })
   const installed = Option.flatMap(record, buildOf)
-  if (on(installed) && trees.wanted && !trees.installed) return Plan.Update({ target: wanted })
+  if (on(installed) && !treed) return Plan.Update({ target: wanted })
   if (on(installed) && on(Option.flatMap(record, goodOf))) return Plan.Current({ target: wanted })
   if (on(installed)) return Plan.Restart({ target: wanted })
   return Plan.Update({ target: wanted })

@@ -1,15 +1,9 @@
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { writeText } from "../filestore/files.ts"
 import { Builder, UpdateFailed } from "../service.ts"
 import { files, type Settings } from "../settings.ts"
 import { versionOf } from "./pin.ts"
 import { run, said, spawned } from "./run.ts"
-
-/**
- * The old scheme's stage command: daily from the checkout as it stands, building the target's fork
- * commit and naming the target's dotfiles commit in the record, writing no config and restarting nothing.
- */
-export const stageCommand = (settings: Settings, fork: string, dotfiles: string): ReadonlyArray<string> => [settings.bun, "scripts/daily.ts", "--stage", "--fork-target", fork, "--dotfiles-target", dotfiles]
 
 /**
  * The stage command of a build with its tree: the tree's own daily (`--from-tree`), so the build logic
@@ -25,12 +19,6 @@ export const treeStageCommand = (settings: Settings, tree: string, fork: string,
   "--dotfiles-target",
   dotfiles,
 ]
-
-/** The configure command: daily from the moved checkout, writing its configs and nothing else (the old scheme). */
-export const configureCommand = (settings: Settings): ReadonlyArray<string> => [settings.bun, "scripts/daily.ts", "--configure"]
-
-/** The fork's file whose presence makes a compiled build bind the tree beside its executable (U1). */
-export const ADJACENT_CONFIG = "packages/cli/src/adjacent-config.ts"
 
 const CliPackage = Schema.Struct({ version: Schema.String })
 const decodeCli = Schema.decodeUnknownEffect(Schema.fromJsonString(CliPackage))
@@ -67,17 +55,7 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
             ),
           ),
         ),
-      binds: (commit) =>
-        forkCommit(commit).pipe(
-          Effect.flatMap((full) => spawned("look for the fork's adjacent binding", ["git", "cat-file", "-e", `${full}:${ADJACENT_CONFIG}`], fork)),
-          Effect.map((ran) => ran.code === 0),
-        ),
-      stage: (target, tree) =>
-        Option.match(tree, {
-          onNone: () => daily("stage the build", stageCommand(settings, target.fork, target.dotfiles), `${settings.checkout}/opencode`),
-          onSome: (at) => daily("stage the build", treeStageCommand(settings, at, target.fork, target.dotfiles), `${at}/opencode`),
-        }),
-      configure: daily("write the configs", configureCommand(settings), `${settings.checkout}/opencode`),
+      stage: (target, tree) => daily("stage the build", treeStageCommand(settings, tree, target.fork, target.dotfiles), `${tree}/opencode`),
     }),
   )
 }
