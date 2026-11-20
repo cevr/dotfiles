@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Match, Option, Predicate } from "effect"
 import { DigestEvent, encodeLine, VERSION } from "./event.ts"
 import { EMPTY, fold, type State } from "./fold.ts"
+import { encodePage, pageOf } from "./messages.ts"
 
 /** A seeded generator (mulberry32): the same cases on every run. */
 const random = (seed: number) => () => {
@@ -30,7 +31,7 @@ const eventOf = (next: () => number): DigestEvent => {
     () => DigestEvent.cases.HandBack.make({ ...base, session: "s1", role: "implementor", unit, round, verdict: one(["ready", "blocked"]), file: Option.none(), digest: Option.some(one(["Done.", "Half done."])) }),
     () => DigestEvent.cases.Verdict.make({ ...base, session: "s3", batch: "batch-a", round: 1, verdict: one(["accepted", "changes"]), file: Option.none(), digest: Option.none(), units: [{ unit, round, verdict: one(["accepted", "changes"]) }] }),
     () => DigestEvent.cases.Land.make({ ...base, units: [unit], pushed: Option.none() }),
-    () => DigestEvent.cases.Check.make({ ...base, ok: next() < 0.5, text: "the accept check" }),
+    () => DigestEvent.cases.Check.make({ ...base, ok: next() < 0.5, text: one(["the accept check passed.", "the accept check FAILED."]) }),
     () => DigestEvent.cases.Item.make({ ...base, id: one(["i1", "i2"]), text: one(["Ship it.", "Wait."]), state: one(["running", "done", "needs-you"]), owner: "mine", who: Option.none(), level: Option.some(one(["red", "green"] as const)), unit: Option.some(unit) }),
     () => DigestEvent.cases.ItemGone.make({ ...base, id: one(["i1", "i2"]) }),
     () => DigestEvent.cases.Asked.make({ ...base, session: "s1", id: one(["q1", "q2"]), question: "Which?", header: Option.none(), options: ["a", "b"], assume: "a" }),
@@ -85,6 +86,15 @@ describe("fold", () => {
     const kept = [...state.items.values()][0]
     expect(kept?._tag === "Item" && kept.text).toBe("later")
     expect([...state.itemsSince.values()]).toEqual([2])
+  })
+
+  test("the page does not depend on the lines' order either, ties in the same millisecond included", () => {
+    const next = random(4)
+    const reader = { names: new Map<string, string>() }
+    for (let at = 0; at < CASES; at++) {
+      const log = logOf(next)
+      expect(encodePage(pageOf(fold(EMPTY, shuffled(log, next)), reader))).toBe(encodePage(pageOf(fold(EMPTY, log), reader)))
+    }
   })
 
   test("leaves the state it folds from as it was", () => {

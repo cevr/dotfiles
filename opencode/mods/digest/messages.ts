@@ -10,8 +10,8 @@
 //   names it, else the newest verdict that holds it, else its own.
 // - Colour comes from data only: red from an item's `level: red` or a failed land check not followed by a land;
 //   "Needs you" from an open question or a needs-you item. Never from words.
-import { Array as Arr, Option, Order, Schema } from "effect"
-import { clip } from "./event.ts"
+import { Array as Arr, Hash, Option, Order, Schema } from "effect"
+import { clip, type DigestEvent, encodeLine } from "./event.ts"
 import { type Answered, type Asked, type HandBack, type Item, type ItemGone, keyOf, type Lane, type Run, type Start, type State, type Verdict } from "./fold.ts"
 
 const maybe = Schema.OptionFromOptionalKey
@@ -121,7 +121,11 @@ interface Group {
 /** The projects of the state: its runs grouped by name, each group's newest record first. */
 const groupsOf = (state: State): ReadonlyArray<Group> => {
   const byName = Arr.groupBy([...state.runs.values()], runNameOf)
-  return Object.entries(byName).map(([id, runs]) => ({ id, runs: Arr.sort(runs, Order.flip(Order.mapInput(Order.Number, (run: Run) => run.t))) }))
+  // Newest first; runs of the same time by their line, so the group's host and order never depend on the log's.
+  const newest = Order.flip(Order.combine(Order.mapInput(Order.Number, (run: Run) => run.t), Order.mapInput(Order.String, (run: Run) => encodeLine(run))))
+  return Object.entries(byName)
+    .toSorted(([a], [b]) => Order.String(a, b))
+    .map(([id, runs]) => ({ id, runs: Arr.sort(runs, newest) }))
 }
 
 /** A host as the owner names it: the Mac by that word, any other by its own name. */
@@ -150,6 +154,10 @@ const rowsOf = (verdict: Verdict): ReadonlyArray<{ readonly unit: string; readon
     onNonEmpty: (rows) => rows,
   })
 
+/** Events oldest first, those of the same time by their line: the order a fold's maps never promise. */
+const ordered = <A extends DigestEvent>(values: Iterable<A>): ReadonlyArray<A> =>
+  Arr.sort(Arr.fromIterable(values), Order.combine(Order.mapInput(Order.Number, (each: A) => each.t), Order.mapInput(Order.String, (each: A) => encodeLine(each))))
+
 /** The units of a project's roots, by name, from their lanes, steps, verdicts and items. */
 const unitsOf = (state: State, roots: ReadonlySet<string>): ReadonlyMap<string, UnitFacts> => {
   const units = new Map<string, { name: string; lane: Option.Option<Lane>; starts: Array<Start>; handBacks: Array<HandBack>; verdicts: Array<UnitFacts["verdicts"][number]> }>()
@@ -160,10 +168,10 @@ const unitsOf = (state: State, roots: ReadonlySet<string>): ReadonlyMap<string, 
     units.set(name, made)
     return made
   }
-  for (const lane of state.lanes.values()) if (roots.has(lane.root)) unit(lane.unit).lane = Option.some(lane)
-  for (const start of state.starts.values()) if (roots.has(start.root) && isStepOfUnit(start.role)) unit(start.unit).starts.push(start)
-  for (const back of state.handBacks.values()) if (roots.has(back.root) && isStepOfUnit(back.role)) unit(back.unit).handBacks.push(back)
-  for (const verdict of state.verdicts.values())
+  for (const lane of ordered(state.lanes.values())) if (roots.has(lane.root)) unit(lane.unit).lane = Option.some(lane)
+  for (const start of ordered(state.starts.values())) if (roots.has(start.root) && isStepOfUnit(start.role)) unit(start.unit).starts.push(start)
+  for (const back of ordered(state.handBacks.values())) if (roots.has(back.root) && isStepOfUnit(back.role)) unit(back.unit).handBacks.push(back)
+  for (const verdict of ordered(state.verdicts.values()))
     if (roots.has(verdict.root)) for (const row of rowsOf(verdict)) unit(row.unit).verdicts.push({ verdict, round: row.round, said: row.verdict })
   for (const item of liveItems(state, roots)) for (const name of Option.toArray(item.unit)) unit(name)
   return units
@@ -365,12 +373,14 @@ const unitMessage = (root: string, facts: UnitFacts, view: UnitView): Draft => {
 /** Which message each unit of a project sits under: the newest item naming it, else the newest verdict holding it, else its own. */
 type Claim = { readonly item: Item } | { readonly verdict: Verdict } | { readonly own: string }
 
-const byTime = <A extends { readonly t: number }>(values: ReadonlyArray<A>): ReadonlyArray<A> => Arr.sort(values, Order.mapInput(Order.Number, (each: A) => each.t))
+/** Oldest first; values of the same time by `text` (an event's line), so the order never depends on the log's. */
+const byTime = <A extends { readonly t: number }>(values: ReadonlyArray<A>, text: (value: A) => string): ReadonlyArray<A> =>
+  Arr.sort(values, Order.combine(Order.mapInput(Order.Number, (each: A) => each.t), Order.mapInput(Order.String, text)))
 
 const claimOf = (name: string, facts: UnitFacts, items: ReadonlyArray<Item>, root: string): Claim => {
-  const item = Arr.last(byTime(items.filter((each) => Option.contains(each.unit, name))))
+  const item = Arr.last(byTime(items.filter((each) => Option.contains(each.unit, name)), encodeLine))
   if (Option.isSome(item)) return { item: item.value }
-  const verdict = Arr.last(byTime(facts.verdicts.map((each) => each.verdict).filter((each) => each.units.length > 0)))
+  const verdict = Arr.last(byTime(facts.verdicts.map((each) => each.verdict).filter((each) => each.units.length > 0), encodeLine))
   if (Option.isSome(verdict)) return { verdict: verdict.value }
   return { own: Option.getOrElse(Option.map(Arr.head(facts.starts), (start) => start.root), () => Option.getOrElse(Option.map(facts.lane, (lane) => lane.root), () => root)) }
 }
@@ -422,7 +432,7 @@ const questionDrafts = (state: State, roots: ReadonlySet<string>): ReadonlyArray
     (asked) => roots.has(asked.root) && !state.answered.has(keyOf(asked.session, asked.id)) && !state.closed.has(keyOf(asked.session, asked.id)),
   )
   const answered = Arr.groupBy(
-    [...state.answered.values()].filter((answer) => roots.has(answer.root)),
+    ordered(state.answered.values()).filter((answer) => roots.has(answer.root)),
     (answer) => keyOf(answer.root, answer.t),
   )
   return [...open.map(askedMessage), ...Object.values(answered).flatMap((answers) => decidedMessage(answers, state.asked))]
@@ -434,7 +444,7 @@ const checkDrafts = (state: State, roots: ReadonlySet<string>): ReadonlyArray<Dr
     .values()
     .filter((check) => roots.has(check.root) && !check.ok)
     .map((check): Draft => ({
-      id: `check:${check.root}:${check.t}`,
+      id: `check:${check.root}:${check.t}:${Hash.string(check.text)}`,
       src: "check",
       kind: "stuck",
       level: "red",
@@ -457,7 +467,7 @@ const installDrafts = (state: State, group: Group): ReadonlyArray<Draft> =>
         .values()
         .filter((install) => install.host === run.host && Option.contains(install.repo, run.repo))
         .map((install): Draft => ({
-          id: `install:${install.host}:${install.t}`,
+          id: `install:${install.host}:${install.t}:${Hash.string(encodeLine(install))}`,
           src: "install",
           kind: installKind(install.outcome),
           level: "none",
@@ -482,7 +492,7 @@ const installKind = (outcome: string): Kind => {
 
 /** Whether a root's newest land check failed and no land came after it. */
 const checkRed = (state: State, roots: ReadonlySet<string>): Option.Option<string> => {
-  const checks = byTime([...state.checks.values()].filter((check) => roots.has(check.root)))
+  const checks = byTime([...state.checks.values()].filter((check) => roots.has(check.root)), encodeLine)
   const lands = [...state.lands.values()].filter((land) => roots.has(land.root))
   return Option.map(
     Option.filter(Arr.last(checks), (check) => !check.ok && !lands.some((land) => land.t > check.t)),
@@ -499,11 +509,11 @@ const levelOf = (messages: ReadonlyArray<Draft>, red: Option.Option<string>): Pr
 
 /** The project's one line: its root's newest item with a level, else its newest `Digest:` line. */
 const headlineOf = (state: State, roots: ReadonlySet<string>, red: Option.Option<string>): string => {
-  const leveled = Arr.last(byTime(liveItems(state, roots).filter((item) => Option.isSome(item.level))))
+  const leveled = Arr.last(byTime(liveItems(state, roots).filter((item) => Option.isSome(item.level)), encodeLine))
   const digests = byTime([
     ...[...state.handBacks.values()].filter((back) => roots.has(back.root)).flatMap((back) => Option.toArray(Option.map(back.digest, (said) => ({ said, t: back.t })))),
     ...[...state.verdicts.values()].filter((verdict) => roots.has(verdict.root)).flatMap((verdict) => Option.toArray(Option.map(verdict.digest, (said) => ({ said, t: verdict.t })))),
-  ])
+  ], (each) => each.said)
   return Option.getOrElse(
     Option.firstSomeOf([
       Option.map(leveled, (item) => splitSubject(item.text).subject),
@@ -514,8 +524,16 @@ const headlineOf = (state: State, roots: ReadonlySet<string>, red: Option.Option
   )
 }
 
-/** Newest first. */
-const newestFirst = Order.mapInput(Order.flip(Order.Number), (message: Message) => message.t)
+const encodeMessage = Schema.encodeSync(Schema.fromJsonString(Message))
+
+/** Newest first; messages of the same time by id, then by all they say, so the order never depends on the log's. */
+const newestFirst = Order.combine(
+  Order.mapInput(Order.flip(Order.Number), (message: Message) => message.t),
+  Order.combine(
+    Order.mapInput(Order.String, (message: Message) => message.id),
+    Order.mapInput(Order.String, (message: Message) => encodeMessage(message)),
+  ),
+)
 
 // ── The page ──
 
@@ -568,7 +586,7 @@ export const pageOf = (state: State, reader: Reader): Page => {
   const projects = projectsOf(state, reader).map((each) => each.project)
   const newest = (project: Project) => Math.max(0, ...project.messages.map((message) => message.t))
   return {
-    projects: Arr.sort(projects, Order.mapInput(Order.flip(Order.Number), newest)),
+    projects: Arr.sort(projects, Order.combine(Order.mapInput(Order.flip(Order.Number), newest), Order.mapInput(Order.String, (project: Project) => project.id))),
     evidence: {},
   }
 }
