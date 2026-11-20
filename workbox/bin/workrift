@@ -384,18 +384,27 @@ create_workspace() {
     gh_stack_metadata=
   fi
 
-  install_dependency_hooks "$source_path"
+  # Under the lock, the Git hooks a fast-forward of the base or the copy's
+  # branch switch fire (lefthook's post-checkout and post-merge run `workrift
+  # deps`) install and build nothing: that build, minutes long, kept the base
+  # locked for every create in the queue (9 min for one, 2026-11-20). This
+  # create installs and builds the base itself in advance_source, and the
+  # workspace once the lock is released.
+  WORKRIFT_CREATING=1
+  export WORKRIFT_CREATING
   lock_source "$source_path"
   advance_source "$source_path" "$main"
   work_deps_tag=
   if [ "$backend" = work ]; then
     made=$(work_new "$source_path" "$name" "$branch" "$main")
     exec 9>&-
+    unset WORKRIFT_CREATING
     work_deps_tag=${made%%	*}
     workspace=${made#*	}
   else
     workspace=$(rift create "$source_path" --copy-all --name "$name")
     exec 9>&-
+    unset WORKRIFT_CREATING
     # Git hooks print to stdout, and stdout carries only the workspace path.
     if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
       git -C "$workspace" switch "$branch" >&2
@@ -498,20 +507,100 @@ lock_source() {
   flock 9
 }
 
+# A create advances the base (fast-forward, install, warm) at most once in this
+# many seconds. The advance runs under the base's lock, so every create waits
+# for it; with a score of agents landing, main moves every few minutes, and an
+# advance on each move (minutes of install and build under load) kept the lock
+# busy nearly all the time (a create waited 1059 s, 2026-11-20). A lane never
+# starts behind: its branch starts at origin's default branch as just fetched;
+# only the copied build output is for an older tree, and the workspace's own
+# install and warm step bring it up to date outside the lock. Ten minutes keeps
+# the base at most ten minutes of landings behind, so that rebuild stays small.
+# WORKRIFT_ADVANCE_EVERY overrides it, for tests only.
+advance_every=${WORKRIFT_ADVANCE_EVERY:-600}
+
+# When a create last advanced the base, in seconds since the epoch; written
+# only once an advance succeeded, so a failed one holds no window.
+advanced_stamp_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-advanced-at
+}
+
+# The tree whose warm step last failed in the base: it is not tried again for
+# that tree (a failing build would hold the lock for every create); a new tree
+# (main moved) or a refresh tries again.
+warm_failed_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-warm-failed
+}
+
+# Whether the base's managed lefthook-local.yml is missing or out of date.
+hooks_stale() {
+  [ -f "$1/lefthook.yml" ] || return 1
+  [ -e "$1/lefthook-local.yml" ] || return 0
+  grep -qxF "$dependency_hook_marker" "$1/lefthook-local.yml" || return 1
+  [ "$(cat "$1/lefthook-local.yml")" != "$(managed_hook_config)" ]
+}
+
 # The workspace shares every unchanged block with the source, so a source behind
 # the default branch makes the workspace's branch switch rewrite each file changed
-# since, and those files stop being shared. Fast-forward and warm the source first.
+# since, and those files stop being shared. Under the base's lock, bring the base
+# up to date, but only what it lacks: a fast-forward when it is behind origin's
+# default branch and no create advanced it within advance_every; the managed
+# hooks when they are missing or old; the warm step when the last one did not
+# build HEAD's tree (a cut or failed warm) and has not failed for that tree.
+# A base with nothing to do costs a few reads; N creates on a fresh base run
+# no warm step.
 advance_source() {
   source_path=$1
   main=$2
-  [ "$(git -C "$source_path" rev-parse HEAD)" != "$(git -C "$source_path" rev-parse "origin/$main")" ] || return 0
-  [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
-  if [ "$(git -C "$source_path" branch --show-current)" != "$main" ]; then
-    git -C "$source_path" switch "$main" >&2
+  head=$(git -C "$source_path" rev-parse HEAD)
+  if [ "$head" != "$(git -C "$source_path" rev-parse "origin/$main")" ]; then
+    stamp_file=$(advanced_stamp_file "$source_path")
+    last=$(cat "$stamp_file" 2>/dev/null || true)
+    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    since=$(($(date +%s) - last))
+    if [ "$since" -ge "$advance_every" ]; then
+      [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
+      if [ "$(git -C "$source_path" branch --show-current)" != "$main" ]; then
+        git -C "$source_path" switch "$main" >&2
+      fi
+      git -C "$source_path" merge --ff-only "origin/$main" >&2
+      sync_dependencies "$source_path" >&2
+      advanced=true
+    else
+      printf 'workrift: %s is behind origin/%s; a create advanced it %ss ago, the next advance comes after %ss: this workspace starts at origin/%s and builds what differs itself\n' \
+        "$source_path" "$main" "$since" "$advance_every" "$main" >&2
+      advanced=false
+    fi
+  else
+    advanced=false
   fi
-  git -C "$source_path" merge --ff-only "origin/$main" >&2
-  sync_dependencies "$source_path" >&2
-  warm_build "$source_path" "$source_path" >&2
+  if hooks_stale "$source_path"; then
+    install_dependency_hooks "$source_path" >&2
+  fi
+  warm_ok=true
+  if [ -n "$(warm_command "$source_path")" ] && [ "${WORKRIFT_WARM:-1}" != 0 ]; then
+    tree=$(git -C "$source_path" rev-parse 'HEAD^{tree}')
+    failed_file=$(warm_failed_file "$source_path")
+    if [ "$(cat "$(warmed_tree_file "$source_path")" 2>/dev/null || true)" != "$tree" ]; then
+      if [ "$(cat "$failed_file" 2>/dev/null || true)" = "$tree" ]; then
+        printf "workrift: the warm step failed in %s for its tree %s and is not tried again until main moves or a refresh; this workspace builds itself; log: %s\n" \
+          "$source_path" "$tree" "$(git -C "$source_path" rev-parse --path-format=absolute --git-path workrift-warm.log)" >&2
+        warm_ok=false
+      else
+        warm_build "$source_path" "$source_path" >&2
+        if [ "$(cat "$(warmed_tree_file "$source_path")" 2>/dev/null || true)" = "$tree" ]; then
+          rm -f "$failed_file"
+        else
+          printf '%s\n' "$tree" >"$failed_file"
+          warm_ok=false
+        fi
+      fi
+    fi
+  fi
+  if [ "$advanced" = true ] && [ "$warm_ok" = true ]; then
+    date +%s >"$(advanced_stamp_file "$source_path")"
+  fi
+  return 0
 }
 
 refresh_source() {
@@ -1486,6 +1575,11 @@ case "$command" in
     ;;
   deps)
     [ "$#" -le 1 ] || { usage >&2; exit 2; }
+    # A hook a create fires while it holds the base's lock: the create
+    # installs and builds once the lock is free (create_workspace).
+    if [ "${WORKRIFT_CREATING:-}" = 1 ]; then
+      exit 0
+    fi
     top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
     if [ "$backend" = work ]; then
       work_deps "$top"
