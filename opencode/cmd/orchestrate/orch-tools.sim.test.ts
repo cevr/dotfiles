@@ -206,7 +206,7 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
       const round = 1 + Math.floor(random() * 3)
       const verdict = pick(["ready", "ready", "blocked", "none"] as const, "ready")
       const suffixes = [
-        ...Option.toArray(Option.filter(Option.map(Option.fromUndefinedOr(model.lanes.get(unit)), (found) => (coin() ? laneNote(found.path) : `(rift: ${found.path})`)), coin)),
+        ...Option.toArray(Option.filter(Option.map(Option.fromUndefinedOr(model.lanes.get(unit)), (found) => pick([laneNote(found.path), `(rift: ${found.path})`], laneNote(found.path))), coin)),
         ...Arr.filter([`(folds: ${pick(UNITS, "u1")}/M1)`], coin),
         ...Arr.filter(["(departs: the owner asked)"], () => random() < 0.3),
       ]

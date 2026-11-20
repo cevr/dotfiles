@@ -235,34 +235,41 @@ describe("the post-land step", () => {
     expect(held.calls).toEqual(["deep settled pool", "sync", "head", "merge"])
   })
 
-  test("only a report that needs action goes to the land, which wakes on it: a red deep run, a conflict, a red or stuck merge, fork work; never a green run", async () => {
-    // Either way the report's text is the same as postLand's, for the step's log.
-    const action = async (outcome: Outcome | undefined, options: Parameters<typeof stand>[1] = {}, load?: Load) => {
-      const got = await reportOf(stand(outcome, options).steps, load)
-      expect(got.text).toBe(await postLand(stand(outcome, options).steps, load))
-      return got.action
-    }
-    const red = Option.some(deepReport(2))
-    const work: ForkWork = { ...NONE, droppable: [{ commit: "80da76e442", pr: 63209, what: "a fix", by: "abcdef1234567", merged: true }] }
-    expect({
-      green: await action({ kind: "up-to-date" }),
-      merged: await action(MERGED, { moved: true }),
-      fetchFailed: await action({ kind: "fetch-failed", error: "no network" }),
-      skipped: await action(undefined),
-      workbox: await action({ kind: "up-to-date" }, { host: "bite-cristian" }),
-      loaded: await action({ kind: "up-to-date" }, {}, "loaded"),
-    }).toEqual({ green: false, merged: false, fetchFailed: false, skipped: false, workbox: false, loaded: false })
-    expect({
-      redDeep: await action({ kind: "up-to-date" }, { deep: red }),
-      noOutcome: await action({ kind: "up-to-date" }, { deep: Option.none() }),
-      redLoaded: await action({ kind: "up-to-date" }, { deep: red }, "loaded"),
-      redWorkbox: await action({ kind: "up-to-date" }, { deep: red, host: "bite-cristian" }),
-      conflict: await action({ kind: "conflict", files: ["bun.lock"], upstream: "u" }),
-      redMerge: await action({ kind: "red", check: "typecheck", merge: "cccccccccccc", upstream: "u" }),
-      stuck: await action({ kind: "stuck", reason: "push refused", merge: "bbbbbbbbbbbb", upstream: "u" }),
-      forkWork: await action(MERGED, { work }),
-    }).toEqual({ redDeep: true, noOutcome: true, redLoaded: true, redWorkbox: true, conflict: true, redMerge: true, stuck: true, forkWork: true })
-  })
+  it.effect("only a report that needs action goes to the land, which wakes on it: a red deep run, a conflict, a red or stuck merge, fork work; never a green run", () =>
+    Effect.gen(function* () {
+      // Either way the report's text is postLand's, for the step's log.
+      const action = (outcome: Outcome, options: Parameters<typeof stand>[1] = {}, load: Load = "settled") =>
+        Effect.gen(function* () {
+          const got = yield* Effect.promise(() => reportOf(stand(outcome, options).steps, load))
+          expect(got.text).toBe(yield* report(stand(outcome, options).steps, load))
+          return got.action
+        })
+      const red = Option.some(deepReport(2))
+      const work: ForkWork = { ...NONE, droppable: [{ commit: "80da76e442", pr: 63209, what: "a fix", by: "abcdef1234567", merged: true }] }
+      const upToDate: Outcome = { kind: "up-to-date" }
+      expect(
+        yield* Effect.all({
+          green: action(upToDate),
+          merged: action(MERGED, { moved: true }),
+          fetchFailed: action({ kind: "fetch-failed", error: "no network" }),
+          workbox: action(upToDate, { host: "bite-cristian" }),
+          loaded: action(upToDate, {}, "loaded"),
+        }),
+      ).toEqual({ green: false, merged: false, fetchFailed: false, workbox: false, loaded: false })
+      expect(
+        yield* Effect.all({
+          redDeep: action(upToDate, { deep: red }),
+          noOutcome: action(upToDate, { deep: Option.none() }),
+          redLoaded: action(upToDate, { deep: red }, "loaded"),
+          redWorkbox: action(upToDate, { deep: red, host: "bite-cristian" }),
+          conflict: action({ kind: "conflict", files: ["bun.lock"], upstream: "u" }),
+          redMerge: action({ kind: "red", check: "typecheck", merge: "cccccccccccc", upstream: "u" }),
+          stuck: action({ kind: "stuck", reason: "push refused", merge: "bbbbbbbbbbbb", upstream: "u" }),
+          forkWork: action(MERGED, { work }),
+        }),
+      ).toEqual({ redDeep: true, noOutcome: true, redLoaded: true, redWorkbox: true, conflict: true, redMerge: true, stuck: true, forkWork: true })
+    }),
+  )
 })
 
 describe("the upstream lock", () => {

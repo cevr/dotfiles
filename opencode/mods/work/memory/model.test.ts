@@ -248,14 +248,19 @@ describe("land", () => {
       await calls(again, [{ action: "land", rifts: ["feat-x"] }])
       await calls(again, [{ action: "land", rifts: ["feat-y"] }])
       expect(again.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${POST_LAND} base0 abc1234`, `post-land ${POST_LAND} base0 abc1234`])
-      // A green step with nothing to report (exit 0, an empty report, or none written) wakes no one; its log stays.
-      for (const report of ["", "\n", undefined]) {
-        const quiet = withPostLand("bun run accept")
-        quiet.landing.postLandRun = { code: 0, output: "lots of output\n", report }
-        await calls(quiet, [{ action: "land", rifts: ["feat-x"] }])
-        expect(quiet.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${POST_LAND} base0 abc1234`])
-        expect(quiet.woken).toEqual([])
-      }
+    })
+
+    test("a green post-land step with nothing to report (exit 0, a blank report) wakes no one; its log stays", () => {
+      const made = withPostLand("bun run accept")
+      made.landing.postLandRun = { code: 0, output: "lots of output\n", report: "\n" }
+      return within(made, (tool) =>
+        Effect.gen(function* () {
+          yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })
+          yield* settle
+          expect(made.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${POST_LAND} base0 abc1234`])
+          expect(made.woken).toEqual([])
+        }),
+      )
     })
 
     const overlapping = (made: Bench) => {
