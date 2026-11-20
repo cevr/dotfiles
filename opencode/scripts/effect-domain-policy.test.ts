@@ -14,6 +14,7 @@
  * `effect/noTryCatch` in the domain are the exact files the hard config leaves to the ratchet.
  * One more try in any of them passes the hard lint and fails the per-file debt comparison.
  */
+// @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/** mods/*/package.json
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
