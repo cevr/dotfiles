@@ -28,10 +28,10 @@ import { inboxOf, LEADER_REST, leaderLabel, loader, queuedRow, SEND_COMMAND, sen
 import { elapsed } from "../clock.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { startingLine } from "../starting.ts"
-import { jobItem, jobsOf, runningJobs } from "../jobs.ts"
+import { JOBS_TAB, jobItem, jobsOf, runningJobs } from "../jobs.ts"
 import { type HintMove, navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
-import { sameWakeItem, wakeItem } from "../wakes.ts"
+import { PART_SEP as WAKE_PART_SEP, sameWakeItem, TAB_ID as WAKE_TAB_ID, wakeItem } from "../wakes.ts"
 import { useNow } from "./clock.ts"
 import { useWorking, working } from "./family.ts"
 import type { Host } from "./host.ts"
@@ -351,10 +351,10 @@ export function Dock(props: { host: Host; sessionID?: string }) {
     const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText()) + job + queue
     return wakeItem(reading, (measured() ?? terminal().width - 2) - others)
   }, sameWakeItem)
-  // The count opens the host's Subagents picker, as Down on an empty prompt does.
-  const [pickerHover, setPickerHover] = createSignal(false)
-  // The shells count opens the session's shell list, where one can be read or killed.
-  const [shellsHover, setShellsHover] = createSignal(false)
+  // Each count opens where its items are, brighter under the pointer (Pressable): the subagents the host's Subagents
+  // picker, as Down on an empty prompt does; the shells the session's shell list, where one can be read or killed;
+  // the queue, the jobs, the wakes and the monitors their own tab of the composer panel.
+  const active = (count: number) => (count ? theme().text.feedback.success.base : theme().text.muted)
   const sep = () => <span style={{ fg: theme().text.faint }}>{DOCK_SEP}</span>
   // The count line shows only while something is active (chrome.ts `dockShown`), read from the same live values it draws.
   const shown = createMemo(() => {
@@ -405,51 +405,19 @@ export function Dock(props: { host: Host; sessionID?: string }) {
           queueMicrotask(() => setMeasured(value))
         }}
       >
-        <box
-          flexShrink={0}
-          onMouseOver={() => setPickerHover(true)}
-          onMouseOut={() => setPickerHover(false)}
-          onMouseUp={() => props.host.openSubagents()}
-        >
-          <text wrapMode="none">
-            <span
-              style={{
-                fg: pickerHover()
-                  ? theme().text.base
-                  : subagents()
-                    ? theme().text.feedback.success.base
-                    : theme().text.muted,
-              }}
-            >
-              {subagentText()}
-            </span>
-          </text>
-        </box>
+        <Pressable host={props.host} text={subagentText()} fg={active(subagents())} shrink={0} press={() => props.host.openSubagents()} />
         <text wrapMode="none" flexShrink={0}>
           {sep()}
         </text>
-        <box
-          flexShrink={0}
-          onMouseOver={() => setShellsHover(true)}
-          onMouseOut={() => setShellsHover(false)}
-          onMouseUp={() => {
+        <Pressable
+          host={props.host}
+          text={shellText()}
+          fg={active(shells())}
+          shrink={0}
+          press={() => {
             if (props.sessionID) props.host.openShells(props.sessionID)
           }}
-        >
-          <text wrapMode="none">
-            <span
-              style={{
-                fg: shellsHover()
-                  ? theme().text.base
-                  : shells()
-                    ? theme().text.feedback.success.base
-                    : theme().text.muted,
-              }}
-            >
-              {shellText()}
-            </span>
-          </text>
-        </box>
+        />
         <Show when={Option.getOrUndefined(queueText())}>
           {(item) => (
             <>
@@ -472,22 +440,45 @@ export function Dock(props: { host: Host; sessionID?: string }) {
         </Show>
         <Show when={Option.getOrUndefined(jobText())}>
           {(text) => (
-            <text wrapMode="none" flexShrink={0}>
-              {sep()}
-              <span style={{ fg: theme().text.feedback.success.base }}>{text()}</span>
-            </text>
+            <>
+              <text wrapMode="none" flexShrink={0}>
+                {sep()}
+              </text>
+              <Pressable host={props.host} text={text()} fg={theme().text.feedback.success.base} shrink={0} press={() => props.host.openTab(JOBS_TAB)} />
+            </>
           )}
         </Show>
-        <text wrapMode="none" truncate fg={theme().text.faint}>
-          <Show when={wake()}>
-            {(item) => (
-              <>
+        {/* The wake item takes what is left: each count opens its own tab (Wakes, Monitors); the notices, which no tab lists, are text. */}
+        <Show when={wake()}>
+          {(item) => (
+            <box flexDirection="row" flexShrink={1} minWidth={0}>
+              <text wrapMode="none" flexShrink={0}>
                 {sep()}
-                <span style={{ fg: toneColor(theme(), item().tone) }}>{item().text}</span>
-              </>
-            )}
-          </Show>
-        </text>
+              </text>
+              <For each={item().parts}>
+                {(part, at) => (
+                  <>
+                    <Show when={at() > 0}>
+                      <text wrapMode="none" flexShrink={0} fg={toneColor(theme(), item().tone)}>
+                        {WAKE_PART_SEP}
+                      </text>
+                    </Show>
+                    <Show
+                      when={Option.getOrUndefined(part.tab)}
+                      fallback={
+                        <text wrapMode="none" truncate fg={toneColor(theme(), item().tone)}>
+                          {part.text}
+                        </text>
+                      }
+                    >
+                      {(tab) => <Pressable host={props.host} text={part.text} fg={toneColor(theme(), item().tone)} shrink={1} press={() => props.host.openTab(WAKE_TAB_ID[tab()])} />}
+                    </Show>
+                  </>
+                )}
+              </For>
+            </box>
+          )}
+        </Show>
       </box>
       </Show>
       {/* A row per subagent of the family under the count, sidebar open or closed; inside a subagent the one shown is marked. */}

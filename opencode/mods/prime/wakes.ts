@@ -4,7 +4,9 @@
 // from the right as the width shrinks. And the composer panel's Wakes and
 // Monitors tabs (tui/composer.tsx): one row per alarm or monitor, the detail
 // Enter shows, and what an empty tab says. The reading comes from the wake
-// mod's RPC (opencode/wakes.ts).
+// mod's RPC (opencode/wakes.ts). A click on the dock's wake or monitor count
+// opens its tab; the notices have none.
+import { Option } from "effect"
 
 /** A monitor's newest check: when, its exit code, and its output's tail. */
 export type LastCheck = { readonly at: number; readonly exitCode: number; readonly output: string }
@@ -40,8 +42,14 @@ export type Wakes = {
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
-/** The dock's wake item: its words and their tone. */
-export type WakeItem = { readonly text: string; readonly tone: "success" | "warning" }
+/** One count of the wake item, and the panel tab a click on it opens: none for the notices, which no tab lists. */
+export type WakePart = { readonly text: string; readonly tab: Option.Option<WakeTab> }
+
+/** The dock's wake item: its words, its counts one by one, and their tone. */
+export type WakeItem = { readonly text: string; readonly parts: ReadonlyArray<WakePart>; readonly tone: "success" | "warning" }
+
+/** Between the wake item's counts. */
+export const PART_SEP = " · "
 
 /** Whether two wake items (`wakeItem`'s answers) draw the same: the dock keeps its item while a new reading says the same. */
 export const sameWakeItem = (a: ReturnType<typeof wakeItem>, b: ReturnType<typeof wakeItem>): boolean => a?.text === b?.text && a?.tone === b?.tone
@@ -55,18 +63,27 @@ export const wakeItem = (wakes: Wakes, max: number): WakeItem | undefined => {
   const alarms = wakes.entries.filter((entry) => entry.kind === "alarm")
   const monitors = wakes.entries.filter((entry) => entry.kind === "monitor")
   if (alarms.length === 0 && monitors.length === 0 && wakes.notices === 0) return undefined
-  const counts = [...(alarms.length === 0 ? [] : [plural(alarms.length, "wake", "wakes")]), ...(monitors.length === 0 ? [] : [plural(monitors.length, "monitor", "monitors")])]
-  const notices = wakes.notices === 0 ? [] : [plural(wakes.notices, "notice", "notices")]
-  const parts = [...counts, ...notices]
+  const count = (shown: number, one: string, many: string, tab: Option.Option<WakeTab>): ReadonlyArray<WakePart> =>
+    shown === 0 ? [] : [{ text: plural(shown, one, many), tab }]
+  const parts = [
+    ...count(alarms.length, "wake", "wakes", Option.some("alarm")),
+    ...count(monitors.length, "monitor", "monitors", Option.some("monitor")),
+    ...count(wakes.notices, "notice", "notices", Option.none()),
+  ]
+  const textOf = (shown: ReadonlyArray<WakePart>) => shown.map((part) => part.text).join(PART_SEP)
   let kept = parts.length
-  while (kept > 1 && [...parts.slice(0, kept).join(" · ")].length > max) kept -= 1
-  return { text: parts.slice(0, kept).join(" · "), tone: wakes.entries.length > 0 ? "success" : "warning" }
+  while (kept > 1 && [...textOf(parts.slice(0, kept))].length > max) kept -= 1
+  const shown = parts.slice(0, kept)
+  return { text: textOf(shown), parts: shown, tone: wakes.entries.length > 0 ? "success" : "warning" }
 }
 
 // ── The composer panel's tabs ──
 
 /** The two tabs: alarms under Wakes, monitors under Monitors. */
 export type WakeTab = "alarm" | "monitor"
+
+/** Each tab's id in the composer panel (cmd/prime registers them; a click on the dock's count opens one). */
+export const TAB_ID: Record<WakeTab, string> = { alarm: "wakes", monitor: "monitors" }
 
 /** What an empty tab says. */
 export const EMPTY: Record<WakeTab, string> = { alarm: "No pending wakes", monitor: "No monitors" }

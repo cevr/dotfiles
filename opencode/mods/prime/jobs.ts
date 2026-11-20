@@ -29,6 +29,9 @@ export type JobEntry = {
 /** What Prime reads of a session's jobs: the wake server's clock when it answered, and the jobs, running first. */
 export type Jobs = { readonly now: number; readonly jobs: ReadonlyArray<JobEntry> }
 
+/** The Jobs tab's id in the composer panel: cmd/prime registers it, a click on the dock's job item opens it. */
+export const JOBS_TAB = "jobs"
+
 /** What the Jobs tab says with no job. */
 export const NO_JOBS = "No jobs"
 
