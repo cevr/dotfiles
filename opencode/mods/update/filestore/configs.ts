@@ -1,6 +1,6 @@
 import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { Configs, UpdateFailed } from "../service.ts"
-import { SERVER_OFF } from "../trees.ts"
+import { SERVER_OFF, TUI_OFF } from "../trees.ts"
 import { readText, remove, writeText } from "./files.ts"
 
 /** Server plugin entries the host no longer has, dropped from the config: the automation plugin's name before upstream's rename (2026-11-16). */
@@ -20,7 +20,20 @@ export interface Paths {
   readonly server: string
   /** What is ours in it (`oursOf`). */
   readonly owned: Ours
+  /** The TUI config (`cli.json`), the one the late strip strips. */
+  readonly tui: string
+  /** What is ours in it (`tuiOursOf`). */
+  readonly tuiOwned: Ours
 }
+
+/**
+ * What is ours in the TUI config, as `scripts/daily.ts` `mergeCli` wrote it: entries under the same
+ * directories as the server's (`oursOf`), and the built-ins the TUI turns off.
+ */
+export const tuiOursOf = (checkout: string, share: string): Ours => ({ dirs: oursOf(checkout, share).dirs, names: [...TUI_OFF] })
+
+/** Where the late strip keeps the TUI config it strips: beside the migration's copies, under its own name. */
+export const tuiKeptOf = (paths: Pick<Paths, "kept">): string => `${paths.kept}/cli.json.before-late-strip`
 
 /**
  * What is ours in a host's server config whose live dotfiles checkout is `checkout` and share
@@ -73,14 +86,35 @@ export const listsOurs = (config: ServerConfig, owned: Ours): boolean => entries
 const keptOf = (paths: Pick<Paths, "kept">, path: string): string => `${paths.kept}/${Option.getOrElse(Arr.last(path.split("/")), () => path)}`
 
 /** The server config, none when the file is absent; a file that is not one JSON object fails. */
-const readServer = (path: string) =>
+const readServer = (path: string, what = "server config") =>
   readText(path).pipe(
     Effect.flatMap(
       Option.match({
         onNone: () => Effect.succeed(Option.none<ServerConfig>()),
-        onSome: (text) => decodeServer(text).pipe(Effect.map(Option.some), Effect.mapError((cause) => new UpdateFailed({ step: "read the server config", message: `${path} is not one JSON object: ${cause.message}` }))),
+        onSome: (text) => decodeServer(text).pipe(Effect.map(Option.some), Effect.mapError((cause) => new UpdateFailed({ step: `read the ${what}`, message: `${path} is not one JSON object: ${cause.message}` }))),
       }),
     ),
+  )
+
+/**
+ * The late strip of the TUI config: when it lists ours, its text is kept (`tuiKeptOf`) and then it is
+ * written with only the entries that are not ours, every other key (the theme, the tabs) kept. A file
+ * absent, or listing none of ours, is not written.
+ */
+const stripTui = (paths: Paths) =>
+  readText(paths.tui).pipe(
+    Effect.flatMap((text) =>
+      Effect.forEach(Option.toArray(text), (each) =>
+        readServer(paths.tui, "TUI config").pipe(
+          Effect.flatMap((config) =>
+            Effect.forEach(Option.toArray(Option.filter(config, (one) => listsOurs(one, paths.tuiOwned))), (one) =>
+              writeText("keep the TUI config", tuiKeptOf(paths), each).pipe(Effect.andThen(writeText("strip the TUI config", paths.tui, `${encodeServer(stripped(one, paths.tuiOwned))}\n`))),
+            ),
+          ),
+        ),
+      ),
+    ),
+    Effect.asVoid,
   )
 
 /**
@@ -121,5 +155,7 @@ export const layer = (paths: Paths) =>
           }),
         ),
       ),
+      tuiOurs: readServer(paths.tui, "TUI config").pipe(Effect.map(Option.exists((config) => listsOurs(config, paths.tuiOwned)))),
+      stripTui: stripTui(paths),
     }),
   )

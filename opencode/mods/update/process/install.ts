@@ -1,7 +1,7 @@
 import { env, spawnSync } from "bun"
 import { Array as Arr, Option, Schema } from "effect"
 import { buildName } from "../builds.ts"
-import { oursOf } from "../filestore/configs.ts"
+import { oursOf, tuiOursOf } from "../filestore/configs.ts"
 import { buildsLock, files, HANDOFF_SETTINGS, modeOf, type Settings, SettingsJson, shareDir, stepEnv } from "../settings.ts"
 import { buildOfTree } from "../trees.ts"
 import { type Program, programOf } from "./handoff.ts"
@@ -63,12 +63,14 @@ export const treeOptions = (settings: Settings, stepVariables: Readonly<globalTh
   overlay: ["--checkout", settings.checkout, "--host", settings.host],
 })
 
-/** The global configs as the update keeps, restores and strips them (`filestore/configs.ts`): the server config is the first. */
+/** The global configs as the update keeps, restores and strips them (`filestore/configs.ts`): the server config is the first, the TUI's the one named `cli.json`. */
 export const configPaths = (settings: Settings, home: string) => ({
   config: settings.config,
   kept: files(settings).kept,
   server: Option.getOrElse(Arr.head(settings.config), () => `${home}/.config/opencode/opencode.json`),
   owned: oursOf(settings.checkout, shareDir(home)),
+  tui: Option.getOrElse(Arr.findFirst(settings.config, (path) => lastPart(path) === "cli.json"), () => `${home}/.config/opencode/cli.json`),
+  tuiOwned: tuiOursOf(settings.checkout, shareDir(home)),
 })
 
 /** The last part of a path. */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, PREVIOUS_ON_DISK, prunable, type Running, stagingName } from "./builds.ts"
+import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, oldFormat, PREVIOUS_ON_DISK, prunable, type Running, stagingName } from "./builds.ts"
 import { type Build, type Record, recordText } from "./record.ts"
 import { buildOfTree, makingName, makingTree, namedBy, treeOf } from "./trees.ts"
 
@@ -150,7 +150,9 @@ const host = (next: () => number) => {
   const base = () => pick(["2.2.5", "2.2.7", "2.3.0-beta.1", "10.0.12"])
   const oldVersion = () => `${base()}-prime.${hex(8)}`
   const newVersion = () => `${base()}-prime.${hex(8)}.${hex(8)}`
-  const anyVersion = () => chance(0.4, oldVersion, newVersion)
+  // A tree build (`pin.ts` `versionOf` with a tree): the new format and `.tree`.
+  const treeVersion = () => `${newVersion()}.tree`
+  const anyVersion = () => chance(0.3, oldVersion, () => chance(0.5, newVersion, treeVersion))
   const versions = Array.from({ length: 2 + Math.floor(next() * 10) }, anyVersion)
   // The record names builds on disk and builds already gone, of either format.
   const known = [...versions, ...Array.from({ length: 3 }, anyVersion)]
@@ -173,6 +175,10 @@ const host = (next: () => number) => {
       () => other(`opencode-${base()}-prime.${hex(8)}.${hex(9)}`),
       () => other(`opencode-${base()}-prime.${hex(7).toUpperCase()}F`),
       () => other(`opencode-${base()}-prime.${hex(8)}.${hex(8)}.${hex(8)}`),
+      // Near misses of a tree build's name: none is a build, nor its tree.
+      () => other(`opencode-${newVersion()}.${pick(["tre", "treex", "tree.tree", "TREE", "trees"])}`),
+      () => other(`opencode-${oldVersion()}.tree`),
+      () => other(treeOf(`opencode-${newVersion()}.tre`)),
       () => other(`${buildName(pick(versions))}.tmp`),
       () => other(`${buildName(pick(versions))}.plugin`),
       () => other(`${treeOf(buildName(pick(versions)))}.old`),
@@ -218,6 +224,7 @@ describe("acceptance: a prune over share directories of both build formats, with
 
   test(`over ${RUNS} generated hosts (seed ${SEED}), it names (a) builds and trees only, (b) never a kept or running one, (c) every other, of either format; a tree exactly when its build, never while a command line names it`, () => {
     const next = random(SEED)
+    const reached = { treeGone: new Array<string>(), treeKept: new Array<string>() }
     for (let run = 0; run < RUNS; run++) {
       const { listing, record, running, through } = host(next)
       const pruned = new Set(prunable(listing.map((made) => made.name), record, Option.some(running)))
@@ -245,6 +252,14 @@ describe("acceptance: a prune over share directories of both build formats, with
       }
       // With what runs unread, nothing goes.
       expect(prunable(listing.map((made) => made.name), record, Option.none())).toEqual([])
+      // The old-format builds that run (the late strip's hold): each running build with no tree listed, by the generator's own record.
+      const builtNames = new Set(listing.filter((made) => made.kind === "build").map((made) => made.name))
+      const treesOf = new Set(listing.filter((made) => made.kind === "tree").map((made) => made.of))
+      const runningOld = new Set(running.executables.map((path) => lastPart(path.replace(/ \(deleted\)$/, ""))).filter((name) => builtNames.has(name) && !treesOf.has(name)))
+      expect(new Set(oldFormat(listing.map((made) => made.name), running.executables)), `old-format at ${where}`).toEqual(runningOld)
+      for (const made of listing.filter((each) => each.kind === "build" && each.name.endsWith(".tree"))) (pruned.has(made.name) ? reached.treeGone : reached.treeKept).push(made.name)
     }
+    // The generator reaches tree builds that go and tree builds that stay.
+    expect([reached.treeGone.length > 0, reached.treeKept.length > 0]).toEqual([true, true])
   })
 })

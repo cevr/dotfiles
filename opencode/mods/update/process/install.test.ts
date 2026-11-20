@@ -29,6 +29,12 @@ describe("daily's part of the update", () => {
     expect(paths.server).toBe("/h/.config/opencode/opencode.json")
     expect(paths.owned.dirs).toEqual(["/h/dotfiles/opencode/mods", "/h/dotfiles/opencode/cmd", "/h/.local/share/opencode-prime/anthropic-auth"])
   })
+
+  test("strips the TUI config late, the one named cli.json, by the same directories and the TUI's built-ins off", () => {
+    const paths = configPaths(settingsFor(HOST), HOST.home)
+    expect(paths.tui).toBe("/h/.config/opencode/cli.json")
+    expect(paths.tuiOwned).toEqual({ dirs: paths.owned.dirs, names: ["-opencode.btw"] })
+  })
 })
 
 describe("daily's stage from a build's tree", () => {

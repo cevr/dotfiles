@@ -77,7 +77,7 @@ const fakes = (host: World): Externals => {
         Layer.succeed(HandoffMark, HandoffMark.of({ hold: Effect.void, release: Effect.void, read: Effect.succeed(Option.none()), alive: () => Effect.succeed(false) })),
         Layer.succeed(Records, Records.of({ read: Effect.succeed(Option.none()), write: () => unused("record") })),
         Layer.succeed(Rejections, Rejections.of({ read: Effect.succeed(Option.none()), write: () => Effect.void })),
-        Layer.succeed(Configs, Configs.of({ keep: Effect.void, restore: Effect.void, ours: Effect.succeed(false), strip: Effect.void })),
+        Layer.succeed(Configs, Configs.of({ keep: Effect.void, restore: Effect.void, ours: Effect.succeed(false), strip: Effect.void, tuiOurs: Effect.succeed(false), stripTui: Effect.void })),
         Layer.succeed(Notice, Notice.of({ show: () => Effect.void, clear: Effect.void })),
         log,
         heartbeat,

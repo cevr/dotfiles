@@ -138,6 +138,12 @@ export class Builds extends Context.Service<
      * runs does not read.
      */
     readonly prune: (read: Effect.Effect<Option.Option<Record>>) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
+    /**
+     * The running executables that are old-format builds: a build of the share directory with no tree
+     * beside it, which reads its plugins from the global configs (`builds.ts` `oldFormat`). Fails when
+     * what runs does not read.
+     */
+    readonly oldRunning: Effect.Effect<ReadonlyArray<string>, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builds") {}
 
@@ -258,8 +264,9 @@ export class Service extends Context.Service<
 /**
  * The global configs (`~/.config/opencode`): the old scheme writes our plugin entries there, and a
  * rollback puts the replaced ones back with the build they belong to. With trees, the first tree
- * install strips our entries from the server config (the migration), a kept copy first; after it, no
- * update writes them.
+ * install strips our entries from the server config (the migration), a kept copy first; the TUI config
+ * keeps its entries for the open TUIs of the old scheme until a proven handoff finds no old-format build
+ * running, which strips them too (the late strip), its own copy kept first. After that, no update writes them.
  */
 export class Configs extends Context.Service<
   Configs,
@@ -272,6 +279,13 @@ export class Configs extends Context.Service<
     readonly ours: Effect.Effect<boolean, UpdateFailed>
     /** Removes our plugin entries from the server config, every other key and entry kept; the TUI config is left alone. */
     readonly strip: Effect.Effect<void, UpdateFailed>
+    /** Whether the TUI config (`cli.json`) still lists plugin entries of ours: the late strip is to do. */
+    readonly tuiOurs: Effect.Effect<boolean, UpdateFailed>
+    /**
+     * Keeps a copy of the TUI config (its own, beside the migration's), then removes our plugin entries
+     * from it, every other key and entry kept: the late strip, once no old-format build runs.
+     */
+    readonly stripTui: Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Configs") {}
 

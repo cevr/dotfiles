@@ -192,6 +192,7 @@ const fakes = (host: World) =>
               return Effect.succeed([{ name: "opencode-2.2.5-prime.old", bytes: 225_000_000 }])
             }),
           ),
+        oldRunning: Effect.die(new Error("the old scheme strips no TUI config")),
       }),
     ),
     Layer.succeed(
@@ -201,6 +202,8 @@ const fakes = (host: World) =>
         restore: Effect.sync(() => void host.calls.push("restore config")),
         ours: Effect.succeed(true),
         strip: Effect.die(new Error("the old scheme strips nothing")),
+        tuiOurs: Effect.die(new Error("the old scheme strips no TUI config")),
+        stripTui: Effect.die(new Error("the old scheme strips no TUI config")),
       }),
     ),
     Layer.succeed(Trees, Trees.of({ make: () => Effect.die(new Error("the old scheme makes no tree")), check: () => Effect.void, has: () => Effect.succeed(false), remove: () => Effect.void })),
@@ -906,6 +909,8 @@ describe("the watchdog outside the resident location", () => {
  *   I2  no step reloads plugins in a process that keeps running;
  *   I3  the live checkout never moves (no update step, and no rollback, moves git);
  *   I4  a prune deletes no binary or tree a model process runs, or the record keeps.
+ *   (I5 to I7 below, with the starts and the trees; U5 adds I8: the TUI config loses our entries only
+ *   once no process of an old-format build runs.)
  *
  * Red on main before U4: the handoff's `source.advance` moved the live checkout, which every open TUI
  * and the old service loaded from and watched, so I1, I2 and I3 all failed.
@@ -958,6 +963,8 @@ describe("plugin trees", () => {
     /** Whether the server config lists plugin entries of ours (the old scheme wrote them), and whether the kept copy does. */
     globalOurs: boolean
     keptOurs: boolean
+    /** Whether the TUI config (`cli.json`) lists plugin entries of ours: the old scheme wrote them, and only the late strip takes them out. */
+    tuiOurs: boolean
     /** What a prune deleted that a process ran or the record kept. */
     readonly lost: Array<string>
     /** The step that fails, if any: the tree's make or the stage. */
@@ -979,6 +986,7 @@ describe("plugin trees", () => {
   const bind = (host: Host, name: string, version: string): Pick<Proc, "from" | "loaded"> => {
     if (!host.trees.has(version)) {
       if (name === "service" && !host.globalOurs) return { from: "live", loaded: "none" }
+      if (name !== "service" && !host.tuiOurs) return { from: "live", loaded: "none" }
       return { from: "live", loaded: host.head }
     }
     if (name === "service" && host.globalOurs) return { from: "tree", loaded: `mixed ${host.head.slice(0, 8)}+tree` }
@@ -1007,6 +1015,17 @@ describe("plugin trees", () => {
   const serverConfigWritten = (host: Host) => {
     for (const proc of host.procs.filter((each) => each.from === "live" && each.name === "service")) proc.reloads += 1
   }
+
+  /** The TUI config's plugins were written (the late strip): every TUI that reads its plugin list there reloads, onto none of ours. */
+  const tuiConfigWritten = (host: Host) => {
+    for (const proc of host.procs.filter((each) => each.from === "live" && each.name !== "service")) {
+      proc.reloads += 1
+      proc.loaded = "none"
+    }
+  }
+
+  /** The running processes of an old-format build: a build with no tree beside it, which reads its plugins from the global configs. */
+  const oldFormat = (host: Host) => host.procs.filter((proc) => !host.trees.has(proc.version))
 
   /** The build the launcher starts (the record's installed one), and the one the service's unit starts again after a crash (the running service's). */
   const launched = (host: Host) => Option.getOrThrow(host.record).version
@@ -1170,6 +1189,8 @@ describe("plugin trees", () => {
                 return []
               }),
             ),
+          // By the processes' executables, as the real one reads them: a build with no tree beside it is old-format.
+          oldRunning: Effect.sync(() => oldFormat(host).map((proc) => buildName(proc.version))),
         }),
       ),
       Layer.succeed(
@@ -1189,6 +1210,14 @@ describe("plugin trees", () => {
             call(host, "strip")
             if (host.globalOurs) serverConfigWritten(host)
             host.globalOurs = false
+          }),
+          tuiOurs: Effect.sync(() => host.tuiOurs),
+          stripTui: Effect.sync(() => {
+            call(host, "strip tui")
+            // I8: the late strip runs only once no process of an old-format build runs, whatever it reads.
+            for (const proc of oldFormat(host)) host.starts.push(`I8: the TUI config was stripped while ${proc.name} runs the old-format ${proc.version}`)
+            if (host.tuiOurs) tuiConfigWritten(host)
+            host.tuiOurs = false
           }),
         }),
       ),
@@ -1257,6 +1286,8 @@ describe("plugin trees", () => {
       trees: new Set([good.version].filter(() => treed)),
       globalOurs: !treed,
       keptOurs: false,
+      // Every host still has the old scheme's TUI entries: the migration leaves the TUI config alone.
+      tuiOurs: true,
       lost: [],
       fails: Option.none(),
       crashAt: Option.none(),
@@ -1353,7 +1384,7 @@ describe("plugin trees", () => {
   }
 
   describe("a running process only ever holds its own build's plugins", () => {
-    test("over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, and a start at any step holds exactly its build's plugins", () =>
+    test("over generated hosts, endings, crashes and a second update, no step breaks I1 to I8, and a start at any step holds exactly its build's plugins", () =>
       check(
         // `SIM_SEED` replays one run.
         Effect.flatMap(Effect.orDie(Config.Int("SIM_SEED").pipe(Config.withDefault(20261119))), (seed) =>
@@ -1370,6 +1401,8 @@ describe("plugin trees", () => {
           // ... and every failed build, and a crash in the switch's span (between the strip and the restart).
           expect(["make tree", "stage"].map((step) => runs.some(({ each }) => Option.contains(each.fails, step)))).toEqual([true, true])
           expect(runs.some(({ ran }) => ran.crashed)).toBe(true)
+          // ... and the late strip, and a host whose old TUI held it.
+          expect([runs.some(({ ran }) => !ran.host.tuiOurs), runs.some(({ ran }) => ran.host.tuiOurs && ran.outcomes.includes("proven"))]).toEqual([true, true])
         },
       ))
 
@@ -1391,11 +1424,34 @@ describe("plugin trees", () => {
 
   describe("the order of an update's effects", () => {
     test("steady state: fetch, make the tree, stage, hand off; then the record, the restart, the good record, the prune; nothing moves the checkout or writes a config", () =>
-      check(once("on trees", "healthy"), (ran) => {
-        expect(ran.outcome).toBe("proven")
-        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune"])
-        expect(ran.found).toEqual([])
+      check(scenario("on trees", 1, ["healthy", "healthy"], []), (ran) => {
+        expect(ran.outcomes).toEqual(["proven", "proven"])
+        // The first proven handoff with no old-format build running takes the old scheme's entries out of the TUI config, once.
+        expect(ran.calls[0]).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune", "strip tui"])
+        expect(ran.calls[1]).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune"])
+        expect([ran.host.tuiOurs, ran.found]).toEqual([false, []])
       }))
+
+    test("the late strip waits while a TUI of the old scheme runs, and comes with the first proven handoff after it moved", () =>
+      check(scenario("first install", 1, ["healthy", "healthy"], []), (ran) => {
+        expect(ran.outcomes).toEqual(["proven", "proven"])
+        // tui-0 still runs the old build when the first handoff ends; it moves at its idle moment, before the second.
+        expect(ran.calls[0].includes("strip tui")).toBe(false)
+        expect(ran.calls[1].slice(-2)).toEqual(["prune", "strip tui"])
+        expect([ran.host.tuiOurs, ran.found]).toEqual([false, []])
+      }))
+
+    test("a TUI of the old scheme that never moves holds the late strip for good; a rollback never strips", () =>
+      Promise.all([
+        check(scenario("first install", 1, ["healthy", "healthy"], ["tui-0"]), (ran) => {
+          expect(ran.calls.flat().includes("strip tui")).toBe(false)
+          expect([ran.host.tuiOurs, ran.found]).toEqual([true, []])
+        }),
+        check(scenario("on trees", 1, ["rolled back", "gave up"], []), (ran) => {
+          expect(ran.calls.flat().includes("strip tui")).toBe(false)
+          expect(ran.host.tuiOurs).toBe(true)
+        }),
+      ]))
 
     test("the first tree install keeps the config and strips our entries right before the record; nothing else is new", () =>
       check(once("first install", "healthy"), (ran) => {

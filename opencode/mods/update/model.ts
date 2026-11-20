@@ -245,6 +245,27 @@ const pruneBuilds = Effect.gen(function* () {
   )
 })
 
+/**
+ * The late strip, after a proven tree handoff's prune: the TUI config (`cli.json`) loses our plugin
+ * entries, its own copy kept first (`Configs.stripTui`), once no running executable is an old-format
+ * build (`Builds.oldRunning`). Until then an open TUI of the old scheme still reads its plugins there,
+ * and a write would reload or blank them; a TUI of a tree build ignores that list (its overlay replaces
+ * it). A config that lists none of ours is not touched. It never changes the handoff's outcome: a step
+ * that fails is logged, and the next proven handoff tries again.
+ */
+const lateStrip = Effect.gen(function* () {
+  const builds = yield* Builds
+  const configs = yield* Configs
+  const log = yield* Log
+  yield* Effect.gen(function* () {
+    if (!(yield* configs.tuiOurs)) return
+    const old = yield* builds.oldRunning
+    if (old.length > 0) return yield* log.line(`late strip: the TUI config keeps our plugin entries while an old-format build runs (${old.join(", ")})`)
+    yield* configs.stripTui
+    yield* log.line("late strip: our plugin entries left the TUI config (a copy kept); no old-format build runs")
+  }).pipe(Effect.catch((failed) => log.line(`late strip: the TUI config is left as it is: ${failed.step}: ${failed.message}`)))
+})
+
 /** A step that failed on the restart path, as the health it leaves: sick, for good. */
 const failedStep = (step: string) => (failed: UpdateFailed | CheckoutStuck) => Health.Sick({ plugin: step, cause: failed.message, final: true })
 
@@ -447,7 +468,12 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
   const migrate = Effect.fn("Update.migrate")(function* () {
     const ours = yield* configs.ours.pipe(Effect.mapError((failed) => heldBy(failed, "the server config does not read")))
     if (!ours) return false
-    yield* log.line("handoff: the first tree install: our plugin entries leave the server config (a copy kept), right before the restart")
+    // A handoff killed between this strip and the record write leaves the old build installed with none of
+    // our server plugins, the updater among them, and nothing of ours runs at its next launch to heal it
+    // (the launcher is written by the record write that did not happen): the line says the one repair.
+    yield* log.line(
+      "handoff: the first tree install: our plugin entries leave the server config (a copy kept), right before the restart; if no install record follows this line, `bun run daily` in the checkout writes them back",
+    )
     yield* configs.keep.pipe(Effect.mapError((failed) => heldBy(failed, "the server config could not be kept")))
     yield* configs.strip.pipe(
       Effect.tapError(() => configs.restore.pipe(Effect.ignore)),
@@ -460,7 +486,13 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
    * The recovery after the first restart, down the ladder (`recover`), to an outcome: proven
    * (recorded good, then the prune), rolled back, or given up. `reinstall` is the old scheme's rung.
    */
-  const ladder = Effect.fn("Update.ladder")(function* (tried: Option.Option<Build>, hadLogins: ReadonlyArray<string>, reinstall: boolean, back: () => Effect.Effect<Option.Option<Health>>) {
+  const ladder = Effect.fn("Update.ladder")(function* (
+    tried: Option.Option<Build>,
+    hadLogins: ReadonlyArray<string>,
+    reinstall: boolean,
+    back: () => Effect.Effect<Option.Option<Health>>,
+    last: Effect.Effect<void, never, Builds | Configs | Log> = Effect.void,
+  ) {
     let stage: Stage = "first"
     let health = yield* restartAndRead(stage, hadLogins)
     let failure = health
@@ -478,6 +510,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
         // builds lock daily's stage holds from its copy to its record write (`Builds`), not under this
         // mark, which daily never reads.
         yield* pruneBuilds
+        yield* last
         return "proven" satisfies Outcome
       }
       if (Recovery.$is("RolledBack")(recovery)) return yield* end("rolled-back", tried, failure, `${describeHealth(failure)}; rolled back`)
@@ -517,7 +550,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
       if (migrated.success) yield* configs.restore.pipe(Effect.catch((back) => log.line(`handoff: putting the config back failed: ${back.message}`)))
       return yield* end("gave-up", tried, failedInstall.value, `${describeHealth(failedInstall.value)}; the service was not restarted`)
     }
-    return yield* ladder(tried, hadLogins, false, rollBackTree)
+    return yield* ladder(tried, hadLogins, false, rollBackTree, lateStrip)
   }
   const moved = yield* Effect.forEach(Option.toArray(tried), moveOnto).pipe(Effect.map(Arr.head), Effect.result)
   if (Result.isFailure(moved)) return yield* unmovedEnd(moved.failure, tried)
