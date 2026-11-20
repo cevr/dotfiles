@@ -92,10 +92,6 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - Every role call runs in the background, names the role as its agent type, and has a `description` that starts like its hand-back line (`implementor auth r2`, `verifier batch-3 r1`); a reused agent (next round, lane) gets the new one; where the host keeps the old title, rename it. On OpenCode it names no `model`. Effort is the table's, always; an implementor that renders a look runs at max. Change effort, never the model. How each host starts, falls back and waits: [hosts](references/hosts.md).
 - The pool and model rules are `AGENTS.md`'s (Fable plans, Opus first, Codex plans or verifies and never implements, never Sonnet).
 
-## The freeze
-
-Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill.
-
 ## Between messages
 
 - **Wait** by ending your turn: workers, lands and timers wake you. An outside event (CI, a time) is one `monitor` or background waiter. Nobody polls. Before you end a turn with units in `plan`, `implement` or `verify` and no agent on them, start them or name what they wait on.
