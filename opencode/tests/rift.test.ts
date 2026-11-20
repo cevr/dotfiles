@@ -13,7 +13,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./rift/run.ts"
-import { BRANCH, COMMIT_SUBJECT, DONE, LAND_SUBJECT, LAND_TASK, MOVE_ONLY, TASK } from "./rift/sim.ts"
+import { BRANCH, COMMIT_SUBJECT, DONE, LAND_SUBJECT, LAND_TASK, TASK, watchedIn } from "./rift/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -92,7 +92,7 @@ describe.skipIf(!fork || !riftHere)("in real OpenCode, on the scripted model and
       const offered = result.seen.find((item) => item.task.endsWith(TASK))
       expect(offered?.tools).toContain("rift")
       // The session move tool, offered beside them, is still in the request: they are gone, not merely unlisted.
-      expect(MOVE_ONLY).toContainEqual(offered?.named)
+      expect(watchedIn(offered?.named ?? [])).toEqual({ worktree: [], move: true })
 
       const [create, commit, list, refused, forced, misspelled, worktree, ...rest] = toolParts(result.messages)
       expect(rest).toEqual([])

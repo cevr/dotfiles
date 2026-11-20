@@ -27,8 +27,14 @@ export const LAND_SUBJECT = "feat: land me"
  */
 export const WATCHED = ["worktree_create", "worktree_list", "worktree_remove", "session_move", "session.move"]
 
-/** What `named` holds for a request that offers no worktree tool and the session move tool: one of its two names. */
-export const MOVE_ONLY: ReadonlyArray<ReadonlyArray<string>> = [["session_move"], ["session.move"]]
+/**
+ * What a request names of WATCHED: its worktree names, and whether it names the session move tool (either name;
+ * a later request may carry both, the work answer naming `opencode_session_move` beside Code Mode's catalog).
+ */
+export const watchedIn = (named: ReadonlyArray<string>) => ({
+  worktree: named.filter((name) => name.startsWith("worktree_")),
+  move: named.some((name) => !name.startsWith("worktree_")),
+})
 
 /** What the test reads back about one request. */
 export const Seen = Schema.Struct({

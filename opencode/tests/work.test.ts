@@ -14,7 +14,7 @@ import { Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { withProcessEnv } from "./git-repo.ts"
-import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, MOVE_ONLY, Result } from "./work/sim.ts"
+import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result, watchedIn } from "./work/sim.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -88,7 +88,7 @@ if (runnable)
             expect(request.tools).toContain("work")
             expect(request.tools).toContain("rift")
             // The session move tool, offered beside them, is still in the request: they are gone, not merely unlisted.
-            expect(MOVE_ONLY).toContainEqual(request.named)
+            expect(watchedIn(request.named)).toEqual({ worktree: [], move: true })
           }
           const [create, commit, list, refused, forced, ...rest] = result.calls
           expect(rest).toEqual([])
