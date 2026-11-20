@@ -588,13 +588,18 @@ if (import.meta.main) {
                   .env(environment(variables))
                   .then(() => undefined),
               settings: () => settingsByHand(home, catalog),
-              handoff: (tree) => Effect.runPromise(Effect.sync(() => restartThroughHandoff(settings, "daily by hand", treeProgram(tree)))),
+              // The restart's line is said where it runs: the no-op (the build installed and proven) restarts nothing.
+              handoff: (tree) =>
+                Effect.runPromise(
+                  Effect.sync(() => restartThroughHandoff(settings, "daily by hand", treeProgram(tree))).pipe(
+                    Effect.tap((code) => Effect.sync(() => log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`))),
+                  ),
+                ),
               log: log,
             }),
           )
         }),
       )
-      log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`)
       process.exit(code)
     }
 
