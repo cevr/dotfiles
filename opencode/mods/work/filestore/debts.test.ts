@@ -1,11 +1,12 @@
 // The owed post-land steps and accept checks in their file: nothing before the first write, what was written read back by a
-// fresh layer (a restarted server), an older file read as its owed steps, and a file that cannot be read holding nothing owed.
+// fresh layer (a restarted server), an older file read as its owed steps, and a file that cannot be decoded kept
+// aside (never written over) and read as nothing owed.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Clock, Context, Deferred, Effect, Fiber, Layer, Option, Schema } from "effect"
-import { noDebts, owe, OwedPostLand, type Debts } from "../owed.ts"
+import { Debts, noDebts, owe, OwedPostLand } from "../owed.ts"
 import { PostLandClaim, PostLandDebts } from "../service.ts"
 import { debtsFile, layer } from "./debts.ts"
 
@@ -43,8 +44,39 @@ describe("the owed post-land steps' file", () => {
           // The first version's file: the owed steps alone.
           writeFileSync(file, Schema.encodeSync(Schema.fromJsonString(Schema.Array(OwedPostLand)))(owed))
           expect(yield* restarted.read).toEqual({ owed, accepts: [], loadedAt: Option.none() })
+        }),
+      ),
+    ))
+
+  test("a file that cannot be decoded (truncated, or the wrong shape) is kept aside, never written over: it reads as nothing owed, and the next write leaves it", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scratch = mkdtempSync(join(tmpdir(), "rift-debts-bad-"))
+          yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })))
+          const logs = join(scratch, "rift-land")
+          const file = debtsFile(logs)
+          mkdirSync(logs, { recursive: true })
+          const debts = yield* debtsAt(file)
+          const owed = owe([], owing("h1", 1_000))
+          const asides = () => readdirSync(logs).filter((name) => name.startsWith("post-land-owed.json.bad-"))
+          const whole = Schema.encodeSync(Schema.fromJsonString(Debts))({ owed, accepts: [], loadedAt: Option.none() })
+          const bad = [whole.slice(0, Math.floor(whole.length / 2)), JSON.stringify({ owed: 5, accepts: "none" })]
+          for (const [index, text] of bad.entries()) {
+            writeFileSync(file, text)
+            expect(yield* debts.read).toEqual(noDebts)
+            // Kept aside, word for word, and gone from the debts' place: a reader after it finds nothing to move.
+            expect(asides()).toHaveLength(index + 1)
+            expect(asides().map((name) => readFileSync(join(logs, name), "utf8"))).toContain(text)
+            expect(existsSync(file)).toBe(false)
+            yield* debts.update((before) => ({ ...before, owed }))
+            expect((yield* debts.read).owed).toEqual(owed)
+            expect(asides()).toHaveLength(index + 1)
+          }
+          // An update that reads a bad file keeps it aside too, then writes only its own change.
           writeFileSync(file, "{ not json")
-          expect(yield* restarted.read).toEqual(noDebts)
+          expect((yield* debts.update((before) => ({ ...before, owed }))).owed).toEqual(owed)
+          expect(asides()).toHaveLength(3)
         }),
       ),
     ))

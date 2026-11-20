@@ -9,6 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { exitWords } from "../land.ts"
+import { RESUMED } from "../owed.ts"
 import { Landing } from "../service.ts"
 import { exclusively, exclusivelySync, gateTurn, hold, type LockMode } from "./flock.ts"
 import * as ProcessLanding from "./landing.ts"
@@ -235,6 +236,23 @@ describe("process Landing", () => {
     expect(ran.code).toBe(3)
     expect(ran.log).toBe(join(made.scratch, "logs", "integrate.gate.log"))
     expect(ran.output).toBe(" 3 pass\noops\n")
+  })
+
+  test("a resumed accept runs a compound rift.accept as it is, told through its environment, and its receipt names it resumed (accept-owed T3)", () => {
+    const made = bench()
+    const compounds = ['(test "$RIFT_ACCEPT_RESUMED" = 1)', 'if [ "$RIFT_ACCEPT_RESUMED" = 1 ]; then exit 0; else exit 4; fi', '{ test "$RIFT_ACCEPT_RESUMED" = 1; }']
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        for (const command of compounds) {
+          const done = yield* landing.receipted(made.integration, "accept", command, { RIFT_LAND_BASE: "b0", [RESUMED]: "1" })
+          expect([command, done.ran.code]).toEqual([command, 0])
+          expect(done.receipt.checks.map((check) => check.command)).toEqual([`${command}\n# ${RESUMED}=1: a resumed run`])
+        }
+        // A first run's receipt names its command alone.
+        const first = yield* landing.receipted(made.integration, "accept", "(exit 0)", { RIFT_LAND_BASE: "b0" })
+        expect(first.receipt.checks.map((check) => check.command)).toEqual(["(exit 0)"])
+      }),
+    )
   })
 
   test("postLand runs like a check with base, head and a fresh report file, and answers what it wrote there; none written, none answered", async () => {

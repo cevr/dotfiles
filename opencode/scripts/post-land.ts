@@ -180,6 +180,9 @@ export interface Report {
   readonly action: boolean
 }
 
+/** What the step writes to RIFT_POST_LAND_REPORT, which the land wakes its session on: a report that needs action, else nothing. */
+export const landReport = ({ text, action }: Report): string => Arr.filter([`${text}\n`], () => action).join("")
+
 /** Runs the step at `load`; answers the report (empty for a `loaded` run that ran no file). */
 export const postLand = (steps: Steps, load: Load = "settled"): Promise<string> => reportOf(steps, load).then((report) => report.text)
 
@@ -236,7 +239,7 @@ if (import.meta.main) {
   const checkout = () => run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
   // Each deep run's receipt, for the next batch's verifier: in the land's receipts folder, else this host's.
   const logs = env.RIFT_LAND_LOGS || landLogs(env)
-  const { text, action } = await reportOf({
+  const done = await reportOf({
     // The deep run takes the machine's accept lock itself and yields it to a land's run; it never holds the
     // land's accept flock (RIFT_LAND_ACCEPT_LOCK), which a land's check takes before its own run starts.
     deep: (ask) => {
@@ -297,6 +300,6 @@ if (import.meta.main) {
   }, loadOf(env.RIFT_POST_LAND_LOAD))
   const out = env.RIFT_POST_LAND_REPORT
   // The report goes to the step's log; only one that needs action goes to the land, and an empty one wakes no one.
-  if (text !== "") log(text)
-  if (out !== undefined && out !== "") writeFileSync(out, Arr.filter([`${text}\n`], () => action).join(""))
+  if (done.text !== "") log(done.text)
+  if (out !== undefined && out !== "") writeFileSync(out, landReport(done))
 }
