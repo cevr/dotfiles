@@ -286,7 +286,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
-        "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },

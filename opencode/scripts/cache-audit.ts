@@ -13,10 +13,17 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { audit, PRIMARY_AGENTS, renderAudit } from "../mods/cache/audit.ts"
+import { audit, renderAudit } from "../mods/cache/audit.ts"
 import { DEFAULT_DIR, FILE_NAME, parse } from "../mods/cache/filestore/request-log.ts"
 import { judgeRules, renderRules, type Facts } from "../mods/cache/rules.ts"
 import { parseTtl } from "../mods/cache/ttl.ts"
+import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
+
+/**
+ * The agents a person talks to, by default: the host's build and plan, and the orchestrator a new root session opens
+ * with (cmd/orchestrate). A session's first request on another agent is a subagent's cold start.
+ */
+export const PRIMARY_AGENTS: ReadonlySet<string> = new Set(["build", "plan", ORCHESTRATOR])
 
 export interface Args {
   readonly since: number

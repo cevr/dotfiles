@@ -8,7 +8,6 @@
 // The break is found from the tokens alone, not from the ledger's `cause`, so
 // a line the server judged wrongly still counts; the cause reads the line's
 // evidence (model, kind, gap, lifetime, login, first changed segment).
-import { ORCHESTRATOR } from "@dotfiles/opencode-orchestrate/role"
 import { formatTokens } from "./line.ts"
 import { NOISE_FLOOR_TOKENS } from "./miss.ts"
 import type { LedgerLine } from "./request-log.ts"
@@ -16,12 +15,6 @@ import { segmentKey } from "./summary.ts"
 
 /** A miss is sharp when it is at least this share of the prompt both requests share, and above the noise floor. */
 export const SHARP_SHARE = 0.2
-
-/**
- * The agents a person talks to: the host's build and plan, and the orchestrator a new root session opens with
- * (cmd/orchestrate). A session's first request on another agent is a subagent's.
- */
-export const PRIMARY_AGENTS: ReadonlySet<string> = new Set(["build", "plan", ORCHESTRATOR])
 
 const HOUR_MS = 3_600_000
 
@@ -65,7 +58,7 @@ export type BreakCause =
   | "message-edit"
   | "dropped"
 
-/** A session's first request: `subagent-first` on an agent outside `PRIMARY_AGENTS`, which shares no prefix with its parent. */
+/** A session's first request: `subagent-first` on an agent outside the primary ones (`AuditOptions.primary`), which shares no prefix with its parent. */
 export type ColdCause = "subagent-first" | "session-start"
 
 export type Cause = BreakCause | ColdCause
@@ -156,7 +149,7 @@ export const detect = (previous: LedgerLine, line: LedgerLine): Break | undefine
 }
 
 /** A session's first request, as the cold start it is. */
-export const coldStart = (line: LedgerLine, primary: ReadonlySet<string> = PRIMARY_AGENTS): Break => ({
+export const coldStart = (line: LedgerLine, primary: ReadonlySet<string>): Break => ({
   host: line.host,
   sessionID: line.sessionID,
   agent: line.agent,
@@ -301,7 +294,11 @@ export interface AuditOptions {
   readonly since: number
   readonly host?: string
   readonly top?: number
-  readonly primary?: ReadonlySet<string>
+  /**
+   * The agents a person talks to: a session's first request on another agent is a subagent's. The caller names them
+   * (scripts/cache-audit.ts `PRIMARY_AGENTS`, which knows the host's and the plugins' agents); this fold imports none.
+   */
+  readonly primary: ReadonlySet<string>
 }
 
 /**
@@ -312,7 +309,7 @@ export interface AuditOptions {
  */
 export const audit = (lines: ReadonlyArray<LedgerLine>, options: AuditOptions): Audit => {
   const top = options.top ?? 10
-  const primary = options.primary ?? PRIMARY_AGENTS
+  const primary = options.primary
   const scoped = options.host === undefined ? lines : lines.filter((line) => line.host === options.host)
   const kept: Array<LedgerLine> = []
   const breaks: Array<Break> = []
