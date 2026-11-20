@@ -437,6 +437,7 @@ describe("the guard", () => {
         expect(inherited.input).toEqual({ agent: "worker", description: "Critique the stills", prompt: "x", model: "anthropic/claude-opus" })
         const answer = yield* plugin.runTool(inherited.input)
         expect(answer.content).toBe(`${NOTE}\nworking`)
+        expect(answer.output).toMatchObject({ note: NOTE, model: "anthropic/claude-opus" })
         const asked = yield* plugin.call("subagent", "root", { agent: "worker", description: "Check the export", prompt: "x", model: "anthropic/claude-opus#max" })
         expect((asked.input as { model?: string }).model).toBe("anthropic/claude-opus")
         const mechanical = yield* plugin.call("subagent", "root", { description: "Rename the rows (mechanical)", prompt: "x" })
@@ -718,6 +719,8 @@ describe("a latch", () => {
             "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
           ].join("\n"),
         )
+        // A kernel cell's handle carries the latch's answer and the model it will start on.
+        expect(answer.output).toMatchObject({ note: answer.content, model: "anthropic/claude" })
         // The answer is given once: the same child run again goes to the tool.
         yield* plugin.runTool(call.input)
         expect(plugin.ran).toHaveLength(1)
@@ -856,8 +859,13 @@ describe("Opus first, Codex second", () => {
       Effect.gen(function* () {
         const asked: Array<string> = []
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked) })
-        expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toEqual({ agent: "verifier", prompt: "x", model: "anthropic/claude-opus#medium" })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })
+        expect(call.input).toEqual({ agent: "verifier", prompt: "x", model: "anthropic/claude-opus#medium" })
         expect(asked).toEqual([])
+        // Its answer names the model it runs on for a kernel cell's handle, and tells the parent nothing more.
+        const answer = yield* plugin.runTool(call.input)
+        expect(answer.content).toBe("working")
+        expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: "working", model: "anthropic/claude-opus#medium" })
       }),
     ))
 
@@ -883,7 +891,10 @@ describe("Opus first, Codex second", () => {
         const answer = yield* plugin.runTool(call.input)
         expect(plugin.ran).toHaveLength(1)
         expect(answer.content).toBe(`${NOTE}\nworking`)
-        expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: `${NOTE}\nworking` })
+        // A kernel cell's handle reads the note and the model as data (mods/kernel/worker/subagent-handle.ts).
+        expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: `${NOTE}\nworking`, note: NOTE, model: "openai/gpt-6.1-sol#medium" })
+        // The tool's output schema keeps them: the kernel encodes a result by it before a cell reads it.
+        expect(Schema.encodeUnknownSync(plugin.subagent.output as Schema.Codec<unknown, unknown>)(answer.output)).toEqual(answer.output)
         expect((yield* plugin.runTool(call.input)).content).toBe("working")
       }),
     ))
