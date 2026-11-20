@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // The orchestrator's check of a round's request before the unit waits in ready for its batch
-// (protocol.md, Implementor → Request): it exists and names its head commit, and it names a red
+// (protocol.md, Implementor → Request): it exists, names its head commit and carries its `Digest:` line, and it names a red
 // test for each Blocker or Major the last round's findings mark `repeat of`.
 // Usage: bun request.ts <unit dir> <round>   Exit 0: it is ready to land. Exit 1: send the reasons back.
 import { existsSync, readFileSync } from 'node:fs';
@@ -30,6 +30,15 @@ export function headOf(request: string): string | undefined {
   return /\bhead\b[^\n]*?\b([0-9a-f]{7,40})\b/i.exec(request)?.[1] ?? /\b[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\b/.exec(request)?.[1];
 }
 
+/** The `Digest:` line's text, from the first 8 lines (as the digest reads it: line 2 by the protocol). */
+export function digestOf(request: string): string | undefined {
+  for (const line of request.split('\n').slice(0, 8)) {
+    const said = /^[\s>*_`]*digest:[*_`]*\s*(.*?)\s*$/i.exec(line)?.[1];
+    if (said) return said;
+  }
+  return undefined;
+}
+
 /** Why round `n`'s request cannot wait in ready; empty when it can. */
 export function refusals(dir: string, n: number): string[] {
   const request = read(join(dir, `round-${n}-request.md`));
@@ -37,6 +46,7 @@ export function refusals(dir: string, n: number): string[] {
   const out: string[] = [];
   // `Head: <sha>`, or a range `<base>..<head>`.
   if (!/\bhead\b[^\n]*\b[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b/i.test(request)) out.push(`round-${n}-request.md names no head commit`);
+  if (!digestOf(request)) out.push(`round-${n}-request.md has no \`Digest:\` line (line 2: what changed or blocks, then why it matters)`);
   const verified = headOf(read(join(dir, `round-${n - 1}-request.md`)) ?? '');
   for (const id of repeats(read(join(dir, `round-${n - 1}-findings.md`)) ?? '')) {
     const m = new RegExp(String.raw`^[\s>*-]*repeat\s+${escape(id)}\**:\s*\S.*?\bred at\s+\`?([0-9a-f]{7,40})\b`, 'im').exec(request);
