@@ -47,8 +47,9 @@
  * endpoint would refuse it and sign the login out). The next resolve, of any
  * label, writes them again, but only while the file still holds the login
  * they replace, and frees the lock once nothing is held. Another holder waits
- * meanwhile: a token still good is served (until a provider refuses it, since
- * the held trade retired it), one that must be refreshed fails `busy`.
+ * meanwhile: after the wait the file is read again, and a token still good is
+ * served while the file still holds its login and no provider refused it (the
+ * held trade retired it); else, and for one that must be refreshed, `busy`.
  *
  * Only accounts signed in to the store itself (an `owner` in their metadata)
  * are listed. The default entry and linked slots are Claude Code's own logins,
@@ -658,17 +659,32 @@ export class StoreSource {
       // A due token is read again under the lock even then: another holder that
       // traded it (its write held) may have retired the access token read here.
       const usable = settled && this.fresh(stored.expires)
-      // Under the lock the file is read again and a failed trade serves what it holds; a lock
-      // held for the whole wait serves the token read here, unless a provider refused it meanwhile
-      // (another holder's held trade retired it): that one is never sent again.
+      // Under the lock the file is read again and a failed trade serves what it holds. A lock held
+      // for the whole wait serves what the file holds after it (waitedOut).
       return yield* serialized(this.state, this.locked(this.refreshLocked(label))).pipe(
         Effect.catchIf(
-          (error) =>
-            usable && error._tag === "StoreCredentialError" && error.kind === "busy" && this.state.rejected.get(label) !== stored.refresh,
-          () => Effect.succeed(served),
+          (error) => usable && error._tag === "StoreCredentialError" && error.kind === "busy",
+          (busy) => this.waitedOut(label, stored.refresh, busy),
         ),
       )
     })
+  }
+
+  /**
+   * After a lock wait another holder outlasted: the file read again, without the lock. Its token serves only while
+   * it holds the login read before the wait (`refresh`), still good past its last minute, and no provider refused
+   * it meanwhile. Another login means a holder wrote one during the wait, and may be trading it now; a refusal
+   * means a held trade retired it; either fails `busy`, so the pool fails over, and a later request reads again.
+   */
+  private waitedOut(label: string, refresh: string, busy: StoreCredentialError): Effect.Effect<{ access: string; expires: number }, StoreCredentialError> {
+    return this.read(label).pipe(
+      Effect.orElseSucceed((): Stored => null),
+      Effect.flatMap((now) => {
+        const same = now && isStoreOwned(now) && now.refresh === refresh
+        if (!same || this.state.pending.has(label) || this.state.rejected.get(label) === refresh || !this.fresh(now.expires)) return Effect.fail(busy)
+        return Effect.succeed({ access: now.access, expires: now.expires })
+      }),
+    )
   }
 
   /** `resolveEffect`, as the credential registry calls it: a failure rejects with its error. */

@@ -190,6 +190,96 @@ const model = (seed: number, commands: ReadonlyArray<Command>) =>
     return { broken, outcomes }
   })
 
+/**
+ * One resolve in this process of a login due its refresh but still good, while another process holds the store's lock
+ * for the whole wait; `during` changes the file (or tells the store of a refusal) once the resolve has read it and is
+ * waiting. How the resolve ended, and the login it read first.
+ */
+const waited = (seed: number, during: (put: (login: { access: string; refresh: string; expires: number }) => void, source: StoreSource, first: { access: string; refresh: string }) => void, text?: string) =>
+  Effect.gen(function* () {
+    const world = World.make({ seed, script: () => World.say(""), anthropic: { accounts: Provider.accounts(seed, [LOGIN]) } })
+    const provider = world.provider()
+    const slots = MemorySlots.make()
+    const put = (login: { access: string; refresh: string; expires: number }) =>
+      slots.put(SLOT, encodeRefresh({ type: "oauth", ...login, metadata: { owner: "store" } }, login))
+    const first = provider.tokens(LOGIN)
+    put({ ...first, expires: World.START + 3 * MINUTE })
+    const context = yield* world.runtime.run(Effect.context<never>())
+    const source = new StoreSource({ dir: STORE, tokenURL: TOKEN_URL, fetch: (url, init) => provider.fetch(url, init), files: slots.files, process: storeProcess(), context })
+    const release = slots.hold(STORE)
+    const fiber = world.runtime.fork(Effect.exit(source.resolveEffect(ID)))
+    yield* world.runtime.settle
+    during(put, source, first)
+    if (text !== undefined) slots.put(SLOT, text)
+    yield* world.until(() => Option.isSome(Option.fromNullishOr(fiber.pollUnsafe())), 2 * MINUTE, 1_000)
+    release()
+    const trades = provider.received().filter((request) => request.path === "/v1/oauth/token").length
+    return { exit: yield* Fiber.join(fiber), first, trades }
+  })
+
+/** The kind a resolve failed with; none when it served. */
+const kindOf = (exit: Exit.Exit<{ access: string }, { readonly _tag: string }>) =>
+  Exit.match(exit, {
+    onSuccess: () => "served",
+    onFailure: (cause) => Option.match(Cause.findErrorOption(cause), { onNone: () => "died", onSome: (error) => ("kind" in error ? String(error.kind) : error._tag) }),
+  })
+
+seeded("after a whole wait, the file still holding the login read before it serves that token", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { exit, first, trades } = yield* waited(seed, () => {})
+    expect(Exit.isSuccess(exit) && exit.value.access, `seed ${seed}`).toBe(first.access)
+    expect(trades).toBe(0)
+  }),
+)
+
+seeded("after a whole wait, another login in the file, good for hours, fails busy: the holder may be trading it", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { exit } = yield* waited(seed, (put) => put({ access: "sim-access-other", refresh: "sim-refresh-other", expires: World.START + 8 * HOUR }))
+    expect(kindOf(exit), `seed ${seed}`).toBe("busy")
+  }),
+)
+
+seeded("after a whole wait, the same login with a new access token in the file serves the file's token", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { exit } = yield* waited(seed, (put, _source, first) => put({ access: "sim-access-renewed", refresh: first.refresh, expires: World.START + 3 * MINUTE }))
+    expect(Exit.isSuccess(exit) && exit.value.access, `seed ${seed}`).toBe("sim-access-renewed")
+  }),
+)
+
+seeded("after a whole wait, the same login a provider refused meanwhile fails busy", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { exit } = yield* waited(seed, (_put, source, first) => source.rejected(ID, first.access))
+    expect(kindOf(exit), `seed ${seed}`).toBe("busy")
+  }),
+)
+
+seeded("after a whole wait, a file that no longer decodes fails busy", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { exit } = yield* waited(seed, () => {}, "{ not a sign-in")
+    expect(kindOf(exit), `seed ${seed}`).toBe("busy")
+  }),
+)
+
+// A refusal of a token the file no longer holds is not remembered: every path that serves reads the file at its
+// decision (a waiter again after its wait), and a refresh token, once traded, never comes back to the file, so the
+// refused token cannot be served again; the login the file holds now is not taken for refused either.
+seeded("a refusal of a token the file already replaced records nothing: the file's login serves, untraded", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const world = World.make({ seed, script: () => World.say(""), anthropic: { accounts: Provider.accounts(seed, [LOGIN]) } })
+    const provider = world.provider()
+    const slots = MemorySlots.make()
+    const now = { access: "sim-access-now", refresh: "sim-refresh-now", expires: World.START + 8 * HOUR }
+    slots.put(SLOT, encodeRefresh({ type: "oauth", ...now, metadata: { owner: "store" } }, now))
+    const context = yield* world.runtime.run(Effect.context<never>())
+    const source = new StoreSource({ dir: STORE, tokenURL: TOKEN_URL, fetch: (url, init) => provider.fetch(url, init), files: slots.files, process: storeProcess(), context })
+    source.rejected(ID, provider.tokens(LOGIN).access)
+    const served = yield* world.runtime.run(source.resolveEffect(ID))
+    expect(served.access, `seed ${seed}`).toBe(now.access)
+    expect(yield* world.runtime.run(source.peekEffect(ID)), `seed ${seed}`).toEqual({ access: now.access, expires: now.expires })
+    expect(provider.received().filter((request) => request.path === "/v1/oauth/token")).toEqual([])
+  }),
+)
+
 seeded("a waiter never serves a token whose login the file replaced or a provider refused, and every turn ends", ({ seed, expect }) =>
   Effect.gen(function* () {
     const commands = commandsOf(seed)
