@@ -13,6 +13,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs"
 import { hostname } from "node:os"
 import path from "node:path"
+import { Option, Schema } from "effect"
 
 /** The TUI package's modules, relative to the fork: what link-fork links into every package. */
 export const FORK_MODULES = "packages/tui/node_modules"
@@ -79,9 +80,7 @@ const checkFork = (dev: string): Fork => {
     return { problem: `${modules} has ${bad.length} modules that point nowhere on this machine (${bad.slice(0, 3).join(", ")}${bad.length > 3 ? ", …" : ""}): run bun install in ${fork}.` }
   const stale = staleInstall(fork)
   if (stale.length > 0)
-    return {
-      problem: `${fork}'s install is not its checkout's (moved without an install?): ${stale.slice(0, 3).join("; ")}${stale.length > 3 ? "; …" : ""}. Run bun install --frozen-lockfile in ${fork}.`,
-    }
+    return { problem: `${fork}'s install is not its checkout's (moved without an install?): ${stale.join("; ")}. Run bun install --frozen-lockfile in ${fork}.` }
   return { fork, modules }
 }
 
@@ -90,22 +89,51 @@ const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 /** The version in a link into Bun's isolated store: `…/.bun/<name, / as +>@<version>[+<hash>]/node_modules/<name>`. */
 const STORE = /\/\.bun\/[^/]+?@([^/@+]+)(?:\+[^/]*)?\/node_modules\//
 
-const readJson = (file: string): Record<string, unknown> => {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"))
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {}
-  } catch {
-    return {}
-  }
-}
-const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {})
+const Pins = Schema.Record(Schema.String, Schema.String)
+const Globs = Schema.Array(Schema.String)
+/** The fields of a workspace package's package.json the check reads. */
+const Manifest = Schema.Struct({
+  dependencies: Schema.optionalKey(Pins),
+  devDependencies: Schema.optionalKey(Pins),
+  optionalDependencies: Schema.optionalKey(Pins),
+})
+/** The fields of the fork's root package.json the check reads: `workspaces` as globs, or as `{ packages, catalog }`. */
+const Root = Schema.Struct({
+  workspaces: Schema.optionalKey(Schema.Union([Globs, Schema.Struct({ packages: Schema.optionalKey(Globs), catalog: Schema.optionalKey(Pins) })])),
+  catalog: Schema.optionalKey(Pins),
+})
+type RootPackage = typeof Root.Type
+const decodeRoot = Schema.decodeUnknownOption(Schema.fromJsonString(Root))
+const decodeManifest = Schema.decodeUnknownOption(Schema.fromJsonString(Manifest))
+const isGlobs = Schema.is(Globs)
 
-/** The fork's workspace package folders: its root package.json's `workspaces` globs, each `dir` or `dir/*`. */
-const workspaceDirs = (fork: string, workspaces: unknown): ReadonlyArray<string> => {
-  const globs = Array.isArray(workspaces) ? workspaces : record(workspaces)["packages"]
-  if (!Array.isArray(globs)) return []
-  return globs
-    .filter((glob): glob is string => typeof glob === "string")
+/** A file's text, none when it is not there. */
+const textOf = (file: string) => Option.map(Option.liftPredicate(file, existsSync), (there) => readFileSync(there, "utf8"))
+/** A package.json's pins as pairs, none for an absent field. */
+const pairs = (pins: Option.Option<typeof Pins.Type>) => Object.entries(Option.getOrElse(pins, () => ({})))
+
+/** The root's `workspaces` globs. */
+const globsOf = (root: RootPackage): ReadonlyArray<string> =>
+  Option.match(Option.fromUndefinedOr(root.workspaces), {
+    onNone: () => [],
+    onSome: (workspaces) => {
+      if (isGlobs(workspaces)) return workspaces
+      return Option.getOrElse(Option.fromUndefinedOr(workspaces.packages), () => [])
+    },
+  })
+
+/** The root's catalog, under `workspaces` or beside it. */
+const catalogOf = (root: RootPackage): ReadonlyMap<string, string> => {
+  const nested = Option.flatMap(Option.fromUndefinedOr(root.workspaces), (workspaces) => {
+    if (isGlobs(workspaces)) return Option.none<typeof Pins.Type>()
+    return Option.fromUndefinedOr(workspaces.catalog)
+  })
+  return new Map([...pairs(Option.fromUndefinedOr(root.catalog)), ...pairs(nested)])
+}
+
+/** The fork's workspace package folders: each glob `dir` or `dir/*` with a package.json. */
+const workspaceDirs = (fork: string, globs: ReadonlyArray<string>): ReadonlyArray<string> =>
+  globs
     .flatMap((glob) => {
       if (!glob.endsWith("/*")) return [path.join(fork, glob)]
       const parent = path.join(fork, glob.slice(0, -2))
@@ -115,7 +143,20 @@ const workspaceDirs = (fork: string, workspaces: unknown): ReadonlyArray<string>
         .map((entry) => path.join(parent, entry.name))
     })
     .filter((dir) => existsSync(path.join(dir, "package.json")))
+
+/** The version a pin wants: the catalog's for `catalog:`, else the pin itself; none when it is not one exact version. */
+const wantedOf = (catalog: ReadonlyMap<string, string>, name: string, spec: string) => {
+  const wanted = Option.liftPredicate(spec, (each) => each !== "catalog:").pipe(Option.orElse(() => Option.fromUndefinedOr(catalog.get(name))))
+  return Option.filter(wanted, (version) => EXACT.test(version))
 }
+
+/** The store version the symlink `link` points into, none for no link or one outside Bun's store. */
+const installedAt = (link: string) =>
+  Option.fromUndefinedOr(lstatSync(link, { throwIfNoEntry: false })).pipe(
+    Option.filter((stat) => stat.isSymbolicLink()),
+    Option.flatMap(() => Option.fromNullishOr(STORE.exec(readlinkSync(link).split(path.sep).join("/")))),
+    Option.flatMap((match) => Option.fromUndefinedOr(match[1])),
+  )
 
 /**
  * The exact pins of the fork's workspace packages (`catalog:` read from the root's catalog) that its
@@ -125,27 +166,27 @@ const workspaceDirs = (fork: string, workspaces: unknown): ReadonlyArray<string>
  * old packages against the new source: Code Mode's `execute` hung and tests/image.test.ts went red
  * with nothing of ours changed. Only links into Bun's store are read; a pin with no link is skipped.
  */
-export const staleInstall = (fork: string): ReadonlyArray<string> => {
-  const root = readJson(path.join(fork, "package.json"))
-  const workspaces = root["workspaces"]
-  const catalog = record(record(workspaces)["catalog"] ?? root["catalog"])
-  return workspaceDirs(fork, workspaces).flatMap((dir) => {
-    const manifest = readJson(path.join(dir, "package.json"))
-    const pins = ["dependencies", "devDependencies", "optionalDependencies"].flatMap((field) => Object.entries(record(manifest[field])))
-    return pins.flatMap(([name, spec]) => {
-      const wanted = spec === "catalog:" ? catalog[name] : spec
-      if (typeof wanted !== "string" || !EXACT.test(wanted)) return []
-      const link = path.join(dir, "node_modules", name)
-      let target: string
-      try {
-        if (!lstatSync(link).isSymbolicLink()) return []
-        target = readlinkSync(link)
-      } catch {
-        return []
-      }
-      const installed = STORE.exec(target.split(path.sep).join("/"))?.[1]
-      if (installed === undefined || installed === wanted) return []
-      return [`${path.relative(fork, dir)}: ${name} ${installed}, pinned ${wanted}`]
-    })
+export const staleInstall = (fork: string): ReadonlyArray<string> =>
+  Option.match(Option.flatMap(textOf(path.join(fork, "package.json")), decodeRoot), {
+    onNone: () => [],
+    onSome: (root) => {
+      const catalog = catalogOf(root)
+      return workspaceDirs(fork, globsOf(root)).flatMap((dir) => {
+        const manifest = Option.flatMap(textOf(path.join(dir, "package.json")), decodeManifest)
+        const pins = Option.match(manifest, {
+          onNone: () => [],
+          onSome: (each) => [each.dependencies, each.devDependencies, each.optionalDependencies].flatMap((field) => pairs(Option.fromUndefinedOr(field))),
+        })
+        return pins.flatMap(([name, spec]) =>
+          Option.toArray(
+            Option.flatMap(wantedOf(catalog, name, spec), (wanted) =>
+              Option.map(
+                Option.filter(installedAt(path.join(dir, "node_modules", name)), (installed) => installed !== wanted),
+                (installed) => `${path.relative(fork, dir)}: ${name} ${installed}, pinned ${wanted}`,
+              ),
+            ),
+          ),
+        )
+      })
+    },
   })
-}
