@@ -93,4 +93,44 @@ describe("a cell's subagent handle", () => {
         }),
       ).pipe(Effect.provide(ProcessWorkers.layer({ timeoutMs: 5_000 }))),
     ))
+
+  // handle-model: a root started verifiers through a cell believing they ran on Opus; the start's answer said the
+  // Codex fallback, and the handle dropped it.
+  test("carries what the start answered: a fallback start's note and model show in the handle and its printed form; a plain start has neither", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const workers = yield* Workers
+          yield* workers.start(session, yield* scratch)
+          const NOTE = "orchestrate: this agent runs on openai/gpt-6.1-sol#medium, the Codex fallback (anthropic/claude-opus#medium held: all pool accounts are held)."
+          // The subagent tool's answers as the orchestrate plugin widens them: a fallback start names its note and model.
+          const tools: Cell["call"] = (name, input) =>
+            Effect.sync((): Json => {
+              const call = asked(input)
+              if (name === "subagents") return { subagents: [view("running", "", "")] }
+              if (call.agent === "verifier")
+                return { sessionID: "ses_c", status: "running", output: `${NOTE}\nworking`, note: NOTE, model: "openai/gpt-6.1-sol#medium" }
+              return { sessionID: "ses_c", status: "running", output: "working" }
+            })
+          const listing = [
+            { id: "subagent", description: "starts a subagent" },
+            { id: "subagents", description: "lists and stops subagents" },
+          ]
+          const run = (source: string) => workers.evaluate(session, { source, tools: listing, call: tools }).pipe(Effect.map((result) => result.display))
+
+          expect(yield* run('const v = await tools.subagent({ agent: "verifier", description: "probe", prompt: "go" }); v.note')).toBe(NOTE)
+          expect(yield* run("v.model")).toBe("openai/gpt-6.1-sol#medium")
+          const printed = yield* run("v")
+          expect(printed).toContain(NOTE)
+          expect(printed).toContain('model: "openai/gpt-6.1-sol#medium"')
+          // A read updates the handle as before; the model it started on stays.
+          expect(yield* run("await v.read(); [v.state, v.note, v.model]")).toBe('[ "running", "", "openai/gpt-6.1-sol#medium" ]')
+
+          expect(yield* run('const p = await tools.subagent({ agent: "worker", description: "probe", prompt: "go" }); Object.keys(p).join()')).toBe(
+            "sessionID,description,agent,state,message,note",
+          )
+          expect(yield* run("p.note")).toBe("")
+        }),
+      ).pipe(Effect.provide(ProcessWorkers.layer({ timeoutMs: 5_000 }))),
+    ))
 })

@@ -7,10 +7,12 @@
  * session, and `tools.subagent.list()` one for each. It has no wait: a
  * finished subagent's report arrives as the session's next message.
  *
- * A handle is `{ sessionID, description, agent, state, message, note }`:
+ * A handle is `{ sessionID, description, agent, state, message, note, model? }`:
  * `state` is running, done, stopped or failed; `message` the subagent's last
  * message as the latest call read it (empty until a call reads it); `note`
- * what the latest call did when it says (a stop). Its
+ * what the latest call did when it says (a stop), and from the start what it
+ * answered of where it runs (a fallback model, a lowered effort, a latch);
+ * `model` the model its start named, when it named one. Its
  * data fields are plain and enumerable, so it prints, serializes and survives
  * a kernel restart as data; its methods are not enumerable, so a restart
  * drops them, and `tools.subagent.handle(h.sessionID)` builds a live one again.
@@ -30,6 +32,8 @@ export interface SubagentHandleData {
   readonly state: "running" | "done" | "stopped" | "failed"
   readonly message: string
   readonly note: string
+  /** The model it runs on, when its start named one. */
+  readonly model?: string
 }
 
 /** A live handle: the data, updated in place by each method. */
@@ -107,14 +111,17 @@ const stateOf = (value: Json): SubagentHandleData["state"] => STATES.find((state
 export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle> =>
   call("subagent", input).then((result) => {
     const asked = recordOf(input)
+    const answered = recordOf(result)
     return makeSubagentHandle(
       {
-        sessionID: String(recordOf(result).sessionID),
+        sessionID: String(answered.sessionID),
         description: String(asked.description),
         agent: String(asked.agent),
         state: "running",
         message: "",
-        note: "",
+        // What the start answered of where it runs (the orchestrate plugin's fallback, effort or latch note), and on what.
+        note: typeof answered.note === "string" ? answered.note : "",
+        ...(typeof answered.model === "string" ? { model: answered.model } : {}),
       },
       call,
     )

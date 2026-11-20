@@ -7,7 +7,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 - `kernel-bindings`: a binding made in one call is read in the next, and after a restart.
 - `kernel-tools`: `tools.<id>(input)` reaches another tool; `tools.list()` and `tools.docs(name)` describe them.
 - `kernel-parallel`: calls past 32 in flight wait; `tools.all`, `tools.map` (`concurrency`) and a returned object's calls run at once.
-- `kernel-handles`: `tools.shell` and `tools.subagent` resolve to live handles (a shell's `.wait` and `.kill`, a subagent's `.stop`; a subagent has no wait, its report arrives as the next message).
+- `kernel-handles`: `tools.shell` and `tools.subagent` resolve to live handles (a shell's `.wait` and `.kill`, a subagent's `.stop`; a subagent has no wait, its report arrives as the next message). A subagent handle carries what its start answered: `.model`, the model it runs on when the start names one, and in `.note` the orchestrate plugin's fallback, lowered-effort or latch note; a plain start's note is empty.
 - `kernel-attach`: `attach(path)` shows an image to the next request.
 - `kernel-transcript`: the cell's header is its description, over the rows of the tool calls it made.
 
