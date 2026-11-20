@@ -1,5 +1,6 @@
 // The guard that the update's old install scheme (the checkout that moves, the global plugin entries,
 // their migration) stays gone from every run-time path and from the docs (plugin-trees U6).
+// @reads mods/update/** cmd/update/** scripts/daily.ts README.md AGENTS.md .claude/skills/verify-opencode/SKILL.md
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Path, PlatformError } from "effect"
 import { describe, expect, it } from "effect-bun-test"

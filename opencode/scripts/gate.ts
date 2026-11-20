@@ -44,7 +44,7 @@ import { hostLocks, landLogs, scriptReceipt } from "../mods/work/process/landing
 import { parseNameStatus } from "./docs-guard.ts"
 import { mergeLegs } from "./merge-check.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { importsOf, keyOf, load, reach, ROOT, sharedKey, unitTests } from "./reach.ts"
+import { importsOf, keyOf, load, reach, readsOf, ROOT, sharedKey, unitTests } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -202,6 +202,7 @@ const planned = (base: string) =>
         scripts: {
           files: readdirSync(path.join(ROOT, "scripts")).filter((name) => /\.test\.tsx?$/.test(name)).map((name) => `scripts/${name}`),
           imports: (file) => importsOf(file, readFileSync(path.join(ROOT, file), "utf8")),
+          reads: (file) => readsOf(readFileSync(path.join(ROOT, file), "utf8")),
         },
       }),
     ),

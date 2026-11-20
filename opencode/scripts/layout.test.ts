@@ -7,6 +7,8 @@
  * Mods without a `cmd/` package are not on the layout yet and are listed as
  * pending.
  *
+ * @reads mods/** cmd/**
+ *
  * @module
  */
 import { describe, expect, test } from "bun:test"
