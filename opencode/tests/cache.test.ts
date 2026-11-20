@@ -6,7 +6,7 @@
 // names the miss, its cost and its cause, the sidebar sums the session and
 // names the cause that cost the most, and the server half's ledger holds a
 // line per request, the second judged expired.
-// Run again with the model's cache living an hour and the build agent asking
+// Run again with the model's cache living an hour and the session's (default) agent asking
 // for 2s of its own, the same miss is an expiry by the agent's lifetime.
 // scenarios/cache-compaction.ts runs /compact between two turns: the summary
 // request's miss sits under the compaction's row, not at the next turn's end.

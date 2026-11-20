@@ -5,7 +5,7 @@
 // - `<label>-running`: while the reviewer subagent works;
 // - `<label>`: the finished turn, in Details mode;
 // - with SCENARIO_CYCLE=1, `<label>-all` and `<label>-overview` after each Ctrl+O.
-// With SCENARIO_WINDOW=<tokens>, the build agent compacts at that window (see `WINDOW`).
+// With SCENARIO_WINDOW=<tokens>, each primary agent compacts at that window (see `WINDOW`).
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -30,11 +30,11 @@ const USAGE = {
   total_tokens: 64_000,
   ...(CACHED === undefined ? {} : { prompt_tokens_details: { cached_tokens: CACHED } }),
 }
-// SCENARIO_WINDOW=<tokens> gives the build agent that compaction window, as cmd/orchestrate gives each primary agent
+// SCENARIO_WINDOW=<tokens> gives each primary agent (the default one among them) that compaction window, as cmd/orchestrate gives each primary agent
 // its 400k one (`request.settings.compactionWindow`); the tray's share then reads against it, not the model's window.
 const WINDOW = process.env.SCENARIO_WINDOW === undefined ? undefined : Number(process.env.SCENARIO_WINDOW)
 const windowFixture = `export default {id: "fixture.window", async setup(ctx) {
-  await ctx.agent.transform((editor) => editor.update("build", (agent) => { agent.request.settings.compactionWindow = ${WINDOW} }));
+  await ctx.agent.transform((editor) => { for (const agent of editor.list()) if (agent.mode !== "subagent" && !agent.hidden) editor.update(agent.id, (item) => { item.request.settings.compactionWindow = ${WINDOW} }) });
 }}`
 
 const NET_PY = [

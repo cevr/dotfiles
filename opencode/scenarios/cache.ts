@@ -5,7 +5,7 @@
 // it, and its cache lives 2s; the shell call takes 4s, so the second request
 // writes back the 48k prefix the first one cached.
 // With CACHE_ROLE_TTL set the model's cache lives an hour and a fixture server
-// plugin gives the build agent its own CACHE_ROLE_TTL
+// plugin gives each primary agent (the default one among them) its own CACHE_ROLE_TTL
 // (`request.settings.cacheTTL`, as cmd/orchestrate does for its roles; the
 // config's `agents` merges only a request's headers and body): the miss is an
 // expiry only by the agent's lifetime.
@@ -28,7 +28,7 @@ const COMMAND = "sleep 4 && echo checked"
 const DONE = "The check passed."
 const ROLE_TTL = process.env.CACHE_ROLE_TTL
 const roleFixture = `export default {id: "fixture.role-ttl", async setup(ctx) {
-  await ctx.agent.transform((editor) => editor.update("build", (agent) => { agent.request.settings.cacheTTL = ${JSON.stringify(ROLE_TTL ?? "")} }));
+  await ctx.agent.transform((editor) => { for (const agent of editor.list()) if (agent.mode !== "subagent" && !agent.hidden) editor.update(agent.id, (item) => { item.request.settings.cacheTTL = ${JSON.stringify(ROLE_TTL ?? "")} }) });
 }}`
 
 // The first request writes its 48k prompt to the cache; the second, after the

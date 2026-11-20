@@ -7,7 +7,7 @@
 // (mods/prime/usage.ts `effectiveWindow`), as the fork's compaction does.
 //
 // scenarios/prime-demo.ts runs with the Prime look on a 262k model, its
-// build agent given a 128k compaction window by a fixture plugin; the last
+// primary agents given a 128k compaction window by a fixture plugin; the last
 // turn's 64k then reads 50%, where the model's window alone reads 24%
 // (tests/prime.test.ts, no window).
 import { beforeAll, describe, expect, test } from "bun:test"
