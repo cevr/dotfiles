@@ -6,6 +6,9 @@ umask 077
 workbox_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 system_dir="$workbox_dir/systemd/system"
 resolved_config="$workbox_dir/systemd/resolved.conf.d/workbox.conf"
+# The kernel limits the workbox needs above the defaults; provision.sh installs
+# the same file on the Hetzner workbox.
+sysctl_config="$workbox_dir/systemd/sysctl.d/90-inotify.conf"
 user_unit_dir="$HOME/.config/systemd/user"
 # The folder that holds the workspace bases; a test sets it to a scratch folder.
 workspaces_dir=${WORKBOX_WORKSPACES_DIR:-/workspaces}
@@ -63,6 +66,22 @@ check_hc() {
   test "$(systemctl --user show "$hc_unit" -p OOMPolicy --value)" = continue
 }
 
+# Warns, without failing, when a live kernel value is below its sysctl.d file's:
+# the limits hold only after `sysctl -p` or a reboot.
+check_sysctl() {
+  grep -v '^[[:space:]]*#' "$sysctl_config" | while IFS='= ' read -r key value; do
+    [ -n "$key" ] || continue
+    live=$(sysctl -n "$key" 2>/dev/null || true)
+    case "$live" in
+      '' | *[!0-9]*) live=0 ;;
+    esac
+    if [ "$live" -lt "$value" ]; then
+      printf 'workbox bootstrap: warning: %s is %s, below %s in %s (sudo sysctl -p /etc/sysctl.d/%s)\n' \
+        "$key" "$live" "$value" "$sysctl_config" "$(basename "$sysctl_config")" >&2
+    fi
+  done
+}
+
 check_mode() {
   for command in btrfs bun curl git hc hunk jq mongosh node redis-cli sideshow sqlite3 syncthing tailscale work workbox-rift-storage workrift zsh; do
     check_command "$command"
@@ -101,6 +120,7 @@ check_mode() {
   WORKRIFT_SOURCE="$bite_source" "$local_bin_dir/workrift" check
   "$local_bin_dir/install-node" --check
   swapon --show --noheadings | grep -q .
+  check_sysctl
 
   printf 'Workbox bootstrap checks passed.\n'
 }
@@ -194,6 +214,9 @@ sudo install -m 0644 \
   /etc/systemd/system/systemd-resolved.service.d/20-bite-memory-protection.conf
 sudo install -d -m 0755 /etc/systemd/resolved.conf.d
 sudo install -m 0644 "$resolved_config" /etc/systemd/resolved.conf.d/workbox.conf
+sudo install -d -m 0755 /etc/sysctl.d
+sudo install -m 0644 "$sysctl_config" /etc/sysctl.d/90-inotify.conf
+sudo sysctl -p /etc/sysctl.d/90-inotify.conf
 
 tailscale_ipv4=$(tailscale ip -4 | head -1)
 sshd_config_file=$(mktemp)
