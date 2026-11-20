@@ -148,10 +148,6 @@ describe("the verify-opencode skill names only what the tree has", () => {
         "testbeds/gamut/sim-model.ts",
         "tests/gamut-owner.test.ts",
         "tests/gamut.test.ts",
-        // 2026-11-16cx: the rift plugin's real check (orchestrate's), changed by the work switch.
-        "tests/rift.test.ts",
-        "tests/rift/run.ts",
-        "tests/rift/sim.ts",
         // 2026-11-16cy: the plugin-start check (work's) and the scratch-service helper (mail's), changed by the reaper.
         "tests/plugin-start.test.ts",
         "tests/service.ts",
