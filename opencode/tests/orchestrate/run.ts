@@ -132,7 +132,7 @@ if (spec.codex !== undefined) {
 const codexOption = spec.codex === undefined ? {} : { codex: { providers: ["sim"], script: codexScript } }
 const content = {
   model: "sim/sim-model",
-  ...(spec.agents === undefined ? {} : { agents: spec.agents }),
+  agents: { ...spec.agents },
   providers: {
     sim: {
       name: "Sim",

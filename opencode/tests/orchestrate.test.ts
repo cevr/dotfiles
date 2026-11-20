@@ -110,9 +110,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → ready r1 round-1-request.md ready"])
       // A new root session opens on the orchestrator, on the config's model, and its requests carry the section
       // after build's prompt; the implementor's carry none.
-      const said = JSON.stringify(result.root?.messages)
-      expect(said).toContain(`"agent":"${ORCHESTRATOR}"`)
-      expect(said).not.toContain(`"variant":"max"`)
+      expect(result.root?.messages).toEqual(expect.arrayContaining([expect.objectContaining({ agent: ORCHESTRATOR })]))
+      expect(result.root?.messages).toEqual(expect.not.arrayContaining([expect.objectContaining({ model: expect.objectContaining({ variant: "max" }) })]))
       const withRule = result.seen.filter((request) => request.system.includes(orchestrator.section))
       expect(withRule.length).toBeGreaterThan(0)
       const implementor = result.seen.filter((request) => request.system.includes("You are the implementor of"))
