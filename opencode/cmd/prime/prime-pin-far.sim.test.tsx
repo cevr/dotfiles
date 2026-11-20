@@ -5,9 +5,9 @@
 // apart from the transcript (mods/prime/opencode/asks.ts). A click on the pin reads the transcript back to that
 // prompt and shows it at the top (the fork's overlay reveal); a little further up, the pin is the turn before's
 // prompt. The prompts are read once, one page, not once a scroll frame.
-import { Effect, Option } from "effect"
+import { Effect, Exit, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
-import type { Model } from "../../sim-tui/server.ts"
+import type { Model, Took } from "../../sim-tui/server.ts"
 
 const FILE = "cmd/prime/prime-pin-far.sim.test.tsx"
 /** Seeds this file runs: a seed scrolls a sixty-step turn and reads a page back, about a second of CPU, so 2. */
@@ -34,9 +34,18 @@ interface Played {
   readonly frames: Record<Name, ReadonlyArray<string>>
   /** The session.messages reads of `type=user` the TUI made. */
   readonly promptReads: number
+  /** Those it had made when the session was open at the bottom, before any scroll. */
+  readonly promptReadsAtBottom: number
   /** Every session.messages read of the far session, in order: `newest` first, then `cursor`. */
   readonly pages: ReadonlyArray<string>
 }
+
+/** The session.messages reads of `sessionID` among the requests the double took. */
+const messageReads = (requests: ReadonlyArray<Took>, sessionID: string) =>
+  requests.filter((request) => request.method === "GET" && request.path === `/api/session/${sessionID}/message`)
+/** A read of the session's prompts (`type=user`), the pin's side channel. */
+const prompts = (request: Took) => new URLSearchParams(request.query).get("type") === "user"
+const promptReadsOf = (requests: ReadonlyArray<Took>, sessionID: string) => messageReads(requests, sessionID).filter(prompts).length
 
 const played = new Map<number, Played>()
 const scenario = (seed: number) =>
@@ -60,6 +69,7 @@ const play = (seed: number) =>
       yield* tui.until("far-bottom", (shown) => shown.join("\n").includes("three step 60"))
       yield* tui.advance(500)
       yield* save("far-bottom")
+      const promptReadsAtBottom = promptReadsOf(tui.server.requests(), far)
       // One wheel step up over the transcript at a time, until the frame is ready.
       const scrollUntil = (name: string, ready: (shown: ReadonlyArray<string>) => boolean) =>
         Effect.gen(function* () {
@@ -78,18 +88,22 @@ const play = (seed: number) =>
       yield* tui.mouse({ action: "move", x: 10, y: FIRST })
       yield* tui.mouse({ action: "down", x: 10, y: FIRST })
       yield* tui.mouse({ action: "up", x: 10, y: FIRST })
-      yield* tui.until("far-revealed", (shown) => shown.join("\n").includes("three step 01"), 10_000)
-      yield* tui.advance(500)
-      yield* save("far-revealed")
-      // A little further up, into the second turn's steps: its prompt is the pin.
-      yield* scrollUntil("far-crossed", (shown) => /two step 0\d/.test(shown[FIRST + 1] ?? ""))
-      yield* tui.advance(300)
-      yield* save("far-crossed")
-      const reads = tui.server.requests().filter((request) => request.method === "GET" && request.path === `/api/session/${far}/message`)
-      const prompts = (request: (typeof reads)[number]) => new URLSearchParams(request.query).get("type") === "user"
+      // A fork whose reveal cannot read back leaves the view where it was: the frames after it stay empty and only
+      // the tests that read them fail, not the ones before.
+      const revealed = yield* Effect.exit(tui.until("far-revealed", (shown) => shown.join("\n").includes("three step 01"), 10_000))
+      if (Exit.isSuccess(revealed)) {
+        yield* tui.advance(500)
+        yield* save("far-revealed")
+        // A little further up, into the second turn's steps: its prompt is the pin.
+        yield* scrollUntil("far-crossed", (shown) => /two step 0\d/.test(shown[FIRST + 1] ?? ""))
+        yield* tui.advance(300)
+        yield* save("far-crossed")
+      }
+      const reads = messageReads(tui.server.requests(), far)
       return {
         frames,
-        promptReads: reads.filter(prompts).length,
+        promptReadsAtBottom,
+        promptReads: promptReadsOf(tui.server.requests(), far),
         pages: reads.filter((request) => !prompts(request)).map((request) => ["newest", "cursor"][Number(new URLSearchParams(request.query).has("cursor"))] ?? ""),
       }
     }),
@@ -133,6 +147,12 @@ seeded("scrolled up across into the second turn, the pin changes to its prompt",
 seeded("the prompts are read once, one page, for the whole scenario: never once a scroll frame", ({ seed, expect }) =>
   Effect.gen(function* () {
     expect((yield* scenario(seed)).promptReads).toBe(1)
+  }),
+)
+
+seeded("nothing is read for the pin while the session opens and sits at the bottom: the first read waits for a scroll up", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    expect((yield* scenario(seed)).promptReadsAtBottom).toBe(0)
   }),
 )
 
