@@ -106,7 +106,8 @@ const shown = (answer: Answer) => Schema.encodeSync(Json)(Option.getOrElse(answe
 const MessageList = Schema.Struct({ data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String })) })
 const PromptPage = Schema.Struct({
   data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String, text: Schema.optional(Schema.String) })),
-  cursor: Schema.Struct({ next: Schema.optional(Schema.String) }),
+  // Real OpenCode answers a page with no messages `next: null`.
+  cursor: Schema.Struct({ next: Schema.optional(Schema.NullOr(Schema.String)) }),
 })
 const Outline = Schema.Struct({
   data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String, summary: Schema.optional(Schema.String) })),
