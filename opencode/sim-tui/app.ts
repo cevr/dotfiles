@@ -544,7 +544,7 @@ const navigateTo = (sessionID: string) =>
     onSome: (navigate) => Effect.sync(() => navigate(sessionID)),
   })
 
-const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
+const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs: number) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
@@ -629,18 +629,22 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions) {
       current.server = server
     },
   }
-  // Ready, then every plugin loaded: the route plugin, loaded last, has lent its navigate.
-  for (let pass = 0; pass < PASSES * 25 && !(ready.done && Option.isSome(router().navigate)); pass++) yield* pump(app, true, true)
-  if (!ready.done) return yield* fail("the TUI never said it was ready")
-  if (Option.isNone(router().navigate)) return yield* fail("the route plugin (sim-tui/route) never loaded")
-  yield* settleOn(app)
-  const took = (yield* realNow) - began
-  const used = cpuNow() - cpu
-  const load = yield* loadNow
-  yield* Console.log(`sim-tui boot ${options.file}: cpu ${Math.round(used)} ms of its ${BOOT_LIMIT_MS}, wall ${Math.round(took)} ms (reported, not judged; load ${load.toFixed(1)}, ${navigator.hardwareConcurrency} cores)`)
-  jest.setSystemTime(wall + took)
-  if (used > BOOT_LIMIT_MS)
-    return yield* fail(`${options.file}: the boot took ${Math.round(used)} ms of CPU time (${Math.round(took)} ms of wall time), past the ${BOOT_LIMIT_MS} ms of CPU a boot has`)
+  // A boot that fails its checks closes the app it started (its fixture, its timers, the route plugin's navigate),
+  // so the next boot starts alone; an app left up kept rendering, and the next boot took its navigate for its own.
+  yield* Effect.gen(function* () {
+    // Ready, then every plugin loaded: the route plugin, loaded last, has lent its navigate.
+    for (let pass = 0; pass < PASSES * 25 && !(ready.done && Option.isSome(router().navigate)); pass++) yield* pump(app, true, true)
+    if (!ready.done) return yield* fail("the TUI never said it was ready")
+    if (Option.isNone(router().navigate)) return yield* fail("the route plugin (sim-tui/route) never loaded")
+    yield* settleOn(app)
+    const took = (yield* realNow) - began
+    const used = cpuNow() - cpu
+    const load = yield* loadNow
+    yield* Console.log(`sim-tui boot ${options.file}: cpu ${Math.round(used)} ms of its ${limitMs}, wall ${Math.round(took)} ms (reported, not judged; load ${load.toFixed(1)}, ${navigator.hardwareConcurrency} cores)`)
+    jest.setSystemTime(wall + took)
+    if (used > limitMs)
+      return yield* fail(`${options.file}: the boot took ${Math.round(used)} ms of CPU time (${Math.round(took)} ms of wall time), past the ${limitMs} ms of CPU a boot has`)
+  }).pipe(Effect.tapError(() => Effect.ignore(close(app))))
   harness.booted = Option.some(app)
   return app
 })
@@ -659,12 +663,18 @@ export const shutdown = Effect.gen(function* () {
 }).pipe(Effect.ensuring(Effect.orDie(dropHost)), Effect.provide(NodeServices.layer))
 
 /** The app for `options.file`, booted once per process: the app of another file closes first, so its timers and requests stop. */
-export const boot = (options: BootOptions) =>
+export const boot = (options: BootOptions) => bootWithin(options, BOOT_LIMIT_MS)
+
+/**
+ * `boot` with `limitMs` of CPU for the boot in place of BOOT_LIMIT_MS: for the harness's own test of a boot that
+ * fails its check (sim-tui/boot-fail.test.tsx), never a file's way to more time.
+ */
+export const bootWithin = (options: BootOptions, limitMs: number) =>
   Effect.gen(function* () {
     const found = harness.booted.pipe(Option.filter((app) => app.options.file === options.file))
     if (Option.isSome(found)) return found.value
     if (Option.isSome(harness.booted)) yield* close(harness.booted.value)
-    return yield* start(options)
+    return yield* start(options, Math.min(limitMs, BOOT_LIMIT_MS))
   }).pipe(Effect.provide(NodeServices.layer))
 
 export { effectTest } from "./effect-test.ts"
