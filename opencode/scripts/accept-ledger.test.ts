@@ -232,7 +232,8 @@ type Behaviour = "green" | "flaky" | "red" | "leak" | "yielded"
  * I10: without --settled a one-at-a-time file never starts and is owed `unsettled`. I11: a pass only from a
  * green run not stopped. I12: red twice is failed, a leak is failed with no second run. I13: the outcome's
  * counts equal the sets. I15: a yield between the first runs and the second runs drops no second run, and
- * no file runs a third time (`secondRunsDue`).
+ * no file runs a third time (`secondRunsDue`). I17: a file that bounds a time gets its second run only at a load
+ * under the cores; else it ends owed `unsettled` and stays due (`heldSecond`), as its first run would have waited.
  */
 const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: ReadonlyMap<string, string>, failures: boolean, settledHost: boolean): Played => {
   const byName = new Map(model.files.map((file) => [file.name, file]))
@@ -250,8 +251,13 @@ const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
   })
   // The hold that runs the second runs reads the first failures as the run carried them (over a yield too), none retried yet.
   const again = Accept.secondRunsDue(first)
+  // I17: at a 1-minute load at or past the cores, a file that bounds a time gets no second run: owed, still due.
+  const loads = new Map(again.map((file) => [file, draw.below(2 * CORES)]))
+  const held = again.filter((file) => Option.isSome(Accept.heldSecond(file, serial(file), loads.get(file) ?? 0, CORES)))
   const second = again.map((file) => {
-    const load = draw.below(200)
+    const load = loads.get(file) ?? 0
+    const kept = Accept.heldSecond(file, serial(file), load, CORES)
+    if (Option.isSome(kept)) return kept.value
     if (behaviour(file) === "red") return Accept.afterSecond({ file, status: "failed", ms: 1000, reason: "bun test exited 1" }, load)
     return Accept.afterSecond(finished(draw, byName.get(file)!, 1000, skips), load)
   })
@@ -271,12 +277,20 @@ const playOwed = (draw: Draw, model: Model, ledger: Accept.Ledger, keys: Readonl
     ...selection.settled.flatMap((outcome) => unless(settledHost || !serial(outcome.file) || outcome.status !== "owed" || outcome.why === "unsettled", `I10: ${outcome.file} held for ${outcome.status}`)),
     ...ended.flatMap((outcome) => unless(outcome.status !== "passed" || behaviour(outcome.file) === "green" || behaviour(outcome.file) === "flaky", `I11: ${outcome.file} passed after a ${behaviour(outcome.file)} run`)),
     ...ended.flatMap((outcome) => unless(behaviour(outcome.file) !== "yielded" || (outcome.status === "owed" && outcome.why === "yielded"), `I11: ${outcome.file} stopped by a yield ended ${outcome.status}`)),
-    ...selection.run.flatMap((file) => unless(behaviour(file) !== "red" || statusOf(file) === "failed", `I12: ${file} failed twice and ended ${String(statusOf(file))}`)),
+    ...selection.run.flatMap((file) => unless(behaviour(file) !== "red" || held.includes(file) || statusOf(file) === "failed", `I12: ${file} failed twice and ended ${String(statusOf(file))}`)),
+    ...again.flatMap((file) => {
+      const loaded = (loads.get(file) ?? 0) >= CORES
+      const outcome = ended.find((each) => each.file === file)
+      return unless(
+        held.includes(file) === (serial(file) && loaded) && (!held.includes(file) || (outcome?.status === "owed" && outcome.why === "unsettled")),
+        `I17: ${file} (serial ${serial(file)}, load ${loads.get(file)} on ${CORES} cores) held ${held.includes(file)}, ended ${String(outcome?.status)}`,
+      )
+    }),
     ...selection.run.flatMap((file) => unless(behaviour(file) !== "leak" || (statusOf(file) === "failed" && !again.includes(file)), `I12: ${file} leaked and ended ${String(statusOf(file))}, run again ${again.includes(file)}`)),
     ...ended.flatMap((outcome) => unless(Option.isNone(Accept.secondLoad(outcome)) || behaviour(outcome.file) === "flaky", `I13: ${outcome.file} marked passed on a second run after a ${behaviour(outcome.file)} first`)),
     ...unless(counts.passed === sets.passed && counts.failed === sets.failed && counts.owed === sets.owed && counts.before === sets.before && new Set(all.map((each) => each.file)).size === all.length, `I13: counts ${counts.passed}/${counts.failed}/${counts.owed}/${counts.before} for sets ${sets.passed}/${sets.failed}/${sets.owed}/${sets.before}`),
     ...unless(again.join(" ") === Accept.secondRuns(first).join(" "), `I15: the second runs are ${again.join(" ")}, not every first failure`),
-    ...unless(dueAfter.length === 0, `I15: ${dueAfter.join(" ")} due a third run after its second ended`),
+    ...unless(dueAfter.join(" ") === held.join(" "), `I15: ${dueAfter.join(" ")} due again after the second runs, not only the held ${held.join(" ")}`),
     ...deepShares(draw),
   ]
   return { ended, selection, problems }
@@ -561,7 +575,7 @@ describe("a deep run cut by yields against its model", () => {
 })
 
 describe("the acceptance ledger against its model", () => {
-  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I15`, () => {
+  test(`${SEEDS} seeded runs of up to ${COMMANDS} commands keep I1 to I15 and I17`, () => {
     const problems = Array.from({ length: SEEDS }, (_, seed) => playSeed(seed + 1)).flat()
     expect(problems.slice(0, 5)).toEqual([])
   })
@@ -612,6 +626,19 @@ describe("the acceptance ledger against its model", () => {
     ).toEqual([1, 2, 0, 0, 0, 0])
   })
 
+  test("a failed one-at-a-time file's second run waits for a settled host as its first did: owed `unsettled` and still due at a load at or past the cores, run under them; any other file runs again at any load", () => {
+    // The red at 3e8d0343: tests/plugin-start.test.ts ran at load 11.8 on 12 cores, failed, and ran again at 23.8.
+    const file = "tests/plugin-start.test.ts"
+    const held = Accept.heldSecond(file, true, 23.8, 12)
+    expect(held).toEqual(Option.some({ file, status: "owed", why: "unsettled", detail: "failed its first run; its second waits for a 1-minute load under the 12 cores (23.8 now)" }))
+    expect(Accept.heldSecond(file, true, 12, 12)._tag).toBe("Some")
+    expect(Accept.heldSecond(file, true, 11.8, 12)).toEqual(Option.none())
+    expect(Accept.heldSecond("tests/queue.test.ts", false, 23.8, 12)).toEqual(Option.none())
+    // Held, it is no ended second run: a later hold still owes it one.
+    const first: Accept.Outcome = { file, status: "failed", ms: 1000, reason: "bun test exited 1" }
+    expect(Accept.secondRunsDue([first, ...Option.toArray(held)])).toEqual([file])
+    expect(Accept.whyWords("unsettled")).toBe("waits for a settled host")
+  })
   test("a file off until a variable is set is owed `off until enabled` by every run while it is unset, and runs once it is set", () => {
     const off = "// accept: deep (8.2 s alone on a quiet host: why)\n// accept: off until WORK_BIN is set (work is not on PATH yet)\n"
     expect([Accept.offUntil(off, {}), Accept.offUntil(off, { WORK_BIN: "" }), Accept.offUntil(off, { WORK_BIN: "/bin/work" })]).toEqual([Option.some("WORK_BIN"), Option.some("WORK_BIN"), Option.none()])
