@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { Option } from "effect"
 import { settingsFor } from "../mods/update/process/install.ts"
+import { tuiPluginsOf } from "../mods/update/trees.ts"
 import { CLI, EXISTING, SERVER } from "./daily-configure.golden.ts"
 import { configured, type HostFacts, jsonText, pluginDir } from "./daily.ts"
 
@@ -54,5 +55,17 @@ describe("the global configs --configure writes", () => {
     const tui = jsonText(configured(EXISTING, FACTS, `${HOME}/.local/share/opencode-prime`).cli)
     expect(withTui.filter((dir) => !tui.includes(`"${dir}"`))).toEqual([])
     expect(withTui.length).toBeGreaterThan(10)
+  })
+
+  test("load the TUI's plugins in the old scheme's order, whatever order the packages list in: Prime, the pool's status section second, then the rest as before, and a plugin it never listed after them, by name", () => {
+    const tui = (name: string) => ({ name, manifest: `{ "exports": { "./tui": "./tui.tsx" } }` })
+    const serverOnly = (name: string) => ({ name, manifest: `{ "exports": { "./server": "./server.ts" } }` })
+    const packages = [tui("zeta"), tui("escape"), serverOnly("pool"), tui("queue"), tui("status"), tui("cache"), tui("prime"), tui("alpha"), tui("git")]
+    expect(tuiPluginsOf(packages)).toEqual(["prime", "status", "git", "cache", "escape", "alpha", "queue", "zeta"])
+    expect(tuiPluginsOf(packages.toReversed())).toEqual(tuiPluginsOf(packages))
+    // This checkout's plugins: the list the TUI had before trees, and Queue, which reached it through the server, after it.
+    const written = configured(EXISTING, FACTS, `${HOME}/.local/share/opencode-prime`).cli
+    const names = (Array.isArray(written.plugins) ? written.plugins : []).flatMap((entry) => (typeof entry === "string" && entry.startsWith(`${ROOT}/cmd/`) ? [entry.slice(`${ROOT}/cmd/`.length)] : []))
+    expect(names).toEqual(["prime", "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape", "queue"])
   })
 })

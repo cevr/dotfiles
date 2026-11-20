@@ -136,16 +136,30 @@ export const hasTuiPart = (manifest: string): boolean => Option.exists(decodeTui
 export const TUI_FIRST = "prime"
 
 /**
+ * The order the TUI loads its plugins in, which is the order their sidebar sections and slots draw in
+ * (a slot is appended in load order): Prime first, then the old scheme's list as it stood, so the
+ * sidebar keeps its layout (the pool's section, `status`, second; the Queue section, which came through
+ * the server's listing, after them). Order only: which plugins load is derived (`tuiPluginsOf`).
+ */
+export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
+
+/** A plugin's place: its index in `TUI_ORDER`, and after every listed one for a plugin it does not list. */
+const placeOf = (name: string): number => {
+  const at = TUI_ORDER.indexOf(name)
+  return at === -1 ? TUI_ORDER.length : at
+}
+
+/**
  * The TUI's plugins, derived from the packages themselves (`packages`: each plugin directory's name and
- * its `package.json`): every one that exports `./tui`, Prime first, then by name. Derived, never kept
- * by hand: a TUI part reached the TUI under the old scheme also through the server's listing (gap 5),
- * which a tree's server entries no longer carry, so a plugin missing here would drop out of every TUI
- * (2026-11-20: the Queue sidebar section, `cmd/queue`).
+ * its `package.json`): every one that exports `./tui`, in `TUI_ORDER`, and those it does not list after,
+ * by name. Derived, never kept by hand: a TUI part reached the TUI under the old scheme also through the
+ * server's listing (gap 5), which a tree's server entries no longer carry, so a plugin missing here
+ * would drop out of every TUI (2026-11-20: the Queue sidebar section, `cmd/queue`).
  */
 export const tuiPluginsOf = (packages: ReadonlyArray<{ readonly name: string; readonly manifest: string }>): ReadonlyArray<string> =>
   packages
     .flatMap((each) => [each.name].filter(() => hasTuiPart(each.manifest)))
-    .toSorted((left, right) => Number(right === TUI_FIRST) - Number(left === TUI_FIRST) || Number(left > right) - Number(left < right))
+    .toSorted((left, right) => placeOf(left) - placeOf(right) || Number(left > right) - Number(left < right))
 
 /** Turns off the fork's built-in /btw (`opencode.btw`), so /btw is the btw mod's (cmd/btw). */
 export const BUILTIN_BTW_OFF = "-opencode.btw"
