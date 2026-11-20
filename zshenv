@@ -13,6 +13,8 @@ path=(
   "$ANDROID_HOME/emulator"
   "$ANDROID_HOME/cmdline-tools/latest/bin"
   /opt/homebrew/bin
+  # rex, for non-interactive shells: `rex -S ssh://…` from another host runs it without a login shell.
+  "$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS"
   $path
 )
 export PATH
