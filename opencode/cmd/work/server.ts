@@ -20,7 +20,6 @@
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Config, Context, Effect, Layer, Option, Predicate, Schema } from "effect"
-import { SessionID } from "@opencode/schema/session-id"
 import * as FilestoreDebts from "@dotfiles/opencode-work/filestore/debts"
 import * as Model from "@dotfiles/opencode-work/model"
 import * as OpenCodeNotices from "@dotfiles/opencode-work/opencode/notices"
@@ -59,8 +58,11 @@ export type Options = typeof Options.Type
 /** The outside systems the model runs on. */
 export type Externals = Rifts | SessionDirectories | Landing | Notices | Workbox | PostLandDebts | PostLandClaim
 
-/** A session id as OpenCode's session calls take it; one that is no session id fails, as the call would. */
-const sessionIdOf = Schema.decodeUnknownEffect(SessionID)
+/**
+ * A session id as OpenCode's session calls take it; one that is no session id fails, as the call would. The server
+ * host serves no `@opencode/schema`, so this is its `session-id` schema built here: the same check and brand.
+ */
+const sessionIdOf = Schema.decodeUnknownEffect(Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID")))
 
 /**
  * The outside systems but the workspaces: Git and the land's checks, the owed post-land steps (their logs in
