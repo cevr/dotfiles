@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { argv, spawnSync, write } from "bun"
 import { gitInit } from "../../../tests/git-repo.ts"
-import { UpdateFailed } from "../service.ts"
+import { Builder, UpdateFailed } from "../service.ts"
+import * as Builders from "./builder.ts"
+import { settingsFor } from "./install.ts"
 import { Effect, Exit, Option } from "effect"
 import { buildName, buildVersion } from "../builds.ts"
 import { dailyBuild, type ForkBuild, stageFork, suffixOf, versionOf } from "./pin.ts"
@@ -114,6 +116,25 @@ describe("the version names the build's fork commit and dotfiles commit", () => 
     expect(buildVersion("opencode-2.2.5-prime.d22f11a9")).toEqual(Option.some("2.2.5-prime.d22f11a9"))
     expect(suffixOf("opencode vlocal")).toEqual(Option.none())
   })
+})
+
+describe("the updater's builder names a tree build", () => {
+  test(
+    "Builder.version reads the target's fork version at its commit and names the tree build: it ends in .tree, and is not the version of a plain build of the same commits",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { root, fork, target } = yield* scratch
+          const settings = settingsFor({ host: "test", home: root, state: `${root}/state`, checkout: `${root}/dotfiles`, fork, bun: BUN, resident: `${root}/resident`, launcher: `${root}/bin/opencode` })
+          const version = yield* Builder.use((builder) => builder.version({ fork: target, dotfiles: DOTFILES, batch: "b" })).pipe(Effect.provide(Builders.layer(settings, GIT_ENV)))
+          expect(version).toBe(versionOf("2.2.7", target, DOTFILES, true))
+          expect(version.endsWith(".tree")).toBe(true)
+          expect(version).not.toBe(versionOf("2.2.7", target, DOTFILES))
+          spawnSync(["rm", "-rf", root])
+        }),
+      ),
+    60_000,
+  )
 })
 
 describe("the stage builds exactly the target's fork commit", () => {
