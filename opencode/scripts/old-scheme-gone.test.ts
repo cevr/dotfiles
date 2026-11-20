@@ -45,7 +45,7 @@ const RUNTIME = Effect.map(Effect.all([sources("opencode/mods/update"), sources(
 ])
 
 /** The docs that describe the update. */
-const DOCS = ["opencode/README.md", "opencode/AGENTS.md", "opencode/.claude/skills/verify-opencode/SKILL.md"]
+const DOCS = ["opencode/README.md", "opencode/AGENTS.md", "opencode/.claude/skills/verify-opencode/SKILL.md", "opencode/mods/update/package.json"]
 
 /** A name of the old scheme, and where it may not appear. */
 const GONE: ReadonlyArray<{ readonly name: string; readonly pattern: RegExp; readonly docs: boolean }> = [
@@ -56,6 +56,12 @@ const GONE: ReadonlyArray<{ readonly name: string; readonly pattern: RegExp; rea
   { name: "Source.advance / reinstall / head", pattern: /\bsource\.(advance|reinstall|head)\b|\breadonly (advance|reinstall):|\breadonly head: Effect\.Effect<string, UpdateFailed>/, docs: false },
   { name: "the checkout's move", pattern: /\bCheckoutStuck\b|\bmoveOnto\b|\bmoveBack\b|\bmoveForward\b|\buntrackedAhead\b|\bKEPT\b|sync-conflict/, docs: false },
   { name: "settings.mode", pattern: /\bmodeOf\b|\bSYNCTHING_FOLLOWERS\b|\bmode: Schema\b|\b(settings|options|checkout)\.mode\b/, docs: false },
+  // Read any other way: by index, or destructured (`{ mode }`, `{ host, mode }`); a `{ mode: 0o600 }` file mode is none.
+  { name: "settings.mode, read by index or destructured", pattern: /\[\s*["'`]mode["'`]\s*\]|\{\s*(?:[\w$]+\s*,\s*)*mode\s*(?:,\s*[\w$]+\s*)*\}/, docs: false },
+  // A removed name, imported (the import alone breaks no other rule until the name is called).
+  { name: "a removed name, imported", pattern: /\bimport\b[^;]*\{[^}]*\b(advance|reinstall|oldFormat|oldRunning|KEPT|kept|keptOf|modeOf|withTree|stripped|tuiOursOf|tuiKeptOf|lateStrip|migrate)\b[^}]*\}/, docs: false },
+  { name: "the old format's hold", pattern: /\boldFormat\b/, docs: false },
+  { name: "the dotfiles' advance", pattern: /advances? the (dotfiles|checkout)/i, docs: true },
   { name: "the Syncthing follower", pattern: /Syncthing follower/i, docs: true },
   { name: "the old scheme", pattern: /\bold scheme\b|\binstallOld\b|\btreeScheme\b|\bNO_TREES\b|\bcheckoutProgram\b/, docs: true },
   { name: "the migration", pattern: /\bconfigs\.(keep|restore|strip|stripTui|tuiOurs)\b|\breadonly (keep|restore|strip|stripTui|tuiOurs):|\blateStrip\b|\boldRunning\b|first tree install/, docs: true },

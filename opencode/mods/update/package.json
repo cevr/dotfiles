@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The host's OpenCode updates itself: from the verified target in git it advances the dotfiles, builds the fork, restarts its own service once every root session is idle, checks the plugins and rolls back a build that fails.",
+  "description": "The host's OpenCode updates itself: from the verified target in git it makes the build's own plugin tree, builds the fork, restarts its own service onto it, checks the plugins and rolls back a build that fails; the live checkout never moves.",
   "exports": {
     "./*": "./*.ts"
   },
