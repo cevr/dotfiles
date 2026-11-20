@@ -849,10 +849,10 @@ export const make = (
       // it gets its own; the config's plugin runs after, so its `default_agent` and an `orchestrator` file still win.
       // Its section goes after build's prompt in the context, compaction and generate hooks (`withSection`).
       yield* ctx.agent.transform((editor) => {
-        const build = editor.get(BUILD)
-        if (build !== undefined) {
+        const build = Option.fromUndefinedOr(editor.get(BUILD))
+        if (Option.isSome(build)) {
           editor.update(ORCHESTRATOR, (item) => {
-            Object.assign(item, structuredClone(build))
+            Object.assign(item, structuredClone(build.value))
             item.name = Agent.Name.make("Orchestrator")
             item.description = orchestrator.description
             item.mode = "primary"

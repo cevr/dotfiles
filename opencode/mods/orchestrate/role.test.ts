@@ -10,7 +10,7 @@ describe("the orchestrator's section", () => {
   test("goes after build's prompt, in its first part, for the orchestrator only", () => {
     expect(withSection(ORCHESTRATOR, system)).toEqual([{ type: "text", text: `build's prompt\n\n${orchestrator.section}` }, system[1]!])
     expect(system[0]!.text).toBe("build's prompt")
-    for (const agent of ["build", ...ROLES]) expect(withSection(agent, system)).toBe(system)
+    for (const agent of ["build", ...ROLES]) expect([agent, withSection(agent, system) === system]).toEqual([agent, true])
   })
   test("stands alone in a request with no system part", () => {
     expect(withSection(ORCHESTRATOR, [])).toEqual([{ type: "text", text: orchestrator.section }])

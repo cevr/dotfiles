@@ -19,19 +19,19 @@ const PIN = "2026-11-04T15:00:00Z"
 const RULE = "**Never block on the shell.**"
 
 /** A world with the orchestrate plugin loaded, recording each request the model gets. */
-const boot = Effect.fn("Orchestrator.boot")(function* (seed: number, options: { readonly defaultAgent?: string; readonly after?: Plugin.Plugin } = {}) {
+const boot = Effect.fn("Orchestrator.boot")(function* (seed: number, host: { readonly defaultAgent?: string } = {}, after: ReadonlyArray<Plugin.Plugin> = []) {
   const requests: Array<World.Request> = []
   const world = World.make({
     seed,
     start: Date.parse(PIN),
-    ...(options.defaultAgent === undefined ? {} : { defaultAgent: options.defaultAgent }),
+    ...host,
     script: (request) => {
       requests.push(request)
       return World.say("done")
     },
   })
   yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: PIN } })
-  if (options.after !== undefined) yield* world.load(options.after, { directory: WORK })
+  for (const plugin of after) yield* world.load(plugin, { directory: WORK })
   const idle = (sessionID: string) => Option.exists(Option.fromNullishOr(world.sessions.get(sessionID)), (session) => !session.running && session.inbox.length === 0)
   /** One prompt to `sessionID`, answered: the requests it made (a child's report also wakes its parent, which is not it). */
   const turn = Effect.fn("Orchestrator.turn")(function* (sessionID: string) {
@@ -49,14 +49,14 @@ seeded("the orchestrator is a primary agent, the default, with build's permissio
     const run = yield* boot(seed)
     const agents = run.world.agents(WORK)
     const first = agents[0]
-    expect(first?.id).toBe(ORCHESTRATOR)
+    expect(String(first?.id)).toBe(ORCHESTRATOR)
     expect(first?.mode).toBe("primary")
     expect(first?.hidden).toBe(false)
     expect(first?.description).toBe(orchestrator.description)
     expect(first?.request.settings["compactionWindow"]).toBe(WINDOW)
     expect(WINDOW).toBe(400_000)
     const build = run.agent("build")
-    expect(first?.permissions).toEqual(build?.permissions)
+    expect([first?.permissions]).toEqual([build?.permissions])
     expect(first?.system).toBe(build?.system)
     // The roles stay as their definitions make them.
     for (const role of ROLES) {
@@ -105,7 +105,7 @@ seeded("a new session runs as the orchestrator with its section after build's pr
 seeded("the config's default_agent wins: a new session runs as build, without the section", ({ seed, expect }) =>
   Effect.gen(function* () {
     const run = yield* boot(seed, { defaultAgent: "build" })
-    expect(run.world.agents(WORK)[0]?.id).toBe("build")
+    expect(String(run.world.agents(WORK)[0]?.id)).toBe("build")
     expect(run.agent(ORCHESTRATOR)?.mode).toBe("primary")
     const root = yield* run.world.session(WORK)
     const asked = yield* run.turn(root)
@@ -131,9 +131,9 @@ const override = Plugin.define({
 
 seeded("an agent defined after the plugin overrides the orchestrator's fields, and it stays the default", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const run = yield* boot(seed, { after: override })
+    const run = yield* boot(seed, {}, [override])
     const first = run.world.agents(WORK)[0]
-    expect(first?.id).toBe(ORCHESTRATOR)
+    expect(String(first?.id)).toBe(ORCHESTRATOR)
     expect(first?.description).toBe("the owner's orchestrator")
     expect(first?.permissions.at(-1)).toEqual({ action: "webfetch", resource: "*", effect: "deny" })
     const root = yield* run.world.session(WORK)

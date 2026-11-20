@@ -1,53 +1,86 @@
 // scripts/agents.ts's orchestrator entry: its section carries SKILL.md's no-block rule word for word, and `--check`
 // fails once that line changes in the skill without `bun run agents` writing agents.json again.
-import { describe, expect, test } from "bun:test"
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
-import { scratch } from "../tests/scratch.ts"
-import { build, DEFAULT_SOURCE, NO_BLOCK, ORCHESTRATOR, orchestratorSection, ROOT, stale } from "./agents.ts"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
+import { describe, expect, it } from "effect-bun-test"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { build, DEFAULT_SOURCE, NO_BLOCK, orchestratorSection, ROOT } from "./agents.ts"
 
-const skill = readFileSync(join(DEFAULT_SOURCE, "SKILL.md"), "utf8")
-const rule = skill.split("\n").find((line) => line.startsWith(NO_BLOCK))
+const live = it.live.layer(BunServices.layer)
+
+/** The written file's orchestrator entry. */
+const Written = Schema.fromJsonString(Schema.Struct({ orchestrator: Schema.Struct({ description: Schema.String, section: Schema.String }) }))
+
+/** SKILL.md and its no-block rule line. */
+const skill = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const text = yield* fs.readFileString(path.join(DEFAULT_SOURCE, "SKILL.md"))
+  const rule = yield* Effect.fromOption(Option.fromNullishOr(text.split("\n").find((line) => line.startsWith(NO_BLOCK))))
+  return { text, rule }
+})
+
+/** `bun scripts/agents.ts --check`, with the skill at `source`: its exit code and stderr. */
+const check = (...source: ReadonlyArray<string>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const path = yield* Path.Path
+      const handle = yield* spawner.spawn(
+        ChildProcess.make("bun", [path.join(ROOT, "scripts/agents.ts"), "--check", ...source], { extendEnv: true, stdin: "ignore", forceKillAfter: "3 seconds" }),
+      )
+      const [code, stderr] = yield* Effect.all([handle.exitCode, handle.stderr.pipe(Stream.decodeText(), Stream.mkString)], { concurrency: 2 })
+      return { code: Number(code), stderr }
+    }),
+  )
 
 /** The orchestrate skill and what its agents script reads beside it (loop/safety.md, the agents dir), under `dir`. */
-const copySkill = (dir: string) => {
-  const source = join(dir, "skills/orchestrate")
-  mkdirSync(join(source, "scripts"), { recursive: true })
-  for (const file of ["SKILL.md", "protocol.md", "scripts/agents.ts"]) cpSync(join(DEFAULT_SOURCE, file), join(source, file))
-  mkdirSync(join(dir, "skills/loop"), { recursive: true })
-  cpSync(join(DEFAULT_SOURCE, "../loop/safety.md"), join(dir, "skills/loop/safety.md"))
-  cpSync(join(DEFAULT_SOURCE, "../../agents"), join(dir, "agents"), { recursive: true })
-  return source
-}
+const copySkill = (dir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const source = path.join(dir, "skills/orchestrate")
+    yield* fs.makeDirectory(path.join(source, "scripts"), { recursive: true })
+    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts"], (file) => fs.copyFile(path.join(DEFAULT_SOURCE, file), path.join(source, file)))
+    yield* fs.makeDirectory(path.join(dir, "skills/loop"), { recursive: true })
+    yield* fs.copyFile(path.join(DEFAULT_SOURCE, "../loop/safety.md"), path.join(dir, "skills/loop/safety.md"))
+    yield* fs.copy(path.join(DEFAULT_SOURCE, "../../agents"), path.join(dir, "agents"))
+    return source
+  })
 
 describe("the orchestrator entry", () => {
-  test("its section ends with SKILL.md's no-block rule, word for word", async () => {
-    expect(rule).toBeDefined()
-    const written = JSON.parse((await build()).text) as { [ORCHESTRATOR]: { section: string; description: string } }
-    expect(written[ORCHESTRATOR].section.endsWith(rule!.slice(2))).toBe(true)
-    expect(written[ORCHESTRATOR].section).toContain("Load the `orchestrate` skill before you coordinate")
-    expect(written[ORCHESTRATOR].section).toContain("A plain question or a small edit needs no run")
-  })
+  live("its section ends with SKILL.md's no-block rule, word for word", () =>
+    Effect.gen(function* () {
+      const { rule } = yield* skill
+      const built = yield* Effect.promise(() => build())
+      const written = yield* Schema.decodeUnknownEffect(Written)(built.text)
+      expect(written.orchestrator.section.endsWith(rule.slice(2))).toBe(true)
+      expect(written.orchestrator.section).toContain("Load the `orchestrate` skill before you coordinate")
+      expect(written.orchestrator.section).toContain("A plain question or a small edit needs no run")
+    }),
+  )
 
-  test("--check is green on the written file", async () => {
-    expect(stale(await build())).toBe(false)
-    const check = Bun.spawnSync([process.execPath, join(ROOT, "scripts/agents.ts"), "--check"], { stderr: "pipe" })
-    expect(check.exitCode).toBe(0)
-  })
+  live("--check is green on the written file, and fails once the skill's rule line is edited without regenerating", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const { text, rule } = yield* skill
+      expect(yield* check()).toMatchObject({ code: 0 })
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "agents-check-" })
+      const source = yield* copySkill(dir)
+      // The copy as it is matches the written file.
+      expect(yield* check("--source", source)).toMatchObject({ code: 0 })
+      yield* fs.writeFileString(path.join(source, "SKILL.md"), text.replace(rule, rule.replace("about 10 seconds", "about 30 seconds")))
+      const edited = yield* check("--source", source)
+      expect(edited.code).toBe(1)
+      expect(edited.stderr).toContain("stale:")
+    })),
+  )
 
-  test("--check fails when the skill's rule line is edited without regenerating", () => {
-    using dir = scratch("agents-check-")
-    const source = copySkill(dir.path)
-    const run = () => Bun.spawnSync([process.execPath, join(ROOT, "scripts/agents.ts"), "--check", "--source", source], { stderr: "pipe" })
-    // The copy as it is matches the written file.
-    expect(run().exitCode).toBe(0)
-    writeFileSync(join(source, "SKILL.md"), skill.replace(rule!, rule!.replace("about 10 seconds", "about 30 seconds")))
-    const edited = run()
-    expect(edited.exitCode).toBe(1)
-    expect(edited.stderr.toString()).toContain("stale:")
-  })
-
-  test("a skill that lost the rule fails the build, naming it", () => {
-    expect(() => orchestratorSection(skill.replace(rule!, ""))).toThrow(NO_BLOCK)
-  })
+  live("a skill that lost the rule fails the build, naming it", () =>
+    Effect.gen(function* () {
+      const { text, rule } = yield* skill
+      expect(() => orchestratorSection(text.replace(rule, ""))).toThrow(NO_BLOCK)
+    }),
+  )
 })

@@ -20,6 +20,7 @@
 // Usage: bun scripts/agents.ts [--check] [--root <dir>] [--source <orchestrate skill dir>]
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { Array as Arr, Data, Option } from "effect"
 
 /** What this script uses from the orchestrate skill's scripts/agents.ts. */
 interface Source {
@@ -104,10 +105,12 @@ const ORCHESTRATOR_DESCRIPTION =
 /** The skill line the orchestrator carries word for word: SKILL.md's rule under "Between messages". */
 export const NO_BLOCK = "- **Never block on the shell.**"
 
+/** SKILL.md no longer holds the rule the orchestrator carries. */
+export class LostRule extends Data.TaggedError("LostRule")<{ readonly message: string }> {}
+
 /** The orchestrator's section: who it is, and the skill's no-block rule word for word. */
 export const orchestratorSection = (skill: string) => {
-  const rule = skill.split("\n").find((line) => line.startsWith(NO_BLOCK))
-  if (!rule) throw new Error(`SKILL.md lost its rule "${NO_BLOCK}" under "Between messages"`)
+  const rule = Option.getOrThrowWith(Arr.findFirst(skill.split("\n"), (line) => line.startsWith(NO_BLOCK)), () => new LostRule({ message: `SKILL.md lost its rule "${NO_BLOCK}" under "Between messages"` }))
   return [
     "# Orchestrator",
     "",

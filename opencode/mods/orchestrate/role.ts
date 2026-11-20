@@ -1,7 +1,7 @@
 // The orchestrate roles as OpenCode agents, and which one a subagent call runs
 // as. agents.json, written by scripts/agents.ts from the orchestrate skill,
 // holds each role's agent fields and reasoning effort; it is decoded here once.
-import { Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 import generated from "./agents.json"
 import { described, STEPS } from "./described.ts"
 
@@ -55,12 +55,18 @@ export const orchestrator: typeof Orchestrator.Type = decoded.orchestrator
  * The system parts an `agent`'s request carries: for the orchestrator, the first part (build's prompt, as the host
  * made it for the request) with the section after it; for every other agent, `system` as it is.
  */
-export const withSection = <P extends { readonly type: "text"; readonly text: string }>(agent: string, system: ReadonlyArray<P>): ReadonlyArray<P> => {
-  const section = orchestrator.section
+export const withSection = <P extends SystemPart>(agent: string, system: ReadonlyArray<P>): ReadonlyArray<P | SystemPart> => {
   if (agent !== ORCHESTRATOR) return system
-  const [first, ...rest] = system
-  if (first === undefined) return [{ type: "text", text: section } as P]
-  return [{ ...first, text: `${first.text}\n\n${section}` }, ...rest]
+  return Option.match(Arr.head(system), {
+    onNone: () => [{ type: "text", text: orchestrator.section }],
+    onSome: (first) => [{ ...first, text: `${first.text}\n\n${orchestrator.section}` }, ...system.slice(1)],
+  })
+}
+
+/** A request's system part, as the host's request hooks hold it. */
+export interface SystemPart {
+  readonly type: "text"
+  readonly text: string
 }
 
 /** A role's reasoning effort, a model variant id such as `high`. The worker runs at the model's own. */

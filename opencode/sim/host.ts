@@ -802,12 +802,12 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    */
   const agentsOf = (directory: string) => {
     const all = new Map<string, MutableAgent>([["build", agentOf("build")]])
-    let chosen: string | undefined
+    let chosen = Option.none<string>()
     const editor: AgentEditor = {
       list: () => [...all.values()],
       get: (id) => all.get(id),
       default: (id) => {
-        chosen = id
+        chosen = Option.fromUndefinedOr(id)
       },
       update: (id, change) => {
         const current = all.get(id) ?? agentOf(id)
@@ -818,16 +818,22 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       remove: (id) => void all.delete(id),
     }
     for (const transform of agentTransforms) if (directories.get(transform.instance) === directory) transform.callback(editor)
-    if (options.defaultAgent !== void 0) chosen = options.defaultAgent
-    const selectable = (agent: MutableAgent | undefined) => (agent !== void 0 && agent.mode !== "subagent" && !agent.hidden ? agent : void 0)
-    const selected =
-      selectable(chosen === void 0 ? void 0 : all.get(chosen)) ?? selectable(all.get("build")) ?? [...all.values()].find((agent) => selectable(agent) !== void 0)
-    if (selected === void 0) return all
-    return new Map([[selected.id as string, selected], ...[...all].filter(([id]) => id !== selected.id)])
+    const picked = Option.orElse(Option.fromUndefinedOr(options.defaultAgent), () => chosen)
+    const entries = [...all]
+    const selectable = ([, agent]: readonly [string, MutableAgent]) => agent.mode !== "subagent" && !agent.hidden
+    const entryOf = (id: string) => Option.filter(Arr.findFirst(entries, ([key]) => key === id), selectable)
+    const selected = Option.flatMap(picked, entryOf).pipe(
+      Option.orElse(() => entryOf("build")),
+      Option.orElse(() => Arr.findFirst(entries, selectable)),
+    )
+    return Option.match(selected, {
+      onNone: () => all,
+      onSome: (entry) => new Map([entry, ...entries.filter(([id]) => id !== entry[0])]),
+    })
   }
 
   /** The agent a session created on none runs as: its location's default, read at each request (the fork's `Agent.select()`). */
-  const defaultAgentOf = (directory: string) => agentsOf(directory).keys().next().value ?? "build"
+  const defaultAgentOf = (directory: string) => Option.getOrElse(Arr.head([...agentsOf(directory).keys()]), () => "build")
 
   /** The agent a session runs as, or the default one when its own is gone. */
   const agentFor = (session: Session) => agentsOf(session.directory).get(requestAgent(session)) ?? agentOf(requestAgent(session))
@@ -859,7 +865,10 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   }
 
   /** The agent a session's requests run as: its own when it was created on one or switched, else its location's default. */
-  const requestAgent = (session: Session) => (session.named ? session.agent : defaultAgentOf(session.directory))
+  const requestAgent = (session: Session) => {
+    if (session.named) return session.agent
+    return defaultAgentOf(session.directory)
+  }
   /** The model a session's requests run on (`modelOf`). */
   const requestModel = modelOf
 
