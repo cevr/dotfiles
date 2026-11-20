@@ -15,6 +15,7 @@
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
 // - every workbox/test/ test when anything under the repository's workbox/ changes: the diff from opencode/ never
 //   sees that folder, and no gate leg ran its tests (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
+import { Glob } from "bun"
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
 
@@ -93,7 +94,7 @@ export const reachedWithin = (test: string, scripts: ScriptsTests, exists: (file
 interface Inputs {
   readonly test: string
   readonly files: ReadonlySet<string>
-  readonly reads: ReadonlyArray<Bun.Glob>
+  readonly reads: ReadonlyArray<Glob>
 }
 
 /**
@@ -112,7 +113,7 @@ const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => []
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
 export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
   const paths = named(changes)
-  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.reads(test).map((glob) => new Bun.Glob(glob)) }))
+  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.reads(test).map((glob) => new Glob(glob)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
   if (docsGuardDue(changes)) due.add(DOCS_GUARD)
