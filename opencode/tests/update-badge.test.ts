@@ -24,7 +24,7 @@
 // `upstreamReading`); the test writes that file in the scratch HOME as daily
 // would, and the corner adds `upstream +12 · merge blocked`, or nothing at 0.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
@@ -38,7 +38,8 @@ if (!fork) console.warn("tests/update-badge.test.ts: skipped. Set OPENCODE_DEV t
 const ROOT = join(import.meta.dir, "..")
 const TIMEOUT_MS = 180_000
 const NOTICE = "update available · restart to update"
-const NEWER = "9.9.9-prime.newbuild"
+/** A newer build as daily names one: the fork commit, then the dotfiles commit (mods/update/process/pin.ts `versionOf`). */
+const NEWER = "9.9.9-prime.0e0e0e0e.d0d0d0d0"
 /** How long a TUI on the service's own build is watched for a notice it must not draw, once it has read `/api/info`. */
 const QUIET_MS = 3_000
 

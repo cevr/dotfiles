@@ -6,8 +6,17 @@ describe("updateAvailable", () => {
     expect(updateAvailable("2.2.5-prime.d22f11a9", "2.2.5-prime.cd6d8ecd")).toBe(true)
   })
 
+  test("a service on the same fork with other plugins (a dotfiles-only update) has one too", () => {
+    expect(updateAvailable("2.2.7-prime.cd6d8ecd.11111111", "2.2.7-prime.cd6d8ecd.22222222")).toBe(true)
+  })
+
+  test("a TUI of the old format on a service of the new one, the first install of the new format, has one", () => {
+    expect(updateAvailable("2.2.7-prime.cd6d8ecd", "2.2.7-prime.cd6d8ecd.22222222")).toBe(true)
+  })
+
   test("the same build has none", () => {
     expect(updateAvailable("2.2.5-prime.cd6d8ecd", "2.2.5-prime.cd6d8ecd")).toBe(false)
+    expect(updateAvailable("2.2.7-prime.cd6d8ecd.22222222", "2.2.7-prime.cd6d8ecd.22222222")).toBe(false)
   })
 
   test("a service not read yet, or one that does not know its version, shows none", () => {

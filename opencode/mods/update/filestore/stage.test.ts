@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test"
 import { env, spawnSync } from "bun"
 import { Effect, Option } from "effect"
 import { buildName } from "../builds.ts"
-import { parseRecord, promoted, proven, type Record, rolledBack } from "../record.ts"
+import { parseRecord, promoted, proven, type Record, recordText, rolledBack } from "../record.ts"
 import { Records } from "../service.ts"
 import * as RecordFile from "./records.ts"
 import { stageBuild, type Stage } from "./stage.ts"
 
-const VERSION = "2.2.7-prime.abcdef12"
+const VERSION = "2.2.7-prime.abcdef12.d0f11e5a"
 
 const sh = (script: string) => spawnSync(["/bin/sh", "-c", script], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
 
@@ -63,10 +63,24 @@ describe("daily's stage of a build", () => {
       stageBuild(stage)
       expect(entries(stage.share)).toEqual([buildName(VERSION)])
     }))
+
+  test("on a host of the old format (its record and builds name the fork alone), it stages beside them: the old builds stay superseded, a copy in flight is none", () =>
+    onScratch((stage) => {
+      const old = "2.2.7-prime.abcdef12"
+      const record: Record = { version: old, command: [`${stage.share}/${buildName(old)}`], previous: ["2.2.6-prime.99999999"], dotfiles: "c".repeat(40), fork: "f".repeat(40) }
+      sh(`mkdir -p '${stage.share}' '${stage.record.replace(/\/[^/]+$/, "")}' && printf old > '${stage.share}/${buildName(old)}' && printf older > '${stage.share}/opencode-2.2.6-prime.99999999' && printf copy > '${stage.share}/${buildName(old)}.4242'`)
+      sh(`printf '%s' '${recordText(record)}' > '${stage.record}'`)
+      const binary = stageBuild(stage)
+      expect(binary).toBe(`${stage.share}/opencode-2.2.7-prime.abcdef12.d0f11e5a`)
+      expect(sh(`cat '${stage.share}/${buildName(old)}'`).stdout.toString()).toBe("old")
+      const staged = parseRecord(sh(`cat '${stage.record}'`).stdout.toString())
+      expect(Option.map(staged, (each) => [each.version, each.previous, each.staged?.version])).toEqual(Option.some([old, ["2.2.6-prime.99999999"], VERSION]))
+      expect(Option.map(Option.map(staged, promoted), (each) => [each.version, each.previous])).toEqual(Option.some([VERSION, ["2.2.6-prime.99999999", old]]))
+    }))
 })
 
 const OLD = "2.2.7-prime.aaaaaaaa"
-const NEW = "2.2.7-prime.bbbbbbbb"
+const NEW = "2.2.7-prime.aaaaaaaa.bbbbbbbb"
 
 /**
  * A stand-in build: a TUI start replaces a running service of another version before it starts, as

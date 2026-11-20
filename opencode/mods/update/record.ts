@@ -1,4 +1,5 @@
 import { Array as Arr, Option, Schema } from "effect"
+import { buildVersion } from "./builds.ts"
 
 /**
  * One build as the record names it: its version, the command that runs it, and the dotfiles and
@@ -46,9 +47,11 @@ export const recordText = (record: Record): string => `${encodeRecord(record)}\n
 /** How many superseded builds the record keeps. */
 export const PREVIOUS_KEPT = 200
 
-/** The versions of the builds a `share` directory holds, from their names (`opencode-<version>`). */
-export const installedVersions = (names: ReadonlyArray<string>): ReadonlyArray<string> =>
-  names.flatMap((name) => Option.toArray(Option.fromNullishOr(/^opencode-(\d+\.\d+\.\d+.*)$/.exec(name)?.[1])))
+/**
+ * The versions of the builds a `share` directory holds, from their names, by the one build grammar
+ * (`builds.ts` `buildVersion`), either format: a copy in flight or any other entry names none.
+ */
+export const installedVersions = (names: ReadonlyArray<string>): ReadonlyArray<string> => names.flatMap((name) => Option.toArray(buildVersion(name)))
 
 /**
  * The record once `build` is installed over `last`. `previous` keeps the last record's builds and
@@ -82,8 +85,8 @@ export const proven = (record: Record): Record =>
 /**
  * The record that rolls back to the last good build: that build installed again, the failed one
  * listed as superseded so every TUI on it follows. None when there is no good build, or the good
- * build is the one that failed: the same version and the same commits (a dotfiles-only target keeps
- * the version, and rolls back its commit).
+ * build is the one that failed: the same version and the same commits (a dotfiles-only target of the
+ * old format kept the version, and rolls back its commit; a version now names both commits).
  */
 export const rolledBack = (record: Record): Option.Option<Record> =>
   goodOf(record).pipe(

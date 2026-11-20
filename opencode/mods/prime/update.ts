@@ -14,7 +14,9 @@ export const UPDATE_REST = " · restart to update"
 
 /**
  * Whether the TUI on build `own` runs an older build than its service on
- * `served`: the service's build differs. A service not read yet (`undefined`)
+ * `served`: the service's build differs. A version names the fork commit and
+ * the dotfiles commit (`<base>-prime.<fork 8>.<dotfiles 8>`, mods/update
+ * `versionOf`), so plugins alone updated count as a build of their own. A service not read yet (`undefined`)
  * or one that does not know its version (`"unknown"`, as `/api/info` answers
  * then) shows nothing.
  */

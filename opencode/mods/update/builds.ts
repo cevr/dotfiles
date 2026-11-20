@@ -13,16 +13,21 @@ export const PREVIOUS_ON_DISK = 3
 export const buildName = (version: string): string => `opencode-${version}`
 
 /**
- * The name daily copies a build to before it renames it to `buildName`: `<build name>.<pid>`. It
- * never parses as a build (`buildVersion`), so a prune never takes a copy in flight.
+ * The name daily copies a build to before it renames it to `buildName`: `<build name>.copy-<pid>`. It
+ * never parses as a build (`buildVersion`), so a prune never takes a copy in flight: `copy-` is no hex,
+ * where a bare pid of eight digits would read as a dotfiles commit after a build of the old format.
+ * Copies an older daily left (`<build name>.<pid>`) do not parse either: a pid has at most seven digits.
  */
-export const stagingName = (version: string, pid: number): string => `${buildName(version)}.${pid}`
+export const stagingName = (version: string, pid: number): string => `${buildName(version)}.copy-${pid}`
 
 /**
  * The one name grammar of a build file, as daily names it (`pin.ts` `versionOf`): `opencode-`, a
- * release version (`X.Y.Z`, with any prerelease), `-prime.` and the fork commit's first eight hex.
+ * release version (`X.Y.Z`, with any prerelease), `-prime.`, the fork commit's first eight hex and
+ * then `.` and the dotfiles commit's first eight hex. A build of the old format, from before the
+ * version named the dotfiles commit, ends at the fork's eight; it is still a build, kept and pruned
+ * by the same rule.
  */
-const BUILD_NAME = /^opencode-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-prime\.[0-9a-f]{8})$/
+const BUILD_NAME = /^opencode-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-prime\.[0-9a-f]{8}(?:\.[0-9a-f]{8})?)$/
 
 /** The version of a share directory entry that is a build; none for anything else (a copy in flight, `pool-auth`, a loader). */
 export const buildVersion = (name: string): Option.Option<string> => Option.fromNullishOr(BUILD_NAME.exec(name)?.[1])

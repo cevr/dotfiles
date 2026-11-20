@@ -7,8 +7,12 @@ import type { Build, Record } from "../record.ts"
 import { Builds } from "../service.ts"
 import * as BuildsLayer from "./builds.ts"
 
-/** Six builds, oldest first: v0 … v5; v5 is the one a concurrent stage brings. */
-const V = Array.from({ length: 6 }, (_, at) => `2.2.7-prime.1000000${at}`)
+/**
+ * Six builds, oldest first: v0 … v5; v5 is the one a concurrent stage brings. v0 and v1 are of the
+ * old format (the fork's commit alone), v2 … v5 of the new (the fork's, then the dotfiles'), as a host
+ * has them after its first install of the new format.
+ */
+const V = [0, 1].map((at) => `2.2.7-prime.1000000${at}`).concat([2, 3, 4, 5].map((at) => `2.2.7-prime.10000001.d000000${at}`))
 const NEW = V[5]
 /** A copy a crashed stage left behind: not a build, so it never goes. */
 const LEFTOVER = stagingName(V[0], 4242)

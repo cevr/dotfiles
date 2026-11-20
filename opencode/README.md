@@ -33,7 +33,10 @@ again. The workbox skips the step and pulls origin `prime-look`.
 `scripts/daily.ts` installs the mods' dependencies (`bun install
 --frozen-lockfile`; OpenCode loads the plugins in place and installs nothing),
 builds the fork in `OPENCODE_DEV` (default: the
-`prime-look` Rift) as a release binary named `<version>-prime.<commit>`,
+`prime-look` Rift) as a release binary whose version names both commits,
+`<release>-prime.<fork 8>.<dotfiles 8>` (`mods/update/process/pin.ts`
+`versionOf`), so an update of the plugins alone is a new version too and every
+open TUI moves onto it at its idle moment, as for a fork update;
 copies it to `~/.local/share/opencode-prime/`, and writes
 `~/.local/bin/opencode`, a launcher that runs the installed build (below: a
 staged build only once the handoff installs it) without `ANTHROPIC_BASE_URL`,
@@ -115,8 +118,9 @@ only the resident location's copy acts, so a host runs one updater.
   a detached worktree of the fork pinned there,
   `~/.local/state/opencode-daily/fork-build`, made on first use and moved to
   each target after, and never moves prime-look for it. A binary whose
-  version (`-prime.<hash>`) names another commit fails the stage, and
-  `installed.json` names the commit built (`mods/update/process/pin.ts`).
+  version (`-prime.<fork 8>.<dotfiles 8>`) names another fork or dotfiles
+  commit fails the stage, and `installed.json` names the commits built
+  (`mods/update/process/pin.ts`).
 - **The restart.** Once the build is staged the handoff starts at once,
   whatever the host's sessions are doing; only the Sabbath rest
   (`mods/orchestrate/sabbath.ts`) holds it, and a newer target while it waits
@@ -175,8 +179,11 @@ only the resident location's copy acts, so a host runs one updater.
   builds lock (`~/.local/state/opencode-prime/builds.lock`, a `flock`), which
   daily holds from its copy of a build through the staged record's write; a
   prune that waits two minutes for it deletes nothing. Only
-  `opencode-<release>-prime.<8 hex>` entries are builds: daily's copy in
-  flight (`<build>.<pid>`), `pool-auth` and the rest stay. Each deletion and
+  `opencode-<release>-prime.<8 hex>.<8 hex>` entries are builds, and those of
+  the old format, `opencode-<release>-prime.<8 hex>`, from before the version
+  named the dotfiles commit, kept and pruned by the same rule: daily's copy in
+  flight (`<build>.copy-<pid>`, or an older daily's `<build>.<pid>`),
+  `pool-auth` and the rest stay. Each deletion and
   its size go to `update.log`. A rollback or a give-up deletes nothing.
 - **How the health check reads.** It reads the registered service over HTTP
   (`~/.local/state/opencode/service.json`), never through `opencode api`:

@@ -16,6 +16,8 @@ export interface Pin {
   readonly tree: string
   /** The fork commit the verified target names. */
   readonly commit: string
+  /** The dotfiles commit the verified target names: the build's version names it beside the fork's (`versionOf`). */
+  readonly dotfiles: string
   /** The bun that installs, by its full path. */
   readonly bun: string
   /** Variables every command gets. */
@@ -38,11 +40,23 @@ export interface Pinned {
   readonly reported: string
 }
 
-/** The fork's release version for `commit`: `<base>-prime.<first 8 of the commit>`. */
-export const versionOf = (base: string, commit: string): string => `${base}-prime.${commit.slice(0, 8)}`
+/**
+ * The release version of a build of fork commit `fork` with the plugins of dotfiles commit `dotfiles`:
+ * `<base>-prime.<first 8 of fork>.<first 8 of dotfiles>`. One version is one pair, so an update of
+ * either half changes it, and every open TUI moves onto it at its idle moment (the fork's
+ * `InstalledBuild.supersedes` compares whole versions). Builds before this had the fork half alone
+ * (`<base>-prime.<8>`); `builds.ts` still reads those names.
+ */
+export const versionOf = (base: string, fork: string, dotfiles: string): string => `${base}-prime.${fork.slice(0, 8)}.${dotfiles.slice(0, 8)}`
 
-/** The commit a fork binary's version names (`…-prime.<hash>`), when it names one. */
-export const suffixOf = (reported: string): Option.Option<string> => Option.fromNullishOr(/-prime\.([0-9a-f]+)/.exec(reported)?.[1])
+/**
+ * The commits a fork binary's version names, as its version writes them: `<fork 8>.<dotfiles 8>`, or
+ * `<fork 8>` alone for a build of the old format; none when it names none.
+ */
+export const suffixOf = (reported: string): Option.Option<string> => Option.fromNullishOr(/-prime\.([0-9a-f]+(?:\.[0-9a-f]+)?)/.exec(reported)?.[1])
+
+/** A commit as git names it: 8 to 40 hex. */
+const COMMIT = /^[0-9a-f]{8,40}$/
 
 const CliPackage = Schema.Struct({ version: Schema.String })
 const decodeCli = Schema.decodeUnknownEffect(Schema.fromJsonString(CliPackage))
@@ -70,27 +84,32 @@ export const pinTree = (pin: Pin): Effect.Effect<string, UpdateFailed> =>
   })
 
 /**
- * Builds the fork checked out in `dir` at `commit` as `<base>-prime.<commit>` and reads its binary's
- * version back. A binary whose version names another commit fails, so nothing is staged from it.
+ * Builds the fork checked out in `dir` at `commit` as `<base>-prime.<commit>.<dotfiles>` (`versionOf`)
+ * and reads its binary's version back. A binary whose version names another pair of commits fails, so
+ * nothing is staged from it; so does a dotfiles commit that is no commit, before any build.
  */
-const buildAt = (dir: string, commit: string, fork: ForkBuild): Effect.Effect<Pinned, UpdateFailed> =>
+const buildAt = (dir: string, commit: string, dotfiles: string, fork: ForkBuild): Effect.Effect<Pinned, UpdateFailed> =>
   Effect.gen(function* () {
+    if (!COMMIT.test(dotfiles)) return yield* new UpdateFailed({ step: "name the build", message: `the dotfiles commit "${dotfiles}" is not a commit: nothing built` })
     const read = Effect.tryPromise({ try: () => file(`${dir}/packages/cli/package.json`).text(), catch: (cause) => new UpdateFailed({ step: "read the fork's version", message: String(cause) }) })
     const cli = yield* read.pipe(Effect.flatMap((text) => decodeCli(text).pipe(Effect.mapError((cause) => new UpdateFailed({ step: "read the fork's version", message: String(cause) })))))
-    const version = versionOf(cli.version, commit)
+    const version = versionOf(cli.version, commit, dotfiles)
     const binary = yield* fork.build(dir, version)
     const reported = (yield* fork.report(binary)).trim()
-    if (!Option.exists(suffixOf(reported), (suffix) => suffix === commit.slice(0, 8)))
-      return yield* new UpdateFailed({ step: "check the build's version", message: `${binary} reports ${reported}, not the fork commit ${commit.slice(0, 8)} it was built from: nothing staged` })
+    if (!Option.exists(suffixOf(reported), (suffix) => Option.contains(suffixOf(version), suffix)))
+      return yield* new UpdateFailed({
+        step: "check the build's version",
+        message: `${binary} reports ${reported}, not the fork commit ${commit.slice(0, 8)} and dotfiles commit ${dotfiles.slice(0, 8)} it was built from: nothing staged`,
+      })
     return { commit, version, binary, reported }
   })
 
 /**
  * The stage's fork build: the tree pinned to the target's commit, then built and its version checked
- * (`buildAt`). A binary that names another commit fails the stage, so the update never installs it
- * nor marks the target good.
+ * (`buildAt`). A binary that names another pair of commits fails the stage, so the update never
+ * installs it nor marks the target good.
  */
-export const stageFork = (pin: Pin, fork: ForkBuild): Effect.Effect<Pinned, UpdateFailed> => pinTree(pin).pipe(Effect.flatMap((commit) => buildAt(pin.tree, commit, fork)))
+export const stageFork = (pin: Pin, fork: ForkBuild): Effect.Effect<Pinned, UpdateFailed> => pinTree(pin).pipe(Effect.flatMap((commit) => buildAt(pin.tree, commit, pin.dotfiles, fork)))
 
 /** What daily builds: with a target's fork commit (`--fork-target`, a stage), that commit in the tree; with none, the fork checkout as it stands. */
 export interface DailyBuild {
@@ -98,6 +117,8 @@ export interface DailyBuild {
   readonly tree: string
   /** The target's fork commit, none or one. */
   readonly commit: ReadonlyArray<string>
+  /** The dotfiles commit the record gives the build, which its version names too. */
+  readonly dotfiles: string
   readonly bun: string
   readonly build: ForkBuild
   readonly log: (line: string) => void
@@ -111,11 +132,11 @@ export const dailyBuild = (options: DailyBuild): Effect.Effect<Pinned, UpdateFai
     onNone: () =>
       Effect.sync(() => options.log(`building ${options.fork} as it stands`)).pipe(
         Effect.andThen(run("read the fork's commit", ["git", "rev-parse", "HEAD"], { cwd: options.fork, env })),
-        Effect.flatMap((head) => buildAt(options.fork, head.trim(), options.build)),
+        Effect.flatMap((head) => buildAt(options.fork, head.trim(), options.dotfiles, options.build)),
       ),
     onSome: (commit) =>
       Effect.sync(() => options.log(`building the target's fork ${commit.slice(0, 10)} in ${options.tree}, pinned there`)).pipe(
-        Effect.andThen(stageFork({ fork: options.fork, tree: options.tree, commit, bun: options.bun, env }, options.build)),
+        Effect.andThen(stageFork({ fork: options.fork, tree: options.tree, commit, dotfiles: options.dotfiles, bun: options.bun, env }, options.build)),
       ),
   })
   return built.pipe(Effect.mapError(named))

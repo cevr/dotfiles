@@ -8,12 +8,14 @@
 //    `~/.local/state/opencode-daily/upstream-conflict.md` and the install goes on. `--no-upstream`
 //    skips it; `--dry-run` fetches, says what it would merge and stops before anything else.
 // 1. Builds the fork in `OPENCODE_DEV` (default: the prime-look workspace) as a release binary
-//    (channel `latest`, version `<base>-prime.<commit>`), so it shares the installed OpenCode's
-//    database and background service; a version change restarts that service as ours. With
+//    (channel `latest`, version `<base>-prime.<fork commit>.<dotfiles commit>`, eight hex each), so it
+//    shares the installed OpenCode's database and background service; a version change restarts that
+//    service as ours, and a dotfiles-only update is a new version too. With
 //    `--fork-target <sha>` it builds exactly that commit, in a detached worktree of the fork
 //    pinned there (`~/.local/state/opencode-daily/fork-build`), never prime-look's HEAD, which
-//    a land's post-land merge moves. A binary whose version names another commit stops daily, and the
-//    record names the commit built (mods/update/process/pin.ts). `--skip-build` reuses the last build.
+//    a land's post-land merge moves. A binary whose version names another pair of commits stops daily, and the
+//    record names the commits built (mods/update/process/pin.ts). `--skip-build` reuses the last build,
+//    which then must name the same pair.
 // 2. Copies it to `~/.local/share/opencode-prime/`, stages it in the installed record and writes
 //    `~/.local/bin/opencode`, a launcher that runs the build the record installs (the running one
 //    until the handoff installs this one) without the caller's Anthropic routing and, after a
@@ -506,10 +508,13 @@ if (import.meta.main) {
     // A stage (`--fork-target`) builds exactly the verified target's fork commit, in a worktree of its
     // own pinned there, never prime-look's HEAD, which a land's post-land merge moves; by hand, the
     // checkout as it stands. Either binary must name the commit it was built from (mods/update/process/pin.ts).
-    const build = releaseBuild(process.execPath, `cli-${process.platform}-${process.arch}`, {}, args.has("--skip-build"))
-    const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, bun: process.execPath, build, log: console.log })
-
+    // The version names the dotfiles commit too (pin.ts `versionOf`), so a dotfiles-only update is a new
+    // version that every open TUI moves onto. `--skip-build` reuses the last binary only when it names the same pair.
     const settings = hostSettings(home, fork)
+    const dotfiles = dotfilesTarget[0] ?? headOf(settings.checkout)
+    const build = releaseBuild(process.execPath, `cli-${process.platform}-${process.arch}`, {}, args.has("--skip-build"))
+    const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, dotfiles, bun: process.execPath, build, log: console.log })
+
     // Under the builds lock, from the copy through the staged record (mods/update/filestore/stage.ts).
     // The launcher stays on the build the record installs; the handoff moves it onto this one (stage.ts `writeLauncher`).
     const binary = stageBuild({
@@ -520,7 +525,7 @@ if (import.meta.main) {
       launcher: settings.launcher,
       resident: settings.resident,
       lock: buildsLock(home),
-      dotfiles: dotfilesTarget[0] ?? headOf(settings.checkout),
+      dotfiles,
       fork: builtCommit,
       pid: process.pid,
     })

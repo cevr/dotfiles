@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { type Build, goodOf, nextRecord, parseRecord, promoted, proven, type Record, recordText, rolledBack, stagedOf, stagedRecord } from "./record.ts"
+import { type Build, goodOf, installedVersions, nextRecord, parseRecord, promoted, proven, type Record, recordText, rolledBack, stagedOf, stagedRecord } from "./record.ts"
 
 const build = (commit: string, dotfiles = "d1", fork = "f1"): Build => ({ version: `2.2.7-prime.${commit}`, command: [`/s/opencode-2.2.7-prime.${commit}`], dotfiles, fork })
 
@@ -18,7 +18,31 @@ describe("the installed build's record", () => {
   })
 
   test("starts from the builds installed beside it when there is no record yet", () => {
-    expect(nextRecord(Option.none(), build("cccccccc"), ["opencode-2.2.7"]).previous).toEqual(["2.2.7"])
+    expect(nextRecord(Option.none(), build("cccccccc"), ["opencode-2.2.6-prime.aaaaaaaa"]).previous).toEqual(["2.2.6-prime.aaaaaaaa"])
+  })
+
+  test("the builds installed beside it are builds of either format, by their names: a copy in flight, the logins or a near miss are none", () => {
+    const names = [
+      "opencode-2.2.6-prime.aaaaaaaa",
+      "opencode-2.2.7-prime.bbbbbbbb.dddddddd",
+      "opencode-2.3.0-beta.1-prime.cccccccc.eeeeeeee",
+      "opencode-2.2.7-prime.bbbbbbbb.dddddddd.copy-71234",
+      "opencode-2.2.6-prime.aaaaaaaa.71234",
+      "opencode-2.2.7-prime.bbbbbbbb.ddddddd",
+      "pool-auth",
+      "opencode",
+    ]
+    expect(installedVersions(names)).toEqual(["2.2.6-prime.aaaaaaaa", "2.2.7-prime.bbbbbbbb.dddddddd", "2.3.0-beta.1-prime.cccccccc.eeeeeeee"])
+  })
+
+  test("a record of the old format, the new build of the new: the old version is superseded, so its TUIs move", () => {
+    const last: Record = { version: "2.2.7-prime.bbbbbbbb", command: ["/s/opencode-2.2.7-prime.bbbbbbbb"], previous: ["2.2.5-prime.aaaaaaaa"], dotfiles: "d1", fork: "f1" }
+    const next: Build = { version: "2.2.7-prime.bbbbbbbb.dddddddd", command: ["/s/opencode-2.2.7-prime.bbbbbbbb.dddddddd"], dotfiles: "d2", fork: "f1" }
+    const staged = stagedRecord(Option.some(last), next, ["opencode-2.2.7-prime.bbbbbbbb", "opencode-2.2.7-prime.bbbbbbbb.dddddddd"])
+    expect(promoted(staged).previous).toEqual(["2.2.5-prime.aaaaaaaa", "2.2.7-prime.bbbbbbbb"])
+    // Its rollback goes back to the old-format good build, and lists the new one superseded.
+    const back = rolledBack({ ...promoted(staged), good: { version: last.version, command: last.command, dotfiles: "d1", fork: "f1" } })
+    expect(Option.map(back, (record) => [record.version, record.previous?.at(-1)])).toEqual(Option.some(["2.2.7-prime.bbbbbbbb", "2.2.7-prime.bbbbbbbb.dddddddd"]))
   })
 
   test("reads back what it writes, and the fork's reader keeps its own keys", () => {

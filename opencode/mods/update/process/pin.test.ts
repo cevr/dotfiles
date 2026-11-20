@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { argv, spawnSync, write } from "bun"
-import { Effect, Exit } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { UpdateFailed } from "../service.ts"
-import { dailyBuild, type ForkBuild, stageFork, suffixOf } from "./pin.ts"
+import { Effect, Exit, Option } from "effect"
+import { buildName, buildVersion } from "../builds.ts"
+import { dailyBuild, type ForkBuild, stageFork, suffixOf, versionOf } from "./pin.ts"
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
@@ -69,7 +70,40 @@ const fakeBuild = (root: string, says?: string) => {
   return { build, seen }
 }
 
-const pin = (paths: { readonly fork: string; readonly tree: string }, commit: string) => ({ ...paths, commit, bun: BUN, env: GIT_ENV })
+/** The dotfiles commit every stage here names. */
+const DOTFILES = "d0f11e5a1b2c3d4e5f60718293a4b5c6d7e8f901"
+const D8 = DOTFILES.slice(0, 8)
+
+const pin = (paths: { readonly fork: string; readonly tree: string }, commit: string) => ({ ...paths, commit, dotfiles: DOTFILES, bun: BUN, env: GIT_ENV })
+
+describe("the version names the build's fork commit and dotfiles commit", () => {
+  const hex = (seed: number) => Array.from({ length: 40 }, (_, at) => "0123456789abcdef"[(seed * 7 + at * 13 + ((seed * at) % 11)) % 16]).join("")
+  const BASES = ["2.2.7", "10.0.12", "2.3.0-beta.1", "1.0.0-rc.2.x"]
+
+  test("acceptance: versionOf(base, fork, dotfiles) round-trips through suffixOf and the build's file name (buildVersion)", () => {
+    for (const base of BASES)
+      for (let seed = 0; seed < 50; seed++) {
+        const [fork, dotfiles] = [hex(seed), hex(seed + 1000)]
+        const version = versionOf(base, fork, dotfiles)
+        expect(version).toBe(`${base}-prime.${fork.slice(0, 8)}.${dotfiles.slice(0, 8)}`)
+        expect(suffixOf(version)).toEqual(Option.some(`${fork.slice(0, 8)}.${dotfiles.slice(0, 8)}`))
+        expect(suffixOf(`opencode v${version}\n`)).toEqual(suffixOf(version))
+        expect(buildVersion(buildName(version))).toEqual(Option.some(version))
+      }
+  })
+
+  test("a dotfiles-only update is another version; the same pair is the same version", () => {
+    const fork = hex(1)
+    expect(versionOf("2.2.7", fork, hex(2))).not.toBe(versionOf("2.2.7", fork, hex(3)))
+    expect(versionOf("2.2.7", fork, hex(2))).toBe(versionOf("2.2.7", fork, hex(2)))
+  })
+
+  test("an old-format version (fork half alone) still reads: its suffix is the fork's eight, and its file is a build", () => {
+    expect(suffixOf("opencode v2.2.5-prime.d22f11a9")).toEqual(Option.some("d22f11a9"))
+    expect(buildVersion("opencode-2.2.5-prime.d22f11a9")).toEqual(Option.some("2.2.5-prime.d22f11a9"))
+    expect(suffixOf("opencode vlocal")).toEqual(Option.none())
+  })
+})
 
 describe("the stage builds exactly the target's fork commit", () => {
   test(
@@ -81,8 +115,8 @@ describe("the stage builds exactly the target's fork commit", () => {
           const { build, seen } = fakeBuild(root)
           const staged = yield* stageFork(pin({ fork, tree }, target), build)
           expect(staged.commit).toBe(target)
-          expect(staged.version).toBe(`2.2.7-prime.${target.slice(0, 8)}`)
-          expect(suffixOf(staged.reported)).toEqual(suffixOf(`-prime.${target.slice(0, 8)}`))
+          expect(staged.version).toBe(`2.2.7-prime.${target.slice(0, 8)}.${D8}`)
+          expect(suffixOf(staged.reported)).toEqual(Option.some(`${target.slice(0, 8)}.${D8}`))
           expect(seen).toEqual([{ dir: tree, head: target, src: "target" }])
           expect(sh(fork, ["git", "rev-parse", "HEAD"])).toBe(ahead)
           expect(sh(fork, ["git", "branch", "--show-current"])).toBe("prime-look")
@@ -112,16 +146,23 @@ describe("the stage builds exactly the target's fork commit", () => {
   )
 
   test(
-    "a binary whose version names another commit fails the stage, saying so",
+    "a binary whose version names another commit, of the fork or of the dotfiles, or the fork's alone, fails the stage, saying so",
     () =>
       Effect.runPromise(
         Effect.gen(function* () {
           const { root, fork, tree, target, ahead } = yield* scratch
-          const { build } = fakeBuild(root, `2.2.7-prime.${ahead.slice(0, 8)}`)
-          const exit = yield* stageFork(pin({ fork, tree }, target), build).pipe(Effect.exit)
-          expect(exit).toEqual(
-            Exit.fail(new UpdateFailed({ step: "check the build's version", message: `${root}/bin/opencode reports opencode v2.2.7-prime.${ahead.slice(0, 8)}, not the fork commit ${target.slice(0, 8)} it was built from: nothing staged` })),
-          )
+          const wrong = [`2.2.7-prime.${ahead.slice(0, 8)}.${D8}`, `2.2.7-prime.${target.slice(0, 8)}.0badc0de`, `2.2.7-prime.${target.slice(0, 8)}`]
+          for (const says of wrong) {
+            const exit = yield* stageFork(pin({ fork, tree }, target), fakeBuild(root, says).build).pipe(Effect.exit)
+            expect(exit).toEqual(
+              Exit.fail(
+                new UpdateFailed({
+                  step: "check the build's version",
+                  message: `${root}/bin/opencode reports opencode v${says}, not the fork commit ${target.slice(0, 8)} and dotfiles commit ${D8} it was built from: nothing staged`,
+                }),
+              ),
+            )
+          }
           spawnSync(["rm", "-rf", root])
         }),
       ),
@@ -154,7 +195,7 @@ describe("daily's build", () => {
           const { root, fork, tree, target, ahead } = yield* scratch
           const { build, seen } = fakeBuild(root)
           const lines: Array<string> = []
-          const options = { fork, tree, bun: BUN, build, log: (line: string) => lines.push(line) }
+          const options = { fork, tree, dotfiles: DOTFILES, bun: BUN, build, log: (line: string) => lines.push(line) }
           expect((yield* dailyBuild({ ...options, commit: [target] })).commit).toBe(target)
           expect((yield* dailyBuild({ ...options, commit: [] })).commit).toBe(ahead)
           expect(seen.map((each) => [each.dir, each.head])).toEqual([
@@ -175,8 +216,26 @@ describe("daily's build", () => {
         Effect.gen(function* () {
           const { root, fork, tree, target, ahead } = yield* scratch
           const { build } = fakeBuild(root, `2.2.7-prime.${ahead.slice(0, 8)}`)
-          const exit = yield* dailyBuild({ fork, tree, bun: BUN, build, log: () => {}, commit: [target] }).pipe(Effect.flip)
+          const exit = yield* dailyBuild({ fork, tree, dotfiles: DOTFILES, bun: BUN, build, log: () => {}, commit: [target] }).pipe(Effect.flip)
           expect(exit.message).toStartWith("check the build's version: ")
+          spawnSync(["rm", "-rf", root])
+        }),
+      ),
+    60_000,
+  )
+
+  test(
+    "a dotfiles commit that is no commit (empty, short, not hex) builds nothing",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { root, fork, tree } = yield* scratch
+          const { build, seen } = fakeBuild(root)
+          for (const dotfiles of ["", "d0f11e5", "HEAD~1-not-a-sha"]) {
+            const exit = yield* dailyBuild({ fork, tree, dotfiles, bun: BUN, build, log: () => {}, commit: [] }).pipe(Effect.flip)
+            expect(exit.message).toStartWith("name the build: ")
+          }
+          expect(seen).toEqual([])
           spawnSync(["rm", "-rf", root])
         }),
       ),
