@@ -39,21 +39,34 @@ const decodeIntegrations = Schema.decodeUnknownOption(Schema.fromJsonString(Inte
 
 const providerOf = (model: string): Option.Option<string> => Option.liftPredicate(model.split("/")[0] ?? "", (provider) => provider !== "" && model.includes("/"))
 
-/**
- * The providers a server config's models use: the default model, each agent's (the orchestrate
- * roles') and a plugin's `planner` model (orchestrate's), as `provider/model` names them.
- */
-export const providersOf = (text: string): ReadonlyArray<string> => {
+/** The models one server config names: its default, each agent's by id, and each plugin's `planner` model. */
+const modelsOf = (text: string) => {
   const json = decodeJson(text)
-  const models = [
-    ...Option.toArray(Option.flatMap(json, Schema.decodeUnknownOption(DefaultModel))).map((config) => config.model),
-    ...Option.toArray(Option.flatMap(json, Schema.decodeUnknownOption(AgentModels))).flatMap((config) =>
-      Object.values(config.agents).flatMap((agent) => Option.toArray(Schema.decodeUnknownOption(AgentModel)(agent)).map((each) => each.model)),
-    ),
-    ...Option.toArray(Option.flatMap(json, Schema.decodeUnknownOption(PluginEntries))).flatMap((config) =>
+  return {
+    model: Option.map(Option.flatMap(json, Schema.decodeUnknownOption(DefaultModel)), (config) => config.model),
+    agents: Option.match(Option.flatMap(json, Schema.decodeUnknownOption(AgentModels)), {
+      onNone: () => [],
+      onSome: (config) => Object.entries(config.agents).flatMap(([id, agent]) => Option.toArray(Schema.decodeUnknownOption(AgentModel)(agent)).map((each) => [id, each.model] as const)),
+    }),
+    planners: Option.toArray(Option.flatMap(json, Schema.decodeUnknownOption(PluginEntries))).flatMap((config) =>
       config.plugins.flatMap((entry) => Option.toArray(Schema.decodeUnknownOption(PlannerModel)(entry)).map((each) => each.options.planner.model)),
     ),
-  ]
+  }
+}
+
+/**
+ * The providers the models in effect use, over server configs in the fork's load order (lowest first:
+ * the global one, then the build's tree's), as `provider/model` names them: the default model and each
+ * agent's (the orchestrate roles') from the last config that sets it, as the fork folds them (core
+ * `Config.latest`, `config/plugin/agent.ts`: an agent's field from a later document replaces the
+ * earlier), and every plugin's `planner` model (orchestrate's). A role model the owner set in the global
+ * config and the tree's overrides counts for nothing.
+ */
+export const providersOf = (texts: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const each = texts.map(modelsOf)
+  const model = each.reduce<Option.Option<string>>((last, config) => Option.orElse(config.model, () => last), Option.none())
+  const agents = new Map(each.flatMap((config) => config.agents))
+  const models = [...Option.toArray(model), ...agents.values(), ...each.flatMap((config) => config.planners)]
   return [...new Set(models.flatMap((model) => Option.toArray(providerOf(model))))]
 }
 
@@ -178,10 +191,10 @@ export const serverConfigsOf = (server: string, recordText: Option.Option<string
   ...Option.toArray(Option.map(Option.flatMap(Option.flatMap(recordText, parseRecord), buildOf), (build) => `${treeOf(build.command[0])}/config/opencode.json`)),
 ]
 
-/** What the configs (their texts, absent ones none) name together: their local plugins and the providers their models use, each once. */
+/** What the configs (their texts in load order, absent ones none) name together: their local plugins, and the providers their models in effect use (`providersOf`), each once. */
 export const configuredBy = (texts: ReadonlyArray<string>) => ({
   configured: [...new Set(texts.flatMap(configuredOf))],
-  providers: [...new Set(texts.flatMap(providersOf))],
+  providers: providersOf(texts),
 })
 
 export const layer = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string) => {

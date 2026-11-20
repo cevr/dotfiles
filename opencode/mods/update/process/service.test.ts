@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
+import { Health, healthOf } from "../health.ts"
 import { proven, recordText } from "../record.ts"
 import { accountsOf, configuredBy, configuredOf, connectedOf, listedOf, pooledOf, providersOf, serverConfigsOf } from "./service.ts"
 
@@ -29,13 +30,22 @@ describe("what the restarted service says, as the handoff reads it", () => {
 
   test("the providers the config's models use: the default model, each agent's, the planner's", () => {
     const config = `{"model":"anthropic/claude-opus-5-5#medium","plugins":["/d/cmd/guard",{"package":"/d/cmd/orchestrate","options":{"codex":{"pool":true},"planner":{"model":"fable/claude-fable-5-2"}}},{"package":"/d/cmd/pool","options":{"planner":3}}],"agents":{"planner":{"model":"anthropic/claude-opus-5-5"},"worker":{"model":"openai/sol-6"},"plain":{"steps":3}}}`
-    expect(providersOf(config)).toEqual(["anthropic", "openai", "fable"])
-    expect(providersOf(`{"model":"no-provider"}`)).toEqual([])
+    expect(providersOf([config])).toEqual(["anthropic", "openai", "fable"])
+    expect(providersOf([`{"model":"no-provider"}`])).toEqual([])
     // Each place a model sits names its provider on its own.
-    expect(providersOf(`{"model":"anthropic/claude-opus-5-5","agents":{"plain":{"steps":3}}}`)).toEqual(["anthropic"])
-    expect(providersOf(`{"agents":{"worker":{"model":"openai/sol-6"}}}`)).toEqual(["openai"])
-    expect(providersOf(`{"plugins":[{"package":"/d/cmd/orchestrate","options":{"planner":{"model":"fable/claude-fable-5-2"}}}]}`)).toEqual(["fable"])
-    expect(providersOf("")).toEqual([])
+    expect(providersOf([`{"model":"anthropic/claude-opus-5-5","agents":{"plain":{"steps":3}}}`])).toEqual(["anthropic"])
+    expect(providersOf([`{"agents":{"worker":{"model":"openai/sol-6"}}}`])).toEqual(["openai"])
+    expect(providersOf([`{"plugins":[{"package":"/d/cmd/orchestrate","options":{"planner":{"model":"fable/claude-fable-5-2"}}}]}`])).toEqual(["fable"])
+    expect(providersOf([""])).toEqual([])
+  })
+
+  test("over the global config and the tree's, as the fork folds them: the last config's model per agent and default, every planner", () => {
+    const global = `{"model":"groq/fast","agents":{"worker":{"model":"openai/sol-6","steps":4},"build":{"model":"xai/grok"}}}`
+    const tree = `{"model":"anthropic/claude-opus-5-5","agents":{"worker":{"model":"anthropic/claude-opus-5-5"},"planner":{"model":"fable/claude-fable-5-2"}}}`
+    // The owner's hand-set worker model and default lose to the tree's; his other agent's model stands.
+    expect(providersOf([global, tree]).toSorted()).toEqual(["anthropic", "fable", "xai"])
+    // In the other order the global would win: the order is the fork's load order, never a union.
+    expect(providersOf([tree, global]).toSorted()).toEqual(["fable", "groq", "openai", "xai"])
   })
 
   test("the logins: providers whose pool lists an account, and integrations with a connection", () => {
@@ -60,5 +70,21 @@ describe("the configs the health check reads, on a tree build", () => {
     const stripped = `{"model":"anthropic/claude-opus","plugins":["/elsewhere/plugin"]}`
     const tree = `{"plugins":["/s/t.plugins/entries/server/pool","/elsewhere/plugin"],"agents":{"planner":{"model":"openai/gpt"}}}`
     expect(configuredBy([stripped, tree])).toEqual({ configured: ["/elsewhere/plugin", "/s/t.plugins/entries/server/pool"], providers: ["anthropic", "openai"] })
+  })
+
+  const reading = (providers: ReadonlyArray<string>, logins: ReadonlyArray<string>) => ({ configured: [], listed: [], accounts: Option.some(1), providers, logins, placement: Option.none() })
+
+  test("a role model the owner set by hand and the tree overrides fails no build, though its provider has no login", () => {
+    const global = `{"agents":{"worker":{"model":"openai/sol-6","steps":4}}}`
+    const tree = `{"agents":{"worker":{"model":"anthropic/claude-opus-5-5"}}}`
+    expect(healthOf(reading(configuredBy([global, tree]).providers, ["anthropic"]), ["anthropic", "openai"])).toEqual(Health.Healthy())
+  })
+
+  test("the tree's own role model with no login fails the build that had one before, and is reported when there was none", () => {
+    const global = `{"agents":{"worker":{"model":"anthropic/claude-opus-5-5"}}}`
+    const tree = `{"agents":{"worker":{"model":"fable/claude-fable-5-2"}}}`
+    const providers = configuredBy([global, tree]).providers
+    expect(Health.$is("Sick")(healthOf(reading(providers, ["anthropic"]), ["anthropic", "fable"]))).toBe(true)
+    expect(healthOf(reading(providers, ["anthropic"]), ["anthropic"])).toEqual(Health.Unsigned({ providers: ["fable"] }))
   })
 })
