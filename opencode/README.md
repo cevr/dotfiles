@@ -94,8 +94,16 @@ only the resident location's copy acts, so a host runs one updater.
   nothing; a staged build of it, or one installed without its proof, goes
   straight to the wait and the handoff. On the tree scheme a proven build of
   it installed with no tree (the old scheme's last install) is built again,
-  as a tree build of the same commits under the same version, so the first
-  tree install comes by itself. A target this host failed on (its
+  as a tree build of the same commits, so the first tree install comes by
+  itself. A tree build's version ends in `.tree`
+  (`<base>-prime.<fork 8>.<dotfiles 8>.tree`, `mods/update/process/pin.ts`
+  `versionOf`): a build of the same commits that binds its own tree loads
+  other plugins, so it is another build at another path. Its tree is never
+  made beside a binary that runs or that the old scheme's config still feeds
+  (a service started there bound both lists, 2026-11-20: all 25 tree plugins
+  failed with "Duplicate plugin ID"), the good build's binary is never
+  overwritten, so a sick first restart has a build to roll back to, and every
+  open TUI moves onto the tree build at its idle moment. A target this host failed on (its
   build, its checkout move or configure, or its restart, rolled back or given up) is kept in
   `~/.local/state/opencode-update/rejected.json` and never built or restarted
   onto again until another target comes. One check runs at a time; a newer
@@ -120,7 +128,8 @@ only the resident location's copy acts, so a host runs one updater.
   reloaded the update plugin and cut its own run). Each process binds its own
   build's tree at its start (the fork's `adjacent-config.ts`), so a process
   holds only its build's plugins, for its life. A failed tree or stage writes
-  nothing and rejects the target. A host whose good build's fork has no
+  nothing and rejects the target; a failed stage deletes the tree it made
+  (`Trees.remove`), so no tree is left beside no build. A host whose good build's fork has no
   adjacent binding stays on the old scheme (the checkout's move, `--configure`
   and the reinstall rung, below) and says so in the log. The launcher stays on the running build:
   the staged one's client would replace the shared service, since the record
@@ -167,6 +176,23 @@ only the resident location's copy acts, so a host runs one updater.
   fetch, make the tree, stage, hand off; record, restart, record (good),
   prune. The first tree install adds the keep and the strip before the
   record, and its rollback the restore before the record of the good build.
+  Between a config write (the strip, the restore) and the restart that
+  follows it, two writes and a call apart, a service started by the launcher
+  or after a crash by its unit can hold none of our plugins or both lists;
+  that restart replaces it. Outside that span every start, of the old build
+  or the new, holds exactly its build's list (the model's I5,
+  `mods/update/model.test.ts` `plugin trees`).
+- **The TUI's plugins.** A tree's `config/cli.json` and the old scheme's
+  global `cli.json` list every plugin package that exports `./tui`
+  (`cmd/*/package.json`), Prime first, then by name: `trees.ts`
+  `tuiPluginsOf`, derived, never a list kept by hand. A tree's server entries
+  carry no TUI part, so a plugin missing there drops out of every TUI
+  (2026-11-20: the Queue sidebar, which the old scheme's TUIs had only through
+  the server's listing). An old TUI that stays open through the first tree
+  install lacks those server-listed parts from the restart until it moves onto
+  the tree build at its idle moment (the tree version differs, so it moves);
+  `scripts/daily-configure.test.ts` fails when a package with a TUI part is
+  missing from the list.
 - **The handoff on the old scheme.** A detached process (`cmd/update/handoff.ts`) outlives the
   service it restarts. It reads the running service's logins, then moves the
   checkout onto the staged build's dotfiles commit: the running config kept
