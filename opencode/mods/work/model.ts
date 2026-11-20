@@ -3,14 +3,15 @@
 // and Landing contracts, removing only what `removal` (workspace.ts) allows,
 // and runs the workbox's own scripts through Workbox. A land's accept check
 // runs in the background, in this layer's scope, and wakes the calling
-// session through Notices. A repository with `rift.push` false is checked,
+// session through Notices; a pushed land's, and its post-land step, are owed
+// (PostLandDebts) from the push, so a restart mid-check loses neither. A repository with `rift.push` false is checked,
 // not pushed: each Rift answered green or red, every Rift kept. With
 // `rift.mergeCheck` a land goes by receipts (`cover`, `mergeGate`, `recordOf`, `afterPush`): never the full
 // gate. The plugin calls this and nothing else.
-import { Array as Arr, Clock, Context, Data, DateTime, Effect, Layer, Option, Predicate, Result, Scope, Semaphore } from "effect"
+import { Array as Arr, Clock, Context, Data, DateTime, Effect, Layer, Option, Predicate, Random, Result, Scope, Semaphore } from "effect"
 import { findRift, isPath, resolvePath } from "./find.ts"
 import { focusLine, shareOf, type Covered, type Receipt, type Standing } from "./receipt.ts"
-import { CHECK_EVERY, baseOf, forcedLine, headOf, loadedLine, loadWord, observe, overloaded, owe, pay, pays, phase, ran, unitsOf, type Debts, type Trigger } from "./owed.ts"
+import { CHECK_EVERY, RESUMED, baseOf, forcedLine, headOf, loadedLine, loadWord, observe, overloaded, owe, pay, pays, phase, ran, unitsOf, type Debts, type OwedAccept, type Trigger } from "./owed.ts"
 import {
   ACCEPT,
   GateMissing,
@@ -290,17 +291,10 @@ export const layer = Layer.effect(
     }
 
     /**
-     * The batch's accept check in the integration Rift (or `checking`, a land by receipts' own), then the wake when
-     * it failed or did not run: a green one wakes no one (its log stays). Runs in the background.
+     * The batch's accept check, `checking` (in the integration Rift, or a land by receipts' own), then the wake
+     * when it failed or did not run: a green one wakes no one (its log stays). Runs in the background.
      */
-    const accept = (
-      sessionID: string,
-      integration: string,
-      units: ReadonlyArray<Unit>,
-      command: string,
-      base: string,
-      checking: Effect.Effect<Ran, RiftFailed> = landing.check(integration, "accept", command, { RIFT_LAND_BASE: base }),
-    ) =>
+    const accept = (sessionID: string, units: ReadonlyArray<Unit>, checking: Effect.Effect<Ran, RiftFailed>) =>
       accepts
         .withPermits(1)(checking)
         .pipe(
@@ -397,22 +391,53 @@ export const layer = Layer.effect(
       return Effect.asVoid(claim.holdIfFree(step))
     }
 
-    /**
-     * After a pushed batch: the batch's post-land step becomes the source's owed one (replacing an older one),
-     * then runs now unless the host is loaded. Runs in the background.
-     */
-    const postLand = (sessionID: string, source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string, head: string) =>
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis
-        yield* changeOwed((all) => owe(all, { source, main, command, sessionID, land: { base, head, units, at: now } }))
-        yield* runOwed(source, "land")
-      }).pipe(Effect.catch((failure: RiftFailed) => notices.wake(sessionID, notRun(units, failure))))
+    /** Changes the owed accept checks, as one step against every other writer on the host. */
+    const changeAccepts = (change: (owed: Debts["accepts"]) => Debts["accepts"]) => debts.update((kept) => ({ ...kept, accepts: change(kept.accepts) }))
 
     /**
-     * One periodic check: read the load while a step is owed, and run each owed step once the readings settled,
-     * or loaded once LOADED_EVERY has passed since its last run; never while another run holds the claim.
+     * The owed accept check `owed`, if it is still owed once its runner holds the host's post-land claim (so
+     * two servers, or the land and a minute check, never run it twice at once, and it never overlaps a
+     * post-land step), in the accept Rift (ACCEPT), its command after `prefix`: a resumed run (a minute
+     * check's, after a restart) has RESUMED there, so its receipt names it so. A red or unrun one wakes the
+     * landing session (a session gone since is logged and skipped, as a post-land wake is); then the debt is
+     * cleared, so a restart between the two wakes it twice rather than never. `kept` false: its debt could not
+     * be written, so it runs anyway.
+     */
+    const runAccept = (owed: OwedAccept, prefix: string, kept = true) =>
+      Effect.gen(function* () {
+        const still = !kept || (yield* debts.read).accepts.some((each) => each.id === owed.id)
+        if (!still) return
+        yield* accept(owed.sessionID, owed.units, acceptApart(owed.source, owed.main, owed.units, `${prefix}${owed.command}`, owed.base))
+        yield* changeAccepts((all) => all.filter((each) => each.id !== owed.id))
+      })
+
+    /** Writes `owed` as owed; answers whether it was written (a failed write is logged, and the check runs unowed). */
+    const oweAccept = (owed: OwedAccept) =>
+      changeAccepts((all) => [...all, owed]).pipe(
+        Effect.as(true),
+        Effect.catch((failure: RiftFailed) => Effect.as(Effect.logWarning("rift: the accept check could not be owed", failure), false)),
+      )
+
+    /** Writes the batch's post-land step as the source's owed one (over the lands owed before it); a failed write wakes the session. */
+    const owePostLand = (sessionID: string, source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string, head: string) =>
+      Effect.flatMap(Clock.currentTimeMillis, (now) => changeOwed((all) => owe(all, { source, main, command, sessionID, land: { base, head, units, at: now } }))).pipe(
+        Effect.asVoid,
+        Effect.catch((failure: RiftFailed) => notices.wake(sessionID, notRun(units, failure))),
+      )
+
+    /** Each owed accept check no one runs now, one at a time, before any post-land step: a minute check's. */
+    const checkAccepts = Effect.gen(function* () {
+      const owed = (yield* debts.read).accepts
+      yield* Effect.forEach(owed, (each) => claim.holdIfFree(runAccept(each, `${RESUMED} `)), { discard: true })
+    })
+
+    /**
+     * One periodic check: the owed accept checks first, whatever the load; then read the load while a step is
+     * owed, and run each owed step once the readings settled, or loaded once LOADED_EVERY has passed since its
+     * last run; never while another run holds the claim.
      */
     const check = Effect.gen(function* () {
+      yield* checkAccepts.pipe(Effect.catch((failure) => Effect.logWarning("rift: the owed accept check failed", failure)))
       const all = (yield* debts.read).owed
       if (all.length === 0) return
       const { readings, now } = yield* reading
@@ -559,35 +584,30 @@ export const layer = Layer.effect(
     )
 
     /**
-     * After the push, in the background and in order: the accept check, then the post-land step. By `rift.gate`
-     * the accept check holds the integration Rift (busy until it ends); by receipts it runs in a Rift of its own.
-     * Answers whether it holds the integration Rift.
+     * After the push: the accept check and the post-land step are owed first, both, so a restart from here on
+     * loses neither; then, in the background and in order, the accept check (in its own Rift, ACCEPT, under
+     * the post-land claim, so the integration Rift is free at the answer), then the post-land step.
      */
-    const afterPush = Effect.fn("RiftTool.afterPush")(function* (
-      sessionID: string,
-      source: string,
-      integration: string,
-      units: ReadonlyArray<Unit>,
-      config: LandConfig,
-      base: string,
-      head: string,
-      gated: Gated,
-    ) {
-      const after = Option.match(Option.fromUndefinedOr(config.postLand), {
+    const afterPush = Effect.fn("RiftTool.afterPush")(function* (sessionID: string, source: string, units: ReadonlyArray<Unit>, config: LandConfig, base: string, head: string) {
+      const at = yield* Clock.currentTimeMillis
+      const accepted = Option.fromUndefinedOr(config.accept)
+      const postLand = Option.fromUndefinedOr(config.postLand)
+      const id = `${head}-${at}-${yield* Random.nextInt}`
+      const owed = Option.map(accepted, (command): OwedAccept => ({ id, source, main: config.main, command, sessionID, base, head, units, at }))
+      const kept = yield* Option.match(owed, { onNone: () => Effect.succeed(false), onSome: oweAccept })
+      if (Option.isSome(postLand)) yield* owePostLand(sessionID, source, config.main, units, postLand.value, base, head)
+      const after = Option.match(postLand, {
         onNone: () => Effect.void,
-        onSome: (step) => postLand(sessionID, source, config.main, units, step, base, head),
+        onSome: () => runOwed(source, "land").pipe(Effect.catch((failure: RiftFailed) => notices.wake(sessionID, notRun(units, failure)))),
       })
-      const holding = (accepted: string) =>
-        Effect.sync(() => busy.set(integration, `the accept check of ${branchList(units)} runs there`)).pipe(
-          Effect.andThen(Effect.forkIn(Effect.andThen(accept(sessionID, integration, units, accepted, base).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration)))), after), scope)),
-          Effect.as(true),
-        )
-      const apart = (accepted: string) =>
-        Effect.forkIn(Effect.andThen(accept(sessionID, integration, units, accepted, base, acceptApart(source, config.main, units, accepted, base)), after), scope).pipe(Effect.as(false))
-      return yield* Option.match(Option.fromUndefinedOr(config.accept), {
-        onNone: () => Effect.as(Effect.forkIn(after, scope), false),
-        onSome: (accepted) => Gated.$match(gated, { Gate: () => holding(accepted), Receipts: () => apart(accepted) }),
+      const accepting = Option.match(owed, {
+        onNone: () => Effect.void,
+        onSome: (one) =>
+          claim.hold(runAccept(one, "", kept)).pipe(
+            Effect.catch((failure: RiftFailed) => Effect.logWarning("rift: the accept check could not take the post-land claim; the minute check runs it", failure)),
+          ),
       })
+      yield* Effect.forkIn(Effect.andThen(accepting, after), scope)
     })
 
     const land = Effect.fn("RiftTool.land")(function* (sessionID: string, directory: string, source: string, input: RiftInput) {
@@ -674,7 +694,7 @@ export const layer = Layer.effect(
             const lines = receiptLines(covered, mergedRan(by), yield* recordOf(integration, started.base, by))
             if (ran.code !== 0) return answer(merged.map((unit) => ({ unit, verdict: "red" as const, note: "the merge check failed" })), ran, lines)
             const apart = Option.map(Option.fromUndefinedOr(config.accept), (accepted) =>
-              accept(sessionID, integration, merged, accepted, started.base, acceptApart(source, config.main, merged, accepted, started.base)),
+              accept(sessionID, merged, acceptApart(source, config.main, merged, accepted, started.base)),
             )
             yield* Effect.forkIn(Option.getOrElse(apart, () => Effect.void), scope)
             return answer(yield* greens(merged, config.pushBranches), ran, [...lines, ...Option.toArray(Option.map(apart, () => ACCEPT_APART))])
@@ -705,12 +725,12 @@ export const layer = Layer.effect(
           if (why !== undefined) kept.push({ path: unit.path, why })
         }
         const landed = { units, main: config.main, base: started.base, pushed, locks: [...new Set(locks)], kept }
-        accepting = yield* afterPush(sessionID, source, integration, units, config, started.base, pushed.split(" ")[0] ?? "", gated)
+        yield* afterPush(sessionID, source, units, config, started.base, pushed.split(" ")[0] ?? "")
         const acceptsAfter = Predicate.isNotUndefined(config.accept)
         const postLands = Predicate.isNotUndefined(config.postLand)
         return {
           text: Gated.$match(gated, {
-            Gate: ({ ran }) => landedText({ ...landed, gate: ran } satisfies Landed, integration, acceptsAfter, postLands),
+            Gate: ({ ran }) => landedText({ ...landed, gate: ran } satisfies Landed, acceptsAfter, postLands),
             Receipts: (by) => receiptLandedText({ ...landed, covered: by.covered, merge: Option.map(by.merge, (done) => done.ran), record }, acceptsAfter, postLands),
           }),
           metadata: { action: "land" as const, source, path: integration, rifts: paths },

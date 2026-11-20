@@ -1,5 +1,5 @@
-// The owed post-land steps in their file: nothing before the first write, what was written read back by a
-// fresh layer (a restarted server), the first version's file read as its owed steps, and a file that cannot be read holding nothing owed.
+// The owed post-land steps and accept checks in their file: nothing before the first write, what was written read back by a
+// fresh layer (a restarted server), an older file read as its owed steps, and a file that cannot be read holding nothing owed.
 import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -30,15 +30,19 @@ describe("the owed post-land steps' file", () => {
           const first = yield* debtsAt(file)
           expect(yield* first.read).toEqual(noDebts)
           const owed: ReadonlyArray<OwedPostLand> = owe(owe([], owing("h1", 1_000)), owing("h2", 2_000))
-          const kept: Debts = { owed, loadedAt: Option.some(1_500) }
+          const accepts = [{ id: "a1", source: "/code/app", main: "main", command: "bun run accept", sessionID: "ses_1", base: "base-h2", head: "h2", units: [{ path: "/code/.work/app/h2", branch: "feat/h2" }], at: 2_000 }]
+          const kept: Debts = { owed, accepts, loadedAt: Option.some(1_500) }
           yield* first.update(() => kept)
           const restarted = yield* debtsAt(file)
           expect(yield* restarted.read).toEqual(kept)
           yield* first.update((before) => ({ ...before, loadedAt: Option.none() }))
-          expect(yield* restarted.read).toEqual({ owed, loadedAt: Option.none() })
+          expect(yield* restarted.read).toEqual({ owed, accepts, loadedAt: Option.none() })
+          // A file written before accept checks were owed: no accepts key, nothing of them owed.
+          writeFileSync(file, JSON.stringify({ owed: JSON.parse(Schema.encodeSync(Schema.fromJsonString(Schema.Array(OwedPostLand)))(owed)), loadedAt: 1_500 }))
+          expect(yield* restarted.read).toEqual({ owed, accepts: [], loadedAt: Option.some(1_500) })
           // The first version's file: the owed steps alone.
           writeFileSync(file, Schema.encodeSync(Schema.fromJsonString(Schema.Array(OwedPostLand)))(owed))
-          expect(yield* restarted.read).toEqual({ owed, loadedAt: Option.none() })
+          expect(yield* restarted.read).toEqual({ owed, accepts: [], loadedAt: Option.none() })
           writeFileSync(file, "{ not json")
           expect(yield* restarted.read).toEqual(noDebts)
         }),

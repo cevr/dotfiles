@@ -45,7 +45,7 @@ describe("the work plugin on the world", () => {
       yield* world.prompt(root, LAND)
       yield* world.until(() => Read.texts(world, root).length >= 3 && Read.idle(world, root) && doubles.landing.steps.some((step) => step.startsWith("accept ")), 60_000)
       expect(Read.answers(world, root, "work")[1]).toStartWith("Landed 1 workspace(s) as one push")
-      expect([...doubles.rifts.rifts.keys()]).toEqual(["/code/.work/app/integrate"])
+      expect([...doubles.rifts.rifts.keys()]).toEqual(["/code/.work/app/integrate", "/code/.work/app/land-accept"])
     }),
   )
 })

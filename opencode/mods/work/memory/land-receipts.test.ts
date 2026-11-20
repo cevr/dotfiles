@@ -96,7 +96,7 @@ describe("a land by receipts", () => {
           "The merge check passed in 3s; log: /logs/merge.log",
           "Receipts recorded: /logs/receipts/head-integrate.land.json",
           `To the trash: ${X}, ${Y}.`,
-          "The accept check runs in the background in its own workspace (land-accept) on the batch since base0; it wakes this session only if it fails: no notice means it passed. The next land need not wait for it.",
+          "The accept check runs in the background in its own workspace (land-accept) on the batch since base0; it wakes this session only if it fails (a server restart runs it again): no notice means it passed. The next land need not wait for it.",
         ].join("\n"),
       )
       expect(made.landing.steps).toEqual([

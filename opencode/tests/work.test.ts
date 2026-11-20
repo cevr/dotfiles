@@ -126,7 +126,7 @@ if (runnable)
           expect(land?.said).toContain("Landed 1 workspace(s) as one push: ")
           expect(land?.said).toContain(`${LAND_SUBJECT} to main (merged ${BRANCH}; the gate passed in `)
           expect(land?.said).toContain(`To the trash: ${result.workspace}.`)
-          expect(land?.said).toContain(`The accept check runs in the background in ${result.integration} on the batch since `)
+          expect(land?.said).toContain("The accept check runs in the background in its own workspace (land-accept) on the batch since ")
           // The branch's commit is origin's main; the workspace went, the integration workspace stays for the next batch.
           expect(result.originMain).toBe(LAND_SUBJECT)
           expect([result.workspaceThere, result.integrationThere]).toEqual([false, true])

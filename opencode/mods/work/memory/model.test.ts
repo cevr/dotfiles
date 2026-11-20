@@ -155,10 +155,11 @@ describe("land", () => {
   const INTEGRATE = "/code/.work/app/integrate"
   const POST_LAND = "/code/.work/app/post-land"
   const THIRD = "/code/.work/app/feat-z"
+  const ACCEPT = "/code/.work/app/land-accept"
   const configured = { [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept") }
   const two = () => bench(MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y")]), MemoryLanding.world(configured))
 
-  test("lands the Rifts as one batch in the integration Rift: merge each in order, one gate, one push, trash them, then one accept check in the background that wakes no one when it passes", async () => {
+  test("lands the Rifts as one batch in the integration Rift: merge each in order, one gate, one push, trash them, then one accept check in the background, in its own Rift, that wakes no one when it passes", async () => {
     const made = two()
     made.landing.merges.set("feat/y", { _tag: "Merged", regenerated: ["opencode/bun.lock", "opencode/mods/orchestrate/agents.json"] })
     made.landing.installs.push("opencode/bun.lock")
@@ -168,10 +169,10 @@ describe("land", () => {
         "Landed 2 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
         "Installed or regenerated and committed: opencode/bun.lock, opencode/mods/orchestrate/agents.json.",
         `To the trash: ${FEAT}, ${OTHER}.`,
-        `The accept check runs in the background in ${INTEGRATE} on the batch since base0; it wakes this session only if it fails: no notice means it passed.`,
+        `The accept check runs in the background in its own workspace (land-accept) on the batch since base0; it wakes this session only if it fails (a server restart runs it again): no notice means it passed. The next land need not wait for it.`,
       ].join("\n"),
     )
-    // The integration Rift is made on first use and kept; the landed Rifts fetch origin before the removal check.
+    // The integration and accept Rifts are made on first use and kept; the landed Rifts fetch origin before the removal check.
     expect(made.landing.steps).toEqual([
       `start ${INTEGRATE} main`,
       "merge feat/x",
@@ -181,11 +182,13 @@ describe("land", () => {
       `push ${INTEGRATE}`,
       `sync ${FEAT}`,
       `sync ${OTHER}`,
-      `accept ${INTEGRATE} base0`,
+      `start ${ACCEPT} main`,
+      "install",
+      `accept ${ACCEPT} base0`,
     ])
     // A green accept check sends no notice: its log stays, and silence means it passed.
     expect(made.woken).toEqual([])
-    expect([...made.rifts.rifts.keys()]).toEqual([INTEGRATE])
+    expect([...made.rifts.rifts.keys()]).toEqual([INTEGRATE, ACCEPT])
   })
 
   test("a workspace of another base, given by path, lands in that base's integration workspace, never the session's; one batch never mixes bases", () => {
@@ -227,7 +230,7 @@ describe("land", () => {
         `Then the repository's post-land step (rift.postLand) runs in the background after the accept check, in its own workspace (post-land), one at a time; it wakes this session only when it fails or its report needs action. The next land need not wait for it.`,
       )
       expect(made.landing.steps.slice(-6)).toEqual([
-        `accept ${INTEGRATE} base0`,
+        `accept ${ACCEPT} base0`,
         "load",
         `start ${POST_LAND} main`,
         "install",
@@ -235,7 +238,7 @@ describe("land", () => {
         `ended post-land ${POST_LAND}`,
       ])
       expect(made.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
-      expect([...made.rifts.rifts.keys()].sort()).toEqual([INTEGRATE, OTHER, THIRD, POST_LAND].sort())
+      expect([...made.rifts.rifts.keys()].sort()).toEqual([INTEGRATE, ACCEPT, OTHER, THIRD, POST_LAND].sort())
       expect(await call(made.rifts, { action: "land", rifts: ["post-land"] })).toBe(
         `refused: Did not land anything: ${POST_LAND} is the workspace the post-land step runs in; it holds no work to land.`,
       )
@@ -299,7 +302,7 @@ describe("land", () => {
     test("a land while a post-land step runs goes on, and its own post-land step waits for the first to end: two never overlap, and the waiting ones run once, as the newest", () =>
       overlapping(withPostLand(undefined)))
 
-    test("with an accept check too, the integration Rift is free once it ends, while the post-land step still runs", () => overlapping(withPostLand("bun run accept")))
+    test("with an accept check too, the integration Rift is free at the answer, while the post-land step still runs", () => overlapping(withPostLand("bun run accept")))
 
     test("a land that starts while the integration Rift is being removed waits for the removal, then lands in a new one", () => {
       const made = withPostLand("bun run accept")
@@ -323,19 +326,21 @@ describe("land", () => {
       )
     })
 
-    test("remove refuses the integration Rift while a land's accept check runs there; once it ends, it may go", () => {
+    test("remove refuses the accept Rift while a land's accept check runs there, never the integration Rift; once it ends, it may go", () => {
       const made = withPostLand("bun run accept")
       return within(made, (tool) =>
         Effect.gen(function* () {
           const release = yield* Deferred.make<string>()
           made.landing.checkHold.accept = Effect.asVoid(Deferred.await(release))
           expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
-          expect(yield* answerOf(tool, { action: "remove", name: "integrate", force: true })).toBe(
-            `refused: ${INTEGRATE} is busy: the accept check of feat/x runs there. Remove it after its wake.`,
+          yield* settle
+          expect(yield* answerOf(tool, { action: "remove", name: "land-accept", force: true })).toBe(
+            `refused: ${ACCEPT} is busy: the accept check of feat/x runs there. Remove it after its wake.`,
           )
+          expect(yield* answerOf(tool, { action: "remove", name: "integrate" })).toStartWith(`Moved the workspace ${INTEGRATE}`)
           yield* Deferred.succeed(release, "released")
           yield* settle
-          expect(yield* answerOf(tool, { action: "remove", name: "integrate" })).toStartWith(`Moved the workspace ${INTEGRATE}`)
+          expect(yield* answerOf(tool, { action: "remove", name: "land-accept", force: true })).toStartWith(`Moved the workspace ${ACCEPT}`)
         }),
       )
     })
@@ -418,7 +423,7 @@ describe("land", () => {
     const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x", "feat-y"] }])
     expect(answer).toContain(`To the trash: ${FEAT}.`)
     expect(answer).toContain(`${OTHER} holds work found nowhere else:\n1 stash entry`)
-    expect([...made.rifts.rifts.keys()].sort()).toEqual([OTHER, INTEGRATE].sort())
+    expect([...made.rifts.rifts.keys()].sort()).toEqual([OTHER, INTEGRATE, ACCEPT].sort())
   })
 
   test("a conflict outside the written files stops the batch before the gate, names the Rift and the files, and keeps every Rift", async () => {
@@ -442,7 +447,7 @@ describe("land", () => {
     expect(red.rifts.rifts.size).toBe(3)
 
     const late = two()
-    late.landing.checks.set(`${INTEGRATE} accept`, { code: 1, output: "(fail) rift > e2e\n" })
+    late.landing.checks.set(`${ACCEPT} accept`, { code: 1, output: "(fail) rift > e2e\n" })
     await calls(late, [{ action: "land", rifts: ["feat-x"] }])
     expect(late.woken).toEqual([
       {

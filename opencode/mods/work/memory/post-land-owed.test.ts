@@ -11,6 +11,10 @@
 // once over the one World, as OpenCode loads the rift plugin once per directory it serves, each with its own
 // minute check: every Git step in the post-land Rift runs under the host's post-land claim, and each run
 // wakes the root once.
+//
+// A pushed land's accept check is owed beside the post-land step, from before it starts until its result is
+// written: a restart mid-check leaves both owed, and the next server's minute check runs the accept once
+// more, first, in the accept Rift, under the claim, waking the landing session only when it is red.
 import { describe, expect, test } from "bun:test"
 import { Clock, Context, Data, Deferred, Duration, Effect, Exit, Layer, Option, Scope } from "effect"
 import { TestClock } from "effect/testing"
@@ -22,7 +26,8 @@ import * as MemorySessionDirectories from "./session-directories.ts"
 import * as MemoryWorkbox from "./workbox.ts"
 import * as Model from "../model.ts"
 import { Landing } from "../service.ts"
-import { CHECK_EVERY, MAX_WAIT, SETTLE } from "../owed.ts"
+import { CHECK_EVERY, MAX_WAIT, RESUMED, SETTLE } from "../owed.ts"
+import { Standing } from "../receipt.ts"
 
 const SOURCE = "/code/app"
 const POST_LAND = "/code/.work/app/post-land"
@@ -467,6 +472,197 @@ describe("an owed post-land step", () => {
           "lane land · post-land needs action",
         ])
         judge(5, world)
+      }),
+    ))
+})
+
+describe("an owed accept check", () => {
+  const X = "/code/.work/app/feat-x"
+  const INTEGRATE = "/code/.work/app/integrate"
+  const ACCEPT = "/code/.work/app/land-accept"
+  const BY_RECEIPTS = { mergeCheck: "bun run merge-check" }
+
+  interface Bench {
+    readonly rifts: MemoryRifts.World
+    readonly landing: MemoryLanding.World
+    readonly woken: Array<MemoryNotices.Woken>
+    readonly debts: MemoryDebts.World
+  }
+
+  /** One Rift, feat/x, with a green receipt, of a source that lands as `options` say (by receipts, unless told otherwise). */
+  const bench = (options: Parameters<typeof MemoryLanding.config>[3] = BY_RECEIPTS): Bench => {
+    const made: Bench = {
+      rifts: MemoryRifts.world([SOURCE], [MemoryRifts.clean(X, "feat/x")]),
+      landing: MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept", options) }),
+      woken: [],
+      debts: MemoryDebts.world(),
+    }
+    made.landing.heads.set(X, "aaa111")
+    made.landing.standings.set(X, Standing.Current({ receipt: MemoryLanding.receiptOf(X, "aaa111") }))
+    return made
+  }
+
+  const layerOf = (made: Bench) =>
+    Model.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          MemoryRifts.layer(made.rifts),
+          MemorySessionDirectories.layer({ ses_1: `${SOURCE}/src` }),
+          MemoryLanding.layer(made.landing),
+          MemoryNotices.layer(made.woken),
+          MemoryWorkbox.layer(false, []),
+          MemoryDebts.layer(made.debts),
+        ),
+      ),
+    )
+
+  /** A server's life: its scope, which a restart closes, and its tool. Two booted at once stand for two servers starting together. */
+  const start = (made: Bench) =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const tool = Context.get(yield* Layer.buildWithScope(layerOf(made), scope), Model.RiftTool)
+      return { scope, tool }
+    })
+
+  /** A land of feat/x whose accept check never ends, then the server's restart (its scope closed): answers the land's answer. */
+  const interrupted = (made: Bench) =>
+    Effect.gen(function* () {
+      const never = yield* Deferred.make<void>()
+      made.landing.checkHold.accept = Deferred.await(never)
+      const server = yield* start(made)
+      const answer = yield* Effect.orDie(server.tool.run("ses_1", { action: "land", rifts: ["feat-x"] }))
+      yield* settle
+      expect(made.landing.steps.filter((step) => step.startsWith("accept "))).toHaveLength(1)
+      yield* Scope.close(server.scope, Exit.void)
+      made.landing.checkHold.accept = Effect.void
+      return answer.text
+    })
+
+  /** The minute check's turn: the clock moves one check on and the fibers run. */
+  const minute = Effect.andThen(TestClock.adjust(CHECK_EVERY), settle)
+
+  const accepts = (made: Bench) => made.landing.steps.filter((step) => step.startsWith("accept "))
+
+  /** `body` on a TestClock. */
+  const onClock = (body: Effect.Effect<void>) => Effect.runPromise(body.pipe(Effect.provide(TestClock.layer())))
+
+  test("a land whose accept is interrupted by a restart leaves it owed, and says a restart runs it again", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        const answer = yield* interrupted(made)
+        expect(answer).toContain("a server restart runs it again")
+        expect(made.debts.debts.accepts.map((owed) => [owed.source, owed.base, owed.sessionID, owed.units.map((unit) => unit.branch)])).toEqual([[SOURCE, "base0", "ses_1", ["feat/x"]]])
+        expect(made.woken).toEqual([])
+      }),
+    ))
+
+  test("the next server's minute check runs it once in the accept Rift, its receipt marked resumed; red wakes the landing session and clears the debt", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        yield* interrupted(made)
+        made.landing.checks.set(`${ACCEPT} accept`, { code: 1, output: "1 fail\n(fail) feat x\n" })
+        const next = yield* start(made)
+        yield* minute
+        yield* minute
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`, `accept ${ACCEPT} base0`])
+        expect(made.landing.steps.slice(-3)).toEqual([`start ${ACCEPT} main`, "install", `accept ${ACCEPT} base0`])
+        expect(made.landing.receiptCommands.at(-1)).toBe(`${RESUMED} bun run accept`)
+        expect(made.woken.map((woken) => [woken.sessionID, woken.notice.description])).toEqual([["ses_1", "lane land · accept FAILED"]])
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* Scope.close(next.scope, Exit.void)
+      }),
+    ))
+
+  test("a resumed green accept clears the debt and wakes no one", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        yield* interrupted(made)
+        const next = yield* start(made)
+        yield* minute
+        yield* minute
+        expect(accepts(made)).toHaveLength(2)
+        expect(made.woken).toEqual([])
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* Scope.close(next.scope, Exit.void)
+      }),
+    ))
+
+  test("a land by its full gate runs its accept in the accept Rift too, the integration Rift free at the answer, and resumes it there", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench({})
+        const answer = yield* interrupted(made)
+        expect(answer).toContain("The accept check runs in the background in its own workspace (land-accept)")
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`])
+        expect(made.landing.steps.some((step) => step.startsWith(`accept ${INTEGRATE}`))).toBe(false)
+        const next = yield* start(made)
+        yield* minute
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`, `accept ${ACCEPT} base0`])
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* Scope.close(next.scope, Exit.void)
+      }),
+    ))
+
+  test("a completed accept leaves no debt and no notice, and no minute check runs it again", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        const server = yield* start(made)
+        yield* Effect.orDie(server.tool.run("ses_1", { action: "land", rifts: ["feat-x"] }))
+        yield* settle
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* minute
+        yield* minute
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`])
+        expect(made.woken).toEqual([])
+        yield* Scope.close(server.scope, Exit.void)
+      }),
+    ))
+
+  test("two servers starting at once run the owed accept once", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        yield* interrupted(made)
+        const hold = yield* Deferred.make<void>()
+        // The resumed run lasts past the next minute check, so the second server's check finds the claim held.
+        made.landing.checkHold.accept = Deferred.await(hold)
+        const first = yield* start(made)
+        const second = yield* start(made)
+        yield* minute
+        yield* minute
+        yield* Deferred.done(hold, Exit.void)
+        yield* settle
+        yield* minute
+        expect(accepts(made)).toHaveLength(2)
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* Scope.close(first.scope, Exit.void)
+        yield* Scope.close(second.scope, Exit.void)
+      }),
+    ))
+
+  test("an accept interrupted by a restart leaves the post-land step owed too; the next server runs the accept first, then the step, which wakes the session (20o's M1)", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench({ ...BY_RECEIPTS, postLand: "bun scripts/post-land.ts" })
+        yield* interrupted(made)
+        // The post-land step never ran (it follows the accept), yet it is owed: both were owed at the push.
+        expect(made.debts.debts.owed.map((owed) => owed.source)).toEqual([SOURCE])
+        const next = yield* start(made)
+        for (const _ of Array.from({ length: 8 })) yield* minute
+        const order = made.landing.steps.filter((step) => step.startsWith("accept ") || step.startsWith("post-land "))
+        // The minute check runs a never-run step loaded at once, then in full once calm for the settle window.
+        expect(order).toEqual([`accept ${ACCEPT} base0`, `accept ${ACCEPT} base0`, `post-land ${POST_LAND} base0 abc1234`, `post-land ${POST_LAND} base0 abc1234`])
+        expect(Option.fromNullishOr(made.debts.debts.accepts[0])).toEqual(Option.none())
+        expect(made.debts.debts.owed).toEqual([])
+        expect(made.woken.map((woken) => [woken.sessionID, woken.notice.description])).toEqual([
+          ["ses_1", "lane land · post-land needs action (loaded)"],
+          ["ses_1", "lane land · post-land needs action"],
+        ])
+        yield* Scope.close(next.scope, Exit.void)
       }),
     ))
 })
