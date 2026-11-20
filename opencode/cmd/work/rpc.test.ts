@@ -1,5 +1,5 @@
 // The rift RPC (`@dotfiles/opencode-work/rpc`) as cmd/work serves it, against its `work` tool, on the
-// plugin's seam: cmd/rift/rpc.test.ts's cases over `make` and memory layers. A differential: one seeded
+// plugin's seam, over `make` and memory layers. A differential: one seeded
 // sequence of calls goes to the tool on one world and to the RPC on a twin world, and each answer's text is
 // the tool's. Then `at`, the one model both share, the four methods under RIFT_RPC's id, and an
 // orchestrate lane removed and made again under its unit's name. Its tests register through
