@@ -837,6 +837,36 @@ work_new() {
   printf '%s\t%s\n' "$(printf '%s' "$w_made" | jq -r '.deps._tag')" "$w_path"
 }
 
+# The commits of the checkout $1 found nowhere else, newest first, one hash a
+# line: reachable from HEAD or a branch, from no remote-tracking ref and from
+# none of the tips $2 (the base's branches). A land merges a branch into main in
+# another workspace and pushes main from there, so this checkout's remote refs
+# may lag: when any commit looks unsaved, origin is fetched and they are read
+# again. A merge of two parents whose tree is the one `git merge-tree` makes of
+# them holds nothing of its own (its parents are judged on their own); any
+# other commit, a merge with an edit or a resolved conflict among them, is
+# work. The plugin's process/unpushed.ts is the same rule.
+work_own_commits() {
+  # shellcheck disable=SC2086 # one argument per tip
+  o_all=$(git -C "$1" rev-list HEAD --branches --ignore-missing --not --remotes $2)
+  [ -n "$o_all" ] || return 0
+  GIT_TERMINAL_PROMPT=0 git -C "$1" fetch --quiet --no-tags origin >/dev/null 2>&1 ||
+    printf 'workrift: no fetch from origin in %s; its remote refs may be stale\n' "$1" >&2
+  # shellcheck disable=SC2086 # one argument per tip
+  o_all=$(git -C "$1" rev-list HEAD --branches --ignore-missing --not --remotes $2)
+  for o_commit in $o_all; do
+    read -r _ o_first o_second o_more <<EOF
+$(git -C "$1" rev-list --parents -n 1 "$o_commit")
+EOF
+    if [ -n "${o_second:-}" ] && [ -z "${o_more:-}" ] &&
+      o_merged=$(git -C "$1" merge-tree --write-tree "$o_first" "$o_second" 2>/dev/null) &&
+      [ "$(printf '%s\n' "$o_merged" | head -n 1)" = "$(git -C "$1" rev-parse "$o_commit^{tree}")" ]; then
+      continue
+    fi
+    printf '%s\n' "$o_commit"
+  done
+}
+
 # The plugin's removal rule (workspace.ts): no uncommitted change, no commit on
 # no remote and in no branch of the base, and no stash entry of its own. $1 is
 # the workspace, $2 the base, $3 the stash commits of the folders above it.
@@ -844,16 +874,19 @@ work_require_held() {
   w_dirty=$(git -C "$1" status --porcelain -- . ':(exclude).rift')
   [ -z "$w_dirty" ] || fail "$1 has uncommitted changes: $(printf '%s' "$w_dirty" | head -n 3 | tr '\n' ' ')"
   w_tips=$(git -C "$2" for-each-ref --format='%(objectname)' refs/heads)
-  # shellcheck disable=SC2086 # one argument per tip
-  w_unpushed=$(git -C "$1" log --format='%h %s' HEAD --branches --ignore-missing --not --remotes $w_tips)
-  [ -z "$w_unpushed" ] || fail "$1 has commits on no remote and in no branch of $2: $(printf '%s' "$w_unpushed" | head -n 3 | tr '\n' ' ')"
+  w_own=$(work_own_commits "$1" "$w_tips")
+  # shellcheck disable=SC2086 # one argument per commit
+  [ -z "$w_own" ] || fail "$1 has commits on no remote and in no branch of $2: $(git -C "$1" show -s --format='%h %s' $w_own | head -n 3 | tr '\n' ' ')"
   for w_stash in $(git -C "$1" stash list --format=%H); do
     printf '%s\n' "$3" | grep -qxF "$w_stash" || fail "$1 has stash entries of its own"
   done
 }
 
 work_remove() {
-  w_target=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || fail "not a workspace: $1"
+  if ! w_target=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null); then
+    work_remove_half_made "$1" "$3"
+    return
+  fi
   w_with_children=$2
   w_base=
   w_bases=$(work_bases)
@@ -920,6 +953,116 @@ work_remove() {
   fi
   [ "$purge_trash" = true ] || return 0
   work_purge "$w_base" "$w_json" "$w_doomed" "$w_out"
+}
+
+# A folder a cut `workrift create` left (the server restarted mid-create,
+# 2026-11-19): in a base's .work/<repo>/, with no .git and no record, so work
+# cannot take it. Deleted for good (the workbox keeps no trash; never moved),
+# and only the one path the caller named, never one read from a listing, a
+# glob or the subvolumes: that path must be absolute and already resolved (no
+# link, no `..`), a direct child of the .work/<repo>/ folder of a work base,
+# not one of work's own entries (.registry, .lock, .work-trash), hold no .git,
+# be no record's path in any base nor hold one, be no mount point nor hold one,
+# and no process may work in it or hold a file open under it. The base's
+# workrift lock is held throughout, so no create or refresh runs meanwhile. A
+# btrfs subvolume (inode 256 on btrfs) goes by one `btrfs subvolume delete` of
+# that path; a plain folder by an rm that never crosses into another file
+# system. Neither follows a link: a link in it is unlinked. $2 true is a dry run.
+work_remove_half_made() {
+  h_path=$1
+  h_dry_run=$2
+  h_no() { fail "$1; nothing deleted"; }
+  case "$h_path" in
+    /*) ;;
+    *) h_no "not a workspace: $h_path (a half-made one is removed only by its absolute path)" ;;
+  esac
+  while [ "${h_path%/}" != "$h_path" ] && [ "$h_path" != / ]; do h_path=${h_path%/}; done
+  [ ! -L "$h_path" ] || h_no "$h_path is a symbolic link; name the folder itself"
+  [ -d "$h_path" ] || h_no "not a workspace: $h_path"
+  h_real=$(cd "$h_path" && pwd -P) || h_no "cannot resolve $h_path"
+  [ "$h_real" = "$h_path" ] || h_no "$h_path resolves to $h_real; name that path itself"
+  case "$h_path" in
+    *[][*?\\]*) h_no "$h_path holds a glob character; remove it by hand" ;;
+  esac
+  h_dir=${h_path%/*}
+  h_name=${h_path##*/}
+  h_repo=${h_dir##*/}
+  h_work=${h_dir%/*}
+  [ "${h_work##*/}" = .work ] && [ -n "$h_repo" ] ||
+    h_no "not a workspace: $h_path is not a direct child of a .work/<repo>/ folder"
+  case "$h_name" in
+    .*) h_no "$h_path is work's own ($h_name), not a workspace" ;;
+  esac
+  h_base=${h_work%/*}/$h_repo
+  h_bases=$(work_bases)
+  printf '%s\n' "$h_bases" | grep -qxF "$h_base" || h_no "not a workspace: $h_dir is the folder of no work base ($h_base is none)"
+  [ ! -e "$h_path/.git" ] && [ ! -L "$h_path/.git" ] || h_no "$h_path holds a .git but is no workspace Git reads; remove it by hand"
+  h_old_ifs=$IFS
+  IFS='
+'
+  for h_one in $h_bases; do
+    case "$h_one/" in
+      "$h_path/"*) IFS=$h_old_ifs; h_no "$h_path is or holds the base $h_one" ;;
+    esac
+  done
+  IFS=$h_old_ifs
+
+  # No create or refresh of the base runs while this looks and deletes.
+  exec 8>"$(git -C "$h_base" rev-parse --path-format=absolute --git-path workrift.lock)"
+  flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base; try again once it ends"
+
+  h_old_ifs=$IFS
+  IFS='
+'
+  for h_one in $h_bases; do
+    IFS=$h_old_ifs
+    h_json=$(work_in "$h_one" --json list) || h_no "work list failed in $h_one: $h_json"
+    h_named=$(printf '%s' "$h_json" | jq -r --arg p "$h_path" '.[] | select(.path == $p or (.path | startswith($p + "/"))) | "\(.name) (\(.state._tag))"' | head -n 1)
+    [ -z "$h_named" ] || h_no "$h_path is the path of a record of $h_one, $h_named; remove it with work"
+  done
+  IFS=$h_old_ifs
+
+  h_mounts=$proc_root/self/mountinfo
+  [ -r "$h_mounts" ] || h_no "cannot read the mount table ($h_mounts)"
+  h_coded=$(printf '%s' "$h_path" | sed 's/\\/\\134/g; s/ /\\040/g; s/	/\\011/g')
+  h_mount=$(awk -v p="$h_coded" '$5 == p || index($5, p "/") == 1 { print $5; exit }' "$h_mounts")
+  [ -z "$h_mount" ] || h_no "a file system is mounted at $h_mount"
+
+  h_user=$(find "$proc_root" -mindepth 1 -maxdepth 3 \
+    \( ! -path "$proc_root/[0-9]*" -prune \) -o \
+    \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" -prune \) -o \
+    \( \( -lname "$h_path" -o -lname "$h_path/*" \) -print -quit \) 2>/dev/null || true)
+  if [ -n "$h_user" ]; then
+    h_pid=${h_user#"$proc_root"/}
+    h_pid=${h_pid%%/*}
+    h_no "a process works in or holds a file open under $h_path (pid $h_pid $(cat "$proc_root/$h_pid/comm" 2>/dev/null || printf '?'))"
+  fi
+
+  h_entries=$(find "$h_path" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$(stat -f -c %T "$h_path" 2>/dev/null)" = btrfs ] && [ "$(stat -c %i "$h_path" 2>/dev/null)" = 256 ]; then
+    h_kind='a btrfs subvolume with no record (deleted by one btrfs subvolume delete of its path)'
+    h_subvolume=true
+  else
+    h_kind='a plain folder (deleted without crossing into another file system)'
+    h_subvolume=false
+  fi
+  printf 'half-made workspace: %s\n' "$h_path"
+  printf '  no .git, no record in any work base, no mount at or below it\n'
+  printf '  no process works in it or holds a file open under it\n'
+  printf '  %s entries; %s\n' "$h_entries" "$h_kind"
+  if [ "$h_dry_run" = true ]; then
+    printf 'would delete: %s\n' "$h_path"
+    return 0
+  fi
+  if [ "$h_subvolume" = true ]; then
+    btrfs subvolume delete "$h_path" >/dev/null || h_no "btrfs subvolume delete $h_path failed"
+  elif rm --version >/dev/null 2>&1; then
+    rm -rf --one-file-system -- "$h_path" || true
+  else
+    rm -rf -x -- "$h_path" || true
+  fi
+  [ ! -e "$h_path" ] && [ ! -L "$h_path" ] || fail "$h_path is not all deleted: $(find "$h_path" -mindepth 1 2>/dev/null | head -n 3 | tr '\n' ' ')"
+  printf 'deleted: %s\n' "$h_path"
 }
 
 # The workbox keeps no trash (owner, 2026-11-19): after `work rm`, each record

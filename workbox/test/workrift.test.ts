@@ -8,7 +8,7 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -865,6 +865,259 @@ describeWork("workrift with the work backend", () => {
       expect(readFileSync(join(p.trash, left[0] ?? "", "mark.txt"), "utf8")).toBe(`${p.two}\n`)
       expect(p.files()).toEqual(p.without(before, p.two))
       expect(p.gcCalls().length).toBe(1)
+    },
+    60_000,
+  )
+
+  /**
+   * A folder a cut `workrift create` left (the server restarted mid-create, 2026-11-19): under app's storage, no .git
+   * and no record, a few files, a `.env` link to a file outside the scratch root and a link to a folder inside it.
+   * `proc` is a /proc of the test's own: a mount table (self/mountinfo) and one process (100) whose working folder
+   * is the base and which holds a file of feat-one open. `stat` and `btrfs` are shims: a path the file `subvolumes`
+   * names is a btrfs subvolume (`stat -f -c %T` btrfs, inode 256), and `btrfs subvolume delete` of one removes
+   * it; every btrfs call is logged.
+   */
+  const halfMade = (p: ReturnType<typeof purgeBench>) => {
+    const path = join(p.w.root, ".work/app/scratch-vfy-sync-parity")
+    mkdirSync(join(path, "src"), { recursive: true })
+    writeFileSync(join(path, "package.json"), "{}\n")
+    writeFileSync(join(path, "src/index.ts"), "export {}\n")
+    const secret = join(p.w.dir, "outside.env")
+    writeFileSync(secret, "KEEP=1\n")
+    symlinkSync(secret, join(path, ".env"))
+    const linked = join(p.w.root, "linked-dir")
+    mkdirSync(linked)
+    writeFileSync(join(linked, "keep.txt"), "linked\n")
+    symlinkSync(linked, join(path, "linked-dir"))
+    const proc = join(p.w.dir, "proc")
+    mkdirSync(join(proc, "self"), { recursive: true })
+    const mounts = join(proc, "self/mountinfo")
+    const table = "22 1 0:21 / / rw,relatime shared:1 - apfs /dev/disk3s1 rw\n"
+    writeFileSync(mounts, table)
+    mkdirSync(join(proc, "100/fd"), { recursive: true })
+    symlinkSync(p.w.app, join(proc, "100/cwd"))
+    symlinkSync(join(p.one, "mark.txt"), join(proc, "100/fd/3"))
+    const subvolumes = join(p.w.dir, "subvolumes")
+    writeFileSync(subvolumes, "")
+    const btrfsLog = join(p.w.dir, "btrfs-calls")
+    writeFileSync(btrfsLog, "")
+    exe(
+      join(p.w.bin, "stat"),
+      `#!/bin/sh\nfor p do :; done\nhit=\ngrep -qxF -- "$p" '${subvolumes}' && hit=1\ncase "$*" in\n  "-f -c %T "*) if [ -n "$hit" ]; then echo btrfs; else echo apfs; fi ;;\n  "-c %i "*) if [ -n "$hit" ]; then echo 256; else echo 1000; fi ;;\n  *) exec /usr/bin/stat "$@" ;;\nesac\n`,
+    )
+    exe(
+      join(p.w.bin, "btrfs"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >>'${btrfsLog}'\n[ "$1 $2" = "subvolume delete" ] && [ "$#" -eq 3 ] || exit 1\ngrep -qxF -- "$3" '${subvolumes}' || { echo "ERROR: Not a Btrfs subvolume: $3" >&2; exit 1; }\nexec /bin/rm -rf "$3"\n`,
+    )
+    const env: Env = { ...p.env, WORKRIFT_PROC: proc }
+    const wr = (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, env, [SCRIPT, ...argv])
+    const btrfsCalls = () => lines(readFileSync(btrfsLog, "utf8"))
+    const workCalls = () => lines(readFileSync(join(p.w.dir, "work-calls"), "utf8")).filter((line) => /\b(rm|gc)\b/.test(line))
+    return { path, secret, linked, proc, mounts, table, subvolumes, env, wr, btrfsCalls, workCalls }
+  }
+
+  test(
+    "remove of a half-made workspace (no .git, no record) says what it is and deletes that one folder for good: a link in it is unlinked, not followed; --dry-run deletes nothing; a btrfs subvolume goes by one btrfs subvolume delete of its path",
+    () => {
+      const p = purgeBench("half-made")
+      const h = halfMade(p)
+      const before = p.files()
+      expect(Object.keys(before)).toContain(join(h.path, "src/index.ts"))
+
+      const dry = h.wr(p.w.app, "remove", "--dry-run", h.path)
+      expect(dry.code, dry.err).toBe(0)
+      expect(dry.out).toContain(`half-made workspace: ${h.path}`)
+      expect(dry.out).toContain("no .git, no record in any work base")
+      expect(dry.out).toContain("5 entries")
+      expect(dry.out).toContain("no process works in it or holds a file open under it")
+      expect(dry.out).toContain("a plain folder")
+      expect(lines(dry.out).at(-1)).toBe(`would delete: ${h.path}`)
+      expect(p.files()).toEqual(before)
+
+      const ran = h.wr(p.w.app, "remove", h.path)
+      expect(ran.code, ran.err).toBe(0)
+      expect(lines(ran.out).at(-1)).toBe(`deleted: ${h.path}`)
+      expect(existsSync(h.path)).toBe(false)
+      // Only its files went: the linked folder, the .env's target, the siblings, the base, the trash all stay.
+      expect(p.files()).toEqual(p.without(before, h.path))
+      expect(readFileSync(h.secret, "utf8")).toBe("KEEP=1\n")
+      expect(readFileSync(join(h.linked, "keep.txt"), "utf8")).toBe("linked\n")
+      expect(readdirSync(p.trash)).toEqual(p.oldTrash)
+      expect(h.workCalls()).toEqual([])
+      expect(h.btrfsCalls()).toEqual([])
+      expect(p.w.active(p.w.app).map((each) => each.path).sort()).toEqual([p.one, p.two, p.three].sort())
+
+      // The same folder as a btrfs subvolume with no record: one `btrfs subvolume delete` of that exact path.
+      const sub = join(p.w.root, ".work/app/scratch-sub")
+      mkdirSync(join(sub, "inner"), { recursive: true })
+      writeFileSync(join(sub, "inner/a.txt"), "a\n")
+      symlinkSync(h.secret, join(sub, ".env"))
+      writeFileSync(h.subvolumes, `${sub}\n`)
+      const subBefore = p.files()
+      const gone = h.wr(p.w.app, "remove", sub)
+      expect(gone.code, gone.err).toBe(0)
+      expect(gone.out).toContain("a btrfs subvolume with no record")
+      expect(lines(gone.out).at(-1)).toBe(`deleted: ${sub}`)
+      expect(h.btrfsCalls()).toEqual([`subvolume delete ${sub}`])
+      expect(existsSync(sub)).toBe(false)
+      expect(p.files()).toEqual(p.without(subBefore, sub))
+      expect(readFileSync(h.secret, "utf8")).toBe("KEEP=1\n")
+    },
+    60_000,
+  )
+
+  test(
+    "remove refuses, and deletes nothing, any folder but an absolute, resolved direct child of a base's .work/<repo>/ with no .git, no record, no mount, no process and no running create",
+    () => {
+      const p = purgeBench("half-made-refuse")
+      const h = halfMade(p)
+      const root = p.w.root
+      const viaLink = join(p.w.dir, "link-to-half")
+      symlinkSync(h.path, viaLink)
+      const ghost = join(root, ".work/ghost/x")
+      mkdirSync(ghost, { recursive: true })
+      const withGit = join(root, ".work/app/with-git")
+      mkdirSync(withGit)
+      writeFileSync(join(withGit, ".git"), "gitdir: /nonexistent/loop-probe-x\n")
+      // feat-three with its .git moved aside, and a subvolume: its record names it. (A trashed record names its
+      // trash folder, which is work's own, not the path it had.)
+      renameSync(join(p.three, ".git"), join(p.three, ".git-aside"))
+      writeFileSync(h.subvolumes, `${p.three}\n`)
+      const flock = join(p.w.bin, "flock")
+      const cases: ReadonlyArray<{ label: string; cwd?: string; arg: string; says: string; arrange?: () => void; undo?: () => void; env?: Env }> = [
+        { label: "relative", cwd: join(root, ".work/app"), arg: "scratch-vfy-sync-parity", says: "absolute path" },
+        { label: "through a link", arg: viaLink, says: "symbolic link" },
+        { label: "through ..", arg: `${root}/.work/app/../app/scratch-vfy-sync-parity`, says: `resolves to ${h.path}` },
+        { label: "the storage folder", arg: join(root, ".work/app"), says: "not a direct child of a .work/<repo>/ folder" },
+        { label: "the trash", arg: p.trash, says: "work's own" },
+        { label: "a folder of no base", arg: ghost, says: "no work base" },
+        { label: "unrelated", arg: p.unrelated, says: "not a direct child of a .work/<repo>/ folder" },
+        { label: "a .git file", arg: withGit, says: "holds a .git" },
+        { label: "a live record, a subvolume", arg: p.three, says: "record" },
+        {
+          label: "a mount point",
+          arg: h.path,
+          says: "mount",
+          arrange: () => writeFileSync(h.mounts, `${h.table}40 22 0:40 / ${h.path} rw - tmpfs tmpfs rw\n`),
+          undo: () => writeFileSync(h.mounts, h.table),
+        },
+        {
+          label: "a mount below",
+          arg: h.path,
+          says: "mount",
+          arrange: () => writeFileSync(h.mounts, `${h.table}40 22 0:40 / ${h.path}/src rw - tmpfs tmpfs rw\n`),
+          undo: () => writeFileSync(h.mounts, h.table),
+        },
+        {
+          label: "a process's working folder",
+          arg: h.path,
+          says: "pid 4242",
+          arrange: () => {
+            mkdirSync(join(h.proc, "4242"))
+            symlinkSync(join(h.path, "src"), join(h.proc, "4242/cwd"))
+          },
+          undo: () => rmSync(join(h.proc, "4242"), { recursive: true }),
+        },
+        {
+          label: "a process's open file",
+          arg: h.path,
+          says: "pid 4243",
+          arrange: () => {
+            mkdirSync(join(h.proc, "4243/fd"), { recursive: true })
+            symlinkSync(join(h.path, "package.json"), join(h.proc, "4243/fd/7"))
+          },
+          undo: () => rmSync(join(h.proc, "4243"), { recursive: true }),
+        },
+        { label: "no mount table to read", arg: h.path, says: "mount table", env: { ...h.env, WORKRIFT_PROC: join(p.w.dir, "no-proc") } },
+        {
+          label: "a create holds the base's lock",
+          arg: h.path,
+          says: "lock",
+          arrange: () => exe(flock, "#!/bin/sh\nexit 1\n"),
+          undo: () => exe(flock, "#!/bin/sh\nexit 0\n"),
+        },
+      ]
+      const before = p.files()
+      for (const each of cases) {
+        each.arrange?.()
+        const ran = run(each.cwd ?? p.w.app, each.env ?? h.env, [SCRIPT, "remove", each.arg])
+        each.undo?.()
+        expect({ label: each.label, code: ran.code }).toEqual({ label: each.label, code: 1 })
+        expect(ran.err, each.label).toContain(each.says)
+        expect(ran.out, each.label).not.toContain("deleted")
+        expect(p.files(), each.label).toEqual(before)
+        expect(h.btrfsCalls(), each.label).toEqual([])
+        expect(h.workCalls(), each.label).toEqual([])
+      }
+      for (const kept of [h.path, withGit, ghost, p.three, p.trash, viaLink]) expect(existsSync(kept)).toBe(true)
+      expect(readFileSync(h.secret, "utf8")).toBe("KEEP=1\n")
+      renameSync(join(p.three, ".git-aside"), join(p.three, ".git"))
+    },
+    60_000,
+  )
+
+  test(
+    "remove takes a workspace whose commits a land put on origin's main from elsewhere, or whose only unpushed commits are clean merges of pushed parents; a commit behind such a merge, or a merge with an edit of its own, is still refused",
+    () => {
+      const w = workBench("remove-landed", work)
+      const wr = (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, { ...w.env, WORKRIFT_PURGE: "0" }, [SCRIPT, ...argv])
+      const commitIn = (path: string, file: string, message: string) => {
+        writeFileSync(join(path, file), `${message}\n`)
+        sh(path, w.env, "git", "add", file)
+        sh(path, w.env, "git", "commit", "-q", "-m", message)
+      }
+      const mergeMain = (path: string) => {
+        sh(path, w.env, "git", "fetch", "-q", "origin")
+        sh(path, w.env, "git", "merge", "-q", "--no-edit", "origin/main")
+      }
+
+      // Landed: the branch was never pushed; a land in another workspace pushed its commit as origin's main, so
+      // this workspace's origin/main does not know it.
+      const landed = w.create(w.app, "feat/landed")
+      commitIn(landed, "landed.txt", "landed")
+      const seed = join(w.dir, "seed")
+      sh(seed, w.env, "git", "fetch", "-q", landed, "feat/landed")
+      sh(seed, w.env, "git", "push", "-q", "origin", "FETCH_HEAD:refs/heads/main")
+      expect(sh(landed, w.env, "git", "rev-parse", "origin/main")).not.toBe(sh(landed, w.env, "git", "rev-parse", "HEAD"))
+      let ran = wr(w.app, "remove", landed)
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(landed)).toBe(false)
+
+      // Merged: its branch pushed, then origin's main merged in here, cleanly, and the merge not pushed.
+      const merged = w.create(w.app, "feat/merged")
+      commitIn(merged, "merged.txt", "merged")
+      sh(merged, w.env, "git", "push", "-q", "origin", "feat/merged")
+      w.push("main", { "later.txt": "later\n" })
+      mergeMain(merged)
+      expect(sh(merged, w.env, "git", "rev-list", "--count", "HEAD", "--not", "--remotes").trim()).toBe("1")
+      ran = wr(w.app, "remove", merged)
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(merged)).toBe(false)
+
+      // A commit only here, then a clean merge of pushed main over it: the commit is still refused, by name.
+      const hidden = w.create(w.app, "feat/hidden")
+      commitIn(hidden, "hidden.txt", "only here behind a merge")
+      w.push("main", { "again.txt": "again\n" })
+      mergeMain(hidden)
+      ran = wr(w.app, "remove", hidden)
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("commits on no remote")
+      expect(ran.err).toContain("only here behind a merge")
+      expect(existsSync(hidden)).toBe(true)
+
+      // A merge of pushed parents that carries an edit of its own (amended into it): refused.
+      const edited = w.create(w.app, "feat/edited")
+      commitIn(edited, "edited.txt", "edited")
+      sh(edited, w.env, "git", "push", "-q", "origin", "feat/edited")
+      w.push("main", { "third.txt": "third\n" })
+      mergeMain(edited)
+      writeFileSync(join(edited, "own.txt"), "own\n")
+      sh(edited, w.env, "git", "add", "own.txt")
+      sh(edited, w.env, "git", "commit", "-q", "--amend", "--no-edit")
+      ran = wr(w.app, "remove", edited)
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("commits on no remote")
+      expect(existsSync(edited)).toBe(true)
     },
     60_000,
   )
