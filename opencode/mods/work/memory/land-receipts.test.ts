@@ -16,11 +16,11 @@ import { Standing } from "../receipt.ts"
 import type { RiftInput } from "../rift.ts"
 
 const SOURCE = "/code/app"
-const X = "/code/.rifts/app/feat-x"
-const Y = "/code/.rifts/app/feat-y"
-const INTEGRATE = "/code/.rifts/app/integrate"
-const ACCEPT = "/code/.rifts/app/land-accept"
-const POST_LAND = "/code/.rifts/app/post-land"
+const X = "/code/.work/app/feat-x"
+const Y = "/code/.work/app/feat-y"
+const INTEGRATE = "/code/.work/app/integrate"
+const ACCEPT = "/code/.work/app/land-accept"
+const POST_LAND = "/code/.work/app/post-land"
 const MERGE_CHECK = 'bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'
 
 interface Bench {

@@ -94,7 +94,7 @@ const SERVERS = sources("cmd/*/server.ts")
 
 describe("runtime imports", () => {
   test("a checkout in a directory named oxlint-* is not the lint tool", () => {
-    const root = "/Users/x/Developer/personal/.rifts/dotfiles/oxlint-x/opencode"
+    const root = "/Users/x/Developer/personal/.work/dotfiles/oxlint-x/opencode"
     const lintTool = (target: string) => forbiddenAt(root, target, LINT_TOOL)
     expect(lintTool(`${root}/mods/skills/catalog.ts`)).toBe(false)
     expect(lintTool(`${root}/scripts/daily.ts`)).toBe(false)

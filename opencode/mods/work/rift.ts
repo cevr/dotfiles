@@ -151,7 +151,7 @@ export const explainInput = (refusal: InputRefused): string => {
     case "BranchMissing":
       return 'create needs a branch (or a name, which becomes the branch): { action: "create", branch: "feat/x" }.'
     case "TargetMissing":
-      return 'remove needs the workspace: { action: "remove", name: "feat-x" } or { action: "remove", path: "/…/.rifts/repo/feat-x" }.'
+      return 'remove needs the workspace: { action: "remove", name: "feat-x" } or { action: "remove", path: "/…/.work/repo/feat-x" }.'
     case "RiftsMissing":
       return 'land needs the workspaces to land, in order: { action: "land", workspaces: ["feat-x"] }.'
     case "TargetsTwice":

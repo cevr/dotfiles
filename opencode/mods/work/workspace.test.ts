@@ -3,7 +3,7 @@ import { Effect, Exit } from "effect"
 import { explainRefusal, holds, removal, type RemoveRefused, type Workspace } from "./workspace.ts"
 
 const RIFT: Workspace = {
-  path: "/code/.rifts/app/feat-x",
+  path: "/code/.work/app/feat-x",
   source: false,
   children: [],
   git: true,
@@ -31,7 +31,7 @@ describe("removing a Rift", () => {
     expect(refused?._tag).toBe("WorkUnsaved")
     expect(explainRefusal(refused!)).toBe(
       [
-        "/code/.rifts/app/feat-x holds work found nowhere else:",
+        "/code/.work/app/feat-x holds work found nowhere else:",
         "2 uncommitted change(s):",
         "   M src/a.ts",
         "  ?? notes.md",
@@ -52,12 +52,12 @@ describe("removing a Rift", () => {
 
   test("a warm source, a Rift holding the session and a Rift with Rifts of its own are refused even when forced", () => {
     expect(refusal({ ...RIFT, source: true }, true)?._tag).toBe("SourceKept")
-    expect(refusal(RIFT, true, "/code/.rifts/app/feat-x/src")?._tag).toBe("SessionInside")
-    expect(refusal(RIFT, true, "/code/.rifts/app/feat-x")?._tag).toBe("SessionInside")
-    expect(refusal(RIFT, true, "/code/.rifts/app/feat-xy")).toBeUndefined()
-    const parent = { ...RIFT, children: ["/code/.rifts/feat-x/inner"] }
+    expect(refusal(RIFT, true, "/code/.work/app/feat-x/src")?._tag).toBe("SessionInside")
+    expect(refusal(RIFT, true, "/code/.work/app/feat-x")?._tag).toBe("SessionInside")
+    expect(refusal(RIFT, true, "/code/.work/app/feat-xy")).toBeUndefined()
+    const parent = { ...RIFT, children: ["/code/.work/feat-x/inner"] }
     expect(explainRefusal(refusal(parent, true)!)).toBe(
-      "/code/.rifts/app/feat-x has workspaces of its own, which would go with it. Remove them first:\n  /code/.rifts/feat-x/inner",
+      "/code/.work/app/feat-x has workspaces of its own, which would go with it. Remove them first:\n  /code/.work/feat-x/inner",
     )
   })
 

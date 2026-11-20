@@ -24,8 +24,8 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 - **World suites:** `cmd/work/work.sim.test.ts`
 - **Code:** `cmd/work/`, `tests/plugin-start.test.ts` (its real check that the bare entry starts with the work binary on PATH, among daily's server plugins)
 
-1. **Create.** Prompt `verify: call work {"action":"create","branch":"feat/x"}`. The answer starts `Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.`
-2. **List by the alias.** Prompt `verify: call rift {"action":"list"}`. The answer is `Workspaces of /code/app:` and the line `- /code/.rifts/app/feat-x · branch feat/x · clean`.
+1. **Create.** Prompt `verify: call work {"action":"create","branch":"feat/x"}`. The answer starts `Created the workspace /code/.work/app/feat-x from /code/app, on branch feat/x.`
+2. **List by the alias.** Prompt `verify: call rift {"action":"list"}`. The answer is `Workspaces of /code/app:` and the line `- /code/.work/app/feat-x · branch feat/x · clean`.
 3. **Land.** Prompt `verify: call work {"action":"land","workspaces":["feat-x"]}`. The answer starts `Landed 1 workspace(s) as one push`; only the `integrate` workspace is left, and the accept check runs.
 
 ## Driving it with real OpenCode

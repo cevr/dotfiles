@@ -32,7 +32,7 @@ const MACHINE_WORDS = /refused by the\s+machine|the machine holds no unit|the ma
 const suffixOf = (answer: string): string => Option.getOrElse(Option.flatMap(Option.fromNullishOr(/\(rift: ([^)]+)\)\s*$/.exec(answer)), (match) => Arr.get(match, 1)), () => "")
 
 /** The Rift a lane of `unit` makes on the Mac, in the run's warm source. */
-const pathOf = (unit: string) => `/scratch/.rifts/work/${unit}`
+const pathOf = (unit: string) => `/scratch/.work/work/${unit}`
 
 /** The warning a land of a unit the logs show in another state than `ready` starts with. */
 const warningOf = (unit: string, state: string) => `orchestrate: warning: ${unit} is ${state}, not ready; landed as asked.`
