@@ -85,6 +85,9 @@ export const cleaner = (redact: boolean) => (text: string, n = 300) => {
 export const WRAPPED = [
   '<local-command',
   '<system-reminder',
+  // OpenCode's harness blocks: a plan-mode or other update, and a background job's result (upstream e51247f626).
+  '<system-update',
+  '<background-result',
   '<task-notification',
   '<bash-',
   '<user-prompt-submit-hook',
