@@ -52,6 +52,7 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { ORCHESTRATOR } from "../../mods/orchestrate/role.ts"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
 import { gitInit } from "../../tests/git-repo.ts"
@@ -88,8 +89,8 @@ export interface Slot {
 }
 
 /**
- * A preset pins the three roles. The orchestrator is OpenCode's `build` agent
- * (and `plan`, `compaction`), the worker the `general` and `explore`
+ * A preset pins the three roles. The orchestrator is the orchestrate plugin's
+ * default `orchestrator` agent (and `build`, `plan`, `compaction`), the worker the `general` and `explore`
  * subagents, the verifier the orchestrate mod's `verifier` agent.
  */
 export interface Preset {
@@ -341,7 +342,9 @@ export const storeAccounts = (dir: string): ReadonlyArray<string> => {
 
 /**
  * The run's `opencode.json`: the orchestrator as the default model and as
- * `build`, `plan` and `compaction`; the worker as `general` and `explore`
+ * the orchestrate plugin's default agent (`orchestrator`), `build`, `plan` and
+ * `compaction`; the orchestrator agent is made from build before the config
+ * applies, so it is pinned by its own entry, not build's; the worker as `general` and `explore`
  * (and, without its variant, the `title` and `summary` helpers); and the
  * orchestrate roles on the preset's models. Agent entries merge into
  * OpenCode's own, so the built-in prompts and permissions stay. Server
@@ -357,6 +360,7 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins:
     ...(plugins.length === 0 ? {} : { plugins }),
     ...(simPort === undefined ? {} : { providers: { [SIM_PROVIDER]: simProvider(simPort) }, policies: presetOnly(preset) }),
     agents: {
+      [ORCHESTRATOR]: orchestrator,
       build: orchestrator,
       plan: orchestrator,
       compaction: orchestrator,
@@ -418,7 +422,7 @@ const ROSTER_END = "<!-- /roster -->"
 export const rosterBlock = (preset: ResolvedPreset): string =>
   [
     ROSTER_START,
-    `- Orchestrator: the \`build\` agent, on \`${selection(preset.orchestrator)}\`.`,
+    `- Orchestrator: the \`${ORCHESTRATOR}\` agent, on \`${selection(preset.orchestrator)}\`.`,
     `- Worker (fix or feature): \`agent: "general"\`, pinned in \`opencode.json\` to \`${selection(preset.worker)}\`.`,
     `- Verifier (proves a change and checks it against the rules): \`agent: "verifier"\`, pinned to \`${selection(preset.verifier)}\`.`,
     ROSTER_END,

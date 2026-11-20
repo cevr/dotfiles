@@ -50,7 +50,9 @@ OpenCode runs from the fork's source at `OPENCODE_DEV` (default: the
 ## Presets
 
 Presets are data in `gamut.ts` (`PRESETS`): a model and an effort for each
-role. The orchestrator is OpenCode's `build` agent, the worker the `general`
+role. The orchestrator is the orchestrate plugin's `orchestrator` agent, the
+default a session opens with (made from `build`; `opencode.json` pins it by its
+own `agents.orchestrator` entry, since `agents.build` does not reach it), the worker the `general`
 and `explore` subagents, the verifier the orchestrate mod's `verifier` agent. A
 family such as `opencode-go/glm` resolves to its newest release in the model
 catalog when the run starts.

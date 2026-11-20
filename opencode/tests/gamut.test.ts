@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
   type Catalog,
@@ -172,7 +173,7 @@ describe("the run's config", () => {
     const config = projectConfig(sim, 4321)
     expect(config.model).toBe("sim/sim-model")
     expect(config.providers?.sim.settings.baseURL).toBe("http://127.0.0.1:4321/v1")
-    expect(config.agents.build.model).toBe("sim/sim-model")
+    expect(config.agents[ORCHESTRATOR].model).toBe("sim/sim-model")
     expect(config.agents.general.model).toBe("sim/sim-model")
     expect(config.agents.verifier.model).toBe("sim/sim-model")
     // Every other provider is denied: no fallback reaches a hosted model.
@@ -553,7 +554,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
       for (const dir of ["cmd/orchestrate", "cmd/status", "cmd/pool"]) expect(packages).toContain(join(root, dir))
       expect(config.agents.worker.model).toBe(config.agents.general.model)
-      expect(config.agents.verifier.model).toBe(config.agents.build.model)
+      expect(config.agents.verifier.model).toBe(config.agents[ORCHESTRATOR].model)
 
       expect(gamut("wait", "120")).toMatchObject({ code: 0, out: "idle\n" })
       const first = gamut("read")
@@ -573,7 +574,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
 
       const status = gamut("status")
       expect(status.code).toBe(0)
-      expect(status.out).toMatch(/sessions \(1\)\n {2}ses_\S+ {2}build {2}"Ledgerline red suite" {2}turns 2/)
+      expect(status.out).toMatch(new RegExp(`sessions \\(1\\)\\n {2}ses_\\S+ {2}${ORCHESTRATOR} {2}"Ledgerline red suite" {2}turns 2`))
       expect(status.out).toContain("sim/sim-model#default  4 replies")
       expect(status.out).toMatch(/ses_\S+ {2}shell 2/)
       expect(status.out).toContain("errors\n  none")
