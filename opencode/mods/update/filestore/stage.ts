@@ -123,7 +123,7 @@ export const CURRENT_TREE = "current.plugins"
  * Points `<share>/current.plugins` at the tree of `binary`, the build the record installs, written with
  * the launcher at each record write: a path that outlives a process (a pending wake's job, a command
  * link) goes through it rather than into one build's tree, which a prune deletes with its build. A
- * relative link, made beside its path and renamed over it; a build with no tree (the old scheme's)
+ * relative link, made beside its path and renamed over it; a build with no tree (an older build's)
  * leaves no link, as nothing of it is in a tree.
  */
 export const writeCurrentTree = (binary: string, pid: number): void => {

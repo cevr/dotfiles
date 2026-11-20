@@ -82,8 +82,8 @@ export const SEEDS: ReadonlyArray<{ readonly glob: string; readonly host: Host }
 
 /**
  * The plugin lists, as data: the plugins by their directory's name (`cmd/<name>`, else `mods/<name>`),
- * in load order, and the built-ins each config turns off. `scripts/daily.ts` reads them for both its
- * writers, the global configs (`--configure`) and a tree's (`--tree`), and gives a plugin its options.
+ * in load order, and the built-ins each config turns off. `scripts/daily.ts` reads them for a tree's
+ * configs (`--tree`), the only place plugin entries are written, and gives a plugin its options.
  */
 export const SERVER_PLUGINS: ReadonlyArray<string> = [
   "anthropic-auth",
@@ -137,9 +137,9 @@ export const TUI_FIRST = "prime"
 
 /**
  * The order the TUI loads its plugins in, which is the order their sidebar sections and slots draw in
- * (a slot is appended in load order): Prime first, then the old scheme's list as it stood, so the
- * sidebar keeps its layout (the pool's section, `status`, second; the Queue section, which came through
- * the server's listing, after them). Order only: which plugins load is derived (`tuiPluginsOf`).
+ * (a slot is appended in load order): Prime first, then the pool's section (`status`), then the rest
+ * in the sidebar's layout, with the Queue section after them all. Order only: which plugins load is
+ * derived (`tuiPluginsOf`).
  */
 export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
 
@@ -149,9 +149,8 @@ const placeOf = (name: string): number => Option.getOrElse(Arr.findFirstIndex(TU
 /**
  * The TUI's plugins, derived from the packages themselves (`packages`: each plugin directory's name and
  * its `package.json`): every one that exports `./tui`, in `TUI_ORDER`, and those it does not list after,
- * by name. Derived, never kept by hand: a TUI part reached the TUI under the old scheme also through the
- * server's listing (gap 5), which a tree's server entries no longer carry, so a plugin missing here
- * would drop out of every TUI (2026-11-20: the Queue sidebar section, `cmd/queue`).
+ * by name. Derived, never kept by hand: a tree's server entries carry no TUI part, so a plugin missing
+ * here would drop out of every TUI (2026-11-20: the Queue sidebar section, `cmd/queue`).
  */
 export const tuiPluginsOf = (packages: ReadonlyArray<{ readonly name: string; readonly manifest: string }>): ReadonlyArray<string> =>
   packages
@@ -183,7 +182,7 @@ export interface ServerEntry {
  * The generated server entry of plugin `name`, whose own `package.json` is `manifest`: a package
  * exporting `./server` (and `./rpc` when the plugin has one), each a one-line re-export of the plugin's
  * own file. None when the plugin has no server part: a list of none or one, for daily, whose `effect`
- * is another copy than this module's in a checkout (`scripts/link-fork.ts`). `from` is the entry's way
+ * is another copy than this module's in a dev checkout (the fork links typecheck and tests use). `from` is the entry's way
  * to the plugin's directory (`../../../opencode/cmd/<name>`). The host runs a server part's default
  * export (`Plugin.define`); an RPC part is read by its named exports.
  */

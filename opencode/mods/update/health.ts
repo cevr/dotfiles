@@ -103,8 +103,8 @@ export const Recovery = Data.taggedEnum<Recovery>()
 
 /**
  * The recovery after a restart's health check. A sick first restart rolls back to the last good build
- * (when there is one other than this, and it can run: `canRollBack`); there is no reinstall rung, since
- * a build's tree was installed fresh and checked at its stage, and reinstalling would write under
+ * (when there is one other than this, and it can run: `canRollBack`); nothing is installed again, since
+ * a build's tree was installed fresh and checked at its stage, and an install would write under
  * running processes. A sick rollback gives up.
  */
 export const recover = (stage: Stage, health: Health, canRollBack: boolean): Recovery => {

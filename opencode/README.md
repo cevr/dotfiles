@@ -30,37 +30,53 @@ prints the conflicting files or the failing check, writes them to
 on with the fork as it is. The report goes once `prime-look` is current
 again. The workbox skips the step and pulls origin `prime-look`.
 
-`scripts/daily.ts` installs the mods' dependencies (`bun install
---frozen-lockfile`; OpenCode loads the plugins in place and installs nothing),
-builds the fork in `OPENCODE_DEV` (default: the
-`prime-look` Rift) as a release binary whose version names both commits,
-`<release>-prime.<fork 8>.<dotfiles 8>` (`mods/update/process/pin.ts`
-`versionOf`), so an update of the plugins alone is a new version too and every
-open TUI moves onto it at its idle moment, as for a fork update;
-copies it to `~/.local/share/opencode-prime/`, and writes
-`~/.local/bin/opencode`, a launcher that runs the installed build (below: a
-staged build only once the handoff installs it) without `ANTHROPIC_BASE_URL`,
-so OpenCode's Claude traffic never routes through TeamClaude's proxy, even when
-an agent session on TeamClaude starts it. `~/.local/bin` precedes `~/.bun/bin`,
-so a new terminal runs it, and `opencode2` stays the stock release. As a `latest`
-build it shares the stock release's database, logins and background
-service; the version change restarts that service as ours. It merges into
-`~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, auto-title, session mail, background questions, wakes, the image tool, skills, the rift tool and tool names, the cache, the role
-models, a one-hour prompt cache for Claude
-(`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false` (it removes the retired
-`experimental.background_compaction` an earlier run wrote), and into `cli.json` Prime, status, the queue, background questions, the
-Prime theme and the `window` tab scope (a TUI window's tabs are the sessions
-opened in it, not every TUI's on the machine). Every other key and plugin there is kept. Rerun it after a fork
-change. At its end it writes what the host now runs to
-`~/.local/state/opencode/installed.json`, OpenCode's own record of the
-installed build (the version, the binary, the builds it superseded), with the
-dotfiles and fork commits and the last build that passed a health check
-(`mods/update/record.ts`). The new build is `staged` there: the running build
-stays the installed one until the update's handoff (below) restarts onto it,
-and it is `good` only once its health check passes. By hand daily then
-restarts through that handoff and exits with its code: 0 only for a proven
-build.
+By hand, `bun run daily` installs the checkout's HEAD commit the way the
+update installs a target (below), never the files as they stand: an edit not
+committed runs only in the dev launcher (`bun run verify:launch`), and daily
+says so before it starts, with the count of files under `opencode/` that
+differ from the commit. It makes the build's plugin tree from that commit, out
+of the checkout's object store, under the builds lock
+(`mods/update/process/install.ts` `installByHand`), and runs the tree's own
+`daily.ts --stage --from-tree`, which installs the tree's dependencies
+(`bun install --frozen-lockfile`), builds the fork in `OPENCODE_DEV`
+(default: the `prime-look` Rift) as a release binary whose version names both
+commits, `<release>-prime.<fork 8>.<dotfiles 8>.tree`
+(`mods/update/process/pin.ts` `versionOf`), so an update of the plugins
+alone is a new version too and every open TUI moves onto it at its idle
+moment, as for a fork update; copies it to `~/.local/share/opencode-prime/`,
+and writes `~/.local/bin/opencode`, a launcher that runs the installed build
+(below: a staged build only once the handoff installs it) without
+`ANTHROPIC_BASE_URL`, so OpenCode's Claude traffic never routes through
+TeamClaude's proxy, even when an agent session on TeamClaude starts it.
+`~/.local/bin` precedes `~/.bun/bin`, so a new terminal runs it, and
+`opencode2` stays the stock release. As a `latest` build it shares the stock
+release's database, logins and background service; the version change
+restarts that service as ours. A failed stage removes the tree it made. Each
+build's plugins are listed in its own tree's `config/` (below): the Anthropic
+auth plugin (`cmd/anthropic-auth`), the pool (on the Claude logins in
+`~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it
+exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the
+guard, the kernel, status, the queue, git, idle compaction, auto-title,
+session mail, background questions, wakes, the image tool, skills, the rift
+tool and tool names, the cache, and in the TUI's list Prime, status, the queue
+and background questions. Then, by hand only, daily writes the host's
+settings into the global configs, never a plugin entry: into
+`~/.config/opencode/opencode.json` the role models, a one-hour prompt cache
+for Claude (`providers.anthropic.settings.cache.ttl: "1h"`) and
+`autoupdate: false` (it removes the retired
+`experimental.background_compaction` an earlier run wrote), and into
+`cli.json` the Prime theme and the `window` tab scope (a TUI window's tabs
+are the sessions opened in it, not every TUI's on the machine). Every other
+key and every plugin entry there is kept, and each file is written only when
+its text changes. Rerun it after a fork change. The stage writes what the
+host now runs to `~/.local/state/opencode/installed.json`, OpenCode's own
+record of the installed build (the version, the binary, the builds it
+superseded), with the dotfiles and fork commits and the last build that
+passed a health check (`mods/update/record.ts`). The new build is `staged`
+there: the running build stays the installed one until the update's handoff
+(below) restarts onto it, and it is `good` only once its health check
+passes. By hand daily then restarts through that handoff and exits with its
+code: 0 only for a proven build.
 
 ## The update
 
@@ -90,21 +106,20 @@ only the resident location's copy acts, so a host runs one updater.
   says `NOT published` like any other refusal.
 - **The check.** At start, every ten minutes and when asked (RPC
   `dotfiles-opencode.update` `check`), the plugin fetches the ref and compares
-  it with `installed.json`. A host on a proven build of the target does
+  it with `installed.json`. A host on a proven tree build of the target does
   nothing; a staged build of it, or one installed without its proof, goes
-  straight to the wait and the handoff. On the tree scheme a proven build of
-  it installed with no tree (the old scheme's last install) is built again,
-  as a tree build of the same commits, so the first tree install comes by
-  itself. A tree build's version ends in `.tree`
-  (`<base>-prime.<fork 8>.<dotfiles 8>.tree`, `mods/update/process/pin.ts`
-  `versionOf`): a build of the same commits that binds its own tree loads
-  other plugins, so it is another build at another path. Its tree is never
-  made beside a binary that runs or that the old scheme's config still feeds
-  (a service started there bound both lists, 2026-11-20: all 25 tree plugins
-  failed with "Duplicate plugin ID"), the good build's binary is never
-  overwritten, so a sick first restart has a build to roll back to, and every
-  open TUI moves onto the tree build at its idle moment. A target this host failed on (its
-  build, its checkout move or configure, or its restart, rolled back or given up) is kept in
+  straight to the wait and the handoff. A proven build of it with no tree is
+  not current: the update makes the tree build of the same commits. Every
+  build's version ends in `.tree` (`<base>-prime.<fork 8>.<dotfiles 8>.tree`,
+  `mods/update/process/pin.ts` `versionOf`): a build that binds its own tree
+  loads other plugins than an older build of the same commits that did not,
+  so it is another build at another path. Its tree is never made beside a
+  binary that runs (a service started there bound both lists, 2026-11-20: all
+  25 tree plugins failed with "Duplicate plugin ID"), the good build's binary
+  is never overwritten, so a sick first restart has a build to roll back to,
+  and every open TUI moves onto the new build at its idle moment. A target
+  this host failed on (its tree, its build, a refusal, or its restart, rolled
+  back or given up) is kept in
   `~/.local/state/opencode-update/rejected.json` and never built or restarted
   onto again until another target comes. One check runs at a time; a newer
   target during a run is the next run.
@@ -133,9 +148,7 @@ only the resident location's copy acts, so a host runs one updater.
   source, `bun run verify:launch` and `verify:tui`
   (`.claude/skills/verify-opencode`). A failed tree or stage writes
   nothing and rejects the target; a failed stage deletes the tree it made
-  (`Trees.remove`), so no tree is left beside no build. A host whose good build's fork has no
-  adjacent binding stays on the old scheme (the checkout's move, `--configure`
-  and the reinstall rung, below) and says so in the log. The launcher stays on the running build:
+  (`Trees.remove`), so no tree is left beside no build. The launcher stays on the running build:
   the staged one's client would replace the shared service, since the record
   names neither it nor a build it superseded (workbox, 2026-11-18: each TUI
   opened in the wait restarted the service). Only the record's writes move it,
@@ -162,100 +175,58 @@ only the resident location's copy acts, so a host runs one updater.
   interrupted (its turn resumes and runs it again if it needs it) and a
   background command is gone with no notice (a real restart, 2026-11-18). The
   owner accepts that loss over holding updates for busy roots.
-- **The handoff, with trees.** A detached process outlives the service it
-  restarts; it runs the next build's own handoff, from its tree
+- **The handoff.** A detached process outlives the service it restarts; it
+  runs the next build's own handoff, from its tree
   (`<tree>/opencode/cmd/update/handoff.ts`), so the restart, the health check
-  and the recovery are the target's code. It reads the running service's
-  logins; on the first tree install, while the server config still lists our
-  plugin entries (the old writer's, by its ownership rule), it keeps the
-  configs aside and strips those entries from `opencode.json`, every other
-  key and entry kept (`filestore/configs.ts`); then it names the staged build
-  installed, points the launcher at it and links `current.plugins` beside the
-  launcher to its tree, `opencode service restart`, and the health check
-  below. A failure rolls back at once (a tree is installed fresh and checked
-  at its make, so there is no reinstall rung): a record write naming the last
-  good build installed, and a restart on it; when that build has no tree, the
-  kept configs go back first. It ends proven, rolled back or given up as
-  below, and a proven handoff prunes, then strips the TUI config late (below)
-  and runs the host's commands script from the checkout as it stands
-  (`local-bin.sh` on the Mac, `workbox/install-bin.sh --apply` on the
-  workbox), as a checkout move did: `rex-show`, part of the plugins, links
-  through `current.plugins`, so it runs from the installed build. The steady
-  state's effects, in order: fetch, make the tree, stage, hand off; record,
-  restart, record (good), prune, the host's commands. The first tree install
-  adds the keep and the strip before the record, and its rollback the restore
-  before the record of the good build. A handoff killed between the strip and
-  the record leaves the old build installed with none of our server plugins,
-  the updater among them, and nothing of ours runs at the next launch to heal
-  it (the launcher is written by that record write): the log's strip line
-  says the repair, `bun run daily` in the checkout, which writes our entries
-  back. The span is under a millisecond, and a host meets it only on a first
-  tree install (both hosts are past theirs; a by-hand old-scheme daily makes
-  another).
-- **The late strip.** The first tree install leaves our entries in the global
-  `cli.json`: an open TUI of the old scheme reads its plugins there until it
-  moves. The first proven handoff that finds no running executable an
-  old-format build (a build of the share directory with no tree beside it,
-  `builds.ts` `oldFormat`) keeps a copy of `cli.json`
-  (`~/.local/state/opencode-update/config-kept/cli.json.before-late-strip`),
-  then takes our entries out of it, every other key and entry kept; from then
-  no update writes either global config. A TUI of a tree build never reads
-  that list (its overlay replaces it). A rollback never strips; a TUI that
-  never moves holds the strip (the model's I8).
-  Between a config write (the strip, the restore) and the restart that
-  follows it, two writes and a call apart, a service started by the launcher
-  or after a crash by its unit can hold none of our plugins or both lists;
-  that restart replaces it. Outside that span every start, of the old build
-  or the new, holds exactly its build's list (the model's I5,
-  `mods/update/model.test.ts` `plugin trees`).
-- **The TUI's plugins.** A tree's `config/cli.json` and the old scheme's
-  global `cli.json` list every plugin package that exports `./tui`
-  (`cmd/*/package.json`): `trees.ts` `tuiPluginsOf`, derived, never a list
-  kept by hand. Their order is the TUI's load order, so the order the sidebar
-  draws its sections in: `TUI_ORDER`, the old scheme's list (Prime first,
-  status with the pool's section second), and a plugin it does not list after
-  those, by name (Queue). A tree's server entries
-  carry no TUI part, so a plugin missing there drops out of every TUI
-  (2026-11-20: the Queue sidebar, which the old scheme's TUIs had only through
-  the server's listing). An old TUI that stays open through the first tree
-  install lacks those server-listed parts from the restart until it moves onto
-  the tree build at its idle moment (the tree version differs, so it moves);
-  `scripts/daily-configure.test.ts` fails when a package with a TUI part is
-  missing from the list.
-- **The handoff on the old scheme.** A detached process (`cmd/update/handoff.ts`) outlives the
-  service it restarts. It reads the running service's logins, then moves the
-  checkout onto the staged build's dotfiles commit: the running config kept
-  aside for a rollback, the move (fast-forward on the Mac, back by `reset
-  --keep` when the target is older; on the workbox, a Syncthing follower, a
-  reset that keeps `codex/config.toml`, `skills/.system/` and
-  `workbox/herdr-config.toml` and drops Syncthing's conflict copies), `bun
-  install --frozen-lockfile` in `opencode/` and the fork's links, then `bun
-  scripts/daily.ts --configure` from the moved checkout, which writes the
-  server and TUI configs and nothing else. A checkout already on that commit
-  (a build by hand) does not move. A move git refuses, or a step before it
-  that fails, holds the update: nothing changed, no rejection, no restart,
-  the notice in the corner, and a check after the handoff's limit hands off
-  again. A failed install (the checkout moves back) or configure (the
-  checkout and the config move back) gives up without a restart and rejects
-  the target. Nothing else moves the checkout. Then it names the staged build
-  installed and points the launcher at it, `opencode service restart`, then
-  the health check (every configured local plugin loaded in
-  the resident location, the pool's status answering accounts, which
-  spends nothing, and a login, a pool account or a stored credential, for
-  each provider the configured models use: the default model, each agent's
-  and the planner's; on Linux, the service in its own scope, below; how it
-  reads, below). A provider that had a login before the restart and
-  has none after it fails like a plugin; one that had none before either
-  is reported (`no anthropic login: sign in with opencode auth login`, in
-  the log and the notice), never rolled back, since a rollback cannot bring
-  a login back. A failure, or a failed restart, reinstalls the
-  dependencies and restarts once; still failing, or a failed reinstall, it
-  rolls back to the last good build and dotfiles commit in `installed.json`
-  and restarts on it. A step of the rollback that fails gives up. It ends
-  proven (exit 0, the build recorded good), rolled back (exit 2) or given up
-  (exit 1); either failure shows the owner's notice and rejects the target,
-  that target alone: a newer one, by either commit, installs as usual.
-  TUIs follow by themselves.
+  and the recovery are the target's code. A record whose next build has no
+  handoff in a tree starts none: the update fails at `start the handoff`.
+  The handoff reads the running service's logins, then refuses, before any
+  write, what it cannot install safely: a staged build with no tree beside it
+  (rejected at `tree`), and a server config that lists a plugin entry of ours
+  (the checkout's `opencode/mods` and `opencode/cmd`, the old auth loader,
+  the built-ins off, the retired names: `filestore/configs.ts`) or does not
+  read (rejected at `config`; the line names the file and the repair, remove
+  the entries under `<checkout>/opencode` from `"plugins"`, or install commit
+  51fc7c9f first, which strips them). A refusal gives up with nothing changed
+  and no restart. Then it names the staged build installed, points the
+  launcher at it and links `current.plugins` beside the launcher to its tree,
+  `opencode service restart`, then the health check (every configured local
+  plugin loaded in the resident location, the pool's status answering
+  accounts, which spends nothing, and a login, a pool account or a stored
+  credential, for each provider the configured models use: the default
+  model, each agent's and the planner's; on Linux, the service in its own
+  scope, below; how it reads, below). A provider that had a login before the
+  restart and has none after it fails like a plugin; one that had none before
+  either is reported (`no anthropic login: sign in with opencode auth login`,
+  in the log and the notice), never rolled back, since a rollback cannot bring
+  a login back. A failure, or a failed restart, rolls back at once (a tree is
+  installed fresh and checked at its make, so nothing is installed again): a
+  record write naming the last good build installed, and a restart on it. A
+  good build with no tree is no rollback: the handoff gives up on the new
+  build, saying `the good build <version> has no plugin tree; not rolled
+  back`. A step of the rollback that fails gives up. It ends proven (exit 0,
+  the build recorded good), rolled back (exit 2) or given up (exit 1); either
+  failure shows the owner's notice and rejects the target, that target alone:
+  a newer one, by either commit, installs as usual. TUIs follow by
+  themselves. A proven handoff prunes, then runs the host's commands script
+  from the checkout as it stands (`local-bin.sh` on the Mac,
+  `workbox/install-bin.sh --apply` on the workbox): `rex-show`, part of the
+  plugins, links through `current.plugins` alone, so it runs from the
+  installed build. An update's effects, in order: fetch, make the tree,
+  stage, hand off; record, restart, record (good), prune, the host's commands.
+  No update moves the live checkout or writes a global config, and each
+  process binds its build's tree at its start, so every start holds exactly
+  its build's list (the model's I5, `mods/update/model.test.ts`
+  `plugin trees`).
+- **The TUI's plugins.** A tree's `config/cli.json` lists every plugin
+  package that exports `./tui` (`cmd/*/package.json`): `trees.ts`
+  `tuiPluginsOf`, derived, never a list kept by hand. Their order is the
+  TUI's load order, so the order the sidebar draws its sections in:
+  `TUI_ORDER` (Prime first, status with the pool's section second), and a
+  plugin it does not list after those, by name (Queue). A tree's server
+  entries carry no TUI part, so a plugin missing there drops out of every TUI
+  (2026-11-20: the Queue sidebar); `scripts/daily-configure.test.ts` fails
+  when a package with a TUI part is missing from the list.
 - **Old builds.** Each build in `~/.local/share/opencode-prime/` is about
   200 MB. A proven handoff, as its last step, deletes the builds nothing
   needs (`mods/update/builds.ts`): it keeps the installed build, the staged
@@ -268,7 +239,8 @@ only the resident location's copy acts, so a host runs one updater.
   builds lock (`~/.local/state/opencode-prime/builds.lock`, a `flock`), which
   daily holds from its copy of a build through the staged record's write; a
   prune that waits two minutes for it deletes nothing. Only
-  `opencode-<release>-prime.<8 hex>.<8 hex>` entries are builds, and those of
+  `opencode-<release>-prime.<8 hex>.<8 hex>.tree` entries are builds, with
+  those named before trees (the same without `.tree`), and those of
   the old format, `opencode-<release>-prime.<8 hex>`, from before the version
   named the dotfiles commit, kept and pruned by the same rule: daily's copy in
   flight (`<build>.copy-<pid>`, or an older daily's `<build>.<pid>`),
@@ -283,11 +255,6 @@ only the resident location's copy acts, so a host runs one updater.
   (`GET /api/model` answers 503 until they are active), so a list read
   mid-activation is "still activating", never a plugin "not loaded". It
   reads again until a final answer or four minutes.
-- **Moving back.** Where the checkout moves by reset (the workbox), a move
-  also deletes each file the commit it leaves tracks and the commit it goes
-  to does not, as a fast-forward's `reset --keep` does: a workspace package
-  a newer commit added would otherwise stay, and the older commit's frozen
-  install would fail on it.
 - **The service's own scope.** On Linux the background service
   (`opencode serve --service`) asks the user manager, as the plugin loads,
   to move it into a transient `opencode-service-<pid>.scope` in `app.slice`
@@ -3935,7 +3902,9 @@ drops the links), and install only when changing the lock file. Link-fork, and
 with it the gate, typecheck, accept and daily, first checks that `OPENCODE_DEV`
 is an OpenCode checkout on this machine whose `packages/tui/node_modules` all
 resolve (`scripts/fork.ts`), and stops before touching anything when it is not:
-a Mac path on the workbox would leave every TUI plugin without `solid-js`. The pool's
+a Mac path on the workbox would leave every TUI plugin without `solid-js`. No running process uses
+the links: each build runs from its own sealed tree, and daily links the checkout only for the upstream
+merge's checks. The pool's
 login store suites (`tests/pool-store*.test.ts`, `tests/pool-fleet.test.ts`) write their store
 in its slot-file format into their scratch directory (`tests/store/store.ts`), so they need
 no other checkout.

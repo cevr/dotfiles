@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { env as hostEnv, file, spawnSync, write } from "bun"
+import { env as hostEnv, file, fileURLToPath, spawnSync, write } from "bun"
 import { Effect, Exit, Option } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { Source } from "../service.ts"
@@ -59,11 +59,10 @@ describe("the host's commands, over the checkout as it stands", () => {
           sh(home, ["ln", "-s", "/nonexistent/loop-probe-x/gone", ".local/bin/gone"])
           const commands = macCommands(root, { ...GIT_ENV, HOME: home })
           const links = () =>
-            ["hours", "codex-bridge", "rex-show", "gone"].map((name) => `${name} -> ${sh(home, ["readlink", `.local/bin/${name}`]).out}`)
+            ["hours", "codex-bridge", "gone"].map((name) => `${name} -> ${sh(home, ["readlink", `.local/bin/${name}`]).out}`)
           const expected = [
             `hours -> ${root}/skills/track-work-hours/scripts/hours`,
             `codex-bridge -> ${root}/claude/mods/codex/bridge/bridge.ts`,
-            `rex-show -> ${root}/opencode/cmd/rex/show.ts`,
             "gone -> /nonexistent/loop-probe-x/gone",
           ]
           expect(Exit.match(yield* commands, { onSuccess: () => "linked", onFailure: String })).toBe("linked")
@@ -78,30 +77,37 @@ describe("the host's commands, over the checkout as it stands", () => {
     60_000,
   )
 
-  test(
-    "rex-show, part of the plugins, links through current.plugins once the installed build has a tree, the checkout's before",
-    () =>
+  /** The host's commands scripts as the repo has them, each run under `sh` from its own place. */
+  const SCRIPTS = [
+    { host: "the Mac", script: fileURLToPath(new URL("../../../../local-bin.sh", import.meta.url)) },
+    { host: "the workbox", script: fileURLToPath(new URL("../../../../workbox/install-bin.sh", import.meta.url)) },
+  ] as const
+  const TREE_SHOW = "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts"
+
+  for (const { host, script } of SCRIPTS)
+    test(`on ${host}, rex-show links through current.plugins alone: into the tree when it holds the file; with none, no link is made and one that is there stays`, () =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const { root, a } = yield* scratch
-          const home = sh(".", ["mktemp", "-d", "-t", "update-source-home"]).out
-          const commands = macCommands(root, { ...GIT_ENV, HOME: home })
-          const rexShow = () => sh(home, ["readlink", ".local/bin/rex-show"]).out
-          expect(Exit.isSuccess(yield* commands)).toBe(true)
-          expect(rexShow()).toBe(`${root}/opencode/cmd/rex/show.ts`)
-          // The installed build's tree, as the record write links it.
-          const share = `${home}/.local/share/opencode-prime`
-          yield* files(share, [["opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts", "// rex-show\n"]])
+          const run = (home: string) => spawnSync(["sh", script], { cwd: home, env: { ...GIT_ENV, HOME: home, PATH: hostEnv.PATH ?? "" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode
+          const rexShow = (home: string) => sh(home, ["readlink", ".local/bin/rex-show"]).out
+          // With the installed build's tree.
+          const treed = sh(".", ["mktemp", "-d", "-t", "update-bin-home"]).out
+          const share = `${treed}/.local/share/opencode-prime`
+          yield* files(share, [[TREE_SHOW, "// rex-show\n"]])
           sh(share, ["ln", "-s", "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins", "current.plugins"])
-          expect(Exit.isSuccess(yield* commands)).toBe(true)
-          expect(rexShow()).toBe(`${share}/current.plugins/opencode/cmd/rex/show.ts`)
-          expect(sh(home, ["readlink", ".local/bin/hours"]).out).toBe(`${root}/skills/track-work-hours/scripts/hours`)
-          expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
-          spawnSync(["rm", "-rf", root, home])
+          expect(run(treed)).toBe(0)
+          expect(rexShow(treed)).toBe(`${share}/current.plugins/opencode/cmd/rex/show.ts`)
+          // With none: no link made.
+          const bare = sh(".", ["mktemp", "-d", "-t", "update-bin-home"]).out
+          expect(run(bare)).toBe(0)
+          expect(sh(bare, ["test", "-L", ".local/bin/rex-show"]).code).not.toBe(0)
+          // With none, and a link already there: it stays as it was.
+          sh(bare, ["ln", "-s", "/nonexistent/loop-probe-x/show.ts", ".local/bin/rex-show"])
+          expect(run(bare)).toBe(0)
+          expect(rexShow(bare)).toBe("/nonexistent/loop-probe-x/show.ts")
+          spawnSync(["rm", "-rf", treed, bare])
         }),
-      ),
-    60_000,
-  )
+      ))
 
   test("a host with no script runs nothing", () =>
     Effect.runPromise(

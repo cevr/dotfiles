@@ -23,8 +23,8 @@ if [ "${1:-}" = --apply ]; then
 fi
 
 # rex-show is part of the plugins (opencode/mods/rex): it runs from the build
-# that runs, through its tree, once there is one; apply-agent-settings links
-# the checkout's, which stays for a host before its first tree install.
+# that runs, through its tree, once it holds the file; with none, no link is
+# made and one that is there stays. This script is its one owner here.
 if [ -e "$current_tree/opencode/cmd/rex/show.ts" ]; then
   ln -sf "$current_tree/opencode/cmd/rex/show.ts" "$local_bin_dir/rex-show"
 fi

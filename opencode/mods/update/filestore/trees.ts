@@ -136,8 +136,8 @@ const packageOf = (specifier: string): string =>
 
 /**
  * Whether a `node_modules` from `file`'s directory up to `root` holds the package `specifier` names as
- * an install put it there, inside `root`, with the links that leave `root` passed over: in a checkout
- * those are the fork's (`scripts/link-fork.ts`), which shadow the install's own copy a tree loads.
+ * an install put it there, inside `root`, with the links that leave `root` passed over: in a dev
+ * checkout those are the fork's, made for typecheck and tests, which shadow the install's own copy a tree loads.
  */
 const installedUp = (root: string, file: string, specifier: string): boolean =>
   Arr.unfold(dirOf(file), (dir) => Option.liftPredicate([dir, dirOf(dir)] as const, () => within(root, dir))).some((dir) =>
