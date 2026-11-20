@@ -5,9 +5,9 @@
  * release: removed on `RIFT_ALIAS_REMOVAL`, the same input and the same answers), and takes OpenCode's
  * worktree tools (`opencode_worktree_create`, `_list`, `_remove`) out of the registry: they make and remove
  * Git worktrees, which a workspace is not. A land's accept check runs in the plugin's scope and wakes the
- * calling session through `session.synthetic`; its logs go to `${XDG_CACHE_HOME:-~/.cache}/rift-land`, and a
- * post-land step owed while the host is loaded (`@dotfiles/opencode-work/owed`) to `post-land-owed.json`
- * there, which the plugin's check reads every minute.
+ * calling session through `session.synthetic`; its logs go to `${XDG_CACHE_HOME:-~/.cache}/rift-land`, and an
+ * owed accept check or post-land step (`@dotfiles/opencode-work/owed`) to `post-land-owed.json` there, which
+ * the plugin's check reads every minute, so one a restart cut off runs again.
  *
  * It serves the rift RPC (`@dotfiles/opencode-work/rpc`: create, with `at` to detach a new workspace at a
  * commit, list, inspect, land) under `RIFT_RPC` on the same model, for the orchestrate plugin's `orchestrate` tool.
