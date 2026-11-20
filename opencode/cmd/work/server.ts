@@ -158,6 +158,7 @@ const laneOf = (workspace: Workspace): Lane => {
     head: workspace.head,
     state: stateOf(workspace),
     ...Option.match(Option.fromUndefinedOr(workspace.purpose), { onNone: () => ({}), onSome: (purpose) => ({ purpose }) }),
+    ...Option.match(Option.fromUndefinedOr(workspace.madeOn), { onNone: () => ({}), onSome: (madeOn) => ({ madeOn }) }),
   }
   return Option.match(Option.fromUndefinedOr(workspace.branch), { onNone: () => lane, onSome: (branch) => ({ ...lane, branch }) })
 }
@@ -175,9 +176,10 @@ const rpcHandlers = (tool: typeof Model.RiftTool.Service, rifts: typeof Rifts.Se
     sessions.directoryOf(sessionID).pipe(
       Effect.flatMap((directory) => rifts.source(Option.match(source, { onNone: () => directory, onSome: (asked) => Model.resolvePath(directory, asked) }))),
     )
-  const created = ({ sessionID, at, purpose, ...asked }: CreateAsk) =>
+  const created = ({ sessionID, at, purpose, mark, ...asked }: CreateAsk) =>
     tool.run(sessionID, { action: "create", ...asked }, Option.fromUndefinedOr(at)).pipe(
       Effect.tap((answer) => Effect.forEach(Option.toArray(Option.fromUndefinedOr(purpose)), (text) => rifts.describe(answer.metadata.path ?? "", text), { discard: true })),
+      Effect.tap((answer) => Effect.when(rifts.mark(answer.metadata.path ?? ""), Effect.succeed(mark === true))),
       Effect.flatMap((answer) => rifts.inspect(answer.metadata.path ?? "").pipe(Effect.map((workspace): Created => ({ outcome: "answered", text: answer.text, rift: laneOf(workspace) })))),
       Effect.catch((failure) => Effect.succeed<Created>(failedOf(failure))),
     )

@@ -32,7 +32,8 @@ export type LandRift = typeof LandRift.Type
 
 /**
  * The `rift` tool's create, and what its input lacks: `at`, a commit (or `origin/HEAD`) to detach the new Rift at, and
- * `purpose`, the lane's one line, set as its branch's description once it is made.
+ * `purpose`, the lane's one line, set as its branch's description once it is made; `mark`, whether to mark it as an
+ * `orchestrate lane`'s, made on its branch (`Rifts.mark`).
  */
 export const CreateAsk = Schema.Struct({
   sessionID: Schema.String,
@@ -41,6 +42,7 @@ export const CreateAsk = Schema.Struct({
   source: Schema.optionalKey(Schema.String),
   at: Schema.optionalKey(Schema.String),
   purpose: Schema.optionalKey(Schema.String),
+  mark: Schema.optionalKey(Schema.Boolean),
 })
 export type CreateAsk = typeof CreateAsk.Type
 
@@ -59,7 +61,8 @@ export type LandAsk = typeof LandAsk.Type
 
 /**
  * A Rift as an answer carries it: its directory, its branch (none when detached), its head, its unsaved work in words
- * (`clean`, `2 uncommitted`), and its purpose (its branch's description; none when unset).
+ * (`clean`, `2 uncommitted`), its purpose (its branch's description; none when unset), and the branch it was marked
+ * made on (`madeOn`; none for a lane `orchestrate lane` did not make).
  */
 export const Lane = Schema.Struct({
   path: Schema.String,
@@ -67,6 +70,7 @@ export const Lane = Schema.Struct({
   head: Schema.String,
   state: Schema.String,
   purpose: Schema.optionalKey(Schema.String),
+  madeOn: Schema.optionalKey(Schema.String),
 })
 export type Lane = typeof Lane.Type
 

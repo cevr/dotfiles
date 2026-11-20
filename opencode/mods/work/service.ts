@@ -55,6 +55,11 @@ export class Rifts extends Context.Service<
      * `purpose`, which `inspect` then answers as the workspace's purpose. Fails on a detached Rift.
      */
     readonly describe: (path: string, purpose: string) => Effect.Effect<void, RiftFailed>
+    /**
+     * Marks the Rift at `path` as a lane made on the branch checked out there (`branch.<branch>.orchestrate-lane`, set
+     * to `path`, in its Git config), which `inspect` then answers as its `madeOn`. Fails on a detached Rift.
+     */
+    readonly mark: (path: string) => Effect.Effect<void, RiftFailed>
     /** Moves the Rift at `path` to Rift's trash; with `withChildren`, its own Rifts go with it. */
     readonly remove: (path: string, options?: { readonly withChildren?: boolean }) => Effect.Effect<void, RiftFailed>
   }

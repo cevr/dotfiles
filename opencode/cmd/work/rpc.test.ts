@@ -21,7 +21,7 @@ import Work, { make } from "./server.ts"
 type Host = Parameters<(typeof Work)["effect"]>[0]
 
 /** A call's input, as a session would send it to the tool or a plugin to the RPC. */
-type Ask = Readonly<{ [field: string]: string | ReadonlyArray<string | { readonly path: string; readonly unit: string }> }>
+type Ask = Readonly<{ [field: string]: string | boolean | ReadonlyArray<string | { readonly path: string; readonly unit: string }> }>
 
 /** The work tool as the registry holds it. */
 interface Registered {
@@ -226,6 +226,27 @@ describe("the rift RPC of the work plugin", () => {
         ])
         const nowhere = yield* Schema.decodeUnknownEffect(Inspected)(yield* rpc("describe", { sessionID: SESSION, path: "/elsewhere", purpose: "x" }))
         expect(nowhere).toMatchObject({ outcome: "failed" })
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+
+  effectTest(
+    "a create with mark marks the workspace as made on its branch: create, list and inspect carry madeOn; one without carries none",
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { rpc } = yield* start(worldOf())
+        const created = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "feat/billing", mark: true }))
+        expect(created).toMatchObject({ outcome: "answered", rift: { path: "/code/.work/app/feat-billing", branch: "feat/billing", madeOn: "feat/billing" } })
+        yield* rpc("create", { sessionID: SESSION, branch: "feat/invoices" })
+        const listed = yield* Schema.decodeUnknownEffect(Listed)(yield* rpc("list", { sessionID: SESSION }))
+        expect(listed.outcome === "answered" && listed.rifts.map((lane) => [lane.path, Option.getOrElse(Option.fromUndefinedOr(lane.madeOn), () => "unmarked")])).toEqual([
+          ["/code/.work/app/feat-billing", "feat/billing"],
+          ["/code/.work/app/feat-invoices", "unmarked"],
+          ["/code/.work/app/feat-x", "unmarked"],
+        ])
+        const inspected = yield* Schema.decodeUnknownEffect(Inspected)(yield* rpc("inspect", { sessionID: SESSION, path: "/code/.work/app/feat-billing" }))
+        expect(inspected).toMatchObject({ outcome: "answered", rift: { madeOn: "feat/billing" } })
       }),
     ),
     TIMEOUT_MS,

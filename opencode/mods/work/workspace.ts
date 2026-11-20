@@ -32,6 +32,12 @@ export interface Workspace {
   readonly stashes: number
   /** Its branch's description (`branch.<branch>.description`, Git's own record of what a branch is for): a lane's one-line purpose; none when unset or detached. */
   readonly purpose?: string
+  /**
+   * The branch it was marked made on (`branch.<branch>.orchestrate-lane` naming this path: a clone copies its source's
+   * marks, which name the source's path and so are not read here); none when unmarked. Kept through a switch of branch,
+   * a merge, a rebase and a detached head, as Git keeps a branch's config.
+   */
+  readonly madeOn?: string
 }
 
 /**
