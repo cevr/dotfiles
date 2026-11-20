@@ -137,4 +137,39 @@ App.effectTest(
   TIMEOUT_MS,
 )
 
+// The renderer keeps the last pointer and lights whatever comes to sit under it. A seed starts with the pointer off
+// the screen: a seed after one that left it over the footer's Theme item draws what it draws after one that did not.
+const asked = (run: number) =>
+  App.seed(BOOT, { key: "pointer", seed: 1, run, model }, (tui) =>
+    Effect.gen(function* () {
+      yield* tui.type("Look at the docs")
+      yield* tui.press({ name: "enter" })
+      yield* tui.until("the reply", (text) => draws(text, "docs"))
+      return App.canonical(tui.trace())
+    }),
+  )
+/** A line's text and colours, to tell a lit item from an unlit one. */
+const styled = (frame: App.Frame, line: number) => frame.lines[line]?.spans ?? []
+
+App.effectTest(
+  "a pointer the seed before left over an item lights nothing in the next seed",
+  Effect.gen(function* () {
+    const alone = yield* asked(0)
+    const lit = yield* App.seed(BOOT, { key: "pointer-left", seed: 1, model }, (tui) =>
+      Effect.gen(function* () {
+        yield* tui.settle
+        const line = tui.text().findLastIndex((row) => row.includes("Theme"))
+        const before = styled(tui.frame(), line)
+        yield* tui.mouse({ action: "move", x: (tui.text()[line] ?? "").indexOf("Theme") + 1, y: line })
+        return { line, before, after: styled(tui.frame(), line) }
+      }),
+    )
+    // The pointer lit the item it was left over.
+    expect(lit.line).toBeGreaterThan(0)
+    expect(lit.after).not.toEqual(lit.before)
+    expect(yield* asked(1)).toEqual(alone)
+  }),
+  TIMEOUT_MS,
+)
+
 App.closeTest()
