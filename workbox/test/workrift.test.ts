@@ -1973,3 +1973,105 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     60_000,
   )
 })
+
+/**
+ * A base whose tracked work.toml declares `[deps]`, made by the real `work` (work-trust.md, 2026-11-20): `work init`
+ * trusts its commands, and a later commit on main that changes the install command leaves the base untrusted
+ * from the moment it fast-forwards. Then `work new` and `work deps` of a branch whose lock differs answer
+ * Untrusted (work new exits 0, work deps 1) and install nothing.
+ */
+describeWork("workrift over a base whose work.toml commands work does not trust", () => {
+  const work = WORK_BIN ?? "work"
+
+  const untrusted = (label: string) => {
+    const w = workBench(label, work)
+    const byWork = join(w.dir, "by-work")
+    const byWorkrift = join(w.dir, "by-workrift")
+    const toml = (install: string) => `[deps]\nlock = "bun.lock"\ninstall = "${install}"\n`
+    w.push("main", { "bun.lock": "v1\n", "work.toml": toml(`pwd -P >>'${byWork}'`) })
+    const lib = w.base("lib")
+    sh(lib, w.env, "git", "config", "workrift.install", `pwd -P >>'${byWorkrift}'`)
+    const read = (file: string) => lines(existsSync(file) ? readFileSync(file, "utf8") : "")
+    const trusted = () => (JSON.parse(w.inBase(lib, "--json", "doctor")) as { trusted: boolean }).trusted
+    expect(trusted()).toBe(true)
+    // A teammate's PR changes the install command: no host has trusted the new one.
+    w.push("main", { "work.toml": toml(`pwd -P >>'${byWork}'; true`) })
+    return { w, lib, byWork: () => read(byWork), byWorkrift: () => read(byWorkrift), trusted }
+  }
+  const note = (lib: string) => `workrift: ${lib}/work.toml runs commands work does not trust on this host`
+
+  test(
+    "create of a branch whose lock differs installs with workrift's own command, says so in one line, and never runs the untrusted one",
+    () => {
+      const u = untrusted("untrusted-create")
+      u.w.push("feat/locked", { "bun.lock": "v2\n" })
+      const ran = u.w.wr(u.lib, "create", "feat/locked")
+      expect(ran.code, ran.err).toBe(0)
+      const path = lines(ran.out).at(-1) ?? ""
+      expect(lines(ran.out)).toEqual([path])
+      expect(u.trusted()).toBe(false)
+      expect(u.byWorkrift()).toContain(path)
+      expect(u.byWork()).not.toContain(path)
+      expect(lines(ran.err).filter((line) => line.startsWith(note(u.lib)))).toHaveLength(1)
+      expect(ran.err).toContain(`work trust in ${u.lib}`)
+    },
+    60_000,
+  )
+
+  test(
+    "deps after a switch to a branch with another lock falls back to workrift's own install when work deps answers Untrusted",
+    () => {
+      const u = untrusted("untrusted-deps")
+      expect(u.w.wr(u.lib, "refresh").code).toBe(0)
+      const path = u.w.create(u.lib, "feat/same")
+      u.w.push("feat/other", { "bun.lock": "v3\n" })
+      sh(path, u.w.env, "git", "fetch", "-q", "origin")
+      sh(path, u.w.env, "git", "switch", "-q", "--detach", "origin/feat/other")
+      const before = u.byWorkrift().filter((line) => line === path).length
+      const ran = u.w.wr(path, "deps")
+      expect(ran.code, ran.err).toBe(0)
+      expect(u.byWorkrift().filter((line) => line === path).length).toBe(before + 1)
+      expect(u.byWork()).not.toContain(path)
+      expect(ran.err).toContain("Untrusted")
+      expect(ran.err).toContain(`work trust in ${u.lib}`)
+      // The same lock again: nothing installs.
+      expect(u.w.wr(path, "deps").code).toBe(0)
+      expect(u.byWorkrift().filter((line) => line === path).length).toBe(before + 1)
+    },
+    60_000,
+  )
+
+  test(
+    "deps stays a loud failure when work's trusted install fails (DepsFailed)",
+    () => {
+      const w = workBench("deps-failed", work)
+      w.push("main", { "bun.lock": "v1\n", "work.toml": `[deps]\nlock = "bun.lock"\ninstall = "exit 3"\n` })
+      const lib = w.base("lib")
+      sh(lib, w.env, "git", "config", "workrift.install", "true")
+      const path = w.create(lib, "feat/f")
+      w.push("feat/g", { "bun.lock": "v2\n" })
+      sh(path, w.env, "git", "fetch", "-q", "origin")
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/feat/g")
+      const ran = w.wr(path, "deps")
+      expect(ran.code).not.toBe(0)
+      expect(ran.err).toContain("DepsFailed")
+    },
+    60_000,
+  )
+
+  test(
+    "refresh warns in one line when work doctor finds the base untrusted, and says nothing of trust when it is trusted",
+    () => {
+      const u = untrusted("untrusted-refresh")
+      const ran = u.w.wr(u.lib, "refresh")
+      expect(ran.code, ran.err).toBe(0)
+      expect(lines(ran.err).filter((line) => line.startsWith(note(u.lib)))).toHaveLength(1)
+      // A person reviews the file and allows it: no more warning.
+      u.w.inBase(u.lib, "trust")
+      const again = u.w.wr(u.lib, "refresh")
+      expect(again.code, again.err).toBe(0)
+      expect(again.err).not.toContain("does not trust")
+    },
+    60_000,
+  )
+})
