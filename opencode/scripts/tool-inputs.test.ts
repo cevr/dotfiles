@@ -3,6 +3,7 @@
 // reads a numeric string or a JSON-array string the way `toolInput` does
 // (decider/tool-input.ts). The list below is checked against the `input:` of
 // every `cmd/*/server.ts`, so a new tool cannot skip it.
+// @reads cmd/*/server.ts
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -13,6 +14,7 @@ import { KernelInput } from "../mods/kernel/description.ts"
 import { SessionsInput } from "../mods/mail/directory.ts"
 import { MessageInput } from "../mods/mail/letter.ts"
 import { ForgetInput, SaveInput, SearchInput } from "../mods/memory/notebook.ts"
+import { ToolInput } from "../mods/model-next/tool.ts"
 import { AskInput } from "../mods/questions/ask.ts"
 import { PushToolInput } from "../mods/pool/push.ts"
 import { QueueInput } from "../mods/queue/queue.ts"
@@ -38,6 +40,7 @@ const INPUTS: Record<string, unknown> = {
   ListInput,
   JobInput,
   ImageInput,
+  ToolInput,
 }
 
 const cmd = join(import.meta.dir, "..", "cmd")
@@ -49,7 +52,8 @@ const registered = readdirSync(cmd).flatMap((name) => {
       return ""
     }
   })()
-  return [...text.matchAll(/^\s+input: ([A-Z]\w*),$/gm)].map((match) => match[1]!)
+  // A registration on its own line (`input: PrInput,`) or inline (cmd/work's `editor.add({ …, input: RiftInput, … })`).
+  return [...text.matchAll(/\binput: ([A-Z]\w*)\s*[,}]/g)].map((match) => match[1]!)
 })
 
 const jsonSchema = (schema: unknown) => JSON.stringify(Schema.toJsonSchemaDocument(schema as Schema.Top, { onExcessProperty: "error" }))

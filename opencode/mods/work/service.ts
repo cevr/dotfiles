@@ -27,7 +27,7 @@ export interface CreateRequest {
   readonly source: string
   /** The checkout asking for it, the session's directory: `workrift` carries its gh stack metadata over. */
   readonly from: string
-  /** The Rift's directory name under `.rifts/<source>/`. */
+  /** The workspace's directory name under `.work/<source>/`. */
   readonly name: string
   /** The branch to check out in it: the local branch, else the remote one, else a new one from the source's HEAD. */
   readonly branch: string
@@ -50,6 +50,16 @@ export class Rifts extends Context.Service<
     readonly list: (source: string) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
     /** What `path` holds. Fails when `path` is no Rift workspace. */
     readonly inspect: (path: string) => Effect.Effect<Workspace, RiftFailed>
+    /**
+     * Sets the description of the branch checked out at `path` (`branch.<branch>.description` in its Git config) to
+     * `purpose`, which `inspect` then answers as the workspace's purpose. Fails on a detached Rift.
+     */
+    readonly describe: (path: string, purpose: string) => Effect.Effect<void, RiftFailed>
+    /**
+     * Marks the Rift at `path` as a lane made on the branch checked out there (`branch.<branch>.orchestrate-lane`, set
+     * to `path`, in its Git config), which `inspect` then answers as its `madeOn`. Fails on a detached Rift.
+     */
+    readonly mark: (path: string) => Effect.Effect<void, RiftFailed>
     /** Moves the Rift at `path` to Rift's trash; with `withChildren`, its own Rifts go with it. */
     readonly remove: (path: string, options?: { readonly withChildren?: boolean }) => Effect.Effect<void, RiftFailed>
   }

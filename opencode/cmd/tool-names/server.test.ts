@@ -1,7 +1,7 @@
 // The plugin seam: the composition root on a stand-in host whose registry
 // lists its tools and runs the `execute.before` hooks the plugin registers.
 // It checks what OpenCode sees: which calls fail and in which words.
-// tests/rift.test.ts runs it in OpenCode on the scripted model.
+// tests/work.test.ts runs it in OpenCode on the scripted model.
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Result, type Scope } from "effect"
 import { statelessToolNameAliases } from "@dotfiles/opencode-anthropic-auth/tool-alias"

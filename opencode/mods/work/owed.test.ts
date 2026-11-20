@@ -17,7 +17,7 @@ const owedFor = (waited: number): OwedPostLand => ({
   main: "main",
   command: "bun scripts/post-land.ts",
   sessionID: "ses_1",
-  lands: [{ base: "base0", head: "h1", units: [{ path: "/code/.rifts/app/l1", branch: "l/l1" }], at: NOW - waited * MINUTE }],
+  lands: [{ base: "base0", head: "h1", units: [{ path: "/code/.work/app/l1", branch: "l/l1" }], at: NOW - waited * MINUTE }],
 })
 
 /** How long the step waited, in minutes: either side of the max wait. */

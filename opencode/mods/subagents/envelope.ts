@@ -53,17 +53,28 @@ interface Span {
   readonly end: number
 }
 
-/** Where the closing tag of the `name` element opened before `from` is (none or one), counting the same name nested inside. */
+/**
+ * Where the closing tag of the `name` element opened before `from` is (none or one). The host writes a body raw, with
+ * no escaping, and its own tags each on a line of their own, so only a tag at a line's start counts, as `OPEN` counts
+ * one: a body that names a tag mid-line (a grep of a file that says `<shell>`) is text. A body may still hold the tag
+ * at a line's start: a whole notice it quotes nests, counted by depth; a closing tag alone on a line (a shell that
+ * printed one) cannot be told from the host's but by place, and the host's is the last before the next notice, so the
+ * envelope ends at the last closing tag before an opening tag that follows it at depth 0 (the next notice in the same
+ * text), else the last in the text. Ambiguous only where a body prints a stray closing tag and then an opening one.
+ */
 function closing(text: string, name: string, from: number): ReadonlyArray<Span> {
-  const tags = new RegExp(`<(/?)${name}(?=[\\s>])(?:"[^"]*"|[^>"])*>`, "g")
+  const tags = new RegExp(`(?<=^|\\n)<(/?)${name}(?=[\\s>])(?:"[^"]*"|[^>"])*>`, "g")
   tags.lastIndex = from
   let depth = 1
+  let last: ReadonlyArray<Span> = []
   for (let match = tags.exec(text); match; match = tags.exec(text)) {
-    if (match[1] === "/") depth -= 1
-    else depth += 1
-    if (depth === 0) return [{ start: match.index, end: match.index + match[0].length }]
+    if (match[1] !== "/" && depth === 0) break
+    if (match[1] === "/") {
+      depth = Math.max(0, depth - 1)
+      last = [{ start: match.index, end: match.index + match[0].length }]
+    } else depth += 1
   }
-  return []
+  return last
 }
 
 type Head = Pick<Envelope, "kind" | "form" | "attributes">

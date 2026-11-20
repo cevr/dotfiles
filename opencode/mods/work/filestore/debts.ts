@@ -1,4 +1,4 @@
-// The owed post-land steps, with the newest load reading at or past the cores, in one JSON file beside the
+// The owed post-land steps and accept checks, with the newest load reading at or past the cores, in one JSON file beside the
 // land logs (`<logs>/post-land-owed.json`), so a server restart keeps them. A write goes to a temporary file
 // renamed over the old one, so a reader never sees half of one; a file that is missing or cannot be read
 // holds nothing owed (the next land owes again). The first version's file, the owed steps alone as an
@@ -31,7 +31,7 @@ const encode = Schema.encodeSync(Stored)
 /** What the file's text holds: the current form, else the first version's, else nothing. */
 const parse = (text: string): Debts =>
   Option.getOrElse(
-    Option.orElse(decode(text), () => Option.map(decodeFirst(text), (owed): Debts => ({ owed, loadedAt: Option.none() }))),
+    Option.orElse(decode(text), () => Option.map(decodeFirst(text), (owed): Debts => ({ owed, accepts: [], loadedAt: Option.none() }))),
     () => noDebts,
   )
 

@@ -1,8 +1,9 @@
 // Every transcript row kind in the Prime look, for the column its glyph
 // starts in: a turn of one shell call (`● Ran 1 command`), a step of two
 // calls at once (a grouped run), an inline tool (a glob) and prose, then a
-// program's notice (`◈ rift land · accept passed`, a synthetic message the
-// host draws). Replayed against OpenCode with a scripted model, once per
+// program's notice (`◈ lane land · accept FAILED`, a synthetic message the
+// host draws, after one a session stored in the old words, `◈ rift land ·
+// accept passed`, which the host draws as written). Replayed against OpenCode with a scripted model, once per
 // transcript verbosity: `low` (the host default) folds a turn's calls into
 // one `+ N …` summary row, `medium` gives each call its own row.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out INDENT_VERBOSITY=low bunx opencode-drive run scenarios/prime-indent.ts
@@ -23,7 +24,9 @@ const label = `indent-${verbosity}`
 
 const ASK = "prime-indent-fixture"
 const DONE = "All rows drawn."
-const NOTICE = "rift land · accept passed"
+const NOTICE = "lane land · accept FAILED"
+/** A land notice in the words before the rename, as a stored session holds it. */
+const STORED = "rift land · accept passed"
 
 type ToolInput = Parameters<typeof Llm.toolCall>[0]["input"]
 const call = (id: string, name: string, input: ToolInput) => Stream.make(Llm.toolCall({ index: 0, id, name, input }), Llm.finish("tool-calls"))
@@ -90,14 +93,15 @@ export default OpenCodeDriver.use(
       const page = yield* opencode.session.list()
       const session = page.data.find((item) => !item.parentID)
       if (!session) return yield* Effect.fail("no root session")
-      yield* opencode.session.synthetic({
-        sessionID: session.id,
-        text: `<notice>${NOTICE}</notice>`,
-        description: NOTICE,
-        metadata: { source: "rift" },
-        resume: false,
-      })
-      yield* until((frame) => frame.includes(NOTICE))
+      for (const description of [STORED, NOTICE])
+        yield* opencode.session.synthetic({
+          sessionID: session.id,
+          text: `<notice>${description}</notice>`,
+          description,
+          metadata: { rift: "land" },
+          resume: false,
+        })
+      yield* until((frame) => frame.includes(STORED) && frame.includes(NOTICE))
       yield* Effect.sleep("500 millis")
 
       if (verbosity === "low") {

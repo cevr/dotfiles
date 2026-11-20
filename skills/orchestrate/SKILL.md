@@ -25,8 +25,8 @@ Pick a mode first, by the table below. The rules every worker follows are in [`p
 
 ### lane
 
-- Per unit: `orchestrate({ action: "lane", unit: "<unit>" })` → its implementor → the focused round gate as the receipt (`bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<commands>'`, with `gate.ts --merge <base>` where the repo has it) → `orchestrate({ action: "land", units: ["<unit>"] })` at once.
-- One land and one full gate per host at a time: the land takes the host's lock and runs one merge check before it pushes.
+- Per unit: `orchestrate({ action: "lane", unit: "<unit>", purpose: "<outcome>" })` → its implementor → the focused round gate as the receipt (`bun ~/Developer/personal/dotfiles/opencode/scripts/receipt.ts -- '<commands>'`, with `gate.ts --merge <base>` where the repo has it) → `orchestrate({ action: "land", units: ["<unit>"] })` at once.
+- One land and one full gate per host at a time: the land runs one merge check before it pushes.
 - When a `land` or `status` answer starts `orchestrate: <N> lands on <branch> since the last verify`, call `orchestrate({ action: "verify" })` and start the subagent call it answers. Each finding becomes a fix unit.
 - Nothing waits for a verdict: the next green unit lands.
 
@@ -57,9 +57,9 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 ## Starting units
 
 - **Read first**: the task, the repo's `AGENTS.md` or `CLAUDE.md`, and `NORTH_STAR.md`. Run on the machine that holds the work. On a host the run has not used, run the base's gate and e2e alone first; each red leg or missing tool goes into one host unit that merges before the others start.
-- **A unit** is one reviewable result: one deliverable, one branch, one spec, a slug of up to 12 characters. Order units by dependency; those with no shared files run together, and a child stacks on its parent's head. The owner's ask, quoted word for word, is the Done line.
+- **A unit** is one reviewable result: one deliverable, one spec, one lane and branch for its life, a slug of words naming its outcome: no `-rN`, no run prefix. Order units by dependency; those with no shared files run together, and a child stacks on its parent's head. The owner's ask, quoted word for word, is the Done line.
 - **Shape first**: a bulk code edit is a codemod; bulk model work is a script on the Batch API; a new core seam follows two blind sketches judged against `NORTH_STAR.md`; a `to-tickets` ticket is a unit, its blocking edges the dependencies. A carried tooling unit that pays back inside the run takes the next free slot.
-- **One workspace per unit**, from the base as `AGENTS.md` says. The implementor's message names its spec, role, round and thread share; its description is `implementor <unit> r<N> (rift: <path>)`. At its hand-back, `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>`; a refusal goes back to it and is not a round.
+- **One workspace per unit**, from the base as `AGENTS.md` says. The implementor's message names its spec, role, round and thread share; its description is `implementor <unit> r<N> — <purpose> (lane: <path>)`. At its hand-back, `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>`; a refusal goes back to it and is not a round.
 - **Pace, not a count**: the account pools set how many agents run ([pace](references/pace.md)), and a heavy agent starts only while the load is under the core count. All heavy checks together use at most the core count in threads: name each worker's share (4 threads or more) in its start message, as its tools' flags.
 - **Focused checks**: a unit's round gate is its changed packages' tests and typecheck, lint of its changed files and its acceptance test, each leg under a minute (`protocol.md`, Rounds). The full gate is the land's merge check; a leg slower than a minute is a tooling unit.
 - **Stateful units start from a model**: a unit that changes behavior over time gets a model-based test as its acceptance check from round 1. A Blocker that repeats an earlier round's class makes a property over that class the next round's first deliverable.
@@ -92,14 +92,10 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - Every role call runs in the background, names the role as its agent type, and has a `description` that starts like its hand-back line (`implementor auth r2`, `verifier batch-3 r1`); a reused agent (next round, lane) gets the new one; where the host keeps the old title, rename it. On OpenCode it names no `model`. Effort is the table's, always; an implementor that renders a look runs at max. Change effort, never the model. How each host starts, falls back and waits: [hosts](references/hosts.md).
 - The pool and model rules are `AGENTS.md`'s (Fable plans, Opus first, Codex plans or verifies and never implements, never Sonnet).
 
-## The freeze
-
-Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill.
-
 ## Between messages
 
 - **Wait** by ending your turn: workers, lands and timers wake you. An outside event (CI, a time) is one `monitor` or background waiter. Nobody polls. Before you end a turn with units in `plan`, `implement` or `verify` and no agent on them, start them or name what they wait on.
-- **Never block on the shell.** A command that can run longer than about 10 seconds (a build, a test run, an ssh, a land's wait, another session's request) goes to a `job`, a background shell or a subagent, and you end the turn or go on; you read its result when it wakes you. Only quick reads run inline.
+- **Never block on the shell.** A command that can run longer than about 10 seconds (a build, a test run, an ssh) goes to a `job`, a background shell or a subagent, and you end the turn or go on until it wakes you. Only quick reads run inline.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, `AGENTS.md` for the stack. On a pause, stop every worker and write where each unit stands into the plan.
 - **After a compaction**: re-read this file and the plan, and run `orchestrate({ action: "status" })` (elsewhere `status.ts`), before any other action.
 - **Close the run** when every unit is merged, dropped or blocked on an owner question: the goal word for word and whether it is met, what merged with hashes, the decisions, the owner questions, the follow-ups and the `plan.md` path.

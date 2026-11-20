@@ -22,6 +22,7 @@ import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import { envelopesOf } from "../mods/subagents/envelope.ts"
+import { isAutomationTool } from "../mods/wake/automations.ts"
 import type { OPERATIONS } from "./context.ts"
 import { envelopesInJson } from "./envelopes.ts"
 import {
@@ -398,7 +399,9 @@ export const LAWS: ReadonlyArray<Law> = [
     check: (ctx) =>
       Effect.gen(function* () {
         const before = (yield* ctx.tool.list()).map((tool) => tool.id)
-        yield* ensure(before.includes("opencode_automation_create"), `the built-in tools were ${before.join(",")}`)
+        // Its id differs by fork (mods/wake/automations.ts); the law removes the one this host offers.
+        const automation = Arr.findFirst(before, isAutomationTool)
+        yield* ensure(Option.isSome(automation), `the built-in tools were ${before.join(",")}`)
         yield* ctx.tool.transform((editor) => {
           editor.add({
             name: "law_echo",
@@ -406,11 +409,11 @@ export const LAWS: ReadonlyArray<Law> = [
             input: Schema.Struct({ text: Schema.String }),
             execute: (input) => Effect.succeed({ content: input.text }),
           })
-          editor.remove("opencode_automation_create")
+          if (Option.isSome(automation)) editor.remove(automation.value)
         })
         const after = (yield* ctx.tool.list()).map((tool) => tool.id)
         yield* ensure(after.includes("law_echo"), "the added tool is not offered")
-        yield* ensure(!after.includes("opencode_automation_create"), "the removed tool is offered")
+        yield* ensure(!Option.exists(automation, (id) => after.includes(id)), "the removed tool is offered")
       }),
   },
   {

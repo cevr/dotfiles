@@ -1,5 +1,5 @@
 // The `orchestrate` tool's runs on the simulated host (sim/world.ts): the real orchestrate plugin (sim/plugins.ts
-// `orchestrate`), the real rift plugin (cmd/rift/server.ts `make`) on the rift mod's memory layers and the real status
+// `orchestrate`), the real work plugin (cmd/work/server.ts `make`) on the work mod's memory layers and the real status
 // plugin (sim/plugins.ts `status`, in the units' location), one copy of the others per location, over one memory world of warm sources, Rifts and
 // unit logs. The units' logs are the world's files: the orchestrate plugin writes a unit's moves there, as log.ts does,
 // and the status script prints them as its table, as status.ts does on disk. Each root turn is one `probe:` call; a
@@ -16,7 +16,7 @@ import * as MemoryWorkbox from "@dotfiles/opencode-work/memory/workbox"
 import { SessionDirectories, SessionUnreadable } from "@dotfiles/opencode-work/service"
 import * as Plugins from "../../sim/plugins.ts"
 import * as World from "../../sim/world.ts"
-import { make as makeRift } from "../rift/server.ts"
+import { make as makeWork } from "../work/server.ts"
 
 /** The warm source the run's roots work in. */
 export const WORK = "/scratch/work"
@@ -125,7 +125,7 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
   return { line: sync, pushed: (push: number) => Option.getOrElse(Arr.get(pushes, push - 1), () => shaFor(`push ${push}`)) }
 }
 
-/** The memory world under every rift plugin copy: the two warm sources, their Rifts, the landing, the debts. */
+/** The memory world under every work plugin copy: the two warm sources, their Rifts, the landing, the debts. */
 const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number, fastForward: ReadonlyArray<string>) => {
   const landing = MemoryLanding.world({
     [WORK]: MemoryLanding.config("main", "bun run gate", "bun run accept"),
@@ -192,7 +192,7 @@ export interface BootOptions {
   readonly fastForward?: ReadonlyArray<string>
 }
 
-/** The rift plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the rift plugin alone). */
+/** The work plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the work plugin alone). */
 export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchestrate: boolean, options: BootOptions = {}) {
   const woken: Array<MemoryNotices.Woken> = []
   // The units' logs: written by the orchestrate plugin, as log.ts writes log.md; read by the status script.
@@ -247,7 +247,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       }),
     }),
   )
-  const rift = makeRift(() =>
+  const work = makeWork(() =>
     Layer.mergeAll(
       MemoryRifts.layer(memory.rifts),
       directories,
@@ -272,7 +272,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   })
   for (const directory of [WORK, PLAIN]) {
     if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET } })
-    yield* world.load(rift, { directory, options: { workrift: false } })
+    yield* world.load(work, { directory, options: { workrift: false } })
   }
   // The status plugin in the units' location only: the simulated host keeps one RPC per id, the last copy registered,
   // and the status RPC answers the runs of its own copy's location.

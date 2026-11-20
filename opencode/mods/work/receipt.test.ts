@@ -14,7 +14,7 @@ const CHECKS: ReadonlyArray<readonly [string, ReadonlyArray<ReceiptCheck>]> = [
 ]
 
 const receiptOf = (head: string, tree: string, checks: ReadonlyArray<ReceiptCheck>): Receipt => ({
-  repo: "/code/.rifts/app/feat-x",
+  repo: "/code/.work/app/feat-x",
   head,
   tree,
   kind: "round",

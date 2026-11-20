@@ -20,7 +20,8 @@
 #   workrift.main     default branch (default: origin HEAD)
 #   workrift.install  dependency install (default: from the lock file)
 #   workrift.warm     build step after the install, run by refresh and create
-#                     (default: none)
+#                     (default: none; init and `settings` set it from the
+#                     table in base_settings)
 #
 # The backend is one word in the backend file, `rift` (also when the file is
 # absent) or `work`. Under `work` (Ergo's workspaces, the binary $WORK, else
@@ -70,13 +71,15 @@ usage: workrift <command>
                               (post-rewrite passes its argument: rebase means a rebase has ended)
   refresh                     update the warm source from its default branch
   list                        list the warm source's workspaces
-  remove [--dry-run] [--with-children] [path]
+  remove [--dry-run] [--with-children] [path | branch]
                               delete a workspace for good (under rift: move it to
                               the Rift trash); --dry-run prints the folders it would
                               delete and deletes nothing
   prune [--dry-run]           archive and remove workspaces idle for two days
   sources                     list warm sources
   check                       check the warm source
+  settings                    give the warm source its host settings from workrift's
+                              table (warm step, .env link); init does it too
 
 The warm source is WORKRIFT_SOURCE, else the Rift root of the current
 directory, else the warm source with the same origin as the current checkout.
@@ -319,6 +322,8 @@ install_dependency_hooks() {
   fi
 }
 
+# The folder name of a branch's workspace: create names the workspace by it,
+# and remove finds a workspace by it (workspace_by_name).
 workspace_name() {
   printf '%s' "$1" |
     tr '/[:space:]' '--' |
@@ -367,7 +372,9 @@ create_workspace() {
   name=$(workspace_name "$branch")
   [ -n "$name" ] || fail 'branch does not make a valid workspace name'
 
+  create_started=$(date +%s)
   main=$(main_branch "$source_path")
+  phase "fetch $branch and $main from origin"
   fetch_branch "$source_path" "$branch"
   # The source's HEAD lags the default branch until the next refresh, so new
   # branches start from a freshly fetched remote default branch instead.
@@ -381,18 +388,31 @@ create_workspace() {
     gh_stack_metadata=
   fi
 
-  install_dependency_hooks "$source_path"
+  # Under the lock, the Git hooks a fast-forward of the base or the copy's
+  # branch switch fire (lefthook's post-checkout and post-merge run `workrift
+  # deps`) install and build nothing: that build, minutes long, kept the base
+  # locked for every create in the queue (9 min for one, 2026-11-20). This
+  # create installs and builds the base itself in advance_source, and the
+  # workspace once the lock is released.
+  WORKRIFT_CREATING=1
+  export WORKRIFT_CREATING
+  phase "lock $source_path"
+  lock_purpose="create $branch"
   lock_source "$source_path"
+  phase 'locked'
   advance_source "$source_path" "$main"
+  phase "clone $name"
   work_deps_tag=
   if [ "$backend" = work ]; then
     made=$(work_new "$source_path" "$name" "$branch" "$main")
-    exec 9>&-
+    unlock_source
+    unset WORKRIFT_CREATING
     work_deps_tag=${made%%	*}
     workspace=${made#*	}
   else
     workspace=$(rift create "$source_path" --copy-all --name "$name")
-    exec 9>&-
+    unlock_source
+    unset WORKRIFT_CREATING
     # Git hooks print to stdout, and stdout carries only the workspace path.
     if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
       git -C "$workspace" switch "$branch" >&2
@@ -412,14 +432,29 @@ create_workspace() {
     printf 'Imported gh stack metadata from %s.\n' "$gh_stack_metadata" >&2
   fi
 
-  # `work new` installs by the base's work.toml [deps] when it finds the lock
-  # changed; then workrift does not install a second time.
+  # The install is decided from the workspace's final head: work_new may have
+  # fast-forwarded the branch to origin's after `work new` installed, and the
+  # hook that merge fired deferred (WORKRIFT_CREATING). `work new` installs
+  # by the base's work.toml [deps] when it finds the lock changed (Installed):
+  # then the deps step `workrift deps` runs (work deps, by work's record of
+  # what it installed) brings it to the lock the workspace ends with, and
+  # installs nothing when that is the lock work installed. Otherwise workrift
+  # installs when the final lock differs from what the copy carries.
+  phase 'workspace: install if its lock file changed'
+  # Untrusted: work installed nothing (its work.toml's commands are not
+  # trusted on this host), so workrift installs with its own fixed command,
+  # as for NoDeps (trust_note).
   case "$work_deps_tag" in
-    '' | NoDeps | Unchanged) sync_dependencies "$workspace" >&2 ;;
+    '' | NoDeps | Unchanged | Untrusted) sync_dependencies "$workspace" >&2 ;;
+    Installed) workspace_deps "$source_path" "$workspace" >&2 ;;
   esac
+  [ "$backend" != work ] || trust_note "$source_path" "$work_deps_tag"
   # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
+  note_cold "$source_path"
+  phase 'workspace: warm step if its tree changed'
   warm_build "$workspace" "$source_path" >&2
+  phase "done: $workspace"
   printf '%s\n' "$workspace"
 }
 
@@ -435,35 +470,225 @@ initialize_source() {
   else
     rift init --here "$source_path"
   fi
+  apply_base_settings "$source_path"
   refresh_source "$source_path"
 }
 
+# A base's host settings, by its path: the warm step (base_warm) and the file
+# its .env links to (base_env); both empty for a base the table does not name.
+# Goes away once Ergo's work declares the warm step in the base's work.toml.
+base_settings() {
+  base_warm=
+  base_env=
+  case "$1" in
+    "$workrift_root/bite")
+      base_warm="TURBO_CACHE=local:rw TURBO_CACHE_DIR=$workrift_root/.cache/turbo bun run compile"
+      base_env="$HOME/.config/bite-workbox/bite-env/.env"
+      ;;
+  esac
+}
+
+# The one writer of a base's host settings, run by init and by bootstrap
+# (`workrift settings`): the .env link and workrift.warm, from base_settings.
+# A warm step or an .env already set to something else stays, and is reported.
+apply_base_settings() {
+  base_settings "$1"
+  if [ -n "$base_env" ]; then
+    if [ -e "$1/.env" ] && [ ! -L "$1/.env" ]; then
+      printf 'workrift: %s/.env is a file of its own; left as it is, not linked to %s\n' "$1" "$base_env" >&2
+    else
+      ln -sfn "$base_env" "$1/.env"
+      # The link is the host's, never a change of the base's.
+      exclude_file=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude)
+      mkdir -p "$(dirname "$exclude_file")"
+      grep -qxF '/.env' "$exclude_file" 2>/dev/null || printf '/.env\n' >>"$exclude_file"
+    fi
+  fi
+  if [ -n "$base_warm" ]; then
+    current=$(warm_command "$1")
+    if [ -z "$current" ]; then
+      git -C "$1" config workrift.warm "$base_warm"
+    elif [ "$current" != "$base_warm" ]; then
+      printf "workrift: %s keeps its warm step '%s'; workrift's table has '%s'\n" "$1" "$current" "$base_warm" >&2
+    fi
+  fi
+}
+
+# One line when the base has no warm step and never warmed: its workspaces
+# start cold (no build output).
+note_cold() {
+  if [ -z "$(warm_command "$1")" ] && [ ! -s "$(warmed_tree_file "$1")" ]; then
+    printf 'workrift: %s has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold\n' "$1" >&2
+  fi
+}
+
 # One writer at a time: a snapshot taken while another command moves the source
-# would copy a half-updated tree. Release with `exec 9>&-`, or at exit.
+# would copy a half-updated tree. So the lock holds what moves the base (a
+# refresh; a create's fast-forward, install, managed hooks and warm step) and
+# the copy itself (`work new` or `rift create`, which must read a base nobody
+# moves), and nothing else: fetches, the workspace's branch moves, its install
+# and its build run outside it. Release with unlock_source, or at exit.
+#
+# Each holder records itself in the Git directory's workrift-lock-holders/
+# (a file named by its pid: when, and what), so a create that waits can say
+# whom for. A wait says so at once and again each minute.
 lock_source() {
   exec 9>"$(git -C "$1" rev-parse --path-format=absolute --git-path workrift.lock)"
-  flock 9
+  if ! flock -n 9; then
+    while :; do
+      printf 'workrift: waiting for the lock of %s:%s\n' "$1" "$(lock_holders_words "$1")" >&2
+      l_tried=$(date +%s)
+      ! flock -w 60 9 || break
+      # A wait that gave up early is no wait but a failing flock.
+      [ $(($(date +%s) - l_tried)) -ge 55 ] || fail "flock of $1's lock failed"
+    done
+  fi
+  holder_file=$(lock_holders_dir "$1")/$$
+  mkdir -p "${holder_file%/*}"
+  printf '%s %s\n' "$(date +%s)" "$lock_purpose" >"$holder_file"
+  trap 'rm -f "$holder_file"' EXIT
+}
+
+unlock_source() {
+  rm -f "$holder_file"
+  exec 9>&-
+}
+
+lock_holders_dir() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-lock-holders
+}
+
+# Who holds the base's lock, as recorded: ` held by pid P since T (what)` for
+# each holder whose process still runs (where the process table reads).
+lock_holders_words() {
+  l_found=
+  for l_file in "$(lock_holders_dir "$1")"/*; do
+    [ -f "$l_file" ] || continue
+    l_pid=${l_file##*/}
+    if [ -d "$proc_root" ] && [ ! -e "$proc_root/$l_pid" ]; then
+      continue
+    fi
+    read -r l_since l_what <"$l_file" || true
+    printf ' held by pid %s since %s (%s)' "$l_pid" "$(clock_time "${l_since:-0}")" "${l_what:-?}"
+    l_found=true
+  done
+  [ -n "$l_found" ] || printf ' held by no workrift that recorded itself (a create from before this version, or a half-made remove)'
+}
+
+# Seconds since the epoch as a UTC time of day, on Linux and macOS.
+clock_time() {
+  date -u -d "@$1" +%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%H:%M:%SZ
+}
+
+# One line per step of a create, with the seconds since it began.
+phase() {
+  printf 'workrift: create %s: %s (%ss)\n' "$branch" "$1" "$(($(date +%s) - create_started))" >&2
+}
+
+# A create advances the base (fast-forward, install, warm) at most once in this
+# many seconds. The advance runs under the base's lock, so every create waits
+# for it; with a score of agents landing, main moves every few minutes, and an
+# advance on each move (minutes of install and build under load) kept the lock
+# busy nearly all the time (a create waited 1059 s, 2026-11-20). A lane never
+# starts behind: its branch starts at origin's default branch as just fetched;
+# only the copied build output is for an older tree, and the workspace's own
+# install and warm step bring it up to date outside the lock. Ten minutes keeps
+# the base at most ten minutes of landings behind, so that rebuild stays small.
+# WORKRIFT_ADVANCE_EVERY overrides it, for tests only.
+advance_every=${WORKRIFT_ADVANCE_EVERY:-600}
+
+# When a create last advanced the base, in seconds since the epoch; written
+# only once an advance succeeded, so a failed one holds no window.
+advanced_stamp_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-advanced-at
+}
+
+# The tree whose warm step last failed in the base: it is not tried again for
+# that tree (a failing build would hold the lock for every create); a new tree
+# (main moved) or a refresh tries again.
+warm_failed_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-warm-failed
+}
+
+# Whether the base's managed lefthook-local.yml is missing or out of date.
+hooks_stale() {
+  [ -f "$1/lefthook.yml" ] || return 1
+  [ -e "$1/lefthook-local.yml" ] || return 0
+  grep -qxF "$dependency_hook_marker" "$1/lefthook-local.yml" || return 1
+  [ "$(cat "$1/lefthook-local.yml")" != "$(managed_hook_config)" ]
 }
 
 # The workspace shares every unchanged block with the source, so a source behind
 # the default branch makes the workspace's branch switch rewrite each file changed
-# since, and those files stop being shared. Fast-forward and warm the source first.
+# since, and those files stop being shared. Under the base's lock, bring the base
+# up to date, but only what it lacks: a fast-forward when it is behind origin's
+# default branch and no create advanced it within advance_every; the managed
+# hooks when they are missing or old; the warm step when the last one did not
+# build HEAD's tree (a cut or failed warm) and has not failed for that tree.
+# A base with nothing to do costs a few reads; N creates on a fresh base run
+# no warm step.
 advance_source() {
   source_path=$1
   main=$2
-  [ "$(git -C "$source_path" rev-parse HEAD)" != "$(git -C "$source_path" rev-parse "origin/$main")" ] || return 0
-  [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
-  if [ "$(git -C "$source_path" branch --show-current)" != "$main" ]; then
-    git -C "$source_path" switch "$main" >&2
+  head=$(git -C "$source_path" rev-parse HEAD)
+  if [ "$head" != "$(git -C "$source_path" rev-parse "origin/$main")" ]; then
+    stamp_file=$(advanced_stamp_file "$source_path")
+    last=$(cat "$stamp_file" 2>/dev/null || true)
+    case "$last" in '' | *[!0-9]*) last=0 ;; esac
+    since=$(($(date +%s) - last))
+    if [ "$since" -ge "$advance_every" ]; then
+      [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
+      if [ "$(git -C "$source_path" branch --show-current)" != "$main" ]; then
+        git -C "$source_path" switch "$main" >&2
+      fi
+      phase "base: fast-forward to origin/$main"
+      git -C "$source_path" merge --ff-only "origin/$main" >&2
+      phase "base: install if its lock file changed"
+      sync_dependencies "$source_path" >&2
+      advanced=true
+    else
+      printf 'workrift: %s is behind origin/%s; a create advanced it %ss ago, the next advance comes after %ss: this workspace starts at origin/%s and builds what differs itself\n' \
+        "$source_path" "$main" "$since" "$advance_every" "$main" >&2
+      advanced=false
+    fi
+  else
+    advanced=false
   fi
-  git -C "$source_path" merge --ff-only "origin/$main" >&2
-  sync_dependencies "$source_path" >&2
-  warm_build "$source_path" "$source_path" >&2
+  if hooks_stale "$source_path"; then
+    phase "base: managed hooks"
+    install_dependency_hooks "$source_path" >&2
+  fi
+  warm_ok=true
+  if [ -n "$(warm_command "$source_path")" ] && [ "${WORKRIFT_WARM:-1}" != 0 ]; then
+    tree=$(git -C "$source_path" rev-parse 'HEAD^{tree}')
+    failed_file=$(warm_failed_file "$source_path")
+    if [ "$(cat "$(warmed_tree_file "$source_path")" 2>/dev/null || true)" != "$tree" ]; then
+      if [ "$(cat "$failed_file" 2>/dev/null || true)" = "$tree" ]; then
+        printf "workrift: the warm step failed in %s for its tree %s and is not tried again until main moves or a refresh; this workspace builds itself; log: %s\n" \
+          "$source_path" "$tree" "$(git -C "$source_path" rev-parse --path-format=absolute --git-path workrift-warm.log)" >&2
+        warm_ok=false
+      else
+        phase "base: warm step"
+        warm_build "$source_path" "$source_path" >&2
+        if [ "$(cat "$(warmed_tree_file "$source_path")" 2>/dev/null || true)" = "$tree" ]; then
+          rm -f "$failed_file"
+        else
+          printf '%s\n' "$tree" >"$failed_file"
+          warm_ok=false
+        fi
+      fi
+    fi
+  fi
+  if [ "$advanced" = true ] && [ "$warm_ok" = true ]; then
+    date +%s >"$(advanced_stamp_file "$source_path")"
+  fi
+  return 0
 }
 
 refresh_source() {
   source_path=${1:-$(resolve_source)}
   require_source "$source_path"
+  lock_purpose=refresh
   lock_source "$source_path"
   [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
 
@@ -478,7 +703,10 @@ refresh_source() {
     : >"$(warmed_tree_file "$source_path")"
     run_warm "$source_path" "$warm"
     git -C "$source_path" rev-parse 'HEAD^{tree}' >"$(warmed_tree_file "$source_path")"
+  else
+    note_cold "$source_path"
   fi
+  trust_note "$source_path"
   printf 'Warm source is ready at %s.\n' "$source_path"
 }
 
@@ -497,6 +725,14 @@ remove_workspace() {
   [ "$#" -le 1 ] || { usage >&2; exit 2; }
   target=${1:-$PWD}
   if [ "$backend" = work ]; then
+    # A path is absolute or starts with . or ..; anything else is the
+    # branch create was given (scratch/x), never a path inside the current
+    # checkout, which Git would take for that checkout.
+    case "$target" in
+      /*) ;;
+      . | .. | ./* | ../*) target=$PWD/$target ;;
+      *) target=$(workspace_by_name "$target") ;;
+    esac
     work_remove "$target" "$with_children" "$remove_dry_run"
     return
   fi
@@ -825,7 +1061,8 @@ work_new() {
     fail "work new failed for $w_branch in $w_source: $w_made"
   w_path=$(printf '%s' "$w_made" | jq -r '.path')
   [ -n "$w_path" ] && [ -d "$w_path/.git" ] || fail "work new made no workspace for $w_branch: $w_made"
-  printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail|Untrusted"))) | .[] | "workrift: work new: \(.)"' >&2
+  # Untrusted is said once by create's trust_note.
+  printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail"))) | .[] | "workrift: work new: \(.)"' >&2
 
   # Git hooks print to stdout, and stdout carries only the workspace path.
   if [ "$w_track" = true ]; then
@@ -884,6 +1121,37 @@ work_require_held() {
   for w_stash in $(git -C "$1" stash list --format=%H); do
     printf '%s\n' "$3" | grep -qxF "$w_stash" || fail "$1 has stash entries of its own"
   done
+}
+
+# The path of the one active workspace, of any work base, that create made
+# for the branch $1: named workspace_name of it, or that name and -N (work_new
+# adds -N while a trashed workspace holds the name) on branch $1. None, or
+# more than one, fails: a name never picks among several.
+workspace_by_name() {
+  n_name=$(workspace_name "$1")
+  [ -n "$n_name" ] || fail "not a workspace: $1 (a branch name or an absolute path)"
+  n_bases=$(work_bases)
+  n_found=
+  n_old_ifs=$IFS
+  IFS='
+'
+  for n_base in $n_bases; do
+    IFS=$n_old_ifs
+    n_json=$(work_list_checked "$n_base") || exit 1
+    # shellcheck disable=SC2016 # jq's variables
+    n_paths=$(printf '%s' "$n_json" | jq -r --arg n "$n_name" --arg b "$1" \
+      '.[] | select(.state._tag == "Active" and (.name == $n or ((.name | startswith($n + "-") and (ltrimstr($n + "-") | test("^[0-9]+$"))) and .branch == $b))) | .path') ||
+      fail "work --json list in $n_base does not read"
+    [ -z "$n_paths" ] || n_found="$n_found$n_paths
+"
+  done
+  IFS=$n_old_ifs
+  n_found=$(printf '%s' "$n_found" | sed '/^$/d')
+  case "$(printf '%s' "$n_found" | grep -c .)" in
+    1) printf '%s\n' "$n_found" ;;
+    0) fail "not a workspace: no active workspace of any work base is named $n_name, the name create gives $1 (a half-made one is removed only by its absolute path)" ;;
+    *) fail "several workspaces answer to $1: $(printf '%s' "$n_found" | tr '\n' ' '); name one by its absolute path" ;;
+  esac
 }
 
 work_remove() {
@@ -1074,7 +1342,7 @@ work_remove_half_made() {
 
   # No create or refresh of the base runs while this looks and deletes.
   exec 8>"$(git -C "$h_base" rev-parse --path-format=absolute --git-path workrift.lock)"
-  flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base; try again once it ends"
+  flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base:$(lock_holders_words "$h_base"); try again once it ends"
 
   # No record names it or a folder below it, but one: a Creating record of
   # this very path in this base, with an id, which work gc -id takes.
@@ -1377,10 +1645,19 @@ work_prune() {
 }
 
 # `workrift deps` in a workspace of a base whose work.toml has [deps] is
-# `work deps`; anywhere else it is workrift's own install.
+# `work deps`; anywhere else it is workrift's own install. When work answers
+# Untrusted (the base's work.toml commands changed since a person ran `work
+# trust`: work-trust.md, 2026-11-20), work installed nothing, so workrift
+# installs with its own fixed command, never the untrusted file's. Any other
+# failure of work deps (DepsFailed: its install ran and failed) fails.
 work_deps() {
-  w_top=$1
-  w_base=$(resolve_source)
+  workspace_deps "$(resolve_source)" "$1"
+}
+
+# The deps step of the checkout $2 of the base $1, as `workrift deps` runs it.
+workspace_deps() {
+  w_base=$1
+  w_top=$2
   if ! work_installs "$w_base" || [ "$w_base" = "$w_top" ]; then
     sync_dependencies "$w_top"
     return
@@ -1388,8 +1665,40 @@ work_deps() {
   w_rows=$(work_workspaces "$w_base")
   w_name=$(printf '%s\n' "$w_rows" | awk -F '	' -v p="$w_top" '$3 == p { print $1 }')
   [ -n "$w_name" ] || fail "not a workspace of $w_base: $w_top"
-  work_in "$w_base" deps -name "$w_name"
+  # stdout passes through as it comes; stderr is read for the tag, then shown.
+  w_status=0
+  { w_said=$(work_in "$w_base" deps -name "$w_name" 2>&1 >&3 3>&-) || w_status=$?; } 3>&1
+  if [ "$w_status" -eq 0 ]; then
+    [ -z "$w_said" ] || printf '%s\n' "$w_said" >&2
+    return 0
+  fi
+  if printf '%s' "$w_said" | grep -q '"_tag":"Untrusted"'; then
+    printf 'workrift: work deps answered Untrusted and installed nothing\n' >&2
+    trust_note "$w_base" Untrusted
+    sync_dependencies "$w_top"
+    return
+  fi
+  printf '%s\n' "$w_said" >&2
+  exit "$w_status"
 }
+
+# One line when work does not trust the base's work.toml commands on this
+# host: `work --json doctor` says trusted false, or work answered Untrusted
+# ($2). work then skips the file's [deps] install and its hooks, and workrift
+# installs with its own fixed command instead: git config workrift.install,
+# else the lock file's (bun install --frozen-lockfile, pnpm install
+# --frozen-lockfile, yarn install --immutable, npm ci), else none, as for a
+# base with no [deps]. workrift never runs `work trust`: allowing commands a
+# teammate's change brought in is a person's call.
+trust_note() {
+  [ "$backend" = work ] && [ -f "$1/work.toml" ] || return 0
+  t_trusted=$(work_in "$1" --json doctor 2>/dev/null | jq -r '.trusted' 2>/dev/null || true)
+  [ "$t_trusted" = false ] || [ "${2:-}" = Untrusted ] || return 0
+  printf "workrift: %s/work.toml runs commands work does not trust on this host (work doctor: trusted %s), so work skips its [deps] install and hooks and workrift installs with its own fixed command (git config workrift.install, else the lock file's); review the file, then run work trust in %s to let work do it\n" \
+    "$1" "${t_trusted:-unknown}" "$1" >&2
+}
+
+lock_purpose=workrift
 
 backend=rift
 if [ -e "$backend_file" ]; then
@@ -1431,6 +1740,11 @@ case "$command" in
     ;;
   deps)
     [ "$#" -le 1 ] || { usage >&2; exit 2; }
+    # A hook a create fires while it holds the base's lock: the create
+    # installs and builds once the lock is free (create_workspace).
+    if [ "${WORKRIFT_CREATING:-}" = 1 ]; then
+      exit 0
+    fi
     top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
     if [ "$backend" = work ]; then
       work_deps "$top"
@@ -1473,6 +1787,12 @@ case "$command" in
   check)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
     check_source
+    ;;
+  settings)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    source_path=$(resolve_source)
+    require_source "$source_path"
+    apply_base_settings "$source_path"
     ;;
   --help | -h)
     usage

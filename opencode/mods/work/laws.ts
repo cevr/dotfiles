@@ -208,6 +208,49 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
     )
 
     test(
+      "a Rift's purpose is its branch's description: none at first, set by describe and read by inspect, kept with the branch it was set on; a detached Rift fails RiftFailed",
+      () =>
+        check(bench, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const path = yield* rifts.create({ source: made.source, from: made.inside, name: "billing", branch: "feat/billing" })
+            expect((yield* rifts.inspect(path)).purpose).toBeUndefined()
+            yield* rifts.describe(path, "Bill each seat once ")
+            expect((yield* rifts.inspect(path)).purpose).toBe("Bill each seat once")
+            yield* rifts.describe(path, "Bill each seat once a month")
+            expect((yield* rifts.inspect(path)).purpose).toBe("Bill each seat once a month")
+            // Another branch checked out here has a description of its own: none.
+            yield* made.switchTo(path, "feat/invoices")
+            expect((yield* rifts.inspect(path)).purpose).toBeUndefined()
+            const detached = yield* rifts.create({ source: made.source, from: made.inside, name: "verify-batch-1", branch: "verify-batch-1", at: yield* made.head })
+            expect(yield* Effect.flip(rifts.describe(detached, "x"))).toBeInstanceOf(RiftFailed)
+          }),
+        ),
+      timeout,
+    )
+
+    test(
+      "a Rift's mark names the branch it was made on: none at first, set by mark and read by inspect as madeOn, kept on another branch; a detached Rift fails RiftFailed",
+      () =>
+        check(bench, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const path = yield* rifts.create({ source: made.source, from: made.inside, name: "billing", branch: "feat/billing" })
+            expect((yield* rifts.inspect(path)).madeOn).toBeUndefined()
+            yield* rifts.mark(path)
+            expect((yield* rifts.inspect(path)).madeOn).toBe("feat/billing")
+            yield* made.switchTo(path, "feat/invoices")
+            expect((yield* rifts.inspect(path)).madeOn).toBe("feat/billing")
+            const other = yield* rifts.create({ source: made.source, from: made.inside, name: "invoices", branch: "feat/invoices" })
+            expect((yield* rifts.inspect(other)).madeOn).toBeUndefined()
+            const detached = yield* rifts.create({ source: made.source, from: made.inside, name: "verify-batch-1", branch: "verify-batch-1", at: yield* made.head })
+            expect(yield* Effect.flip(rifts.mark(detached))).toBeInstanceOf(RiftFailed)
+          }),
+        ),
+      timeout,
+    )
+
+    test(
       "a second Rift of one name, and a directory that is no Rift, fail RiftFailed",
       () =>
         check(bench, (made) =>

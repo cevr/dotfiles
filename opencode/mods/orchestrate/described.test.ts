@@ -11,6 +11,15 @@ describe("the step a description names", () => {
     expect(described("  verifier   sso r3 (resume) ")).toEqual({ role: "verifier", rest: "sso r3 (resume)" })
   })
 
+  test("the lane tool's form, with a purpose and the lane, without one, and the old (rift: …) form", () => {
+    expect(described("implementor land-notices r2 — Land notices only when red (lane: /x/.work/app/land-notices)")).toEqual({
+      role: "implementor",
+      rest: "land-notices r2 — Land notices only when red (lane: /x/.work/app/land-notices)",
+    })
+    expect(described("implementor land-notices r1 (lane: /x/land-notices)")).toEqual({ role: "implementor", rest: "land-notices r1 (lane: /x/land-notices)" })
+    expect(described("implementor land-notices r1 (rift: /x/land-notices)")).toEqual({ role: "implementor", rest: "land-notices r1 (rift: /x/land-notices)" })
+  })
+
   test("the role after a one-word unit, with an optional round and note (the descriptions ergo wrote)", () => {
     expect(described("pkg-lower implementor")).toEqual({ role: "implementor", rest: "pkg-lower" })
     expect(described("pkg-lower r2 implementor")).toEqual({ role: "implementor", rest: "pkg-lower r2" })

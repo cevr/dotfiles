@@ -200,8 +200,12 @@ A source's Git config holds its settings: `workrift.main` (default branch),
 step after the install). `refresh` runs it in the source. `create` runs it in the
 new workspace unless the branch's tree is the source's, because the copied build
 output matches the source's tree, not the branch; a failed step only prints a
-warning and runs again at the next `workrift deps`. Bootstrap sets the Bite warm step to
-`bun run compile` and links its `.env`. Per-repository create and remove hooks
+warning and runs again at the next `workrift deps`. `workrift init` sets a base's
+host settings from the table in workrift's `base_settings` (for Bite: the warm step
+`bun run compile` and the `.env` link); `workrift settings` sets them on a base made
+before, as bootstrap does, and keeps a value already set to something else. With no
+warm step and no warmed tree, `refresh` and `create` say its workspaces start cold.
+Per-repository create and remove hooks
 belong in Rift's own `.rift.toml` in the source.
 
 `workrift prune` keeps pinned, in-use and recently modified workspaces and every

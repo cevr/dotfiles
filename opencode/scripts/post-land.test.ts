@@ -9,7 +9,7 @@ import type { ForkWork } from "./fork-work.ts"
 import { Effect, Option } from "effect"
 import { it } from "effect-bun-test"
 import type { DeepReport } from "./accept-ledger.ts"
-import { type Load, loadOf, postLand, type Steps } from "./post-land.ts"
+import { type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
 import { FORK_OWNER, type Outcome, withUpstreamLock } from "./upstream.ts"
 
 const NONE: ForkWork = { candidates: [], closed: [], unread: 0, droppable: [] }
@@ -94,7 +94,7 @@ const afterGreen = (text: string) => {
 }
 
 const UP_TO_DATE = ["upstream: up to date; prime-look has every commit of upstream/dev.", "upstream.json: 0 commits past the fork's checkout.", "fork work: none."]
-const MERGED: Outcome = { kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12, pushed: true }
+const MERGED: Outcome = { kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12 }
 const MERGED_LINE = "upstream: merged 12 commits into prime-look (aaaaaaaaaa -> bbbbbbbbbb) and pushed prime-look; the next install builds it."
 const HELD = "upstream: held; the deep run is red at c0ffee000000, and a merge would make every file due again. The next land tries again."
 
@@ -192,7 +192,7 @@ describe("the post-land step", () => {
       ...NONE,
       droppable: [{ commit: "80da76e442", pr: 63209, what: "a subagent waiting on its own background work", by: "abcdef1234567", merged: true }],
     }
-    const { steps, calls } = stand({ kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12, pushed: true }, { work })
+    const { steps, calls } = stand({ kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 12 }, { work })
     const text = await postLand(steps)
     expect(afterGreen(text).slice(0, 3)).toEqual([
       "upstream: merged 12 commits into prime-look (aaaaaaaaaa -> bbbbbbbbbb) and pushed prime-look; the next install builds it.",
@@ -203,16 +203,18 @@ describe("the post-land step", () => {
     expect(calls.at(-2)).toBe("work before0000 true")
   })
 
-  test("a merged but unpushed fork says to push it", async () => {
-    const { steps } = stand({ kind: "merged", from: "aaaaaaaaaaaa", merge: "bbbbbbbbbbbb", commits: 2, pushed: false })
-    expect(afterGreen(await postLand(steps))[0]).toBe("upstream: merged 2 commits into prime-look (aaaaaaaaaa -> bbbbbbbbbb), but the push to origin failed; push prime-look from the fork.")
+  test("a merge origin refused says why, once, and hands the held merge on", async () => {
+    const { steps } = stand({ kind: "stuck", reason: "the push to origin failed: ! [remote rejected] prime-look (pre-receive hook declined)", merge: "bbbbbbbbbbbb", upstream: "u" })
+    const lines = afterGreen(await postLand(steps))
+    expect(lines[0]).toBe(`upstream: the merge is green but did not land (the push to origin failed: ! [remote rejected] prime-look (pre-receive hook declined)); kept on daily/upstream-merge. Report: ${REPORT}`)
+    expect(lines.filter((line) => line.includes("pre-receive hook declined"))).toHaveLength(1)
   })
 
-  test("a conflict names its files and report, and hands the orchestrator a fork Rift unit", async () => {
+  test("a conflict names its files and report, and hands the orchestrator a fork unit", async () => {
     const { steps, calls } = stand({ kind: "conflict", files: ["packages/tui/a.tsx", "bun.lock"], upstream: "u" })
     const lines = afterGreen(await postLand(steps))
     expect(lines[0]).toBe(`upstream: the merge conflicts in 2 files (packages/tui/a.tsx, bun.lock); prime-look unchanged. Report: ${REPORT}`)
-    expect(lines[3]).toStartWith("- resolve the conflicts as a fork unit: a Rift of the fork on a branch off prime-look, `git merge upstream/dev`, resolve packages/tui/a.tsx, bun.lock")
+    expect(lines[3]).toStartWith("- resolve the conflicts as a fork unit: a lane of the fork on a branch off prime-look, `git merge upstream/dev`, resolve packages/tui/a.tsx, bun.lock")
     expect(lines[3]).toContain("the merge joins the next batch and its verifier")
     expect(calls.at(-2)).toBe("work before0000 true")
   })
@@ -221,7 +223,7 @@ describe("the post-land step", () => {
     const { steps } = stand({ kind: "red", check: "typecheck packages/tui", merge: "cccccccccccc", upstream: "u" })
     const lines = afterGreen(await postLand(steps))
     expect(lines[0]).toBe(`upstream: the merge is red: typecheck packages/tui; prime-look unchanged, the merge kept on daily/upstream-merge (cccccccccc). Log: ${REPORT}`)
-    expect(lines[3]).toStartWith("- make the merge land as a fork unit: start a fork Rift from daily/upstream-merge (cccccccccc)")
+    expect(lines[3]).toStartWith("- make the merge land as a fork unit: start a fork lane from daily/upstream-merge (cccccccccc)")
   })
 
   test("a failed fetch says the next land tries again; daily holding the merge skips it, refreshing nothing", async () => {
@@ -232,6 +234,42 @@ describe("the post-land step", () => {
     expect(afterGreen(await postLand(held.steps))).toEqual(["upstream: skipped; bun run daily is merging upstream now, and the next land runs this again."])
     expect(held.calls).toEqual(["deep settled pool", "sync", "head", "merge"])
   })
+
+  it.effect("only a report that needs action goes to the land, which wakes on it: a red deep run, a conflict, a red or stuck merge, fork work; never a green run", () =>
+    Effect.gen(function* () {
+      // Either way the report's text is postLand's, for the step's log.
+      const action = (outcome: Outcome, options: Parameters<typeof stand>[1] = {}, load: Load = "settled") =>
+        Effect.gen(function* () {
+          const got = yield* Effect.promise(() => reportOf(stand(outcome, options).steps, load))
+          expect(got.text).toBe(yield* report(stand(outcome, options).steps, load))
+          return got.action
+        })
+      const red = Option.some(deepReport(2))
+      const work: ForkWork = { ...NONE, droppable: [{ commit: "80da76e442", pr: 63209, what: "a fix", by: "abcdef1234567", merged: true }] }
+      const upToDate: Outcome = { kind: "up-to-date" }
+      expect(
+        yield* Effect.all({
+          green: action(upToDate),
+          merged: action(MERGED, { moved: true }),
+          fetchFailed: action({ kind: "fetch-failed", error: "no network" }),
+          workbox: action(upToDate, { host: "bite-cristian" }),
+          loaded: action(upToDate, {}, "loaded"),
+        }),
+      ).toEqual({ green: false, merged: false, fetchFailed: false, workbox: false, loaded: false })
+      expect(
+        yield* Effect.all({
+          redDeep: action(upToDate, { deep: red }),
+          noOutcome: action(upToDate, { deep: Option.none() }),
+          redLoaded: action(upToDate, { deep: red }, "loaded"),
+          redWorkbox: action(upToDate, { deep: red, host: "bite-cristian" }),
+          conflict: action({ kind: "conflict", files: ["bun.lock"], upstream: "u" }),
+          redMerge: action({ kind: "red", check: "typecheck", merge: "cccccccccccc", upstream: "u" }),
+          stuck: action({ kind: "stuck", reason: "push refused", merge: "bbbbbbbbbbbb", upstream: "u" }),
+          forkWork: action(MERGED, { work }),
+        }),
+      ).toEqual({ redDeep: true, noOutcome: true, redLoaded: true, redWorkbox: true, conflict: true, redMerge: true, stuck: true, forkWork: true })
+    }),
+  )
 })
 
 describe("the upstream lock", () => {

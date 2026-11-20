@@ -168,7 +168,7 @@ import * as Tools from "@dotfiles/opencode-orchestrate/tools"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
 import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
-import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
+import { Created, Inspected, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ORCHESTRATOR, orchestrator, ROLE_CACHE_TTL, ROLES, withSection } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
@@ -857,7 +857,7 @@ export const make = (
       // Each role and each primary agent compacts at `WINDOW`. Config agent files
       // cannot set a window, and the config's agents arrive after this, so a primary agent
       // defined only in a config file keeps the model's ceiling.
-      // The orchestrator (owner's exception to the freeze, 2026-11-20) is build as the host's plugins defined it, under
+      // The orchestrator is build as the host's plugins defined it, under
       // its own name and description, and the default a new session opens with. It is defined before the windows, so
       // it gets its own; the config's plugin runs after, so its `default_agent` and an `orchestrator` file still win.
       // For the same reason a config's `agents.build` entry does not reach it: the config pins it as `agents.orchestrator`
@@ -893,7 +893,7 @@ export const make = (
         }
       })
 
-      // A subagent asks its orchestrator, not the owner (owner's exception to the freeze, 2026-11-19): the two tools,
+      // A subagent asks its orchestrator, not the owner: the two tools,
       // the swap and the documents' nudge (mods/orchestrate/opencode/asking.ts) over the questions plugin's RPC.
       if (options.subagents === "orchestrator") {
         const family = Context.get(services, Sessions)
@@ -1006,8 +1006,18 @@ export const make = (
       // tool, every answer computed at the call (above). No batch rule refuses it: a land of a unit the run tables show
       // in another state than `ready` lands with a warning first.
       /** A new Rift, made by the rift plugin's create. */
-      const createRift = (ask: { readonly sessionID: string; readonly branch: string; readonly name: string; readonly source?: string; readonly at?: string }) =>
-        riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+      const createRift = (ask: {
+        readonly sessionID: string
+        readonly branch: string
+        readonly name: string
+        readonly source?: string
+        readonly at?: string
+        readonly purpose?: string
+        readonly mark?: boolean
+      }) => riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+      /** A Rift's purpose set, by the rift plugin's describe: its branch's description. */
+      const describeRift = (ask: { readonly sessionID: string; readonly path: string; readonly purpose: string }) =>
+        riftRpc().describe(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Inspected)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
       /** Whether a session is a subagent's: the root lanes, lands and verifies. */
       const isChild = (sessionID: string) => Effect.map(sessions.parentOf(sessionID), Predicate.isNotUndefined)
       /** Why a call does not run: the input rule, then its names. */
@@ -1024,10 +1034,22 @@ export const make = (
           const name = Option.getOrElse(Option.liftPredicate(workriftName(branch), () => listed.workrift), () => unit)
           const decided = Tools.laneDecision(unit, branch, name, listed.workrift, listed.rifts)
           if ("refused" in decided) return yield* failWith(decided.refused)
-          if ("found" in decided) return Tools.laneAnswer(unit, decided.found, false)
-          const ask = { sessionID, branch, name: decided.make }
+          const purpose = Option.map(Option.fromUndefinedOr(input.purpose), (text) => text.trim())
+          // The naming rule warns, never refuses (tools.ts `namingWarnings`).
+          const warnings = Tools.namingWarnings(unit, listed.rifts)
+          if ("found" in decided) {
+            // A purpose given for a lane that exists becomes its purpose; the same one again writes nothing.
+            const found = decided.found
+            const lane = yield* Option.match(Option.filter(purpose, (text) => text !== found.purpose), {
+              onNone: () => Effect.succeed(found),
+              onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
+            })
+            return Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)])
+          }
+          // `mark`: the lane is marked as made here, on its branch, so a later switch to another branch is refused.
+          const ask = { sessionID, branch, name: decided.make, mark: true, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
-          return Tools.laneAnswer(unit, created.rift, true)
+          return Tools.laneAnswer(unit, created.rift, true, warnings)
         })
 
       /** A verify's clean checkout: the workspace `verify-<batch>` detached at `at`, answered when it exists, else made. */

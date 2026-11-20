@@ -35,6 +35,8 @@ export interface World {
   readonly heads: Map<string, string>
   /** Each land's record, in order. */
   readonly records: Array<LandRecord>
+  /** The command each receipted run's receipt names, in order. */
+  readonly receiptCommands: Array<string>
   /** The host's load the post-land step reads first; absent: idle on 8 cores. */
   load: HostLoad | undefined
   /** Every load reading taken, with its time on the Effect clock. */
@@ -107,6 +109,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   standings: new Map(),
   heads: new Map(),
   records: [],
+  receiptCommands: [],
   load: undefined,
   readings: [],
   pushFails: undefined,
@@ -186,6 +189,7 @@ export const layer = (state: World) =>
       receipted: (path, kind, command, env) =>
         Effect.sync(() => {
           const label = RECEIPTED[kind]
+          state.receiptCommands.push(command)
           state.steps.push(Match.value(kind).pipe(
             Match.when("round", () => `focus ${path} ${command}`),
             Match.when("merge", () => `merge-check ${path} ${env["RIFT_LAND_BASE"]}`),

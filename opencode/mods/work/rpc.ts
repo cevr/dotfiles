@@ -11,7 +11,7 @@ const object = { type: "object" } as const
 
 /**
  * `create(CreateAsk)` → `Created`, `list(ListAsk)` → `Listed`, `inspect(InspectAsk)` → `Inspected`,
- * `land(LandAsk)` → `LandAnswered`; any of them `Failed`. `sessionID` is the session the call is for: its directory
+ * `describe(DescribeAsk)` → `Inspected` (the Rift with its new purpose), `land(LandAsk)` → `LandAnswered`; any of them `Failed`. `sessionID` is the session the call is for: its directory
  * finds the warm source, and a land's background checks wake it.
  */
 export const RIFT_RPC = {
@@ -20,6 +20,7 @@ export const RIFT_RPC = {
     create: { input: object, output: object },
     list: { input: object, output: object },
     inspect: { input: object, output: object },
+    describe: { input: object, output: object },
     land: { input: object, output: object },
   },
   events: {},
@@ -29,15 +30,25 @@ export const RIFT_RPC = {
 export const LandRift = Schema.Union([Schema.String, Schema.Struct({ path: Schema.String, unit: Schema.String })])
 export type LandRift = typeof LandRift.Type
 
-/** The `rift` tool's create, and `at`: a commit (or `origin/HEAD`) to detach the new Rift at, which the tool's input lacks. */
+/**
+ * The `rift` tool's create, and what its input lacks: `at`, a commit (or `origin/HEAD`) to detach the new Rift at, and
+ * `purpose`, the lane's one line, set as its branch's description once it is made; `mark`, whether to mark it as an
+ * `orchestrate lane`'s, made on its branch (`Rifts.mark`).
+ */
 export const CreateAsk = Schema.Struct({
   sessionID: Schema.String,
   branch: Schema.String,
   name: Schema.optionalKey(Schema.String),
   source: Schema.optionalKey(Schema.String),
   at: Schema.optionalKey(Schema.String),
+  purpose: Schema.optionalKey(Schema.String),
+  mark: Schema.optionalKey(Schema.Boolean),
 })
 export type CreateAsk = typeof CreateAsk.Type
+
+/** A Rift's purpose set: its checked-out branch's description becomes `purpose`. */
+export const DescribeAsk = Schema.Struct({ sessionID: Schema.String, path: Schema.String, purpose: Schema.String })
+export type DescribeAsk = typeof DescribeAsk.Type
 
 export const ListAsk = Schema.Struct({ sessionID: Schema.String, source: Schema.optionalKey(Schema.String) })
 export type ListAsk = typeof ListAsk.Type
@@ -48,8 +59,19 @@ export type InspectAsk = typeof InspectAsk.Type
 export const LandAsk = Schema.Struct({ sessionID: Schema.String, rifts: Schema.Array(LandRift), departs: Schema.optionalKey(Schema.String) })
 export type LandAsk = typeof LandAsk.Type
 
-/** A Rift as an answer carries it: its directory, its branch (none when detached), its head and its unsaved work in words (`clean`, `2 uncommitted`). */
-export const Lane = Schema.Struct({ path: Schema.String, branch: Schema.optionalKey(Schema.String), head: Schema.String, state: Schema.String })
+/**
+ * A Rift as an answer carries it: its directory, its branch (none when detached), its head, its unsaved work in words
+ * (`clean`, `2 uncommitted`), its purpose (its branch's description; none when unset), and the branch it was marked
+ * made on (`madeOn`; none for a lane `orchestrate lane` did not make).
+ */
+export const Lane = Schema.Struct({
+  path: Schema.String,
+  branch: Schema.optionalKey(Schema.String),
+  head: Schema.String,
+  state: Schema.String,
+  purpose: Schema.optionalKey(Schema.String),
+  madeOn: Schema.optionalKey(Schema.String),
+})
 export type Lane = typeof Lane.Type
 
 /** The call did not act: what the `rift` tool's failure says. */

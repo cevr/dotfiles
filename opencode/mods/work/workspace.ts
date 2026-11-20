@@ -30,6 +30,14 @@ export interface Workspace {
   readonly unpushed: ReadonlyArray<string>
   /** How many stash entries it holds of its own: ones not inherited from the workspaces it was copied from (ownStashes). */
   readonly stashes: number
+  /** Its branch's description (`branch.<branch>.description`, Git's own record of what a branch is for): a lane's one-line purpose; none when unset or detached. */
+  readonly purpose?: string
+  /**
+   * The branch it was marked made on (`branch.<branch>.orchestrate-lane` naming this path: a clone copies its source's
+   * marks, which name the source's path and so are not read here); none when unmarked. Kept through a switch of branch,
+   * a merge, a rebase and a detached head, as Git keeps a branch's config.
+   */
+  readonly madeOn?: string
 }
 
 /**
@@ -105,13 +113,21 @@ export const removal = (
 const some = (lines: ReadonlyArray<string>, limit = 10): string =>
   [...lines.slice(0, limit).map((line) => `  ${line}`), ...(lines.length > limit ? [`  … and ${lines.length - limit} more`] : [])].join("\n")
 
+/**
+ * The tool that moves a session, as the answers name it: its registry id on both forks, which a direct tool
+ * list and a kernel cell (`tools.opencode_session_move`) use. Upstream's Code Mode name changed with
+ * 8e50929d0d (`opencode.session_move` to `opencode.session.move`), and Code Mode is unreachable beside the
+ * kernel runtime, so the answers never use it.
+ */
+export const MOVE_TOOL = "opencode_session_move"
+
 /** What the model reads when a removal is refused. */
 export const explainRefusal = (refusal: RemoveRefused): string => {
   switch (refusal._tag) {
     case "SourceKept":
       return `${refusal.path} is a base, not a workspace made from one; this tool never removes a base.`
     case "SessionInside":
-      return `This session runs in ${refusal.directory}, inside ${refusal.path}. Move the session out first (session_move to the source), then remove it.`
+      return `This session runs in ${refusal.directory}, inside ${refusal.path}. Move the session out first (${MOVE_TOOL} to the source), then remove it.`
     case "ChildrenKept":
       return `${refusal.path} has workspaces of its own, which would go with it. Remove them first:\n${some(refusal.children)}`
     case "StepRunning":

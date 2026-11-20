@@ -4,6 +4,7 @@
 // asserts an upper bound on a time, rate or CPU (its own text or the scenario
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
+// @reads sim/seed.ts
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"

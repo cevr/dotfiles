@@ -4,8 +4,9 @@
 // stops the batch and names the Rift and the files), writes the generated
 // files again for the merged sources (a clean merge can leave them stale),
 // runs the repository's gate once, pushes to the default branch, trashes the landed Rifts, then
-// runs the repository's accept check once, in the background, on everything
-// the batch changed, and wakes the calling session with its result; then the
+// runs the repository's accept check once, in the background, in a Rift of its
+// own (ACCEPT), on everything the batch changed, owed until it ends so a server
+// restart runs it again, and wakes the calling session only when it fails; then the
 // repository's own post-land work (`rift.postLand`) in a Rift of its own
 // (POST_LAND), outside the integration Rift's lock, waking it with its report. The repository names its commands in its warm source's
 // Git config (`rift.gate`, `rift.accept`, `rift.postLand`), so the tool knows
@@ -24,6 +25,12 @@
 import { Array as Arr, Match, Option, Schema } from "effect"
 import type { Covered } from "./receipt.ts"
 
+/**
+ * What a land's notice opens with, in its text (`lane land: …`) and its title (`lane land · accept FAILED`).
+ * A notice means something needs action: a green accept check or post-land step sends none.
+ */
+export const LAND = "lane land"
+
 /** The Rift every batch is merged in, one per warm source, kept between batches. */
 export const INTEGRATION = "integrate"
 
@@ -41,7 +48,11 @@ export interface LandConfig {
   readonly main: string
   /** `rift.gate`: the fast check run in the integration Rift before the push; required. */
   readonly gate: string | undefined
-  /** `rift.accept`: the slow check run there after the push, in the background, with RIFT_LAND_BASE set to the batch's base. */
+  /**
+   * `rift.accept`: the slow check run after the batch's gate: after a push, in the accept Rift (ACCEPT), owed
+   * (owed.ts) until it ends; for a checked batch, in the integration Rift. In the background, with RIFT_LAND_BASE
+   * set to the batch's base.
+   */
   readonly accept: string | undefined
   /**
    * `rift.generated` (one value per file, relative to the repository root):
@@ -64,10 +75,11 @@ export interface LandConfig {
   /**
    * `rift.postLand`: the repository's own work after a pushed batch (the
    * dotfiles merge upstream OpenCode into their fork), a shell line run in
-   * the integration Rift in the background after the accept check, one at a
-   * time with it, with RIFT_LAND_BASE, RIFT_LAND_HEAD and
+   * its own Rift (POST_LAND) in the background after the accept check, never
+   * beside it or another post-land step, with RIFT_LAND_BASE, RIFT_LAND_HEAD and
    * RIFT_POST_LAND_REPORT set: what it writes to that file is the report the
-   * session is woken with. While the host is loaded past its cores it is
+   * session is woken with, and only a step that fails or writes a report
+   * wakes it (write none when nothing needs doing). While the host is loaded past its cores it is
    * owed, not dropped (owed.ts): it runs once the load settles, or at a land
    * past the max wait.
    */
@@ -90,7 +102,7 @@ export interface LandConfig {
 }
 
 /**
- * The Rift a land by receipts runs its accept check in, one per warm source, kept and put at origin's newest
+ * The Rift a pushed land (and a checked land by receipts) runs its accept check in, one per warm source, kept and put at origin's newest
  * default branch before each run: the integration Rift is free for the next land once the push is done.
  */
 export const ACCEPT = "land-accept"
@@ -198,7 +210,7 @@ export const exitWords = (ran: Pick<Ran, "code" | "output">): string =>
   })
 
 /** The answer to a land that pushed. */
-export const landedText = (landed: Landed, integration: string, accepting: boolean, postLand = false): string => {
+export const landedText = (landed: Landed, accepting: boolean, postLand = false): string => {
   const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
   return [
     `Landed ${landed.units.length} workspace(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; the gate passed in ${landed.gate.seconds}s).`,
@@ -206,11 +218,11 @@ export const landedText = (landed: Landed, integration: string, accepting: boole
     ...(removed.length > 0 ? [`To the trash: ${removed.map((unit) => unit.path).join(", ")}.`] : []),
     ...landed.kept.map((kept) => `Kept ${kept.path}: ${kept.why}`),
     accepting
-      ? `The accept check runs in the background in ${integration} on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result.`
+      ? `The accept check runs in the background in its own workspace (${ACCEPT}) on the batch since ${landed.base.slice(0, 9)}; it wakes this session only if it fails (a server restart runs it again): no notice means it passed. The next land need not wait for it.`
       : "No rift.accept is configured, so no check runs after the push.",
     ...(postLand
       ? [
-          `Then the repository's post-land step (rift.postLand) runs in the background${accepting ? " after the accept check" : ""}, in its own workspace (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`,
+          `Then the repository's post-land step (rift.postLand) runs in the background${accepting ? " after the accept check" : ""}, in its own workspace (${POST_LAND}), one at a time; it wakes this session only when it fails or its report needs action. The next land need not wait for it.`,
         ]
       : []),
   ].join("\n")
@@ -267,11 +279,11 @@ export const receiptLandedText = (landed: ReceiptLanded, accepting: boolean, pos
     ...Arr.map(Arr.filter([removed], Arr.isReadonlyArrayNonEmpty), (gone) => `To the trash: ${gone.map((unit) => unit.path).join(", ")}.`),
     ...landed.kept.map((kept) => `Kept ${kept.path}: ${kept.why}`),
     Match.value(accepting).pipe(
-      Match.when(true, () => `The accept check runs in the background in its own workspace (${ACCEPT}) on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result. The next land need not wait for it.`),
+      Match.when(true, () => `The accept check runs in the background in its own workspace (${ACCEPT}) on the batch since ${landed.base.slice(0, 9)}; it wakes this session only if it fails (a server restart runs it again): no notice means it passed. The next land need not wait for it.`),
       Match.orElse(() => "No rift.accept is configured, so no check runs after the push."),
     ),
     ...Arr.filter(
-      [`Then the repository's post-land step (rift.postLand) runs in the background, in its own workspace (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`],
+      [`Then the repository's post-land step (rift.postLand) runs in the background, in its own workspace (${POST_LAND}), one at a time; it wakes this session only when it fails or its report needs action. The next land need not wait for it.`],
       () => postLand,
     ),
   ].join("\n")
@@ -281,19 +293,17 @@ export const receiptLandedText = (landed: ReceiptLanded, accepting: boolean, pos
 export const postLandedText = (units: ReadonlyArray<Unit>, ran: PostLanded): string =>
   [
     ran.code === 0
-      ? `rift land: the post-land step after ${branches(units)} ran in ${ran.seconds}s. Log: ${ran.log}`
-      : `rift land: the post-land step after ${branches(units)} FAILED (${exitWords(ran)}) in ${ran.seconds}s. The batch is already pushed. Log: ${ran.log}`,
+      ? `${LAND}: the post-land step after ${branches(units)} ran in ${ran.seconds}s. Log: ${ran.log}`
+      : `${LAND}: the post-land step after ${branches(units)} FAILED (${exitWords(ran)}) in ${ran.seconds}s. The batch is already pushed. Log: ${ran.log}`,
     ran.report !== undefined && ran.report.trim() !== "" ? ran.report.trimEnd() : digest(ran.output, 20),
   ].join("\n")
 
-/** The wake a background accept check sends. */
-export const acceptedText = (units: ReadonlyArray<Unit>, accept: Ran): string =>
-  accept.code === 0
-    ? `rift land: the accept check for ${branches(units)} passed in ${accept.seconds}s.`
-    : [
-        `rift land: the accept check for ${branches(units)} FAILED (${exitWords(accept)}) in ${accept.seconds}s. The batch is already pushed: fix forward. Log: ${accept.log}`,
-        digest(accept.output, 20),
-      ].join("\n")
+/** The wake a background accept check that failed sends; a green one sends none. */
+export const acceptFailedText = (units: ReadonlyArray<Unit>, accept: Ran): string =>
+  [
+    `${LAND}: the accept check for ${branches(units)} FAILED (${exitWords(accept)}) in ${accept.seconds}s. The batch is already pushed: fix forward. Log: ${accept.log}`,
+    digest(accept.output, 20),
+  ].join("\n")
 
 /** One Rift's result in a batch that is checked, not pushed (`rift.push` false). */
 export interface Outcome {
@@ -348,9 +358,9 @@ export const checkedText = (checked: Checked): string => {
 export const checkAcceptedText = (main: string, ran: ReadonlyArray<Unit>, accept: Ran, outcomes: ReadonlyArray<Outcome>): string =>
   [
     accept.code === 0
-      ? `rift land: the accept check for ${branches(ran)} passed in ${accept.seconds}s; ${main} was not pushed.`
+      ? `${LAND}: the accept check for ${branches(ran)} passed in ${accept.seconds}s; ${main} was not pushed.`
       : [
-          `rift land: the accept check for ${branches(ran)} FAILED (${exitWords(accept)}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the workspace whose diff it touches. Log: ${accept.log}`,
+          `${LAND}: the accept check for ${branches(ran)} FAILED (${exitWords(accept)}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the workspace whose diff it touches. Log: ${accept.log}`,
           digest(accept.output, 20),
         ].join("\n"),
     ...outcomeLines(outcomes),

@@ -8,9 +8,10 @@
 // the step has been owed MAX_WAIT, whatever the load (heavy, so nice'd), and says so. Where the rule says
 // defer, the step still runs, `loaded` (`phase`): a land's at once, the minute check's once LOADED_EVERY has
 // passed since its last run; it does what a loaded host allows (RIFT_POST_LAND_LOAD=loaded) and stays owed.
-// This file holds the rules and the words; model.ts runs them.
-import { Array as Arr, Duration, Option, Schema } from "effect"
-import type { HostLoad, Unit } from "./land.ts"
+// A pushed land's accept check is owed beside them (`OwedAccept`), and the minute check runs an owed one
+// first, whatever the load. This file holds the rules and the words; model.ts runs them.
+import { Array as Arr, Duration, Effect, Option, Schema } from "effect"
+import { type HostLoad, LAND, type Unit } from "./land.ts"
 
 /** How often the plugin reads the load while a post-land step is owed. */
 export const CHECK_EVERY = Duration.minutes(1)
@@ -48,15 +49,47 @@ export const OwedPostLand = Schema.Struct({
 })
 export type OwedPostLand = typeof OwedPostLand.Type
 
-/** What the store keeps: the owed steps, and the newest load reading at or past the cores (`Readings.loadedAt`). */
+/**
+ * A pushed land's accept check, owed from before it starts until its result is written (its wake when red,
+ * then the debt cleared): a server restart mid-check leaves it owed, and the next minute check on the host
+ * runs it again, in the accept Rift. A second run of it is harmless: the same Rift, a receipt of the same kind.
+ */
+export const OwedAccept = Schema.Struct({
+  /** Names this debt alone: two lands may push the same head in a test, never the same id. */
+  id: Schema.String,
+  source: Schema.String,
+  /** The default branch the accept Rift is put at. */
+  main: Schema.String,
+  /** `rift.accept`, as the land read it. */
+  command: Schema.String,
+  /** The session woken when it is red: the land's. */
+  sessionID: Schema.String,
+  /** The batch's base, RIFT_LAND_BASE. */
+  base: Schema.String,
+  /** The pushed commit. */
+  head: Schema.String,
+  units: Schema.Array(Schema.Struct({ path: Schema.String, branch: Schema.String })),
+  /** When it was pushed, epoch milliseconds. */
+  at: Schema.Finite,
+})
+export type OwedAccept = typeof OwedAccept.Type
+
+/** What a resumed accept check runs before `rift.accept`, so its receipt names it a resumed run. */
+export const RESUMED = "RIFT_ACCEPT_RESUMED=1"
+
+/**
+ * What the store keeps: the owed steps, the owed accept checks (none in a file written before them), and the
+ * newest load reading at or past the cores (`Readings.loadedAt`).
+ */
 export const Debts = Schema.Struct({
   owed: Schema.Array(OwedPostLand),
+  accepts: Schema.Array(OwedAccept).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   loadedAt: Schema.OptionFromOptionalKey(Schema.Finite),
 })
 export type Debts = typeof Debts.Type
 
 /** Nothing owed, and no reading at or past the cores. */
-export const noDebts: Debts = { owed: [], loadedAt: Option.none() }
+export const noDebts: Debts = { owed: [], accepts: [], loadedAt: Option.none() }
 
 /** RIFT_LAND_BASE: the oldest owed land's base, so the step sees every batch it covers. */
 export const baseOf = (owed: OwedPostLand): string => Arr.headNonEmpty(owed.lands).base
@@ -202,7 +235,7 @@ const loadWords = (load: HostLoad, readings: Readings, now: number): string => {
  */
 export const loadedLine = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
   [
-    `rift land: the post-land step after ${branches(unitsOf(owed))} ran loaded (${loadWords(load, readings, now)}): it ran what a loaded host allows, and the rest still waits, so the step stays owed.`,
+    `${LAND}: the post-land step after ${branches(unitsOf(owed))} ran loaded (${loadWords(load, readings, now)}): it ran what a loaded host allows, and the rest still waits, so the step stays owed.`,
     `It runs in full once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes, or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; until then the next land, or every ${minutesOf(LOADED_EVERY)} minutes the minute check, runs it loaded again.`,
   ].join(" ")
 
@@ -211,4 +244,4 @@ export const loadedLine = (owed: OwedPostLand, load: HostLoad, readings: Reading
  * the reading now when it is at or past the cores, else the earlier one that held the step back.
  */
 export const forcedLine = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
-  `rift land: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${loadWords(load, readings, now)}), nice'd like every check.`
+  `${LAND}: the post-land step was owed for ${minutesOf(owedFor(owed, now))} minutes, past the ${minutesOf(MAX_WAIT) / 60}-hour wait, so this land ran it whatever the load (${loadWords(load, readings, now)}), nice'd like every check.`

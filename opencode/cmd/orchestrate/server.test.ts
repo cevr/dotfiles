@@ -1536,7 +1536,7 @@ describe("the units' logs", () => {
     scenario(
       Effect.gen(function* () {
         const work = yield* checkout
-        const rift = join(work, ".rifts/dotfiles/land-fixes")
+        const rift = join(work, ".work/dotfiles/land-fixes")
         mkdirSync(rift, { recursive: true })
         writeFileSync(join(rift, "README.md"), "")
         const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: { directory: rift } } })
@@ -2061,9 +2061,9 @@ describe("a verifier's verdict and a root's compaction, with no machine", () => 
       Effect.gen(function* () {
         const fleet: Array<FleetTest.Asked> = []
         const logged: Array<{ readonly near: string; readonly line: string }> = []
-        const bite = "/workspaces/.rifts/bite/scratchpad/batches/batch-288-findings.md"
+        const bite = "/workspaces/.work/bite/scratchpad/batches/batch-288-findings.md"
         const sessions = steps({
-          ses_b: { agent: "verifier", lastWords: `verifier batch-288 r1: accepted ${bite}`, directory: "/workspaces/.rifts/bite/verify-batch-288" },
+          ses_b: { agent: "verifier", lastWords: `verifier batch-288 r1: accepted ${bite}`, directory: "/workspaces/.work/bite/verify-batch-288" },
           ses_d: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
         })
         const target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-1" }

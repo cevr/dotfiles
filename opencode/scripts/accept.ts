@@ -707,9 +707,14 @@ const longSwarm = Effect.fn("Accept.longSwarm")(function* (run: Run) {
   if (whole) disk.write(SWARM_STATE, Swarm.encodeSwarmState({ at: wallNow(), head: run.head }))
 })
 
-/** A failed file's second run, alone, at the end of the run; the load is printed with it. */
+/** A failed file's second run, alone, at the end of the run; the load is printed with it. One that bounds a time waits for a settled host (`heldSecond`). */
 const secondRun = Effect.fn("Accept.secondRun")(function* (run: Run, file: string) {
   const load = load1()
+  const held = Accept.heldSecond(file, isSerial(run.text(file)), load, cores)
+  if (Option.isSome(held)) {
+    yield* say(`accept: ${file} ${held.value.detail}, so it stays owed`)
+    return held.value
+  }
   yield* say(`accept: ${file} failed; running it once more, alone, at 1-minute load ${load.toFixed(1)}`)
   // An ended second run is marked `second`, so `secondRunsDue` never gives the file another; one a yield stopped is not.
   return Accept.afterSecond(yield* runFile(run, file, true), load)

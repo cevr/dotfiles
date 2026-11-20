@@ -17,6 +17,9 @@ export const VERIFY_EVERY = 5
 /** …or once the last one is this old, with at least one land since. */
 export const VERIFY_MAX_AGE_MS = 24 * 3_600_000
 
+/** A lane's purpose is one line of at most this many characters. */
+export const PURPOSE_MAX = 80
+
 export const ACTIONS = ["status", "lane", "land", "verify"] as const
 export type Action = (typeof ACTIONS)[number]
 
@@ -38,6 +41,9 @@ export const OrchestrateInput = toolInput(
     run: Schema.optional(Schema.String).annotate({ description: "lane: the run, for the branch `<run>/<unit>`." }),
     branch: Schema.optional(Schema.String).annotate({ description: "lane: the branch, in place of `<run>/<unit>` or `feat/<unit>`." }),
     source: Schema.optional(Schema.String).annotate({ description: "lane: a directory of the repository whose base to use. Default: this session's directory." }),
+    purpose: Schema.optional(Schema.String).annotate({
+      description: `lane: the lane's one-line purpose, the outcome in plain words (at most ${PURPOSE_MAX} characters), as in "Land notices only when red". Kept as its branch's description.`,
+    }),
     units: Schema.optional(Schema.Array(LandUnit)).annotate({
       description: "land: the units to land, by name, or { unit, path } to land the workspace at path as the unit. Default: every unit the run tables show ready that has a lane.",
     }),
@@ -56,13 +62,13 @@ export type Field = Exclude<keyof OrchestrateInput, "action">
 /** The fields each action takes, and the ones it needs. */
 export const FIELDS = {
   status: [],
-  lane: ["unit", "run", "branch", "source"],
+  lane: ["unit", "run", "branch", "source", "purpose"],
   land: ["units", "departs"],
   verify: ["batch", "head"],
 } as const satisfies { readonly [A in Action]: ReadonlyArray<Field> }
 export const REQUIRED = { status: [], lane: ["unit"], land: [], verify: [] } as const satisfies { readonly [A in Action]: ReadonlyArray<Field> }
 
-const ALL_FIELDS: ReadonlyArray<Field> = ["unit", "run", "branch", "source", "units", "departs", "batch", "head"]
+const ALL_FIELDS: ReadonlyArray<Field> = ["unit", "run", "branch", "source", "purpose", "units", "departs", "batch", "head"]
 
 /** A unit's name: what a Rift's name and a role call's description can hold. A verify's name is one too. */
 export const UNIT_NAME = /^[a-z0-9][a-z0-9._-]*$/
@@ -113,10 +119,10 @@ export const STEP_ORDER = ["lane", "implement", "ready", "land", "verify"] as co
 
 export const ORCHESTRATE_DESCRIPTION = [
   "The steps of an orchestrate run, for the root session that runs its units, in this order: lane → implement → ready → land → verify. Every answer is read at the call from the run tables (the units' log.md files, as the skill's status script derives them) and the base's workspaces, so a restart or another root session gets the same answer; status names the one next call.",
-  `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")]])} makes the unit's workspace (an isolated copy-on-write copy of the base), named for the unit, on branch \`branch\`, else \`<run>/<unit>\`, else \`feat/<unit>\`. A lane that exists is answered, never made again by hand. Each answer ends with the \`(rift: <path>)\` its implementor's description takes.`,
-  'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)", prompt, background: true }). Its start and its hand-back move the unit in its log.md.',
+  `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")], ["purpose", quote("Bill each seat once")]])} makes the unit's workspace (an isolated copy-on-write copy of the base), named for the unit, on branch \`branch\` (\`<prefix>/<unit>\`), else \`<run>/<unit>\`, else \`feat/<unit>\`, with its one-line purpose. A lane that exists is answered, never made again by hand. One lane is one unit's, on one branch, for its life: a lane it made that now holds another unit's branch is refused; an older one only warns. Name a unit for its outcome in words, with no round and no run prefix. Each answer ends with the \`(lane: <path>)\` its implementor's description takes.`,
+  'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 — <purpose> (lane: <path>)", prompt, background: true }). Its start and its hand-back move the unit in its log.md.',
   "ready: the implementor's hand-back, `implementor <unit> r<N>: ready <request path>`, which the plugin writes to the unit's log.md when the implementor goes idle.",
-  `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their workspaces merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a workspace the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you.`,
+  `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their workspaces merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a workspace the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you only when one fails or needs action: no notice means green.`,
   `verify: ${VERIFY_CALL} verifies main since the last verify, every ${VERIFY_EVERY} lands or ${VERIFY_MAX_AGE_MS / 3_600_000} h: it writes the batch file (base, head, the merges and units between them) into the run dir, makes the verifier's clean checkout, the workspace verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier <batch> r1", prompt, background: true }). ${verifyCallOf("batch-7")} names a batch you wrote yourself.`,
   `status: ${STATUS_CALL} answers the run tables, each open unit's lane, and one next: line naming the call to make. Call it after a compaction, or whenever the next step is unclear. A land's and a status's answer start with a warning line when a verify is due.`,
   "A subagent never lanes, lands or verifies: the root does. The work tool is for a session that runs no units; in a root that runs units, lane replaces work's create and land replaces work's land.",
@@ -150,6 +156,20 @@ export const nameRefusal = (input: OrchestrateInput): Option.Option<string> => {
   const action = input.action
   if (action === "lane" && !UNIT_NAME.test(input.unit ?? ""))
     return Option.some(`orchestrate: ${quote(input.unit ?? "")} is no unit name: a unit is lowercase letters, digits, ., _ and -, as in ${EXAMPLES.lane}.`)
+  if (action === "lane" && Option.exists(Option.fromUndefinedOr(input.branch), (branch) => baseOf(branch) !== input.unit))
+    return Option.some(
+      `orchestrate: branch ${quote(input.branch ?? "")} does not name unit ${input.unit}: a lane is one unit's, on one branch named for it, for its life. Name it <prefix>/${input.unit}: ${callOf("lane", [
+        ["unit", quote(input.unit ?? "")],
+        ["branch", quote(`${Option.getOrElse(Option.filter(Option.fromUndefinedOr(input.branch?.split("/").slice(0, -1).join("/")), (prefix) => prefix !== ""), () => "feat")}/${input.unit}`)],
+      ])}.`,
+    )
+  if (action === "lane" && Option.exists(Option.fromUndefinedOr(input.purpose), (purpose) => purpose.trim() === "" || purpose.includes("\n") || purpose.trim().length > PURPOSE_MAX))
+    return Option.some(
+      `orchestrate: a lane's purpose is one line of plain words, at most ${PURPOSE_MAX} characters, the outcome: ${callOf("lane", [
+        ["unit", quote(input.unit ?? "")],
+        ["purpose", quote("Land notices only when red")],
+      ])}.`,
+    )
   if (action === "verify" && Option.exists(Option.fromUndefinedOr(input.batch), (batch) => !UNIT_NAME.test(batch)))
     return Option.some(`orchestrate: ${quote(input.batch ?? "")} is no batch: name it batch-<k>, a unit or main-<sha>, as in ${EXAMPLES.verify}.`)
   return Option.none()
@@ -170,6 +190,13 @@ export interface Lane {
   readonly branch?: string
   readonly head: string
   readonly state: string
+  /** Its one-line purpose: its branch's description (`branch.<branch>.description`); none when it has none. */
+  readonly purpose?: string
+  /**
+   * The branch `orchestrate lane` made it on, by its mark (`branch.<branch>.orchestrate-lane`, the lane's path); none
+   * for a lane made otherwise (before the one-lane rule, by `work` or workrift by hand, by another run).
+   */
+  readonly madeOn?: string
 }
 
 /** The branch a lane is made on: `branch`, else `<run>/<unit>`, else `feat/<unit>`. */
@@ -193,6 +220,111 @@ export const isLaneOf = (unit: string, lane: Lane, workrift: boolean): boolean =
 /** The Rifts of `lanes` that are `unit`'s. */
 export const lanesOf = (unit: string, lanes: ReadonlyArray<Lane>, workrift: boolean): ReadonlyArray<Lane> => lanes.filter((lane) => isLaneOf(unit, lane, workrift))
 
+/**
+ * The folder workrift gives the Rift of `branch` on the workbox: rift.ts `workspaceName` (the work mod's, which this
+ * pure domain does not import), its parity held by cmd/orchestrate/orch-tools.sim.test.ts.
+ */
+export const workriftFolderOf = (branch: string): string =>
+  branch
+    .replace(/[/\s]/g, "-")
+    .replace(/[^A-Za-z0-9._-]/g, "")
+    .replace(/^-+|-+$/g, "")
+
+/**
+ * The workspaces a land and a verify make for themselves (the work mod's land.ts `INTEGRATION`, `POST_LAND`,
+ * `ACCEPT`, and `verifyLaneOf`'s), never a unit's lane: by kind they are never flagged, detached or not.
+ */
+const INTERNAL = /^(?:verify-.+|integrate|post-land|land-accept)(?:-[2-9])?$/
+
+/** Whether `lane` is a land's or a verify's own workspace. */
+export const isInternal = (lane: Lane): boolean => INTERNAL.test(baseOf(lane.path))
+
+/** The name a lane of `branch` is made under: workrift's for the branch on the workbox, the unit (its last segment) on the Mac. */
+const nameFor = (branch: string, workrift: boolean): string =>
+  Match.value(workrift).pipe(
+    Match.when(true, () => workriftFolderOf(branch)),
+    Match.orElse(() => baseOf(branch)),
+  )
+
+/**
+ * Why a lane `orchestrate lane` made (its `madeOn` mark) is off the branch it was made on: switched to another branch
+ * (reused for another unit), or detached (a rebase or merge stopped part way). A lane is one unit's, on one branch,
+ * for its life, so a land of it refuses. None for a lane on its branch, an unmarked lane (`strayOf` warns of it) and
+ * a land's or verify's own workspace.
+ */
+export const reusedOf = (lane: Lane): Option.Option<string> =>
+  Option.flatMap(
+    Option.filter(Option.fromUndefinedOr(lane.madeOn), () => !isInternal(lane)),
+    (madeOn) =>
+      Option.match(Option.fromUndefinedOr(lane.branch), {
+        onNone: () => Option.some(`detached at ${lane.head}, off ${madeOn}, the branch orchestrate lane made it on`),
+        onSome: (branch) => Option.liftPredicate(`branch ${branch} is not ${madeOn}, the branch orchestrate lane made it on`, () => branch !== madeOn),
+      }),
+  )
+
+/**
+ * Why a lane `orchestrate lane` did not mark (made before the one-lane rule, by `work` or workrift by hand, by another
+ * run) no longer says what happens in it: its branch is not the one its name would be made for (on the Mac the
+ * branch's last segment is its folder, `<name>-2` to `-9` aside; on the workbox the folder is workrift's for the
+ * branch), or it is detached. Only a warning: such a lane is taken as before the rule. None for a marked lane and a
+ * land's or verify's own workspace.
+ */
+export const strayOf = (lane: Lane, workrift: boolean): Option.Option<string> => {
+  const name = baseOf(lane.path)
+  // A name a removed lane still held is made again under a suffix (the work mod's `freshly`: `<name>-2` to `<name>-9`).
+  const names = [name, name.replace(/-[2-9]$/, "")]
+  return Option.flatMap(
+    Option.liftPredicate(lane, (each) => Option.isNone(Option.fromUndefinedOr(each.madeOn)) && !isInternal(each)),
+    (unmarked) =>
+      Option.match(Option.fromUndefinedOr(unmarked.branch), {
+        onNone: () => Option.some(`is detached at ${unmarked.head}, on no branch`),
+        onSome: (branch) => Option.liftPredicate(`holds branch ${branch}, not ${name}'s`, () => !names.includes(nameFor(branch, workrift))),
+      }),
+  )
+}
+
+/** The lanes of `lanes` a land and a lane take: all but a marked lane off its branch. */
+const kept = (lanes: ReadonlyArray<Lane>): ReadonlyArray<Lane> => lanes.filter((lane) => Option.isNone(reusedOf(lane)))
+
+/** The unit a lane's branch names (its last segment); none when detached. */
+const branchUnitOf = (lane: Lane): Option.Option<string> => Option.map(Option.fromUndefinedOr(lane.branch), baseOf)
+
+/** The fix for a lane off its branch: finish the rebase or merge a marked detached lane stopped in, else a lane of its own for the unit its branch names. */
+const reusedFix = (lane: Lane): string =>
+  Option.match(branchUnitOf(lane), {
+    onNone: () =>
+      Option.match(Option.fromUndefinedOr(lane.madeOn), {
+        onNone: () => `Switch it back to its unit's branch, or make a lane for the unit its work is: ${laneCallOf("<unit>")}.`,
+        onSome: (madeOn) => `Finish or abort the rebase or merge in progress there (git rebase --continue or --abort, git merge --continue or --abort), or check out ${madeOn} again.`,
+      }),
+    onSome: (other) => `Make a lane for the unit its branch names, ${laneCallOf(other)}, and move that work there (push the branch from ${lane.path} first).`,
+  })
+
+/** The branch a marked lane was made on, in words. */
+const madeOnOf = (lane: Lane): string => Option.getOrElse(Option.fromUndefinedOr(lane.madeOn), () => "its branch")
+
+/** A lane call of a unit whose marked lane holds another branch, or a land of a marked lane off its branch: what it holds, and the fix. */
+export const reusedRefusal = (unit: string, lane: Lane): string =>
+  Option.match(Option.fromUndefinedOr(lane.branch), {
+    onNone: () =>
+      `orchestrate: ${unit}'s lane ${lane.path} is detached at ${lane.head}, off ${madeOnOf(lane)}, the branch orchestrate lane made it on: a rebase or merge stopped part way leaves it so, and a land takes a branch. ${reusedFix(lane)} Then land again.`,
+    onSome: (branch) =>
+      `orchestrate: ${unit}'s lane ${lane.path} holds branch ${branch}, not ${madeOnOf(lane)}, the branch orchestrate lane made it on. One lane is one unit's, on one branch, for its life: a lane is never reused for another unit. ${reusedFix(lane)}`,
+  })
+
+/** The warning a lane's or a land's answer starts with for an unmarked lane off its name's branch: taken as before the one-lane rule. */
+export const strayWarning = (unit: string, lane: Lane, workrift: boolean): Option.Option<string> =>
+  Option.map(
+    strayOf(lane, workrift),
+    (why) => `orchestrate: warning: ${unit}'s lane ${lane.path} ${why}; orchestrate lane did not make it, so it is taken as before the one-lane rule. ${reusedFix(lane)}`,
+  )
+
+/** The warning a lane's answer starts with for its lane: a marked one detached (a land of it refuses), or an unmarked one off its name's branch. */
+export const laneWarnings = (unit: string, lane: Lane, workrift: boolean): ReadonlyArray<string> => [
+  ...Option.toArray(Option.map(reusedOf(lane), () => `orchestrate: warning: ${reusedRefusal(unit, lane).replace(/^orchestrate: /, "")}`)),
+  ...Option.toArray(strayWarning(unit, lane, workrift)),
+]
+
 /** What a lane does: answers the Rift it finds, makes one of `name`, or is refused. */
 export type LaneDecision = { readonly found: Lane } | { readonly make: string } | { readonly refused: string }
 
@@ -204,6 +336,14 @@ export type LaneDecision = { readonly found: Lane } | { readonly make: string } 
  */
 export const laneDecision = (unit: string, branch: string, name: string, workrift: boolean, lanes: ReadonlyArray<Lane>): LaneDecision => {
   const named = Arr.findFirst(lanes, (lane) => baseOf(lane.path) === name)
+  // A marked lane now on another branch is refused; one detached (a rebase stopped part way) is still its unit's,
+  // answered with the warning, and its land refuses until it is back on its branch.
+  const off = Option.filter(named, (lane) => Option.isSome(reusedOf(lane)))
+  if (Option.isSome(off))
+    return Option.match(Option.fromUndefinedOr(off.value.branch), {
+      onNone: (): LaneDecision => ({ found: off.value }),
+      onSome: (): LaneDecision => ({ refused: reusedRefusal(unit, off.value) }),
+    })
   if (Option.isSome(named) && workrift && named.value.branch !== branch)
     return {
       refused: `orchestrate: workrift names the workspace of branch ${branch} ${name}, and ${named.value.path} (${Option.getOrElse(
@@ -215,7 +355,9 @@ export const laneDecision = (unit: string, branch: string, name: string, workrif
       ])}.`,
     }
   if (Option.isSome(named)) return { found: named.value }
-  return Arr.match(lanesOf(unit, lanes, workrift), {
+  // A marked lane of another name that holds this unit's branch was reused: it is not this unit's lane, and this one
+  // is made. An unmarked one is taken as before the one-lane rule.
+  return Arr.match(kept(lanesOf(unit, lanes, workrift)), {
     onEmpty: (): LaneDecision => ({ make: name }),
     onNonEmpty: (found): LaneDecision =>
       Arr.match(Arr.drop(found, 1), { onEmpty: () => ({ found: Arr.headNonEmpty(found) }), onNonEmpty: () => ({ refused: lanesRefusal(unit, found) }) }),
@@ -247,9 +389,9 @@ export const stateOf = (unit: string, runs: ReadonlyArray<Run>): Option.Option<s
 /** The units the run tables show in `state`, once each, in the tables' order. */
 const unitsIn = (runs: ReadonlyArray<Run>, state: string): ReadonlyArray<string> => Arr.dedupe(runs.flatMap((run) => run.units.filter((unit) => unit.state === state).map((unit) => unit.unit)))
 
-/** The units that are ready with exactly one lane: what a land with no units lands. */
+/** The units that are ready with exactly one lane a land takes: what a land with no units lands. */
 export const readyWithLane = (runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane>, workrift: boolean): ReadonlyArray<string> =>
-  unitsIn(runs, "ready").filter((unit) => lanesOf(unit, lanes, workrift).length === 1)
+  unitsIn(runs, "ready").filter((unit) => kept(lanesOf(unit, lanes, workrift)).length === 1)
 
 // ── The land ──
 
@@ -263,45 +405,124 @@ export const warningOf = (unit: string, state: string): string => `orchestrate: 
 export const nothingToLand = (runs: ReadonlyArray<Run>): string =>
   `orchestrate: no unit is ready with a lane, so nothing landed. Name the units to land: ${landCallOf(["<unit>"])}, or { unit, path } for a workspace the plugin cannot name.${Arr.match(unitsIn(runs, "ready"), { onEmpty: () => "", onNonEmpty: (ready) => ` Ready with no lane or two: ${ready.join(", ")}.` })}`
 
+/** Two paths name one workspace: the same, trailing slashes aside. */
+const samePath = (one: string, other: string): boolean => one.replace(/\/+$/, "") === other.replace(/\/+$/, "")
+
 /**
  * The Rifts a land takes: `{ unit, path }` as given; a name, its one lane (none or two: the call names them and the
- * `{ unit, path }` form, never picks); no units, every unit the run tables show ready with one lane. A named unit the
- * run tables show in another state than `ready` lands with a warning.
+ * `{ unit, path }` form, never picks); no units, every unit the run tables show ready with one lane. A lane
+ * `orchestrate lane` made that is off its branch is refused with the fix; an unmarked one off its name's branch lands,
+ * with a warning, as before the one-lane rule. A named unit the run tables show in another state than `ready` lands
+ * with a warning.
  */
 export const resolveLand = (input: OrchestrateInput, runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane>, workrift: boolean): Resolved => {
   const asked = Option.getOrElse(Option.filter(Option.fromUndefinedOr(input.units), Arr.isReadonlyArrayNonEmpty), () => [])
+  const strays = (rifts: ReadonlyArray<UnitRift>): ReadonlyArray<string> =>
+    rifts.flatMap((rift) => Option.toArray(Option.flatMap(Arr.findFirst(lanes, (lane) => samePath(lane.path, rift.path)), (lane) => strayWarning(rift.unit, lane, workrift))))
   if (asked.length === 0) {
     const ready = readyWithLane(runs, lanes, workrift)
     if (ready.length === 0) return { nothing: nothingToLand(runs) }
-    return { rifts: ready.flatMap((unit) => lanesOf(unit, lanes, workrift).map((lane) => ({ unit, path: lane.path }))), warnings: [] }
+    const rifts = ready.flatMap((unit) => kept(lanesOf(unit, lanes, workrift)).map((lane) => ({ unit, path: lane.path })))
+    return { rifts, warnings: strays(rifts) }
   }
   const rifts: Array<UnitRift> = []
   for (const each of asked) {
     if (!Predicate.isString(each)) {
+      // A workspace named by its path lands as given, unless it is a marked lane off its branch.
+      const reused = Arr.findFirst(lanes, (lane) => samePath(lane.path, each.path) && Option.isSome(reusedOf(lane)))
+      if (Option.isSome(reused)) return { refused: reusedRefusal(each.unit, reused.value) }
       rifts.push(each)
       continue
     }
     const found = lanesOf(each, lanes, workrift)
-    if (found.length === 0) return { refused: `orchestrate: no workspace of the base reads as ${each}. Name its workspace: ${landCallOf([{ unit: each, path: "<its workspace>" }])}.` }
-    if (found.length > 1) return { refused: lanesRefusal(each, found) }
-    rifts.push({ unit: each, path: found[0]?.path ?? "" })
+    const first = Arr.head(found)
+    if (Option.isNone(first)) return { refused: `orchestrate: no workspace of the base reads as ${each}. Name its workspace: ${landCallOf([{ unit: each, path: "<its workspace>" }])}.` }
+    const own = kept(found)
+    const only = Arr.head(own)
+    if (Option.isNone(only)) return { refused: reusedRefusal(each, first.value) }
+    if (own.length > 1) return { refused: lanesRefusal(each, own) }
+    rifts.push({ unit: each, path: only.value.path })
   }
   const warnings = rifts.flatMap((rift) => Option.toArray(Option.map(Option.filter(stateOf(rift.unit, runs), (state) => state !== "ready"), (state) => warningOf(rift.unit, state))))
-  return { rifts, warnings }
+  return { rifts, warnings: [...strays(rifts), ...warnings] }
 }
 
 // ── The answers ──
 
-/** A lane's answer: the Rift, its branch, head and unsaved work, whether it was made, and the implementor's suffix last. */
-export const laneAnswer = (unit: string, lane: Lane, made: boolean): string =>
+/** The description an implementor's call takes: `implementor <unit> r<N> — <purpose> (lane: <path>)`, the purpose left out when the lane has none. */
+export const implementorDescriptionOf = (unit: string, round: number, lane: Lane): string =>
+  `implementor ${unit} r${round}${Option.getOrElse(
+    Option.map(Option.fromUndefinedOr(lane.purpose), (purpose) => ` — ${purpose}`),
+    () => "",
+  )} ${laneNote(lane.path)}`
+
+/** The hint a lane with no purpose answers with: missing is allowed for one release. */
+export const purposeHint = (unit: string): string =>
+  `orchestrate: hint: lane ${unit} has no purpose. Give it one, the outcome in plain words (at most ${PURPOSE_MAX} characters): ${callOf("lane", [
+    ["unit", quote(unit)],
+    ["purpose", quote("<the outcome, in words>")],
+  ])}. A lane with none is allowed for this release only.`
+
+/**
+ * A lane's answer: the naming warnings first, then the Rift, its branch, head and unsaved work, whether it was made,
+ * its purpose (or the hint to give one), and the implementor's call and suffix last.
+ */
+export const laneAnswer = (unit: string, lane: Lane, made: boolean, warnings: ReadonlyArray<string> = []): string =>
   [
+    ...warnings,
     `orchestrate: lane ${unit}: ${lane.path} · ${Option.getOrElse(Option.map(Option.fromUndefinedOr(lane.branch), (branch) => `branch ${branch}`), () => `detached at ${lane.head}`)} · head ${lane.head} · ${lane.state}${Match.value(made).pipe(
       Match.when(true, () => "; made now."),
       Match.orElse(() => "; it existed, so nothing was made."),
     )}`,
-    `Start its implementor: subagent({ agent: "implementor", description: "implementor ${unit} r1 (rift: ${lane.path})", prompt, background: true }).`,
-    `(rift: ${lane.path})`,
+    Option.match(Option.fromUndefinedOr(lane.purpose), { onNone: () => purposeHint(unit), onSome: (purpose) => `Purpose: ${purpose}` }),
+    `Start its implementor: subagent({ agent: "implementor", description: ${quote(implementorDescriptionOf(unit, 1, lane))}, prompt, background: true }).`,
+    laneNote(lane.path),
   ].join("\n")
+
+// ── The naming rule, kept softly: a warning, never a refusal ──
+
+/** A segment of a name: split at `-`, `_`, `.` and `/`. */
+const segmentsOf = (name: string): ReadonlyArray<string> => name.split(/[-_./]+/).filter((segment) => segment !== "")
+
+/** The unit a lane is for: its branch's last segment, else its folder. */
+const laneUnitOf = (lane: Lane): string => Option.getOrElse(branchUnitOf(lane), () => baseOf(lane.path))
+
+/**
+ * The warnings a lane of `unit` answers with, each saying what to name it instead: a name that ends in a round
+ * (`-r2`), one that is only a code (no word of four letters or more), and one that starts with a segment every other
+ * lane of the repository shares (a run or batch prefix: at least two others, the verify checkouts aside). None for a
+ * name of words.
+ */
+export const namingWarnings = (unit: string, lanes: ReadonlyArray<Lane>): ReadonlyArray<string> => {
+  const stem = Option.fromNullishOr(/^(.+)[-_.]r\d+$/.exec(unit)?.[1])
+  const words = segmentsOf(unit)
+  const others = lanes.flatMap((lane) => Option.toArray(Option.liftPredicate(laneUnitOf(lane), (name) => name !== unit && !name.startsWith("verify-"))))
+  const prefix = Option.filter(Arr.head(words), (first) => words.length > 1 && others.length >= 2 && others.every((name) => Option.contains(Arr.head(segmentsOf(name)), first)))
+  return [
+    ...Option.toArray(
+      Option.map(
+        stem,
+        (named) => `orchestrate: warning: ${unit} ends in a round: a round is no part of a unit's name, and the next round reuses the unit's lane. Name it ${named}.`,
+      ),
+    ),
+    ...Arr.filter([`orchestrate: warning: ${unit} is only a code: name a unit for its outcome, in words (one of four letters or more), as in land-notices-red.`], () => !/[a-z]{4,}/.test(unit)),
+    ...Option.toArray(
+      Option.map(
+        prefix,
+        (first) =>
+          `orchestrate: warning: ${unit} starts with ${first}, which every other lane here shares: a run or batch prefix says nothing of the lane. Name it ${words.slice(1).join("-")}, and pass the run as run: "${first}" for the branch ${first}/<unit>.`,
+      ),
+    ),
+  ]
+}
+/** The note naming a unit's lane, as its implementor's description carries it: `(lane: <path>)`. */
+export const laneNote = (path: string): string => `(lane: ${path})`
+
+/**
+ * The lane path a description or a lane's answer names in its note: `(lane: <path>)`, or `(rift: <path>)` as
+ * notes said before the rename (stored sessions and sessions in flight hold it); none without a note.
+ */
+export const lanePathOf = (text: string): Option.Option<string> => Option.fromNullishOr(/\((?:lane|rift): ([^)]+)\)/.exec(text)?.[1])
 
 /**
  * The commit a land pushed, as the land's answer names it first (`Landed <n> workspace(s) as one push: <sha> …`, or
@@ -315,7 +536,7 @@ export const roundIn = (unit: string, runs: ReadonlyArray<Run>): Option.Option<n
     Option.map(Arr.findFirst(run.units, (each) => each.unit === unit), (each) => Option.getOrElse(Option.filter(Option.map(Option.fromUndefinedOr(each.round), Number), (n) => Number.isInteger(n) && n > 0), () => 1)),
   )
 
-/** A land's answer: its warnings, the rift land's own text, then the verify to make. */
+/** A land's answer: its warnings, the work tool's land text, then the verify to make. */
 export const landAnswer = (warnings: ReadonlyArray<string>, text: string): string => [...warnings, text, LAND_NEXT].join("\n")
 
 /** A land's last line: the verify of main, when it is due. */
@@ -365,17 +586,30 @@ export const nextOf = (runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane>, wor
 export const nextLine = (runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane>, workrift: boolean, since: Option.Option<MainSince> = Option.none(), now = 0): string =>
   nextOf(runs, lanes, workrift, since, now).line
 
+/** One lane as status says it: its path, branch and purpose, and the flag of a lane that was reused. */
+const oneLaneText = (lane: Lane, workrift: boolean): string =>
+  [
+    `lane ${lane.path} (${Option.getOrElse(Option.map(Option.fromUndefinedOr(lane.branch), (branch) => `branch ${branch}`), () => `detached at ${lane.head}`)})`,
+    ...Option.toArray(Option.map(Option.fromUndefinedOr(lane.purpose), (purpose) => ` — ${purpose}`)),
+    ...Option.toArray(
+      Option.map(reusedOf(lane), (why) =>
+        Option.match(Option.fromUndefinedOr(lane.branch), {
+          onNone: () => ` · DETACHED: ${why}; a land of it refuses until it is back on its branch. ${reusedFix(lane)}`,
+          onSome: () => ` · REUSED: ${why}; a land of it refuses. ${reusedFix(lane)}`,
+        }),
+      ),
+    ),
+    ...Option.toArray(Option.map(strayOf(lane, workrift), (why) => ` · warning: it ${why}; orchestrate lane did not make it, so it lands as asked. ${reusedFix(lane)}`)),
+  ].join("")
+
 /** A unit's lane as status says it. */
-const laneText = (found: ReadonlyArray<Lane>): string =>
+const laneText = (found: ReadonlyArray<Lane>, workrift: boolean): string =>
   Arr.match(found, {
     onEmpty: () => "no lane",
     onNonEmpty: (each) =>
       Arr.match(Arr.drop(each, 1), {
-        onEmpty: () => {
-          const lane = Arr.headNonEmpty(each)
-          return `lane ${lane.path} (${Option.getOrElse(Option.map(Option.fromUndefinedOr(lane.branch), (branch) => `branch ${branch}`), () => `detached at ${lane.head}`)})`
-        },
-        onNonEmpty: () => `${each.length} lanes: ${each.map((lane) => lane.path).join(", ")}`,
+        onEmpty: () => oneLaneText(Arr.headNonEmpty(each), workrift),
+        onNonEmpty: () => `${each.length} lanes: ${each.map((lane) => oneLaneText(lane, workrift)).join("; ")}`,
       }),
   })
 
@@ -389,7 +623,7 @@ export const statusAnswer = (runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane
     ...due,
     ...held.flatMap((run) => [
       `orchestrate: run ${run.name}:`,
-      ...run.units.map((unit) => [`- ${unit.unit}: ${unit.state}`, ...Arr.filter([unit], isOpen).map((open) => laneText(lanesOf(open.unit, lanes, workrift)))].join(" · ")),
+      ...run.units.map((unit) => [`- ${unit.unit}: ${unit.state}`, ...Arr.filter([unit], isOpen).map((open) => laneText(lanesOf(open.unit, lanes, workrift), workrift))].join(" · ")),
     ]),
     nextLine(held, lanes, workrift, since, now),
   ].join("\n")

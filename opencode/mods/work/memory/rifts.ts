@@ -1,6 +1,6 @@
 // Rifts held in memory, for the seam test and the model's tests: warm
 // sources and their Rifts in a mutable world the test reads and changes, laid
-// out as Rift lays them (`<parent>/.rifts/<source>/<name>`).
+// out as work lays them (`<parent>/.work/<source>/<name>`).
 import { Effect, Layer, Option } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
@@ -16,6 +16,10 @@ export interface World {
    * the ones its source does not also hold on top of the `stashes` a test set.
    */
   readonly stashed: Map<string, ReadonlyArray<string>>
+  /** Each branch description a Rift's Git config holds, by `<path>\n<branch>`: what `describe` sets and `inspect` reads as the purpose. */
+  readonly described: Map<string, string>
+  /** Each Rift's mark, by its directory: the branch `mark` found checked out there, which `inspect` answers as `madeOn` on any branch after. */
+  readonly marked: Map<string, string>
   /** What each removal runs before it trashes, standing for a slow `rift remove`; at first, nothing. */
   removeHold: Effect.Effect<void>
   /** The commit a create's `at` names (a commit or a ref), or none when the repository has no such commit; at first, `at` itself. */
@@ -26,6 +30,8 @@ export const world = (sources: ReadonlyArray<string>, rifts: ReadonlyArray<Works
   sources: [...sources],
   rifts: new Map(rifts.map((workspace) => [workspace.path, workspace])),
   stashed: new Map(),
+  described: new Map(),
+  marked: new Map(),
   removeHold: Effect.void,
   commitOf: Option.some,
 })
@@ -35,11 +41,11 @@ export const stash = (state: World, path: string, commit: string): void => {
   state.stashed.set(path, [commit, ...(state.stashed.get(path) ?? [])])
 }
 
-/** Where Rift puts a Rift named `name` of `source`. */
+/** Where work puts a workspace named `name` of `source`. */
 export const pathOf = (source: string, name: string): string => {
   const parts = source.split("/")
   const base = parts.pop()
-  return `${parts.join("/")}/.rifts/${base}/${name}`
+  return `${parts.join("/")}/.work/${base}/${name}`
 }
 
 /** A clean Rift on `branch`, as a test sets one up. */
@@ -54,6 +60,12 @@ export const clean = (path: string, branch: string | undefined): Workspace => ({
   unpushed: [],
   stashes: 0,
 })
+
+const describedKey = (path: string, branch: string): string => `${path}\n${branch}`
+
+/** The purpose `inspect` answers for the Rift at `path`: its checked-out branch's description, if any. */
+export const purposeOf = (state: World, path: string): Option.Option<string> =>
+  Option.flatMap(Option.fromNullishOr(state.rifts.get(path)?.branch), (branch) => Option.fromNullishOr(state.described.get(describedKey(path, branch))))
 
 const sourceOfRift = (state: World, path: string): string | undefined => state.sources.find((source) => path.startsWith(pathOf(source, "")))
 
@@ -95,7 +107,21 @@ export const layer = (state: World) =>
         if (workspace === undefined) return yield* new RiftFailed({ operation: "rift", message: `${path} is not a Rift workspace (no .rift marker)` })
         const source = sourceOfRift(state, path)
         const own = ownStashes(state.stashed.get(path) ?? [], source === undefined ? [] : (state.stashed.get(source) ?? []))
-        return own === 0 ? workspace : { ...workspace, stashes: workspace.stashes + own }
+        const purposed = Option.match(purposeOf(state, path), { onNone: () => workspace, onSome: (purpose) => ({ ...workspace, purpose }) })
+        const described = Option.match(Option.fromUndefinedOr(state.marked.get(path)), { onNone: () => purposed, onSome: (madeOn) => ({ ...purposed, madeOn }) })
+        return own === 0 ? described : { ...described, stashes: workspace.stashes + own }
+      }),
+      describe: Effect.fn("Rifts.describe")(function* (path: string, purpose: string) {
+        if (!state.rifts.has(path)) return yield* new RiftFailed({ operation: "git config", message: `${path} is not a Rift workspace` })
+        const branch = Option.fromNullishOr(state.rifts.get(path)?.branch)
+        if (Option.isNone(branch)) return yield* new RiftFailed({ operation: "git config", message: `${path} is detached: a purpose is its branch's description, and it has no branch` })
+        state.described.set(describedKey(path, branch.value), purpose.trim())
+      }),
+      mark: Effect.fn("Rifts.mark")(function* (path: string) {
+        if (!state.rifts.has(path)) return yield* new RiftFailed({ operation: "git config", message: `${path} is not a Rift workspace` })
+        const branch = Option.fromNullishOr(state.rifts.get(path)?.branch)
+        if (Option.isNone(branch)) return yield* new RiftFailed({ operation: "git config", message: `${path} is detached: a lane's mark is on its branch, and it has no branch` })
+        state.marked.set(path, branch.value)
       }),
       remove: Effect.fn("Rifts.remove")(function* (path: string, options?: { readonly withChildren?: boolean }) {
         const workspace = state.rifts.get(path)
@@ -108,6 +134,8 @@ export const layer = (state: World) =>
           for (const child of state.rifts.get(each)?.children ?? []) drop(child)
           state.rifts.delete(each)
           state.stashed.delete(each)
+          state.marked.delete(each)
+          for (const key of [...state.described.keys()].filter((found) => found.startsWith(`${each}\n`))) state.described.delete(key)
         }
         drop(path)
       }),

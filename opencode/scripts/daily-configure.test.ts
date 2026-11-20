@@ -1,6 +1,7 @@
 // What a build's tree gives the TUI (`config/cli.json`, daily's `tuiEntries`): every plugin with a TUI
 // part, in the old scheme's order. A tree's server entries carry no TUI part, so this list is the only
 // way a TUI gets one.
+// @reads cmd/*/tui.ts cmd/*/tui.tsx cmd/*/package.json
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import { Schema } from "effect"

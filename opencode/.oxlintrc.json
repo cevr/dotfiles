@@ -411,7 +411,7 @@
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The rift domain fence: the rift tool's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+                "message": "The work domain fence: the work tool's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
           }

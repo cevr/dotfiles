@@ -1,8 +1,8 @@
 // One work run in real OpenCode (the fork, embedded through its SDK, as tests/auto-title/run.ts runs it), on the
-// scripted model (tests/work/sim.ts) on a loopback port, with cmd/work loaded from config as the owner would load
-// it, on the real `work` binary. tests/work.test.ts starts it in a child process whose HOME and XDG dirs are a
+// scripted model (tests/work/sim.ts) on a loopback port, with cmd/work and cmd/tool-names loaded from config as the
+// owner would load them, on the real `work` binary. tests/work.test.ts starts it in a child process whose HOME and XDG dirs are a
 // scratch dir, so work's registry is the run's own, with `WORK_E2E_BASE`, `WORK_E2E_FORK`, `WORK_E2E_PLUGIN`,
-// `WORK_E2E_BIN`, `WORK_E2E_BARE` (list cmd/work with no options, finding work on PATH), `WORK_E2E_TASK` and, for a
+// `WORK_E2E_TOOL_NAMES`, `WORK_E2E_BIN`, `WORK_E2E_BARE` (list cmd/work with no options, finding work on PATH), `WORK_E2E_TASK` and, for a
 // land, `WORK_E2E_WAKE`. The work dir is a base: a git repository with one commit pushed to a bare origin, `work.toml` in its `.git/info/exclude`, registered with `work init`, with a
 // gate and an accept check. It writes what the session's tool calls said, the model's requests and what is on
 // disk after the run to `<base>/result.json`. It imports nothing of the fork's at compile time.
@@ -105,6 +105,7 @@ const run = Effect.gen(function* () {
   const base = yield* Config.String("WORK_E2E_BASE")
   const fork = yield* Config.String("WORK_E2E_FORK")
   const plugin = yield* Config.String("WORK_E2E_PLUGIN")
+  const toolNames = yield* Config.String("WORK_E2E_TOOL_NAMES")
   const bin = yield* Config.String("WORK_E2E_BIN")
   const bare = yield* Config.Boolean("WORK_E2E_BARE").pipe(Config.withDefault(false))
   const task = yield* Config.String("WORK_E2E_TASK")
@@ -126,11 +127,12 @@ const run = Effect.gen(function* () {
   yield* git(work, "push", "-q", "-u", "origin", "main")
   yield* fs.writeFileString(path.join(work, ".git/info/exclude"), "work.toml\n")
   yield* sh(work, [bin, "--json", "init"], { WORK_BASE: work })
-  // The repository's checks for a land: a gate and a slower accept that reports the batch's base.
+  // The repository's checks for a land: a gate and a slower accept that reports the batch's base and fails, since
+  // only a failed accept check wakes the session (a green one says nothing).
   yield* git(work, "config", "user.name", "work")
   yield* git(work, "config", "user.email", "work@example.com")
   yield* git(work, "config", "rift.gate", 'echo " 2 pass"')
-  yield* git(work, "config", "rift.accept", 'sleep 1 && echo " 1 pass since $RIFT_LAND_BASE"')
+  yield* git(work, "config", "rift.accept", 'sleep 1 && echo " 1 fail since $RIFT_LAND_BASE" && exit 1')
   const workspaces = path.join(path.dirname(work), ".work", path.basename(work))
   const workspace = path.join(workspaces, "feat-x")
   const integration = path.join(workspaces, "integrate")
@@ -149,7 +151,7 @@ const run = Effect.gen(function* () {
         models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
       },
     },
-    plugins: [entryOf(plugin, bin, bare)],
+    plugins: [entryOf(plugin, bin, bare), toolNames],
   }
 
   const sdk: Partial<Sdk> = yield* Effect.tryPromise({

@@ -93,7 +93,7 @@ type LockFiles = ReturnType<typeof lockFiles>
 
 /**
  * This host's land logs and their lock files, `${XDG_CACHE_HOME:-~/.cache}/rift-land` read from `env`: the one
- * place the rift tool (cmd/rift) and a script that takes its locks (scripts/daily.ts) find them.
+ * place the work tool (cmd/work) and a script that takes its locks (scripts/daily.ts) find them.
  */
 export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_HOME"] || join(TuiDirs.dirs().home, ".cache"), "rift-land")
 

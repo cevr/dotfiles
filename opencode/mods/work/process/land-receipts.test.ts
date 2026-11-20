@@ -60,7 +60,7 @@ const bench = (exits: { readonly merge?: number; readonly focus?: number } = {})
   sh(source, "git", "config", "rift.gate", marking(marks, "full-gate", 0))
   sh(source, "git", "config", "rift.mergeCheck", marking(marks, "merge-check", exits.merge ?? 0))
   sh(source, "git", "config", "rift.focus", `echo focus "$(pwd)" {threads} {paths} >> "${marks}"; exit ${exits.focus ?? 0}`)
-  const rifts = join(scratch, ".rifts", "app")
+  const rifts = join(scratch, ".work", "app")
   mkdirSync(rifts, { recursive: true })
   const clone = (name: string, branch: string) => {
     const path = join(rifts, name)

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
 /** A fork path that exists on no machine, like a Mac path on the workbox. */
-const ELSEWHERE = "/nonexistent/loop-probe-x/.rifts/opencode/prime-look"
+const ELSEWHERE = "/nonexistent/loop-probe-x/.work/opencode/prime-look"
 /** opencode/: the real scripts run from it. */
 const OPENCODE = join(import.meta.dir, "..")
 
@@ -70,6 +70,8 @@ beforeEach(() => {
   // The script and the check it shares with the gate, accept and daily.
   for (const name of ["link-fork.ts", "fork.ts"])
     if (existsSync(join(import.meta.dir, name))) cpSync(join(import.meta.dir, name), join(workspace, "scripts", name))
+  // The check decodes the fork's package.json files with Effect, which the copies resolve from opencode/'s own install.
+  symlinkSync(join(OPENCODE, "node_modules"), join(workspace, "node_modules"))
   fork = makeFork(join(scratch, "fork"))
 })
 
@@ -118,7 +120,7 @@ describe("link-fork", () => {
 
   test("refuses an unexpanded ~ and says to write $HOME", () => {
     const before = snapshot()
-    const { code, err } = run("~/Developer/personal/.rifts/opencode/prime-look")
+    const { code, err } = run("~/Developer/personal/.work/opencode/prime-look")
     expect(code).not.toBe(0)
     expect(err).toContain("$HOME")
     expect(snapshot()).toEqual(before)
@@ -151,6 +153,36 @@ describe("link-fork", () => {
     expect(err).toContain("bun install")
     expect(snapshot()).toEqual(before)
     expect(dangling()).toEqual([])
+  })
+
+  // 2026-11-20: prime-look moved to a commit pinning psychoscript 0.1.2 with 0.2.1 still installed;
+  // Code Mode's `execute` hung and tests/image.test.ts went red with nothing of ours changed.
+  test("refuses a fork whose install is not its checkout's (an exact pin, or a catalog one, linked at another version), naming the install to run", () => {
+    file(join(fork, "package.json"), '{ "workspaces": { "packages": ["packages/*"], "catalog": { "effect": "4.1.0" } } }')
+    const codemode = join(fork, "packages/codemode")
+    file(join(codemode, "package.json"), '{ "dependencies": { "psychoscript": "0.1.2", "effect": "catalog:", "ranged": "^2.0.0", "@opencode/plugin": "workspace:*" } }')
+    /** Installs `name` at `version` in the fork's store and links the codemode package to it, as Bun's isolated install does. */
+    const install = (name: string, version: string) => {
+      const stored = join(fork, "node_modules/.bun", `${name}@${version}+0123abcd`, "node_modules", name)
+      file(join(stored, "package.json"))
+      const at = join(codemode, "node_modules", name)
+      rmSync(at, { force: true })
+      mkdirSync(join(at, ".."), { recursive: true })
+      symlinkSync(relative(join(at, ".."), stored), at)
+    }
+    install("psychoscript", "0.1.2")
+    install("effect", "4.1.0")
+    install("ranged", "2.5.0")
+    expect(run(fork)).toMatchObject({ code: 0 })
+    install("psychoscript", "0.2.1")
+    install("effect", "4.0.0")
+    const before = snapshot()
+    const { code, err } = run(fork)
+    expect({ code, err: err.trim() }).toEqual({
+      code: 1,
+      err: `link-fork: ${fork}'s install is not its checkout's (moved without an install?): packages/codemode: psychoscript 0.2.1, pinned 0.1.2; packages/codemode: effect 4.0.0, pinned 4.1.0. Run bun install --frozen-lockfile in ${fork}.`,
+    })
+    expect(snapshot()).toEqual(before)
   })
 
   test("accept runs the same check, before it runs or lists any test", () => {

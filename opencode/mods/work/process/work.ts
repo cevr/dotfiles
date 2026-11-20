@@ -1,16 +1,17 @@
-// Rifts over Ergo's `work` binary and Git, run as child processes: the contract's second provider,
-// beside process/rifts.ts. A workspace is a record in its base's registry (`work --json list`);
+// Rifts over Ergo's `work` binary and Git, run as child processes: the contract's process provider.
+// A workspace is a record in its base's registry (`work --json list`);
 // the bases are the ones `work init` registered (`work --json bases`). Every call that reads or
 // writes a registry names its base with WORK_BASE: inside an adopted copy `work` would otherwise
 // take the copy for a base and read an empty registry. With `workrift: true` (the workbox) a
-// workspace is made and removed by `workrift`, as process/rifts.ts does; the rest asks `work`.
-// Unsaved work is read with Git exactly as process/rifts.ts reads it. A removal is
+// workspace is made and removed by `workrift`; the rest asks `work`.
+// Unsaved work is read with Git (unpushed.ts). A removal is
 // `work rm -abandon -expect <id>`: the tool's removal rule (workspace.ts) has judged it already,
 // and the id is the one the caller's inspect saw, so a workspace replaced since is refused.
 import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
+import { describeBranch, madeOnField, madeOnOf, markBranch, purposeField, purposeOf } from "./purpose.ts"
 import { unpushed as unpushedOf } from "./unpushed.ts"
 
 export interface Options {
@@ -235,7 +236,17 @@ export const layer = (options: Options) => {
     const stashOf = (at: string) => git(at, "stash", "list", "--format=%H").pipe(Effect.map(lines))
     const inherited = yield* Effect.forEach(chain, stashOf).pipe(Effect.map((each) => each.flat()))
     const stashes = ownStashes(yield* stashOf(path), inherited)
-    return { ...base, git: true, branch: Option.getOrUndefined(branch), head, uncommitted, unpushed, stashes } satisfies Workspace
+    const purpose = yield* purposeOf({ git, spawn }, path, branch)
+    const madeOn = yield* madeOnOf({ git, spawn }, path)
+    return { ...base, git: true, branch: Option.getOrUndefined(branch), head, uncommitted, unpushed, stashes, ...purposeField(purpose), ...madeOnField(madeOn) } satisfies Workspace
+  })
+
+  const describe = Effect.fn("WorkRifts.describe")(function* (path: string, purpose: string) {
+    yield* describeBranch({ git, spawn }, path, purpose)
+  })
+
+  const mark = Effect.fn("WorkRifts.mark")(function* (path: string) {
+    yield* markBranch({ git, spawn }, path)
   })
 
   /** Whether the checkout at `path` has `ref`. */
@@ -402,5 +413,5 @@ export const layer = (options: Options) => {
     yield* trash(known, withChildren)
   })
 
-  return Layer.succeed(Rifts, Rifts.of({ source, create, list, inspect, remove }))
+  return Layer.succeed(Rifts, Rifts.of({ source, create, list, inspect, describe, mark, remove }))
 }
