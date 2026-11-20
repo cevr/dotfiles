@@ -122,7 +122,7 @@ export const LAW = {
   agents:
     "an agent a transform defines is listed and got with its fields, an update of an agent the transform did not define makes it, and a session created on it runs as it with its system prompt",
   subagent:
-    "a subagent call starts a child session of the caller on the agent asked, prompted with the spawned line, and answers at once that it runs in the background; the child going idle sends the parent a <subagent> notice with its answer, which wakes it",
+    "a subagent call starts a child session of the caller on the agent asked, prompted with the spawned line, and answers at once that it runs in the background; the child going idle sends the parent a subagent notice (its background-result envelope) with its answer, which wakes it",
   idleBackground:
     "experimental.idle after a turn that started a background subagent lists the running child as the session's background; once the child's notice is answered, the session's idle lists none",
   hooks:

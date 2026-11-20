@@ -11,8 +11,9 @@
 //   message; a period with no assistant message of its own (control work, a
 //   compaction alone) reports nothing; an execution the server's stop
 //   interrupts reports nothing;
-// - the report is a synthetic steer in the parent, its text
-//   `<subagent sessionID="…" state="…" description="…">\n<body>\n</subagent>`,
+// - the report is a synthetic steer in the parent, its text the background-result envelope (upstream e51247f626;
+//   mods/subagents/envelope.ts reads it and the older `<subagent …>` alike)
+//   `<background-result kind="subagent" sessionID="…" state="…" description="…">\n<body>\n</background-result>`,
 //   its description the child's title (`Subagent` without one), its metadata
 //   `{ source: "subagent", childID, agent, state }` (the agent `subagent`
 //   when the child has none: a plugin's `session.create` sets none);
@@ -24,6 +25,7 @@
 // Not modelled: the fork's outbox, which redelivers a report a stopped server
 // recorded but did not admit (packages/core/src/session/execution/restart.ts).
 import { Option } from "effect"
+import { render } from "../mods/subagents/envelope.ts"
 import type { JsonObject } from "./runtime.ts"
 
 /** The body of a completed period with no text. */
@@ -96,7 +98,7 @@ export const reportOf = (
   Option.map(ended, ({ status, body }) => {
     const shown = withRunning(status, body, shells)
     return {
-      text: `<subagent sessionID="${child.id}" state="${shown.state}" description="${child.description}">\n${shown.body}\n</subagent>`,
+      text: render("background-result", "subagent", { sessionID: child.id, state: shown.state, description: child.description }, shown.body),
       description: child.description,
       metadata: { source: "subagent", childID: child.id, agent: child.agent, state: status },
     }

@@ -232,7 +232,7 @@ export interface Session {
   named: boolean
   /** The model it selected, when it selected one; else the host's default. */
   model: Option.Option<ModelRef>
-  /** A subagent child's job: each time it goes idle, its parent gets a `<subagent>` notice. */
+  /** A subagent child's job: each time it goes idle, its parent gets a `<background-result kind="subagent">` notice. */
   job: Option.Option<Job>
   /** None until the first execution asks for one; then the title request's answer. */
   title: Option.Option<string>
@@ -525,7 +525,7 @@ export const SPAWNED = "You are a subagent spawned by another session."
 /** The subagent tool's answer: the child works in the background, and its notices wake the parent. */
 export const backgroundText = (sessionID: string) =>
   [
-    `The subagent is working in the background (sessionID: ${sessionID}). You will receive a <subagent> message when it goes idle, and again after each later round of work.`,
+    `The subagent is working in the background (sessionID: ${sessionID}). You will receive a <background-result kind="subagent"> message when it goes idle, and again after each later round of work.`,
     "DO NOT sleep, poll, proactively check on its progress, or duplicate this subagent's work.",
     "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
     "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
@@ -1348,7 +1348,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
    * The built-in subagent tool, as the fork's (packages/core/src/tool/plugin/subagent.ts): a new child session of
    * the caller, on the agent asked, its model the one asked, else the agent's, else the parent's; or, with a
    * `sessionID`, a follow-up to the caller's child. The child is prompted and runs in the background; the call
-   * answers at once, and each time the child goes idle its parent gets a `<subagent>` notice that wakes it.
+   * answers at once, and each time the child goes idle its parent gets a `<background-result kind="subagent">` notice that wakes it.
    */
   const subagentTool: Tool.Info<typeof SubagentInput> = {
     name: "subagent",

@@ -13,7 +13,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path"
 import { Option, Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, REPORT_HEARD, REPORT_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { envelope } from "../mods/subagents/envelope.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, REPORT_HEARD, REPORT_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK, isReport } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -84,7 +85,7 @@ const droppedAlpha = (result: Result) => {
   expect((cell!.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(/implement → dropped r1 superseded/)
 }
 
-/** A message of the session's context that carries text, as a `<subagent>` notice is one. */
+/** A message of the session's context that carries text, as a subagent's notice is one. */
 const Notice = Schema.Struct({ type: Schema.Literal("synthetic"), text: Schema.String })
 /** An assistant message's text parts. */
 const AssistantText = Schema.Struct({ type: Schema.Literal("assistant"), content: Schema.Array(Schema.Unknown) })
@@ -104,9 +105,9 @@ const stoppedChild = (result: Result) => {
   expect((cell?.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(
     /^read: running\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\)\nlater: stopped\nlate file: none\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
   )
-  const notices = noticesOf(result).filter((text) => text.startsWith("<subagent "))
+  const notices = noticesOf(result).flatMap((text) => envelope(text, "subagent") ?? [])
   expect(notices).toHaveLength(1)
-  expect(notices[0]).toContain('state="cancelled"')
+  expect(notices[0]!.attributes.state).toBe("cancelled")
   // The child's model requests are its shell's call and its stalled turn: nothing ran it again after the stop.
   expect(result.seen.filter((request) => request.task.endsWith(STALL_TASK) && request.tools.length > 0)).toHaveLength(2)
   expect(result.seen.filter((request) => request.last.includes(QUEUED_PROMPT))).toEqual([])
@@ -284,12 +285,12 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
           ].join(""),
         )
         const closed = said.findIndex((text) => text.includes(DONE))
-        const report = said.findIndex((text) => text.startsWith("<subagent ") && text.includes('state="completed"'))
+        const report = said.findIndex((text) => envelope(text, "subagent")?.attributes.state === "completed")
         const answered = said.findIndex((text) => text.includes(REPORT_HEARD))
         expect({ closed: closed >= 0, report: report > closed, answered: answered > report }).toEqual({ closed: true, report: true, answered: true })
         // One request answered the report, and it was the report the parent read last.
-        expect(result.seen.filter((request) => request.task === REPORT_TASK && request.last.includes("<subagent ")).map((request) => request.last)).toEqual([
-          expect.stringContaining('state="completed"'),
+        expect(result.seen.filter((request) => request.task === REPORT_TASK && isReport(request.last)).map((request) => envelope(request.last, "subagent")?.attributes.state)).toEqual([
+          "completed",
         ])
       }),
     RUN_MS,

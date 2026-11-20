@@ -27,6 +27,8 @@
  * @module
  */
 
+import { envelope } from "../../mods/subagents/envelope.ts"
+
 export const KERNEL_TASK = "kernel"
 export const HELLO = "hello from the work dir"
 export const DONE = "sim: kernel done"
@@ -223,9 +225,12 @@ const startLate = (request: ChatRequest): Reply => {
   return { kind: "tool", name: "kernel", input: { code: `await tools.shell({ command: "${LATE_COMMAND}", background: true })` } }
 }
 
+/** Whether a message is a subagent's idle report: its envelope, in either form (envelope.ts). */
+export const isReport = (said: string) => envelope(said, "subagent") !== undefined
+
 /** A one-cell task's last line: the report task's answer to its subagent's report once it arrives, else `DONE`. */
 const closing = (task: string, messages: ReadonlyArray<ChatMessage>) => {
-  if (task.endsWith(REPORT_TASK) && text(messages.at(-1)?.content).includes("<subagent ")) return REPORT_HEARD
+  if (task.endsWith(REPORT_TASK) && isReport(text(messages.at(-1)?.content))) return REPORT_HEARD
   return DONE
 }
 

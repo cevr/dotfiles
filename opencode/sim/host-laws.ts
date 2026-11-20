@@ -21,6 +21,7 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { envelope, envelopesIn } from "../mods/subagents/envelope.ts"
 import type { OPERATIONS } from "./context.ts"
 import {
   CLIENT,
@@ -176,6 +177,12 @@ const contextText = (ctx: Plugin.Context, sessionID: SessionID) =>
   ctx.session.context({ sessionID }).pipe(Effect.flatMap((messages) => Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(messages)))
 
 const count = (text: string, part: string) => text.split(part).length - 1
+
+/** How many notices of `childID`'s idle reports the session's context holds, in either envelope (envelope.ts). */
+const childNotices = (ctx: Plugin.Context, sessionID: SessionID, childID: string) =>
+  ctx.session
+    .context({ sessionID })
+    .pipe(Effect.map((messages) => envelopesIn(messages).filter((each) => each.kind === "subagent" && each.attributes.sessionID === childID).length))
 
 /** A provider's socket frame's event type, as OpenAI's Responses names it, or `?` for a frame that names none. */
 const frameType = (frame: string) =>
@@ -992,7 +999,7 @@ export const LAWS: ReadonlyArray<Law> = [
             Stream.runForEach((event) =>
               Effect.when(
                 Ref.update(notices, (n) => n + 1),
-                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && event.data.item.payload.text.startsWith("<subagent ")),
+                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && envelope(event.data.item.payload.text)?.kind === "subagent"),
               ),
             ),
           ),
@@ -1007,15 +1014,14 @@ export const LAWS: ReadonlyArray<Law> = [
         const answered = yield* contextText(ctx, parent.id)
         yield* ensure(count(answered, "is working in the background") === 1, "the call did not answer that the child runs in the background")
         // The child's idle reports to the parent, which wakes and reads it.
-        const notice = `<subagent sessionID=\\"${child.id}\\"`
-        for (let waited = 0; count(yield* contextText(ctx, parent.id), notice) === 0 && waited < 60_000; waited += 100) yield* Effect.sleep("100 millis")
+        for (let waited = 0; (yield* childNotices(ctx, parent.id, child.id)) === 0 && waited < 60_000; waited += 100) yield* Effect.sleep("100 millis")
         yield* settle
         const told = yield* contextText(ctx, child.id)
         yield* ensure(count(told, "You are a subagent spawned by another session.") === 1, "the child was not told it is a subagent")
         yield* ensure(count(told, "heard the child task") === 1, "the child did not answer its task")
         const after = yield* contextText(ctx, parent.id)
         yield* ensure((yield* Ref.get(notices)) === 1, `the parent got ${yield* Ref.get(notices)} subagent notices`)
-        yield* ensure(count(after, notice) === 1, "the parent's context does not hold the child's notice")
+        yield* ensure((yield* childNotices(ctx, parent.id, child.id)) === 1, "the parent's context does not hold the child's notice")
         // The parent's answer to its call, the notice with the child's, and the parent's answer to the notice.
         yield* ensure(count(after, "heard the child task") >= 3, `the parent's context holds ${count(after, "heard the child task")} answers to the task, not its own, the child's and its own to the notice`)
       }),

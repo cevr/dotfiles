@@ -10,9 +10,17 @@
 // makes a turn compact mid-turn is `sim/host.ts` `pastCeiling`).
 import { Effect, Option, Schema } from "effect"
 import { Cancelled, KEY, MODEL_NEXT, type ModelRef, Queued, Refused } from "@dotfiles/opencode-model-next/pending"
+import { envelope } from "../../mods/subagents/envelope.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+
+/** Whether a request carries a subagent's idle report: a synthetic message that opens with its envelope (envelope.ts, either form). */
+const reportsSubagent = (text: string) =>
+  text.split("synthetic: ").slice(1).some((after) => {
+    const found = envelope(after)
+    return found?.start === 0 && found.kind === "subagent"
+  })
 
 const { seeded } = Seed.runner("cmd/model-next/model-next.sim.test.ts")
 
@@ -44,7 +52,7 @@ const recorder = () => {
     const calls = request.text.split("\ntool ").length - 1
     if (request.text.startsWith("compaction: ")) return World.say("Done.", { input: 100, read: 0, write: 2_000 })
     // A subagent's report is read and noted: no work of the parent's own.
-    if (request.text.includes("synthetic: <subagent")) return World.say("Noted.", { input: 100, read: 2_000, write: 100 })
+    if (reportsSubagent(request.text)) return World.say("Noted.", { input: 100, read: 2_000, write: 100 })
     if (calls < 2) return World.call(`call_${calls}`, "shell", { command: "true", background: false }, { input: 100, read: 0, write: 9_500 })
     return World.say("Done.", { input: 100, read: 0, write: 2_000 })
   }

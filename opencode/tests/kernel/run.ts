@@ -14,7 +14,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Schedule } from "effect"
-import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK } from "./sim.ts"
+import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK, isReport } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -113,7 +113,7 @@ try {
       yield* done
       // The parent's turn ended; now its subagent answers, and its report wakes the parent into a turn of its own.
       sim.release()
-      yield* Effect.sync(() => sim.seen.some((request) => request.task.endsWith(REPORT_TASK) && request.last.includes("<subagent "))).pipe(
+      yield* Effect.sync(() => sim.seen.some((request) => request.task.endsWith(REPORT_TASK) && isReport(request.last))).pipe(
         Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (heard) => heard }),
       )
       yield* done

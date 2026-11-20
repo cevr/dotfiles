@@ -10,7 +10,7 @@
 // session's turn, the background work it owns (its shells) and its queued
 // input, and keeps it from waking on a notice until it is given a new task.
 // The host settles a running subagent as cancelled: its parent hears it once,
-// in a `<subagent state="cancelled">` notice, and never that it finished,
+// in a subagent notice whose state is `cancelled`, and never that it finished,
 // even when it is woken later. A second stop changes nothing.
 //
 // State, from the host's session: `running` while its newest execution has

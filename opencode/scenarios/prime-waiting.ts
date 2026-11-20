@@ -19,6 +19,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { envelopesIn } from "../mods/subagents/envelope.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -71,7 +72,7 @@ export default OpenCodeDriver.use(
             return call("call_long", "shell", { command: "sleep 600", background: true, description: "Wait for proof DONE" })
           if (!s.includes("call_short")) return call("call_short", "shell", { command: "sleep 6", background: true, description: "Short check" })
           // The short shell's stop notice wakes it: it stops the proof wait, which sends no notice.
-          if (!s.includes("<shell id=")) return say(WAITING)
+          if (!envelopesIn(request).some((each) => each.kind === "shell")) return say(WAITING)
           if (!s.includes("call_kill")) return call("call_kill", "shell", { action: "kill", id: shellIDs(s)[0] ?? "missing" })
           return say(STOPPED)
         }
