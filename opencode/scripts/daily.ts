@@ -28,19 +28,23 @@
 //    committed.
 //    Only `--configure` does this step, and nothing else: the update's handoff runs it from the
 //    checkout once it moved onto the build's commit, right before the restart (mods/update). A
-//    by-hand run gets it from the handoff too.
+//    by-hand run gets it from the handoff too. The plugin lists are data (mods/update/trees.ts),
+//    which `--tree <dir> --at <place> [--checkout <live checkout>]` reads too: it writes a build's
+//    plugin tree's server entries and overlay (`config/opencode.json`, `config/cli.json`) into the
+//    tree in the making `dir`, every path naming `place`, and nothing else (mods/update/filestore/trees.ts).
 // 4. Writes upstream/dev's lead for the TUI's corner (`upstreamReading`), then restarts the service
 //    through the update's handoff (mods/update: checkout move, configs, health check, reinstall,
 //    rollback). `--stage` (the update plugin's build ahead, from the checkout as it stands, which
 //    does not move; `--dotfiles-target <sha>` names the commit the record gives the build) restarts
 //    nothing and writes no config: the plugin's handoff does both, at once (outside the Sabbath rest).
 import { $ } from "bun"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
+import { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF, SERVER_OFF, SERVER_PLUGINS, serverEntry, serverEntryDir, TUI_OFF, TUI_PLUGINS } from "../mods/update/trees.ts"
+import type { Settings } from "../mods/update/settings.ts"
 import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
@@ -51,26 +55,29 @@ import { buildsLock, shareDir } from "../mods/update/settings.ts"
 import { stageBuild } from "../mods/update/filestore/stage.ts"
 import { releaseBuild, runDailyBuild } from "../mods/update/process/pin.ts"
 
-const MODS = resolve(import.meta.dir, "../mods")
-const CMD = resolve(import.meta.dir, "../cmd")
+/** This checkout's `opencode/` directory, which daily runs from. */
+const ROOT = resolve(import.meta.dir, "..")
+const MODS = join(ROOT, "mods")
+const CMD = join(ROOT, "cmd")
 
-/** The directory OpenCode loads a plugin from: its `cmd/` package once it has one, else its mod. */
-export const pluginDir = (name: string): string => (existsSync(join(CMD, name, "package.json")) ? join(CMD, name) : join(MODS, name))
+/**
+ * The directory OpenCode loads a plugin from in the `opencode/` directory `root`: its `cmd/` package
+ * once it has one, else its mod, named as it stands at `at` (a tree in the making names the place it is
+ * renamed to).
+ */
+export const pluginDirIn = (name: string, root: string, at: string = root): string => {
+  const where = existsSync(join(root, "cmd", name, "package.json")) ? "cmd" : "mods"
+  return join(at, where, name)
+}
+
+/** The directory OpenCode loads a plugin from in this checkout (`pluginDirIn`). */
+export const pluginDir = (name: string): string => pluginDirIn(name, ROOT)
 const THEME = resolve(import.meta.dir, "../themes/prime.json")
 
 export type PluginEntry = string | { readonly package: string; readonly options?: Record<string, unknown> }
 type Json = Record<string, unknown>
 
-/** Turns off the fork's built-in /btw (`opencode.btw`), so /btw is the btw mod's (cmd/btw). */
-export const BUILTIN_BTW_OFF = "-opencode.btw"
-
-/**
- * Turns off the fork's built-in automation plugin (`opencode.tool.automation`): its automation tools and
- * its `/automation` command, which tells the model to call them. The wake plugin's tools replace
- * them (the README's OpenCode's automations are off); a plugin can take a tool out of the registry
- * but not a command, so the plugin goes whole. Stored automations and their API are the host's own.
- */
-export const BUILTIN_AUTOMATION_OFF = "-opencode.tool.automation"
+export { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF }
 
 /** Server plugin entries the host no longer has, dropped from the config: the automation plugin's name before upstream's rename (2026-11-16). */
 const RETIRED_PLUGINS: ReadonlyArray<string> = ["-opencode.tool.schedule"]
@@ -269,9 +276,11 @@ export const mergeCli = (existing: Json, plugins: ReadonlyArray<string>, owned: 
 }
 
 const readJson = (path: string): Json => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {})
+/** A config's text, as daily writes every JSON file. */
+export const jsonText = (value: Json): string => `${JSON.stringify(value, null, 2)}\n`
 const writeJson = (path: string, value: Json) => {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
+  writeFileSync(path, jsonText(value), { mode: 0o600 })
 }
 
 /**
@@ -366,9 +375,62 @@ export const installDotfiles = <I>(checkout: string, install: Effect.Effect<I>):
     ),
   )
 
-/** The update's settings for this checkout on this host, as the plugin's entry and the handoff get them. */
-const hostSettings = (home: string, fork: string) =>
-  settingsFor({ host: hostname(), home, state: dirname(dirname(installedFile(home))), checkout: DOTFILES, fork, bun: process.execPath, resident: residentDir(home), launcher: join(home, ".local/bin/opencode") })
+/** The update's settings for the dotfiles checkout `checkout` on this host, as the plugin's entry and the handoff get them. */
+const hostSettings = (home: string, fork: string, checkout: string = DOTFILES) =>
+  settingsFor({ host: hostname(), home, state: dirname(dirname(installedFile(home))), checkout, fork, bun: process.execPath, resident: residentDir(home), launcher: join(home, ".local/bin/opencode") })
+
+/** What a host's plugin entries are made of beyond the plugins' directories, read once per run (`hostFacts`). */
+export interface HostFacts {
+  /** The host's name (`FLEET`). */
+  readonly host: string
+  readonly tailscale: Option.Option<string>
+  /** The fork checkout, and the dotfiles checkout an accepted verdict records the verified target from. */
+  readonly fleet: { readonly dotfiles: string; readonly fork: string }
+  readonly catalog: Catalog
+  /** The pool's login store, when it exists. */
+  readonly store: Option.Option<string>
+  /** The update plugin's options. */
+  readonly settings: Settings
+}
+
+/** This host's facts, with the live dotfiles checkout `checkout` (this one, by default). */
+const hostFacts = (home: string, fork: string, checkout: string = DOTFILES) =>
+  Effect.gen(function* () {
+    return {
+      host: hostname(),
+      tailscale: Option.fromNullishOr(yield* Effect.promise(tailscaleAddress)),
+      fleet: { dotfiles: checkout, fork },
+      catalog: yield* Effect.promise(() => loadCatalog(fork)),
+      store: Option.liftPredicate(loginStoreDir(home), existsSync),
+      settings: hostSettings(home, fork, checkout),
+    } satisfies HostFacts
+  })
+
+/** The entries of the plugins daily gives options, by name, from the plugin's directory and the host's facts. */
+const OPTIONED = new Map<string, (dir: string, facts: HostFacts) => PluginEntry>([
+  ["pool", (dir, facts) => poolEntry(dir, Option.getOrUndefined(facts.store), { host: facts.host })],
+  ["orchestrate", (dir, facts) => orchestrateEntry(dir, facts.fleet, plannerModel(facts.catalog))],
+  ["mail", (dir, facts) => mailEntry(dir, { host: facts.host, tailscale: Option.getOrUndefined(facts.tailscale) })],
+  ["update", (dir, facts) => updateEntry(dir, facts.settings)],
+])
+
+/**
+ * The server's plugin entries, as `trees.ts` `SERVER_PLUGINS` lists them and then the built-ins it
+ * turns off, each plugin at the directory `dirOf` names, with its options from `facts`.
+ */
+export const serverEntries = (facts: HostFacts, dirOf: (name: string) => string): ReadonlyArray<PluginEntry> => [
+  ...SERVER_PLUGINS.map((name) => Option.match(Option.fromNullishOr(OPTIONED.get(name)), { onNone: () => dirOf(name), onSome: (entry) => entry(dirOf(name), facts) })),
+  ...SERVER_OFF,
+]
+
+/** The TUI's plugin entries, as `trees.ts` `TUI_PLUGINS` lists them and then the built-ins it turns off, each at the directory `dirOf` names. */
+export const tuiEntries = (dirOf: (name: string) => string): ReadonlyArray<string> => [...TUI_PLUGINS.map(dirOf), ...TUI_OFF]
+
+/** Both global configs as `--configure` writes them over `existing`: the server's and the TUI's. */
+export const configured = (existing: { readonly server: Json; readonly cli: Json }, facts: HostFacts, share: string) => ({
+  server: mergeServer(existing.server, serverEntries(facts, (name) => pluginDir(name)), roleModels(facts.catalog), ownedDirs(share)),
+  cli: mergeCli(existing.cli, tuiEntries((name) => pluginDir(name)), ownedDirs(share)),
+})
 
 /**
  * Step 3, `--configure`: merges this checkout's plugins, the role models and the theme into the
@@ -378,55 +440,50 @@ const hostSettings = (home: string, fork: string) =>
 const configureHost = (home: string, fork: string) =>
   Effect.gen(function* () {
     const share = shareDir(home)
-    const settings = hostSettings(home, fork)
-    const checkout = settings.checkout
     writeJson(join(residentDir(home), "opencode.json"), residentConfig)
-    const auth = anthropicAuthPlugin
-    const store = loginStoreDir(home)
-    const pool = pluginDir("pool")
-    const catalog = yield* Effect.promise(() => loadCatalog(fork))
-    const planner = plannerModel(catalog)
-    const server: PluginEntry[] = [
-      auth,
-      poolEntry(pool, existsSync(store) ? store : undefined, { host: hostname() }),
-      orchestrateEntry(pluginDir("orchestrate"), { dotfiles: checkout, fork }, planner),
-      pluginDir("guard"),
-      pluginDir("kernel"),
-      pluginDir("status"),
-      pluginDir("queue"),
-      pluginDir("git"),
-      pluginDir("idle-compact"),
-      pluginDir("model-next"),
-      pluginDir("auto-title"),
-      mailEntry(pluginDir("mail"), { host: hostname(), tailscale: yield* Effect.promise(tailscaleAddress) }),
-      pluginDir("questions"),
-      pluginDir("wake"),
-      pluginDir("image"),
-      pluginDir("skills"),
-      pluginDir("work"),
-      pluginDir("tool-names"),
-      pluginDir("cache"),
-      // Prime's reply style (cmd/prime/server.ts) goes before memory, whose digest stays last in the system prompt.
-      pluginDir("prime"),
-      pluginDir("memory"),
-      pluginDir("stall"),
-      pluginDir("rex"),
-      pluginDir("escape"),
-      updateEntry(pluginDir("update"), settings),
-      BUILTIN_AUTOMATION_OFF,
-    ]
+    const facts = yield* hostFacts(home, fork)
     // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
     const loader = join(share, "anthropic-auth")
     rmSync(loader, { recursive: true, force: true })
     const config = join(home, ".config/opencode")
-    const models = roleModels(catalog)
-    const tui = [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("rex"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("model-next"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF]
-    writeConfigs({ config, server, cli: tui, models, owned: ownedDirs(share) })
+    const written = configured({ server: readJson(join(config, "opencode.json")), cli: readJson(join(config, "cli.json")) }, facts, share)
+    writeJson(join(config, "opencode.json"), written.server)
+    writeJson(join(config, "cli.json"), written.cli)
     mkdirSync(join(config, "themes"), { recursive: true })
     copyFileSync(THEME, join(config, "themes/prime.json"))
-    console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
-    console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
+    const planner = plannerModel(facts.catalog)
+    console.log(`server plugins: ${serverEntries(facts, (name) => pluginDir(name)).map(packageOf).join(", ")}`)
+    console.log(`roles: ${Object.entries(roleModels(facts.catalog)).map(([role, model]) => `${role} ${model}`).join(", ")}`)
     console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
+  })
+
+/**
+ * `--tree <dir> --at <place>`: writes a tree's server entries and its overlay (`trees.ts`) into `dir`,
+ * the tree in the making, whose `opencode/` holds the plugins; every path names `place`, where the tree
+ * stands once renamed. The server lists each plugin's generated entry (`entries/server/<name>`, no TUI
+ * part), the TUI each plugin's own directory. Only the plugin entries: the global configs keep the role
+ * models, the theme and every other key. `checkout` is the live dotfiles checkout, which the update
+ * plugin fetches into and orchestrate records the verified target from.
+ */
+const writeTree = (home: string, fork: string, tree: { readonly dir: string; readonly at: string; readonly checkout: string }) =>
+  Effect.gen(function* () {
+    const facts = yield* hostFacts(home, fork, tree.checkout)
+    const opencode = join(tree.dir, "opencode")
+    // Each entry reaches its plugin from `entries/server/<name>/`, three levels below the tree.
+    const entries = SERVER_PLUGINS.flatMap((name) =>
+      serverEntry(name, readFileSync(join(pluginDirIn(name, opencode), "package.json"), "utf8"), pluginDirIn(name, opencode, "../../../opencode")).map((entry) => ({ name, entry })),
+    )
+    const listed = new Set(entries.map(({ name }) => name))
+    const missing = SERVER_PLUGINS.filter((name) => !listed.has(name))
+    if (missing.length > 0) return yield* Effect.die(`no server part to list in ${tree.dir}: ${missing.join(", ")}`)
+    for (const { name, entry } of entries) {
+      const dir = serverEntryDir(tree.dir, name)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, "package.json"), entry.manifest)
+      for (const file of entry.files) writeFileSync(join(dir, file.name), file.text)
+    }
+    writeJson(join(tree.dir, "config/opencode.json"), { plugins: serverEntries(facts, (name) => serverEntryDir(tree.at, name)) })
+    writeJson(join(tree.dir, "config/cli.json"), { plugins: tuiEntries((name) => pluginDirIn(name, opencode, join(tree.at, "opencode"))) })
   })
 
 /** The fork checkout daily builds and configures from: `OPENCODE_DEV`, else the default, checked. */
@@ -437,15 +494,27 @@ const forkOf = (env: NodeJS.ProcessEnv): string => {
   return checked.fork
 }
 
-// `--configure`: step 3 alone. Every other run: steps 0 to 2 and 4, the fork merged and built, the
-// build staged, then (by hand) the restart through the handoff, which moves the checkout if it must
-// and runs `--configure`.
+/** `--tree`'s run: the tree in the making, where it will stand, and the live checkout, from daily's arguments. */
+const treeRun = (argv: ReadonlyArray<string>, home: string, fork: string) =>
+  Option.map(Option.fromIterable(flagValue(argv, "--tree")), (dir) =>
+    writeTree(home, fork, {
+      dir,
+      at: Option.getOrElse(Option.fromIterable(flagValue(argv, "--at")), () => dir),
+      checkout: Option.getOrElse(Option.fromIterable(flagValue(argv, "--checkout")), () => DOTFILES),
+    }),
+  )
+
+// `--tree`: a build's tree's entries and overlay alone. `--configure`: step 3 alone. Every other run:
+// steps 0 to 2 and 4, the fork merged and built, the build staged, then (by hand) the restart through
+// the handoff, which moves the checkout if it must and runs `--configure`.
 if (import.meta.main) {
   const home = homedir()
-  const args = new Set(process.argv)
+  const argv = process.argv
+  const args = new Set(argv)
   const env = process.env
   const fork = forkOf(env)
-  if (args.has("--configure")) await Effect.runPromise(configureHost(home, fork))
+  const only = Option.orElse(treeRun(argv, home, fork), () => Option.some(configureHost(home, fork)).pipe(Option.filter(() => args.has("--configure"))))
+  if (Option.isSome(only)) await Effect.runPromise(only.value)
   else {
     // From the update plugin (mods/update): the verified target's fork commit, built instead of
     // origin's prime-look, and its dotfiles commit, which the record names (the checkout moves onto

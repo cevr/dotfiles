@@ -152,11 +152,12 @@ export interface ServerEntry {
 /**
  * The generated server entry of plugin `name`, whose own `package.json` is `manifest`: a package
  * exporting `./server` (and `./rpc` when the plugin has one), each a one-line re-export of the plugin's
- * own file. None when the plugin has no server part. `from` is the entry's way to the plugin's
- * directory (`../../../opencode/cmd/<name>`). The host runs a server part's default export
- * (`Plugin.define`); an RPC part is read by its named exports.
+ * own file. None when the plugin has no server part: a list of none or one, for daily, whose `effect`
+ * is another copy than this module's in a checkout (`scripts/link-fork.ts`). `from` is the entry's way
+ * to the plugin's directory (`../../../opencode/cmd/<name>`). The host runs a server part's default
+ * export (`Plugin.define`); an RPC part is read by its named exports.
  */
-export const serverEntry = (name: string, manifest: string, from: string): Option.Option<ServerEntry> =>
+export const serverEntry = (name: string, manifest: string, from: string): ReadonlyArray<ServerEntry> =>
   decodeManifest(manifest).pipe(
     Option.flatMap((plugin) =>
       Option.map(Option.fromUndefinedOr(plugin.exports["./server"]), (server) => [
@@ -168,4 +169,5 @@ export const serverEntry = (name: string, manifest: string, from: string): Optio
       manifest: `${encodeManifest({ name: `@dotfiles/opencode-entry-${name}`, private: true, type: "module", exports: Object.fromEntries(parts.map(({ part }) => [`./${part}`, `./${part}.ts`])) })}\n`,
       files: parts.map(({ part, file, line }) => ({ name: `${part}.ts`, text: `${line} "${from}/${file.replace(/^\.\//, "")}"\n` })),
     })),
+    Option.toArray,
   )
