@@ -23,6 +23,19 @@ import { BUILTIN_AUTOMATION_OFF, pluginDir } from "../daily.ts"
 import { Data, Effect, Option, Result, Schedule } from "effect"
 import { spawnSync } from "bun"
 
+/**
+ * How often the scratch service exports its spans (`OTEL_BSP_SCHEDULE_DELAY`, the BatchSpanProcessor's
+ * delay; 5 s by default). A location opened alone waits for the spans of the ones before it, and the end
+ * for two exports that bring nothing new: at the default, 20-30 s of a run that times nothing.
+ */
+const EXPORT_MS = 250
+/**
+ * How long the end waits for the stopped service to exit before it kills its group. Its own shutdown
+ * gives up after 10 s (`shutdown did not finish within 10s`, Worktree and the plugin supervisors still
+ * releasing: on a loaded Mac it read 10-28 s), and nothing here measures a stop.
+ */
+const EXIT_MS = 3_000
+
 /** Fewer locations set up than opened, after 90 s of looking. */
 class SetupsPending extends Data.TaggedError("SetupsPending")<{ readonly count: number }> {}
 
@@ -238,6 +251,7 @@ export const measure = async (options: Options): Promise<Measure> => {
     OPENCODE_DB: join(root, "opencode.db"),
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${receiver.port}`,
+    OTEL_BSP_SCHEDULE_DELAY: String(EXPORT_MS),
     ...options.launch.env,
   }
   if (options.cpuProfile) env.BUN_OPTIONS = `${env.BUN_OPTIONS ?? ""} --cpu-prof --cpu-prof-dir=${resolve(options.cpuProfile)}`.trim()
@@ -320,17 +334,21 @@ export const measure = async (options: Options): Promise<Measure> => {
         return [...together, ...alone]
       }),
     )
-    // The batch span processor flushes every few seconds: wait until two flushes bring nothing new.
+    // The batch span processor exports every EXPORT_MS: wait until two exports bring nothing new.
     for (let last = -1; last !== spans.length; ) {
       last = spans.length
-      await Bun.sleep(6_000)
+      await Bun.sleep(EXPORT_MS * 4)
     }
     return { listening, ready, locations, t0, spans, plugins: plugins.map(nameOf) }
   } finally {
-    try {
-      process.kill(-child.pid, "SIGTERM")
-    } catch {}
-    await child.exited
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        process.kill(-child.pid, name)
+      } catch {}
+    }
+    signal("SIGTERM")
+    const exited = Effect.promise(() => child.exited)
+    await Effect.runPromise(exited.pipe(Effect.timeoutOption(EXIT_MS), Effect.tap(Option.match({ onNone: () => Effect.sync(() => signal("SIGKILL")), onSome: () => Effect.void })), Effect.andThen(exited)))
     receiver.stop(true)
     rmSync(root, { recursive: true, force: true })
   }
