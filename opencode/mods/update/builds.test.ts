@@ -257,7 +257,10 @@ describe("acceptance: a prune over share directories of both build formats, with
       const treesOf = new Set(listing.filter((made) => made.kind === "tree").map((made) => made.of))
       const runningOld = new Set(running.executables.map((path) => lastPart(path.replace(/ \(deleted\)$/, ""))).filter((name) => builtNames.has(name) && !treesOf.has(name)))
       expect(new Set(oldFormat(listing.map((made) => made.name), running.executables)), `old-format at ${where}`).toEqual(runningOld)
-      for (const made of listing.filter((each) => each.kind === "build" && each.name.endsWith(".tree"))) (pruned.has(made.name) ? reached.treeGone : reached.treeKept).push(made.name)
+      for (const made of listing.filter((each) => each.kind === "build" && each.name.endsWith(".tree"))) {
+        if (pruned.has(made.name)) reached.treeGone.push(made.name)
+        else reached.treeKept.push(made.name)
+      }
     }
     // The generator reaches tree builds that go and tree builds that stay.
     expect([reached.treeGone.length > 0, reached.treeKept.length > 0]).toEqual([true, true])

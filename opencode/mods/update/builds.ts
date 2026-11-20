@@ -70,7 +70,7 @@ export const keptOf = (record: Record, running: ReadonlyArray<string>): Readonly
  * tree build never reads as old.
  */
 export const oldFormat = (names: ReadonlyArray<string>, running: ReadonlyArray<string>): ReadonlyArray<string> =>
-  Arr.dedupe(running.map(baseName).filter((name) => isBuild(name) && !names.includes(treeOf(name))))
+  Arr.dedupe(Arr.filter(Arr.map(running, baseName), (name) => isBuild(name) && !names.includes(treeOf(name))))
 
 /** What runs on the host, as a prune reads it: each process's executable by path, and each one's whole command line. */
 export interface Running {

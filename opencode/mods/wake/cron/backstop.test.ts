@@ -76,6 +76,9 @@ for (const platform of ["darwin", "linux"] as const)
     }),
   )
 
+/** `text` in double quotes, as a script's string literal: these paths and versions hold no quote or backslash. */
+const quoted = (text: string) => `"${text}"`
+
 /** Runs `use` against the Bun.cron backstop built from `config`. */
 const on = (config: Config) => <A, E>(use: (backstop: Backstop["Service"]) => Effect.Effect<A, E>) => Backstop.use(use).pipe(Effect.provide(layer(config)))
 
@@ -124,7 +127,7 @@ describe("a job", () => {
   const installTree = (share: string, version: string, out: string) => {
     const tree = path.join(share, `opencode-${version}.plugins`)
     mkdirSync(path.join(tree, "opencode", "cmd", "wake"), { recursive: true })
-    writeFileSync(path.join(tree, "opencode", "cmd", "wake", "backstop.ts"), `export const scheduled = () => Bun.write(${JSON.stringify(out)}, ${JSON.stringify(version)})\n`)
+    writeFileSync(path.join(tree, "opencode", "cmd", "wake", "backstop.ts"), `export const scheduled = () => Bun.write(${quoted(out)}, ${quoted(version)})\n`)
     rmSync(path.join(share, "current.plugins"), { force: true })
     symlinkSync(path.basename(tree), path.join(share, "current.plugins"))
     return path.join(tree, "opencode", "cmd", "wake", "backstop.ts")
@@ -141,7 +144,7 @@ describe("a job", () => {
       installTree(share, B, out)
       rmSync(path.join(share, `opencode-${A}.plugins`), { recursive: true })
       const file = path.join(config.jobs, "opencode-wake-w000010.ts")
-      const ran = yield* exec([process.execPath, "-e", `const job = await import(${JSON.stringify(file)}); await job.default.scheduled()`])
+      const ran = yield* exec([process.execPath, "-e", `const job = await import(${quoted(file)}); await job.default.scheduled()`])
       expect(ran.stderr).toBe("")
       expect(ran.exitCode).toBe(0)
       expect(readFileSync(out, "utf8")).toBe(B)
@@ -156,12 +159,12 @@ describe("a job", () => {
       const config = configOf("darwin", dir, { text: "" })
       mkdirSync(config.jobs, { recursive: true })
       const file = path.join(config.jobs, "opencode-wake-w000011.ts")
-      writeFileSync(file, `// old\nimport { scheduled } from ${JSON.stringify(script)}\n\nexport default { scheduled: () => scheduled({}) }\n`)
+      writeFileSync(file, `// old\nimport { scheduled } from ${quoted(script)}\n\nexport default { scheduled: () => scheduled({}) }\n`)
       writeFileSync(path.join(config.launchAgents, "bun.cron.opencode-wake-w000011.plist"), "<plist/>")
       expect(yield* on(config)((backstop) => backstop.titles)).toEqual(["opencode-wake-w000011"])
       installTree(share, B, out)
       rmSync(path.join(share, `opencode-${A}.plugins`), { recursive: true })
-      const ran = yield* exec([process.execPath, "-e", `const job = await import(${JSON.stringify(file)}); await job.default.scheduled()`])
+      const ran = yield* exec([process.execPath, "-e", `const job = await import(${quoted(file)}); await job.default.scheduled()`])
       expect(ran.exitCode).toBe(0)
       expect(readFileSync(out, "utf8")).toBe(B)
     }),
@@ -196,7 +199,7 @@ describe("listing", () => {
     expect(stableScript(tree, () => false)).toBe(tree)
     for (const other of ["/dotfiles/opencode/cmd/wake/backstop.ts", through, "/s/x.plugins/opencode/cmd/wake/backstop.ts", "/s/opencode-2.3.0.plugins/cmd/wake/backstop.ts"])
       expect(stableScript(other, () => true)).toBe(other)
-    const entry = `// x\nimport { scheduled } from ${JSON.stringify(tree)}\n\nexport default {}\n`
+    const entry = `// x\nimport { scheduled } from ${quoted(tree)}\n\nexport default {}\n`
     expect(relinked(entry, () => true)).toBe(entry.replace(tree, through))
     expect(relinked(entry, () => false)).toBe(entry)
     expect(relinked("not an entry\n", () => true)).toBe("not an entry\n")

@@ -118,6 +118,10 @@ describe("the version names the build's fork commit and dotfiles commit", () => 
   })
 })
 
+/** The version the live builder names for the fork commit `fork` and this file's dotfiles commit. */
+const builtVersion = (settings: Parameters<typeof Builders.layer>[0], fork: string) =>
+  Builder.use((builder) => builder.version({ fork, dotfiles: DOTFILES, batch: "b" })).pipe(Effect.provide(Builders.layer(settings, GIT_ENV)))
+
 describe("the updater's builder names a tree build", () => {
   test(
     "Builder.version reads the target's fork version at its commit and names the tree build: it ends in .tree, and is not the version of a plain build of the same commits",
@@ -126,7 +130,7 @@ describe("the updater's builder names a tree build", () => {
         Effect.gen(function* () {
           const { root, fork, target } = yield* scratch
           const settings = settingsFor({ host: "test", home: root, state: `${root}/state`, checkout: `${root}/dotfiles`, fork, bun: BUN, resident: `${root}/resident`, launcher: `${root}/bin/opencode` })
-          const version = yield* Builder.use((builder) => builder.version({ fork: target, dotfiles: DOTFILES, batch: "b" })).pipe(Effect.provide(Builders.layer(settings, GIT_ENV)))
+          const version = yield* builtVersion(settings, target)
           expect(version).toBe(versionOf("2.2.7", target, DOTFILES, true))
           expect(version.endsWith(".tree")).toBe(true)
           expect(version).not.toBe(versionOf("2.2.7", target, DOTFILES))

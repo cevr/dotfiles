@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
 
 /**
  * A build's plugin tree: `opencode-<version>.plugins/` beside its binary `opencode-<version>` in the
@@ -144,10 +144,7 @@ export const TUI_FIRST = "prime"
 export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
 
 /** A plugin's place: its index in `TUI_ORDER`, and after every listed one for a plugin it does not list. */
-const placeOf = (name: string): number => {
-  const at = TUI_ORDER.indexOf(name)
-  return at === -1 ? TUI_ORDER.length : at
-}
+const placeOf = (name: string): number => Option.getOrElse(Arr.findFirstIndex(TUI_ORDER, (listed) => listed === name), () => TUI_ORDER.length)
 
 /**
  * The TUI's plugins, derived from the packages themselves (`packages`: each plugin directory's name and

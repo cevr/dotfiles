@@ -61,6 +61,12 @@ const advance = (root: string, mode: "ff" | "reset", commit: string) =>
     return yield* (yield* Source).advance(commit)
   }).pipe(Effect.provide(SourceLive.layer({ root, mode, bun: BUN, fork: "/nonexistent/loop-probe-x", env: GIT_ENV, bin: Option.none() })), Effect.exit)
 
+/** The Mac's commands script run from the checkout at `root` as it stands, with no move. */
+const macCommands = (root: string, env: Record<string, string>) =>
+  Effect.gen(function* () {
+    return yield* (yield* Source).commands
+  }).pipe(Effect.provide(SourceLive.layer({ root, mode: "ff", bun: BUN, fork: "/nonexistent/loop-probe-x", env, bin: Option.some(SourceLive.MAC_BIN) })), Effect.exit)
+
 describe("the advance step over real git and bun", () => {
   for (const mode of ["ff", "reset"] as const) {
     test(
@@ -324,9 +330,7 @@ describe("the advance step over real git and bun", () => {
           yield* files(root, [["local-bin.sh", script]])
           const home = sh(".", ["mktemp", "-d", "-t", "update-source-home"]).out
           const env = { ...GIT_ENV, HOME: home }
-          const commands = Effect.gen(function* () {
-            return yield* (yield* Source).commands
-          }).pipe(Effect.provide(SourceLive.layer({ root, mode: "ff", bun: BUN, fork: "/nonexistent/loop-probe-x", env, bin: Option.some(SourceLive.MAC_BIN) })), Effect.exit)
+          const commands = macCommands(root, env)
           const rexShow = () => sh(home, ["readlink", ".local/bin/rex-show"]).out
           expect(Exit.isSuccess(yield* commands)).toBe(true)
           expect(rexShow()).toBe(`${root}/opencode/cmd/rex/show.ts`)

@@ -1444,17 +1444,17 @@ describe("plugin trees", () => {
         expect([ran.host.tuiOurs, ran.found]).toEqual([false, []])
       }))
 
-    test("a TUI of the old scheme that never moves holds the late strip for good; a rollback never strips", () =>
-      Promise.all([
-        check(scenario("first install", 1, ["healthy", "healthy"], ["tui-0"]), (ran) => {
-          expect(ran.calls.flat().includes("strip tui")).toBe(false)
-          expect([ran.host.tuiOurs, ran.found]).toEqual([true, []])
-        }),
-        check(scenario("on trees", 1, ["rolled back", "gave up"], []), (ran) => {
-          expect(ran.calls.flat().includes("strip tui")).toBe(false)
-          expect(ran.host.tuiOurs).toBe(true)
-        }),
-      ]))
+    test("a TUI of the old scheme that never moves holds the late strip for good", () =>
+      check(scenario("first install", 1, ["healthy", "healthy"], ["tui-0"]), (ran) => {
+        expect(ran.calls.flat().includes("strip tui")).toBe(false)
+        expect([ran.host.tuiOurs, ran.found]).toEqual([true, []])
+      }))
+
+    test("a rollback never strips the TUI config", () =>
+      check(scenario("on trees", 1, ["rolled back", "gave up"], []), (ran) => {
+        expect(ran.calls.flat().includes("strip tui")).toBe(false)
+        expect(ran.host.tuiOurs).toBe(true)
+      }))
 
     test("the first tree install keeps the config and strips our entries right before the record; nothing else is new", () =>
       check(once("first install", "healthy"), (ran) => {

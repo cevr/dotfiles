@@ -17,7 +17,7 @@
 // wake titles only.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { carried, type Descriptor, idOfTitle, type Job, type Schedule } from "../backstop.ts"
 import { Backstop, BackstopRefused } from "../service.ts"
 
@@ -53,11 +53,14 @@ const REMOVE = "await Bun.cron.remove(process.argv[1])"
 const PLIST = /^bun\.cron\.(.+)\.plist$/
 const MARKER = /# bun-cron: (\S+)/
 
+/** An entry file's import of the shared script at `script`. */
+const importOf = (script: string): string => `import { scheduled } from ${JSON.stringify(script)}`
+
 /** The entry file of a job: the shared script, called with the job's descriptor. */
 export const entryOf = (script: string, descriptor: Descriptor): string =>
   [
     `// Written by the wake plugin (opencode/cmd/wake) for ${descriptor.title}: the OS job's script. Removed with its job.`,
-    `import { scheduled } from ${JSON.stringify(script)}`,
+    importOf(script),
     "",
     `export default { scheduled: () => scheduled(${JSON.stringify(descriptor, null, 2)}) }`,
     "",
@@ -78,26 +81,25 @@ const IN_TREE = /^(.+)\/opencode-[^/]+\.plugins\/(opencode\/.+)$/
  * later, when the prune has deleted the tree with its build. Any other path (a checkout, a link already)
  * stays as it is. `exists` is the file system's, but for a test.
  */
-export const stableScript = (script: string, exists: (path: string) => boolean = existsSync): string => {
-  const match = IN_TREE.exec(script)
-  if (match === null) return script
-  const through = path.join(match[1] ?? "", CURRENT_TREE, match[2] ?? "")
-  return exists(through) ? through : script
-}
+export const stableScript = (script: string, exists: (path: string) => boolean = existsSync): string =>
+  Option.fromNullishOr(IN_TREE.exec(script)).pipe(
+    Option.map(([, share = "", rest = ""]) => path.join(share, CURRENT_TREE, rest)),
+    Option.filter(exists),
+    Option.getOrElse(() => script),
+  )
 
-/** The script an entry file imports; none for a file that is not one (`entryOf`). */
+/** An entry file's import line and the script it names (`entryOf`); none for a file that is not one. */
 const IMPORTED = /^import \{ scheduled \} from "([^"\\\n]+)"$/m
 
 /**
  * An entry file written before its script went through the link (`stableScript`), pointed at it; any
  * other file as it is.
  */
-export const relinked = (entry: string, exists: (path: string) => boolean = existsSync): string => {
-  const script = IMPORTED.exec(entry)?.[1]
-  if (script === undefined) return entry
-  const stable = stableScript(script, exists)
-  return stable === script ? entry : entry.replace(JSON.stringify(script), JSON.stringify(stable))
-}
+export const relinked = (entry: string, exists: (path: string) => boolean = existsSync): string =>
+  Option.fromNullishOr(IMPORTED.exec(entry)).pipe(
+    Option.map(([line, script = ""]) => entry.replace(line, importOf(stableScript(script, exists)))),
+    Option.getOrElse(() => entry),
+  )
 
 /** The wake titles among a LaunchAgents directory's files. */
 export const plistTitles = (files: ReadonlyArray<string>): ReadonlyArray<string> =>

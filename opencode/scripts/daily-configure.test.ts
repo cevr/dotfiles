@@ -64,8 +64,11 @@ describe("the global configs --configure writes", () => {
     expect(tuiPluginsOf(packages)).toEqual(["prime", "status", "git", "cache", "escape", "alpha", "queue", "zeta"])
     expect(tuiPluginsOf(packages.toReversed())).toEqual(tuiPluginsOf(packages))
     // This checkout's plugins: the list the TUI had before trees, and Queue, which reached it through the server, after it.
-    const written = configured(EXISTING, FACTS, `${HOME}/.local/share/opencode-prime`).cli
-    const names = (Array.isArray(written.plugins) ? written.plugins : []).flatMap((entry) => (typeof entry === "string" && entry.startsWith(`${ROOT}/cmd/`) ? [entry.slice(`${ROOT}/cmd/`.length)] : []))
-    expect(names).toEqual(["prime", "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape", "queue"])
+    const text = jsonText(configured(EXISTING, FACTS, `${HOME}/.local/share/opencode-prime`).cli)
+    const order = ["prime", "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape", "queue"]
+    const places = order.map((name) => text.indexOf(`"${ROOT}/cmd/${name}"`))
+    expect(places.every((place) => place >= 0)).toBe(true)
+    expect(places).toEqual(places.toSorted((left, right) => left - right))
+    expect(text.split(`"${ROOT}/cmd/`).length - 1).toBe(order.length)
   })
 })
