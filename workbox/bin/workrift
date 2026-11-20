@@ -435,9 +435,13 @@ create_workspace() {
   # `work new` installs by the base's work.toml [deps] when it finds the lock
   # changed; then workrift does not install a second time.
   phase 'workspace: install if its lock file changed'
+  # Untrusted: work installed nothing (its work.toml's commands are not
+  # trusted on this host), so workrift installs with its own fixed command,
+  # as for NoDeps (trust_note).
   case "$work_deps_tag" in
-    '' | NoDeps | Unchanged) sync_dependencies "$workspace" >&2 ;;
+    '' | NoDeps | Unchanged | Untrusted) sync_dependencies "$workspace" >&2 ;;
   esac
+  [ "$backend" != work ] || trust_note "$source_path" "$work_deps_tag"
   # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
   note_cold "$source_path"
@@ -695,6 +699,7 @@ refresh_source() {
   else
     note_cold "$source_path"
   fi
+  trust_note "$source_path"
   printf 'Warm source is ready at %s.\n' "$source_path"
 }
 
@@ -1049,7 +1054,8 @@ work_new() {
     fail "work new failed for $w_branch in $w_source: $w_made"
   w_path=$(printf '%s' "$w_made" | jq -r '.path')
   [ -n "$w_path" ] && [ -d "$w_path/.git" ] || fail "work new made no workspace for $w_branch: $w_made"
-  printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail|Untrusted"))) | .[] | "workrift: work new: \(.)"' >&2
+  # Untrusted is said once by create's trust_note.
+  printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail"))) | .[] | "workrift: work new: \(.)"' >&2
 
   # Git hooks print to stdout, and stdout carries only the workspace path.
   if [ "$w_track" = true ]; then
@@ -1632,7 +1638,11 @@ work_prune() {
 }
 
 # `workrift deps` in a workspace of a base whose work.toml has [deps] is
-# `work deps`; anywhere else it is workrift's own install.
+# `work deps`; anywhere else it is workrift's own install. When work answers
+# Untrusted (the base's work.toml commands changed since a person ran `work
+# trust`: work-trust.md, 2026-11-20), work installed nothing, so workrift
+# installs with its own fixed command, never the untrusted file's. Any other
+# failure of work deps (DepsFailed: its install ran and failed) fails.
 work_deps() {
   w_top=$1
   w_base=$(resolve_source)
@@ -1643,7 +1653,37 @@ work_deps() {
   w_rows=$(work_workspaces "$w_base")
   w_name=$(printf '%s\n' "$w_rows" | awk -F '	' -v p="$w_top" '$3 == p { print $1 }')
   [ -n "$w_name" ] || fail "not a workspace of $w_base: $w_top"
-  work_in "$w_base" deps -name "$w_name"
+  # stdout passes through as it comes; stderr is read for the tag, then shown.
+  w_status=0
+  { w_said=$(work_in "$w_base" deps -name "$w_name" 2>&1 >&3 3>&-) || w_status=$?; } 3>&1
+  if [ "$w_status" -eq 0 ]; then
+    [ -z "$w_said" ] || printf '%s\n' "$w_said" >&2
+    return 0
+  fi
+  if printf '%s' "$w_said" | grep -q '"_tag":"Untrusted"'; then
+    printf 'workrift: work deps answered Untrusted and installed nothing\n' >&2
+    trust_note "$w_base" Untrusted
+    sync_dependencies "$w_top"
+    return
+  fi
+  printf '%s\n' "$w_said" >&2
+  exit "$w_status"
+}
+
+# One line when work does not trust the base's work.toml commands on this
+# host: `work --json doctor` says trusted false, or work answered Untrusted
+# ($2). work then skips the file's [deps] install and its hooks, and workrift
+# installs with its own fixed command instead: git config workrift.install,
+# else the lock file's (bun install --frozen-lockfile, pnpm install
+# --frozen-lockfile, yarn install --immutable, npm ci), else none, as for a
+# base with no [deps]. workrift never runs `work trust`: allowing commands a
+# teammate's change brought in is a person's call.
+trust_note() {
+  [ "$backend" = work ] && [ -f "$1/work.toml" ] || return 0
+  t_trusted=$(work_in "$1" --json doctor 2>/dev/null | jq -r '.trusted' 2>/dev/null || true)
+  [ "$t_trusted" = false ] || [ "${2:-}" = Untrusted ] || return 0
+  printf "workrift: %s/work.toml runs commands work does not trust on this host (work doctor: trusted %s), so work skips its [deps] install and hooks and workrift installs with its own fixed command (git config workrift.install, else the lock file's); review the file, then run work trust in %s to let work do it\n" \
+    "$1" "${t_trusted:-unknown}" "$1" >&2
 }
 
 lock_purpose=workrift
