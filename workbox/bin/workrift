@@ -36,6 +36,8 @@ config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/workrift"
 keep_file="${WORKRIFT_KEEP_FILE:-$config_dir/keep}"
 archive_root="${WORKRIFT_ARCHIVE:-$HOME/rift-archive}"
 prune_idle_minutes=2880
+# How old a Creating record must be before remove takes its folder as half-made.
+half_made_min_age=3600
 archive_retention_days=30
 backend_file="${WORKRIFT_BACKEND_FILE:-$config_dir/backend}"
 work_bin="${WORK:-work}"
@@ -904,7 +906,13 @@ work_remove() {
     fi
   done
   IFS=$w_old_ifs
-  [ -n "$w_base" ] || fail "not a workspace of any work base: $w_target"
+  if [ -z "$w_base" ]; then
+    # A Creating record over a checkout: a live lane whose create never
+    # recorded its end, not a half-made folder.
+    w_stale=$(work_records_at "$w_target" | awk -F "$record_separator" -v p="$w_target" '$4 == "Creating" && $6 == p { print $5; exit }')
+    [ -z "$w_stale" ] || fail "$(stale_lane_words "$w_target" "$w_stale")"
+    fail "not a workspace of any work base: $w_target"
+  fi
 
   # shellcheck disable=SC2016 # jq's variables
   w_tree='[.[] | select(.state._tag == "Active")] as $all
@@ -955,6 +963,35 @@ work_remove() {
   work_purge "$w_base" "$w_json" "$w_doomed" "$w_out"
 }
 
+# The records of every base whose path is $1 or a folder below it, one a
+# line: base, name, id, state, since and path, each ended by record_separator
+# (a tab would let an empty id vanish).
+record_separator=$(printf '\037')
+work_records_at() {
+  r_old_ifs=$IFS
+  IFS='
+'
+  for r_base in $(work_bases); do
+    IFS=$r_old_ifs
+    r_json=$(work_in "$r_base" --json list) || fail "work list failed in $r_base: $r_json"
+    printf '%s' "$r_json" | jq -r --arg b "$r_base" --arg p "$1" --arg s "$record_separator" \
+      '.[] | select(.path == $p or (.path | startswith($p + "/"))) | [$b, .name, .id, .state._tag, (.since | tostring), .path] | join($s)'
+  done
+  IFS=$r_old_ifs
+}
+
+# A duration in seconds as hours, else minutes: 7h, 10m.
+age_words() {
+  if [ "$1" -ge 3600 ]; then printf '%sh' "$(($1 / 3600))"; else printf '%sm' "$(($1 / 60))"; fi
+}
+
+# The refusal of a Creating record ($2 its since) over the folder $1 that
+# holds a .git.
+stale_lane_words() {
+  printf '%s has a record in state Creating, %s old, but holds a .git: it looks like a live lane whose create never recorded its end (a stale record), not a half-made one; nothing is removed. work has no command that marks such a record active; ask work'"'"'s maintainers for one, and do not edit the registry by hand' \
+    "$1" "$(age_words $(($(date +%s) - $2)))"
+}
+
 # A folder a cut `workrift create` left (the server restarted mid-create,
 # 2026-11-19): in a base's .work/<repo>/, with no .git and no record, so work
 # cannot take it. Deleted for good (the workbox keeps no trash; never moved),
@@ -968,6 +1005,17 @@ work_remove() {
 # btrfs subvolume (inode 256 on btrfs) goes by one `btrfs subvolume delete` of
 # that path; a plain folder by an rm that never crosses into another file
 # system. Neither follows a link: a link in it is unlinked. $2 true is a dry run.
+#
+# A cut `work new` can also leave its reservation: a record in state Creating
+# of that path (the real scratch-vfy-sync-parity, 2026-11-20). That folder is
+# half-made only on positive proof, shown to the caller: no .git (a live lane
+# has one; a Creating record over a folder with one is a live lane whose
+# create never recorded its end, and is refused), the record at least an hour
+# old (work itself takes an id-less reservation as abandoned after an hour),
+# its maker gone (the reservation's lock is free) and no workrift create
+# holding the base's lock, plus every check above. Then work's own
+# `work gc -id <id>` deletes the folder and drops the record together; the
+# registry stays work's.
 work_remove_half_made() {
   h_path=$1
   h_dry_run=$2
@@ -996,7 +1044,6 @@ work_remove_half_made() {
   h_base=${h_work%/*}/$h_repo
   h_bases=$(work_bases)
   printf '%s\n' "$h_bases" | grep -qxF "$h_base" || h_no "not a workspace: $h_dir is the folder of no work base ($h_base is none)"
-  [ ! -e "$h_path/.git" ] && [ ! -L "$h_path/.git" ] || h_no "$h_path holds a .git but is no workspace Git reads; remove it by hand"
   h_old_ifs=$IFS
   IFS='
 '
@@ -1011,16 +1058,25 @@ work_remove_half_made() {
   exec 8>"$(git -C "$h_base" rev-parse --path-format=absolute --git-path workrift.lock)"
   flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base; try again once it ends"
 
-  h_old_ifs=$IFS
-  IFS='
-'
-  for h_one in $h_bases; do
-    IFS=$h_old_ifs
-    h_json=$(work_in "$h_one" --json list) || h_no "work list failed in $h_one: $h_json"
-    h_named=$(printf '%s' "$h_json" | jq -r --arg p "$h_path" '.[] | select(.path == $p or (.path | startswith($p + "/"))) | "\(.name) (\(.state._tag))"' | head -n 1)
-    [ -z "$h_named" ] || h_no "$h_path is the path of a record of $h_one, $h_named; remove it with work"
-  done
-  IFS=$h_old_ifs
+  # No record names it or a folder below it, but one: a Creating record of
+  # this very path in this base, with an id, which work gc -id takes.
+  h_records=$(work_records_at "$h_path") || h_no "work's records do not read"
+  h_creating=false
+  if [ -n "$h_records" ]; then
+    IFS=$record_separator read -r h_rbase h_rname h_rid h_rstate h_rsince h_rpath <<EOF
+$h_records
+EOF
+    if [ "$(printf '%s\n' "$h_records" | wc -l)" -eq 1 ] && [ "$h_rstate" = Creating ] &&
+      [ "$h_rpath" = "$h_path" ] && [ "$h_rbase" = "$h_base" ] && [ -n "$h_rid" ]; then
+      h_creating=true
+    else
+      h_no "$h_path is the path of a record of $h_rbase, $h_rname ($h_rstate); remove it with work"
+    fi
+  fi
+  if [ -e "$h_path/.git" ] || [ -L "$h_path/.git" ]; then
+    [ "$h_creating" = false ] || h_no "$(stale_lane_words "$h_path" "$h_rsince")"
+    h_no "$h_path holds a .git but is no workspace Git reads; remove it by hand"
+  fi
 
   h_mounts=$proc_root/self/mountinfo
   [ -r "$h_mounts" ] || h_no "cannot read the mount table ($h_mounts)"
@@ -1038,8 +1094,25 @@ work_remove_half_made() {
     h_no "a process works in or holds a file open under $h_path (pid $h_pid $(cat "$proc_root/$h_pid/comm" 2>/dev/null || printf '?'))"
   fi
 
+  # A Creating record: a create that is not over yet is no half-made one.
+  # It is old enough, and its maker is gone: work's maker holds the
+  # reservation's lock (<storage>/.lock-<id>) while it copies, and gives it
+  # back (removing the file) when it ends.
+  if [ "$h_creating" = true ]; then
+    h_age=$(($(date +%s) - h_rsince))
+    [ "$h_age" -ge "$half_made_min_age" ] ||
+      h_no "the Creating record of $h_path is $(age_words "$h_age") old, younger than $((half_made_min_age / 60)) minutes: its create may still be on its way"
+    h_reservation=$h_dir/.lock-$h_rid
+    if [ -e "$h_reservation" ] && ! flock -n "$h_reservation" true; then
+      h_no "a create still runs for $h_rname: its maker holds $h_reservation"
+    fi
+  fi
+
   h_entries=$(find "$h_path" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$(stat -f -c %T "$h_path" 2>/dev/null)" = btrfs ] && [ "$(stat -c %i "$h_path" 2>/dev/null)" = 256 ]; then
+  if [ "$h_creating" = true ]; then
+    h_kind="a folder work reserved; work gc -id $h_rid (work's own command) deletes it and drops its record"
+    h_subvolume=false
+  elif [ "$(stat -f -c %T "$h_path" 2>/dev/null)" = btrfs ] && [ "$(stat -c %i "$h_path" 2>/dev/null)" = 256 ]; then
     h_kind='a btrfs subvolume with no record (deleted by one btrfs subvolume delete of its path)'
     h_subvolume=true
   else
@@ -1047,14 +1120,31 @@ work_remove_half_made() {
     h_subvolume=false
   fi
   printf 'half-made workspace: %s\n' "$h_path"
-  printf '  no .git, no record in any work base, no mount at or below it\n'
+  if [ "$h_creating" = true ]; then
+    printf '  record %s (id %s) of %s is Creating, %s old (at least %s minutes)\n' "$h_rname" "$h_rid" "$h_rbase" "$(age_words "$h_age")" "$((half_made_min_age / 60))"
+    printf '  no .git (a live lane has one)\n'
+    printf "  no create running: its reservation lock is free and no workrift create holds the base's lock\n"
+    printf '  no mount at or below it\n'
+  else
+    printf '  no .git, no record in any work base, no mount at or below it\n'
+  fi
   printf '  no process works in it or holds a file open under it\n'
   printf '  %s entries; %s\n' "$h_entries" "$h_kind"
   if [ "$h_dry_run" = true ]; then
     printf 'would delete: %s\n' "$h_path"
     return 0
   fi
-  if [ "$h_subvolume" = true ]; then
+  if [ "$h_creating" = true ]; then
+    # work gc -id takes that one record, and only while its maker is gone; it
+    # answers the names it purged. Anything but this one, and the folder or
+    # the record still there, is reported as it is.
+    h_out=$(work_in "$h_base" --json gc -id "$h_rid") || h_no "work gc -id $h_rid failed: $h_out"
+    h_left=$(work_records_at "$h_path") || h_left='(the records do not read)'
+    if [ "$(printf '%s' "$h_out" | jq -c '.purged' 2>/dev/null)" != "$(jq -cn --arg n "$h_rname" '[$n]')" ] ||
+      [ -e "$h_path" ] || [ -L "$h_path" ] || [ -n "$h_left" ]; then
+      fail "work gc -id $h_rid answered $h_out; the folder is $([ -e "$h_path" ] && printf 'still there' || printf 'gone'), its record $([ -n "$h_left" ] && printf 'still there' || printf 'gone')"
+    fi
+  elif [ "$h_subvolume" = true ]; then
     btrfs subvolume delete "$h_path" >/dev/null || h_no "btrfs subvolume delete $h_path failed"
   elif rm --version >/dev/null 2>&1; then
     rm -rf --one-file-system -- "$h_path" || true

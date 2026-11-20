@@ -106,7 +106,12 @@ noncurrent snapshot objects after 14 days.
   no `.git` and no record) is removed by its exact absolute path: remove says
   what it is and deletes it for good (one `btrfs subvolume delete` when it is
   a subvolume), and refuses any other folder, a mount, a link, one a process
-  uses, and one while a create holds the base's lock.
+  uses, and one while a create holds the base's lock. When the cut create
+  left its record in state Creating, remove takes it only on shown proof (no
+  `.git`, the record at least an hour old, its maker's reservation lock free)
+  and through work's own `work gc -id <id>`, which drops the record with the
+  folder; a Creating record over a folder with a `.git` is a live lane with a
+  stale record, and is refused.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,

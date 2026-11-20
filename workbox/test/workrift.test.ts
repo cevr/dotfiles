@@ -909,12 +909,127 @@ describeWork("workrift with the work backend", () => {
       join(p.w.bin, "btrfs"),
       `#!/bin/sh\nprintf '%s\\n' "$*" >>'${btrfsLog}'\n[ "$1 $2" = "subvolume delete" ] && [ "$#" -eq 3 ] || exit 1\ngrep -qxF -- "$3" '${subvolumes}' || { echo "ERROR: Not a Btrfs subvolume: $3" >&2; exit 1; }\nexec /bin/rm -rf "$3"\n`,
     )
+    // A flock that answers held for each lock file the file `held` names (a maker still copying holds its
+    // reservation's .lock-<id>), and free for anything else, the fd form workrift takes its own lock with included.
+    const held = join(p.w.dir, "held")
+    writeFileSync(held, "")
+    exe(join(p.w.bin, "flock"), `#!/bin/sh\nfor a do\n  if [ -e "$a" ] && grep -qxF -- "$a" '${held}'; then exit 1; fi\ndone\nexit 0\n`)
     const env: Env = { ...p.env, WORKRIFT_PROC: proc }
     const wr = (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, env, [SCRIPT, ...argv])
     const btrfsCalls = () => lines(readFileSync(btrfsLog, "utf8"))
     const workCalls = () => lines(readFileSync(join(p.w.dir, "work-calls"), "utf8")).filter((line) => /\b(rm|gc)\b/.test(line))
-    return { path, secret, linked, proc, mounts, table, subvolumes, env, wr, btrfsCalls, workCalls }
+    const home = join(p.w.root, ".work/app")
+    /**
+     * A record in state Creating for the folder `name` of app's storage, `ageS` seconds old, written as a `work new`
+     * cut between its reservation and its clone leaves it: the registry line work itself writes (put, name, path,
+     * parent, branch, no cloner, creating, since, base commit, latest, id, deps, token, moving).
+     */
+    const creating = (name: string, id: string, ageS: number) => {
+      const since = Math.floor(Date.now() / 1000) - ageS
+      const start = sh(p.w.app, p.w.env, "git", "rev-parse", "HEAD").trim()
+      writeFileSync(
+        join(home, ".registry"),
+        `put\t"${name}"\t"${join(home, name)}"\t"${p.w.app}"\t"${name}"\t""\tcreating\t${since}\t"${start}"\t""\t"${id}"\t""\t""\t""\t-\t0\n`,
+        { flag: "a" },
+      )
+      return join(home, name)
+    }
+    /** Every record of app, in any state, as `name state`. */
+    const records = () => p.w.listed(p.w.app).map((each) => `${each.name} ${each.state._tag}`).sort()
+    return { path, secret, linked, proc, mounts, table, subvolumes, held, env, wr, btrfsCalls, workCalls, home, creating, records }
   }
+
+  test(
+    "remove of a create cut mid-way whose record says Creating (the real scratch-vfy-sync-parity: 7 hours old, no .git, a few files, a .env link) shows its proof, and deletes the folder and the record by work gc -id; --dry-run removes nothing",
+    () => {
+      const p = purgeBench("creating")
+      const h = halfMade(p)
+      const id = "e314d2db38131c91"
+      expect(h.creating("scratch-vfy-sync-parity", id, 7 * 3600)).toBe(h.path)
+      expect(h.records()).toContain("scratch-vfy-sync-parity Creating")
+      const before = p.files()
+      const recordsBefore = h.records()
+
+      const dry = h.wr(p.w.app, "remove", "--dry-run", h.path)
+      expect(dry.code, dry.err).toBe(0)
+      for (const proof of [
+        `half-made workspace: ${h.path}`,
+        `record scratch-vfy-sync-parity (id ${id}) of ${p.w.app} is Creating, 7h old (at least 60 minutes)`,
+        "no .git (a live lane has one)",
+        "no create running: its reservation lock is free and no workrift create holds the base's lock",
+        "no mount at or below it",
+        "no process works in it or holds a file open under it",
+        "5 entries",
+        `work gc -id ${id}`,
+      ])
+        expect(dry.out).toContain(proof)
+      expect(lines(dry.out).at(-1)).toBe(`would delete: ${h.path}`)
+      expect(p.files()).toEqual(before)
+      expect(h.records()).toEqual(recordsBefore)
+      expect(h.workCalls()).toEqual([])
+
+      const ran = h.wr(p.w.app, "remove", h.path)
+      expect(ran.code, ran.err).toBe(0)
+      expect(lines(ran.out).at(-1)).toBe(`deleted: ${h.path}`)
+      expect(existsSync(h.path)).toBe(false)
+      // work's own command took the folder and the record together, and nothing else.
+      expect(h.workCalls()).toEqual([`${p.w.app} --json gc -id ${id}`])
+      expect(h.records()).toEqual(recordsBefore.filter((each) => !each.startsWith("scratch-vfy-sync-parity ")))
+      expect(p.files()).toEqual(p.without(before, h.path))
+      expect(readFileSync(h.secret, "utf8")).toBe("KEEP=1\n")
+      expect(readFileSync(join(h.linked, "keep.txt"), "utf8")).toBe("linked\n")
+      expect(h.btrfsCalls()).toEqual([])
+    },
+    60_000,
+  )
+
+  test(
+    "remove refuses a Creating record that holds a .git (a live lane with a stale record), one whose create still runs, one too young, and one a process works in; nothing changes",
+    () => {
+      const p = purgeBench("creating-refuse")
+      const h = halfMade(p)
+      // A live lane: a complete clone with its .git, whose create never recorded its end; 13 hours old.
+      const lane = h.creating("cristian-lab-bare-lab-cli", "1111111111111111", 13 * 3600)
+      sh(p.w.dir, p.w.env, "git", "clone", "-q", p.w.origin, lane)
+      writeFileSync(join(lane, "work-in-progress.txt"), "current work\n")
+      // A cut create, but its maker still holds its reservation lock.
+      const running = h.creating("scratch-running", "2222222222222222", 7 * 3600)
+      mkdirSync(running)
+      writeFileSync(join(running, "a.txt"), "a\n")
+      writeFileSync(join(h.home, ".lock-2222222222222222"), "")
+      writeFileSync(h.held, `${join(h.home, ".lock-2222222222222222")}\n`)
+      // A cut create made ten minutes ago.
+      const young = h.creating("scratch-young", "3333333333333333", 600)
+      mkdirSync(young)
+      writeFileSync(join(young, "a.txt"), "a\n")
+      // The real shape, 7 hours old, but a process works in it.
+      h.creating("scratch-vfy-sync-parity", "e314d2db38131c91", 7 * 3600)
+      mkdirSync(join(h.proc, "4242"))
+      symlinkSync(join(h.path, "src"), join(h.proc, "4242/cwd"))
+
+      const before = p.files()
+      const recordsBefore = h.records()
+      for (const [label, path, says] of [
+        ["a live lane", lane, "looks like a live lane whose create never recorded its end"],
+        ["a live lane, dry run", lane, "stale"],
+        ["a create still running", running, "a create still runs"],
+        ["a young record", young, "younger than 60 minutes"],
+        ["a process in it", h.path, "pid 4242"],
+      ] as const) {
+        const argv = label.endsWith("dry run") ? ["remove", "--dry-run", path] : ["remove", path]
+        const ran = h.wr(p.w.app, ...argv)
+        expect({ label, code: ran.code }).toEqual({ label, code: 1 })
+        expect(ran.err, label).toContain(says)
+        expect(ran.out, label).not.toContain("delete")
+        expect(p.files(), label).toEqual(before)
+        expect(h.records(), label).toEqual(recordsBefore)
+        expect(h.workCalls(), label).toEqual([])
+      }
+      for (const kept of [lane, running, young, h.path]) expect(existsSync(kept)).toBe(true)
+      expect(readFileSync(join(lane, "work-in-progress.txt"), "utf8")).toBe("current work\n")
+    },
+    60_000,
+  )
 
   test(
     "remove of a half-made workspace (no .git, no record) says what it is and deletes that one folder for good: a link in it is unlinked, not followed; --dry-run deletes nothing; a btrfs subvolume goes by one btrfs subvolume delete of its path",
