@@ -22,6 +22,7 @@
  *
  * @module
  */
+import { Option, Schema } from "effect"
 import type { Json } from "../frame.ts"
 
 /** A subagent as the subagents tool answers it. */
@@ -104,6 +105,10 @@ const handleOfView = (view: Json, call: CallTool): SubagentHandle => {
 const STATES: ReadonlyArray<SubagentHandleData["state"]> = ["running", "done", "stopped", "failed"]
 const stateOf = (value: Json): SubagentHandleData["state"] => STATES.find((state) => state === value) || "running"
 
+/** What a start answers of where it runs, beside its session: the orchestrate plugin's fallback, effort or latch note, and its model. */
+const Started = Schema.Struct({ note: Schema.optionalKey(Schema.String), model: Schema.optionalKey(Schema.String) })
+const decodeStarted = Schema.decodeUnknownOption(Started)
+
 /**
  * `tools.subagent(input)`: starts a subagent (or sends one more work, with its sessionID) and resolves to its live
  * handle, running.
@@ -111,17 +116,15 @@ const stateOf = (value: Json): SubagentHandleData["state"] => STATES.find((state
 export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle> =>
   call("subagent", input).then((result) => {
     const asked = recordOf(input)
-    const answered = recordOf(result)
     return makeSubagentHandle(
       {
-        sessionID: String(answered.sessionID),
+        sessionID: String(recordOf(result).sessionID),
         description: String(asked.description),
         agent: String(asked.agent),
         state: "running",
         message: "",
-        // What the start answered of where it runs (the orchestrate plugin's fallback, effort or latch note), and on what.
-        note: typeof answered.note === "string" ? answered.note : "",
-        ...(typeof answered.model === "string" ? { model: answered.model } : {}),
+        note: "",
+        ...Option.getOrElse(decodeStarted(result), () => ({})),
       },
       call,
     )

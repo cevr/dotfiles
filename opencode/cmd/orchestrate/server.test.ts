@@ -96,7 +96,7 @@ interface World {
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
 interface EditedTool {
   execute: (input: unknown, context: unknown) => Effect.Effect<{ readonly output?: unknown; readonly content?: unknown; readonly metadata?: unknown }, unknown>
-  output?: unknown
+  output?: Schema.Codec<unknown, unknown>
 }
 
 /** What the stand-in subagent tool was run with. */
@@ -894,7 +894,8 @@ describe("Opus first, Codex second", () => {
         // A kernel cell's handle reads the note and the model as data (mods/kernel/worker/subagent-handle.ts).
         expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: `${NOTE}\nworking`, note: NOTE, model: "openai/gpt-6.1-sol#medium" })
         // The tool's output schema keeps them: the kernel encodes a result by it before a cell reads it.
-        expect(Schema.encodeUnknownSync(plugin.subagent.output as Schema.Codec<unknown, unknown>)(answer.output)).toEqual(answer.output)
+        const output = plugin.subagent.output
+        expect(output && Schema.encodeUnknownSync(output)(answer.output)).toEqual(answer.output)
         expect((yield* plugin.runTool(call.input)).content).toBe("working")
       }),
     ))

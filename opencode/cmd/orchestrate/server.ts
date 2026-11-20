@@ -440,6 +440,14 @@ const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched 
   })
 }
 
+/** What a start's answer tells a kernel cell's handle as data (mods/kernel/worker/subagent-handle.ts): its note and its model, those it has. */
+interface Telling {
+  readonly note?: string
+  readonly model?: string
+}
+const tellingOf = (fields: Telling): Telling =>
+  Object.fromEntries(Object.entries(fields).filter(([, value]) => Predicate.isString(value) && value !== ""))
+
 /** What a latched call answers, as the subagent tool's output: why it waits, when it opens, and that its result wakes the parent. */
 const latchedResult = (latched: Model.LatchedStart, place: Place) => {
   const event = latched.latched
@@ -459,7 +467,7 @@ const latchedResult = (latched: Model.LatchedStart, place: Place) => {
   ].join("\n")
   return {
     // `note` and `model` are what a kernel cell's handle reads of the answer (mods/kernel/worker/subagent-handle.ts).
-    output: { sessionID: latched.child, status: "latched" as const, output, latch, note: output, ...(event.model === undefined ? {} : { model: event.model }) },
+    output: { sessionID: latched.child, status: "latched" as const, output, latch, ...tellingOf({ note: output, model: event.model }) },
     content: output,
     metadata: { sessionID: latched.child, status: "latched", latch },
   }
@@ -940,7 +948,7 @@ export const make = (
       const latched = new Map<string, ReturnType<typeof latchedResult>>()
       // What a started call's answer tells, by its call (noteKey): a fallback's or lowered worker's note, put first in
       // the subagent tool's answer, and the model it runs on; both also as fields of its output.
-      const tellings = new Map<string, { readonly note?: string; readonly model?: string }>()
+      const tellings = new Map<string, Telling>()
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -953,15 +961,11 @@ export const make = (
             const tells = tellings.get(key)
             if (tells !== undefined) {
               tellings.delete(key)
-              const { note, model } = tells
-              const said = (text: string) => (note === undefined ? text : `${note}\n${text}`)
+              const said = (text: string) => [tells.note, text].filter(Predicate.isString).join("\n")
               return execute(input, context).pipe(
                 Effect.map((result) => ({
                   ...result,
-                  output:
-                    isObject(result.output) && typeof result.output.output === "string"
-                      ? { ...result.output, output: said(result.output.output), ...(note === undefined ? {} : { note }), ...(model === undefined ? {} : { model }) }
-                      : result.output,
+                  output: isObject(result.output) && typeof result.output.output === "string" ? { ...result.output, output: said(result.output.output), ...tells } : result.output,
                   content: typeof result.content === "string" ? said(result.content) : result.content,
                 })),
               )
@@ -1176,15 +1180,14 @@ export const make = (
             // A named model was dropped (the role's own, or a Codex model an implementor named): with no variant chosen,
             // the role runs on its own model, a follow-up on its child's.
             else if (routed.reason === "model-dropped" || routed.dropped !== undefined) delete input.model
-            // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why.
+            // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why; and
+            // every start's names the model it runs on, as data.
             if (outcome.value._tag === "SubagentStarted") {
               const said = [
                 ...(outcome.value.fallback === undefined ? [] : [fallbackNote(outcome.value)]),
                 ...(outcome.value.lowered === undefined ? [] : [effortNote(outcome.value)]),
               ]
-              const model = outcome.value.model
-              if (said.length > 0 || model !== undefined)
-                tellings.set(key, { ...(said.length > 0 ? { note: said.join("\n") } : {}), ...(model === undefined ? {} : { model }) })
+              tellings.set(key, tellingOf({ note: said.join("\n"), model: outcome.value.model }))
             }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
