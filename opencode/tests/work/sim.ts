@@ -5,7 +5,7 @@
 // - A title request: a short title.
 // - `work flow`: create a workspace for `feat/x` with `work`; commit in it through the shell; list; remove it
 //   (refused: the commit is found nowhere else); remove it with force; call `shll`, a one-letter miss of
-//   `shell`; call `opencode_worktree_create`, which the work plugin took away; then a closing line.
+//   `shell`; then a closing line.
 // - `work land`: create a workspace for `feat/x`; commit a file in it through the shell; land it by
 //   `workspaces`; then a closing line, again after the wake.
 // - `work alias`: list with the alias `rift`; then a closing line.
@@ -116,7 +116,6 @@ const scripts = (workspace: string): ReadonlyArray<readonly [string, ReadonlyArr
       { kind: "tool", name: "work", input: { action: "remove", name: "feat-x" } },
       { kind: "tool", name: "work", input: { action: "remove", name: "feat-x", force: true } },
       { kind: "tool", name: "shll", input: { command: "echo never", description: "A misspelled tool" } },
-      { kind: "tool", name: "opencode_worktree_create", input: { name: "x" } },
     ],
   ],
   [
