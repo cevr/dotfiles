@@ -4,7 +4,9 @@
 // hands it no title or environment (a launchd job gets a bare PATH, and the
 // controller carries only `cron`, `type` and `scheduledTime`), so each job gets
 // its own entry file, `<jobs>/<title>.ts`, that calls the shared script
-// (cmd/wake/backstop.ts) with the job's descriptor written in.
+// (cmd/wake/backstop.ts) with the job's descriptor written in. A script of a
+// build's plugin tree is named through `<share>/current.plugins` (`stableScript`),
+// since a job may fire after the prune deleted that tree with its build.
 //
 // It registers through a real `bun`, not the process it runs in: inside the
 // compiled OpenCode binary, Bun.cron writes that binary as the job's program,
@@ -13,7 +15,7 @@
 // its own launchd label or its own marked crontab line. Listing reads the
 // LaunchAgents directory, or `crontab -l` for the marked lines, and keeps the
 // wake titles only.
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Effect, Layer } from "effect"
 import { carried, type Descriptor, idOfTitle, type Job, type Schedule } from "../backstop.ts"
@@ -61,6 +63,42 @@ export const entryOf = (script: string, descriptor: Descriptor): string =>
     "",
   ].join("\n")
 
+/**
+ * The link beside the builds that names the installed build's plugin tree (`mods/update/filestore/stage.ts`
+ * `CURRENT_TREE`), written with the launcher at each record write.
+ */
+export const CURRENT_TREE = "current.plugins"
+
+/** A path into a build's plugin tree: `<share>/opencode-<version>.plugins/opencode/<rest>`. */
+const IN_TREE = /^(.+)\/opencode-[^/]+\.plugins\/(opencode\/.+)$/
+
+/**
+ * The script an OS job's entry file imports: a script of a build's plugin tree goes through
+ * `<share>/current.plugins` once that link holds the same file, since the job may fire up to 30 days
+ * later, when the prune has deleted the tree with its build. Any other path (a checkout, a link already)
+ * stays as it is. `exists` is the file system's, but for a test.
+ */
+export const stableScript = (script: string, exists: (path: string) => boolean = existsSync): string => {
+  const match = IN_TREE.exec(script)
+  if (match === null) return script
+  const through = path.join(match[1] ?? "", CURRENT_TREE, match[2] ?? "")
+  return exists(through) ? through : script
+}
+
+/** The script an entry file imports; none for a file that is not one (`entryOf`). */
+const IMPORTED = /^import \{ scheduled \} from "([^"\\\n]+)"$/m
+
+/**
+ * An entry file written before its script went through the link (`stableScript`), pointed at it; any
+ * other file as it is.
+ */
+export const relinked = (entry: string, exists: (path: string) => boolean = existsSync): string => {
+  const script = IMPORTED.exec(entry)?.[1]
+  if (script === undefined) return entry
+  const stable = stableScript(script, exists)
+  return stable === script ? entry : entry.replace(JSON.stringify(script), JSON.stringify(stable))
+}
+
 /** The wake titles among a LaunchAgents directory's files. */
 export const plistTitles = (files: ReadonlyArray<string>): ReadonlyArray<string> =>
   files.flatMap((file) => {
@@ -83,6 +121,24 @@ const ranOk = (what: string) => (ran: Ran) =>
 
 export const layer = (config: Config) => {
   const fileOf = (title: string) => path.join(config.jobs, `${title}.ts`)
+  /**
+   * The listed jobs' entry files, each pointed through the link where it named a build's tree (`relinked`):
+   * a job registered before the link was used still fires after the prune. Read at each start; a file
+   * that does not read or write stays as it is.
+   */
+  const relink = (titles: ReadonlyArray<string>) =>
+    Effect.forEach(
+      titles,
+      (title) =>
+        attempt("an entry file was not relinked", () => {
+          const file = fileOf(title)
+          if (!existsSync(file)) return
+          const entry = readFileSync(file, "utf8")
+          const next = relinked(entry)
+          if (next !== entry) writeFileSync(file, next)
+        }).pipe(Effect.ignore),
+      { discard: true },
+    ).pipe(Effect.as(titles))
   return Layer.succeed(Backstop, {
     register: (job: Job, schedule: Schedule) =>
       Effect.gen(function* () {
@@ -90,7 +146,7 @@ export const layer = (config: Config) => {
         const file = fileOf(job.title)
         yield* attempt("the job's script was not written", () => {
           mkdirSync(config.jobs, { recursive: true })
-          writeFileSync(file, entryOf(config.script, descriptor))
+          writeFileSync(file, entryOf(stableScript(config.script), descriptor))
         })
         yield* config.exec([config.bun, "-e", REGISTER, file, schedule.cron, job.title]).pipe(Effect.flatMap(ranOk("Bun.cron")))
       }),
@@ -109,7 +165,7 @@ export const layer = (config: Config) => {
         return crontabTitles(ran.stdout)
       }
       return yield* new BackstopRefused({ message: `no OS scheduler is supported on ${config.platform}` })
-    }),
+    }).pipe(Effect.flatMap(relink)),
   })
 }
 

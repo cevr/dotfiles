@@ -94,9 +94,13 @@ export type Options = typeof Options.Type
 /** What the wakes run on. */
 export type Externals = WakeStore | Courier | Checks | Backstop | Opener | Runner
 
-/** The OS job's script, beside this file. */
+/** The OS job's script, beside this file; a job's entry file names it through the share's `current.plugins` when it is in a build's tree (`CronBackstop.stableScript`). */
 export const SCRIPT = fileURLToPath(new URL("./backstop.ts", import.meta.url))
-/** A job's runner, beside this file. */
+/**
+ * A job's runner, beside this file, by its own path even in a build's tree: the runner starts at once and
+ * runs as `bun <tree>/…/job.ts`, so the prune keeps that tree while it runs (`mods/update/trees.ts`
+ * `namedBy`), and the job ends on the code it started with.
+ */
 export const JOB_SCRIPT = fileURLToPath(new URL("./job.ts", import.meta.url))
 
 const bunOf = (options: Options, home: string) => options.bun ?? Bun.which("bun") ?? path.join(home, ".bun", "bin", "bun")

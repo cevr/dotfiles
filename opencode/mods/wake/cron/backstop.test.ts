@@ -3,14 +3,14 @@
 // the laws run without registering a real job. The job's entry file is run by
 // a real bun against a stand-in script, to show it hands the descriptor over.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, type Scope } from "effect"
 import { backstopLaws } from "../laws.ts"
 import { bounded, type TestBounds, testLimitMs } from "../process/readiness.ts"
 import { Backstop } from "../service.ts"
-import { type Config, crontabTitles, type Exec, exec, layer, plistTitles } from "./backstop.ts"
+import { type Config, crontabTitles, type Exec, exec, layer, plistTitles, relinked, stableScript } from "./backstop.ts"
 
 /** A scratch directory of the test's own, with an empty LaunchAgents directory, removed when its scope closes. */
 const scratch = Effect.acquireRelease(
@@ -120,6 +120,53 @@ describe("a job", () => {
     }),
   )
 
+  /** A build's plugin tree in `share` whose backstop script writes `name` to `out`, the share's `current.plugins` link pointed at it. */
+  const installTree = (share: string, version: string, out: string) => {
+    const tree = path.join(share, `opencode-${version}.plugins`)
+    mkdirSync(path.join(tree, "opencode", "cmd", "wake"), { recursive: true })
+    writeFileSync(path.join(tree, "opencode", "cmd", "wake", "backstop.ts"), `export const scheduled = () => Bun.write(${JSON.stringify(out)}, ${JSON.stringify(version)})\n`)
+    rmSync(path.join(share, "current.plugins"), { force: true })
+    symlinkSync(path.basename(tree), path.join(share, "current.plugins"))
+    return path.join(tree, "opencode", "cmd", "wake", "backstop.ts")
+  }
+  const A = "2.3.0-prime.aaaaaaaa.11111111.tree"
+  const B = "2.3.0-prime.bbbbbbbb.22222222.tree"
+
+  scratchTest("an entry file registered by a server in tree A still imports after A is pruned and B is installed, through the link", (dir) =>
+    Effect.gen(function* () {
+      const share = path.join(dir, "share")
+      const out = path.join(dir, "fired")
+      const config = { ...configOf("darwin", dir, { text: "" }), script: installTree(share, A, out) }
+      yield* on(config)((backstop) => backstop.register({ id: "w000010", title: "opencode-wake-w000010", directory: "/work/app" }, { cron: "* * * * *", recurring: true }))
+      installTree(share, B, out)
+      rmSync(path.join(share, `opencode-${A}.plugins`), { recursive: true })
+      const file = path.join(config.jobs, "opencode-wake-w000010.ts")
+      const ran = yield* exec([process.execPath, "-e", `const job = await import(${JSON.stringify(file)}); await job.default.scheduled()`])
+      expect(ran.stderr).toBe("")
+      expect(ran.exitCode).toBe(0)
+      expect(readFileSync(out, "utf8")).toBe(B)
+    }),
+  )
+
+  scratchTest("an entry file written into tree A before the link was used goes through it from the next start's listing", (dir) =>
+    Effect.gen(function* () {
+      const share = path.join(dir, "share")
+      const out = path.join(dir, "fired")
+      const script = installTree(share, A, out)
+      const config = configOf("darwin", dir, { text: "" })
+      mkdirSync(config.jobs, { recursive: true })
+      const file = path.join(config.jobs, "opencode-wake-w000011.ts")
+      writeFileSync(file, `// old\nimport { scheduled } from ${JSON.stringify(script)}\n\nexport default { scheduled: () => scheduled({}) }\n`)
+      writeFileSync(path.join(config.launchAgents, "bun.cron.opencode-wake-w000011.plist"), "<plist/>")
+      expect(yield* on(config)((backstop) => backstop.titles)).toEqual(["opencode-wake-w000011"])
+      installTree(share, B, out)
+      rmSync(path.join(share, `opencode-${A}.plugins`), { recursive: true })
+      const ran = yield* exec([process.execPath, "-e", `const job = await import(${JSON.stringify(file)}); await job.default.scheduled()`])
+      expect(ran.exitCode).toBe(0)
+      expect(readFileSync(out, "utf8")).toBe(B)
+    }),
+  )
+
   scratchTest("a refused registration says what the scheduler said", (dir) =>
     Effect.gen(function* () {
       const config = { ...configOf("darwin", dir, { text: "" }), exec: (() => Effect.succeed({ exitCode: 1, stdout: "", stderr: "launchctl: bootstrap failed\n" })) satisfies Exec }
@@ -140,6 +187,19 @@ describe("listing", () => {
   test("keeps only wake titles, from plist names and from marked crontab lines", () => {
     expect(plistTitles(["bun.cron.opencode-wake-w1.plist", "bun.cron.nightly.plist", "com.cvr.okra.schedule-x.plist", "bun.cron.opencode-wake-.plist"])).toEqual(["opencode-wake-w1"])
     expect(crontabTitles(["*/5 * * * * run # bun-cron: opencode-wake-w2", "0 3 * * * opencode-wake-w3 # mine", "# bun-cron: other"].join("\n"))).toEqual(["opencode-wake-w2"])
+  })
+
+  test("a tree's script goes through current.plugins only where the link holds it; a checkout's, a link's or a near miss stays", () => {
+    const tree = "/s/opencode-2.3.0-prime.aaaaaaaa.11111111.tree.plugins/opencode/cmd/wake/backstop.ts"
+    const through = "/s/current.plugins/opencode/cmd/wake/backstop.ts"
+    expect(stableScript(tree, (each) => each === through)).toBe(through)
+    expect(stableScript(tree, () => false)).toBe(tree)
+    for (const other of ["/dotfiles/opencode/cmd/wake/backstop.ts", through, "/s/x.plugins/opencode/cmd/wake/backstop.ts", "/s/opencode-2.3.0.plugins/cmd/wake/backstop.ts"])
+      expect(stableScript(other, () => true)).toBe(other)
+    const entry = `// x\nimport { scheduled } from ${JSON.stringify(tree)}\n\nexport default {}\n`
+    expect(relinked(entry, () => true)).toBe(entry.replace(tree, through))
+    expect(relinked(entry, () => false)).toBe(entry)
+    expect(relinked("not an entry\n", () => true)).toBe("not an entry\n")
   })
 
   test("exec runs a program and says how it went; one that cannot start reads as exit 127", async () => {
