@@ -50,7 +50,8 @@ const requestOf = ({ method, path, body }: Call) =>
 /** The double as a law server, on a clock that moves 1 ms a call. */
 const double = (): LawServer => {
   const clock = { now: 1_793_804_400_000 }
-  const server = Server.make({ draw: () => 0, now: () => clock.now, model })
+  // Pages as the real server's, so the laws hold the double's paging to real OpenCode's.
+  const server = Server.make({ draw: () => 0, now: () => clock.now, model, pagedMessages: true })
   const sent: Array<Sent> = []
   const drain = Effect.sync(() => void sent.push(...server.take()))
   const call = (made: Call) =>
