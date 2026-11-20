@@ -99,6 +99,7 @@ Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hoo
 ## Between messages
 
 - **Wait** by ending your turn: workers, lands and timers wake you. An outside event (CI, a time) is one `monitor` or background waiter. Nobody polls. Before you end a turn with units in `plan`, `implement` or `verify` and no agent on them, start them or name what they wait on.
+- **Never block on the shell.** A command that can run longer than about 10 seconds (a build, a test run, an ssh, a land's wait, another session's request) goes to a `job`, a background shell or a subagent, and you end the turn or go on; you read its result when it wakes you. Only quick reads run inline.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, `AGENTS.md` for the stack. On a pause, stop every worker and write where each unit stands into the plan.
 - **After a compaction**: re-read this file and the plan, and run `orchestrate({ action: "status" })` (elsewhere `status.ts`), before any other action.
 - **Close the run** when every unit is merged, dropped or blocked on an owner question: the goal word for word and whether it is met, what merged with hashes, the decisions, the owner questions, the follow-ups and the `plan.md` path.
