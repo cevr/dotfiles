@@ -8,7 +8,7 @@
 // not pushed: each Rift answered green or red, every Rift kept. With
 // `rift.mergeCheck` a land goes by receipts (`cover`, `mergeGate`, `recordOf`, `afterPush`): never the full
 // gate. The plugin calls this and nothing else.
-import { Array as Arr, Clock, Context, Data, DateTime, Effect, Layer, Option, Predicate, Random, Result, Scope, Semaphore } from "effect"
+import { Array as Arr, Cause, Clock, Context, Data, DateTime, Effect, Layer, Option, Predicate, Random, Result, Scope, Semaphore } from "effect"
 import { findRift, isPath, resolvePath } from "./find.ts"
 import { focusLine, shareOf, type Covered, type Receipt, type Standing } from "./receipt.ts"
 import { CHECK_EVERY, RESUMED, baseOf, forcedLine, headOf, loadedLine, loadWord, observe, overloaded, owe, pay, pays, phase, ran, unitsOf, type Debts, type OwedAccept, type Trigger } from "./owed.ts"
@@ -277,13 +277,13 @@ export const layer = Layer.effect(
 
     /**
      * A batch landed by receipts: its accept check in its own Rift (ACCEPT), put at origin's newest default
-     * branch, its receipt written for the verifier. The integration Rift is free meanwhile.
+     * branch, its receipt written for the verifier, with `env` beside RIFT_LAND_BASE. The integration Rift is free meanwhile.
      */
-    const acceptApart = (source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string) => {
+    const acceptApart = (source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string, env: Readonly<Record<string, string>> = {}) => {
       const checkIn = Effect.fn("RiftTool.acceptApart")(function* (path: string) {
         const started = yield* landing.start(path, main)
         yield* landing.install(path, started.previous)
-        return (yield* landing.receipted(path, "accept", command, { RIFT_LAND_BASE: base })).ran
+        return (yield* landing.receipted(path, "accept", command, { ...env, RIFT_LAND_BASE: base })).ran
       })
       return claimed(Effect.tap(keptRift(source, ACCEPT), (path) => Effect.sync(() => busy.set(path, `the accept check of ${branchList(units)} runs there`)))).pipe(
         Effect.flatMap((path) => checkIn(path).pipe(Effect.ensuring(Effect.sync(() => busy.delete(path))))),
@@ -397,17 +397,17 @@ export const layer = Layer.effect(
     /**
      * The owed accept check `owed`, if it is still owed once its runner holds the host's post-land claim (so
      * two servers, or the land and a minute check, never run it twice at once, and it never overlaps a
-     * post-land step), in the accept Rift (ACCEPT), its command after `prefix`: a resumed run (a minute
-     * check's, after a restart) has RESUMED there, so its receipt names it so. A red or unrun one wakes the
-     * landing session (a session gone since is logged and skipped, as a post-land wake is); then the debt is
-     * cleared, so a restart between the two wakes it twice rather than never. `kept` false: its debt could not
-     * be written, so it runs anyway.
+     * post-land step), in the accept Rift (ACCEPT), `rift.accept` run as it is with `env`: a resumed run (a
+     * minute check's, after a restart) has RESUMED=1 there, which its receipt names. A red or unrun one wakes
+     * the landing session (a session gone since is logged and skipped, as a post-land wake is); then the debt
+     * is cleared, so a restart between the two wakes it twice rather than never. `kept` false: its debt could
+     * not be written, so it runs anyway.
      */
-    const runAccept = (owed: OwedAccept, prefix: string, kept = true) =>
+    const runAccept = (owed: OwedAccept, env: Readonly<Record<string, string>>, kept = true) =>
       Effect.gen(function* () {
         const still = !kept || (yield* debts.read).accepts.some((each) => each.id === owed.id)
         if (!still) return
-        yield* accept(owed.sessionID, owed.units, acceptApart(owed.source, owed.main, owed.units, `${prefix}${owed.command}`, owed.base))
+        yield* accept(owed.sessionID, owed.units, acceptApart(owed.source, owed.main, owed.units, owed.command, owed.base, env))
         yield* changeAccepts((all) => all.filter((each) => each.id !== owed.id))
       })
 
@@ -428,7 +428,7 @@ export const layer = Layer.effect(
     /** Each owed accept check no one runs now, one at a time, before any post-land step: a minute check's. */
     const checkAccepts = Effect.gen(function* () {
       const owed = (yield* debts.read).accepts
-      yield* Effect.forEach(owed, (each) => claim.holdIfFree(runAccept(each, `${RESUMED} `)), { discard: true })
+      yield* Effect.forEach(owed, (each) => claim.holdIfFree(runAccept(each, { [RESUMED]: "1" })), { discard: true })
     })
 
     /**
@@ -444,7 +444,21 @@ export const layer = Layer.effect(
       const due = all.filter((owed) => phase(owed, readings, now, "settled") !== "wait")
       yield* Effect.forEach(due, (owed) => runOwed(owed.source, "settled"), { discard: true })
     }).pipe(Effect.catch((failure) => Effect.logWarning("work: the post-land check failed", failure)))
-    yield* Effect.forkIn(Effect.forever(Effect.andThen(Effect.sleep(CHECK_EVERY), check)), scope)
+    /** Each distinct cause a turn of the check ended on, said once. */
+    const said = new Set<string>()
+    /**
+     * A turn that ended on any cause but an interruption (a defect too: a typed failure is caught above) is
+     * logged, once per distinct cause, and the next turn runs: no cause ends the check for the server's life.
+     */
+    const survive = (cause: Cause.Cause<unknown>) =>
+      Effect.gen(function* () {
+        if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause)
+        const words = Cause.pretty(cause)
+        if (said.has(words)) return
+        said.add(words)
+        yield* Effect.logError("work: a minute check's turn died; the next one runs", cause)
+      })
+    yield* Effect.forkIn(Effect.forever(Effect.andThen(Effect.sleep(CHECK_EVERY), Effect.catchCause(check, survive))), scope)
 
     /** Each Rift green, its own branch pushed when `pushBranches` is set; a refused push is named, never fatal. */
     const greens = (merged: ReadonlyArray<Unit>, pushBranches: boolean): Effect.Effect<ReadonlyArray<Outcome>> =>
@@ -603,7 +617,7 @@ export const layer = Layer.effect(
       const accepting = Option.match(owed, {
         onNone: () => Effect.void,
         onSome: (one) =>
-          claim.hold(runAccept(one, "", kept)).pipe(
+          claim.hold(runAccept(one, {}, kept)).pipe(
             Effect.catch((failure: RiftFailed) => Effect.logWarning("rift: the accept check could not take the post-land claim; the minute check runs it", failure)),
           ),
       })

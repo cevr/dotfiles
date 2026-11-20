@@ -25,8 +25,8 @@ import * as MemoryRifts from "./rifts.ts"
 import * as MemorySessionDirectories from "./session-directories.ts"
 import * as MemoryWorkbox from "./workbox.ts"
 import * as Model from "../model.ts"
-import { Landing } from "../service.ts"
-import { CHECK_EVERY, MAX_WAIT, RESUMED, SETTLE } from "../owed.ts"
+import { Landing, PostLandClaim, PostLandDebts, type RiftFailed } from "../service.ts"
+import { CHECK_EVERY, MAX_WAIT, RESUMED, SETTLE, receiptCommand } from "../owed.ts"
 import { Standing } from "../receipt.ts"
 
 const SOURCE = "/code/app"
@@ -502,7 +502,10 @@ describe("an owed accept check", () => {
     return made
   }
 
-  const layerOf = (made: Bench) =>
+  /** The debts and the claim a server reads: the bench's memory ones, unless a case stands another in. */
+  type Kept = Layer.Layer<PostLandDebts | PostLandClaim>
+
+  const layerOf = (made: Bench, kept: Kept) =>
     Model.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -511,18 +514,60 @@ describe("an owed accept check", () => {
           MemoryLanding.layer(made.landing),
           MemoryNotices.layer(made.woken),
           MemoryWorkbox.layer(false, []),
-          MemoryDebts.layer(made.debts),
+          kept,
         ),
       ),
     )
 
   /** A server's life: its scope, which a restart closes, and its tool. Two booted at once stand for two servers starting together. */
-  const start = (made: Bench) =>
+  const start = (made: Bench, kept: Kept = MemoryDebts.layer(made.debts)) =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()
-      const tool = Context.get(yield* Layer.buildWithScope(layerOf(made), scope), Model.RiftTool)
+      const tool = Context.get(yield* Layer.buildWithScope(layerOf(made, kept), scope), Model.RiftTool)
       return { scope, tool }
     })
+
+  /** The bench's debts whose next `dying.left` reads die (a defect, not a typed failure). */
+  const dyingReads = (made: Bench, dying: { left: number }): Kept =>
+    Layer.mergeAll(
+      MemoryDebts.layer(made.debts),
+      Layer.effect(
+        PostLandDebts,
+        Effect.map(
+          Effect.gen(function* () {
+            return yield* PostLandDebts
+          }),
+          (kept) =>
+            PostLandDebts.of({
+              ...kept,
+              read: Effect.suspend(() => {
+                if (dying.left === 0) return kept.read
+                dying.left -= 1
+                return Effect.die(new Error("a defect in the debts read"))
+              }),
+            }),
+        ),
+      ).pipe(Layer.provide(MemoryDebts.layer(made.debts))),
+    )
+
+  /** The bench's claim, where a waiting holder asks again every `every`, as a flock(2) holder polls: a free claim goes to whoever asks first. */
+  const pollingClaim = (made: Bench, every: Duration.Duration): Kept =>
+    Layer.mergeAll(
+      MemoryDebts.layer(made.debts),
+      Layer.effect(
+        PostLandClaim,
+        Effect.map(
+          Effect.gen(function* () {
+            return yield* PostLandClaim
+          }),
+          (kept) => {
+            const hold = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | RiftFailed, R> =>
+              Effect.flatMap(kept.holdIfFree(effect), (got) => Option.match(got, { onSome: Effect.succeed, onNone: () => Effect.andThen(Effect.sleep(every), hold(effect)) }))
+            return PostLandClaim.of({ ...kept, hold })
+          },
+        ),
+      ).pipe(Layer.provide(MemoryDebts.layer(made.debts))),
+    )
 
   /** A land of feat/x whose accept check never ends, then the server's restart (its scope closed): answers the land's answer. */
   const interrupted = (made: Bench) =>
@@ -568,7 +613,10 @@ describe("an owed accept check", () => {
         yield* minute
         expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`, `accept ${ACCEPT} base0`])
         expect(made.landing.steps.slice(-3)).toEqual([`start ${ACCEPT} main`, "install", `accept ${ACCEPT} base0`])
-        expect(made.landing.receiptCommands.at(-1)).toBe(`${RESUMED} bun run accept`)
+        // It runs rift.accept as it is, told it is resumed through its environment; its receipt names it resumed.
+        expect(made.landing.acceptRuns.at(-1)).toEqual({ command: "bun run accept", resumed: true })
+        expect(made.landing.receiptCommands.at(-1)).toBe(receiptCommand("bun run accept", { [RESUMED]: "1" }))
+        expect(made.landing.receiptCommands.at(-1)).toContain(`# ${RESUMED}=1`)
         expect(made.woken.map((woken) => [woken.sessionID, woken.notice.description])).toEqual([["ses_1", "lane land · accept FAILED"]])
         expect(made.debts.debts.accepts).toEqual([])
         yield* Scope.close(next.scope, Exit.void)
@@ -661,6 +709,65 @@ describe("an owed accept check", () => {
         expect(made.woken.map((woken) => [woken.sessionID, woken.notice.description])).toEqual([
           ["ses_1", "lane land · post-land needs action (loaded)"],
           ["ses_1", "lane land · post-land needs action"],
+        ])
+        yield* Scope.close(next.scope, Exit.void)
+      }),
+    ))
+
+  test("a defect in one turn of the minute check ends no loop: the next turn runs the owed accept (20p O1)", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        yield* interrupted(made)
+        made.landing.checks.set(`${ACCEPT} accept`, { code: 1, output: "1 fail\n" })
+        const dying = { left: 1 }
+        const next = yield* start(made, dyingReads(made, dying))
+        yield* minute
+        // The first turn's read died: nothing ran.
+        expect([dying.left, accepts(made)]).toEqual([0, [`accept ${ACCEPT} base0`]])
+        yield* minute
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`, `accept ${ACCEPT} base0`])
+        expect(made.woken.map((woken) => woken.notice.description)).toEqual(["lane land · accept FAILED"])
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* Scope.close(next.scope, Exit.void)
+      }),
+    ))
+
+  test("a land waiting for the claim while the minute check takes it first and runs its accept finds it paid: one run, one wake (accept-owed T1)", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        made.landing.checks.set(`${ACCEPT} accept`, { code: 1, output: "1 fail\n" })
+        // Another holder (a post-land step) has the claim as the land pushes; the land asks again every 5 minutes.
+        yield* made.debts.claim.take(1)
+        const server = yield* start(made, pollingClaim(made, Duration.minutes(5)))
+        yield* Effect.orDie(server.tool.run("ses_1", { action: "land", rifts: ["feat-x"] }))
+        yield* settle
+        expect(made.debts.debts.accepts).toHaveLength(1)
+        yield* made.debts.claim.release(1)
+        // The minute check comes first, runs it and clears the debt; the land's next ask finds nothing owed.
+        yield* minute
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`])
+        for (const _ of Array.from({ length: 6 })) yield* minute
+        expect(accepts(made)).toEqual([`accept ${ACCEPT} base0`])
+        expect(made.woken.map((woken) => woken.notice.description)).toEqual(["lane land · accept FAILED"])
+        expect(made.debts.debts.accepts).toEqual([])
+        yield* Scope.close(server.scope, Exit.void)
+      }),
+    ))
+
+  test("a resumed accept whose rift.accept opens with a compound command runs it as it is, told it is resumed through its environment (accept-owed T3)", () =>
+    onClock(
+      Effect.gen(function* () {
+        const made = bench()
+        const compound = "(cd opencode && bun run accept)"
+        made.landing.config.set(SOURCE, MemoryLanding.config("main", "bun run gate", compound, BY_RECEIPTS))
+        yield* interrupted(made)
+        const next = yield* start(made)
+        yield* minute
+        expect(made.landing.acceptRuns).toEqual([
+          { command: compound, resumed: false },
+          { command: compound, resumed: true },
         ])
         yield* Scope.close(next.scope, Exit.void)
       }),

@@ -3,6 +3,7 @@
 // and the steps taken, in order, for the test to read.
 import { Clock, Effect, Layer, Match, Option } from "effect"
 import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Unit } from "../land.ts"
+import { RESUMED, receiptCommand } from "../owed.ts"
 import { type LandRecord, type Receipt, Standing, standing } from "../receipt.ts"
 import { Landing, RiftFailed } from "../service.ts"
 
@@ -37,6 +38,8 @@ export interface World {
   readonly records: Array<LandRecord>
   /** The command each receipted run's receipt names, in order. */
   readonly receiptCommands: Array<string>
+  /** Each receipted accept check as it ran: its command, and whether RIFT_ACCEPT_RESUMED=1 is in its environment. */
+  readonly acceptRuns: Array<{ readonly command: string; readonly resumed: boolean }>
   /** The host's load the post-land step reads first; absent: idle on 8 cores. */
   load: HostLoad | undefined
   /** Every load reading taken, with its time on the Effect clock. */
@@ -110,6 +113,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   heads: new Map(),
   records: [],
   receiptCommands: [],
+  acceptRuns: [],
   load: undefined,
   readings: [],
   pushFails: undefined,
@@ -189,14 +193,15 @@ export const layer = (state: World) =>
       receipted: (path, kind, command, env) =>
         Effect.sync(() => {
           const label = RECEIPTED[kind]
-          state.receiptCommands.push(command)
+          state.receiptCommands.push(receiptCommand(command, env))
+          if (kind === "accept") state.acceptRuns.push({ command, resumed: env[RESUMED] === "1" })
           state.steps.push(Match.value(kind).pipe(
             Match.when("round", () => `focus ${path} ${command}`),
             Match.when("merge", () => `merge-check ${path} ${env["RIFT_LAND_BASE"]}`),
             Match.orElse(() => `accept ${path} ${env["RIFT_LAND_BASE"]}`),
           ))
           const scripted = Option.getOrElse(Option.fromUndefinedOr(state.checks.get(`${path} ${label}`)), () => ({ code: 0, output: "1 pass\n" }))
-          const receipt = { ...receiptOf(path, headIn(state, path), kind), checks: [{ command, code: scripted.code, seconds: 3 }] }
+          const receipt = { ...receiptOf(path, headIn(state, path), kind), checks: [{ command: receiptCommand(command, env), code: scripted.code, seconds: 3 }] }
           if (kind === "round") state.standings.set(path, standing(Option.some(receipt), { head: receipt.head, tree: receipt.tree }))
           return { ran: { ...scripted, seconds: 3, log: `/logs/${label}.log` }, receipt }
         }).pipe(Effect.tap(() => state.checkHold[HOLD[kind]])),
