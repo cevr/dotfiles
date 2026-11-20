@@ -494,7 +494,7 @@ const resolveLaunch = (installed: boolean, callerEnv: Readonly<Record<string, st
   if (installed) {
     const bin = Bun.which(OWNER_OPENCODE)
     if (bin === null) throw new Error(`no ${OWNER_OPENCODE} on PATH for --installed`)
-    if (bindsTree(realpathSync(bin))) throw new Error(`${bin} is a build with a plugin tree beside it, which would load over the run's config; run a clone of it (unboundBuild)`)
+    // `opencode2` is upstream's npm build, which has no plugin tree beside it (`bindsTree`), so it runs as it is.
     return { kind: "installed", base: [bin], env: {} }
   }
   const fork = resolve(callerEnv.OPENCODE_DEV || DEFAULT_FORK)

@@ -1,48 +1,56 @@
 // The service's CPU time as plugin-start.ts reads it: `ps`'s `time` on macOS, `/proc/<pid>/stat` on Linux.
 // And the harnesses' rule that no harness starts an installed build by its path.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { argv, readableStreamToText, spawnSync } from "bun"
+import { Effect, Option } from "effect"
+import { it } from "effect-bun-test"
 import { bindsTree, unboundBuild } from "../../testbeds/gamut/gamut.ts"
-import { owned } from "../../tests/owned.ts"
+import { owned, released } from "../../tests/owned.ts"
+import { scratch } from "../../tests/scratch.ts"
 import { groupCpu, procStat, psTime, serviceCommand } from "./plugin-start.ts"
+
+/** Runs `script` in /bin/sh with `args` as $1…, and answers whether it exited 0. */
+const sh = (script: string, ...args: ReadonlyArray<string>) => spawnSync(["/bin/sh", "-c", script, "sh", ...args]).exitCode === 0
 
 describe("a harness and an installed build", () => {
   /** A scratch share directory holding a build with its plugin tree beside it, as the update installs one. */
   const installed = () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clone-"))
-    const binary = join(root, "share", "opencode-2.3.0-prime.aaaaaaaa.11111111.tree")
-    mkdirSync(`${binary}.plugins/config`, { recursive: true })
-    writeFileSync(`${binary}.plugins/config/opencode.json`, "{}\n")
-    writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
-    return { root, binary, [Symbol.dispose]: () => rmSync(root, { recursive: true, force: true }) }
+    const held = scratch("harness-clone-")
+    const binary = `${held.path}/share/opencode-2.3.0-prime.aaaaaaaa.11111111.tree`
+    expect(sh('mkdir -p "$1.plugins/config" && printf "{}\\n" > "$1.plugins/config/opencode.json" && printf "#!/bin/sh\\necho \\"\\$0\\"\\n" > "$1" && chmod 755 "$1"', binary)).toBe(true)
+    return { root: held.path, binary, [Symbol.dispose]: held[Symbol.dispose] }
   }
 
   test("plugin-start's service runs a clone of an installed build in its scratch directory, never the build by its path", () => {
     using share = installed()
-    const command = serviceCommand([share.binary], join(share.root, "run"))
+    const command = serviceCommand([share.binary], `${share.root}/run`)
     const [program = ""] = command
     expect(program).not.toBe(share.binary)
-    expect(dirname(program)).toBe(join(share.root, "run", "bin"))
+    expect(program.slice(0, program.lastIndexOf("/"))).toBe(`${share.root}/run/bin`)
     expect(bindsTree(program)).toBe(false)
-    expect(readFileSync(program, "utf8")).toBe(readFileSync(share.binary, "utf8"))
+    expect(sh('cmp -s "$1" "$2"', program, share.binary)).toBe(true)
     expect(command.slice(1)).toEqual(["serve", "--service"])
   })
 
   test("a build with no tree beside it, and the fork from source, run as they are", () => {
     using share = installed()
-    rmSync(`${share.binary}.plugins`, { recursive: true })
+    expect(sh('rm -r "$1.plugins"', share.binary)).toBe(true)
     expect(serviceCommand([share.binary], share.root)).toEqual([share.binary, "serve", "--service"])
-    expect(serviceCommand([process.execPath, "/fork/packages/cli/src/index.ts"], share.root)).toEqual([process.execPath, "/fork/packages/cli/src/index.ts", "serve", "--service"])
+    expect(serviceCommand([argv[0] ?? "bun", "/fork/packages/cli/src/index.ts"], share.root)).toEqual([argv[0] ?? "bun", "/fork/packages/cli/src/index.ts", "serve", "--service"])
     expect(unboundBuild(share.binary, share.root)).toBe(share.binary)
-    expect(existsSync(join(share.root, "opencode-clone"))).toBe(false)
+    expect(sh('test -e "$1"', `${share.root}/opencode-clone`)).toBe(false)
   })
 
-  test("a test's owned child refuses an installed build by its path", () => {
-    using share = installed()
-    expect(() => owned([share.binary, "serve"])).toThrow(/plugin tree beside it/)
-  })
+  it.live("a test's owned child runs a clone of an installed build, removed with it, never the build by its path", () =>
+    Effect.gen(function* () {
+      using share = installed()
+      const child = owned([share.binary, "serve"])
+      const ran = (yield* Effect.promise(() => readableStreamToText(child.stdout))).trim()
+      expect(ran).not.toBe(share.binary)
+      expect(ran.endsWith("/opencode-clone")).toBe(true)
+      yield* Option.match(Option.fromNullishOr(released(child.pid)), { onNone: () => Effect.void, onSome: (done) => Effect.promise(() => done) })
+    }),
+  )
 })
 
 describe("the service's CPU time", () => {
