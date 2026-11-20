@@ -973,6 +973,16 @@ work_remove() {
 # path, state tag and since (not JSON, not a list, a row short of one, no
 # output at all), fails with what came back, never reads as "no record".
 record_separator=$(printf '\037')
+# `work --json list` of the base $1, printed only when it is a list of records
+# each with a name, id, path, state tag and since; anything else fails.
+work_list_checked() {
+  l_json=$(work_in "$1" --json list) || fail "work --json list failed in $1 (exit $?): ${l_json:-no output}"
+  printf '%s' "$l_json" | jq -e 'type == "array" and all(.[]; type == "object"
+      and (.name | type) == "string" and (.id | type) == "string" and (.path | type) == "string"
+      and (.state | type) == "object" and (.state._tag | type) == "string" and (.since | type) == "number")' >/dev/null 2>&1 ||
+    fail "work --json list in $1 answered no list of records (each with a name, id, path, state and since): $(printf '%s' "${l_json:-no output}" | head -c 200)"
+  printf '%s' "$l_json"
+}
 work_records_at() {
   r_bases=$(work_bases) || return 1
   r_old_ifs=$IFS
@@ -980,11 +990,7 @@ work_records_at() {
 '
   for r_base in $r_bases; do
     IFS=$r_old_ifs
-    r_json=$(work_in "$r_base" --json list) || fail "work --json list failed in $r_base (exit $?): ${r_json:-no output}"
-    printf '%s' "$r_json" | jq -e 'type == "array" and all(.[]; type == "object"
-        and (.name | type) == "string" and (.id | type) == "string" and (.path | type) == "string"
-        and (.state | type) == "object" and (.state._tag | type) == "string" and (.since | type) == "number")' >/dev/null 2>&1 ||
-      fail "work --json list in $r_base answered no list of records (each with a name, id, path, state and since): $(printf '%s' "${r_json:-no output}" | head -c 200)"
+    r_json=$(work_list_checked "$r_base") || exit 1
     printf '%s' "$r_json" | jq -r --arg b "$r_base" --arg p "$1" --arg s "$record_separator" \
       '.[] | select(.path == $p or (.path | startswith($p + "/"))) | [$b, .name, .id, .state._tag, (.since | tostring), .path] | join($s)' ||
       fail "work --json list in $r_base does not read"
@@ -1177,25 +1183,41 @@ EOF
 # the base, nor holding the base or a workspace that stays. Anything else, and
 # no gc runs: the trash stays, named. $1 is the base, $4 rm's answer. On the
 # Mac (and wherever WORKRIFT_PURGE=0) the trash stays, as before.
+#
+# A base whose work keeps no trash (`trash = false`) deletes the folder and
+# the record in the rm itself, and answers "trash": "" for it; a gc -id then
+# finds no record and purges nothing. For such a row no gc runs, and the end
+# state is proven instead: the folder is gone, and a `work --json list` that
+# reads as a list of records has no record of that id. A row whose trash is a
+# path keeps the rule above, and its gc -id must answer that one name.
 work_purge() {
   p_base=$1
   p_list=$2
   p_doomed=$3
   p_answer=$4
-  p_rows=$(printf '%s' "$p_answer" | jq -r '.[] | [.id, .trash, .name] | @tsv') ||
+  # Joined by record_separator: a tab is whitespace to read, so an empty trash would shift the fields.
+  # shellcheck disable=SC2016 # jq's variables
+  p_rows=$(printf '%s' "$p_answer" | jq -r --arg s "$record_separator" \
+    '.[] | [.id, .trash, .name] | if all(.[]; type == "string") then join($s) else error("a field is no string") end') ||
     fail "work rm's answer does not read; nothing deleted: $p_answer"
   p_trashes=$(printf '%s' "$p_answer" | jq -r '.[].trash')
   p_left() { fail "$1; nothing deleted, the trash stays: $(printf '%s' "$p_trashes" | tr '\n' ' ')"; }
   [ -n "$p_rows" ] || p_left "work rm answered no removed workspace"
-  p_ids=$(printf '%s\n' "$p_rows" | cut -f1)
+  p_ids=$(printf '%s\n' "$p_rows" | cut -d "$record_separator" -f1)
   [ "$(printf '%s\n' "$p_ids" | sort -u | wc -l)" -eq "$(printf '%s\n' "$p_ids" | wc -l)" ] || p_left "work rm answered one id twice"
   p_kept=$(printf '%s\n' "$p_base"; printf '%s' "$p_list" | jq -r '.[] | select(.state._tag == "Active") | .path' | grep -vxF "$p_doomed" || true)
   p_plan=
-  while IFS='	' read -r p_id p_trash p_name; do
+  p_gone=
+  while IFS=$record_separator read -r p_id p_trash p_name; do
     [ -n "$p_id" ] || p_left "work rm answered $p_name with no id"
     p_was=$(printf '%s' "$p_list" | jq -r --arg id "$p_id" '[.[] | select(.id == $id and .state._tag == "Active") | .path] | if length == 1 then .[0] else "" end')
     if [ -z "$p_was" ] || ! printf '%s\n' "$p_doomed" | grep -qxF "$p_was"; then
       p_left "work rm answered id $p_id, which is none of the workspaces asked for"
+    fi
+    if [ -z "$p_trash" ]; then
+      p_gone="$p_gone$p_id$record_separator$p_was
+"
+      continue
     fi
     case "$p_trash" in
       /*) ;;
@@ -1214,13 +1236,13 @@ work_purge() {
     done <<EOF
 $p_kept
 EOF
-    p_plan="$p_plan$p_id	$p_trash	$p_was
+    p_plan="$p_plan$p_id$record_separator$p_trash$record_separator$p_was$record_separator$p_name
 "
   done <<EOF
 $p_rows
 EOF
   p_failed=
-  while IFS='	' read -r p_id p_trash p_was; do
+  while IFS=$record_separator read -r p_id p_trash p_was p_name; do
     [ -n "$p_id" ] || continue
     if ! p_gc=$(work_in "$p_base" --json gc -id "$p_id"); then
       printf 'workrift: work gc -id %s failed; its trash stays at %s: %s\n' "$p_id" "$p_trash" "$p_gc" >&2
@@ -1228,13 +1250,36 @@ EOF
     elif [ -e "$p_trash" ]; then
       printf 'workrift: work gc -id %s left its trash at %s: %s\n' "$p_id" "$p_trash" "$p_gc" >&2
       p_failed="$p_failed $p_trash"
+    elif [ "$(printf '%s' "$p_gc" | jq -c '.purged' 2>/dev/null)" != "$(jq -cn --arg n "$p_name" '[$n]')" ]; then
+      printf 'workrift: work gc -id %s answered %s, not the one name %s; its trash was at %s\n' "$p_id" "$p_gc" "$p_name" "$p_trash" >&2
+      p_failed="$p_failed $p_trash"
     else
       printf 'deleted: %s\n' "$p_was"
     fi
   done <<EOF
 $p_plan
 EOF
+  p_unproven=
+  if [ -n "$p_gone" ]; then
+    # work said nothing went to its trash: the folder and the record must both be gone.
+    p_after=$(work_list_checked "$p_base") || fail "work rm answered that nothing went to the trash, but work's records do not read, so the deletion is unproven"
+    while IFS=$record_separator read -r p_id p_was; do
+      [ -n "$p_id" ] || continue
+      if [ -e "$p_was" ] || [ -L "$p_was" ]; then
+        printf 'workrift: work rm answered that nothing went to the trash, but %s is still there\n' "$p_was" >&2
+        p_unproven="$p_unproven $p_was"
+      elif printf '%s' "$p_after" | jq -e --arg id "$p_id" 'any(.[]; .id == $id)' >/dev/null; then
+        printf 'workrift: work rm answered that nothing went to the trash, but work --json list still lists id %s (%s)\n' "$p_id" "$(printf '%s' "$p_after" | jq -c --arg id "$p_id" '[.[] | select(.id == $id) | {path, state: .state._tag}]')" >&2
+        p_unproven="$p_unproven $p_was"
+      else
+        printf 'deleted: %s\n' "$p_was"
+      fi
+    done <<EOF
+$p_gone
+EOF
+  fi
   [ -z "$p_failed" ] || fail "removed, but not deleted; the trash stays:$p_failed"
+  [ -z "$p_unproven" ] || fail "removed, but not proven deleted:$p_unproven"
 }
 
 # The workspaces of one base (a work_workspaces file) that Rift's prune would

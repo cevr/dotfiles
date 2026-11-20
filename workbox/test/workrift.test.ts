@@ -695,15 +695,74 @@ describeWork("workrift with the work backend", () => {
    * in app's trash (removed with WORKRIFT_PURGE=0). `work` is a shim that logs each call (with the base it names) and
    * fails a `gc` when the file `fail-gc` is there. `files` is every file under the scratch root but the trash and Git's
    * folders, with its text, so a test proves that nothing but the removed workspace went.
+   *
+   * `mode` "no-trash" is work with `trash = false` (Ergo's measured answers, ergo-install-checks.md 2 to 4): `rm`
+   * deletes the folder and the record at once and answers `"trash": ""`; `gc -id` of an id with no record answers
+   * `{"purged":[],"idle":[]}` exit 0; the guard binary's `gc -id` of a Creating record over a .git answers the same
+   * and keeps it, and its `rm` of one is `NotHeld`, exit 1. The rest is the real binary's, and only the calls
+   * workrift makes are logged. In that mode, `fake-rm` makes `rm` answer `"trash": ""` for the id it expects without
+   * removing the record: the folder moves into the folder the file names (it stays where it is when the file is
+   * empty). Once an rm ran, `list` prints `list-lie` and exits with `list-code` while `list-lie` is there.
+   * `gc-purged` (either mode) runs the real gc and answers that file's JSON as its `purged`.
    */
-  const purgeBench = (label: string) => {
+  const purgeBench = (label: string, mode: "trash" | "no-trash" = "trash") => {
     const w = workBench(label, work)
     const calls = join(w.dir, "work-calls")
     const failGc = join(w.dir, "fail-gc")
     const lieTrash = join(w.dir, "lie-trash")
+    const noTrash = join(w.dir, "no-trash")
+    const fakeRm = join(w.dir, "fake-rm")
+    const rmDone = join(w.dir, "rm-done")
+    const listLie = join(w.dir, "list-lie")
+    const listCode = join(w.dir, "list-code")
+    const gcPurged = join(w.dir, "gc-purged")
+    if (mode === "no-trash") writeFileSync(noTrash, "")
     exe(
       join(w.bin, "work-logged"),
-      `#!/bin/sh\nprintf '%s %s\\n' "\${WORK_BASE:-}" "$*" >>'${calls}'\nfor a do\n  [ "$a" = gc ] && [ -e '${failGc}' ] && { echo '{"_tag":"Locked"}'; exit 1; }\n  [ "$a" = rm ] && [ -e '${lieTrash}' ] && { '${work}' "$@" | jq -c --arg t "$(cat '${lieTrash}')" 'map(.trash = $t)'; exit; }\ndone\nexec '${work}' "$@"\n`,
+      [
+        "#!/bin/sh",
+        `printf '%s %s\\n' "\${WORK_BASE:-}" "$*" >>'${calls}'`,
+        `real='${work}'`,
+        "verb= id= last= prev=",
+        "for a do",
+        '  case "$a" in rm | gc | list) [ -n "$verb" ] || verb=$a ;; esac',
+        '  case "$prev" in -id | -expect) id=$a ;; esac',
+        "  prev=$a last=$a",
+        "done",
+        `[ "$verb" = gc ] && [ -e '${failGc}' ] && { echo '{"_tag":"Locked"}'; exit 1; }`,
+        `[ "$verb" = gc ] && [ -e '${gcPurged}' ] && { "$real" "$@" | jq -c --argjson p "$(cat '${gcPurged}')" '.purged = $p'; exit; }`,
+        `[ "$verb" = rm ] && [ -e '${lieTrash}' ] && { "$real" "$@" | jq -c --arg t "$(cat '${lieTrash}')" 'map(.trash = $t)'; exit; }`,
+        `if [ -e '${noTrash}' ]; then`,
+        "  creating_git() {",
+        `    "$real" --json list | jq -r --arg k "$1" --arg v "$2" '.[] | select(.state._tag == "Creating" and .[$k] == $v) | .path' |`,
+        '      while IFS= read -r p; do if [ -e "$p/.git" ]; then printf "%s\\n" "$p"; fi; done',
+        "  }",
+        '  case "$verb" in',
+        "    gc)",
+        `      if [ -n "$id" ] && [ -n "$(creating_git id "$id")" ]; then echo '{"purged":[],"idle":[]}'; exit 0; fi ;;`,
+        "    rm)",
+        "      for n do",
+        '        p=$(creating_git name "$n")',
+        `        if [ -n "$p" ]; then printf '{"_tag":"NotHeld","name":"%s","path":"%s"}\\n' "$n" "$p"; exit 1; fi`,
+        "      done",
+        `      : >'${rmDone}'`,
+        `      if [ -e '${fakeRm}' ]; then`,
+        `        to=$(cat '${fakeRm}')`,
+        `        p=$("$real" --json list | jq -r --arg id "$id" '.[] | select(.id == $id) | .path')`,
+        '        if [ -n "$to" ]; then mv "$p" "$to/" || exit 1; fi',
+        `        printf '[{"name":"%s","id":"%s","trash":"","already":false}]\\n' "$last" "$id"`,
+        "        exit 0",
+        "      fi",
+        '      out=$("$real" "$@") || { c=$?; printf "%s\\n" "$out"; exit $c; }',
+        `      for i in $(printf '%s' "$out" | jq -r '.[].id'); do "$real" --json gc -id "$i" >/dev/null || exit 1; done`,
+        `      printf '%s' "$out" | jq -c 'map(.trash = "")'`,
+        "      exit 0 ;;",
+        `    list) if [ -e '${rmDone}' ] && [ -e '${listLie}' ]; then cat '${listLie}'; exit "$(cat '${listCode}')"; fi ;;`,
+        "  esac",
+        "fi",
+        'exec "$real" "$@"',
+        "",
+      ].join("\n"),
     )
     const env: Env = { ...w.env, WORK: join(w.bin, "work-logged"), WORKRIFT_PURGE: "1" }
     const wr = (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, env, [SCRIPT, ...argv])
@@ -743,8 +802,11 @@ describeWork("workrift with the work backend", () => {
     const without = (all: Record<string, string>, folder: string) =>
       Object.fromEntries(Object.entries(all).filter(([path]) => !path.startsWith(`${folder}/`)))
     const gcCalls = () => lines(readFileSync(calls, "utf8")).filter((line) => /\bgc\b/.test(line))
-    return { w, env, wr, lib, one, two, three, other, plain, unrelated, trash, oldTrash, failGc, lieTrash, files, without, gcCalls }
+    return { w, env, wr, lib, one, two, three, other, plain, unrelated, trash, oldTrash, failGc, lieTrash, fakeRm, rmDone, listLie, listCode, gcPurged, files, without, gcCalls }
   }
+  /** The gc calls a removal of these ids makes: one `gc -id` each when work trashed them, none when it deleted them. */
+  const gcFor = (mode: "trash" | "no-trash", base: string, ids: ReadonlyArray<string>) =>
+    mode === "trash" ? ids.map((id) => `${base} --json gc -id ${id}`).sort() : []
 
   test.each([
     ["the base", (p: ReturnType<typeof purgeBench>) => p.w.app],
@@ -769,10 +831,10 @@ describeWork("workrift with the work backend", () => {
     60_000,
   )
 
-  test(
-    "on the workbox remove deletes the one workspace for good, by work gc -id: its siblings, the base, another base's workspace, a plain folder beside it, an unrelated folder and a workspace already in the trash all stay",
-    () => {
-      const p = purgeBench("purge")
+  test.each(["trash", "no-trash"] as const)(
+    "on the workbox (work's %s) remove deletes the one workspace for good, by work gc -id when work trashed it: its siblings, the base, another base's workspace, a plain folder beside it, an unrelated folder and a workspace already in the trash all stay",
+    (mode) => {
+      const p = purgeBench("purge", mode)
       const id = p.w.active(p.w.app).find((each) => each.path === p.two)?.id ?? ""
       expect(id).not.toBe("")
       const before = p.files()
@@ -785,7 +847,7 @@ describeWork("workrift with the work backend", () => {
       expect(Object.keys(p.without(before, p.two)).length).toBeGreaterThan(5)
       // The workspace already in the trash stays (gc took that one id), and feat-two left no trash.
       expect(readdirSync(p.trash)).toEqual(p.oldTrash)
-      expect(p.gcCalls()).toEqual([`${p.w.app} --json gc -id ${id}`])
+      expect(p.gcCalls()).toEqual(gcFor(mode, p.w.app, [id]))
       // Its record is gone, not trashed; the others are as they were.
       expect(p.w.listed(p.w.app).some((each) => each.id === id)).toBe(false)
       expect(p.w.active(p.w.app).map((each) => each.path).sort()).toEqual([p.one, p.three].sort())
@@ -796,10 +858,10 @@ describeWork("workrift with the work backend", () => {
     60_000,
   )
 
-  test(
-    "remove --dry-run prints the exact folders it would delete and changes nothing; --with-children deletes the workspace and the one made on it, each by its own id",
-    () => {
-      const p = purgeBench("purge-tree")
+  test.each(["trash", "no-trash"] as const)(
+    "(work's %s) remove --dry-run prints the exact folders it would delete and changes nothing; --with-children deletes the workspace and the one made on it, each by its own id",
+    (mode) => {
+      const p = purgeBench("purge-tree", mode)
       const oneName = p.w.active(p.w.app).find((each) => each.path === p.one)?.name ?? ""
       const nested = (JSON.parse(p.w.inBase(p.w.app, "--json", "new", "-on", oneName, "-branch", "nested", "nested")) as { path: string }).path
       const before = p.files()
@@ -821,7 +883,8 @@ describeWork("workrift with the work backend", () => {
       expect(lines(ran.out).sort()).toEqual([`deleted: ${p.one}`, `deleted: ${nested}`].sort())
       expect(p.files()).toEqual(p.without(p.without(before, p.one), nested))
       expect(readdirSync(p.trash)).toEqual(p.oldTrash)
-      expect(p.gcCalls().sort()).toEqual(ids.map((id) => `${p.w.app} --json gc -id ${id}`).sort())
+      expect(p.gcCalls().sort()).toEqual(gcFor(mode, p.w.app, ids))
+      for (const id of ids) expect(p.w.listed(p.w.app).some((each) => each.id === id)).toBe(false)
     },
     60_000,
   )
@@ -867,6 +930,83 @@ describeWork("workrift with the work backend", () => {
       expect(p.gcCalls().length).toBe(1)
     },
     60_000,
+  )
+
+  test(
+    "a work gc -id that answers another purge than the one name rm trashed is reported, not taken as deleted",
+    () => {
+      const p = purgeBench("purge-other")
+      writeFileSync(p.gcPurged, '["feat-one"]')
+      const ran = p.wr(p.w.app, "remove", p.two)
+      expect(ran.code).toBe(1)
+      expect(ran.out).not.toContain("deleted:")
+      expect(ran.err).toContain('["feat-one"]')
+      expect(ran.err).toContain("not deleted")
+      expect(existsSync(p.one)).toBe(true)
+    },
+    60_000,
+  )
+
+  test(
+    'with work\'s trash = false, a work rm that answers "trash": "" while the folder is still there, or its record is still listed (moved to the trash, or kept), is no deletion: workrift says what is left and exits 1',
+    () => {
+      const p = purgeBench("notrash-unproven", "no-trash")
+      const aside = join(p.w.dir, "aside")
+      mkdirSync(aside)
+      const idOf = (path: string) => p.w.active(p.w.app).find((each) => each.path === path)?.id ?? ""
+      const twoId = idOf(p.two)
+
+      // rm answered no trash, but deleted nothing: the folder and the record are there.
+      writeFileSync(p.fakeRm, "")
+      const kept = p.wr(p.w.app, "remove", p.two)
+      expect(kept.code).toBe(1)
+      expect(kept.out).not.toContain("deleted:")
+      expect(kept.err).toContain(`${p.two} is still there`)
+      expect(existsSync(join(p.two, "mark.txt"))).toBe(true)
+
+      // rm answered no trash and the folder went, but the record stays.
+      rmSync(p.rmDone, { force: true })
+      writeFileSync(p.fakeRm, aside)
+      const listed = p.wr(p.w.app, "remove", p.two)
+      expect(listed.code).toBe(1)
+      expect(listed.out).not.toContain("deleted:")
+      expect(listed.err).toContain(`still lists id ${twoId}`)
+      renameSync(join(aside, "feat-two"), p.two)
+      expect(p.gcCalls()).toEqual([])
+
+      // The real binary trashed it but answered no trash: its Trashed record is still listed, and the trash stays.
+      rmSync(p.fakeRm)
+      const real = purgeBench("notrash-lie")
+      writeFileSync(real.lieTrash, "")
+      const lied = real.wr(real.w.app, "remove", real.two)
+      expect(lied.code).toBe(1)
+      expect(lied.out).not.toContain("deleted:")
+      expect(lied.err).toContain("still lists id")
+      expect(readdirSync(real.trash).length).toBe(real.oldTrash.length + 1)
+      expect(real.gcCalls()).toEqual([])
+    },
+    120_000,
+  )
+
+  test(
+    'with work\'s trash = false, after a work rm that answered "trash": "", a work --json list that is not a list of records, or fails, is no proof: workrift refuses to say deleted',
+    () => {
+      const p = purgeBench("notrash-list", "no-trash")
+      const aside = join(p.w.dir, "aside")
+      mkdirSync(aside)
+      writeFileSync(p.fakeRm, aside)
+      const outcomes = malformedLists(p.two).map((each) => {
+        rmSync(p.rmDone, { force: true })
+        writeFileSync(p.listLie, each.answer)
+        writeFileSync(p.listCode, `${each.code}\n`)
+        const ran = p.wr(p.w.app, "remove", p.two)
+        rmSync(p.listLie)
+        if (existsSync(join(aside, "feat-two"))) renameSync(join(aside, "feat-two"), p.two)
+        return { label: each.label, code: ran.code, deleted: ran.out.includes("deleted:"), says: ran.err.includes("work --json list") }
+      })
+      expect(outcomes).toEqual(malformedLists(p.two).map((each) => ({ label: each.label, code: 1, deleted: false, says: true })))
+    },
+    120_000,
   )
 
   /**
@@ -939,10 +1079,10 @@ describeWork("workrift with the work backend", () => {
     return { path, secret, linked, proc, mounts, table, subvolumes, held, env, wr, btrfsCalls, workCalls, home, creating, records }
   }
 
-  test(
-    "remove of a create cut mid-way whose record says Creating (the real scratch-vfy-sync-parity: 7 hours old, no .git, a few files, a .env link) shows its proof, and deletes the folder and the record by work gc -id; --dry-run removes nothing",
-    () => {
-      const p = purgeBench("creating")
+  test.each(["trash", "no-trash"] as const)(
+    "(work's %s) remove of a create cut mid-way whose record says Creating (the real scratch-vfy-sync-parity: 7 hours old, no .git, a few files, a .env link) shows its proof, and deletes the folder and the record by work gc -id; --dry-run removes nothing",
+    (mode) => {
+      const p = purgeBench("creating", mode)
       const h = halfMade(p)
       const id = "e314d2db38131c91"
       expect(h.creating("scratch-vfy-sync-parity", id, 7 * 3600)).toBe(h.path)
@@ -983,10 +1123,10 @@ describeWork("workrift with the work backend", () => {
     60_000,
   )
 
-  test(
-    "remove refuses a Creating record that holds a .git (a live lane with a stale record), one whose create still runs, one too young, and one a process works in; nothing changes",
-    () => {
-      const p = purgeBench("creating-refuse")
+  test.each(["trash", "no-trash"] as const)(
+    "(work's %s) remove refuses a Creating record that holds a .git (a live lane with a stale record), one whose create still runs, one too young, and one a process works in; nothing changes",
+    (mode) => {
+      const p = purgeBench("creating-refuse", mode)
       const h = halfMade(p)
       // A live lane: a complete clone with its .git, whose create never recorded its end; 13 hours old.
       const lane = h.creating("cristian-lab-bare-lab-cli", "1111111111111111", 13 * 3600)
