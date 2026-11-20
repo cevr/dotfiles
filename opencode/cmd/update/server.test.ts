@@ -7,7 +7,7 @@ import { iso } from "@dotfiles/opencode-update/gate"
 import { GATE_POLL } from "@dotfiles/opencode-update/model"
 import { Placement } from "@dotfiles/opencode-update/placement"
 import { UPDATE } from "@dotfiles/opencode-update/rpc"
-import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Placer, Records, Rejections, Resident, Source } from "@dotfiles/opencode-update/service"
+import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Placer, Records, Rejections, Resident, Source, Trees } from "@dotfiles/opencode-update/service"
 import { RESIDENT_DELAY } from "@dotfiles/opencode-update/watch"
 import { Clock, Duration, Effect, Layer, Option, type Scope } from "effect"
 import { TestClock } from "effect/testing"
@@ -70,13 +70,14 @@ const fakes = (host: World): Externals => {
       ),
     live: () =>
       Layer.mergeAll(
-        Layer.succeed(Source, Source.of({ verified: Effect.succeed(Option.none()), head: unused("head"), advance: () => unused("advance"), reinstall: unused("reinstall") })),
-        Layer.succeed(Builder, Builder.of({ stage: () => unused("stage"), configure: unused("configure") })),
+        Layer.succeed(Source, Source.of({ verified: Effect.succeed(Option.none()), fetch: () => unused("fetch"), head: unused("head"), advance: () => unused("advance"), reinstall: unused("reinstall") })),
+        Layer.succeed(Builder, Builder.of({ version: () => unused("version"), binds: () => unused("binds"), stage: () => unused("stage"), configure: unused("configure") })),
+        Layer.succeed(Trees, Trees.of({ make: () => unused("make"), check: () => unused("check"), has: () => unused("has") })),
         Layer.succeed(Handoff, Handoff.of({ start: () => unused("handoff") })),
         Layer.succeed(HandoffMark, HandoffMark.of({ hold: Effect.void, release: Effect.void, read: Effect.succeed(Option.none()), alive: () => Effect.succeed(false) })),
         Layer.succeed(Records, Records.of({ read: Effect.succeed(Option.none()), write: () => unused("record") })),
         Layer.succeed(Rejections, Rejections.of({ read: Effect.succeed(Option.none()), write: () => Effect.void })),
-        Layer.succeed(Configs, Configs.of({ keep: Effect.void, restore: Effect.void })),
+        Layer.succeed(Configs, Configs.of({ keep: Effect.void, restore: Effect.void, ours: Effect.succeed(false), strip: Effect.void })),
         Layer.succeed(Notice, Notice.of({ show: () => Effect.void, clear: Effect.void })),
         log,
         heartbeat,

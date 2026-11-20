@@ -91,6 +91,20 @@ export const layer = (checkout: Checkout) => {
 
   const head = git("read the checkout's commit", "rev-parse", "HEAD").pipe(Effect.map((out) => out.trim()))
 
+  /** Whether the object store holds `commit` as a commit. */
+  const holds = (commit: string) => spawned("look for the commit", ["git", "cat-file", "-e", `${commit}^{commit}`], here).pipe(Effect.map((ran) => ran.code === 0))
+
+  /**
+   * Brings `commit` into the checkout's object store from its origin, when it lacks it (the verified
+   * tag's fetch usually brought it already). Only objects and remote refs change: the branch, the
+   * index and the files stay as they are.
+   */
+  const fetch = Effect.fn("Source.fetch")(function* (commit: string) {
+    if (yield* holds(commit)) return
+    yield* git("fetch the target's dotfiles commit", "fetch", "--quiet", "origin")
+    if (!(yield* holds(commit))) return yield* new UpdateFailed({ step: "fetch the target's dotfiles commit", message: `the origin has no commit ${commit.slice(0, 10)}` })
+  })
+
   const move = Effect.fn("Source.move")(function* (commit: string) {
     const back = yield* spawned("compare commits", ["git", "merge-base", "--is-ancestor", commit, "HEAD"], here)
     if (checkout.mode === "ff" && back.code === 0) return yield* git("move the checkout back", "reset", "--quiet", "--keep", commit)
@@ -175,5 +189,5 @@ export const layer = (checkout: Checkout) => {
     )
   })
 
-  return Layer.succeed(Source, Source.of({ verified, head, advance, reinstall: install }))
+  return Layer.succeed(Source, Source.of({ verified, fetch, head, advance, reinstall: install }))
 }

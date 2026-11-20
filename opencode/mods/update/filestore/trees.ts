@@ -1,8 +1,8 @@
 import { file as fileAt, Glob, mmap, readableStreamToText, resolveSync, spawn, Transpiler } from "bun"
-import { Array as Arr, Effect, Layer, Match, Option } from "effect"
+import { Array as Arr, Effect, Match, Option } from "effect"
 import { buildName } from "../builds.ts"
 import { removeMaking } from "./builds.ts"
-import { Trees, UpdateFailed } from "../service.ts"
+import { UpdateFailed } from "../service.ts"
 import { type Host, hostProvided, makingName, SEEDS, treeOf } from "../trees.ts"
 
 /** Where trees are made, and what a make runs with. */
@@ -277,5 +277,4 @@ export const make = Effect.fn("Trees.make")(function* (options: Options, version
   return place.tree
 })
 
-/** The Trees over the share directory. */
-export const layer = (options: Options) => Layer.succeed(Trees, Trees.of({ make: (version, commit) => make(options, version, commit), check }))
+// The Trees layer is `filestore/stage.ts` `treesLayer`: these, each make under the builds lock.

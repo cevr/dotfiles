@@ -97,6 +97,12 @@ describe("the recovery after a health check", () => {
     expect(recover("first", Health.Healthy(), true)).toEqual(Recovery.Proven())
   })
 
+  test("a tree build has no reinstall rung: a sick first restart rolls back, or gives up with nothing to roll back to", () => {
+    expect(recover("first", sick, true, false)).toEqual(Recovery.RollBack())
+    expect(recover("first", sick, false, false)).toEqual(Recovery.GaveUp())
+    expect(recover("first", Health.Healthy(), true, false)).toEqual(Recovery.Proven())
+  })
+
   test("a sick restart reinstalls the dependencies and restarts once, and a healthy one then proves the build", () => {
     expect(steps([sick, Health.Healthy()], true)).toEqual(["Reinstall", "Proven"])
   })

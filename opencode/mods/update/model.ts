@@ -1,8 +1,8 @@
-import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Result, Schedule } from "effect"
+import { Array as Arr, Clock, Context, Duration, Effect, Layer, Match, Option, Ref, Result, Schedule } from "effect"
 import { describeGate, Gate, gate } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
-import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
-import { Builder, Builds, type CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, type UpdateFailed } from "./service.ts"
+import { type Build, buildOf, goodOf, promoted, proven, type Record, rolledBack } from "./record.ts"
+import { Builder, Builds, type CheckoutStuck, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, Trees, UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
 import { ask, ended, HANDOFF_LIMIT, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
@@ -30,9 +30,9 @@ export class Updater extends Context.Service<
   Updater,
   {
     /**
-     * Looks for the verified target and installs it: build from the unmoved checkout, wait for
-     * the gate, hand the restart off (which moves the checkout). A request while a run goes asks
-     * for one more run after it.
+     * Looks for the verified target and installs it: build it ahead with its own plugin tree (or, on
+     * the old scheme, from the unmoved checkout), wait for the gate, hand the restart off. A request
+     * while a run goes asks for one more run after it.
      */
     readonly check: (reason: string) => Effect.Effect<void>
   }
@@ -57,6 +57,7 @@ export const updaterLayer = (policy: Policy) =>
       const builder = yield* Builder
       const handoff = yield* Handoff
       const records = yield* Records
+      const trees = yield* Trees
       const mark = yield* HandoffMark
       const rejections = yield* Rejections
       const log = yield* Log
@@ -116,9 +117,47 @@ export const updaterLayer = (policy: Policy) =>
       const install = Effect.fn("Updater.install")(function* (target: Target) {
         const at = yield* source.head
         yield* log.line(`update: ${shortTarget(target)}; building it ahead, the dotfiles stay at ${at.slice(0, 10)} until the restart`)
-        yield* builder.stage(target).pipe(Effect.tapError((failed) => reject(target, "build", failed.message)))
+        yield* builder.stage(target, Option.none()).pipe(Effect.tapError((failed) => reject(target, "build", failed.message)))
         return yield* restart(target)
       })
+
+      /**
+       * Builds the target with its own plugin tree: the dotfiles commit fetched into the live
+       * checkout's object store (which never moves), the tree made from it beside where the binary
+       * goes (`trees.ts`), then daily's stage run from that tree. Nothing a running process loads
+       * changes, so the build is never a reload. A target whose fork binds no tree, a tree that does
+       * not make or a build that fails is rejected; a fetch that fails is not (the next check tries).
+       */
+      const installTree = Effect.fn("Updater.installTree")(function* (target: Target) {
+        yield* log.line(`update: ${shortTarget(target)}; building it ahead with its own plugin tree; nothing running loads from it`)
+        yield* source.fetch(target.dotfiles)
+        const version = yield* builder.version(target)
+        yield* Effect.gen(function* () {
+          if (!(yield* builder.binds(target.fork)))
+            return yield* new UpdateFailed({ step: "build", message: `the target's fork ${target.fork.slice(0, 10)} binds no tree (it lacks packages/cli/src/adjacent-config.ts): no tree build` })
+          const tree = yield* trees.make(version, target.dotfiles)
+          yield* builder.stage(target, Option.some(tree))
+        }).pipe(Effect.tapError((failed) => reject(target, "build", failed.message)))
+        return yield* restart(target)
+      })
+
+      /**
+       * Whether this host's builds take a tree: yes unless the record's good build's fork binds none
+       * (a host whose good build predates the fork's adjacent binding). Then the old scheme stays (the
+       * install says so in the log): a rollback from a tree build must land on a fork that drops an
+       * inherited overlay.
+       */
+      const treeScheme = Effect.fn("Updater.treeScheme")(function* (record: Option.Option<Record>) {
+        const good = Option.flatMap(record, goodOf)
+        if (Option.isNone(good)) return true
+        return yield* builder.binds(good.value.fork)
+      })
+
+      /** The old scheme's install, said so in the log first. */
+      const installOld = (target: Target, record: Option.Option<Record>) =>
+        Effect.forEach(Option.toArray(Option.flatMap(record, goodOf)), (good) =>
+          log.line(`update: the good build's fork ${good.fork.slice(0, 10)} binds no plugin tree (no packages/cli/src/adjacent-config.ts); staying on the old scheme`),
+        ).pipe(Effect.andThen(install(target)))
 
       const once = Effect.fn("Updater.once")(function* (reason: string) {
         const now = yield* Clock.currentTimeMillis
@@ -128,7 +167,10 @@ export const updaterLayer = (policy: Policy) =>
         const alive = yield* Option.match(held, { onNone: () => Effect.succeed(false), onSome: (each) => mark.alive(each.pid) })
         const running = runningOf(held, alive, now)
         const target = yield* source.verified
-        const next = plan(target, yield* records.read, yield* rejections.read, running)
+        const record = yield* records.read
+        const wanted = yield* treeScheme(record)
+        const installed = wanted && (yield* Effect.forEach(Option.toArray(record), (each) => trees.has(each.version)).pipe(Effect.map((has) => has.includes(true))))
+        const next = plan(target, record, yield* rejections.read, running, { wanted, installed })
         return yield* Plan.$match(next, {
           HandingOff: ({ running: handing }) =>
             log.line(`check (${reason}): a handoff runs (pid ${handing.pid}); nothing builds or restarts until it ends`).pipe(Effect.as(false)),
@@ -137,7 +179,11 @@ export const updaterLayer = (policy: Policy) =>
           Rejected: ({ target: failed, rejected }) =>
             log.line(`check (${reason}): ${shortTarget(failed)} failed at ${rejected.step} (${rejected.cause}); waiting for another target`).pipe(Effect.as(false)),
           Restart: ({ target: built }) => log.line(`check (${reason}): ${shortTarget(built)} is built and not yet proven`).pipe(Effect.andThen(restart(built))),
-          Update: ({ target: wanted }) => install(wanted),
+          Update: ({ target: update }) =>
+            Match.value(wanted).pipe(
+              Match.when(true, () => installTree(update)),
+              Match.orElse(() => installOld(update, record)),
+            ),
         })
       })
 
@@ -218,22 +264,31 @@ const heldBy = (failed: UpdateFailed | CheckoutStuck, what: string = failed.step
 const failedAt = (step: string, failed: UpdateFailed): Unmoved => ({ held: false, step, cause: `${failed.step}: ${failed.message}` })
 
 /**
- * The handoff: move the live checkout onto the staged build's dotfiles commit and write its configs
- * (`moveOnto`), install the staged build, restart the service, read its health, and recover. The
- * checkout moves here, seconds before the restart, never while the build is made or the Sabbath rest
- * holds the restart: the running service and every open TUI reload a plugin whose files change, so
- * an early move ran the new plugins on the old fork (2026-11-19). A sick
- * restart reinstalls the dependencies and restarts once; still sick, it rolls back to the last good
- * build, its dotfiles commit and its config, and restarts onto it. A step that fails (the restart,
- * the reinstall, the rollback's checkout move) is a sick reading, so it goes down the same ladder:
- * the handoff ends healthy, rolled back, or given up with the owner's notice, and never fails. A
- * build that does not end proven is rejected, so no check builds or restarts onto it again.
+ * The handoff, for a staged build with its plugin tree beside it (the tree scheme): read the logins,
+ * strip our entries from the server config on the first tree install alone (`migrate`), install the
+ * staged build in the record (which points the launcher at it), restart the service, read its
+ * health, and recover. No step moves the live checkout or reloads a running process's plugins: each
+ * process binds the tree beside its own executable. A sick restart rolls back to the last good build,
+ * a record write (`rollBackTree`), and restarts onto it.
+ *
+ * For a staged build with no tree (the old scheme, kept while the good build's fork binds no tree):
+ * move the live checkout onto the build's dotfiles commit and write its configs (`moveOnto`), install
+ * the staged build, restart, read its health, and recover. The checkout moves here, seconds before the
+ * restart: the running service and every open TUI reload a plugin whose files change (2026-11-19). A
+ * sick restart reinstalls the dependencies and restarts once; still sick, it rolls back to the last
+ * good build, its dotfiles commit and its config.
+ *
+ * Either way a step that fails (the restart, the reinstall, the rollback) is a sick reading, so it goes
+ * down the same ladder: the handoff ends healthy, rolled back, or given up with the owner's notice,
+ * and never fails. A build that does not end proven is rejected, so no check builds or restarts onto
+ * it again.
  */
-const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds | Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
+const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds | Service | Source | Records | Rejections | Configs | Trees | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
   const service = yield* Service
   const builder = yield* Builder
   const source = yield* Source
   const records = yield* Records
+  const trees = yield* Trees
   const rejections = yield* Rejections
   const configs = yield* Configs
   const notice = yield* Notice
@@ -349,59 +404,124 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
     return "held" satisfies Outcome
   })
 
+  /** The installed record names the staged build: the step before the restart; answers the failure's health, if it failed. */
+  const install = (before: Option.Option<Record>) =>
+    Effect.forEach(Option.toArray(before), (record) => records.write(promoted(record)), { discard: true }).pipe(
+      Effect.as(Option.none<Health>()),
+      Effect.catch((failed) => Effect.succeed(Option.some(failedStep("installed record")(failed)))),
+    )
+
+  /**
+   * Goes back to the good build with trees: a record write. The good build's binary and tree are kept
+   * by the prune, and the live checkout never moved. Only a good build with no tree (the old scheme's,
+   * before the first tree install) gets the kept configs back first, so it finds the plugin entries
+   * it ran with.
+   */
+  const rollBackTree = Effect.fn("Update.rollBackTree")(function* () {
+    const record = yield* records.read
+    const back = Option.flatMap(record, rolledBack)
+    const good = Option.flatMap(record, goodOf)
+    if (Option.isNone(back) || Option.isNone(good)) return Option.some(Health.Sick({ plugin: "rollback", cause: "no good build to roll back to", final: true }))
+    const treed = yield* trees.has(good.value.version)
+    yield* log.line(`handoff: rolling back to ${good.value.version}`)
+    if (!treed) yield* log.line(`handoff: ${good.value.version} has no plugin tree: the kept configs go back first`)
+    return yield* Effect.when(configs.restore, Effect.succeed(!treed)).pipe(
+      Effect.andThen(records.write(back.value)),
+      Effect.as(Option.none<Health>()),
+      Effect.catch((failed) => Effect.succeed(Option.some(failedStep(`rollback at ${failed.step}`)(failed)))),
+    )
+  })
+
+  /**
+   * The first tree install's one config step, right before the record and the restart: when the
+   * server config still lists our plugin entries (the old scheme wrote them), a copy is kept, then
+   * they are stripped, every other key and entry kept (`Configs.strip`). The old service unloads our
+   * plugins for the seconds before its restart. Answers whether it stripped. A config that does not
+   * read, keep or strip holds the update with nothing changed (a failed strip puts the copy back).
+   */
+  const migrate = Effect.fn("Update.migrate")(function* () {
+    const ours = yield* configs.ours.pipe(Effect.mapError((failed) => heldBy(failed, "the server config does not read")))
+    if (!ours) return false
+    yield* log.line("handoff: the first tree install: our plugin entries leave the server config (a copy kept), right before the restart")
+    yield* configs.keep.pipe(Effect.mapError((failed) => heldBy(failed, "the server config could not be kept")))
+    yield* configs.strip.pipe(
+      Effect.tapError(() => configs.restore.pipe(Effect.ignore)),
+      Effect.mapError((failed) => heldBy(failed, "our plugin entries could not leave the server config")),
+    )
+    return true
+  })
+
+  /**
+   * The recovery after the first restart, down the ladder (`recover`), to an outcome: proven
+   * (recorded good, then the prune), rolled back, or given up. `reinstall` is the old scheme's rung.
+   */
+  const ladder = Effect.fn("Update.ladder")(function* (tried: Option.Option<Build>, hadLogins: ReadonlyArray<string>, reinstall: boolean, back: () => Effect.Effect<Option.Option<Health>>) {
+    let stage: Stage = "first"
+    let health = yield* restartAndRead(stage, hadLogins)
+    let failure = health
+    for (;;) {
+      if (Health.$is("Sick")(health)) failure = health
+      const recovery = recover(stage, health, yield* canRollBack, reinstall)
+      if (Recovery.$is("Proven")(recovery)) {
+        const record = yield* records.read
+        yield* Effect.forEach(Option.toArray(record), (current) => records.write(proven(current)), { discard: true }).pipe(
+          Effect.catch((failed) => log.line(`handoff: recording the good build failed: ${failed.message}`)),
+        )
+        yield* Option.match(provenNotice(health), { onNone: () => notice.clear, onSome: notice.show })
+        yield* log.line("handoff: the build is proven and recorded as the good build")
+        // The handoff's last step. The prune reads the record and lists the share directory under the
+        // builds lock daily's stage holds from its copy to its record write (`Builds`), not under this
+        // mark, which daily never reads.
+        yield* pruneBuilds
+        return "proven" satisfies Outcome
+      }
+      if (Recovery.$is("RolledBack")(recovery)) return yield* end("rolled-back", tried, failure, `${describeHealth(failure)}; rolled back`)
+      if (Recovery.$is("GaveUp")(recovery)) return yield* end("gave-up", tried, failure, describeHealth(failure))
+      if (Recovery.$is("Reinstall")(recovery)) {
+        yield* log.line("handoff: installing the dependencies again")
+        stage = "reinstalled"
+        const reinstalled = yield* source.reinstall.pipe(Effect.as(Option.none<Health>()), Effect.catch((failed) => Effect.succeed(Option.some(failedStep("reinstall")(failed)))))
+        if (Option.isSome(reinstalled)) {
+          yield* log.line(`handoff (${stage}): ${describeHealth(reinstalled.value)}`)
+          health = reinstalled.value
+          continue
+        }
+      }
+      if (Recovery.$is("RollBack")(recovery)) {
+        const backed = yield* back()
+        if (Option.isSome(backed)) return yield* end("gave-up", tried, failure, `${describeHealth(failure)}; ${describeHealth(backed.value)}`)
+        stage = "rolled-back"
+      }
+      health = yield* restartAndRead(stage, hadLogins)
+    }
+  })
+
   yield* log.line(`handoff: ${reason}`)
   const before = yield* records.read
   const tried = Option.flatMap(Option.map(before, promoted), buildOf)
-  // Read from the running service before the checkout moves, which reloads its plugins.
+  // Read from the running service before anything changes under it.
   const hadLogins = yield* loginsBefore
+  // A build with its tree beside it runs on trees: no checkout move, no config write but the first
+  // install's strip, no reinstall rung. One without (the old scheme's build) moves the checkout.
+  const treed = yield* Effect.forEach(Option.toArray(tried), (build) => trees.has(build.version)).pipe(Effect.map((has) => has.includes(true)))
+  if (treed) {
+    const migrated = yield* migrate().pipe(Effect.result)
+    if (Result.isFailure(migrated)) return yield* unmovedEnd(migrated.failure, tried)
+    const failedInstall = yield* install(before)
+    if (Option.isSome(failedInstall)) {
+      if (migrated.success) yield* configs.restore.pipe(Effect.catch((back) => log.line(`handoff: putting the config back failed: ${back.message}`)))
+      return yield* end("gave-up", tried, failedInstall.value, `${describeHealth(failedInstall.value)}; the service was not restarted`)
+    }
+    return yield* ladder(tried, hadLogins, false, rollBackTree)
+  }
   const moved = yield* Effect.forEach(Option.toArray(tried), moveOnto).pipe(Effect.map(Arr.head), Effect.result)
   if (Result.isFailure(moved)) return yield* unmovedEnd(moved.failure, tried)
-  const installing = yield* Effect.forEach(Option.toArray(before), (record) => records.write(promoted(record)), { discard: true }).pipe(
-    Effect.as(Option.none<Health>()),
-    Effect.catch((failed) => Effect.succeed(Option.some(failedStep("installed record")(failed)))),
-  )
+  const installing = yield* install(before)
   if (Option.isSome(installing)) {
     yield* Effect.forEach(Option.toArray(moved.success), moveBack, { discard: true })
     return yield* end("gave-up", tried, installing.value, `${describeHealth(installing.value)}; the service was not restarted`)
   }
-  let stage: Stage = "first"
-  let health = yield* restartAndRead(stage, hadLogins)
-  let failure = health
-  for (;;) {
-    if (Health.$is("Sick")(health)) failure = health
-    const recovery = recover(stage, health, yield* canRollBack)
-    if (Recovery.$is("Proven")(recovery)) {
-      const record = yield* records.read
-      yield* Effect.forEach(Option.toArray(record), (current) => records.write(proven(current)), { discard: true }).pipe(
-        Effect.catch((failed) => log.line(`handoff: recording the good build failed: ${failed.message}`)),
-      )
-      yield* Option.match(provenNotice(health), { onNone: () => notice.clear, onSome: notice.show })
-      yield* log.line("handoff: the build is proven and recorded as the good build")
-      // The handoff's last step. The prune reads the record and lists the share directory under the
-      // builds lock daily's stage holds from its copy to its record write (`Builds`), not under this
-      // mark, which daily never reads.
-      yield* pruneBuilds
-      return "proven" satisfies Outcome
-    }
-    if (Recovery.$is("RolledBack")(recovery)) return yield* end("rolled-back", tried, failure, `${describeHealth(failure)}; rolled back`)
-    if (Recovery.$is("GaveUp")(recovery)) return yield* end("gave-up", tried, failure, describeHealth(failure))
-    if (Recovery.$is("Reinstall")(recovery)) {
-      yield* log.line("handoff: installing the dependencies again")
-      stage = "reinstalled"
-      const reinstalled = yield* source.reinstall.pipe(Effect.as(Option.none<Health>()), Effect.catch((failed) => Effect.succeed(Option.some(failedStep("reinstall")(failed)))))
-      if (Option.isSome(reinstalled)) {
-        yield* log.line(`handoff (${stage}): ${describeHealth(reinstalled.value)}`)
-        health = reinstalled.value
-        continue
-      }
-    }
-    if (Recovery.$is("RollBack")(recovery)) {
-      const back = yield* rollBack()
-      if (Option.isSome(back)) return yield* end("gave-up", tried, failure, `${describeHealth(failure)}; ${describeHealth(back.value)}`)
-      stage = "rolled-back"
-    }
-    health = yield* restartAndRead(stage, hadLogins)
-  }
+  return yield* ladder(tried, hadLogins, true, rollBack)
 })
 
 /**
@@ -409,5 +529,5 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
  * dropped once its outcome, good or rejected, is recorded. The restarted service's own check reads
  * the mark and waits, so one handoff runs at a time.
  */
-export const handoff = (reason: string): Effect.Effect<Outcome, never, Builder | Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log> =>
+export const handoff = (reason: string): Effect.Effect<Outcome, never, Builder | Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Trees | Notice | Log> =>
   HandoffMark.use((mark) => mark.hold.pipe(Effect.andThen(steps(reason)), Effect.ensuring(mark.release)))

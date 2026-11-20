@@ -5,6 +5,7 @@ import * as Log from "@dotfiles/opencode-update/filestore/log"
 import * as Notice from "@dotfiles/opencode-update/filestore/notice"
 import * as Records from "@dotfiles/opencode-update/filestore/records"
 import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
+import * as Stage from "@dotfiles/opencode-update/filestore/stage"
 import * as Source from "@dotfiles/opencode-update/git/source"
 import { intervalChecks, Updater, updaterLayer } from "@dotfiles/opencode-update/model"
 import { describePlacement, Placement } from "@dotfiles/opencode-update/placement"
@@ -17,22 +18,24 @@ import * as ServiceProcess from "@dotfiles/opencode-update/process/service"
 import { Heartbeat as HeartbeatService, Placer } from "@dotfiles/opencode-update/service"
 import { UPDATE } from "@dotfiles/opencode-update/rpc"
 import { every, files, Options, stepEnv } from "@dotfiles/opencode-update/settings"
+import { configPaths, treeOptions } from "@dotfiles/opencode-update/process/install"
 import { type Status, status, watchdog } from "@dotfiles/opencode-update/watch"
 import { Clock, Config, Context, Effect, Layer, Schema, type Scope } from "effect"
 
 /** A directory as the host keys a location by it: without a trailing separator. */
 export const canonical = (directory: string): string => directory.replace(/(.)\/+$/, "$1")
 
-/** Every implementation the updater runs on, for these options and step variables. */
-export const live = (options: Options, env: Readonly<globalThis.Record<string, string>>) =>
+/** Every implementation the updater runs on, for these options and step variables, in the home `home`. */
+export const live = (options: Options, env: Readonly<globalThis.Record<string, string>>, home: string) =>
   Layer.mergeAll(
     Source.layer({ root: options.checkout, mode: options.mode, bun: options.bun, fork: options.fork, env, bin: Source.binScript(process.platform) }),
     Builder.layer(options, env),
+    Stage.treesLayer(treeOptions(options, env, home, process.pid)),
     Handoff.layer(options, env),
     HandoffMark.layer(files(options).mark, process.pid),
     Records.layer(options, process.pid),
     Rejections.layer(files(options).rejected),
-    Configs.layer({ config: options.config, kept: files(options).kept }),
+    Configs.layer(configPaths(options, home)),
     Log.layer(files(options).log, options.host),
     Notice.layer(options.notice),
     Heartbeat.layer(files(options).checked),
@@ -61,7 +64,12 @@ export interface Externals {
 /** The live systems; the service's registration is where XDG_STATE_HOME (or HOME) puts it. */
 export const liveExternals = (): Externals => ({
   placement: () => ProcessPlacement.layer(ProcessPlacement.optionsOf(process.pid, process.platform)),
-  live: (options, env) => live(options, env),
+  live: (options, env) =>
+    Layer.unwrap(
+      Effect.gen(function* () {
+        return live(options, env, yield* Config.withDefault(Config.String("HOME"), ""))
+      }).pipe(Effect.orDie),
+    ),
   watch: (options) =>
     Layer.unwrap(
       Effect.gen(function* () {

@@ -5,11 +5,13 @@ import * as Log from "@dotfiles/opencode-update/filestore/log"
 import * as Notice from "@dotfiles/opencode-update/filestore/notice"
 import * as Records from "@dotfiles/opencode-update/filestore/records"
 import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
+import * as Stage from "@dotfiles/opencode-update/filestore/stage"
 import * as Source from "@dotfiles/opencode-update/git/source"
 import { EXIT_CODES, handoff } from "@dotfiles/opencode-update/model"
 import * as HandoffMark from "@dotfiles/opencode-update/process/mark"
 import * as Service from "@dotfiles/opencode-update/process/service"
 import { buildsLock, files, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "@dotfiles/opencode-update/settings"
+import { configPaths, treeOptions } from "@dotfiles/opencode-update/process/install"
 import { argv } from "bun"
 import { Config, Effect, Layer } from "effect"
 
@@ -20,10 +22,11 @@ export const live = (settings: Settings, env: Readonly<globalThis.Record<string,
     Builder.layer(settings, env),
     Builds.layer(Builds.optionsOf(shareDir(home), buildsLock(home), process.platform)),
     Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env, bin: Source.binScript(process.platform) }),
+    Stage.treesLayer(treeOptions(settings, env, home, process.pid)),
     Records.layer(settings, process.pid),
     Rejections.layer(files(settings).rejected),
     HandoffMark.layer(files(settings).mark, process.pid),
-    Configs.layer({ config: settings.config, kept: files(settings).kept }),
+    Configs.layer(configPaths(settings, home)),
     Notice.layer(settings.notice),
     Log.layer(files(settings).log, settings.host),
   )

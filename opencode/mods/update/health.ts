@@ -104,15 +104,19 @@ export type Recovery = Data.TaggedEnum<{
 export const Recovery = Data.taggedEnum<Recovery>()
 
 /**
- * The recovery after a restart's health check. A sick first restart reinstalls the dependencies and
- * restarts once; still sick, it rolls back to the last good build (when there is one other than
+ * The recovery after a restart's health check. On the old scheme (`reinstall`), a sick first restart
+ * reinstalls the live checkout's dependencies and restarts once. A tree build has no such rung: its
+ * tree was installed fresh and checked at the stage, and reinstalling would write under running
+ * processes. Then, still sick, it rolls back to the last good build (when there is one other than
  * this); a sick rollback gives up.
  */
-export const recover = (stage: Stage, health: Health, canRollBack: boolean): Recovery => {
+export const recover = (stage: Stage, health: Health, canRollBack: boolean, reinstall = true): Recovery => {
   const healthy = usable(health)
   if (stage === "first") {
     if (healthy) return Recovery.Proven()
-    return Recovery.Reinstall()
+    if (reinstall) return Recovery.Reinstall()
+    if (canRollBack) return Recovery.RollBack()
+    return Recovery.GaveUp()
   }
   if (stage === "reinstalled") {
     if (healthy) return Recovery.Proven()
