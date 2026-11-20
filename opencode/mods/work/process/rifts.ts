@@ -10,6 +10,7 @@ import { Effect, Layer, Option } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines } from "./command.ts"
+import { unpushed as unpushedOf } from "./unpushed.ts"
 
 export interface Options {
   /** Make and remove Rifts with `workrift` (the workbox). */
@@ -161,9 +162,7 @@ export const layer = (options: Options) => {
     const root = above.at(-1)
     const sourceTips = root === undefined ? [] : lines(yield* git(root, "for-each-ref", "--format=%(objectname)", "refs/heads"))
     const hasHead = head !== "(no commits)"
-    const unpushed = lines(
-      yield* git(path, "log", "--format=%h %s", ...(hasHead ? ["HEAD"] : []), "--branches", "--ignore-missing", "--not", "--remotes", ...sourceTips),
-    )
+    const unpushed = yield* unpushedOf({ git, spawn }, path, sourceTips, hasHead)
     // Stash entries found only here: a Rift inherits the stash of the workspaces it was copied from.
     const stashOf = (at: string) => git(at, "stash", "list", "--format=%H").pipe(Effect.map(lines))
     const inherited = yield* Effect.forEach(above, stashOf).pipe(Effect.map((each) => each.flat()))

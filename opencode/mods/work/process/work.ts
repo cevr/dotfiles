@@ -11,6 +11,7 @@ import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
+import { unpushed as unpushedOf } from "./unpushed.ts"
 
 export interface Options {
   /** The `work` binary, a path or a name on PATH; `work` when absent. */
@@ -229,8 +230,7 @@ export const layer = (options: Options) => {
       onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
       onSome: (at) => git(at, "for-each-ref", "--format=%(objectname)", "refs/heads").pipe(Effect.map(lines)),
     })
-    const tip = ["HEAD"].filter(() => head !== "(no commits)")
-    const unpushed = lines(yield* git(path, "log", "--format=%h %s", ...tip, "--branches", "--ignore-missing", "--not", "--remotes", ...sourceTips))
+    const unpushed = yield* unpushedOf({ git, spawn }, path, sourceTips, head !== "(no commits)")
     // Stash entries found only here: a clone carries the stash of the workspaces it was made from.
     const stashOf = (at: string) => git(at, "stash", "list", "--format=%H").pipe(Effect.map(lines))
     const inherited = yield* Effect.forEach(chain, stashOf).pipe(Effect.map((each) => each.flat()))

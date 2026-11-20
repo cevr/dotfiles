@@ -898,7 +898,7 @@
     "mods/work/process/landing.test.ts": {"effect/noAsyncFunction":35,"effect/noEffectRunInTests":2,"effect/noGlobals":6,"effect/noNewError":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":5,"effect/noTernary":1,"effect/noTestLifecycleHooks":1,"effect/noThrowStatement":1,"effect/preferTaggedConstructors":4},
     "mods/work/process/landing.ts": {"effect/noGlobals":2,"effect/noKnownValueWidening":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":7,"effect/noTernary":8,"effect/noTryCatch":1,"effect/preferTaggedConstructors":3},
     "mods/work/process/rifts.test.ts": {"effect/noGlobals":3,"effect/noModulePathFacts":1,"effect/noNewError":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":1,"effect/noThrowStatement":1},
-    "mods/work/process/rifts.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":6,"effect/noTernary":6},
+    "mods/work/process/rifts.ts": {"effect/noNodeBuiltinImport":2,"effect/noNullish":6,"effect/noTernary":5},
     "mods/work/process/workbox.test.ts": {"effect/noAsyncFunction":11,"effect/noEffectRunInTests":1,"effect/noGlobals":1,"effect/noNodeBuiltinImport":2,"effect/noTernary":1,"effect/noTestLifecycleHooks":1,"effect/preferTaggedConstructors":8},
     "mods/work/process/workbox.ts": {"effect/noGlobals":1,"effect/noNullish":2,"effect/noTernary":2},
     "mods/work/rift.ts": {"effect/noNullish":1,"effect/noTernary":10,"effect/preferMatchTagsExhaustive":1},
