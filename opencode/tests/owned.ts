@@ -24,6 +24,11 @@
 // draws the same whether the test ran from a herdr pane, a Rex pane or a plain shell (tui-cpu passed
 // or failed by an inherited HERDR_ENV); a scenario that wants a pane sets it in its driver's
 // `opencode.env` (scenarios/herdr.ts).
+//
+// Each child runs outside the installed build the test started under: the plugin binding a tree
+// build sets in its shells (scripts/bound-env.ts) leaves the environment it is given, so a scenario
+// driving OpenCode from source loads its own plugins and not the installed tree's.
+import { outsideBuild } from "../scripts/bound-env.ts"
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
@@ -101,7 +106,7 @@ export const owned = <
     },
   }
   const [program = "", ...rest] = command
-  const child = Bun.spawn([unboundBuild(program, build.path), ...rest], { ...options, env: { ...outsidePanes(temp.env, parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS }, detached: true })
+  const child = Bun.spawn([unboundBuild(program, build.path), ...rest], { ...options, env: { ...outsideBuild(outsidePanes(temp.env, parentEnv), parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS }, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)
