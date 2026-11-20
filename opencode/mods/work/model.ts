@@ -717,6 +717,8 @@ export const layer = Layer.effect(
           onSome: (command) => pushedMergeGate(integration, covered, command, started.base),
         })
         const pushed = yield* landing.push(integration, config.main).pipe(Effect.mapError((failure) => stopped("push", failure.message)))
+        // Owed at once: a restart from here on (the record, the trashing) loses neither the accept check nor the post-land step.
+        yield* afterPush(sessionID, source, units, config, started.base, pushed.split(" ")[0] ?? "")
         const record = yield* recordOf(integration, started.base, gated)
 
         const kept: Array<{ path: string; why: string }> = []
@@ -725,7 +727,6 @@ export const layer = Layer.effect(
           if (why !== undefined) kept.push({ path: unit.path, why })
         }
         const landed = { units, main: config.main, base: started.base, pushed, locks: [...new Set(locks)], kept }
-        yield* afterPush(sessionID, source, units, config, started.base, pushed.split(" ")[0] ?? "")
         const acceptsAfter = Predicate.isNotUndefined(config.accept)
         const postLands = Predicate.isNotUndefined(config.postLand)
         return {
