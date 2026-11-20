@@ -796,12 +796,17 @@ const mouseOn = (fixture: Fixture, event: Mouse) => {
 /** A key as the trace names it. */
 const keyName = (key: Key) => [...[key.ctrl && "ctrl", key.shift && "shift"].filter(Boolean), key.name].join("+")
 
-/** A seed's start: back on the lobby session at the file's size, whatever the seed before left open, the timers it left fired there. */
+/**
+ * A seed's start: back on the lobby session at the file's size, whatever the seed before left open, the timers it left
+ * fired there, and the pointer off the screen. The renderer keeps the last pointer and lights whatever comes to sit
+ * under it, so a pointer the seed before left over the transcript lit a row of the next seed's screen.
+ */
 const lobbyOn = (app: Booted) =>
   Effect.gen(function* () {
     app.current = app.lobby.server
     const { width, height } = app.options
     if (app.fixture.renderer.width !== width || app.fixture.renderer.height !== height) app.fixture.resize(width, height)
+    yield* Effect.promise(() => mouseOn(app.fixture, { action: "move", x: width, y: height }))
     yield* navigateTo(app.lobby.sessionID)
     jest.advanceTimersByTime(LOBBY_MS)
     yield* settleOn(app)
