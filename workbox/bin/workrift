@@ -71,7 +71,7 @@ usage: workrift <command>
                               (post-rewrite passes its argument: rebase means a rebase has ended)
   refresh                     update the warm source from its default branch
   list                        list the warm source's workspaces
-  remove [--dry-run] [--with-children] [path]
+  remove [--dry-run] [--with-children] [path | branch]
                               delete a workspace for good (under rift: move it to
                               the Rift trash); --dry-run prints the folders it would
                               delete and deletes nothing
@@ -322,6 +322,8 @@ install_dependency_hooks() {
   fi
 }
 
+# The folder name of a branch's workspace: create names the workspace by it,
+# and remove finds a workspace by it (workspace_by_name).
 workspace_name() {
   printf '%s' "$1" |
     tr '/[:space:]' '--' |
@@ -711,6 +713,14 @@ remove_workspace() {
   [ "$#" -le 1 ] || { usage >&2; exit 2; }
   target=${1:-$PWD}
   if [ "$backend" = work ]; then
+    # A path is absolute or starts with . or ..; anything else is the
+    # branch create was given (scratch/x), never a path inside the current
+    # checkout, which Git would take for that checkout.
+    case "$target" in
+      /*) ;;
+      . | .. | ./* | ../*) target=$PWD/$target ;;
+      *) target=$(workspace_by_name "$target") ;;
+    esac
     work_remove "$target" "$with_children" "$remove_dry_run"
     return
   fi
@@ -1098,6 +1108,37 @@ work_require_held() {
   for w_stash in $(git -C "$1" stash list --format=%H); do
     printf '%s\n' "$3" | grep -qxF "$w_stash" || fail "$1 has stash entries of its own"
   done
+}
+
+# The path of the one active workspace, of any work base, that create made
+# for the branch $1: named workspace_name of it, or that name and -N (work_new
+# adds -N while a trashed workspace holds the name) on branch $1. None, or
+# more than one, fails: a name never picks among several.
+workspace_by_name() {
+  n_name=$(workspace_name "$1")
+  [ -n "$n_name" ] || fail "not a workspace: $1 (a branch name or an absolute path)"
+  n_bases=$(work_bases)
+  n_found=
+  n_old_ifs=$IFS
+  IFS='
+'
+  for n_base in $n_bases; do
+    IFS=$n_old_ifs
+    n_json=$(work_list_checked "$n_base") || exit 1
+    # shellcheck disable=SC2016 # jq's variables
+    n_paths=$(printf '%s' "$n_json" | jq -r --arg n "$n_name" --arg b "$1" \
+      '.[] | select(.state._tag == "Active" and (.name == $n or ((.name | startswith($n + "-") and (ltrimstr($n + "-") | test("^[0-9]+$"))) and .branch == $b))) | .path') ||
+      fail "work --json list in $n_base does not read"
+    [ -z "$n_paths" ] || n_found="$n_found$n_paths
+"
+  done
+  IFS=$n_old_ifs
+  n_found=$(printf '%s' "$n_found" | sed '/^$/d')
+  case "$(printf '%s' "$n_found" | grep -c .)" in
+    1) printf '%s\n' "$n_found" ;;
+    0) fail "not a workspace: no active workspace of any work base is named $n_name, the name create gives $1 (a half-made one is removed only by its absolute path)" ;;
+    *) fail "several workspaces answer to $1: $(printf '%s' "$n_found" | tr '\n' ' '); name one by its absolute path" ;;
+  esac
 }
 
 work_remove() {

@@ -1896,6 +1896,57 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
   )
 
   test(
+    "remove takes the branch name create was given, from anywhere, and refuses a name that is no workspace, that two bases answer to, or a folder inside a checkout",
+    () => {
+      const w0 = workBench("by-name", work)
+      const w = { ...w0, wr: (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, { ...w0.env, WORKRIFT_PURGE: "0" }, [SCRIPT, ...argv]) }
+      const x = w.create(w.app, "scratch/x")
+      expect(x).toBe(join(w.root, ".work/app/scratch-x"))
+      // From outside any checkout, and from the base, by the name create was given.
+      let ran = w.wr(w.dir, "remove", "--dry-run", "scratch/x")
+      expect(ran.code, ran.err).toBe(0)
+      expect(ran.out).toBe(`would trash: ${x}\n`)
+      ran = w.wr(w.app, "remove", "scratch/x")
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(x)).toBe(false)
+
+      // The trash still holds scratch-x, so the next create of the branch makes scratch-x-2: its name finds that one.
+      const again = w.create(w.app, "scratch/x")
+      expect(again).toBe(join(w.root, ".work/app/scratch-x-2"))
+      ran = w.wr(w.dir, "remove", "scratch/x")
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(again)).toBe(false)
+
+      // A folder inside a checkout is no name: it never stands for the checkout around it.
+      const a = w.create(w.app, "feat/a")
+      mkdirSync(join(a, "src"))
+      ran = w.wr(a, "remove", "src")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("no active workspace of any work base is named src")
+      expect(ran.err).toContain("absolute path")
+      expect(existsSync(a)).toBe(true)
+
+      // Two bases with a workspace for one branch: the name picks neither.
+      const lib = w.base("lib")
+      const one = w.create(w.app, "feat/dup")
+      const two = w.create(lib, "feat/dup")
+      ran = w.wr(w.dir, "remove", "feat/dup")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("several workspaces answer to feat/dup")
+      expect(ran.err).toContain(one)
+      expect(ran.err).toContain(two)
+      for (const kept of [one, two, a]) expect(existsSync(kept)).toBe(true)
+
+      // A name of nothing.
+      ran = w.wr(w.dir, "remove", "no/such")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("no-such")
+      expect(w.active(w.app).map((each) => each.path).sort()).toEqual([a, one].sort())
+    },
+    60_000,
+  )
+
+  test(
     "a failed base warm holds no window and says so; the same tree is not tried again",
     () => {
       const { w, head } = loaded("failed-warm")
