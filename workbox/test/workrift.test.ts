@@ -228,8 +228,24 @@ describe("workrift with no backend file", () => {
       // create now checks what the base lacks under the lock (its marker, its advance stamp, its hooks) and says
       // its phases (a create waited 1059 s, 2026-11-20); the Rift backend is on its way out, so create's steps
       // keep only their rift calls, exit, output and remaining stderr to compare. Every other verb stays exact.
-      const createRift = (step: (typeof after)[number]) =>
-        step.argv.startsWith("create ") ? { ...step, calls: step.calls.filter((call) => call.startsWith("rift ")) } : step
+      // refresh records itself as the lock's holder (whom a waiting create names): one call reads where.
+      const holders = "git [-C] [<S>/root/app] [rev-parse] [--path-format=absolute] [--git-path] [workrift-lock-holders]"
+      const createRift = (step: (typeof after)[number]) => {
+        if (step.argv !== "refresh" || !step.calls.includes(holders)) return createOnly(step)
+        expect(step.calls.filter((call) => call === holders)).toEqual([holders])
+        return { ...step, calls: step.calls.filter((call) => call !== holders) }
+      }
+      const createOnly = (step: (typeof after)[number]) =>
+        step.argv.startsWith("create ")
+          ? {
+              ...step,
+              calls: step.calls.filter((call) => call.startsWith("rift ")),
+              err: step.err
+                .split("\n")
+                .filter((line) => !line.startsWith(`workrift: ${step.argv}: `))
+                .join("\n"),
+            }
+          : step
       expect(after.map((step) => createRift(step === deps ? { ...step, calls: step.calls.slice(0, -1) } : withoutNote(step)))).toEqual(before.map(createRift))
     },
     60_000,
@@ -1837,6 +1853,44 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(installed()).toEqual([w.app, w.app, b, w.app])
       expect(warms()).toEqual([`${w.app} held`, `${w.app} held`, `${b} free`, `${w.app} held`])
       expect(head(c)).toBe(third)
+    },
+    60_000,
+  )
+
+  test(
+    "create says each step on stderr with the seconds since it began, and whom it waits for; stdout is the path alone",
+    async () => {
+      const { w, lock } = loaded("phases")
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      // A refresh holds the lock (as one that recorded itself would) for a moment.
+      const holder = Bun.spawn(["flock", lock, "sleep", "2"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+      while (run(w.app, w.env, ["flock", "-n", lock, "true"]).code === 0) await Bun.sleep(20)
+      const holders = join(w.app, ".git/workrift-lock-holders")
+      mkdirSync(holders, { recursive: true })
+      const since = Math.floor(Date.now() / 1000)
+      writeFileSync(join(holders, String(holder.pid)), `${since} refresh\n`)
+      const [ran] = await spawnAll(w.app, w.env, [[SCRIPT, "create", "feat/p"]])
+      await holder.exited
+      expect(ran?.code, ran?.err).toBe(0)
+      const path = join(w.root, ".work/app/feat-p")
+      expect(ran?.out).toBe(`${path}\n`)
+      const said = lines(ran?.err ?? "")
+      const at = new Date(since * 1000).toISOString().slice(11, 19)
+      expect(said.filter((line) => line.startsWith("workrift: waiting"))).toEqual([`workrift: waiting for the lock of ${w.app}: held by pid ${holder.pid} since ${at}Z (refresh)`])
+      const steps = said.filter((line) => line.startsWith("workrift: create feat/p: ")).map((line) => line.replace(/ \(\d+s\)$/, ""))
+      expect(steps).toEqual([
+        "workrift: create feat/p: fetch feat/p and main from origin",
+        `workrift: create feat/p: lock ${w.app}`,
+        "workrift: create feat/p: locked",
+        "workrift: create feat/p: clone feat-p",
+        "workrift: create feat/p: workspace: install if its lock file changed",
+        "workrift: create feat/p: workspace: warm step if its tree changed",
+        `workrift: create feat/p: done: ${path}`,
+      ])
+      for (const line of said.filter((line) => line.startsWith("workrift: create feat/p: "))) expect(line).toMatch(/ \(\d+s\)$/)
+      // The lock waited about as long as the holder held it, and the holder's record of this create is gone.
+      expect(Number(said.find((line) => line.includes(": locked"))?.match(/\((\d+)s\)$/)?.[1])).toBeGreaterThanOrEqual(1)
+      expect(readdirSync(holders)).toEqual([String(holder.pid)])
     },
     60_000,
   )

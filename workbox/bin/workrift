@@ -370,7 +370,9 @@ create_workspace() {
   name=$(workspace_name "$branch")
   [ -n "$name" ] || fail 'branch does not make a valid workspace name'
 
+  create_started=$(date +%s)
   main=$(main_branch "$source_path")
+  phase "fetch $branch and $main from origin"
   fetch_branch "$source_path" "$branch"
   # The source's HEAD lags the default branch until the next refresh, so new
   # branches start from a freshly fetched remote default branch instead.
@@ -392,18 +394,22 @@ create_workspace() {
   # workspace once the lock is released.
   WORKRIFT_CREATING=1
   export WORKRIFT_CREATING
+  phase "lock $source_path"
+  lock_purpose="create $branch"
   lock_source "$source_path"
+  phase 'locked'
   advance_source "$source_path" "$main"
+  phase "clone $name"
   work_deps_tag=
   if [ "$backend" = work ]; then
     made=$(work_new "$source_path" "$name" "$branch" "$main")
-    exec 9>&-
+    unlock_source
     unset WORKRIFT_CREATING
     work_deps_tag=${made%%	*}
     workspace=${made#*	}
   else
     workspace=$(rift create "$source_path" --copy-all --name "$name")
-    exec 9>&-
+    unlock_source
     unset WORKRIFT_CREATING
     # Git hooks print to stdout, and stdout carries only the workspace path.
     if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
@@ -426,13 +432,16 @@ create_workspace() {
 
   # `work new` installs by the base's work.toml [deps] when it finds the lock
   # changed; then workrift does not install a second time.
+  phase 'workspace: install if its lock file changed'
   case "$work_deps_tag" in
     '' | NoDeps | Unchanged) sync_dependencies "$workspace" >&2 ;;
   esac
   # The copied build output matches the source's tree, not the branch's. A warm
   # step that shares its cache with the source rebuilds only what differs.
   note_cold "$source_path"
+  phase 'workspace: warm step if its tree changed'
   warm_build "$workspace" "$source_path" >&2
+  phase "done: $workspace"
   printf '%s\n' "$workspace"
 }
 
@@ -501,10 +510,66 @@ note_cold() {
 }
 
 # One writer at a time: a snapshot taken while another command moves the source
-# would copy a half-updated tree. Release with `exec 9>&-`, or at exit.
+# would copy a half-updated tree. So the lock holds what moves the base (a
+# refresh; a create's fast-forward, install, managed hooks and warm step) and
+# the copy itself (`work new` or `rift create`, which must read a base nobody
+# moves), and nothing else: fetches, the workspace's branch moves, its install
+# and its build run outside it. Release with unlock_source, or at exit.
+#
+# Each holder records itself in the Git directory's workrift-lock-holders/
+# (a file named by its pid: when, and what), so a create that waits can say
+# whom for. A wait says so at once and again each minute.
 lock_source() {
   exec 9>"$(git -C "$1" rev-parse --path-format=absolute --git-path workrift.lock)"
-  flock 9
+  if ! flock -n 9; then
+    while :; do
+      printf 'workrift: waiting for the lock of %s:%s\n' "$1" "$(lock_holders_words "$1")" >&2
+      l_tried=$(date +%s)
+      ! flock -w 60 9 || break
+      # A wait that gave up early is no wait but a failing flock.
+      [ $(($(date +%s) - l_tried)) -ge 55 ] || fail "flock of $1's lock failed"
+    done
+  fi
+  holder_file=$(lock_holders_dir "$1")/$$
+  mkdir -p "${holder_file%/*}"
+  printf '%s %s\n' "$(date +%s)" "$lock_purpose" >"$holder_file"
+  trap 'rm -f "$holder_file"' EXIT
+}
+
+unlock_source() {
+  rm -f "$holder_file"
+  exec 9>&-
+}
+
+lock_holders_dir() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-lock-holders
+}
+
+# Who holds the base's lock, as recorded: ` held by pid P since T (what)` for
+# each holder whose process still runs (where the process table reads).
+lock_holders_words() {
+  l_found=
+  for l_file in "$(lock_holders_dir "$1")"/*; do
+    [ -f "$l_file" ] || continue
+    l_pid=${l_file##*/}
+    if [ -d "$proc_root" ] && [ ! -e "$proc_root/$l_pid" ]; then
+      continue
+    fi
+    read -r l_since l_what <"$l_file" || true
+    printf ' held by pid %s since %s (%s)' "$l_pid" "$(clock_time "${l_since:-0}")" "${l_what:-?}"
+    l_found=true
+  done
+  [ -n "$l_found" ] || printf ' held by no workrift that recorded itself (a create from before this version, or a half-made remove)'
+}
+
+# Seconds since the epoch as a UTC time of day, on Linux and macOS.
+clock_time() {
+  date -u -d "@$1" +%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%H:%M:%SZ
+}
+
+# One line per step of a create, with the seconds since it began.
+phase() {
+  printf 'workrift: create %s: %s (%ss)\n' "$branch" "$1" "$(($(date +%s) - create_started))" >&2
 }
 
 # A create advances the base (fast-forward, install, warm) at most once in this
@@ -563,7 +628,9 @@ advance_source() {
       if [ "$(git -C "$source_path" branch --show-current)" != "$main" ]; then
         git -C "$source_path" switch "$main" >&2
       fi
+      phase "base: fast-forward to origin/$main"
       git -C "$source_path" merge --ff-only "origin/$main" >&2
+      phase "base: install if its lock file changed"
       sync_dependencies "$source_path" >&2
       advanced=true
     else
@@ -575,6 +642,7 @@ advance_source() {
     advanced=false
   fi
   if hooks_stale "$source_path"; then
+    phase "base: managed hooks"
     install_dependency_hooks "$source_path" >&2
   fi
   warm_ok=true
@@ -587,6 +655,7 @@ advance_source() {
           "$source_path" "$tree" "$(git -C "$source_path" rev-parse --path-format=absolute --git-path workrift-warm.log)" >&2
         warm_ok=false
       else
+        phase "base: warm step"
         warm_build "$source_path" "$source_path" >&2
         if [ "$(cat "$(warmed_tree_file "$source_path")" 2>/dev/null || true)" = "$tree" ]; then
           rm -f "$failed_file"
@@ -606,6 +675,7 @@ advance_source() {
 refresh_source() {
   source_path=${1:-$(resolve_source)}
   require_source "$source_path"
+  lock_purpose=refresh
   lock_source "$source_path"
   [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
 
@@ -1218,7 +1288,7 @@ work_remove_half_made() {
 
   # No create or refresh of the base runs while this looks and deletes.
   exec 8>"$(git -C "$h_base" rev-parse --path-format=absolute --git-path workrift.lock)"
-  flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base; try again once it ends"
+  flock -n 8 || h_no "a workrift create or refresh holds the lock of $h_base:$(lock_holders_words "$h_base"); try again once it ends"
 
   # No record names it or a folder below it, but one: a Creating record of
   # this very path in this base, with an id, which work gc -id takes.
@@ -1534,6 +1604,8 @@ work_deps() {
   [ -n "$w_name" ] || fail "not a workspace of $w_base: $w_top"
   work_in "$w_base" deps -name "$w_name"
 }
+
+lock_purpose=workrift
 
 backend=rift
 if [ -e "$backend_file" ]; then
