@@ -55,9 +55,9 @@ seeded("the orchestrator is a primary agent, the default, with build's permissio
     expect(first?.description).toBe(orchestrator.description)
     expect(first?.request.settings["compactionWindow"]).toBe(WINDOW)
     expect(WINDOW).toBe(400_000)
-    const build = run.agent("build")
-    expect([first?.permissions]).toEqual([build?.permissions])
-    expect(first?.system).toBe(build?.system)
+    const build = yield* Effect.fromOption(Option.fromNullishOr(run.agent("build")))
+    expect(first?.permissions).toEqual(build.permissions)
+    expect(first?.system).toBe(build.system)
     // The roles stay as their definitions make them.
     for (const role of ROLES) {
       const defined = run.agent(role)
