@@ -5,9 +5,9 @@ import { gitInit } from "../../../tests/git-repo.ts"
 import { buildName } from "../builds.ts"
 import { EXIT_CODES, handoff } from "../model.ts"
 import * as HandoffMarkFile from "../process/mark.ts"
-import { configPaths, installByHand, notInstalledLine, settingsFor, treeOptions } from "../process/install.ts"
+import { alreadyLine, configPaths, installByHand, notInstalledLine, settingsFor, treeOptions } from "../process/install.ts"
 import { goodOf, parseRecord, promoted, proven, type Record, recordText, rolledBack } from "../record.ts"
-import { Builder, Builds, Configs, Records, Service, Source } from "../service.ts"
+import { Builder, Builds, Configs, Records, Service, Source, UpdateFailed } from "../service.ts"
 import { buildsLock, files } from "../settings.ts"
 import { treeOf } from "../trees.ts"
 import * as BuildsFile from "./builds.ts"
@@ -17,7 +17,7 @@ import * as LogFile from "./log.ts"
 import * as NoticeFile from "./notice.ts"
 import * as RecordFile from "./records.ts"
 import * as RejectionFile from "./rejections.ts"
-import { stageBuild, type Stage, treesLayer } from "./stage.ts"
+import { makeAndStage, stageBuild, type Stage, treesLayer } from "./stage.ts"
 
 const VERSION = "2.2.7-prime.abcdef12.d0f11e5a"
 
@@ -309,6 +309,7 @@ describe("daily by hand on a from-scratch host", () => {
                 commit,
                 version,
                 trees,
+                record: settings.record,
                 stage: (tree) =>
                   Effect.runPromise(
                     Effect.sync(() => {
@@ -351,8 +352,21 @@ describe("daily by hand on a from-scratch host", () => {
             for (const file of settings.config) expect(sh(`touch -t 200001010000 '${file}'`).exitCode).toBe(0)
             const stamps = () => settings.config.map((file) => sh(`cat '${file}' && date -r '${file}' +%s`).stdout.toString())
             const before = stamps()
+            const treeFiles = () => sh(`cd '${tree}' && find . -type f | sort | xargs cat`).stdout.toString()
+            const whole = treeFiles()
+            effects.length = 0
+            lines.length = 0
+            // M1: the installed and proven commit, by hand again: nothing built, staged or restarted, and it says so.
             expect(yield* Effect.promise(byHand)).toBe(0)
             expect(stamps()).toEqual(before)
+            expect(effects).toEqual(["settings"])
+            expect(lines).toEqual([notInstalledLine(commit, 1), alreadyLine(version)])
+            // M1: a stage of that version that fails, over the tree that stands: the tree is not its own, so it stays whole.
+            const killed = () => Effect.runPromise(Effect.fail(new UpdateFailed({ step: "build the fork", message: "the compile was killed" })))
+            const failed = yield* Effect.exit(Effect.tryPromise(() => makeAndStage(trees, version, commit, killed)))
+            expect(String(failed)).toContain("the compile was killed")
+            expect(treeFiles()).toBe(whole)
+            expect(exists(`${share}/current.plugins/config/opencode.json`)).toBe(true)
           }),
         (dir) => Effect.sync(() => void spawnSync(["/bin/sh", "-c", 'chmod -R u+w "$1" && rm -rf "$1"', "sh", dir])),
       ),

@@ -581,6 +581,7 @@ if (import.meta.main) {
               commit: head,
               version: versionOf(cli.version, forkCommit, head),
               trees: treeOptions(settings, variables, home, process.pid),
+              record: settings.record,
               stage: (tree) =>
                 $`${[...treeStageCommand(settings, tree, forkCommit, head), ...passed]}`
                   .cwd(join(tree, "opencode"))

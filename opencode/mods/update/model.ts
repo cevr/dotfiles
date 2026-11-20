@@ -2,7 +2,7 @@ import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Sch
 import { describeGate, Gate, gate } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, type Record, rolledBack } from "./record.ts"
-import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, Trees, UpdateFailed } from "./service.ts"
+import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, stageInTree, Trees, UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
 import { ask, ended, HANDOFF_LIMIT, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
@@ -121,11 +121,8 @@ export const updaterLayer = (policy: Policy) =>
         yield* log.line(`update: ${shortTarget(target)}; building it ahead with its own plugin tree; nothing running loads from it`)
         yield* source.fetch(target.dotfiles)
         const version = yield* builder.version(target)
-        yield* trees.make(version, target.dotfiles).pipe(
-          // A failed stage takes its tree with it: nothing will run that build, and nothing is left for a start to bind.
-          Effect.flatMap((tree) => builder.stage(target, tree).pipe(Effect.tapError(() => trees.remove(version)))),
-          Effect.tapError((failed) => reject(target, "build", failed.message)),
-        )
+        // A failed stage takes its tree with it when its make made it; a tree that stood (a recorded build's) stays whole.
+        yield* stageInTree(trees, version, target.dotfiles, (tree) => builder.stage(target, tree)).pipe(Effect.tapError((failed) => reject(target, "build", failed.message)))
         return yield* restart(target)
       })
 

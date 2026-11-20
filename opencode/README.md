@@ -51,7 +51,10 @@ TeamClaude's proxy, even when an agent session on TeamClaude starts it.
 `~/.local/bin` precedes `~/.bun/bin`, so a new terminal runs it, and
 `opencode2` stays the stock release. As a `latest` build it shares the stock
 release's database, logins and background service; the version change
-restarts that service as ours. A failed stage removes the tree it made. Each
+restarts that service as ours. A failed stage removes the tree only when its own
+make made it: a tree that stood (the running build's, a good, staged or previous
+one) stays whole. A run on a commit the host already runs, proven and with its
+tree, builds and restarts nothing: it writes the settings and says so. Each
 build's plugins are listed in its own tree's `config/` (below): the Anthropic
 auth plugin (`cmd/anthropic-auth`), the pool (on the Claude logins in
 `~/.local/share/opencode-prime/pool-auth`, the pool's login store, when it
@@ -147,8 +150,13 @@ only the resident location's copy acts, so a host runs one updater.
   fixed copy per build); it hot-reloads only on a scratch service run from
   source, `bun run verify:launch` and `verify:tui`
   (`.claude/skills/verify-opencode`). A failed tree or stage writes
-  nothing and rejects the target; a failed stage deletes the tree it made
-  (`Trees.remove`), so no tree is left beside no build. The launcher stays on the running build:
+  nothing and rejects the target; a failed stage deletes the tree only when
+  its own make made it (`Trees.make` answers `Made` or `Stood`, read under
+  the builds lock; `service.ts` `stageInTree`, which daily by hand runs too),
+  so no tree is left beside no build and no stage ever removes a tree a
+  recorded build or `current.plugins` names. A run killed between the make and
+  the stage leaves its tree, which the next make answers as standing and the
+  prune takes once no record names it. The launcher stays on the running build:
   the staged one's client would replace the shared service, since the record
   names neither it nor a build it superseded (workbox, 2026-11-18: each TUI
   opened in the wait restarted the service). Only the record's writes move it,

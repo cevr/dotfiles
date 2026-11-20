@@ -1,4 +1,4 @@
-import { Context, type Effect, type Option, Schema } from "effect"
+import { Context, Data, Effect, type Option, Schema } from "effect"
 import type { Reading } from "./health.ts"
 import type { Placement } from "./placement.ts"
 import type { Record } from "./record.ts"
@@ -105,6 +105,17 @@ export class Builds extends Context.Service<
 >()("dotfiles-opencode/update/Builds") {}
 
 /**
+ * A tree a make answers: `Made`, made by that make, which is the only tree a stage owns and may remove
+ * when it fails; or `Stood`, there before the make (the installed, good, staged or a previous build's,
+ * or another stage's), which no stage removes or writes. Decided by the make, under the builds lock.
+ */
+export type Tree = Data.TaggedEnum<{
+  Made: { readonly path: string; readonly version: string }
+  Stood: { readonly path: string }
+}>
+export const Tree = Data.taggedEnum<Tree>()
+
+/**
  * The builds' plugin trees (`trees.ts`): `opencode-<version>.plugins` beside each build in the share
  * directory, which the build's every process loads its plugins from. A tree is made once, checked and
  * sealed, and never written after; a prune deletes it with its build (`Builds`).
@@ -114,23 +125,37 @@ export class Trees extends Context.Service<
   {
     /**
      * Makes the tree of build `version` from dotfiles commit `commit`, out of the checkout's object
-     * store (never a checkout), and answers its path; a tree already there is answered as it is. The
-     * tree appears by one rename once installed, written, checked and sealed: a make stopped at any
-     * step leaves nothing that reads as a tree.
+     * store (never a checkout): `Made`. A tree already there is answered as it is, `Stood`. The tree
+     * appears by one rename once installed, written, checked and sealed: a make stopped at any step
+     * leaves nothing that reads as a tree.
      */
-    readonly make: (version: string, commit: string) => Effect.Effect<string, UpdateFailed>
+    readonly make: (version: string, commit: string) => Effect.Effect<Tree, UpdateFailed>
     /** Fails, naming each, when a process of the tree at `tree` would import something its install lacks. */
     readonly check: (tree: string) => Effect.Effect<void, UpdateFailed>
     /** Whether build `version` has its tree beside it (its overlay there): the handoff installs no build without one. */
     readonly has: (version: string) => Effect.Effect<boolean>
     /**
-     * Deletes the tree of build `version`, which a stage that failed made: nothing will run that build,
-     * so nothing is left that a later start could bind. Never fails; a tree it could not delete the next
-     * prune takes, since no record names its build.
+     * Deletes a tree its make made (`Made`), once the stage on it failed: nothing will run that build,
+     * so nothing is left that a later start could bind. A tree that stood takes no `remove`. Never
+     * fails; a tree it could not delete the next prune takes, since no record names its build.
      */
-    readonly remove: (version: string) => Effect.Effect<void>
+    readonly remove: (tree: Data.TaggedEnum.Value<Tree, "Made">) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/update/Trees") {}
+
+/**
+ * The tree of build `version` made from dotfiles commit `commit`, then `stage` run on it: the updater's
+ * build and daily by hand's alike. A stage that fails takes the tree with it only when this make made
+ * it; a tree that stood (a recorded build's, which processes run and `current.plugins` names) stays
+ * whole. A run killed between the make and the stage leaves its tree, which the next make answers as
+ * standing and the prune takes once no record names it. Answers the tree's path.
+ */
+export const stageInTree = <E, R>(trees: Trees["Service"], version: string, commit: string, stage: (tree: string) => Effect.Effect<void, E, R>) =>
+  Effect.gen(function* () {
+    const tree = yield* trees.make(version, commit)
+    yield* stage(tree.path).pipe(Effect.tapError(() => Tree.$match(tree, { Made: (made) => trees.remove(made), Stood: () => Effect.void })))
+    return tree.path
+  })
 
 /** The installed record (`record.ts`); a write points the launcher at the build it installs (`filestore/launcher.ts`). */
 export class Records extends Context.Service<

@@ -6,7 +6,7 @@ import { buildName, prunable } from "./builds.ts"
 import type { Reading } from "./health.ts"
 import { EXIT_CODES, GATE_POLL, handoff, HEALTH_DEADLINE, HEALTH_POLL, intervalChecks, Updater, updaterLayer } from "./model.ts"
 import { type Build, goodOf, proven, type Record, stagedRecord } from "./record.ts"
-import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Source, Trees, UpdateFailed } from "./service.ts"
+import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Source, Tree, Trees, UpdateFailed } from "./service.ts"
 import { treeOf } from "./trees.ts"
 import type { Target } from "./target.ts"
 import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
@@ -179,7 +179,7 @@ const fakes = (host: World) =>
     Layer.succeed(
       Trees,
       Trees.of({
-        make: (version) => Effect.sync(() => void host.calls.push("make tree")).pipe(Effect.as(`/s/${treeOf(buildName(version))}`)),
+        make: (version) => Effect.sync(() => void host.calls.push("make tree")).pipe(Effect.as(Tree.Made({ path: `/s/${treeOf(buildName(version))}`, version }))),
         check: () => Effect.void,
         has: (version) => Effect.sync(() => host.trees.has(version)),
         remove: () => Effect.sync(() => void host.calls.push("remove tree")),
@@ -813,8 +813,10 @@ describe("plugin trees", () => {
   const NEW = build("2.2.7-prime.ffffffff.dddddddd.tree", "d".repeat(40), "f".repeat(40))
   /** The second update's build, on top of the first: the same fork, another dotfiles commit. */
   const NEWER = build("2.2.7-prime.ffffffff.bbbbbbbb.tree", "b".repeat(40), "f".repeat(40))
+  /** An older tree build a record keeps among its previous ones. */
+  const OLDER = build("2.2.5-prime.aaaaaaaa.99999999.tree", "9".repeat(40), "a".repeat(40))
   /** The builds an update makes: each a tree build. */
-  const TREE_BUILDS = [GOOD_T, NEW, NEWER]
+  const TREE_BUILDS = [OLDER, GOOD_T, NEW, NEWER]
   const BUILDS = [GOOD, ...TREE_BUILDS]
   const targetOf = (each: Build, batch: string): Target => ({ dotfiles: each.dotfiles, fork: each.fork, batch })
   const dotfilesOf = (version: string) => Option.getOrElse(Option.map(Option.fromNullishOr(BUILDS.find((each) => each.version === version)), (each) => each.dotfiles), () => "unknown")
@@ -851,6 +853,8 @@ describe("plugin trees", () => {
     fails: Option.Option<"make tree" | "stage">
     /** Before which of an update's calls (by its index) the service crashes, its unit starts it again and a TUI opens, if any. */
     crashAt: Option.Option<number>
+    /** The call before which the update's own process is killed, if any: nothing after it runs, no failure handler either. */
+    killAt: Option.Option<string>
     /** What the starts the model tries before every call found wrong (I5). */
     readonly starts: Array<string>
   }
@@ -888,6 +892,8 @@ describe("plugin trees", () => {
 
   /** The update's next call: first every start this instant allows is tried, and at `crashAt` the service crashes (its unit starts it again) and a TUI opens. */
   const call = (host: Host, name: string) => {
+    // Killed: the run's process dies here, a defect no failure handler of the update catches.
+    if (Option.contains(host.killAt, name)) Effect.runSync(Effect.die(`killed before ${name}`))
     tryStarts(host, name)
     if (Option.contains(host.crashAt, host.calls.length))
       host.procs = [...host.procs.filter((proc) => proc.name !== "service"), started(host, "service", unitBuild(host)), started(host, `tui-opened-${host.calls.length}`, launched(host))]
@@ -971,19 +977,22 @@ describe("plugin trees", () => {
       Layer.succeed(
         Trees,
         Trees.of({
+          // As the share directory's: a tree there is answered as it stands; only one it placed is the make's own.
           make: (version) =>
             Effect.suspend(() => {
               call(host, "make tree")
               if (Option.contains(host.fails, "make tree")) return failure("install the tree")
+              const path = `${SHARE}/${treeOf(buildName(version))}`
+              if (host.trees.has(version)) return Effect.succeed<Tree>(Tree.Stood({ path }))
               host.trees.add(version)
-              return Effect.succeed(`${SHARE}/${treeOf(buildName(version))}`)
+              return Effect.succeed<Tree>(Tree.Made({ path, version }))
             }),
           check: () => Effect.void,
           has: (version) => Effect.sync(() => host.trees.has(version)),
-          remove: (version) =>
+          remove: (made) =>
             Effect.sync(() => {
               call(host, "remove tree")
-              host.trees.delete(version)
+              host.trees.delete(made.version)
             }),
         }),
       ),
@@ -1090,6 +1099,7 @@ describe("plugin trees", () => {
       lost: [],
       fails: Option.none(),
       crashAt: Option.none(),
+      killAt: Option.none(),
       starts: [],
     }
     host.procs = [started(host, "service", running.version), ...Array.from({ length: tuis }, (_, index) => started(host, `tui-${index}`, running.version))]
@@ -1223,6 +1233,114 @@ describe("plugin trees", () => {
         expect(ran.outcomes[0]).toBe("rolled-back")
         expect(ran.found).toEqual([])
       }))
+  })
+
+
+  /**
+   * M1 (U6 r2): a stage owns, and may remove when it fails, only a tree it made in this run. Over a
+   * host whose record names four tree builds, each with its tree (installed, unproven; good; staged;
+   * previous, a TUI still on it), the target is each of them in turn, and the update fails at the
+   * tree's make or the stage, or its process is killed before any one of its calls. After the run,
+   * and after the next run once the process is back: every tree the record names that stood before
+   * stands, and `current.plugins` (the installed build's tree) resolves.
+   */
+  describe("M1: a stage never removes a tree it did not make", () => {
+    type Role = "installed" | "good" | "staged" | "previous"
+    const ROLES: ReadonlyArray<Role> = ["installed", "good", "staged", "previous"]
+    const BUILD_OF = { installed: NEW, good: GOOD_T, staged: NEWER, previous: OLDER } as const satisfies { readonly [role in Role]: Build }
+    const KILLS = ["fetch", "make tree", "stage", "remove tree", "handoff", "record", "restart", "record (good)", "prune", "commands"]
+    type Failing = { readonly how: "fails"; readonly at: "make tree" | "stage" } | { readonly how: "killed"; readonly at: string }
+    const FAILINGS: ReadonlyArray<Failing> = [
+      ...(["make tree", "stage"] as const).map((at): Failing => ({ how: "fails", at })),
+      ...KILLS.map((at): Failing => ({ how: "killed", at })),
+    ]
+
+    /** A host on NEW (installed, not yet proven), GOOD_T good, NEWER staged and OLDER previous, each with its binary and tree. */
+    const recordedHost = (role: Role): Host => {
+      const host = hostOf("on trees", 0)
+      host.record = Option.some({
+        version: NEW.version,
+        command: NEW.command,
+        dotfiles: NEW.dotfiles,
+        fork: NEW.fork,
+        previous: [OLDER.version, GOOD_T.version],
+        good: GOOD_T,
+        staged: NEWER,
+      })
+      for (const each of [OLDER, GOOD_T, NEW, NEWER]) {
+        host.binaries.add(each.version)
+        host.trees.add(each.version)
+      }
+      host.procs = [started(host, "service", NEW.version), started(host, "tui-0", OLDER.version), started(host, "tui-1", GOOD_T.version)]
+      host.target = targetOf(BUILD_OF[role], "batch-9")
+      return host
+    }
+
+    /** The trees the record names (installed, good, staged, previous) that are gone, and whether `current.plugins` resolves. */
+    const recordedLost = (host: Host, stood: ReadonlyArray<string>): ReadonlyArray<string> => {
+      const record = Option.getOrThrow(host.record)
+      const named = [record.version, record.good?.version, record.staged?.version, ...(record.previous ?? [])].flatMap((each) => Option.toArray(Option.fromNullishOr(each)))
+      const gone = (version: string) => !host.trees.has(version)
+      return [
+        ...Arr.dedupe(named).flatMap((version) => [`the recorded tree of ${version} is gone`].filter(() => stood.includes(version) && gone(version))),
+        ...[`current.plugins names ${record.version}, whose tree is gone`].filter(() => gone(record.version)),
+      ]
+    }
+
+    /** One run of the updater (its check, then the handoff it started, if any), ending however it ends. */
+    const runOnce = (host: Host) =>
+      Effect.gen(function* () {
+        host.readings.push(healthy, healthy)
+        const checking = yield* Effect.forkChild((yield* Updater).check("asked"))
+        yield* settle
+        yield* TestClock.adjust(GATE_POLL)
+        yield* Fiber.await(checking)
+        if (host.calls.includes("handoff")) {
+          const handing = yield* Effect.forkChild(handoff("batch"))
+          yield* settle
+          yield* TestClock.adjust(HANDOFF_LIMIT)
+          yield* Fiber.await(handing)
+        }
+        host.readings.length = 0
+      })
+
+    const failed = (role: Role, failing: Failing) =>
+      Effect.suspend(() => {
+        const host = recordedHost(role)
+        const stood = [...host.trees]
+        if (failing.how === "fails") host.fails = Option.some(failing.at)
+        if (failing.how === "killed") host.killAt = Option.some(failing.at)
+        return onHost(
+          host,
+          Effect.gen(function* () {
+            yield* runOnce(host)
+            const afterRun = recordedLost(host, stood).map((line) => `after the run: ${line}`)
+            // The process is back: the next run, with its stage failing again over whatever the last one left.
+            const calls = [...host.calls]
+            host.calls.length = 0
+            host.killAt = Option.none()
+            host.fails = Option.some("stage")
+            yield* runOnce(host)
+            const afterNext = recordedLost(host, stood).map((line) => `after the next run: ${line}`)
+            return { role, failing, calls, lost: [...afterRun, ...afterNext] }
+          }),
+        )
+      })
+
+    test("over every recorded build as the target, a stage failing or its process killed before any call leaves every recorded tree whole and current.plugins resolving", () =>
+      check(
+        Effect.forEach(
+          ROLES.flatMap((role) => FAILINGS.map((failing) => ({ role, failing }))),
+          ({ role, failing }) => failed(role, failing),
+        ),
+        (runs) => {
+          const broken = runs.filter((each) => each.lost.length > 0).map((each) => `${each.role}, ${each.failing.how} at ${each.failing.at}: ${each.lost.join("; ")} [${each.calls.join(", ")}]`)
+          expect(broken).toEqual([])
+          // The property reaches a stage over a tree that stood (the good and the previous build's), and a kill between the make and the stage.
+          expect(runs.some((each) => each.role === "good" && each.calls.includes("stage"))).toBe(true)
+          expect(runs.some((each) => each.role === "previous" && each.calls.includes("stage"))).toBe(true)
+        },
+      ))
   })
 
   /** One update of a host that starts as `start`, ending as `ending`, with `fails` failing; its calls and outcome. */

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { builtForTree, configPaths, flagValue, notInstalledLine, refusals, settingsFor, STAGED_LINE, treeStage } from "./install.ts"
+import { Option } from "effect"
+import type { Build, Record } from "../record.ts"
+import { alreadyInstalled, builtForTree, configPaths, flagValue, notInstalledLine, refusals, settingsFor, STAGED_LINE, treeStage } from "./install.ts"
 
 const HOST = { host: "bite-cristian", home: "/h", state: "/h/.local/state", checkout: "/h/dotfiles", fork: "/h/opencode", bun: "/h/.local/bin/bun", resident: "/h/.local/state/opencode-prime/resident", launcher: "/h/.local/bin/opencode" }
 const VERSION = "2.3.0-prime.056a7066.1c82e080"
@@ -35,6 +37,18 @@ describe("daily's part of the update", () => {
   test("daily by hand says it installs the commit, never the edits as they stand, and how many files under opencode/ differ", () => {
     expect(notInstalledLine("c".repeat(40), 0)).toBe(`daily: installing commit ${"c".repeat(10)}; uncommitted edits in this checkout are not installed (to run them: bun run verify:launch)`)
     expect(notInstalledLine("c".repeat(40), 3)).toBe(`${notInstalledLine("c".repeat(40), 0)}; 3 files under opencode/ differ from it`)
+  })
+
+  test("daily by hand builds nothing only for the build the record installs, proven, with its tree standing", () => {
+    const build = (version: string): Build => ({ version, command: [`/s/opencode-${version}`], dotfiles: "d".repeat(40), fork: "f".repeat(40) })
+    const [it, other] = [build("2.3.0-prime.aaaaaaaa.bbbbbbbb.tree"), build("2.3.0-prime.aaaaaaaa.cccccccc.tree")]
+    const record = (installed: typeof it, good: typeof it): Option.Option<Record> => Option.some({ ...installed, good })
+    expect(alreadyInstalled(record(it, it), it.version, true)).toBe(true)
+    // Its tree gone, unproven, another build installed, or no record: it builds (and its stage never removes a tree that stood).
+    expect(alreadyInstalled(record(it, it), it.version, false)).toBe(false)
+    expect(alreadyInstalled(record(it, other), it.version, true)).toBe(false)
+    expect(alreadyInstalled(record(other, it), it.version, true)).toBe(false)
+    expect(alreadyInstalled(Option.none(), it.version, true)).toBe(false)
   })
 })
 

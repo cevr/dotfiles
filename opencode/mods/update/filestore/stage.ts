@@ -4,7 +4,7 @@ import { exclusivelySync, holding } from "@dotfiles/opencode-work/process/flock"
 import { Effect, Layer } from "effect"
 import { buildName, stagingName } from "../builds.ts"
 import { parseRecord, type Record, recordText, stagedRecord } from "../record.ts"
-import { Trees, UpdateFailed } from "../service.ts"
+import { stageInTree, Tree, Trees, UpdateFailed } from "../service.ts"
 import { TREE_SUFFIX, treeOf } from "../trees.ts"
 import { removeMaking } from "./builds.ts"
 import { launcher } from "./launcher.ts"
@@ -14,39 +14,49 @@ import { check, make, type Options as TreeOptions } from "./trees.ts"
  * The Trees over the share directory (`filestore/trees.ts`), each make under the builds lock `lock`,
  * which daily's stage takes for its copy and record and a prune for its read and deletes: two stages
  * at once (daily by hand during the updater's) never make one tree twice, and a prune never meets a
- * tree half placed. `has` reads whether a build's overlay stands beside it.
+ * tree half placed. Under that same lock, and before the make, it reads whether the tree stands: a
+ * make answers `Stood` for a tree that was there, `Made` for one it placed, and nothing places a tree
+ * in between. `has` reads whether a build's overlay stands beside it.
  */
 export const treesLayer = (options: TreeOptions & { readonly lock: string }) =>
   Layer.succeed(
     Trees,
     Trees.of({
       make: (version, commit) =>
-        holding([[options.lock, "exclusive"]], make(options, version, commit)).pipe(
+        holding(
+          [[options.lock, "exclusive"]],
+          Effect.gen(function* () {
+            const stood = existsSync(join(options.share, treeOf(buildName(version))))
+            const path = yield* make(options, version, commit)
+            if (stood) return Tree.Stood({ path })
+            return Tree.Made({ path, version })
+          }),
+        ).pipe(
           Effect.catchTag("RiftFailed", (failed) => Effect.fail(new UpdateFailed({ step: "take the builds lock", message: failed.message }))),
         ),
       check,
       has: (version) => Effect.sync(() => existsSync(join(options.share, treeOf(buildName(version)), "config", "opencode.json"))),
-      remove: (version) => holding([[options.lock, "exclusive"]], removeMaking(join(options.share, treeOf(buildName(version))))).pipe(Effect.ignore),
+      remove: (made) => holding([[options.lock, "exclusive"]], removeMaking(made.path)).pipe(Effect.ignore),
     }),
   )
 
 /**
- * daily by hand's tree build, as the updater makes one (`model.ts` `installTree`), for daily, which runs on
+ * daily by hand's tree build, the updater's own (`service.ts` `stageInTree`), for daily, which runs on
  * the root package's Effect: the tree of build `version` made from dotfiles commit `commit` under the
- * builds lock (`treesLayer`), then `stage` run on it (the tree's own daily); a stage that fails takes its
- * tree with it. A from-scratch host has no share directory yet: it is made first. Answers the tree's
- * path; rejects with the failed step.
+ * builds lock (`treesLayer`), then `stage` run on it (the tree's own daily); a stage that fails takes
+ * the tree with it only when this make made it. A from-scratch host has no share directory yet: it is
+ * made first. Answers the tree's path; rejects with the failed step.
  */
 export const makeAndStage = (options: TreeOptions & { readonly lock: string }, version: string, commit: string, stage: (tree: string) => Promise<void>): Promise<string> =>
   Effect.runPromise(
-    Trees.use((trees) =>
-      Effect.sync(() => mkdirSync(options.share, { recursive: true })).pipe(
-        Effect.andThen(trees.make(version, commit)),
-        Effect.tap((tree) =>
-          Effect.tryPromise({ try: () => stage(tree), catch: (cause) => new UpdateFailed({ step: "stage the build", message: String(cause) }) }).pipe(Effect.tapError(() => trees.remove(version))),
+    Effect.sync(() => mkdirSync(options.share, { recursive: true })).pipe(
+      Effect.andThen(
+        Trees.use((trees) =>
+          stageInTree(trees, version, commit, (tree) => Effect.tryPromise({ try: () => stage(tree), catch: (cause) => new UpdateFailed({ step: "stage the build", message: String(cause) }) })),
         ),
       ),
-    ).pipe(Effect.provide(treesLayer(options))),
+      Effect.provide(treesLayer(options)),
+    ),
   )
 
 /** One build daily stages: the file it built, where it goes, and what the record says of it. */

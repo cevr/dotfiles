@@ -1,11 +1,12 @@
-import { env, spawnSync } from "bun"
+import { env, file, spawnSync } from "bun"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { buildName } from "../builds.ts"
 import { oursOf } from "../filestore/configs.ts"
 import { makeAndStage } from "../filestore/stage.ts"
 import type { Options as TreeOptions } from "../filestore/trees.ts"
 import { buildsLock, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "../settings.ts"
-import { buildOfTree } from "../trees.ts"
+import { goodOf, parseRecord, type Record } from "../record.ts"
+import { buildOfTree, treeOf } from "../trees.ts"
 import type { Program } from "./handoff.ts"
 import { environment } from "./run.ts"
 
@@ -136,6 +137,17 @@ export const notInstalledLine = (commit: string, dirty: number): string =>
     ...[dirty].flatMap((count) => [`; ${count} files under opencode/ differ from it`].filter(() => count > 0)),
   ].join("")
 
+/**
+ * Whether build `version` is what the host runs, proven, with its tree: the record installs it and names
+ * it good, and its tree stands (`treeStands`). daily by hand then has nothing to build or restart.
+ */
+export const alreadyInstalled = (record: Option.Option<Record>, version: string, treeStands: boolean): boolean =>
+  treeStands && Option.exists(record, (each) => each.version === version && Option.exists(goodOf(each), (good) => good.version === version))
+
+/** What daily by hand says when the commit is installed and proven already (`alreadyInstalled`). */
+export const alreadyLine = (version: string): string =>
+  `daily: ${version} is installed and proven, with its tree; nothing built, staged or restarted (commit a change to install it)`
+
 /** daily by hand's install of the checkout's commit, each step daily's own (`installByHand`). */
 export interface ByHand {
   /** The live dotfiles checkout, whose object store the tree is made from. */
@@ -146,6 +158,8 @@ export interface ByHand {
   readonly version: string
   /** Where and how the tree is made (`treeOptions`). */
   readonly trees: TreeOptions & { readonly lock: string }
+  /** The installed record (`installed.json`), read for whether `version` is installed and proven already. */
+  readonly record: string
   /** The tree's own daily, staging the build (`builder.ts` `treeStageCommand`); rejects when it fails. */
   readonly stage: (tree: string) => Promise<void>
   /** The host's settings in the global configs: never a plugin entry. */
@@ -156,15 +170,25 @@ export interface ByHand {
 }
 
 /**
- * daily by hand: the checkout's HEAD installed the way the updater installs a target. The tree is made
- * and the build staged from it (`stage.ts` `makeAndStage`, a failed stage taking its tree), then the
- * host's settings are written, then the tree's handoff restarts onto the build. Answers the handoff's
- * exit code; rejects, restarting nothing, when the tree or the stage fails.
+ * daily by hand: the checkout's HEAD installed the way the updater installs a target. When the record
+ * installs that build already, proven, with its tree, only the host's settings are written, and daily
+ * says so: a rebuild would restart the service onto the build it runs. Else the tree is made and the
+ * build staged from it (`stage.ts` `makeAndStage`: a failed stage takes the tree only when its make
+ * made it), then the host's settings are written, then the tree's handoff restarts onto the build.
+ * Answers the handoff's exit code (0 for the no-op); rejects, restarting nothing, when the tree or the
+ * stage fails.
  */
 export const installByHand = (steps: ByHand): Promise<number> =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* Effect.sync(() => steps.log(notInstalledLine(steps.commit, uncommitted(steps.checkout))))
+      const record = yield* Effect.promise(() => file(steps.record).text().catch(() => "")).pipe(Effect.map(parseRecord))
+      const treeStands = yield* Effect.promise(() => file(`${steps.trees.share}/${treeOf(buildName(steps.version))}/config/opencode.json`).exists())
+      if (alreadyInstalled(record, steps.version, treeStands)) {
+        yield* Effect.sync(steps.settings)
+        yield* Effect.sync(() => steps.log(alreadyLine(steps.version)))
+        return 0
+      }
       const tree = yield* Effect.promise(() => makeAndStage(steps.trees, steps.version, steps.commit, steps.stage))
       yield* Effect.sync(steps.settings)
       return yield* Effect.promise(() => steps.handoff(tree))
