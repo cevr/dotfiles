@@ -3947,7 +3947,11 @@ drops the links), and install only when changing the lock file. Link-fork, and
 with it the gate, typecheck, accept and daily, first checks that `OPENCODE_DEV`
 is an OpenCode checkout on this machine whose `packages/tui/node_modules` all
 resolve (`scripts/fork.ts`), and stops before touching anything when it is not:
-a Mac path on the workbox would leave every TUI plugin without `solid-js`. No running process uses
+a Mac path on the workbox would leave every TUI plugin without `solid-js`. It also refuses a fork
+whose install is not its checkout's (an exact pin linked at another version: a checkout moved
+without an install, which hung Code Mode on 2026-11-20); run `bun install --frozen-lockfile` there.
+The fork's own moves (`syncFork`, the upstream merge's fast-forward) install a changed `bun.lock`
+themselves. No running process uses
 the links: each build runs from its own sealed tree, and daily links the checkout only for the upstream
 merge's checks. The pool's
 login store suites (`tests/pool-store*.test.ts`, `tests/pool-fleet.test.ts`) write their store

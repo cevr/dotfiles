@@ -1,7 +1,8 @@
 // The one check every script that takes OPENCODE_DEV runs before it uses the
 // fork (link-fork, and through it the gate and typecheck; accept; daily):
 // the path is an OpenCode checkout on this machine with its TUI package
-// installed, and every module that package installed resolves here. A path
+// installed, every module that package installed resolves here, and the install
+// is the checkout's own (no exact pin linked at another version). A path
 // from another machine (a Mac path on the workbox), an unexpanded `~`, a folder
 // that is not a checkout and an install copied from elsewhere all fail it, so
 // nothing links to a module that is not there.
@@ -9,7 +10,7 @@
 // Every caller takes the fork through `readyFork`, which first removes the one
 // stray link-fork itself ever wrote into a fork (below), so an older checkout's
 // run does not leave a fork that every caller then refuses.
-import { existsSync, lstatSync, readdirSync, readlinkSync, rmSync } from "node:fs"
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs"
 import { hostname } from "node:os"
 import path from "node:path"
 
@@ -76,5 +77,75 @@ const checkFork = (dev: string): Fork => {
   const bad = broken(modules)
   if (bad.length > 0)
     return { problem: `${modules} has ${bad.length} modules that point nowhere on this machine (${bad.slice(0, 3).join(", ")}${bad.length > 3 ? ", …" : ""}): run bun install in ${fork}.` }
+  const stale = staleInstall(fork)
+  if (stale.length > 0)
+    return {
+      problem: `${fork}'s install is not its checkout's (moved without an install?): ${stale.slice(0, 3).join("; ")}${stale.length > 3 ? "; …" : ""}. Run bun install --frozen-lockfile in ${fork}.`,
+    }
   return { fork, modules }
+}
+
+/** A version a package.json pins exactly (no range, alias or protocol). */
+const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+/** The version in a link into Bun's isolated store: `…/.bun/<name, / as +>@<version>[+<hash>]/node_modules/<name>`. */
+const STORE = /\/\.bun\/[^/]+?@([^/@+]+)(?:\+[^/]*)?\/node_modules\//
+
+const readJson = (file: string): Record<string, unknown> => {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"))
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {})
+
+/** The fork's workspace package folders: its root package.json's `workspaces` globs, each `dir` or `dir/*`. */
+const workspaceDirs = (fork: string, workspaces: unknown): ReadonlyArray<string> => {
+  const globs = Array.isArray(workspaces) ? workspaces : record(workspaces)["packages"]
+  if (!Array.isArray(globs)) return []
+  return globs
+    .filter((glob): glob is string => typeof glob === "string")
+    .flatMap((glob) => {
+      if (!glob.endsWith("/*")) return [path.join(fork, glob)]
+      const parent = path.join(fork, glob.slice(0, -2))
+      if (!existsSync(parent)) return []
+      return readdirSync(parent, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(parent, entry.name))
+    })
+    .filter((dir) => existsSync(path.join(dir, "package.json")))
+}
+
+/**
+ * The exact pins of the fork's workspace packages (`catalog:` read from the root's catalog) that its
+ * install links at another version, each `<package folder>: <name> <installed>, pinned <wanted>`. A
+ * checkout moved to a commit whose lockfile differs, with no install after (2026-11-20: prime-look
+ * reset from a merge that installed psychoscript 0.2.1 back to a commit pinning 0.1.2), runs the
+ * old packages against the new source: Code Mode's `execute` hung and tests/image.test.ts went red
+ * with nothing of ours changed. Only links into Bun's store are read; a pin with no link is skipped.
+ */
+export const staleInstall = (fork: string): ReadonlyArray<string> => {
+  const root = readJson(path.join(fork, "package.json"))
+  const workspaces = root["workspaces"]
+  const catalog = record(record(workspaces)["catalog"] ?? root["catalog"])
+  return workspaceDirs(fork, workspaces).flatMap((dir) => {
+    const manifest = readJson(path.join(dir, "package.json"))
+    const pins = ["dependencies", "devDependencies", "optionalDependencies"].flatMap((field) => Object.entries(record(manifest[field])))
+    return pins.flatMap(([name, spec]) => {
+      const wanted = spec === "catalog:" ? catalog[name] : spec
+      if (typeof wanted !== "string" || !EXACT.test(wanted)) return []
+      const link = path.join(dir, "node_modules", name)
+      let target: string
+      try {
+        if (!lstatSync(link).isSymbolicLink()) return []
+        target = readlinkSync(link)
+      } catch {
+        return []
+      }
+      const installed = STORE.exec(target.split(path.sep).join("/"))?.[1]
+      if (installed === undefined || installed === wanted) return []
+      return [`${path.relative(fork, dir)}: ${name} ${installed}, pinned ${wanted}`]
+    })
+  })
 }
