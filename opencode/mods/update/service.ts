@@ -60,9 +60,9 @@ export class Builder extends Context.Service<
   Builder,
   {
     /**
-     * The version the target builds as (`process/pin.ts` `versionOf`), read from the fork checkout's
-     * object store at the target's fork commit, which it fetches when it lacks it: the name its tree
-     * is made under before the build.
+     * The version the target builds as with its own tree (`process/pin.ts` `versionOf`, ending `.tree`),
+     * read from the fork checkout's object store at the target's fork commit, which it fetches when it
+     * lacks it: the name its tree is made under before the build, never the name of a build without one.
      */
     readonly version: (target: Target) => Effect.Effect<string, UpdateFailed>
     /**
@@ -160,6 +160,12 @@ export class Trees extends Context.Service<
     readonly check: (tree: string) => Effect.Effect<void, UpdateFailed>
     /** Whether build `version` has its tree beside it (its overlay there): a build with none runs on the old scheme's global configs. */
     readonly has: (version: string) => Effect.Effect<boolean>
+    /**
+     * Deletes the tree of build `version`, which a stage that failed made: nothing will run that build,
+     * so nothing is left that a later start could bind. Never fails; a tree it could not delete the next
+     * prune takes, since no record names its build.
+     */
+    readonly remove: (version: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/update/Trees") {}
 

@@ -74,7 +74,7 @@ const fakeBuild = (root: string, says?: string) => {
 const DOTFILES = "d0f11e5a1b2c3d4e5f60718293a4b5c6d7e8f901"
 const D8 = DOTFILES.slice(0, 8)
 
-const pin = (paths: { readonly fork: string; readonly tree: string }, commit: string) => ({ ...paths, commit, dotfiles: DOTFILES, bun: BUN, env: GIT_ENV })
+const pin = (paths: { readonly fork: string; readonly tree: string }, commit: string) => ({ ...paths, commit, dotfiles: DOTFILES, withTree: false, bun: BUN, env: GIT_ENV })
 
 describe("the version names the build's fork commit and dotfiles commit", () => {
   const hex = (seed: number) => Array.from({ length: 40 }, (_, at) => "0123456789abcdef"[(seed * 7 + at * 13 + ((seed * at) % 11)) % 16]).join("")
@@ -96,6 +96,17 @@ describe("the version names the build's fork commit and dotfiles commit", () => 
     const fork = hex(1)
     expect(versionOf("2.2.7", fork, hex(2))).not.toBe(versionOf("2.2.7", fork, hex(3)))
     expect(versionOf("2.2.7", fork, hex(2))).toBe(versionOf("2.2.7", fork, hex(2)))
+  })
+
+  test("a tree build of the same commits is another version, at another path: it ends in .tree, which the suffix and the build grammar keep", () => {
+    const [fork, dotfiles] = [hex(1), hex(2)]
+    const tree = versionOf("2.2.7", fork, dotfiles, true)
+    expect(tree).toBe(`${versionOf("2.2.7", fork, dotfiles)}.tree`)
+    expect(buildName(tree)).not.toBe(buildName(versionOf("2.2.7", fork, dotfiles)))
+    expect(buildVersion(buildName(tree))).toEqual(Option.some(tree))
+    expect(suffixOf(`opencode v${tree}\n`)).toEqual(Option.some(`${fork.slice(0, 8)}.${dotfiles.slice(0, 8)}.tree`))
+    // A binary built without its mark is not the tree build the stage asked for.
+    expect(suffixOf(versionOf("2.2.7", fork, dotfiles))).not.toEqual(suffixOf(tree))
   })
 
   test("an old-format version (fork half alone) still reads: its suffix is the fork's eight, and its file is a build", () => {
@@ -195,7 +206,7 @@ describe("daily's build", () => {
           const { root, fork, tree, target, ahead } = yield* scratch
           const { build, seen } = fakeBuild(root)
           const lines: Array<string> = []
-          const options = { fork, tree, dotfiles: DOTFILES, bun: BUN, build, log: (line: string) => lines.push(line) }
+          const options = { fork, tree, dotfiles: DOTFILES, withTree: false, bun: BUN, build, log: (line: string) => lines.push(line) }
           expect((yield* dailyBuild({ ...options, commit: [target] })).commit).toBe(target)
           expect((yield* dailyBuild({ ...options, commit: [] })).commit).toBe(ahead)
           expect(seen.map((each) => [each.dir, each.head])).toEqual([
@@ -216,7 +227,7 @@ describe("daily's build", () => {
         Effect.gen(function* () {
           const { root, fork, tree, target, ahead } = yield* scratch
           const { build } = fakeBuild(root, `2.2.7-prime.${ahead.slice(0, 8)}`)
-          const exit = yield* dailyBuild({ fork, tree, dotfiles: DOTFILES, bun: BUN, build, log: () => {}, commit: [target] }).pipe(Effect.flip)
+          const exit = yield* dailyBuild({ fork, tree, dotfiles: DOTFILES, withTree: false, bun: BUN, build, log: () => {}, commit: [target] }).pipe(Effect.flip)
           expect(exit.message).toStartWith("check the build's version: ")
           spawnSync(["rm", "-rf", root])
         }),
@@ -232,7 +243,7 @@ describe("daily's build", () => {
           const { root, fork, tree } = yield* scratch
           const { build, seen } = fakeBuild(root)
           for (const dotfiles of ["", "d0f11e5", "HEAD~1-not-a-sha"]) {
-            const exit = yield* dailyBuild({ fork, tree, dotfiles, bun: BUN, build, log: () => {}, commit: [] }).pipe(Effect.flip)
+            const exit = yield* dailyBuild({ fork, tree, dotfiles, withTree: false, bun: BUN, build, log: () => {}, commit: [] }).pipe(Effect.flip)
             expect(exit.message).toStartWith("name the build: ")
           }
           expect(seen).toEqual([])

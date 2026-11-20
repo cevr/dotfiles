@@ -63,7 +63,7 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
           Effect.flatMap((commit) =>
             run("read the fork's version", ["git", "show", `${commit}:packages/cli/package.json`], fork).pipe(
               Effect.flatMap((text) => decodeCli(text).pipe(Effect.mapError((cause) => new UpdateFailed({ step: "read the fork's version", message: String(cause) })))),
-              Effect.map((cli) => versionOf(cli.version, commit, target.dotfiles)),
+              Effect.map((cli) => versionOf(cli.version, commit, target.dotfiles, true)),
             ),
           ),
         ),

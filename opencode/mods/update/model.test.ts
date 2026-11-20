@@ -203,7 +203,7 @@ const fakes = (host: World) =>
         strip: Effect.die(new Error("the old scheme strips nothing")),
       }),
     ),
-    Layer.succeed(Trees, Trees.of({ make: () => Effect.die(new Error("the old scheme makes no tree")), check: () => Effect.void, has: () => Effect.succeed(false) })),
+    Layer.succeed(Trees, Trees.of({ make: () => Effect.die(new Error("the old scheme makes no tree")), check: () => Effect.void, has: () => Effect.succeed(false), remove: () => Effect.void })),
     Layer.succeed(Log, Log.of({ line: (text) => Effect.sync(() => void host.lines.push(text)) })),
     Layer.succeed(
       Heartbeat,
@@ -916,15 +916,19 @@ describe("the watchdog outside the resident location", () => {
 describe("plugin trees", () => {
   const SHARE = "/s"
   const build = (version: string, dotfiles: string, fork: string): Build => ({ version, command: [`${SHARE}/${buildName(version)}`], dotfiles, fork })
-  /** The good build: fork e (which binds a tree), dotfiles c. */
+  /** The old scheme's good build, before the host's first tree install: fork e (which binds a tree), dotfiles c, no tree. */
   const GOOD = build("2.2.6-prime.eeeeeeee.cccccccc", PRIOR, "e".repeat(40))
-  const NEW = build("2.2.7-prime.ffffffff.dddddddd", "d".repeat(40), "f".repeat(40))
+  /** The tree build of the good build's own commits: another version (`.tree`), at another path. A host on trees already runs it. */
+  const GOOD_T = build("2.2.6-prime.eeeeeeee.cccccccc.tree", PRIOR, "e".repeat(40))
+  const NEW = build("2.2.7-prime.ffffffff.dddddddd.tree", "d".repeat(40), "f".repeat(40))
   /** The second update's build, on top of the first: the same fork, another dotfiles commit. */
-  const NEWER = build("2.2.7-prime.ffffffff.bbbbbbbb", "b".repeat(40), "f".repeat(40))
-  const BUILDS = [GOOD, NEW, NEWER]
+  const NEWER = build("2.2.7-prime.ffffffff.bbbbbbbb.tree", "b".repeat(40), "f".repeat(40))
+  /** The builds an update makes: each a tree build. */
+  const TREE_BUILDS = [GOOD_T, NEW, NEWER]
+  const BUILDS = [GOOD, ...TREE_BUILDS]
   const targetOf = (each: Build, batch: string): Target => ({ dotfiles: each.dotfiles, fork: each.fork, batch })
   const dotfilesOf = (version: string) => Option.getOrElse(Option.map(Option.fromNullishOr(BUILDS.find((each) => each.version === version)), (each) => each.dotfiles), () => "unknown")
-  const buildOfTarget = (target: Target) => Option.getOrThrow(Option.fromNullishOr(BUILDS.find((each) => each.dotfiles === target.dotfiles && each.fork === target.fork)))
+  const buildOfTarget = (target: Target) => Option.getOrThrow(Option.fromNullishOr(TREE_BUILDS.find((each) => each.dotfiles === target.dotfiles && each.fork === target.fork)))
 
   /** One running process: the build it started on, the dotfiles commit its loaded plugins are of, and how often they were reloaded under it. */
   interface Proc {
@@ -958,16 +962,25 @@ describe("plugin trees", () => {
     readonly lost: Array<string>
     /** The step that fails, if any: the tree's make or the stage. */
     fails: Option.Option<"make tree" | "stage">
+    /** Before which of an update's calls (by its index) the service crashes, its unit starts it again and a TUI opens, if any. */
+    crashAt: Option.Option<number>
+    /** What the starts the model tries before every call found wrong (I5). */
+    readonly starts: Array<string>
   }
 
   /**
    * How a process started on `version` binds its plugins: a build with its tree beside it binds the
    * tree (the fork's adjacent binding), and the server lists the global config's entries too, so a
-   * service started while the global config still names ours holds both; a build with no tree loads
-   * from the live checkout, as the global config names it.
+   * service started while the global config still names ours holds both ("Duplicate plugin ID"); a
+   * build with no tree loads from the live checkout, as the global configs name it, so a service
+   * started once our entries left the server config holds none (a TUI reads its own config, which the
+   * strip leaves).
    */
   const bind = (host: Host, name: string, version: string): Pick<Proc, "from" | "loaded"> => {
-    if (!host.trees.has(version)) return { from: "live", loaded: host.head }
+    if (!host.trees.has(version)) {
+      if (name === "service" && !host.globalOurs) return { from: "live", loaded: "none" }
+      return { from: "live", loaded: host.head }
+    }
     if (name === "service" && host.globalOurs) return { from: "tree", loaded: `mixed ${host.head.slice(0, 8)}+tree` }
     return { from: "tree", loaded: dotfilesOf(version) }
   }
@@ -995,13 +1008,55 @@ describe("plugin trees", () => {
     for (const proc of host.procs.filter((each) => each.from === "live" && each.name === "service")) proc.reloads += 1
   }
 
+  /** The build the launcher starts (the record's installed one), and the one the service's unit starts again after a crash (the running service's). */
+  const launched = (host: Host) => Option.getOrThrow(host.record).version
+  const unitBuild = (host: Host) => Option.getOrElse(Option.map(Option.fromNullishOr(host.procs.find((proc) => proc.name === "service")), (proc) => proc.version), () => launched(host))
+
+  /**
+   * Whether the update stands between a config write (the strip, its restore) and the restart that
+   * follows it: the one span where a service started by the launcher or its unit may hold no list of
+   * ours or both, which that restart, the handoff's next step, ends. Outside it every start holds
+   * exactly its build's plugins (I5).
+   */
+  const betweenWriteAndRestart = (host: Host) => Math.max(host.calls.lastIndexOf("strip"), host.calls.lastIndexOf("restore config")) > host.calls.lastIndexOf("restart")
+
+  /** Every start a host can see at this instant, of the old build or the new: a service by the launcher or by its unit, and a TUI by the launcher. What each would hold that is not its build's own goes in `starts` (I5). */
+  const tryStarts = (host: Host, before: string) => {
+    const tries = [
+      { name: "service", version: launched(host) },
+      { name: "service", version: unitBuild(host) },
+      { name: "tui", version: launched(host) },
+    ]
+    for (const each of tries) {
+      const { loaded } = bind(host, each.name, each.version)
+      const allowed = each.name === "service" && betweenWriteAndRestart(host)
+      if (loaded !== dotfilesOf(each.version) && !allowed) host.starts.push(`I5: a ${each.name} started on ${each.version} before ${before} holds ${loaded.slice(0, 8)}`)
+    }
+  }
+
+  /** The update's next call: first every start this instant allows is tried, and at `crashAt` the service crashes (its unit starts it again) and a TUI opens. */
+  const call = (host: Host, name: string) => {
+    tryStarts(host, name)
+    if (Option.contains(host.crashAt, host.calls.length))
+      host.procs = [...host.procs.filter((proc) => proc.name !== "service"), started(host, "service", unitBuild(host)), started(host, `tui-opened-${host.calls.length}`, launched(host))]
+    host.calls.push(name)
+  }
+
   /** What the invariant finds wrong on the host, as lines; none when it holds. */
   const broken = (host: Host): ReadonlyArray<string> => [
+    // I1: exactly its build's plugins: none, both lists or another commit's all break it.
     ...host.procs.filter((proc) => proc.loaded !== dotfilesOf(proc.version)).map((proc) => `I1: ${proc.name} runs ${proc.version} with plugins of ${proc.loaded.slice(0, 8)}`),
     ...host.procs.filter((proc) => proc.reloads > 0).map((proc) => `I2: ${proc.name} reloaded its plugins ${proc.reloads} times while running`),
     ...[host.moves].values().filter((moves) => moves > 0).map((moves) => `I3: the live checkout moved ${moves} times`).toArray(),
     ...host.lost.map((what) => `I4: the prune deleted ${what}`),
+    ...host.starts,
+    // I7: a tree is only ever beside its build's binary: a stage that failed takes its tree with it.
+    ...host.trees.values().filter((version) => !host.binaries.has(version)).map((version) => `I7: the tree of ${version} is left with no build`).toArray(),
   ]
+
+  /** I6: an update the host did not reject ends on a build with its tree: a host never stays on the old scheme by itself. */
+  const stuck = (host: Host): ReadonlyArray<string> =>
+    [launched(host)].values().filter((version) => !host.calls.some((each) => each.startsWith("reject")) && !host.trees.has(version)).map((version) => `I6: the update ended on ${version}, which has no tree, and rejected nothing`).toArray()
 
   const POOL = "/t/opencode/cmd/pool"
   const healthy: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.none() }], accounts: Option.some(7), providers: ["anthropic"], logins: ["anthropic"], placement: Option.none() }
@@ -1029,7 +1084,7 @@ describe("plugin trees", () => {
     for (const version of host.trees) if (doomed.includes(treeOf(buildName(version)))) host.trees.delete(version)
     for (const version of needed(host, record)) {
       if (!host.binaries.has(version)) host.lost.push(`the binary of ${version}`)
-      if (BUILDS.some((each) => each.version === version) && version !== GOOD.version && !host.trees.has(version)) host.lost.push(`the tree of ${version}`)
+      if (TREE_BUILDS.some((each) => each.version === version) && !host.trees.has(version)) host.lost.push(`the tree of ${version}`)
     }
     if (doomed.includes("pool-auth")) host.lost.push("pool-auth")
   }
@@ -1040,14 +1095,14 @@ describe("plugin trees", () => {
         Source,
         Source.of({
           verified: Effect.sync(() => Option.some(host.target)),
-          fetch: () => Effect.sync(() => void host.calls.push("fetch")),
+          fetch: () => Effect.sync(() => call(host, "fetch")),
           head: Effect.sync(() => host.head),
           advance: (commit: string) =>
             Effect.sync(() => {
-              host.calls.push(`advance ${commit.slice(0, 1)}`)
+              call(host, `advance ${commit.slice(0, 1)}`)
               checkoutMoved(host, commit)
             }),
-          reinstall: Effect.sync(() => void host.calls.push("reinstall")),
+          reinstall: Effect.sync(() => call(host, "reinstall")),
         }),
       ),
       Layer.succeed(
@@ -1058,7 +1113,7 @@ describe("plugin trees", () => {
           binds: () => Effect.succeed(true),
           stage: (target) =>
             Effect.suspend(() => {
-              host.calls.push("stage")
+              call(host, "stage")
               if (Option.contains(host.fails, "stage")) return failure("stage the build")
               const built = buildOfTarget(target)
               host.binaries.add(built.version)
@@ -1066,7 +1121,7 @@ describe("plugin trees", () => {
               return Effect.void
             }),
           configure: Effect.sync(() => {
-            host.calls.push("configure")
+            call(host, "configure")
             globalPluginsWritten(host)
           }),
         }),
@@ -1076,16 +1131,21 @@ describe("plugin trees", () => {
         Trees.of({
           make: (version) =>
             Effect.suspend(() => {
-              host.calls.push("make tree")
+              call(host, "make tree")
               if (Option.contains(host.fails, "make tree")) return failure("install the tree")
               host.trees.add(version)
               return Effect.succeed(`${SHARE}/${treeOf(buildName(version))}`)
             }),
           check: () => Effect.void,
           has: (version) => Effect.sync(() => host.trees.has(version)),
+          remove: (version) =>
+            Effect.sync(() => {
+              call(host, "remove tree")
+              host.trees.delete(version)
+            }),
         }),
       ),
-      Layer.succeed(Handoff, Handoff.of({ start: () => Effect.sync(() => void host.calls.push("handoff")) })),
+      Layer.succeed(Handoff, Handoff.of({ start: () => Effect.sync(() => call(host, "handoff")) })),
       Layer.succeed(HandoffMark, HandoffMark.of({ hold: Effect.void, release: Effect.void, read: Effect.succeed(Option.none()), alive: () => Effect.succeed(false) })),
       Layer.succeed(
         Records,
@@ -1093,19 +1153,19 @@ describe("plugin trees", () => {
           read: Effect.sync(() => host.record),
           write: (next) =>
             Effect.sync(() => {
-              host.calls.push(recordCall(next))
+              call(host, recordCall(next))
               host.record = Option.some(next)
             }),
         }),
       ),
-      Layer.succeed(Rejections, Rejections.of({ read: Effect.succeed(Option.none()), write: (rejected) => Effect.sync(() => void host.calls.push(`reject ${rejected.step}`)) })),
+      Layer.succeed(Rejections, Rejections.of({ read: Effect.succeed(Option.none()), write: (rejected) => Effect.sync(() => call(host, `reject ${rejected.step}`)) })),
       Layer.succeed(
         Builds,
         Builds.of({
           prune: (read) =>
             read.pipe(
               Effect.map((record) => {
-                host.calls.push("prune")
+                call(host, "prune")
                 for (const each of Option.toArray(record)) prune(host, each)
                 return []
               }),
@@ -1116,17 +1176,17 @@ describe("plugin trees", () => {
         Configs,
         Configs.of({
           keep: Effect.sync(() => {
-            host.calls.push("keep config")
+            call(host, "keep config")
             host.keptOurs = host.globalOurs
           }),
           restore: Effect.sync(() => {
-            host.calls.push("restore config")
+            call(host, "restore config")
             if (host.globalOurs !== host.keptOurs) serverConfigWritten(host)
             host.globalOurs = host.keptOurs
           }),
           ours: Effect.sync(() => host.globalOurs),
           strip: Effect.sync(() => {
-            host.calls.push("strip")
+            call(host, "strip")
             if (host.globalOurs) serverConfigWritten(host)
             host.globalOurs = false
           }),
@@ -1140,7 +1200,7 @@ describe("plugin trees", () => {
         Service.of({
           // The service process ends and another starts on the build the record installs.
           restart: Effect.sync(() => {
-            host.calls.push("restart")
+            call(host, "restart")
             host.restarts += 1
             const installed = Option.getOrThrow(host.record).version
             host.procs = [...host.procs.filter((proc) => proc.name !== "service"), started(host, "service", installed)]
@@ -1175,31 +1235,34 @@ describe("plugin trees", () => {
   const STARTS: ReadonlyArray<Start> = ["on trees", "first install", "same commits"]
   /** Per start: the build it targets first, whether the good build has its tree, and whether the global config still lists ours. */
   const START_OF = {
-    "on trees": { first: NEW, treed: true },
-    "first install": { first: NEW, treed: false },
-    "same commits": { first: GOOD, treed: false },
+    "on trees": { first: NEW, good: GOOD_T },
+    "first install": { first: NEW, good: GOOD },
+    "same commits": { first: GOOD_T, good: GOOD },
   } as const
 
   /** A host on the good build, proven, with `tuis` TUIs open on it. */
   const hostOf = (start: Start, tuis: number): Host => {
-    const { first, treed } = START_OF[start]
+    const { first, good } = START_OF[start]
+    const treed = good === GOOD_T
     const host: Host = {
       head: PRIOR,
       moves: 0,
       procs: [],
-      record: Option.some(proven({ version: GOOD.version, command: GOOD.command, dotfiles: GOOD.dotfiles, fork: GOOD.fork })),
+      record: Option.some(proven({ version: good.version, command: good.command, dotfiles: good.dotfiles, fork: good.fork })),
       readings: [],
       restarts: 0,
       calls: [],
       target: targetOf(first, "batch-7"),
-      binaries: new Set([GOOD.version]),
-      trees: new Set([GOOD.version].filter(() => treed)),
+      binaries: new Set([good.version]),
+      trees: new Set([good.version].filter(() => treed)),
       globalOurs: !treed,
       keptOurs: false,
       lost: [],
       fails: Option.none(),
+      crashAt: Option.none(),
+      starts: [],
     }
-    host.procs = [started(host, "service", GOOD.version), ...Array.from({ length: tuis }, (_, index) => started(host, `tui-${index}`, GOOD.version))]
+    host.procs = [started(host, "service", good.version), ...Array.from({ length: tuis }, (_, index) => started(host, `tui-${index}`, good.version))]
     return host
   }
 
@@ -1220,14 +1283,19 @@ describe("plugin trees", () => {
       yield* TestClock.adjust(GATE_POLL)
       yield* Fiber.join(checking)
       read("the build")
-      if (!host.calls.includes("handoff")) return "not handed off"
+      if (!host.calls.includes("handoff")) {
+        found.push(...stuck(host).map((line) => `${label}: ${line}`))
+        return "not handed off"
+      }
       const handing = yield* Effect.forkChild(handoff("batch"))
       yield* settle
       yield* TestClock.adjust(HANDOFF_LIMIT)
       const outcome = yield* Fiber.join(handing)
       read(`the handoff (${outcome})`)
       idleMoves(host, stay)
+      tryStarts(host, "the next update")
       read("the TUIs' idle moves")
+      found.push(...stuck(host).map((line) => `${label}: ${line}`))
       host.readings.length = 0
       return outcome
     })
@@ -1243,8 +1311,10 @@ describe("plugin trees", () => {
   const check = <A>(scenarios: Effect.Effect<A, UpdateFailed>, assert: (ran: A) => void) => run(world(), Effect.map(scenarios, assert))
 
   /** One generated host and its update, and a second update on top of it; what the invariant found, and each update's calls. */
-  const scenario = (start: Start, tuis: number, endings: readonly [Ending, Ending], stay: ReadonlyArray<string>) => {
+  const scenario = (start: Start, tuis: number, endings: readonly [Ending, Ending], stay: ReadonlyArray<string>, crashAt: Option.Option<number> = Option.none(), fails: Option.Option<"make tree" | "stage"> = Option.none()) => {
     const host = hostOf(start, tuis)
+    host.crashAt = crashAt
+    host.fails = fails
     const found: Array<string> = []
     return onHost(
       host,
@@ -1252,9 +1322,11 @@ describe("plugin trees", () => {
         const first = yield* update(host, endings[0], found, stay, "first update")
         const firstCalls = [...host.calls]
         host.calls.length = 0
+        host.fails = Option.none()
         host.target = targetOf(NEWER, "batch-8")
         const second = yield* update(host, endings[1], found, stay, "second update")
-        return { outcomes: [first, second], found, calls: [firstCalls, [...host.calls]], host }
+        const crashed = [firstCalls, host.calls].some((calls) => Option.exists(host.crashAt, (at) => calls.indexOf("strip") >= 0 && calls.indexOf("strip") < at && at <= calls.indexOf("restart")))
+        return { outcomes: [first, second], found, calls: [firstCalls, [...host.calls]], host, crashed }
       }),
     )
   }
@@ -1262,24 +1334,30 @@ describe("plugin trees", () => {
   /** One pick of `choices` by the generator. */
   const pick = <A>(next: () => number, choices: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(choices, Math.floor(next() * choices.length)))
 
-  /** The 60 generated scenarios of one seed (`SIM_SEED`, else a fixed one): a start, its TUIs, the two endings, and which TUI stays on its build. */
+  /**
+   * The 90 generated scenarios of one seed (`SIM_SEED`, else a fixed one): a start, its TUIs, the two
+   * endings, which TUI stays on its build, before which call (if any) the service crashes and a TUI
+   * opens, and which step of the first build fails, if any. Every call besides tries every start (I5).
+   */
   const generated = (seed: number) => {
     const next = random(seed)
-    return Array.from({ length: 60 }, () => ({
+    return Array.from({ length: 90 }, () => ({
       tuis: Math.floor(next() * 4),
       ending: pick(next, ENDINGS),
       start: pick(next, STARTS),
       second: pick(next, ENDINGS),
       stay: ["tui-0"].filter(() => next() < 0.3),
+      crashAt: Option.some(Math.floor(next() * 14)).pipe(Option.filter(() => next() < 0.7)),
+      fails: Option.some(pick(next, ["make tree", "stage"] as const)).pipe(Option.filter(() => next() < 0.15)),
     }))
   }
 
   describe("a running process only ever holds its own build's plugins", () => {
-    test("over generated hosts, endings and a second update, no step breaks I1, I2, I3 or I4", () =>
+    test("over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, and a start at any step holds exactly its build's plugins", () =>
       check(
         // `SIM_SEED` replays one run.
         Effect.flatMap(Effect.orDie(Config.Int("SIM_SEED").pipe(Config.withDefault(20261119))), (seed) =>
-          Effect.forEach(generated(seed), (each) => scenario(each.start, each.tuis, [each.ending, each.second], each.stay).pipe(Effect.map((ran) => ({ each, ran })))),
+          Effect.forEach(generated(seed), (each) => scenario(each.start, each.tuis, [each.ending, each.second], each.stay, each.crashAt, each.fails).pipe(Effect.map((ran) => ({ each, ran })))),
         ),
         (runs) => {
           const failures = runs.flatMap(({ each, ran }) =>
@@ -1289,6 +1367,9 @@ describe("plugin trees", () => {
           // The generator reaches every way an update ends, on both updates.
           const seen = runs.map(({ ran }) => ran.outcomes)
           for (const outcome of ["proven", "rolled-back", "gave-up"]) expect([seen.some((each) => each[0] === outcome), seen.some((each) => each[1] === outcome)]).toEqual([true, true])
+          // ... and every failed build, and a crash in the switch's span (between the strip and the restart).
+          expect(["make tree", "stage"].map((step) => runs.some(({ each }) => Option.contains(each.fails, step)))).toEqual([true, true])
+          expect(runs.some(({ ran }) => ran.crashed)).toBe(true)
         },
       ))
 
@@ -1335,25 +1416,35 @@ describe("plugin trees", () => {
         expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "restart", "reject health"])
       }))
 
-    test("a host on the old scheme's last build re-stages the same commits as a tree build, by itself, and strips once", () =>
+    test("a host on the old scheme's last build re-stages the same commits as a tree build, by itself, at another version, and strips once", () =>
       check(once("same commits", "healthy"), (ran) => {
         expect(ran.outcome).toBe("proven")
-        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record (good)", "restart", "record (good)", "prune"])
+        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record", "restart", "record (good)", "prune"])
+        expect(Option.map(ran.host.record, (record) => record.version)).toEqual(Option.some(GOOD_T.version))
         expect(ran.found).toEqual([])
       }))
 
-    /** A failed step: the calls up to and including it. */
+    test("the same commits' first tree install rolls back like any other: the kept config back, then the good build, whose binary the tree build never overwrote", () =>
+      check(once("same commits", "rolled back"), (ran) => {
+        expect(ran.outcome).toBe("rolled-back")
+        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record", "restart", "restore config", "record (good)", "restart", "reject health"])
+        expect(Option.map(ran.host.record, (record) => record.version)).toEqual(Option.some(GOOD.version))
+        expect([ran.host.binaries.has(GOOD.version), ran.host.globalOurs, ran.found]).toEqual([true, true, []])
+      }))
+
+    /** A failed step: the calls up to and including it; a failed stage then deletes the tree it was to bind. */
     const FAILED = [
       { fails: "make tree", what: "tree", calls: ["fetch", "make tree"] },
-      { fails: "stage", what: "build", calls: ["fetch", "make tree", "stage"] },
+      { fails: "stage", what: "build", calls: ["fetch", "make tree", "stage", "remove tree"] },
     ] as const
-    for (const { fails, what, calls } of FAILED)
-      test(`a failed ${what} rejects the target and writes nothing: no record, no handoff, no config`, () =>
-        check(once("first install", "healthy", Option.some(fails)), (ran) => {
-          expect(ran.outcome).toBe("not handed off")
-          expect(ran.calls).toEqual([...calls, "reject build"])
-          expect(Option.map(ran.host.record, (record) => [record.version, Option.isSome(Option.fromNullishOr(record.staged))])).toEqual(Option.some([GOOD.version, false]))
-          expect(ran.host.globalOurs).toBe(true)
-        }))
+    for (const start of ["first install", "same commits"] as const)
+      for (const { fails, what, calls } of FAILED)
+        test(`${start}: a failed ${what} rejects the target and leaves nothing: no record, no handoff, no config, no tree`, () =>
+          check(once(start, "healthy", Option.some(fails)), (ran) => {
+            expect(ran.outcome).toBe("not handed off")
+            expect(ran.calls).toEqual([...calls, "reject build"])
+            expect(Option.map(ran.host.record, (record) => [record.version, Option.isSome(Option.fromNullishOr(record.staged))])).toEqual(Option.some([GOOD.version, false]))
+            expect([ran.host.globalOurs, [...ran.host.trees], ran.found]).toEqual([true, [], []])
+          }))
   })
 })

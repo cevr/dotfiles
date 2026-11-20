@@ -24,11 +24,11 @@ export const stagingName = (version: string, pid: number): string => `${buildNam
 /**
  * The one name grammar of a build file, as daily names it (`pin.ts` `versionOf`): `opencode-`, a
  * release version (`X.Y.Z`, with any prerelease), `-prime.`, the fork commit's first eight hex and
- * then `.` and the dotfiles commit's first eight hex. A build of the old format, from before the
+ * then `.` and the dotfiles commit's first eight hex, and `.tree` for a build with its own plugin tree. A build of the old format, from before the
  * version named the dotfiles commit, ends at the fork's eight; it is still a build, kept and pruned
  * by the same rule.
  */
-const BUILD_NAME = /^opencode-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-prime\.[0-9a-f]{8}(?:\.[0-9a-f]{8})?)$/
+const BUILD_NAME = /^opencode-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-prime\.[0-9a-f]{8}(?:\.[0-9a-f]{8}(?:\.tree)?)?)$/
 
 /** The version of a share directory entry that is a build; none for anything else (a copy in flight, `pool-auth`, a loader). */
 export const buildVersion = (name: string): Option.Option<string> => Option.fromNullishOr(BUILD_NAME.exec(name)?.[1])

@@ -83,7 +83,7 @@ export const plan = (target: Option.Option<Target>, record: Option.Option<Record
   const failed = rejectionOf(wanted, rejected)
   if (Option.isSome(failed)) return Plan.Rejected({ target: wanted, rejected: failed.value })
   const on = (build: Option.Option<{ readonly dotfiles: string; readonly fork: string }>) => Option.exists(build, (each) => sameCommits(each, wanted))
-  // A staged build of the target first: a tree build of the installed build's own commits has its version.
+  // A staged build of the target first: a tree build of the installed build's own commits is staged under its own version (`.tree`), with the same commits.
   if (on(Option.flatMap(record, stagedOf))) return Plan.Restart({ target: wanted })
   const installed = Option.flatMap(record, buildOf)
   if (on(installed) && trees.wanted && !trees.installed) return Plan.Update({ target: wanted })

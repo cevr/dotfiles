@@ -124,9 +124,12 @@ export const updaterLayer = (policy: Policy) =>
       /**
        * Builds the target with its own plugin tree: the dotfiles commit fetched into the live
        * checkout's object store (which never moves), the tree made from it beside where the binary
-       * goes (`trees.ts`), then daily's stage run from that tree. Nothing a running process loads
-       * changes, so the build is never a reload. A target whose fork binds no tree, a tree that does
-       * not make or a build that fails is rejected; a fetch that fails is not (the next check tries).
+       * goes (`trees.ts`), then daily's stage run from that tree. A tree build's version ends in
+       * `.tree` (`pin.ts` `versionOf`), so its tree never lands beside a binary that runs: not even on
+       * a host's first tree install, whose target is the running build's own commits. Nothing a running
+       * process loads changes, so the build is never a reload. A target whose fork binds no tree, a
+       * tree that does not make or a build that fails is rejected, the failed build's tree deleted; a
+       * fetch that fails is not (the next check tries).
        */
       const installTree = Effect.fn("Updater.installTree")(function* (target: Target) {
         yield* log.line(`update: ${shortTarget(target)}; building it ahead with its own plugin tree; nothing running loads from it`)
@@ -136,7 +139,8 @@ export const updaterLayer = (policy: Policy) =>
           if (!(yield* builder.binds(target.fork)))
             return yield* new UpdateFailed({ step: "build", message: `the target's fork ${target.fork.slice(0, 10)} binds no tree (it lacks packages/cli/src/adjacent-config.ts): no tree build` })
           const tree = yield* trees.make(version, target.dotfiles)
-          yield* builder.stage(target, Option.some(tree))
+          // A failed stage takes its tree with it: nothing will run that build, and nothing is left for a start to bind.
+          yield* builder.stage(target, Option.some(tree)).pipe(Effect.tapError(() => trees.remove(version)))
         }).pipe(Effect.tapError((failed) => reject(target, "build", failed.message)))
         return yield* restart(target)
       })
@@ -415,7 +419,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
    * Goes back to the good build with trees: a record write. The good build's binary and tree are kept
    * by the prune, and the live checkout never moved. Only a good build with no tree (the old scheme's,
    * before the first tree install) gets the kept configs back first, so it finds the plugin entries
-   * it ran with.
+   * it ran with (a strip this handoff made, or one a handoff that died after its strip left).
    */
   const rollBackTree = Effect.fn("Update.rollBackTree")(function* () {
     const record = yield* records.read
@@ -424,8 +428,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
     if (Option.isNone(back) || Option.isNone(good)) return Option.some(Health.Sick({ plugin: "rollback", cause: "no good build to roll back to", final: true }))
     const treed = yield* trees.has(good.value.version)
     yield* log.line(`handoff: rolling back to ${good.value.version}`)
-    if (!treed) yield* log.line(`handoff: ${good.value.version} has no plugin tree: the kept configs go back first`)
-    return yield* Effect.when(configs.restore, Effect.succeed(!treed)).pipe(
+    const restore = !treed
+    if (restore) yield* log.line(`handoff: ${good.value.version} has no plugin tree: the kept configs go back first`)
+    return yield* Effect.when(configs.restore, Effect.succeed(restore)).pipe(
       Effect.andThen(records.write(back.value)),
       Effect.as(Option.none<Health>()),
       Effect.catch((failed) => Effect.succeed(Option.some(failedStep(`rollback at ${failed.step}`)(failed)))),

@@ -6,6 +6,7 @@ import { buildName, stagingName } from "../builds.ts"
 import { parseRecord, type Record, recordText, stagedRecord } from "../record.ts"
 import { Trees, UpdateFailed } from "../service.ts"
 import { TREE_SUFFIX, treeOf } from "../trees.ts"
+import { removeMaking } from "./builds.ts"
 import { launcher } from "./launcher.ts"
 import { check, make, type Options as TreeOptions } from "./trees.ts"
 
@@ -25,6 +26,7 @@ export const treesLayer = (options: TreeOptions & { readonly lock: string }) =>
         ),
       check,
       has: (version) => Effect.sync(() => existsSync(join(options.share, treeOf(buildName(version)), "config", "opencode.json"))),
+      remove: (version) => holding([[options.lock, "exclusive"]], removeMaking(join(options.share, treeOf(buildName(version))))).pipe(Effect.ignore),
     }),
   )
 
