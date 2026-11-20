@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { ORCHESTRATOR } from "@dotfiles/opencode-orchestrate/role"
 import { audit, classify, detect, renderAudit, usageOf } from "./audit.ts"
 import type { LedgerLine } from "./request-log.ts"
 
@@ -133,6 +134,15 @@ describe("the audit over a window", () => {
       expiriesInsideHour: 1,
       savedAtHour: 46_000,
     })
+  })
+
+  test("a root session's first request is a session start on build, plan and the orchestrator alike; a role's is a subagent's", () => {
+    const first = (sessionID: string, agent: string) => row(T0 + MIN, { sessionID, agent, cause: "first", read: 0, write: 50_000, prompt: 50_000 })
+    const result = audit([first("ses_build", "build"), first("ses_plan", "plan"), first("ses_root", ORCHESTRATOR), first("ses_role", "verifier")], { since: T0 })
+    expect(result.coldStarts.map((tally) => [tally.cause, tally.count, tally.wasted])).toEqual([
+      ["session-start", 3, 150_000],
+      ["subagent-first", 1, 50_000],
+    ])
   })
 
   test("a host, a top and the primary agents narrow it", () => {

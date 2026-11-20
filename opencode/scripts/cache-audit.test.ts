@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { DEFAULT_DIR, FILE_NAME } from "../mods/cache/filestore/request-log.ts"
+import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
 import { scratch } from "../tests/scratch.ts"
 import { parseArgs, probe } from "./cache-audit.ts"
 
@@ -9,13 +10,13 @@ const NOW = Date.parse("2026-11-06T12:00:00Z")
 const DAY = 86_400_000
 
 describe("cache-audit's command line", () => {
-  test("by default: the last 7 days of this machine's ledger, build and plan as the primary agents, no static check", () => {
+  test("by default: the last 7 days of this machine's ledger, build, plan and the orchestrator as the primary agents, no static check", () => {
     expect(parseArgs([], NOW)).toEqual({
       since: NOW - 7 * DAY,
       top: 10,
       json: false,
       static: false,
-      primary: new Set(["build", "plan"]),
+      primary: new Set(["build", "plan", ORCHESTRATOR]),
       files: [join(DEFAULT_DIR, FILE_NAME)],
     })
   })

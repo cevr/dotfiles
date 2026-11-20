@@ -6,7 +6,7 @@
 // caching rules (mods/cache/rules.ts), each finding naming its file.
 //
 //   bun scripts/cache-audit.ts [--since 7d] [--host <name>] [--top 10] [--json] [--static]
-//                              [--primary build,plan] [--file <ledger.jsonl>]...
+//                              [--primary build,plan,orchestrator] [--file <ledger.jsonl>]...
 //
 // The dream runs it on each machine; the north star is the overall hit rate
 // and the wasted write tokens.

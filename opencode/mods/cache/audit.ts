@@ -8,6 +8,7 @@
 // The break is found from the tokens alone, not from the ledger's `cause`, so
 // a line the server judged wrongly still counts; the cause reads the line's
 // evidence (model, kind, gap, lifetime, login, first changed segment).
+import { ORCHESTRATOR } from "@dotfiles/opencode-orchestrate/role"
 import { formatTokens } from "./line.ts"
 import { NOISE_FLOOR_TOKENS } from "./miss.ts"
 import type { LedgerLine } from "./request-log.ts"
@@ -16,8 +17,11 @@ import { segmentKey } from "./summary.ts"
 /** A miss is sharp when it is at least this share of the prompt both requests share, and above the noise floor. */
 export const SHARP_SHARE = 0.2
 
-/** The agents a person talks to: a session's first request on another agent is a subagent's. */
-export const PRIMARY_AGENTS: ReadonlySet<string> = new Set(["build", "plan"])
+/**
+ * The agents a person talks to: the host's build and plan, and the orchestrator a new root session opens with
+ * (cmd/orchestrate). A session's first request on another agent is a subagent's.
+ */
+export const PRIMARY_AGENTS: ReadonlySet<string> = new Set(["build", "plan", ORCHESTRATOR])
 
 const HOUR_MS = 3_600_000
 
