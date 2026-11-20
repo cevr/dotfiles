@@ -1093,6 +1093,19 @@ const oneLine = (text: string, max = 160) => {
 }
 
 /**
+ * The SQL for a `session_message m` row's data with its parts in `content`. The fork writes each assistant part as
+ * its own session_part row (upstream #65039) and leaves the message's content empty; a message written before that,
+ * or by a release without the table, keeps its parts inline.
+ */
+const messageData = (db: Database): string => {
+  if (!hasTable(db, "session_part")) return "m.data"
+  return `CASE WHEN EXISTS (SELECT 1 FROM session_part p WHERE p.message_id = m.id)
+    THEN json_set(m.data, '$.content', (SELECT json_group_array(json(data))
+      FROM (SELECT p.data FROM session_part p WHERE p.message_id = m.id ORDER BY p.ordinal)))
+    ELSE m.data END`
+}
+
+/**
  * What the run did, from its own database: each session (its parent, agent,
  * turns, cost and tokens), the tool calls and errors in it, and the models
  * that answered.
@@ -1113,7 +1126,7 @@ export const runReport = (db: Database): RunReport => {
     tokens_output: number
   }>
   const messages = db
-    .query(`SELECT session_id, type, data FROM session_message ORDER BY session_id, seq`)
+    .query(`SELECT m.session_id, m.type, ${messageData(db)} AS data FROM session_message m ORDER BY m.session_id, m.seq`)
     .all() as ReadonlyArray<{ session_id: string; type: string; data: string }>
   const models: Record<string, number> = {}
   const turns = new Map<string, number>()
