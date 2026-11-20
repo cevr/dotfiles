@@ -1171,6 +1171,89 @@ describeWork("workrift with the work backend", () => {
     60_000,
   )
 
+  /**
+   * `work --json list` answers that are not a list of records (each with a name, id, path and state): the half-made
+   * folder's record check cannot read them, so it must refuse and say why, never take "no record" from them. `answer`
+   * is what the list prints, `code` its exit. The rows name the real half-made folder or a path that is none.
+   */
+  const malformedLists = (path: string): ReadonlyArray<{ label: string; answer: string; code: number }> => {
+    const since = Math.floor(Date.now() / 1000) - 7 * 3600
+    const elsewhere = "/nonexistent/loop-probe-x"
+    return [
+      { label: "not JSON", answer: "half a line {", code: 0 },
+      { label: "not a list", answer: `{"name":"scratch-vfy-sync-parity","path":"${path}"}`, code: 0 },
+      { label: "a list of no records", answer: `["${path}"]`, code: 0 },
+      { label: "a row without an id", answer: `[{"name":"other","path":"${elsewhere}","state":{"_tag":"Active"},"since":${since}}]`, code: 0 },
+      {
+        label: "a row without a path",
+        answer: `[{"name":"scratch-vfy-sync-parity","id":"e314d2db38131c91","state":{"_tag":"Creating"},"since":${since}}]`,
+        code: 0,
+      },
+      { label: "a row without a state", answer: `[{"name":"other","id":"4444444444444444","path":"${elsewhere}","since":${since}}]`, code: 0 },
+      {
+        label: "a state with no tag",
+        answer: `[{"name":"scratch-vfy-sync-parity","id":"e314d2db38131c91","path":"${path}","state":"Creating","since":${since}}]`,
+        code: 0,
+      },
+      { label: "empty output, exit 0", answer: "", code: 0 },
+      { label: "empty output, exit 1", answer: "", code: 1 },
+      { label: "work not found", answer: "", code: 127 },
+    ]
+  }
+
+  for (const withRecord of [false, true])
+    test(
+      `remove of a half-made folder ${withRecord ? "with a Creating record (7 hours old, maker gone)" : "with no record"} refuses, says why and deletes nothing when work's list is not a list of records, or work is missing`,
+      () => {
+        const p = purgeBench(withRecord ? "half-made-list-creating" : "half-made-list")
+        const h = halfMade(p)
+        if (withRecord) h.creating("scratch-vfy-sync-parity", "e314d2db38131c91", 7 * 3600)
+        const answer = join(p.w.dir, "list-answer")
+        const code = join(p.w.dir, "list-code")
+        // work-logged, but its `list` prints the file list-answer and exits with list-code while they are there.
+        const lying = join(p.w.bin, "work-lying")
+        exe(
+          lying,
+          `#!/bin/sh\nfor a do\n  if [ "$a" = list ] && [ -e '${answer}' ]; then cat '${answer}'; exit "$(cat '${code}')"; fi\ndone\nexec '${p.env.WORK}' "$@"\n`,
+        )
+        const before = p.files()
+        const recordsBefore = h.records()
+        const cases = [
+          ...malformedLists(h.path).map((each) => ({ ...each, work: lying, says: "work --json list" })),
+          { label: "work missing", answer: undefined, code: 0, work: "/nonexistent/loop-probe-x/work", says: "work --json bases" },
+        ]
+        // Every case runs (a delete would end the bench, so the dry run goes last), and all are held to the rule at once.
+        const outcomes = cases.map((each) => {
+          if (each.answer === undefined) rmSync(answer, { force: true })
+          else writeFileSync(answer, each.answer)
+          writeFileSync(code, `${each.code}\n`)
+          const ran = run(p.w.app, { ...h.env, WORK: each.work }, [SCRIPT, "remove", "--dry-run", h.path])
+          const real = existsSync(h.path) ? run(p.w.app, { ...h.env, WORK: each.work }, [SCRIPT, "remove", h.path]) : ran
+          return {
+            label: each.label,
+            dryRun: { code: ran.code, says: ran.err.includes(each.says), refused: ran.err.includes("nothing deleted"), out: ran.out },
+            remove: { code: real.code, says: real.err.includes(each.says), refused: real.err.includes("nothing deleted"), out: real.out },
+            kept: existsSync(h.path),
+          }
+        })
+        expect(outcomes).toEqual(
+          cases.map((each) => ({
+            label: each.label,
+            dryRun: { code: 1, says: true, refused: true, out: "" },
+            remove: { code: 1, says: true, refused: true, out: "" },
+            kept: true,
+          })),
+        )
+        expect(p.files()).toEqual(before)
+        expect(h.records()).toEqual(recordsBefore)
+        expect(h.workCalls()).toEqual([])
+        expect(h.btrfsCalls()).toEqual([])
+        expect(existsSync(h.path)).toBe(true)
+        expect(readFileSync(h.secret, "utf8")).toBe("KEEP=1\n")
+      },
+      60_000,
+    )
+
   test(
     "remove takes a workspace whose commits a land put on origin's main from elsewhere, or whose only unpushed commits are clean merges of pushed parents; a commit behind such a merge, or a merge with an edit of its own, is still refused",
     () => {

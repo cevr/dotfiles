@@ -111,7 +111,10 @@ noncurrent snapshot objects after 14 days.
   `.git`, the record at least an hour old, its maker's reservation lock free)
   and through work's own `work gc -id <id>`, which drops the record with the
   folder; a Creating record over a folder with a `.git` is a live lane with a
-  stale record, and is refused.
+  stale record, and is refused. Both read work's records and fail closed:
+  when `work --json list` (or `work --json bases`) fails, is missing, or
+  answers anything but a list of records each with a name, id, path, state
+  and since, remove refuses, quotes what came back, and deletes nothing.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - In OpenCode, the `work` tool runs these for an agent: `create`, `list`,
   `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
