@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync } from "node:fs"
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Effect, Path } from "effect"
+import { Effect, Exit, Option, Path } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { byteLength, decodeLines, DigestEvent, encodeLine, MAX_LINE, VERSION } from "../event.ts"
-import { fileOf, make } from "./log.ts"
+import { fileOf, make, type Sink, writeLine } from "./log.ts"
 
 const WRITERS = 4
 const EACH = 40
+const T = Date.parse("2026-11-20T12:00:00Z")
+
+const check = (t: number, text: string) => DigestEvent.cases.Check.make({ v: VERSION, t, root: "r", ok: true, text })
+const textsOf = (events: ReadonlyArray<DigestEvent>) => events.flatMap((event) => (event._tag === "Check" && [event.text]) || [])
 
 /** The writer process's file, beside this one. */
 const writerFile = Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("./log-writer.ts", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie)
@@ -52,4 +56,62 @@ describe("the digest's file log", () => {
     const read = decodeLines(text)
     expect([read.events.length, read.bad]).toEqual([WRITERS * EACH, 0])
   }, 30_000)
+
+  test("a line appended after a torn last line is read; only the torn line is counted bad", async () => {
+    using held = scratch("digest-log-")
+    const dir = join(held.path, "torn")
+    const log = make(dir)
+    await Effect.runPromise(log.append(encodeLine(check(T, "first")), T))
+    // A crash mid-write: half a line, no newline.
+    appendFileSync(fileOf(dir, T), encodeLine(check(T + 1, "torn")).slice(0, 20))
+    await Effect.runPromise(log.append(encodeLine(check(T + 2, "after the restart")), T + 2))
+    const read = decodeLines(await Effect.runPromise(log.read))
+    expect([textsOf(read.events), read.bad]).toEqual([["first", "after the restart"], 1])
+  })
+
+  test("any prefix of a valid log, then N appends: those N lines read back, and at most the cut line is bad", async () => {
+    using held = scratch("digest-log-")
+    const whole = `${[1, 2, 3].map((at) => encodeLine(check(T + at, `old ${at}`))).join("\n")}\n`
+    const bytes = new TextEncoder().encode(whole)
+    const fresh = ["new a", "new b"]
+    for (let cut = 0; cut <= bytes.length; cut++) {
+      const dir = join(held.path, `cut-${cut}`)
+      mkdirSync(dir)
+      writeFileSync(fileOf(dir, T), bytes.slice(0, cut))
+      const log = make(dir)
+      await Effect.runPromise(Effect.forEach(fresh, (text, at) => log.append(encodeLine(check(T + 10 + at, text)), T), { discard: true }))
+      const read = decodeLines(await Effect.runPromise(log.read))
+      expect({ cut, tail: textsOf(read.events).slice(-2), bad: read.bad <= 1 }).toEqual({ cut, tail: fresh, bad: true })
+    }
+  })
+
+  test("a short write fails the append and ends its piece, so the next line is read and the piece counts bad once", async () => {
+    const written: Array<Uint8Array> = []
+    const sink = (limit: number): Sink => ({
+      lastByte: Effect.sync(() => Option.fromUndefinedOr(written.at(-1)?.at(-1))),
+      write: (bytes) =>
+        Effect.sync(() => {
+          const kept = bytes.slice(0, Math.min(limit, bytes.length))
+          written.push(kept)
+          return kept.length
+        }),
+    })
+    const first = encodeLine(check(T, "cut short"))
+    expect(Exit.isFailure(await Effect.runPromiseExit(writeLine(sink(10), first)))).toBe(true)
+    await Effect.runPromise(writeLine(sink(Number.MAX_SAFE_INTEGER), encodeLine(check(T + 1, "next"))))
+    const read = decodeLines(written.map((bytes) => new TextDecoder().decode(bytes)).join(""))
+    expect([textsOf(read.events), read.bad]).toEqual([["next"], 1])
+  })
+
+  test("the log's folder is 0700 and its files 0600, a 0644 file already there tightened at its next append", async () => {
+    using held = scratch("digest-log-")
+    const dir = join(held.path, "modes")
+    const log = make(dir)
+    await Effect.runPromise(log.append(encodeLine(check(T, "one")), T))
+    expect([statSync(dir).mode & 0o777, statSync(fileOf(dir, T)).mode & 0o777]).toEqual([0o700, 0o600])
+    chmodSync(fileOf(dir, T), 0o644)
+    chmodSync(dir, 0o755)
+    await Effect.runPromise(log.append(encodeLine(check(T + 1, "two")), T + 1))
+    expect([statSync(dir).mode & 0o777, statSync(fileOf(dir, T)).mode & 0o777]).toEqual([0o700, 0o600])
+  })
 })
