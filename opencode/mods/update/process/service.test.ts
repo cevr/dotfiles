@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { accountsOf, configuredOf, connectedOf, listedOf, pooledOf, providersOf } from "./service.ts"
+import { proven, recordText } from "../record.ts"
+import { accountsOf, configuredBy, configuredOf, connectedOf, listedOf, pooledOf, providersOf, serverConfigsOf } from "./service.ts"
 
 describe("what the restarted service says, as the handoff reads it", () => {
   test("its plugin list: each local plugin's directory, and the error of one that failed", () => {
@@ -43,5 +44,21 @@ describe("what the restarted service says, as the handoff reads it", () => {
     const integrations = `{"location":{"directory":"/r"},"data":[{"id":"anthropic","name":"Anthropic","methods":[],"connections":[]},{"id":"openai","name":"OpenAI","methods":[],"connections":[{"type":"credential","id":"x","label":"l","method":"oauth"}]},{"id":"groq","name":"Groq","methods":[],"connections":[{"type":"env","name":"GROQ_API_KEY"}]}]}`
     expect(connectedOf(integrations)).toEqual(Option.some(["openai", "groq"]))
     expect(connectedOf("not json")).toEqual(Option.none())
+  })
+})
+
+describe("the configs the health check reads, on a tree build", () => {
+  const VERSION = "2.3.0-prime.056a7066.1c82e080"
+  const record = recordText(proven({ version: VERSION, command: [`/s/opencode-${VERSION}`], dotfiles: "d".repeat(40), fork: "f".repeat(40) }))
+
+  test("are the global server config and the installed build's tree's, which the fork binds over it", () => {
+    expect(serverConfigsOf("/h/.config/opencode/opencode.json", Option.some(record))).toEqual(["/h/.config/opencode/opencode.json", `/s/opencode-${VERSION}.plugins/config/opencode.json`])
+    expect(serverConfigsOf("/h/.config/opencode/opencode.json", Option.none())).toEqual(["/h/.config/opencode/opencode.json"])
+  })
+
+  test("after the strip our plugins are configured by the tree's config alone, and the providers come from both", () => {
+    const stripped = `{"model":"anthropic/claude-opus","plugins":["/elsewhere/plugin"]}`
+    const tree = `{"plugins":["/s/t.plugins/entries/server/pool","/elsewhere/plugin"],"agents":{"planner":{"model":"openai/gpt"}}}`
+    expect(configuredBy([stripped, tree])).toEqual({ configured: ["/elsewhere/plugin", "/s/t.plugins/entries/server/pool"], providers: ["anthropic", "openai"] })
   })
 })
