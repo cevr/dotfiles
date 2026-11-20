@@ -29,7 +29,7 @@
 //    Only `--configure` does this step, and nothing else: the update's handoff runs it from the
 //    checkout once it moved onto the build's commit, right before the restart (mods/update). A
 //    by-hand run gets it from the handoff too. The plugin lists are data (mods/update/trees.ts),
-//    which `--tree <dir> --at <place> [--checkout <live checkout>]` reads too: it writes a build's
+//    which `--tree <dir> --at <place> [--checkout <live checkout>] [--host <name>]` reads too: it writes a build's
 //    plugin tree's server entries and overlay (`config/opencode.json`, `config/cli.json`) into the
 //    tree in the making `dir`, every path naming `place`, and nothing else (mods/update/filestore/trees.ts).
 // 4. Writes upstream/dev's lead for the TUI's corner (`upstreamReading`), then restarts the service
@@ -375,9 +375,18 @@ export const installDotfiles = <I>(checkout: string, install: Effect.Effect<I>):
     ),
   )
 
-/** The update's settings for the dotfiles checkout `checkout` on this host, as the plugin's entry and the handoff get them. */
-const hostSettings = (home: string, fork: string, checkout: string = DOTFILES) =>
-  settingsFor({ host: hostname(), home, state: dirname(dirname(installedFile(home))), checkout, fork, bun: process.execPath, resident: residentDir(home), launcher: join(home, ".local/bin/opencode") })
+/** Which host a run configures: its live dotfiles checkout and its name. */
+interface Where {
+  readonly checkout: string
+  readonly host: string
+}
+
+/** This checkout on this host. */
+const HERE: Where = { checkout: DOTFILES, host: hostname() }
+
+/** The update's settings for the dotfiles checkout and host `where`, as the plugin's entry and the handoff get them. */
+const hostSettings = (home: string, fork: string, where: Where = HERE) =>
+  settingsFor({ host: where.host, home, state: dirname(dirname(installedFile(home))), checkout: where.checkout, fork, bun: process.execPath, resident: residentDir(home), launcher: join(home, ".local/bin/opencode") })
 
 /** What a host's plugin entries are made of beyond the plugins' directories, read once per run (`hostFacts`). */
 export interface HostFacts {
@@ -393,16 +402,16 @@ export interface HostFacts {
   readonly settings: Settings
 }
 
-/** This host's facts, with the live dotfiles checkout `checkout` (this one, by default). */
-const hostFacts = (home: string, fork: string, checkout: string = DOTFILES) =>
+/** The facts of the host `where` (this checkout on this host, by default). */
+const hostFacts = (home: string, fork: string, where: Where = HERE) =>
   Effect.gen(function* () {
     return {
-      host: hostname(),
+      host: where.host,
       tailscale: Option.fromNullishOr(yield* Effect.promise(tailscaleAddress)),
-      fleet: { dotfiles: checkout, fork },
+      fleet: { dotfiles: where.checkout, fork },
       catalog: yield* Effect.promise(() => loadCatalog(fork)),
       store: Option.liftPredicate(loginStoreDir(home), existsSync),
-      settings: hostSettings(home, fork, checkout),
+      settings: hostSettings(home, fork, where),
     } satisfies HostFacts
   })
 
@@ -462,12 +471,13 @@ const configureHost = (home: string, fork: string) =>
  * the tree in the making, whose `opencode/` holds the plugins; every path names `place`, where the tree
  * stands once renamed. The server lists each plugin's generated entry (`entries/server/<name>`, no TUI
  * part), the TUI each plugin's own directory. Only the plugin entries: the global configs keep the role
- * models, the theme and every other key. `checkout` is the live dotfiles checkout, which the update
- * plugin fetches into and orchestrate records the verified target from.
+ * models, the theme and every other key. `where` names the live dotfiles checkout, which the update
+ * plugin fetches into and orchestrate records the verified target from, and the host whose fleet the
+ * pool and mail join (a host outside `FLEET`, such as a test's, joins none).
  */
-const writeTree = (home: string, fork: string, tree: { readonly dir: string; readonly at: string; readonly checkout: string }) =>
+const writeTree = (home: string, fork: string, tree: { readonly dir: string; readonly at: string; readonly where: Where }) =>
   Effect.gen(function* () {
-    const facts = yield* hostFacts(home, fork, tree.checkout)
+    const facts = yield* hostFacts(home, fork, tree.where)
     const opencode = join(tree.dir, "opencode")
     // Each entry reaches its plugin from `entries/server/<name>/`, three levels below the tree.
     const entries = SERVER_PLUGINS.flatMap((name) =>
@@ -500,7 +510,7 @@ const treeRun = (argv: ReadonlyArray<string>, home: string, fork: string) =>
     writeTree(home, fork, {
       dir,
       at: Option.getOrElse(Option.fromIterable(flagValue(argv, "--at")), () => dir),
-      checkout: Option.getOrElse(Option.fromIterable(flagValue(argv, "--checkout")), () => DOTFILES),
+      where: { checkout: Option.getOrElse(Option.fromIterable(flagValue(argv, "--checkout")), () => HERE.checkout), host: Option.getOrElse(Option.fromIterable(flagValue(argv, "--host")), () => HERE.host) },
     }),
   )
 
