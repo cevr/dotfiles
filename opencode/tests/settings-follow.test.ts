@@ -195,7 +195,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         const saved = (theme: string, scope: string) =>
           fs.readFileString(`${config}/cli.json`).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Picked)),
-            Effect.filterOrFail((cli) => cli.theme.name === theme && cli.tabs.scope === scope, (cli) => new NotYet({ message: `cli.json never held the theme ${theme} and the scope ${scope}: ${JSON.stringify(cli)}` })),
+            Effect.filterOrFail((cli) => cli.theme.name === theme && cli.tabs.scope === scope, (cli) => new NotYet({ message: `cli.json never held the theme ${theme} and the scope ${scope}: ${jsonText(cli)}` })),
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
             Effect.orDie,
           )
