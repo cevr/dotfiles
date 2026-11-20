@@ -15,6 +15,7 @@ import { createSignal } from "solid-js"
 import type { Starting } from "../starting.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
+import type { asks } from "./asks.ts"
 import { killJob, readJobs } from "./jobs.ts"
 import { pendingLeader } from "../pending.ts"
 import { openPending } from "./pending.ts"
@@ -25,7 +26,8 @@ import { cancelWake, readWakes } from "./wakes.ts"
 /**
  * The Host over `context`, with each session's goal read through `goal`
  * (`goals` in opencode/goal.ts) and the service's build and upstream's
- * reading through `build` (`builds` in opencode/build.ts).
+ * reading through `build` (`builds` in opencode/build.ts), and each session's
+ * prompts apart from its transcript through `prompts` (`asks` in opencode/asks.ts).
  */
 export function host(
   context: Plugin.Context,
@@ -35,6 +37,7 @@ export function host(
     readonly upstream: () => UpstreamReading | undefined
     readonly starting: () => Option.Option<Starting>
   },
+  prompts: Pick<ReturnType<typeof asks>, "index" | "read" | "learn">,
 ): Host {
   const data = context.data
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
@@ -53,6 +56,9 @@ export function host(
     sessions: () => data.session.list(),
     messages: (sessionID) => data.session.message.list(sessionID),
     message: (sessionID, messageID) => data.session.message.get(sessionID, messageID),
+    asks: prompts.index,
+    readAsks: prompts.read,
+    learnAsks: prompts.learn,
     part: (sessionID, messageID, partID) => partOf(data.session.message.get(sessionID, messageID), partID),
     cost: (sessionID) => data.session.cost(sessionID),
     status: (sessionID) => data.session.status(sessionID),

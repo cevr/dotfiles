@@ -130,6 +130,16 @@ export const codeOf = (file: string, source: string): string => scan(file, sourc
 /** The import specifiers a source holds (`import`, `export … from`, `import()`), through Bun's transpiler. */
 export const importsOf = (file: string, source: string): ReadonlyArray<string> => scan(file, source).imports
 
+const READS = /^\s*(?:\/\/|\*)\s*@reads\s+(.+?)\s*$/gm
+
+/**
+ * The globs, from opencode/, of the files a source declares it reads by path rather than import: its `@reads <glob> …`
+ * comment lines. A test that globs, lists or reads files by their path text (scripts/runtime-imports.test.ts walks
+ * every cmd/** and mods/** source) declares them, so the gate's cache key (`reach`) and the merge check's selection
+ * (scripts/merge-check.ts) see a change to one as a change to the test's input; no import edge does.
+ */
+export const readsOf = (source: string): ReadonlyArray<string> => [...source.matchAll(READS)].flatMap((match) => String(match[1]).split(/\s+/))
+
 /** The workspace file a specifier from `from` names, if any. */
 const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))

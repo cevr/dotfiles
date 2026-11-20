@@ -5,6 +5,9 @@
  * The scenarios and daily never reach oxc-parser either: a compiled scenario cannot load its native
  * binding (`Cannot find module './parser.darwin-universal.node'`). The walk follows each file's
  * runtime imports, type-only ones left out, through the workspace and stops at node_modules.
+ *
+ * It finds its seeds by glob, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
+ * @reads cmd/** mods/** scenarios/*.ts scripts/daily.ts
  */
 import { describe, expect, test } from "bun:test"
 import { readFileSync, realpathSync } from "node:fs"
@@ -94,7 +97,7 @@ const SERVERS = sources("cmd/*/server.ts")
 
 describe("runtime imports", () => {
   test("a checkout in a directory named oxlint-* is not the lint tool", () => {
-    const root = "/Users/x/Developer/personal/.rifts/dotfiles/oxlint-x/opencode"
+    const root = "/Users/x/Developer/personal/.work/dotfiles/oxlint-x/opencode"
     const lintTool = (target: string) => forbiddenAt(root, target, LINT_TOOL)
     expect(lintTool(`${root}/mods/skills/catalog.ts`)).toBe(false)
     expect(lintTool(`${root}/scripts/daily.ts`)).toBe(false)

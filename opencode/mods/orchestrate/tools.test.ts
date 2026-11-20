@@ -18,6 +18,8 @@ import {
   landCallOf,
   laneAnswer,
   laneBranchOf,
+  laneNote,
+  lanePathOf,
   laneDecision,
   lanesOf,
   implementorDescriptionOf,
@@ -186,6 +188,22 @@ describe("the orchestrate tool's description", () => {
     expect(paragraphs[headings.indexOf("verify")]).toContain('subagent({ agent: "verifier", description: "verifier <batch> r1"')
   })
 
+  test("a lane's answer ends with the (lane: <path>) note its implementor's description takes; the note's reader takes the old (rift: <path>) too", () => {
+    const lane: Lane = { path: "/code/.work/app/auth", branch: "run/auth", head: "abc1234", state: "clean" }
+    const answer = laneAnswer("auth", lane, true)
+    expect(answer.split("\n").slice(-2)).toEqual([
+      'Start its implementor: subagent({ agent: "implementor", description: "implementor auth r1 (lane: /code/.work/app/auth)", prompt, background: true }).',
+      "(lane: /code/.work/app/auth)",
+    ])
+    expect(laneNote(lane.path)).toBe("(lane: /code/.work/app/auth)")
+    expect(answer).not.toContain("(rift:")
+    expect([lanePathOf(answer), lanePathOf("implementor auth r1 (rift: /code/.rifts/app/auth)"), lanePathOf("implementor auth r1 (Opus)")]).toEqual([
+      Option.some("/code/.work/app/auth"),
+      Option.some("/code/.rifts/app/auth"),
+      Option.none(),
+    ])
+  })
+
   test("is at most 4,000 characters, with no line over 700", () => {
     expect(ORCHESTRATE_DESCRIPTION.length).toBeLessThanOrEqual(4000)
     expect(ORCHESTRATE_DESCRIPTION.split("\n").filter((line) => line.length > 700)).toEqual([])
@@ -196,6 +214,8 @@ describe("the orchestrate tool's description", () => {
     for (const sentence of [
       "A named unit that is not ready lands with a warning.",
       "A land does not wait for the deep run or the post-land step:",
+      "they run in the background and wake you only when one fails or needs action:",
+      "no notice means green.",
       "A lane that exists is answered, never made again by hand.",
       "The work tool is for a session that runs no units;",
     ])
@@ -259,7 +279,7 @@ const textsOf = (random: () => number): ReadonlyArray<string> => {
   const unit = pick([...UNITS, unitName(random)], "alpha")
   const workrift = random() < 0.5
   const lanes = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(laneOf(name, workrift), () => random() < 0.6)))
-  const lane = pick(lanes, laneAt(`/code/.rifts/app/${unit}`, Option.none()))
+  const lane = pick(lanes, laneAt(`/code/.work/app/${unit}`, Option.none()))
   const input = inputOf(random)
   const units = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(pick<LandUnit>([name, { unit: name, path: `/x/${name}` }], name), () => random() < 0.4)))
   return [
@@ -316,7 +336,7 @@ describe("every call an answer or a refusal names", () => {
 const valueOf = (field: Field, random: () => number) => {
   const pick = pickOf(random)
   const name = unitName(random)
-  if (field === "units") return [name, { unit: pick(UNITS, "alpha"), path: `/code/.rifts/app/${name}` }].filter(() => random() < 0.7)
+  if (field === "units") return [name, { unit: pick(UNITS, "alpha"), path: `/code/.work/app/${name}` }].filter(() => random() < 0.7)
   if (field === "batch") return pick([`batch-${1 + Math.floor(random() * 20)}`, name, "main-abc1234"], "batch-1")
   if (field === "head") return pick(["abc1234", "origin/HEAD", "f00dfeed"], "abc1234")
   if (field === "source") return pick(["/code/app", "../app", "."], ".")
@@ -384,7 +404,7 @@ const riftNameOf = (unit: string, workrift: boolean): string =>
 /** The Rift a lane makes for `unit` on its default branch: named for the unit on the Mac, for its branch (`feat-<unit>`) on the workbox. */
 const laneOf = (unit: string, workrift: boolean): Lane => {
   const branch = laneBranchOf({ unit })
-  return laneAt(`/code/.rifts/app/${riftNameOf(unit, workrift)}`, Option.some(branch))
+  return laneAt(`/code/.work/app/${riftNameOf(unit, workrift)}`, Option.some(branch))
 }
 
 describe("the lane name rule", () => {
@@ -587,10 +607,9 @@ describe("a land", () => {
   })
 
   test("a name two Rifts read as is never picked: the refusal names both and the { unit, path } form", () => {
-    // On the workbox each branch's Rift is named for it, so feat/db and p5/db are two lanes of db, neither reused.
-    const other = laneAt("/code/.rifts/app/p5-db", Option.some("p5/db"))
-    const db = laneOf("db", true)
-    const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], true)
+    const other = laneAt("/code/.work/app/db-2", Option.some("p5/db"))
+    const db = laneOf("db", false)
+    const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], false)
     expect(resolved).toEqual({ refused: expect.stringContaining(`2 workspaces read as db: ${db.path}, ${other.path}`) })
     expect(resolved).toEqual({ refused: expect.stringContaining('{ unit: "db", path: "<its workspace>" }') })
   })

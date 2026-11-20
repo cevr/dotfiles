@@ -1,7 +1,7 @@
 // `bun run daily`'s settings in the global configs (never a plugin entry), its entries, and its fork steps.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect, Option, Schema } from "effect"
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { type Catalog, loginStoreDir } from "../testbeds/gamut/gamut.ts"
@@ -11,7 +11,7 @@ import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
-import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
+import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
@@ -485,26 +485,34 @@ describe("the upstream merge", () => {
     expect(existsSync(f.options().report)).toBe(false)
   })
 
-  test("a clean merge whose checks pass fast-forwards prime-look to it inside `landing` alone, then pushes it to origin by its fetch URL, past the push URL work gives an adopted copy (post-land 2026-11-16)", async () => {
+  test("a clean merge whose checks pass goes to origin by its fetch URL, past the push URL work gives an adopted copy (post-land 2026-11-16), and only then fast-forwards prime-look, inside `landing` alone", async () => {
     using f = fixture()
     // work's rule on every workspace, the adopted fork among them: a push by the remote's name is refused.
     git(f.fork, "config", "remote.origin.pushurl", "no-push:workspaces-never-push-origin")
-    commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+    // Upstream's lockfile change reaches the checkout's packages: the fast-forward installs it there.
+    commitTo(f.upstream, "dev", { "b.txt": "upstream\n", "bun.lock": "{ lock: upstream }\n" })
     commitTo(f.origin, "prime-look", { "c.txt": "ours\n" })
     git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
     const before = f.head(f.fork, "prime-look")
     const seen: string[] = []
+    const installs: string[] = []
+    const install = (dir: string) => {
+      installs.push(`${dir} ${readFileSync(join(dir, "bun.lock"), "utf8").trim()}`)
+      return { ok: true, err: "" }
+    }
     const landing = <A>(step: () => A): A => {
       seen.push(f.head(f.fork, "prime-look"))
       const answer = step()
       seen.push(f.head(f.fork, "prime-look"), f.head(f.origin, "prime-look"))
       return answer
     }
-    const outcome = await mergeUpstream(f.options({ landing }))
-    expect(outcome).toMatchObject({ kind: "merged", from: before, commits: 1, pushed: true })
+    const outcome = await mergeUpstream(f.options({ landing, install }))
+    expect(installs).toEqual([`${f.fork} { lock: upstream }`])
+    expect(outcome).toMatchObject({ kind: "merged", from: before, commits: 1 })
     const merge = f.head(f.fork, "prime-look")
     expect(merge).not.toBe(before)
-    expect(seen).toEqual([before, merge, before])
+    // origin holds the merge before the checkout moves to it.
+    expect(seen).toEqual([before, merge, merge])
     // A merge commit: ours first, upstream's second, checked in the worktree, never in the fork.
     expect(git(f.fork, "rev-list", "--parents", "-n", "1", merge).split(" ")).toEqual([merge, before, f.head(f.upstream, "dev")])
     expect(f.calls).toEqual([f.options().worktree])
@@ -561,6 +569,98 @@ describe("the upstream merge", () => {
     expect(existsSync(join(f.fork, "b.txt"))).toBe(false)
   })
 
+  /** The fork's checkout as it stands: its branch's commit and its working tree's status. */
+  const checkoutOf = (f: ReturnType<typeof fixture>) => ({ head: f.head(f.fork, "prime-look"), status: git(f.fork, "status", "--porcelain") })
+  /** The step's outcome, as an Effect the test's generator yields. */
+  const merged = (options: UpstreamOptions) => Effect.promise(() => mergeUpstream(options))
+  /** A check that passes. */
+  const green = () => Effect.runPromise(Effect.succeed<CheckResult>({ ok: true }))
+
+  // Post-land 2026-11-20, twice: prime-look fast-forwarded to the merge, then the push failed, and the
+  // shared checkout sat on a merge no remote held while origin moved on without it.
+  test("a push origin refuses leaves prime-look, its working tree and origin where they were, keeps the merge and reports the cause once", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        using f = fixture()
+        commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+        const hook = join(f.origin, "hooks/pre-receive")
+        writeFileSync(hook, "#!/bin/sh\necho 'refused by the test hook' >&2\nexit 1\n")
+        chmodSync(hook, 0o755)
+        const before = checkoutOf(f)
+        const lines: string[] = []
+        const outcome = yield* merged(f.options({ log: (line) => lines.push(line) }))
+        expect(outcome).toMatchObject({ kind: "stuck", merge: f.head(f.fork, HELD_BRANCH) })
+        expect(checkoutOf(f)).toEqual(before)
+        expect(existsSync(join(f.fork, "b.txt"))).toBe(false)
+        expect(f.head(f.origin, "prime-look")).toBe(before.head)
+        expect(readFileSync(f.options().report, "utf8")).toContain("refused by the test hook")
+        const said = lines.filter((line) => line.includes("push"))
+        expect(said).toHaveLength(1)
+        expect(said[0]).toContain("refused by the test hook")
+      }),
+    ))
+
+  test("origin moving during the merge: the step starts over from origin's head and lands on top of it", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        using f = fixture()
+        commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+        const calls: string[] = []
+        const checks = (dir: string) => {
+          if (calls.length === 0) commitTo(f.origin, "prime-look", { "c.txt": "pushed meanwhile\n" })
+          calls.push(dir)
+          return green()
+        }
+        const outcome = yield* merged(f.options({ checks }))
+        const merge = f.head(f.origin, "prime-look")
+        const moved = git(f.origin, "rev-parse", "prime-look^1")
+        expect(outcome).toEqual({ kind: "merged", from: moved, merge, commits: 1 })
+        expect(calls).toHaveLength(2)
+        expect(git(f.fork, "rev-list", "--parents", "-n", "1", merge).split(" ")).toEqual([merge, moved, f.head(f.upstream, "dev")])
+        // The checkout went straight to origin's merge: never on a commit origin lacks.
+        expect(f.head(f.fork, "prime-look")).toBe(merge)
+        expect(readFileSync(join(f.fork, "c.txt"), "utf8")).toBe("pushed meanwhile\n")
+        expect(readFileSync(join(f.fork, "b.txt"), "utf8")).toBe("upstream\n")
+      }),
+    ))
+
+  test("origin moving on every try: the step gives up with prime-look and its working tree where they were, and says why", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        using f = fixture()
+        commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+        const before = checkoutOf(f)
+        let tries = 0
+        const checks = () => {
+          commitTo(f.origin, "prime-look", { "c.txt": `pushed meanwhile ${++tries}\n` })
+          return green()
+        }
+        const outcome = yield* merged(f.options({ checks }))
+        expect(outcome).toMatchObject({ kind: "stuck", reason: expect.stringContaining(`origin prime-look moved during each of ${ATTEMPTS} merges`) })
+        expect(tries).toBe(ATTEMPTS)
+        expect(checkoutOf(f)).toEqual(before)
+        expect(existsSync(join(f.fork, "c.txt"))).toBe(false)
+        expect(readFileSync(f.options().report, "utf8")).toContain("origin kept moving")
+      }),
+    ))
+
+  test("a prime-look with commits origin lacks is not merged: the merge would publish them", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        using f = fixture()
+        commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+        writeFileSync(join(f.fork, "d.txt"), "local\n")
+        git(f.fork, "add", "d.txt")
+        git(f.fork, "commit", "--quiet", "-m", "local only")
+        const before = checkoutOf(f)
+        const origin = f.head(f.origin, "prime-look")
+        expect(yield* merged(f.options())).toMatchObject({ kind: "skipped", reason: expect.stringContaining("1 commit not on origin") })
+        expect(checkoutOf(f)).toEqual(before)
+        expect(f.head(f.origin, "prime-look")).toBe(origin)
+        expect(f.calls).toEqual([])
+      }),
+    ))
+
   test("the workbox, and --no-upstream, skip it without fetching", async () => {
     using f = fixture()
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
@@ -596,10 +696,36 @@ describe("the upstream merge", () => {
     const pushed = f.head(f.origin, "prime-look")
     commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
     // The merge starts from origin's head, not the stale one, and lands as a fast-forward of origin.
-    expect(await mergeUpstream(f.options())).toMatchObject({ kind: "merged", from: pushed, pushed: true })
+    expect(await mergeUpstream(f.options())).toMatchObject({ kind: "merged", from: pushed })
     expect(git(f.fork, "rev-parse", "prime-look^1")).toBe(pushed)
     // Current: nothing to do.
     expect(sync({ fork: f.fork, dryRun: false, log: () => {} })).toEqual({ kind: "current" })
+  })
+
+  // 2026-11-20: prime-look moved to a commit with another lockfile and no install; its old packages
+  // hung Code Mode and turned tests/image.test.ts red.
+  test("a fast-forward whose bun.lock changed installs it in the checkout, and one whose bun.lock did not installs nothing", () => {
+    using f = fixture()
+    commitTo(f.origin, "prime-look", { "bun.lock": "{ lock: 1 }\n" })
+    git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
+    const installs: string[] = []
+    const install = (dir: string) => {
+      installs.push(`${dir} ${readFileSync(join(dir, "bun.lock"), "utf8").trim()}`)
+      return { ok: true, err: "" }
+    }
+    commitTo(f.origin, "prime-look", { "c.txt": "no lock change\n" })
+    expect(sync({ fork: f.fork, dryRun: false, log: () => {}, install })).toMatchObject({ kind: "fast-forwarded" })
+    expect(installs).toEqual([])
+    commitTo(f.origin, "prime-look", { "bun.lock": "{ lock: 2 }\n" })
+    expect(sync({ fork: f.fork, dryRun: false, log: () => {}, install })).toMatchObject({ kind: "fast-forwarded" })
+    expect(installs).toEqual([`${f.fork} { lock: 2 }`])
+    // A failed install is said, and the move stands.
+    commitTo(f.origin, "prime-look", { "bun.lock": "{ lock: 3 }\n" })
+    const lines: string[] = []
+    const failing = () => ({ ok: false, err: "error: lockfile had changes, but lockfile is frozen" })
+    expect(sync({ fork: f.fork, dryRun: false, log: (line) => lines.push(line), install: failing })).toMatchObject({ kind: "fast-forwarded" })
+    expect(f.head(f.fork, "prime-look")).toBe(f.head(f.origin, "prime-look"))
+    expect(lines.join("\n")).toContain(`bun install --frozen-lockfile in ${f.fork} failed`)
   })
 
   test("a fork with local commits or tracked changes is left alone, and says so", () => {

@@ -857,7 +857,7 @@ export const make = (
       // Each role and each primary agent compacts at `WINDOW`. Config agent files
       // cannot set a window, and the config's agents arrive after this, so a primary agent
       // defined only in a config file keeps the model's ceiling.
-      // The orchestrator (owner's exception to the freeze, 2026-11-20) is build as the host's plugins defined it, under
+      // The orchestrator is build as the host's plugins defined it, under
       // its own name and description, and the default a new session opens with. It is defined before the windows, so
       // it gets its own; the config's plugin runs after, so its `default_agent` and an `orchestrator` file still win.
       // For the same reason a config's `agents.build` entry does not reach it: the config pins it as `agents.orchestrator`
@@ -893,7 +893,7 @@ export const make = (
         }
       })
 
-      // A subagent asks its orchestrator, not the owner (owner's exception to the freeze, 2026-11-19): the two tools,
+      // A subagent asks its orchestrator, not the owner: the two tools,
       // the swap and the documents' nudge (mods/orchestrate/opencode/asking.ts) over the questions plugin's RPC.
       if (options.subagents === "orchestrator") {
         const family = Context.get(services, Sessions)

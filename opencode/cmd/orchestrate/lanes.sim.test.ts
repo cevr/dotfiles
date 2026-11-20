@@ -16,7 +16,7 @@ const ORCHESTRATE = "orchestrate"
 const READY = "/nonexistent/loop-probe-x/request.md"
 
 /** The Rift a lane of `unit` makes on the Mac, in the run's warm source. */
-const pathOf = (unit: string) => `/scratch/.rifts/work/${unit}`
+const pathOf = (unit: string) => `/scratch/.work/work/${unit}`
 
 /** The Rift a lane's answer ends with: its `(lane: <path>)`. */
 const suffixOf = (answer: string): string => Option.getOrElse(Option.flatMap(Option.fromNullishOr(/\(lane: ([^)]+)\)\s*$/.exec(answer)), (match) => Arr.get(match, 1)), () => "")

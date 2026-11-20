@@ -16,11 +16,11 @@ import { Standing } from "../receipt.ts"
 import type { RiftInput } from "../rift.ts"
 
 const SOURCE = "/code/app"
-const X = "/code/.rifts/app/feat-x"
-const Y = "/code/.rifts/app/feat-y"
-const INTEGRATE = "/code/.rifts/app/integrate"
-const ACCEPT = "/code/.rifts/app/land-accept"
-const POST_LAND = "/code/.rifts/app/post-land"
+const X = "/code/.work/app/feat-x"
+const Y = "/code/.work/app/feat-y"
+const INTEGRATE = "/code/.work/app/integrate"
+const ACCEPT = "/code/.work/app/land-accept"
+const POST_LAND = "/code/.work/app/post-land"
 const MERGE_CHECK = 'bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'
 
 interface Bench {
@@ -96,7 +96,7 @@ describe("a land by receipts", () => {
           "The merge check passed in 3s; log: /logs/merge.log",
           "Receipts recorded: /logs/receipts/head-integrate.land.json",
           `To the trash: ${X}, ${Y}.`,
-          "The accept check runs in the background in its own workspace (land-accept) on the batch since base0; this session is woken with its result. The next land need not wait for it.",
+          "The accept check runs in the background in its own workspace (land-accept) on the batch since base0; it wakes this session only if it fails: no notice means it passed. The next land need not wait for it.",
         ].join("\n"),
       )
       expect(made.landing.steps).toEqual([
@@ -123,7 +123,8 @@ describe("a land by receipts", () => {
         ["feat/y", "held", "bbb222"],
       ])
       expect(Option.map(record!.merge, (receipt) => [receipt.kind, receipt.repo, receipt.checks[0]?.command])).toEqual(Option.some(["merge", INTEGRATE, MERGE_CHECK]))
-      expect(made.woken.map((woken) => woken.notice.description)).toEqual(["rift land · accept passed"])
+      // The accept check passed (its step above): no notice.
+      expect(made.woken).toEqual([])
     })
   })
 

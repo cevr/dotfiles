@@ -10,6 +10,8 @@
  * computed env root (`process["env"]`) and an alias (`const env = process.env; env.X = ...`). The
  * repo's own `dotfiles/no-module-env-in-tests` still refuses the computed root while a test file
  * loads; that retained coverage is asserted, the alias is not.
+ *
+ * @reads .oxlintrc.json lint/**
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

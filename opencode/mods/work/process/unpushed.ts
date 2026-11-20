@@ -1,5 +1,5 @@
 // The commits a workspace holds and nothing else does: the "unpushed" of the
-// removal rule (workspace.ts), for both process providers. workbox/bin/workrift's
+// removal rule (workspace.ts), for the process provider. workbox/bin/workrift's
 // work_own_commits is the same rule in sh, for `workrift remove`.
 import { Effect } from "effect"
 import type { RiftFailed } from "../service.ts"

@@ -179,7 +179,7 @@ export const select = (mode: Mode, candidates: ReadonlyArray<Candidate>, ledger:
 
 const NAMED_PACKAGE = /(?<![\w.-])(cmd|mods)\/([a-z0-9][a-z0-9-]*)/g
 
-/** The packages (`mods/prime`, `cmd/rift`) the texts name. */
+/** The packages (`mods/prime`, `cmd/work`) the texts name. */
 export const namedPackages = (texts: ReadonlyArray<string>): ReadonlySet<string> =>
   new Set(texts.flatMap((text) => [...text.matchAll(NAMED_PACKAGE)].map((match) => `${match[1]}/${match[2]}`)))
 
@@ -512,6 +512,18 @@ export const holdPlan = (selected: ReadonlyArray<string>, done: ReadonlyArray<Ou
     todo: fresh.run.filter(mine),
   }
 }
+
+/**
+ * A failed file's second run held back at the 1-minute `load` on `cores`: a file that bounds a time (`serial`) runs again
+ * only on a host as settled as its first run needed, the load under the cores (mods/work/owed.ts `overloaded`); else it
+ * stays owed, `waits for a settled host`, unmarked, so it is still due its second run: in a later hold, or as a first
+ * run in the next settled deep run. Any other file runs again at any load.
+ */
+export const heldSecond = (file: string, serial: boolean, load: number, cores: number): Option.Option<Extract<Outcome, { readonly status: "owed" }>> =>
+  Option.liftPredicate(
+    { file, status: "owed" as const, why: "unsettled" as const, detail: `failed its first run; its second waits for a 1-minute load under the ${cores} cores (${load.toFixed(1)} now)` },
+    () => serial && load >= cores,
+  )
 
 /** A file's outcome after its second run at `load`, marked `second` with that load once the run ended; one a yield stopped stands as it is, and the file is still due its second run. */
 export const afterSecond = (second: Outcome, load: number): Outcome => {

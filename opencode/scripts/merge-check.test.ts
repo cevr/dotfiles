@@ -6,7 +6,45 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
 import { parseNameStatus } from "./docs-guard.ts"
 import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
-import { importsOf } from "./reach.ts"
+import { importsOf, load, reach, readsOf } from "./reach.ts"
+
+/** bb435bcc's change set from opencode/ (Rift U1's land): its cmd/work/server.ts import broke runtime-imports.test, which its merge check never ran. */
+const BB435BCC = [
+  "M\t.claude/skills/verify-opencode/features/orchestrate.md",
+  "M\t.oxlintrc.json",
+  "M\tAGENTS.md",
+  "M\tbun.lock",
+  "M\tcmd/orchestrate/orch-tools-world.ts",
+  "D\tcmd/rift/package.json",
+  "D\tcmd/rift/rpc.test.ts",
+  "D\tcmd/rift/server.test.ts",
+  "D\tcmd/rift/server.ts",
+  "D\tcmd/rift/tsconfig.json",
+  "M\tcmd/tool-names/server.test.ts",
+  "M\tcmd/work/package.json",
+  "M\tcmd/work/rpc.test.ts",
+  "M\tcmd/work/server.test.ts",
+  "M\tcmd/work/server.ts",
+  "M\teffect-debt.json",
+  "M\tmods/work/process/landing.ts",
+  "D\tmods/work/process/rifts.test.ts",
+  "D\tmods/work/process/rifts.ts",
+  "M\tmods/work/process/unpushed.ts",
+  "M\tmods/work/process/work.test.ts",
+  "M\tmods/work/process/work.ts",
+  "M\tmods/work/tool.ts",
+  "M\tscripts/accept-ledger.ts",
+  "M\tscripts/cache-audit.test.ts",
+  "M\tscripts/verify-docs.test.ts",
+  "M\tsim/plugins.ts",
+  "D\ttests/rift.test.ts",
+  "D\ttests/rift/run.ts",
+  "D\ttests/rift/sim.ts",
+  "M\ttests/work.test.ts",
+  "M\ttests/work/run.ts",
+  "M\ttests/work/sim.ts",
+  "",
+].join("\n")
 
 /** The scripts/ folder as the merge check reads it (its files, each source's imports), and the selections over it. */
 const tree = Effect.gen(function* () {
@@ -15,10 +53,15 @@ const tree = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
   const files = (yield* fs.readDirectory(path.join(root, "scripts"))).map((name) => `scripts/${name}`)
   const sources = files.filter((file) => /\.tsx?$/.test(file))
-  const imports = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, importsOf(file, text)] as const)))
+  const texts = new Map(yield* Effect.forEach(sources, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, text] as const)))
+  const imports = new Map([...texts].map(([file, text]) => [file, importsOf(file, text)] as const))
   // The git-repo guard lives in tests/, outside the folder read here.
   const exists = (file: string) => files.includes(file) || file === GIT_REPO_GUARD
-  const scripts = { files: sources.filter((file) => /\.test\.tsx?$/.test(file)), imports: (file: string) => imports.get(file) ?? [] }
+  const scripts = {
+    files: sources.filter((file) => /\.test\.tsx?$/.test(file)),
+    imports: (file: string) => imports.get(file) ?? [],
+    reads: (file: string) => readsOf(texts.get(file) ?? ""),
+  }
   const tools = (workbox: string) => ({
     bun: "bun",
     oxlint: "oxlint",
@@ -64,7 +107,8 @@ describe("the merge check's tests", () => {
       expect(tests("M\ttests/pool-resets.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
       expect(tests("M\ttests/work.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
       expect(tests("M\ttests/parity.json\n")).toEqual(accept)
-      expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toEqual([...accept, GIT_REPO_GUARD])
+      // layout.test and runtime-imports.test read every cmd/** file too (@reads).
+      expect(tests("M\tcmd/pool/pool-resets.sim.test.ts\n")).toEqual([...accept, "scripts/layout.test.ts", "scripts/runtime-imports.test.ts", GIT_REPO_GUARD])
       expect(tests("M\tscripts/accept-ledger.ts\n")).toEqual(["scripts/accept-ledger.test.ts", "scripts/post-land.test.ts", ...ACCEPT_TESTS].toSorted())
     }),
   )
@@ -77,7 +121,40 @@ describe("the merge check's tests", () => {
       expect(tests("M\ttestbeds/gamut/gamut.ts\n")).toContain(GIT_REPO_GUARD)
       expect(tests("A\ttests/git-repo.ts\n")).toContain(GIT_REPO_GUARD)
       expect(tests("D\tmods/update/git/source.test.ts\n")).not.toContain(GIT_REPO_GUARD)
-      expect(tests("M\tmods/update/git/source.ts\n")).toEqual([])
+      expect(tests("M\tmods/update/git/source.ts\n")).not.toContain(GIT_REPO_GUARD)
+    }),
+  )
+
+  live("a test that reads files by path, not import, runs when a file it declares with @reads changes (Rift U1, bb435bcc)", () =>
+    Effect.gen(function* () {
+      const { ran, tests } = yield* tree
+      const RUNTIME_IMPORTS = "scripts/runtime-imports.test.ts"
+      // bb435bcc changed cmd/work/server.ts's imports; runtime-imports.test globs cmd/** and mods/**, imports neither, and stayed unselected.
+      expect(tests("M\tcmd/work/server.ts\n")).toContain(RUNTIME_IMPORTS)
+      expect(ran(BB435BCC)).toContain(RUNTIME_IMPORTS)
+      expect(tests("M\tmods/work/tool.ts\n")).toContain(RUNTIME_IMPORTS)
+      expect(tests("A\tscenarios/new.ts\n")).toContain(RUNTIME_IMPORTS)
+      // The rest of the class: each reads its files by glob or path text.
+      expect(tests("A\tcmd/new/tui.tsx\n")).toContain("scripts/daily-configure.test.ts")
+      expect(tests("A\tmods/new/model.ts\n")).toContain("scripts/layout.test.ts")
+      expect(tests("M\tcmd/git/server.ts\n")).toContain("scripts/tool-inputs.test.ts")
+      expect(tests("M\tmods/update/source.ts\n")).toContain("scripts/old-scheme-gone.test.ts")
+      expect(tests("M\tscripts/daily.ts\n")).toContain("scripts/old-scheme-gone.test.ts")
+      for (const test of ["scripts/effect-domain-policy.test.ts", "scripts/effect-isolation.test.ts", "scripts/effect-process-policy.test.ts", "scripts/effect-small-rules.test.ts"])
+        expect(tests("M\t.oxlintrc.json\n")).toContain(test)
+      expect(tests("M\teffect-debt.json\n")).toContain("scripts/effect-domain-policy.test.ts")
+      expect(tests("M\tsim/seed.ts\n")).toContain("scripts/accept.test.ts")
+      // What no test reads selects none of them.
+      expect(tests("M\tREADME.txt\n")).toEqual([])
+    }),
+  )
+
+  // The full gate's unit leg was never the gap: reach.ts follows the paths runtime-imports.test's code names (scripts/daily.ts names "cmd" and "mods").
+  live("the full gate's cache key over runtime-imports.test covers cmd/** and mods/**: a cmd/work change makes it due", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(load)
+      const reached = reach(workspace, ["scripts/runtime-imports.test.ts"])
+      expect(["cmd/work/server.ts", "mods/work/tool.ts"].filter((file) => !reached.has(file))).toEqual([])
     }),
   )
 
@@ -88,11 +165,12 @@ describe("the merge check's tests", () => {
     }),
   )
 
-  live("an unrelated diff runs none: mod source, which the land's round gate tested; its tests run only the git-repo guard", () =>
+  live("an unrelated diff runs none: source no scripts/ test imports or reads, which the land's round gate tested; its tests run only the git-repo guard; mod source runs only the tests that read mods/", () =>
     Effect.gen(function* () {
       const { exists, legs, ran, tests } = yield* tree
-      expect(tests("M\tmods/update/git/source.ts\n")).toEqual([])
-      expect(tests("M\tmods/update/git/source.ts\nM\tmods/update/git/source.test.ts\nA\tcmd/escape/setup.test.ts\n")).toEqual([GIT_REPO_GUARD])
+      expect(tests("M\tdecider/tui-clock.ts\n")).toEqual([])
+      expect(tests("M\tdecider/tui-clock.ts\nM\tdecider/tui-clock.test.ts\n")).toEqual([GIT_REPO_GUARD])
+      expect(tests("M\tmods/update/git/source.ts\n")).toEqual(["scripts/layout.test.ts", "scripts/old-scheme-gone.test.ts", "scripts/runtime-imports.test.ts"])
       expect(tests("")).toEqual([])
     }),
   )
@@ -111,7 +189,7 @@ describe("the merge check's tests", () => {
       const { exists, legs, ran, tests } = yield* tree
       expect(ran("M\t.claude/skills/verify-opencode/features/rex.md\n")).toEqual([DOCS_GUARD])
       expect(ran("M\ttests/parity.json\nM\tscripts/link-fork.ts\n")).toEqual(["scripts/accept-parity.test.ts", "scripts/accept.test.ts", "scripts/link-fork.test.ts"])
-      const none = legs("M\tmods/update/git/source.ts\n")
+      const none = legs("M\tdecider/tui-clock.ts\n")
       expect(none.map((leg) => leg.name)).toEqual(["lint", "debt", "types", "tests"])
       expect(none.filter((leg) => leg.name === "tests").map((leg) => leg.argv)).toEqual([["true"]])
     }),
@@ -142,13 +220,27 @@ describe("the merge check's tests", () => {
         ["scripts/fixtures/data.json", []],
         ["scripts/fixtures/helper.ts", []],
       ])
-      const scripts = { files: ["scripts/a.test.ts"], imports: (file: string) => graph.get(file) ?? [] }
+      const scripts = { files: ["scripts/a.test.ts"], imports: (file: string) => graph.get(file) ?? [], reads: () => [] }
       const exists = (file: string) => graph.has(file)
       expect([...reachedWithin("scripts/a.test.ts", scripts, exists)].toSorted()).toEqual(["scripts/a.test.ts", "scripts/b.ts", "scripts/c.ts"])
       expect(scriptTests(parseNameStatus("M\tscripts/c.ts\n"), exists, scripts)).toEqual(["scripts/a.test.ts"])
       expect(scriptTests(parseNameStatus("M\tscripts/d.ts\n"), exists, scripts)).toEqual([])
       // A change outside scripts/ that a ./ path reaches selects nothing through the walk.
       expect(scriptTests(parseNameStatus("M\tscripts/fixtures/helper.ts\nM\tmods/x/y.ts\n"), exists, scripts)).toEqual([])
+    }),
+  )
+
+  it.effect("a test's @reads lines name the globs it reads; a change, an old path or a new one, that one matches selects it", () =>
+    Effect.sync(() => {
+      const source = ["/**", " * Reads its seeds by glob.", " * @reads cmd/** mods/*/server.ts", " */", "// @reads  data/*.json", "const reads = 1 // @reads not/this.ts"].join("\n")
+      expect(readsOf(source)).toEqual(["cmd/**", "mods/*/server.ts", "data/*.json"])
+      const scripts = { files: ["scripts/a.test.ts"], imports: () => [], reads: () => readsOf(source) }
+      const exists = (file: string) => file === "scripts/a.test.ts"
+      const due = (out: string) => scriptTests(parseNameStatus(out), exists, scripts)
+      expect(due("M\tcmd/work/deep/x.ts\n")).toEqual(["scripts/a.test.ts"])
+      expect(due("D\tmods/rift/server.ts\n")).toEqual(["scripts/a.test.ts"])
+      expect(due("R100\tdata/a.json\tother/a.json\n")).toEqual(["scripts/a.test.ts"])
+      expect(due("M\tmods/rift/deep/server.ts\nM\tnot/this.ts\nM\tdata/sub/a.json\n")).toEqual([])
     }),
   )
 

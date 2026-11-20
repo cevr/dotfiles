@@ -1,10 +1,10 @@
-// Rifts over Ergo's `work` binary and Git, run as child processes: the contract's second provider,
-// beside process/rifts.ts. A workspace is a record in its base's registry (`work --json list`);
+// Rifts over Ergo's `work` binary and Git, run as child processes: the contract's process provider.
+// A workspace is a record in its base's registry (`work --json list`);
 // the bases are the ones `work init` registered (`work --json bases`). Every call that reads or
 // writes a registry names its base with WORK_BASE: inside an adopted copy `work` would otherwise
 // take the copy for a base and read an empty registry. With `workrift: true` (the workbox) a
-// workspace is made and removed by `workrift`, as process/rifts.ts does; the rest asks `work`.
-// Unsaved work is read with Git exactly as process/rifts.ts reads it. A removal is
+// workspace is made and removed by `workrift`; the rest asks `work`.
+// Unsaved work is read with Git (unpushed.ts). A removal is
 // `work rm -abandon -expect <id>`: the tool's removal rule (workspace.ts) has judged it already,
 // and the id is the one the caller's inspect saw, so a workspace replaced since is refused.
 import { Effect, Layer, Option, Schedule, Schema } from "effect"

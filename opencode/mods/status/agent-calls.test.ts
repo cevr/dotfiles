@@ -78,6 +78,9 @@ describe("a run's session", () => {
     expect(stepUnit("implementor land-notices r2 — Land notices only when red (lane: /x/land-notices)")).toEqual(Option.some("land-notices"))
     expect(stepUnit("implementor land-notices r1 (lane: /x/land-notices)")).toEqual(Option.some("land-notices"))
     expect(stepUnit("implementor land-notices r1 (rift: /x/land-notices)")).toEqual(Option.some("land-notices"))
+    // The lane note, in its words now and before the rename: a session in flight may hold either.
+    expect(stepUnit("implementor auth r1 (lane: /code/.work/app/auth)")).toEqual(Option.some("auth"))
+    expect(stepUnit("implementor auth r1 (rift: /code/.rifts/app/auth)")).toEqual(Option.some("auth"))
     for (const prose of ["Fix the verifier's timeout", "Ask the planner about X", "Fix verifier", "r2 verifier", ""]) expect(stepUnit(prose)).toEqual(Option.none())
   })
 

@@ -13,7 +13,7 @@ import * as Model from "../model.ts"
 import { workspaceName, type RiftInput } from "../rift.ts"
 
 const SOURCE = "/code/app"
-const FEAT = "/code/.rifts/app/feat-x"
+const FEAT = "/code/.work/app/feat-x"
 
 /** The world one test acts on: Rifts, landing, the wakes sent and the workbox commands run. */
 interface Bench {
@@ -76,31 +76,31 @@ describe("the rift tool", () => {
     expect(await call(state, { action: "create", branch: "feat/x" })).toBe(
       [
         `Created the workspace ${FEAT} from ${SOURCE}, on branch feat/x.`,
-        `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
+        `This session still runs in its own directory. To work in the workspace, move the session there with the opencode_session_move tool (directory: "${FEAT}"), or give each shell call workdir "${FEAT}".`,
       ].join("\n"),
     )
     expect(state.rifts.get(FEAT)?.branch).toBe("feat/x")
     // A name alone is the branch too; a Rift's own session makes Rifts of the same source.
-    expect(await call(state, { action: "create", name: "spike" }, "ses_in")).toStartWith(`Created the workspace /code/.rifts/app/spike from ${SOURCE}, on branch spike.`)
+    expect(await call(state, { action: "create", name: "spike" }, "ses_in")).toStartWith(`Created the workspace /code/.work/app/spike from ${SOURCE}, on branch spike.`)
     expect(await call(state, { action: "create" })).toBe('refused: create needs a branch (or a name, which becomes the branch): { action: "create", branch: "feat/x" }.')
   })
 
   test("list shows each Rift with its branch and its unsaved work", async () => {
-    const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean("/code/.rifts/app/old", undefined), unpushed: ["d85f04d wip"], stashes: 2 }])
+    const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean("/code/.work/app/old", undefined), unpushed: ["d85f04d wip"], stashes: 2 }])
     expect(await call(state, { action: "list" })).toBe(
-      [`Workspaces of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`, "- /code/.rifts/app/old · detached at abc1234 · 1 unpushed, 2 stashed"].join("\n"),
+      [`Workspaces of ${SOURCE}:`, `- ${FEAT} · branch feat/x · clean`, "- /code/.work/app/old · detached at abc1234 · 1 unpushed, 2 stashed"].join("\n"),
     )
     expect(await call(MemoryRifts.world([SOURCE]), { action: "list" })).toBe(`The base ${SOURCE} has no workspaces.`)
     expect(await call(MemoryRifts.world(["/other"]), { action: "list" })).toBe("failed: rift ancestors failed: /code/app/src is in no Rift source")
   })
 
   test("remove trashes a clean Rift by name or path, and refuses one with work found nowhere else until forced", async () => {
-    const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean("/code/.rifts/app/busy", "busy"), uncommitted: [" M a.ts"] }])
+    const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean("/code/.work/app/busy", "busy"), uncommitted: [" M a.ts"] }])
     expect(await call(state, { action: "remove", name: "feat/x" })).toBe(`Moved the workspace ${FEAT} (branch feat/x) to the trash.`)
     expect(state.rifts.has(FEAT)).toBe(false)
-    expect(await call(state, { action: "remove", path: "../../.rifts/app/busy" })).toStartWith("refused: /code/.rifts/app/busy holds work found nowhere else:\n1 uncommitted change(s):\n   M a.ts")
-    expect(state.rifts.has("/code/.rifts/app/busy")).toBe(true)
-    expect(await call(state, { action: "remove", name: "busy", force: true })).toBe("Moved the workspace /code/.rifts/app/busy (branch busy) to the trash; it held 1 uncommitted.")
+    expect(await call(state, { action: "remove", path: "../../.work/app/busy" })).toStartWith("refused: /code/.work/app/busy holds work found nowhere else:\n1 uncommitted change(s):\n   M a.ts")
+    expect(state.rifts.has("/code/.work/app/busy")).toBe(true)
+    expect(await call(state, { action: "remove", name: "busy", force: true })).toBe("Moved the workspace /code/.work/app/busy (branch busy) to the trash; it held 1 uncommitted.")
     expect(state.rifts.size).toBe(0)
   })
 
@@ -124,7 +124,7 @@ describe("the rift tool", () => {
   })
 
   test("remove withChildren takes a Rift's own Rifts with it, unless one of them holds unsaved work", async () => {
-    const CHILD = "/code/.rifts/.rifts/feat-x/child"
+    const CHILD = "/code/.work/.work/feat-x/child"
     const state = () => MemoryRifts.world([SOURCE], [{ ...MemoryRifts.clean(FEAT, "feat/x"), children: [CHILD] }, MemoryRifts.clean(CHILD, "child")])
     const plain = state()
     expect(await call(plain, { action: "remove", name: "feat-x" })).toStartWith(`refused: ${FEAT} has workspaces of its own, which would go with it.`)
@@ -151,24 +151,24 @@ describe("the rift tool", () => {
 })
 
 describe("land", () => {
-  const OTHER = "/code/.rifts/app/feat-y"
-  const INTEGRATE = "/code/.rifts/app/integrate"
-  const POST_LAND = "/code/.rifts/app/post-land"
-  const THIRD = "/code/.rifts/app/feat-z"
+  const OTHER = "/code/.work/app/feat-y"
+  const INTEGRATE = "/code/.work/app/integrate"
+  const POST_LAND = "/code/.work/app/post-land"
+  const THIRD = "/code/.work/app/feat-z"
   const configured = { [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept") }
   const two = () => bench(MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y")]), MemoryLanding.world(configured))
 
-  test("lands the Rifts as one batch in the integration Rift: merge each in order, one gate, one push, trash them, then one accept check in the background that wakes the session", async () => {
+  test("lands the Rifts as one batch in the integration Rift: merge each in order, one gate, one push, trash them, then one accept check in the background that wakes no one when it passes", async () => {
     const made = two()
     made.landing.merges.set("feat/y", { _tag: "Merged", regenerated: ["opencode/bun.lock", "opencode/mods/orchestrate/agents.json"] })
     made.landing.installs.push("opencode/bun.lock")
-    const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x", "../../.rifts/app/feat-y"] }])
+    const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x", "../../.work/app/feat-y"] }])
     expect(answer).toBe(
       [
         "Landed 2 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
         "Installed or regenerated and committed: opencode/bun.lock, opencode/mods/orchestrate/agents.json.",
         `To the trash: ${FEAT}, ${OTHER}.`,
-        `The accept check runs in the background in ${INTEGRATE} on the batch since base0; this session is woken with its result.`,
+        `The accept check runs in the background in ${INTEGRATE} on the batch since base0; it wakes this session only if it fails: no notice means it passed.`,
       ].join("\n"),
     )
     // The integration Rift is made on first use and kept; the landed Rifts fetch origin before the removal check.
@@ -183,13 +183,14 @@ describe("land", () => {
       `sync ${OTHER}`,
       `accept ${INTEGRATE} base0`,
     ])
-    expect(made.woken).toEqual([{ sessionID: "ses_1", notice: { text: "rift land: the accept check for feat/x, feat/y passed in 3s.", description: "rift land · accept passed" } }])
+    // A green accept check sends no notice: its log stays, and silence means it passed.
+    expect(made.woken).toEqual([])
     expect([...made.rifts.rifts.keys()]).toEqual([INTEGRATE])
   })
 
   test("a workspace of another base, given by path, lands in that base's integration workspace, never the session's; one batch never mixes bases", () => {
     const MANNA = "/code/manna"
-    const KEYCHAIN = "/code/.rifts/manna/keychain"
+    const KEYCHAIN = "/code/.work/manna/keychain"
     const made = bench(
       MemoryRifts.world([SOURCE, MANNA], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(KEYCHAIN, "keychain")]),
       MemoryLanding.world({ ...configured, [MANNA]: MemoryLanding.config("main", "bun run gate", void 0) }),
@@ -198,7 +199,7 @@ describe("land", () => {
       Effect.gen(function* () {
         // The session runs in /code/app; the workspace is manna's.
         expect(yield* answerOf(tool, { action: "land", rifts: [KEYCHAIN] })).toStartWith("Landed 1 workspace(s) as one push")
-        expect(made.landing.steps.slice(0, 2)).toEqual(["start /code/.rifts/manna/integrate main", "merge keychain"])
+        expect(made.landing.steps.slice(0, 2)).toEqual(["start /code/.work/manna/integrate main", "merge keychain"])
         expect(made.rifts.rifts.has(INTEGRATE)).toBe(false)
         made.rifts.rifts.set(KEYCHAIN, MemoryRifts.clean(KEYCHAIN, "keychain"))
         made.landing.steps.length = 0
@@ -218,12 +219,12 @@ describe("land", () => {
         MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", accept, { postLand: "bun scripts/post-land.ts" }) }),
       )
 
-    test("each pushed batch runs the post-land step once, after the accept check, in its own Rift put at origin's main, with the batch's base and head, and wakes the session with its report", async () => {
+    test("each pushed batch runs the post-land step once, after the accept check, in its own Rift put at origin's main, with the batch's base and head, and wakes the session with a report that has something to say, never with an empty one", async () => {
       const made = withPostLand("bun run accept")
       made.landing.postLandRun = { code: 0, output: "lots of output\n", report: "upstream: merged 3 commits and pushed prime-look\nfork work: none\n" }
       const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x"] }])
       expect(answer).toEndWith(
-        `Then the repository's post-land step (rift.postLand) runs in the background after the accept check, in its own workspace (post-land), one at a time; this session is woken with its report. The next land need not wait for it.`,
+        `Then the repository's post-land step (rift.postLand) runs in the background after the accept check, in its own workspace (post-land), one at a time; it wakes this session only when it fails or its report needs action. The next land need not wait for it.`,
       )
       expect(made.landing.steps.slice(-6)).toEqual([
         `accept ${INTEGRATE} base0`,
@@ -238,15 +239,28 @@ describe("land", () => {
       expect(await call(made.rifts, { action: "land", rifts: ["post-land"] })).toBe(
         `refused: Did not land anything: ${POST_LAND} is the workspace the post-land step runs in; it holds no work to land.`,
       )
-      expect(made.woken.map((woken) => woken.notice.description)).toEqual(["rift land · accept passed", "rift land · post-land ran"])
-      expect(made.woken[1]!.notice.text).toBe(
-        "rift land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log\nupstream: merged 3 commits and pushed prime-look\nfork work: none",
+      expect(made.woken.map((woken) => woken.notice.description)).toEqual(["lane land · post-land needs action"])
+      expect(made.woken[0]!.notice.text).toBe(
+        "lane land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log\nupstream: merged 3 commits and pushed prime-look\nfork work: none",
       )
       // A second land, once the first one's background work is done, runs it once more: once per land.
       const again = withPostLand(undefined)
       await calls(again, [{ action: "land", rifts: ["feat-x"] }])
       await calls(again, [{ action: "land", rifts: ["feat-y"] }])
       expect(again.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${POST_LAND} base0 abc1234`, `post-land ${POST_LAND} base0 abc1234`])
+    })
+
+    test("a green post-land step with nothing to report (exit 0, a blank report) wakes no one; its log stays", () => {
+      const made = withPostLand("bun run accept")
+      made.landing.postLandRun = { code: 0, output: "lots of output\n", report: "\n" }
+      return within(made, (tool) =>
+        Effect.gen(function* () {
+          yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })
+          yield* settle
+          expect(made.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${POST_LAND} base0 abc1234`])
+          expect(made.woken).toEqual([])
+        }),
+      )
     })
 
     const overlapping = (made: Bench) => {
@@ -275,8 +289,8 @@ describe("land", () => {
           // The two lands that waited owe one step, the newest's, over both batches: it runs once.
           expect(made.landing.steps.filter(ran)).toEqual([step, ended, `post-land ${POST_LAND} base0 head3`, ended])
           expect(made.woken.filter((woken) => woken.notice.description.includes("post-land")).map((woken) => woken.notice.text.split(" ran in")[0])).toEqual([
-            "rift land: the post-land step after feat/x",
-            "rift land: the post-land step after feat/y, feat/z",
+            "lane land: the post-land step after feat/x",
+            "lane land: the post-land step after feat/y, feat/z",
           ])
         }),
       )
@@ -331,8 +345,8 @@ describe("land", () => {
       failed.landing.postLandRun = { code: 1, output: "error: the fork is not a checkout\n", report: undefined }
       await calls(failed, [{ action: "land", rifts: ["feat-x"] }])
       expect(failed.woken[0]!.notice).toEqual({
-        text: "rift land: the post-land step after feat/x FAILED (exit 1) in 4s. The batch is already pushed. Log: /logs/post-land.log\n  error: the fork is not a checkout",
-        description: "rift land · post-land failed",
+        text: "lane land: the post-land step after feat/x FAILED (exit 1) in 4s. The batch is already pushed. Log: /logs/post-land.log\n  error: the fork is not a checkout",
+        description: "lane land · post-land FAILED",
       })
       const loaded = withPostLand(undefined)
       loaded.landing.load = { load: 12.5, cores: 10 }
@@ -341,11 +355,11 @@ describe("land", () => {
       expect(loaded.landing.postLandEnvs.map((env) => env["RIFT_POST_LAND_LOAD"])).toEqual(["loaded"])
       expect(loaded.woken[0]!.notice).toEqual({
         text: [
-          "rift land: the post-land step after feat/x ran loaded (the 1-minute load is 12.5, at or past the host's 10 cores): it ran what a loaded host allows, and the rest still waits, so the step stays owed. It runs in full once the load has stayed under 10 for 5 minutes, or at the first land after 6 hours owed whatever the load; until then the next land, or every 30 minutes the minute check, runs it loaded again.",
-          "rift land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log",
+          "lane land: the post-land step after feat/x ran loaded (the 1-minute load is 12.5, at or past the host's 10 cores): it ran what a loaded host allows, and the rest still waits, so the step stays owed. It runs in full once the load has stayed under 10 for 5 minutes, or at the first land after 6 hours owed whatever the load; until then the next land, or every 30 minutes the minute check, runs it loaded again.",
+          "lane land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log",
           "post-land: nothing to do",
         ].join("\n"),
-        description: "rift land · post-land ran loaded",
+        description: "lane land · post-land needs action (loaded)",
       })
       expect(loaded.debts.debts.owed.map((owed) => owed.lands.map((land) => land.head))).toEqual([["abc1234"]])
       // The next land reads a calm host, but the load was past the cores moments ago: loaded again, still owed, for both
@@ -371,8 +385,8 @@ describe("land", () => {
   })
 
   test("land finds each Rift by its branch too, and refuses a name two Rifts answer to, naming both", async () => {
-    const LEXER = "/code/.rifts/app/fu-lexer"
-    const PARSER = "/code/.rifts/app/fu-parser"
+    const LEXER = "/code/.work/app/fu-lexer"
+    const PARSER = "/code/.work/app/fu-parser"
     const state = () => MemoryRifts.world([SOURCE], [MemoryRifts.clean(LEXER, "run/lexer"), MemoryRifts.clean(PARSER, "run/parser")])
     const made = bench(state(), MemoryLanding.world(configured))
     expect(await call(made, { action: "land", rifts: ["run/lexer", "run-parser"] })).toStartWith("Landed 2 workspace(s) as one push")
@@ -387,7 +401,7 @@ describe("land", () => {
   })
 
   test("a land's departs is the orchestrate plugin's: the land runs as it would without it", async () => {
-    const LEXER = "/code/.rifts/app/fu-lexer"
+    const LEXER = "/code/.work/app/fu-lexer"
     const state = () => MemoryRifts.world([SOURCE], [MemoryRifts.clean(LEXER, "run/lexer")])
     const plain = bench(state(), MemoryLanding.world(configured))
     const departing = bench(state(), MemoryLanding.world(configured))
@@ -434,8 +448,8 @@ describe("land", () => {
       {
         sessionID: "ses_1",
         notice: {
-          text: "rift land: the accept check for feat/x FAILED (exit 1) in 3s. The batch is already pushed: fix forward. Log: /logs/accept.log\n  (fail) rift > e2e",
-          description: "rift land · accept failed",
+          text: "lane land: the accept check for feat/x FAILED (exit 1) in 3s. The batch is already pushed: fix forward. Log: /logs/accept.log\n  (fail) rift > e2e",
+          description: "lane land · accept FAILED",
         },
       },
     ])
@@ -496,7 +510,7 @@ describe("land", () => {
       [
         "Landed 2 workspace(s) as one push: abc1234 Merge into trunk to trunk (merged feat/x, feat/y; the gate passed in 3s).",
         `To the trash: ${OTHER}.`,
-        `Kept ${FEAT}: This session runs in ${FEAT}/src, inside ${FEAT}. Move the session out first (session_move to the source), then remove it.`,
+        `Kept ${FEAT}: This session runs in ${FEAT}/src, inside ${FEAT}. Move the session out first (opencode_session_move to the source), then remove it.`,
         "No rift.accept is configured, so no check runs after the push.",
       ].join("\n"),
     )
@@ -510,7 +524,7 @@ describe("land", () => {
   })
 
   describe("with rift.push false (a repository that lands through pull requests)", () => {
-    const THIRD = "/code/.rifts/app/feat-z"
+    const THIRD = "/code/.work/app/feat-z"
     const prs = (pushBranches: boolean, accept: string | undefined = undefined) =>
       bench(
         MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y"), MemoryRifts.clean(THIRD, "feat/z")]),
@@ -575,12 +589,12 @@ describe("land", () => {
           sessionID: "ses_1",
           notice: {
             text: [
-              "rift land: the accept check for feat/x, feat/y passed in 3s; master was not pushed.",
+              "lane land: the accept check for feat/x, feat/y passed in 3s; master was not pushed.",
               `- feat/x (${FEAT}): green; branch pushed: def5678 tip of feat/x`,
               `- feat/y (${OTHER}): green; branch pushed: def5678 tip of feat/y`,
               `- feat/z (${THIRD}): red; conflicts with the batch: b.ts`,
             ].join("\n"),
-            description: "rift land · accept passed",
+            description: "lane land · accept passed, not pushed",
           },
         },
       ])
@@ -591,7 +605,7 @@ describe("land", () => {
       await calls(late, [{ action: "land", rifts: ["feat-x"] }])
       expect(late.woken[0]?.notice.text).toBe(
         [
-          "rift land: the accept check for feat/x FAILED (exit 2) in 3s; master was not pushed. Route each failure to the workspace whose diff it touches. Log: /logs/accept.log",
+          "lane land: the accept check for feat/x FAILED (exit 2) in 3s; master was not pushed. Route each failure to the workspace whose diff it touches. Log: /logs/accept.log",
           "  (fail) e2e > checkout",
           `- feat/x (${FEAT}): red; the accept check failed`,
         ].join("\n"),

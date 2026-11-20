@@ -71,7 +71,7 @@ describe("the static probes", () => {
     put("opencode/cmd/memory/server.ts", "event.system.push({ type: 'text', text: digest })")
     put("opencode/mods/memory/model.ts", "// digest: chosen once per session")
     put("opencode/cmd/notes/server.ts", "event.system.push({ type: 'text', text: new Date().toString() })")
-    put("opencode/cmd/rift/server.ts", "for (const id of WORKTREE_TOOLS) editor.remove(id)")
+    put("opencode/cmd/work/server.ts", "for (const id of WORKTREE_TOOLS) editor.remove(id)")
     put("opencode/cmd/flip/server.ts", "if (on) editor.remove(name)")
     put("opencode/cmd/kernel/server.ts", "runtime: { describe: (tools) => description(options, tools) }")
     put("opencode/mods/memory/digest.ts", "export const LIMITS: Limits = { notes: 30, chars: 4_000 }")

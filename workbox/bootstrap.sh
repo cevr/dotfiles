@@ -159,12 +159,10 @@ if [ ! -x "$local_bin_dir/hc" ] && ! command -v hc >/dev/null 2>&1; then
   curl -fsSL https://releases.herdr.dev/core/install.sh | sh
 fi
 
-# `workrift init <repository> /workspaces/bite` creates the Bite warm source; rerun
-# bootstrap afterwards to give it the environment file and its warm step.
-if [ -f "$bite_source/.rift" ]; then
-  ln -sfn "$HOME/.config/bite-workbox/bite-env/.env" "$bite_source/.env"
-  git -C "$bite_source" config workrift.warm \
-    "TURBO_CACHE=local:rw TURBO_CACHE_DIR=$workspaces_dir/.cache/turbo bun run compile"
+# `workrift init <repository> /workspaces/bite` creates the Bite base and gives it
+# its .env link and warm step (workrift's table); a base made before gets them here.
+if WORKRIFT_SOURCE="$bite_source" "$local_bin_dir/workrift" check >/dev/null 2>&1; then
+  WORKRIFT_SOURCE="$bite_source" WORKRIFT_ROOT="$workspaces_dir" "$local_bin_dir/workrift" settings
 fi
 
 for unit in "$workbox_dir"/systemd/user/*; do

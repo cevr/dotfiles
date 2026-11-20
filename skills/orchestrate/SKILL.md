@@ -59,7 +59,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 - **Read first**: the task, the repo's `AGENTS.md` or `CLAUDE.md`, and `NORTH_STAR.md`. Run on the machine that holds the work. On a host the run has not used, run the base's gate and e2e alone first; each red leg or missing tool goes into one host unit that merges before the others start.
 - **A unit** is one reviewable result: one deliverable, one branch, one spec, a slug of up to 12 characters. Order units by dependency; those with no shared files run together, and a child stacks on its parent's head. The owner's ask, quoted word for word, is the Done line.
 - **Shape first**: a bulk code edit is a codemod; bulk model work is a script on the Batch API; a new core seam follows two blind sketches judged against `NORTH_STAR.md`; a `to-tickets` ticket is a unit, its blocking edges the dependencies. A carried tooling unit that pays back inside the run takes the next free slot.
-- **One workspace per unit**, from the base as `AGENTS.md` says. The implementor's message names its spec, role, round and thread share; its description is `implementor <unit> r<N> (rift: <path>)`. At its hand-back, `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>`; a refusal goes back to it and is not a round.
+- **One workspace per unit**, from the base as `AGENTS.md` says. The implementor's message names its spec, role, round and thread share; its description is `implementor <unit> r<N> (lane: <path>)`. At its hand-back, `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>`; a refusal goes back to it and is not a round.
 - **Pace, not a count**: the account pools set how many agents run ([pace](references/pace.md)), and a heavy agent starts only while the load is under the core count. All heavy checks together use at most the core count in threads: name each worker's share (4 threads or more) in its start message, as its tools' flags.
 - **Focused checks**: a unit's round gate is its changed packages' tests and typecheck, lint of its changed files and its acceptance test, each leg under a minute (`protocol.md`, Rounds). The full gate is the land's merge check; a leg slower than a minute is a tooling unit.
 - **Stateful units start from a model**: a unit that changes behavior over time gets a model-based test as its acceptance check from round 1. A Blocker that repeats an earlier round's class makes a property over that class the next round's first deliverable.
@@ -91,10 +91,6 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 
 - Every role call runs in the background, names the role as its agent type, and has a `description` that starts like its hand-back line (`implementor auth r2`, `verifier batch-3 r1`); a reused agent (next round, lane) gets the new one; where the host keeps the old title, rename it. On OpenCode it names no `model`. Effort is the table's, always; an implementor that renders a look runs at max. Change effort, never the model. How each host starts, falls back and waits: [hosts](references/hosts.md).
 - The pool and model rules are `AGENTS.md`'s (Fable plans, Opus first, Codex plans or verifies and never implements, never Sonnet).
-
-## The freeze
-
-Until 2026-11-29, no new orchestration machinery: no new plugin state, rule, hook, tool action, script or model in `opencode/mods/orchestrate`, `opencode/cmd/orchestrate`, `opencode/mods/rift` or `skills/orchestrate`; only deletions, simplifications and bug fixes. A needed rule becomes a line in the skill.
 
 ## Between messages
 
