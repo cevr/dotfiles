@@ -81,10 +81,16 @@ test('a missing request, or one with no head commit, goes back', () => {
   expect(check({ 'round-1-request.md': 'Digest: The sheet settles at every drag speed. A slow drag no longer snaps it shut.\nRange `1a2b3c4..9f8e7d6`\n' }, 1).code).toBe(0);
 });
 
-test('a request with no Digest: line in its first lines, or an empty one, goes back; one in bold is read', () => {
+test('a request with no Digest: line in its first lines, or an empty one, is accepted for this release with a hint; one in bold is read', () => {
   const head = 'implementor sheet r1: ready round-1-request.md\n';
-  expect(check({ 'round-1-request.md': `${head}Head: 1a2b3c4\n` }, 1).err).toContain('has no `Digest:` line');
-  expect(check({ 'round-1-request.md': `${head}Digest:   \nHead: 1a2b3c4\n` }, 1).code).toBe(1);
-  expect(check({ 'round-1-request.md': `${head}**Digest:** The sheet settles.\nHead: 1a2b3c4\n` }, 1).code).toBe(0);
-  expect(check({ 'round-1-request.md': `${head}${'\n'.repeat(8)}Digest: Too late to read.\nHead: 1a2b3c4\n` }, 1).code).toBe(1);
+  const hinted = (request: string) => {
+    const r = check({ 'round-1-request.md': request }, 1);
+    return [r.code, r.err.includes('request.ts hint:') && r.err.includes('has no `Digest:` line'), r.err.includes('refused')];
+  };
+  expect(hinted(`${head}Head: 1a2b3c4\n`)).toEqual([0, true, false]);
+  expect(hinted(`${head}Digest:   \nHead: 1a2b3c4\n`)).toEqual([0, true, false]);
+  expect(hinted(`${head}${'\n'.repeat(8)}Digest: Too late to read.\nHead: 1a2b3c4\n`)).toEqual([0, true, false]);
+  expect(hinted(`${head}**Digest:** The sheet settles.\nHead: 1a2b3c4\n`)).toEqual([0, false, false]);
+  // The hint never hides a refusal.
+  expect(hinted(`${head}Spec: spec.md\n`)).toEqual([1, true, true]);
 });

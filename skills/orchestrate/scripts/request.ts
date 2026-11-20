@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // The orchestrator's check of a round's request before the unit waits in ready for its batch
-// (protocol.md, Implementor → Request): it exists, names its head commit and carries its `Digest:` line, and it names a red
+// (protocol.md, Implementor → Request): it exists and names its head commit (a missing `Digest:` line is a hint), and it names a red
 // test for each Blocker or Major the last round's findings mark `repeat of`.
 // Usage: bun request.ts <unit dir> <round>   Exit 0: it is ready to land. Exit 1: send the reasons back.
 import { existsSync, readFileSync } from 'node:fs';
@@ -39,6 +39,16 @@ export function digestOf(request: string): string | undefined {
   return undefined;
 }
 
+/**
+ * What round `n`'s request should add, without being held back for it: a `Digest:` line. For one release a request
+ * from a worker on the older protocol, which has none, is accepted with this hint.
+ */
+export function hints(dir: string, n: number): string[] {
+  const request = read(join(dir, `round-${n}-request.md`));
+  if (request === undefined || digestOf(request)) return [];
+  return [`round-${n}-request.md has no \`Digest:\` line: add it as line 2 (what changed or blocks, then why it matters)`];
+}
+
 /** Why round `n`'s request cannot wait in ready; empty when it can. */
 export function refusals(dir: string, n: number): string[] {
   const request = read(join(dir, `round-${n}-request.md`));
@@ -46,7 +56,6 @@ export function refusals(dir: string, n: number): string[] {
   const out: string[] = [];
   // `Head: <sha>`, or a range `<base>..<head>`.
   if (!/\bhead\b[^\n]*\b[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b/i.test(request)) out.push(`round-${n}-request.md names no head commit`);
-  if (!digestOf(request)) out.push(`round-${n}-request.md has no \`Digest:\` line (line 2: what changed or blocks, then why it matters)`);
   const verified = headOf(read(join(dir, `round-${n - 1}-request.md`)) ?? '');
   for (const id of repeats(read(join(dir, `round-${n - 1}-findings.md`)) ?? '')) {
     const m = new RegExp(String.raw`^[\s>*-]*repeat\s+${escape(id)}\**:\s*\S.*?\bred at\s+\`?([0-9a-f]{7,40})\b`, 'im').exec(request);
@@ -65,5 +74,6 @@ if (import.meta.main) {
   }
   const out = refusals(dir, Number(round));
   for (const r of out) console.error(`request.ts refused: ${r}`);
+  for (const h of hints(dir, Number(round))) console.error(`request.ts hint: ${h}`);
   process.exit(out.length ? 1 : 0);
 }
