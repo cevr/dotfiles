@@ -74,9 +74,7 @@ export const outcomeLine = (outcome: Outcome, report: string): string => {
     case "would-merge":
       return `upstream: would merge ${outcome.commits} commits.`
     case "merged":
-      return outcome.pushed
-        ? `upstream: merged ${outcome.commits} commits into ${BRANCH} (${outcome.from.slice(0, 10)} -> ${outcome.merge.slice(0, 10)}) and pushed ${BRANCH}; the next install builds it.`
-        : `upstream: merged ${outcome.commits} commits into ${BRANCH} (${outcome.from.slice(0, 10)} -> ${outcome.merge.slice(0, 10)}), but the push to origin failed; push ${BRANCH} from the fork.`
+      return `upstream: merged ${outcome.commits} commits into ${BRANCH} (${outcome.from.slice(0, 10)} -> ${outcome.merge.slice(0, 10)}) and pushed ${BRANCH}; the next install builds it.`
     case "conflict":
       return `upstream: the merge conflicts in ${outcome.files.length} files (${outcome.files.join(", ")}); ${BRANCH} unchanged. Report: ${report}`
     case "red":
