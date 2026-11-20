@@ -7,6 +7,8 @@ import { byteLength, decodeLine, MAX_LINE } from "@dotfiles/opencode-digest/even
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as Model from "../model.ts"
 import { QuestionsModel } from "../model.ts"
+import { linesOf } from "../digest.ts"
+import { QuestionClosed, type Row } from "../question.ts"
 import { Changes } from "../service.ts"
 import * as MemoryCourier from "./courier.ts"
 import * as MemoryStore from "./store.ts"
@@ -63,6 +65,14 @@ describe("the questions' digest lines", () => {
       ["Closed", "q1", "withdrawn"],
       ["Closed", "q2", "dismissed"],
     ])
+  })
+
+  test("a question closed after it was answered, its answer not yet delivered, writes no Closed line: it was answered", () => {
+    const open: Row = { id: "q1", sessionID: "ses_a", question: "Which port?", assume: "8080", askedAt: 1 }
+    const answered: Row = { ...open, answered: { answer: "3000", delivery: "msg_1" } }
+    const closing = [QuestionClosed.make({ id: "q1", reason: "dropped" })]
+    const tags = (row: Row) => linesOf("ses_root", "ses_a", { next: 2, rows: [row] }, { next: 2, rows: [] }, closing, 5).map((event) => event._tag)
+    expect([tags(answered), tags(open)]).toEqual([[], ["Closed"]])
   })
 
   test("a question put to an orchestrator is not the owner's, and writes nothing", async () => {
