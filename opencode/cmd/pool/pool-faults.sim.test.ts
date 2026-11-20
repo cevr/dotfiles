@@ -365,8 +365,13 @@ revoked.seeded("with every login's refresh token revoked, every turn still ends 
 // new tokens and the lock, writing again every 10 s, past another holder's 30 s wait. Expected: a waiter may send
 // the token the trade retired (401), once per process, and fail over, but no refresh token is traded twice, every turn ends as the
 // property says, and once writes work again every final turn is answered.
-/** The lasting mode's seeds found failing: two waiters in a row sent the same retired token (106497663). */
-const lasting = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663] })
+/**
+ * The lasting mode's seeds found failing: two waiters in a row sent the same retired token (106497663); a held write
+ * that landed during two waits, the lock then kept by a slow trade, so each waiter served the token it read before
+ * its wait, which the file no longer held, and its 401 recorded nothing (820992407; cmd/pool/pool-waiter.sim.test.ts
+ * models the class).
+ */
+const lasting = Seed.runner("cmd/pool/pool-faults.sim.test.ts", { past: [106497663, 820992407] })
 
 lasting.seeded("with store writes failing for a while, every turn still ends as the property says, and no refresh token is traded twice", ({ seed, expect }) =>
   Effect.asVoid(property(seed, expect, lastingCommandsOf(seed), true)),
