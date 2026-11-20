@@ -1,85 +1,103 @@
-// `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
+// `bun run daily`'s settings in the global configs (never a plugin entry), its entries, and its fork steps.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Effect, Match, Schema } from "effect"
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { Effect, Schema } from "effect"
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
-import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, ownedDirs, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeConfigs } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
-const CMD = "/repo/opencode/cmd"
-const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
 const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
 
-/** A written config's plugin entries: a path, or a path with options. */
-const decodeEntries = Schema.decodeUnknownSync(Schema.Struct({ plugins: Schema.Array(Schema.Union([Schema.String, Schema.Struct({ package: Schema.String })])) }))
+/** JSON text, either way. */
+const JsonText = Schema.fromJsonString(Schema.Unknown)
+const parseJson = Schema.decodeUnknownSync(JsonText)
+const jsonOf = Schema.encodeSync(JsonText)
 
-/** A config file's plugin list, as JSON. */
-const PluginsJson = Schema.fromJsonString(Schema.Struct({ plugins: Schema.Array(Schema.Unknown) }))
-const encodePlugins = Schema.encodeSync(PluginsJson)
-const decodePlugins = Schema.decodeUnknownSync(PluginsJson)
+/** A small seeded generator (mulberry32), so a failing seed replays. */
+const random = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
 
 describe("the server config", () => {
-  test("puts our plugins first, replaces our old entries and keeps everyone else's", () => {
+  test("gets each role's model (its other fields kept), Claude's cache lifetime and no auto-update, every other key kept", () => {
     const existing = {
       model: "openai/gpt-6.1-sol",
-      plugins: [`${MODS}/codex`, { package: `${MODS}/pool`, options: { old: true } }, "/elsewhere/plugin", AUTH],
+      plugins: [`${MODS}/codex`, "/elsewhere/plugin"],
       agents: { verifier: { description: "mine" }, build: { model: "x/y" } },
     }
-    const merged = mergeServer(existing, [AUTH, { package: `${MODS}/pool` }, `${MODS}/orchestrate`], { verifier: "openai/gpt-6.1-sol" }, [MODS, AUTH])
-    expect(merged.plugins).toEqual([AUTH, { package: `${MODS}/pool` }, `${MODS}/orchestrate`, "/elsewhere/plugin"])
+    const merged = mergeServer(existing, { verifier: "openai/gpt-6.1-sol" })
     expect(merged.agents).toEqual({ verifier: { description: "mine", model: "openai/gpt-6.1-sol" }, build: { model: "x/y" } })
     expect(merged.model).toBe("openai/gpt-6.1-sol")
     expect(merged.autoupdate).toBe(false)
     expect(merged.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
+    expect(merged.plugins).toBe(existing.plugins)
   })
 
-  test("a plugin that moved from mods/ to its cmd/ composition root replaces its old entry, never doubles it", () => {
-    expect(anthropicAuthPlugin.endsWith("/opencode/cmd/anthropic-auth")).toBe(true)
-    const existing = { plugins: [`${MODS}/anthropic-auth`, "/elsewhere/plugin"] }
-    const merged = mergeServer(existing, [`${CMD}/anthropic-auth`], {}, [MODS, CMD])
-    expect(merged.plugins).toEqual([`${CMD}/anthropic-auth`, "/elsewhere/plugin"])
+  test("neither writer changes plugins: over generated configs, ours and foreign entries, bare and with options, any order or none, the plugin list comes out as it went in", () => {
+    const ENTRIES: ReadonlyArray<PluginEntry> = [
+      pluginDir("guard"),
+      { package: pluginDir("pool"), options: { cacheLifeMs: 1 } },
+      "/elsewhere/plugin",
+      { package: "/elsewhere/configured", options: { keep: true } },
+      BUILTIN_AUTOMATION_OFF,
+      BUILTIN_BTW_OFF,
+      "-opencode.tool.schedule",
+      "/home/x/.local/share/opencode-prime/opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/entries/server/pool",
+    ]
+    for (let seed = 1; seed <= 300; seed++) {
+      const next = random(seed)
+      const plugins = ENTRIES.filter(() => next() < 0.5).toSorted(() => next() - 0.5)
+      const existing = { plugins, theme: { name: "x" }, agents: { worker: { model: "a/b" } } }
+      const before = jsonOf(existing)
+      expect([seed, mergeServer(existing, { worker: "anthropic/c" }).plugins, mergeCli(existing).plugins]).toEqual([seed, plugins, plugins])
+      expect(jsonOf(existing)).toBe(before)
+    }
+    // A config with no plugins key gets none.
+    expect([mergeServer({}, { worker: "anthropic/c" }), mergeCli({})].map((config) => "plugins" in config)).toEqual([false, false])
   })
 
-  test("an update's configure drops the deleted web plugin's entries (its cmd/ root and its mod) from both configs before the handoff restarts the service", () => {
-    // The update's handoff runs `daily.ts --configure` from the checkout it just moved onto the build's commit
-    // (mods/update/process/builder.ts), the same on the Mac and the workbox, right before the restart
-    // (mods/update/model.test.ts pins keep config, advance, configure, record, restart). A restart that read an
-    // entry naming a deleted directory fails that plugin's load, and the handoff's health check rolls the update back.
-    using scratch = scratchDir("daily-configs-")
-    const config = join(scratch.path, ".config/opencode")
-    const checkout = join(DOTFILES, "opencode")
-    const deleted = [join(checkout, "cmd", "web"), join(checkout, "mods", "web")]
-    expect(deleted.some((dir) => existsSync(join(dir, "package.json")))).toBe(false)
-    mkdirSync(config, { recursive: true })
-    writeFileSync(join(config, "opencode.json"), encodePlugins({ plugins: [join(checkout, "cmd/guard"), deleted[0], { package: deleted[1], options: {} }, "/elsewhere/plugin"] }))
-    writeFileSync(join(config, "cli.json"), encodePlugins({ plugins: [deleted[0], "/elsewhere/tui"] }))
-    writeConfigs({ config, server: [pluginDir("guard")], cli: [pluginDir("prime")], models: {}, owned: ownedDirs(join(scratch.path, "share")) })
-    const plugins = (file: string) => decodePlugins(readFileSync(join(config, file), "utf8")).plugins
-    expect(plugins("opencode.json")).toEqual([pluginDir("guard"), "/elsewhere/plugin"])
-    expect(plugins("cli.json")).toEqual([pluginDir("prime"), "/elsewhere/tui"])
-  })
-
-  test("only --configure writes the configs: a stage, which builds while the checkout stays where the running build's plugins load from, writes none", () => {
+  test("a stage writes no global config; a by-hand run writes the settings and no plugin entry", () => {
     const source = readFileSync(join(DOTFILES, "opencode/scripts/daily.ts"), "utf8")
-    const configure = source.slice(source.indexOf("const configureHost = ("), source.indexOf("const forkOf = ("))
     const main = source.slice(source.indexOf("if (import.meta.main) {"))
-    const dispatch = "if (Option.isSome(only)) await Effect.runPromise(only.value)\n  else {"
-    const stage = main.slice(main.indexOf(dispatch) + dispatch.length)
+    const byHand = main.slice(main.indexOf('if (from.kind !== "tree") {'), main.indexOf("// Step 2, from the build's tree"))
+    const stage = main.slice(main.indexOf("// Step 2, from the build's tree"))
     const calls = (text: string, names: ReadonlyArray<string>) => names.reduce((sum, name) => sum + text.split(`${name}(`).length - 1, 0)
+    const from = source.indexOf("export const writeSettings = (")
+    const writer = source.slice(from, source.indexOf("\n}\n", from))
     expect({
-      configureWrites: calls(configure.slice(0, configure.indexOf("const writeTree = (")), ["configured"]),
-      dispatched: main.includes(dispatch),
-      stageWrites: calls(stage, ["writeConfigs", "configured", "configureHost", "writeTree"]),
-    }).toEqual({ configureWrites: 1, dispatched: true, stageWrites: 0 })
+      byHand: calls(byHand, ["settingsByHand"]),
+      stage: calls(stage, ["settingsByHand", "writeSettings", "writeTree"]),
+      writerNamesPlugins: writer.includes("plugins"),
+    }).toEqual({ byHand: 1, stage: 0, writerNamesPlugins: false })
+  })
+
+  test("a from-scratch host's settings: the role models, the cache lifetime, no auto-update, the theme and tab scope, and no plugins key; a second write with nothing changed touches no file", () => {
+    using scratch = scratchDir("daily-settings-")
+    const home = realpathSync(scratch.path)
+    writeSettings(home, { worker: "anthropic/claude-opus-5-5" })
+    const config = join(home, ".config/opencode")
+    const server = join(config, "opencode.json")
+    const cli = join(config, "cli.json")
+    const files = [server, cli, join(config, "themes/prime.json"), join(residentDir(home), "opencode.json")]
+    const read = (path: string) => readFileSync(path, "utf8")
+    expect(parseJson(read(server))).toEqual({ autoupdate: false, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } }, agents: { worker: { model: "anthropic/claude-opus-5-5" } } })
+    expect(parseJson(read(cli))).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+    // Each dated far back first: a write would date it now.
+    for (const path of files) utimesSync(path, 946684800, 946684800)
+    const stamps = files.map((path) => [read(path), statSync(path).mtimeMs])
+    writeSettings(home, { worker: "anthropic/claude-opus-5-5" })
+    expect(files.map((path) => [read(path), statSync(path).mtimeMs])).toEqual(stamps)
   })
 
   test("lists Prime's server half before memory, so its reply style precedes memory's digest, which stays last", () => {
@@ -94,7 +112,7 @@ describe("the server config", () => {
         anthropic: { name: "Claude", settings: { timeout: 60_000, cache: { ttl: "5m" } } },
       },
     }
-    const merged = mergeServer(existing, [], {}, [MODS])
+    const merged = mergeServer(existing, {})
     expect(CLAUDE_CACHE_TTL).toBe("1h")
     expect(merged.providers).toEqual({
       openai: { settings: { reasoningEffort: "high" } },
@@ -105,9 +123,9 @@ describe("the server config", () => {
 
 describe("background compaction", () => {
   test("is default on in the fork (upstream #64290): daily removes the retired flag it wrote, and keeps the other experimental settings", () => {
-    expect(mergeServer({ experimental: { todo: true, background_compaction: true } }, [], {}, [MODS]).experimental).toEqual({ todo: true })
-    expect(mergeServer({ experimental: { background_compaction: true } }, [], {}, [MODS])).not.toHaveProperty("experimental")
-    expect(mergeServer({}, [], {}, [MODS])).not.toHaveProperty("experimental")
+    expect(mergeServer({ experimental: { todo: true, background_compaction: true } }, {}).experimental).toEqual({ todo: true })
+    expect(mergeServer({ experimental: { background_compaction: true } }, {})).not.toHaveProperty("experimental")
+    expect(mergeServer({}, {})).not.toHaveProperty("experimental")
   })
 
   const fork = process.env.OPENCODE_DEV
@@ -120,7 +138,7 @@ describe("background compaction", () => {
 describe("the pool's entry", () => {
   test("gives the pool the cache lifetime the config gives Claude, so a session stays on its cache's login as long as the cache lives", () => {
     const entry = poolEntry(`${MODS}/pool`, undefined)
-    const ttl = (mergeServer({}, [entry], {}, [MODS]).providers as { anthropic: { settings: { cache: { ttl: string } } } }).anthropic.settings.cache.ttl
+    const ttl = (mergeServer({}, {}).providers as { anthropic: { settings: { cache: { ttl: string } } } }).anthropic.settings.cache.ttl
     expect(entry).toEqual({ package: `${MODS}/pool`, options: { cacheLifeMs: 3_600_000 } })
     // The ttl as OpenCode's cache settings write it, read by the cache mods' own parser.
     expect(parseTTL(ttl)).toMatchObject({ _tag: "Some", value: 3_600_000 })
@@ -181,8 +199,6 @@ describe("the pool's fleet", () => {
   test("orchestrate asks the pool first for a Codex provider's agents, and names the checkouts an accepted verdict records the verified target from", () => {
     const entry = orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS)
     expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS } })
-    // It replaces the bare entry an older run wrote, as every entry from our dirs is.
-    expect(mergeServer({ plugins: [`${MODS}/orchestrate`] }, [entry], {}, [MODS]).plugins).toEqual([entry])
   })
 
   test("orchestrate's entry names the newest Fable as the planner's first model, and replaces an earlier run's options whole", () => {
@@ -195,112 +211,31 @@ describe("the pool's fleet", () => {
     expect(planner).toBe("anthropic/claude-fable-5-2")
     const entry = orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS, planner)
     expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS, planner: { model: "anthropic/claude-fable-5-2" } } })
-    // The planner A/B's option an earlier run wrote goes with its entry.
-    const earlier = { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-1", share: 0.2 } } }
-    expect(mergeServer({ plugins: [earlier, "/x"] }, [entry], {}, [MODS]).plugins).toEqual([entry, "/x"])
     // A catalog with no Fable names no first model, and the entry names none: the planner runs on Opus.
     expect(plannerModel({ anthropic: { models: {} } } as never)).toBeUndefined()
-    expect(mergeServer({ plugins: [earlier] }, [orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS, undefined)], {}, [MODS]).plugins).toEqual([
-      { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS } },
-    ])
+    expect(orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS, undefined)).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS } })
   })
 })
 
 describe("the TUI config", () => {
-  test("loads Prime first, sets the Prime theme and keeps the other keys", () => {
-    const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }, [`${MODS}/prime`, `${MODS}/status`], [MODS])
-    expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, tabs: { scope: "window" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] })
+  test("sets the Prime theme and keeps the other keys", () => {
+    const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] })
+    expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, tabs: { scope: "window" }, plugins: [`${MODS}/prime`, "/x"] })
   })
 
   test("keeps each window's tabs its own, keeping the other tab settings", () => {
-    const merged = mergeCli({ tabs: { scope: "cwd", layout: "vertical" } }, [`${MODS}/prime`], [MODS])
-    expect(merged.tabs).toEqual({ scope: "window", layout: "vertical" })
-  })
-
-  test("Prime loads from its cmd/ composition root, and that entry replaces the old mods/prime one", () => {
-    expect(pluginDir("prime").endsWith("/opencode/cmd/prime")).toBe(true)
-    const existing = { theme: { name: "prime", mode: "dark" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] }
-    const merged = mergeCli(existing, [`${CMD}/prime`, `${CMD}/status`], [MODS, CMD])
-    expect(merged.plugins).toEqual([`${CMD}/prime`, `${CMD}/status`, "/x"])
+    expect(mergeCli({ tabs: { scope: "cwd", layout: "vertical" } }).tabs).toEqual({ scope: "window", layout: "vertical" })
   })
 })
 
-describe("the TUI config's built-in /btw", () => {
-  test("is turned off once, however many runs merged it", () => {
-    const once = mergeCli({ plugins: ["/x"] }, [`${MODS}/btw`, BUILTIN_BTW_OFF], [MODS])
-    expect(mergeCli(once, [`${MODS}/btw`, BUILTIN_BTW_OFF], [MODS]).plugins).toEqual([`${MODS}/btw`, BUILTIN_BTW_OFF, "/x"])
-  })
-})
-
-describe("the server config's built-in automation plugin", () => {
-  test("is turned off once, however many runs merged it, so neither its tools nor /automation are offered", () => {
-    expect(BUILTIN_AUTOMATION_OFF).toBe("-opencode.tool.automation")
-    const once = mergeServer({ plugins: ["/x"] }, [`${MODS}/wake`, BUILTIN_AUTOMATION_OFF], {}, [MODS])
-    expect(mergeServer(once, [`${MODS}/wake`, BUILTIN_AUTOMATION_OFF], {}, [MODS]).plugins).toEqual([`${MODS}/wake`, BUILTIN_AUTOMATION_OFF, "/x"])
-  })
-
-  test("drops the entry that turned it off under its name before upstream's rename", () => {
-    const merged = mergeServer({ plugins: ["-opencode.tool.schedule", "/x"] }, [`${MODS}/wake`, BUILTIN_AUTOMATION_OFF], {}, [MODS])
-    expect(merged.plugins).toEqual([`${MODS}/wake`, BUILTIN_AUTOMATION_OFF, "/x"])
-  })
-})
-
-describe("the workspace plugin: work replaces rift", () => {
-  /** A small seeded generator (mulberry32), so a failing seed replays. */
-  const random = (seed: number) => () => {
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-  const UNRELATED: ReadonlyArray<PluginEntry> = ["/elsewhere/plugin", { package: "/elsewhere/configured", options: { keep: true } }, "/home/x/.cache/plugin/cmd/rift", "-opencode.other"]
-  /** An entry of ours for `dir`, bare or with options, as an earlier install or a hand edit wrote it. */
-  const entryOf = (dir: string, next: () => number): PluginEntry => Arr.getUnsafe([dir, { package: dir, options: { work: "/old/work", n: Math.floor(next() * 9) } }], Math.floor(next() * 2))
-  /** A prior server config: `…/cmd/rift` and `…/cmd/work` each absent, once or twice, ours and unrelated entries, any order. */
-  const priorPlugins = (seed: number): Array<PluginEntry> => {
-    const next = random(seed)
-    const times = () => Math.floor(next() * 3)
-    const entries: Array<PluginEntry> = [
-      ...Array.from({ length: times() }, () => entryOf(pluginDir("rift"), next)),
-      ...Array.from({ length: times() }, () => entryOf(pluginDir("work"), next)),
-      ...Array.from({ length: times() }, () => entryOf(pluginDir("guard"), next)),
-      ...UNRELATED.filter(() => next() < 0.7),
-    ]
-    // Fisher-Yates over the seed: any order.
-    for (let i = entries.length - 1; i > 0; i--) {
-      const j = Math.floor(next() * (i + 1))
-      ;[entries[i], entries[j]] = [entries[j]!, entries[i]!]
-    }
-    return entries
-  }
-  /** daily's server list around the workspace plugin, built with `name` as daily builds it (`pluginDir`). */
-  const ours = (name: string): ReadonlyArray<PluginEntry> => [pluginDir("guard"), pluginDir(name), pluginDir("tool-names")]
-  const owned = ownedDirs("/home/.local/share/opencode-prime")
-  /** The written config's plugin paths, each entry bare or with options. */
-  const pathsOf = (config: ReturnType<typeof mergeServer>): ReadonlyArray<string> =>
-    decodeEntries(config).plugins.map((entry) => Match.value(entry).pipe(Match.when(Match.string, (path) => path), Match.orElse((configured) => configured.package)))
-  const count = (config: ReturnType<typeof mergeServer>, dir: string) => pathsOf(config).filter((path) => path === dir).length
-
-  test("daily's server list names work, not rift", () => {
+describe("the server plugins", () => {
+  test("daily's server list names work, not rift, from its cmd/ root", () => {
     expect([SERVER_PLUGINS.filter((name) => name === "work").length, SERVER_PLUGINS.filter((name) => name === "rift").length]).toEqual([1, 0])
     expect(pluginDir("work").endsWith("/opencode/cmd/work")).toBe(true)
   })
 
-  test("for any prior config, the install writes cmd/work exactly once, cmd/rift not at all, and every unrelated entry as it was", () => {
-    for (let seed = 1; seed <= 300; seed++) {
-      const prior = priorPlugins(seed)
-      const merged = mergeServer({ plugins: prior }, ours("work"), {}, owned)
-      const unrelated = prior.filter((entry) => UNRELATED.includes(entry))
-      expect([seed, count(merged, pluginDir("work")), count(merged, pluginDir("rift")), merged.plugins]).toEqual([seed, 1, 0, [...ours("work"), ...unrelated]])
-    }
-  })
-
-  test("the rollback is the same function: built with rift, the install writes cmd/rift once and no cmd/work", () => {
-    for (let seed = 1; seed <= 300; seed++) {
-      const enabled = mergeServer({ plugins: priorPlugins(seed) }, ours("work"), {}, owned)
-      const rolledBack = mergeServer(enabled, ours("rift"), {}, owned)
-      expect([seed, count(rolledBack, pluginDir("rift")), count(rolledBack, pluginDir("work"))]).toEqual([seed, 1, 0])
-    }
+  test("the built-in automation plugin is turned off by its name after upstream's rename", () => {
+    expect(BUILTIN_AUTOMATION_OFF).toBe("-opencode.tool.automation")
   })
 })
 

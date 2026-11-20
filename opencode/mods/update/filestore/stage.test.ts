@@ -1,13 +1,23 @@
 import { describe, expect, test } from "bun:test"
-import { env, spawnSync } from "bun"
-import { Effect, Option, Schema } from "effect"
+import { argv, env, spawnSync } from "bun"
+import { Effect, Layer, Option, Schema } from "effect"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { buildName } from "../builds.ts"
-import { parseRecord, promoted, proven, type Record, recordText, rolledBack } from "../record.ts"
-import { Configs, Records } from "../service.ts"
+import { EXIT_CODES, handoff } from "../model.ts"
+import * as HandoffMarkFile from "../process/mark.ts"
+import { configPaths, installByHand, notInstalledLine, settingsFor, treeOptions } from "../process/install.ts"
+import { goodOf, parseRecord, promoted, proven, type Record, recordText, rolledBack } from "../record.ts"
+import { Builder, Builds, Configs, Records, Service, Source } from "../service.ts"
+import { buildsLock, files } from "../settings.ts"
+import { treeOf } from "../trees.ts"
+import * as BuildsFile from "./builds.ts"
 import * as ConfigFile from "./configs.ts"
 import { oursOf, type Paths as ConfigPaths, tuiKeptOf, tuiOursOf } from "./configs.ts"
+import * as LogFile from "./log.ts"
+import * as NoticeFile from "./notice.ts"
 import * as RecordFile from "./records.ts"
-import { stageBuild, type Stage } from "./stage.ts"
+import * as RejectionFile from "./rejections.ts"
+import { stageBuild, type Stage, treesLayer } from "./stage.ts"
 
 const VERSION = "2.2.7-prime.abcdef12.d0f11e5a"
 
@@ -212,4 +222,175 @@ describe("the late strip of the TUI config, on files", () => {
         expect(exists(tuiKeptOf(paths))).toBe(false)
       }),
     ))
+})
+
+/** The stand-in for a commit's own `scripts/daily.ts --tree <dir>`: both overlay files with no plugin, as the real one writes them for a checkout of none. */
+const OVERLAY_DAILY = `import { mkdirSync, writeFileSync } from "node:fs"
+const dir = process.argv[process.argv.indexOf("--tree") + 1]
+mkdirSync(dir + "/config", { recursive: true })
+writeFileSync(dir + "/config/opencode.json", JSON.stringify({ plugins: [] }))
+writeFileSync(dir + "/config/cli.json", JSON.stringify({ plugins: [] }))
+`
+
+/** daily's settings writer, loaded at run time: daily runs on the root package's Effect, this test on the update's. */
+interface Daily {
+  readonly writeSettings: (home: string, models: globalThis.Record<string, string>) => void
+  readonly roleModels: (catalog: typeof CATALOG) => globalThis.Record<string, string>
+}
+/** Held in a binding, so the typecheck of this package leaves the root package's file alone. */
+const DAILY = "../../../scripts/daily.ts"
+
+/** A catalog of one Opus, the role models' source. */
+const CATALOG = { anthropic: { models: { "claude-opus-5-5": { family: "claude-opus", release_date: "2026-09-22" } } } }
+
+/** A record write as one effect: `record (good)` once it names its installed build good. */
+const recordEffect = (next: Record) =>
+  Option.match(Option.filter(goodOf(next), (good) => good.version === next.version), { onNone: () => "record", onSome: () => "record (good)" })
+
+/** Runs `argv` in `cwd`, failing the case on a non-zero exit; answers what it printed. */
+const ran = (argv: ReadonlyArray<string>, cwd: string) => {
+  const done = spawnSync([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  expect({ argv, code: done.exitCode, err: done.stderr.toString().slice(-800) }).toMatchObject({ code: 0 })
+  return done.stdout.toString()
+}
+
+describe("daily by hand on a from-scratch host", () => {
+  test("A2: no build, no record, no config: the checkout's HEAD installs as a tree build through the real handoff, the configs get the settings and no plugin entry, and a second run writes neither config", () =>
+    Effect.runPromise(
+      Effect.acquireUseRelease(
+        Effect.sync(() => ran(["realpath", ran(["mktemp", "-d", "-t", "update-by-hand"], "/").trim()], "/").trim()),
+        (dir) =>
+          Effect.gen(function* () {
+            const daily: Daily = yield* Effect.promise(() => import(DAILY))
+            const bun = Option.getOrElse(Option.fromNullishOr(argv.at(0)), () => "bun")
+            const path = Option.getOrElse(Option.fromNullishOr(env.PATH), () => "/usr/bin:/bin")
+            const home = `${dir}/home`
+            const repo = `${dir}/dotfiles`
+            // The live checkout: one commit of opencode/, then an edit that is not committed.
+            ran(["mkdir", "-p", `${repo}/opencode/scripts`, `${dir}/build`, home], dir)
+            put(`${repo}/opencode/package.json`, `{ "name": "scratch", "private": true }\n`)
+            put(`${repo}/opencode/scripts/daily.ts`, OVERLAY_DAILY)
+            put(`${repo}/opencode/x.txt`, "committed\n")
+            ran([bun, "install"], `${repo}/opencode`)
+            gitInit(repo, ["-q", "-b", "main"])
+            ran(["git", "add", "-A"], repo)
+            ran(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "scratch"], repo)
+            const commit = ran(["git", "rev-parse", "HEAD"], repo).trim()
+            put(`${repo}/opencode/x.txt`, "edited, not committed\n")
+            put(`${dir}/build/opencode`, "stand-in binary")
+
+            const settings = settingsFor({ host: "scratch-host", home, state: `${home}/.local/state`, checkout: repo, fork: `${dir}/fork`, bun, resident: `${home}/.local/state/opencode-prime/resident`, launcher: `${home}/.local/bin/opencode` })
+            const version = `2.3.0-prime.f0f0f0f0.${commit.slice(0, 8)}.tree`
+            const trees = treeOptions(settings, { PATH: path, HOME: home }, home, 4242)
+            const share = trees.share
+            const effects: Array<string> = []
+            const lines: Array<string> = []
+            const staged: Array<string> = []
+
+            /** The handoff's systems: the real file stores and trees over the scratch host, the model's fake service and commands. */
+            const seams = Layer.mergeAll(
+              Layer.effect(
+                Records,
+                Effect.gen(function* () {
+                  const real = yield* Records
+                  return Records.of({ read: real.read, write: (next) => real.write(next).pipe(Effect.tap(() => Effect.sync(() => void effects.push(recordEffect(next))))) })
+                }),
+              ).pipe(Layer.provide(RecordFile.layer(settings, 4242))),
+              Layer.effect(
+                Builds,
+                Effect.gen(function* () {
+                  const real = yield* Builds
+                  return Builds.of({ ...real, prune: (read) => real.prune(read).pipe(Effect.tap(() => Effect.sync(() => void effects.push("prune")))) })
+                }),
+              ).pipe(Layer.provide(BuildsFile.layer(BuildsFile.optionsOf(share, buildsLock(home), process.platform)))),
+              ConfigFile.layer(configPaths(settings, home)),
+              treesLayer(trees),
+              RejectionFile.layer(files(settings).rejected),
+              NoticeFile.layer(settings.notice),
+              LogFile.layer(files(settings).log, settings.host),
+              HandoffMarkFile.layer(files(settings).mark, 4242),
+              Layer.succeed(
+                Service,
+                Service.of({
+                  restart: Effect.sync(() => void effects.push("restart")),
+                  read: Effect.succeed({ configured: [], listed: [], accounts: Option.some(1), providers: [], logins: [], placement: Option.none() }),
+                  logins: Effect.succeed([]),
+                }),
+              ),
+              Layer.succeed(
+                Source,
+                Source.of({
+                  verified: Effect.die("a handoff reads no target"),
+                  fetch: () => Effect.die("a handoff fetches nothing"),
+                  head: Effect.die("a handoff reads no checkout"),
+                  advance: () => Effect.die("a tree build's handoff moves no checkout"),
+                  reinstall: Effect.die("a tree build's handoff reinstalls nothing"),
+                  commands: Effect.sync(() => void effects.push("commands")),
+                }),
+              ),
+              Layer.succeed(
+                Builder,
+                Builder.of({
+                  version: () => Effect.die("a handoff builds nothing"),
+                  binds: () => Effect.die("a handoff builds nothing"),
+                  stage: () => Effect.die("a handoff builds nothing"),
+                  configure: Effect.die("a tree build's handoff writes no config"),
+                }),
+              ),
+            )
+
+            const byHand = () =>
+              installByHand({
+                checkout: repo,
+                commit,
+                version,
+                trees,
+                stage: (tree) =>
+                  Effect.runPromise(
+                    Effect.sync(() => {
+                      effects.push(...["make tree"].filter(() => exists(`${tree}/config/opencode.json`)), "stage")
+                      stageBuild({ built: `${dir}/build/opencode`, share, version, record: settings.record, launcher: settings.launcher, resident: settings.resident, lock: buildsLock(home), dotfiles: commit, fork: "f0f0f0f0".repeat(5), pid: 4242 })
+                      staged.push(...Option.toArray(Option.flatMap(parseRecord(sh(`cat '${settings.record}'`).stdout.toString()), (record) => Option.fromNullishOr(record.staged))).map((each) => each.version))
+                    }),
+                  ),
+                settings: () => {
+                  daily.writeSettings(home, daily.roleModels(CATALOG))
+                  effects.push("settings")
+                },
+                handoff: () => {
+                  effects.push("handoff", "|")
+                  return Effect.runPromise(handoff("daily by hand").pipe(Effect.map((outcome) => EXIT_CODES[outcome]), Effect.provide(seams)))
+                },
+                log: (line) => void lines.push(line),
+              })
+
+            expect(yield* Effect.promise(byHand)).toBe(0)
+            expect(effects).toEqual(["make tree", "stage", "settings", "handoff", "|", "record", "restart", "record (good)", "prune", "commands"])
+            expect(lines).toEqual([notInstalledLine(commit, 1)])
+            // One build, a tree build, with its tree, installed and proven; the link names its tree.
+            const tree = `${share}/${treeOf(buildName(version))}`
+            expect(entries(share).filter((name) => name.startsWith("opencode-"))).toEqual([buildName(version), treeOf(buildName(version))])
+            expect(staged).toEqual([version])
+            expect(Option.map(parseRecord(sh(`cat '${settings.record}'`).stdout.toString()), (record) => ({ version: record.version, good: Option.map(goodOf(record), (good) => good.version), staged: Option.isSome(Option.fromNullishOr(record.staged)) }))).toEqual(Option.some({ version, good: Option.some(version), staged: false }))
+            expect(sh(`readlink '${share}/current.plugins'`).stdout.toString().trim()).toBe(treeOf(buildName(version)))
+            // The tree holds the commit's file, never the edit.
+            expect(sh(`cat '${tree}/opencode/x.txt'`).stdout.toString()).toBe("committed\n")
+            // The settings, and no plugin entry of any kind.
+            const [server, cli] = settings.config
+            const json = (file: string) => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(sh(`cat '${file}'`).stdout.toString())
+            const roles = { model: "anthropic/claude-opus-5-5" }
+            expect(json(Option.getOrElse(Option.fromNullishOr(server), () => ""))).toEqual({ autoupdate: false, providers: { anthropic: { settings: { cache: { ttl: "1h" } } } }, agents: { planner: roles, implementor: roles, verifier: roles, worker: roles } })
+            expect(json(Option.getOrElse(Option.fromNullishOr(cli), () => ""))).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" } })
+
+            // A second run with no new commit writes neither config.
+            // Both dated far back first: a write would date them now.
+            for (const file of settings.config) expect(sh(`touch -t 200001010000 '${file}'`).exitCode).toBe(0)
+            const stamps = () => settings.config.map((file) => sh(`cat '${file}' && date -r '${file}' +%s`).stdout.toString())
+            const before = stamps()
+            expect(yield* Effect.promise(byHand)).toBe(0)
+            expect(stamps()).toEqual(before)
+          }),
+        (dir) => Effect.sync(() => void spawnSync(["/bin/sh", "-c", 'chmod -R u+w "$1" && rm -rf "$1"', "sh", dir])),
+      ),
+    ), 60_000)
 })

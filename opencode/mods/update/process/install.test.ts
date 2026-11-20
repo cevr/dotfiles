@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Option } from "effect"
-import { type Build, nextRecord, proven, recordText, stagedRecord } from "../record.ts"
-import { builtForTree, configPaths, flagValue, programForHand, refusals, settingsFor, stagedLine, treeStage } from "./install.ts"
+import { builtForTree, configPaths, flagValue, notInstalledLine, refusals, settingsFor, STAGED_LINE, treeStage } from "./install.ts"
 
 const HOST = { host: "bite-cristian", home: "/h", state: "/h/.local/state", checkout: "/h/dotfiles", fork: "/h/opencode", bun: "/h/.local/bin/bun", resident: "/h/.local/state/opencode-prime/resident", launcher: "/h/.local/bin/opencode" }
 const VERSION = "2.3.0-prime.056a7066.1c82e080"
@@ -30,10 +28,14 @@ describe("daily's part of the update", () => {
     expect(paths.owned.dirs).toEqual(["/h/dotfiles/opencode/mods", "/h/dotfiles/opencode/cmd", "/h/.local/share/opencode-prime/anthropic-auth"])
   })
 
-  test("daily's staged line says what the handoff of that scheme does: a tree build's moves no checkout and writes no config", () => {
-    expect(stagedLine(true)).toContain("no checkout moves and no config is written")
-    expect(stagedLine(true)).not.toContain("writes the configs")
-    expect(stagedLine(false)).toContain("moves the checkout, writes the configs")
+  test("daily's staged line says what the handoff does: it moves no checkout and writes no config", () => {
+    expect(STAGED_LINE).toContain("no checkout moves and no config is written")
+    expect(STAGED_LINE).not.toContain("writes the configs")
+  })
+
+  test("daily by hand says it installs the commit, never the edits as they stand, and how many files under opencode/ differ", () => {
+    expect(notInstalledLine("c".repeat(40), 0)).toBe(`daily: installing commit ${"c".repeat(10)}; uncommitted edits in this checkout are not installed (to run them: bun run verify:launch)`)
+    expect(notInstalledLine("c".repeat(40), 3)).toBe(`${notInstalledLine("c".repeat(40), 0)}; 3 files under opencode/ differ from it`)
   })
 
   test("strips the TUI config late, the one named cli.json, by the same directories and the TUI's built-ins off", () => {
@@ -43,42 +45,30 @@ describe("daily's part of the update", () => {
   })
 })
 
-describe("daily's stage from a build's tree", () => {
-  test("without --from-tree it stages from the checkout, as before", () => {
-    const from = treeStage("/h/dotfiles/opencode", false, [])
-    expect([from, refusals(from), builtForTree(from, VERSION)]).toEqual([{ kind: "checkout" }, [], []])
+describe("what daily is asked to do", () => {
+  test("with neither --stage nor --from-tree, it installs by hand", () => {
+    const from = treeStage("/h/dotfiles/opencode", false, false, [])
+    expect([from, refusals(from), builtForTree(from, VERSION)]).toEqual([{ kind: "hand" }, [], []])
+  })
+
+  test("a stage is only ever from a build's tree: --stage or --from-tree alone is refused", () => {
+    for (const [stage, flagged] of [
+      [true, false],
+      [false, true],
+    ] as const)
+      expect(refusals(treeStage(`${TREE}/opencode`, stage, flagged, ["d".repeat(40)]))).toEqual(["daily stages only from a build's tree (--stage --from-tree, as the update runs it); by hand it takes neither flag"])
   })
 
   test("from a tree it names the tree's build, and stages only the version the tree was made for", () => {
-    const from = treeStage(`${TREE}/opencode`, true, ["d".repeat(40)])
+    const from = treeStage(`${TREE}/opencode`, true, true, ["d".repeat(40)])
     expect([from, refusals(from)]).toEqual([{ kind: "tree", build: `opencode-${VERSION}` }, []])
     expect(builtForTree(from, VERSION)).toEqual([])
     expect(builtForTree(from, "2.3.0-prime.056a7066.ffffffff")).toEqual([`daily built 2.3.0-prime.056a7066.ffffffff, but runs from the tree of opencode-${VERSION}: nothing staged`])
   })
 
   test("refuses a root that is no tree's opencode/, or a stage that names no dotfiles commit", () => {
-    expect(refusals(treeStage("/h/dotfiles/opencode", true, ["d".repeat(40)]))).toEqual(["daily --from-tree runs from a build's tree (<share>/opencode-<version>.plugins/opencode), not /h/dotfiles/opencode"])
-    expect(refusals(treeStage(`${TREE}/cmd`, true, ["d".repeat(40)]))).toHaveLength(1)
-    expect(refusals(treeStage(`${TREE}/opencode`, true, []))).toEqual(["daily --from-tree needs --dotfiles-target: a tree has no git to read the dotfiles commit from"])
-  })
-})
-
-describe("the handoff daily by hand runs", () => {
-  const settings = settingsFor(HOST)
-  const build: Build = { version: VERSION, command: [`/h/.local/share/opencode-prime/opencode-${VERSION}`], dotfiles: "d".repeat(40), fork: "f".repeat(40) }
-  const old = proven({ version: "2.2.9-prime.aaaaaaaa", command: ["/h/.local/share/opencode-prime/opencode-2.2.9-prime.aaaaaaaa"], dotfiles: "a".repeat(40), fork: "a".repeat(40) })
-  const read = (text: string) => () => text
-
-  test("is the next build's own, from its tree, when the tree has one: the staged build's, else the installed one's", () => {
-    const tree = { path: `${TREE}/opencode/cmd/update/handoff.ts`, cwd: `${TREE}/opencode` }
-    const there = (path: string) => path === tree.path
-    expect(programForHand(settings, read(recordText(stagedRecord(Option.some(old), build, []))), there)).toEqual(tree)
-    expect(programForHand(settings, read(recordText(nextRecord(Option.some(old), build, []))), there)).toEqual(tree)
-  })
-
-  test("is the live checkout's for a build with no tree, or with no record that reads", () => {
-    const checkout = { path: "/h/dotfiles/opencode/cmd/update/handoff.ts", cwd: "/h/dotfiles" }
-    expect(programForHand(settings, read(recordText(stagedRecord(Option.some(old), build, []))), () => false)).toEqual(checkout)
-    expect(programForHand(settings, read("not a record"), () => true)).toEqual(checkout)
+    expect(refusals(treeStage("/h/dotfiles/opencode", true, true, ["d".repeat(40)]))).toEqual(["daily --from-tree runs from a build's tree (<share>/opencode-<version>.plugins/opencode), not /h/dotfiles/opencode"])
+    expect(refusals(treeStage(`${TREE}/cmd`, true, true, ["d".repeat(40)]))).toHaveLength(1)
+    expect(refusals(treeStage(`${TREE}/opencode`, true, true, []))).toEqual(["daily --from-tree needs --dotfiles-target: a tree has no git to read the dotfiles commit from"])
   })
 })

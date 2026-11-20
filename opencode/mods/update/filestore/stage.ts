@@ -30,6 +30,25 @@ export const treesLayer = (options: TreeOptions & { readonly lock: string }) =>
     }),
   )
 
+/**
+ * daily by hand's tree build, as the updater makes one (`model.ts` `installTree`), for daily, which runs on
+ * the root package's Effect: the tree of build `version` made from dotfiles commit `commit` under the
+ * builds lock (`treesLayer`), then `stage` run on it (the tree's own daily); a stage that fails takes its
+ * tree with it. A from-scratch host has no share directory yet: it is made first. Answers the tree's
+ * path; rejects with the failed step.
+ */
+export const makeAndStage = (options: TreeOptions & { readonly lock: string }, version: string, commit: string, stage: (tree: string) => Promise<void>): Promise<string> =>
+  Effect.runPromise(
+    Trees.use((trees) =>
+      Effect.sync(() => mkdirSync(options.share, { recursive: true })).pipe(
+        Effect.andThen(trees.make(version, commit)),
+        Effect.tap((tree) =>
+          Effect.tryPromise({ try: () => stage(tree), catch: (cause) => new UpdateFailed({ step: "stage the build", message: String(cause) }) }).pipe(Effect.tapError(() => trees.remove(version))),
+        ),
+      ),
+    ).pipe(Effect.provide(treesLayer(options))),
+  )
+
 /** One build daily stages: the file it built, where it goes, and what the record says of it. */
 export interface Stage {
   /** The release binary daily built. */

@@ -1,10 +1,12 @@
 import { env, spawnSync } from "bun"
-import { Array as Arr, Option, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import { buildName } from "../builds.ts"
 import { oursOf, tuiOursOf } from "../filestore/configs.ts"
+import { makeAndStage } from "../filestore/stage.ts"
+import type { Options as TreeOptions } from "../filestore/trees.ts"
 import { buildsLock, files, HANDOFF_SETTINGS, modeOf, type Settings, SettingsJson, shareDir, stepEnv } from "../settings.ts"
 import { buildOfTree } from "../trees.ts"
-import { type Program, programOf } from "./handoff.ts"
+import type { Program } from "./handoff.ts"
 import { environment } from "./run.ts"
 
 const encodeSettings = Schema.encodeSync(SettingsJson)
@@ -74,34 +76,32 @@ export const configPaths = (settings: Settings, home: string) => ({
 })
 
 /**
- * What daily says once it staged a build: what the handoff will do with it. A tree build's handoff
- * writes the record and restarts, and moves no checkout and writes no config (but the first tree
- * install's strip of our server entries); the old scheme's moves the checkout and writes the configs.
+ * What daily says once it staged a build: what a handoff will do with it. It writes the record and
+ * restarts, and moves no checkout and writes no config (but the first tree install's strip of our
+ * server entries).
  */
-export const stagedLine = (fromTree: boolean): string => STAGED_LINES[`${fromTree}`]
-
-const STAGED_LINES = {
-  true: "staged: the update plugin's handoff installs it in the record and restarts the service onto it (after the Sabbath rest, in it); no checkout moves and no config is written, but for a host's first tree install, which takes our entries out of the server config",
-  false: "staged: the update plugin's handoff moves the checkout, writes the configs and restarts the service (after the Sabbath rest, in it)",
-} as const
+export const STAGED_LINE =
+  "staged: a handoff installs it in the record and restarts the service onto it (the update plugin's after the Sabbath rest, daily by hand's at once); no checkout moves and no config is written, but for a host's first tree install, which takes our entries out of the server config"
 
 /** The last part of a path. */
 const lastPart = (path: string): string => Option.getOrElse(Arr.last(path.split("/")), () => path)
 
 /**
- * Where daily stages from (`--from-tree` or not), as plain data for daily, which runs on the root
- * package's Effect: the checkout, a build's tree (the build's name), or a stage refused with why.
+ * What daily was asked to do, as plain data for daily, which runs on the root package's Effect: install
+ * the checkout's commit by hand, stage from a build's tree (the build's name), or nothing, refused with why.
  */
-export type StageFrom = { readonly kind: "checkout" } | { readonly kind: "tree"; readonly build: string } | { readonly kind: "refused"; readonly message: string }
+export type StageFrom = { readonly kind: "hand" } | { readonly kind: "tree"; readonly build: string } | { readonly kind: "refused"; readonly message: string }
 
 /**
- * A stage from a build's tree (daily's `--from-tree`): the build whose tree daily's `opencode/` (`root`)
- * is (`<share>/opencode-<version>.plugins/opencode`), with the dotfiles commit the update names
- * (`--dotfiles-target`, as a tree has no git to read one from). The checkout without the flag;
- * refused, so daily stages nothing, for a root that is no tree or a stage that names no dotfiles commit.
+ * A stage from a build's tree (daily's `--stage --from-tree`): the build whose tree daily's `opencode/`
+ * (`root`) is (`<share>/opencode-<version>.plugins/opencode`), with the dotfiles commit the update names
+ * (`--dotfiles-target`, as a tree has no git to read one from). With neither flag, an install by hand;
+ * refused, so daily stages nothing, for a stage that is not from a tree, a root that is no tree or a stage
+ * that names no dotfiles commit.
  */
-export const treeStage = (root: string, flagged: boolean, dotfiles: ReadonlyArray<string>): StageFrom => {
-  if (!flagged) return { kind: "checkout" }
+export const treeStage = (root: string, stage: boolean, flagged: boolean, dotfiles: ReadonlyArray<string>): StageFrom => {
+  if (!stage && !flagged) return { kind: "hand" }
+  if (!stage || !flagged) return { kind: "refused", message: "daily stages only from a build's tree (--stage --from-tree, as the update runs it); by hand it takes neither flag" }
   const build = Option.filter(buildOfTree(lastPart(root.slice(0, root.lastIndexOf("/")))), () => lastPart(root) === "opencode")
   if (Option.isNone(build)) return { kind: "refused", message: `daily --from-tree runs from a build's tree (<share>/opencode-<version>.plugins/opencode), not ${root}` }
   if (dotfiles.length === 0) return { kind: "refused", message: "daily --from-tree needs --dotfiles-target: a tree has no git to read the dotfiles commit from" }
@@ -124,17 +124,66 @@ export const builtForTree = (from: StageFrom, version: string): ReadonlyArray<st
     .map((each) => `daily built ${version}, but runs from the tree of ${each.build}: nothing staged`)
     .toArray()
 
-/** The handoff program for daily by hand (`handoff.ts` `programOf`), over the record file as `read` reads it now (none when it throws). */
-export const programForHand = (settings: Settings, read: (path: string) => string, exists: (path: string) => boolean): Program => programOf(settings, Option.liftThrowable(() => read(settings.record))(), exists)
-
 /** The commit a checkout is on, in full. */
 export const headOf = (directory: string): string => spawnSync(["git", "-C", directory, "rev-parse", "HEAD"]).stdout.toString().trim()
 
+/** How many files under the checkout's `opencode/` differ from its commit, git's way (`status --porcelain`). */
+const uncommitted = (checkout: string): number =>
+  spawnSync(["git", "-C", checkout, "status", "--porcelain", "--", "opencode"])
+    .stdout.toString()
+    .split("\n")
+    .filter((line) => line !== "").length
+
+/**
+ * What daily by hand says before it installs: the commit, never the files as they stand. An edit not
+ * committed is in no tree; the dev launcher runs the checkout as it stands.
+ */
+export const notInstalledLine = (commit: string, dirty: number): string =>
+  [
+    `daily: installing commit ${commit.slice(0, 10)}; uncommitted edits in this checkout are not installed (to run them: bun run verify:launch)`,
+    ...[dirty].flatMap((count) => [`; ${count} files under opencode/ differ from it`].filter(() => count > 0)),
+  ].join("")
+
+/** daily by hand's install of the checkout's commit, each step daily's own (`installByHand`). */
+export interface ByHand {
+  /** The live dotfiles checkout, whose object store the tree is made from. */
+  readonly checkout: string
+  /** Its HEAD, the dotfiles commit installed. */
+  readonly commit: string
+  /** The build's version, a tree build's (`pin.ts` `versionOf`). */
+  readonly version: string
+  /** Where and how the tree is made (`treeOptions`). */
+  readonly trees: TreeOptions & { readonly lock: string }
+  /** The tree's own daily, staging the build (`builder.ts` `treeStageCommand`); rejects when it fails. */
+  readonly stage: (tree: string) => Promise<void>
+  /** The host's settings in the global configs: never a plugin entry. */
+  readonly settings: () => void
+  /** The restart through the tree's handoff; answers its exit code. */
+  readonly handoff: (tree: string) => Promise<number>
+  readonly log: (line: string) => void
+}
+
+/**
+ * daily by hand: the checkout's HEAD installed the way the updater installs a target. The tree is made
+ * and the build staged from it (`stage.ts` `makeAndStage`, a failed stage taking its tree), then the
+ * host's settings are written, then the tree's handoff restarts onto the build. Answers the handoff's
+ * exit code; rejects, restarting nothing, when the tree or the stage fails.
+ */
+export const installByHand = (steps: ByHand): Promise<number> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Effect.sync(() => steps.log(notInstalledLine(steps.commit, uncommitted(steps.checkout))))
+      const tree = yield* Effect.promise(() => makeAndStage(steps.trees, steps.version, steps.commit, steps.stage))
+      yield* Effect.sync(steps.settings)
+      return yield* Effect.promise(() => steps.handoff(tree))
+    }),
+  )
+
 /**
  * Restarts the service through the update's handoff, as the plugin does, waiting for it: the health
- * check and its recovery run for an install by hand too. `program` is the next build's own handoff,
- * from its tree when it has one (`handoff.ts` `programOf`). Answers the handoff's exit code
- * (`model.ts` `EXIT_CODES`: 0 only for a proven build); its lines are in the update's log.
+ * check and its recovery run for an install by hand too. `program` is the build's own handoff, from its
+ * tree (`handoff.ts` `treeProgram`). Answers the handoff's exit code (`model.ts` `EXIT_CODES`: 0 only
+ * for a proven build); its lines are in the update's log.
  */
 export const restartThroughHandoff = (settings: Settings, reason: string, program: Program): number =>
   spawnSync([settings.bun, program.path, reason], {

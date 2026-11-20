@@ -7,44 +7,41 @@
 //    (scripts/upstream.ts); a conflict or a red check leaves prime-look as it was, writes
 //    `~/.local/state/opencode-daily/upstream-conflict.md` and the install goes on. `--no-upstream`
 //    skips it; `--dry-run` fetches, says what it would merge and stops before anything else.
-// 1. Builds the fork in `OPENCODE_DEV` (default: the prime-look workspace) as a release binary
-//    (channel `latest`, version `<base>-prime.<fork commit>.<dotfiles commit>`, eight hex each), so it
-//    shares the installed OpenCode's database and background service; a version change restarts that
-//    service as ours, and a dotfiles-only update is a new version too. With
-//    `--fork-target <sha>` it builds exactly that commit, in a detached worktree of the fork
-//    pinned there (`~/.local/state/opencode-daily/fork-build`), never prime-look's HEAD, which
-//    a land's post-land merge moves. A binary whose version names another pair of commits stops daily, and the
-//    record names the commits built (mods/update/process/pin.ts). `--skip-build` reuses the last build,
-//    which then must name the same pair.
-// 2. Copies it to `~/.local/share/opencode-prime/`, stages it in the installed record and writes
-//    `~/.local/bin/opencode`, a launcher that runs the build the record installs (the running one
-//    until the handoff installs this one) without the caller's Anthropic routing and, after a
-//    service start or restart, loads the resident location so the server plugins run with no
-//    client (mods/update/filestore/launcher.ts, `residentDir`). `~/.local/bin` comes before
-//    `~/.bun/bin` on PATH; `opencode2` stays the stock release.
-// 3. Merges our entries into `~/.config/opencode/opencode.json` (server plugins, the role
-//    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
-//    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
-//    committed.
-//    Only `--configure` does this step, and nothing else: the update's handoff runs it from the
-//    checkout once it moved onto the build's commit, right before the restart (mods/update). A
-//    by-hand run gets it from the handoff too. The plugin lists are data (mods/update/trees.ts),
-//    which `--tree <dir> --at <place> [--checkout <live checkout>] [--host <name>]` reads too: it writes a build's
-//    plugin tree's server entries and overlay (`config/opencode.json`, `config/cli.json`) into the
-//    tree in the making `dir`, every path naming `place`, and nothing else (mods/update/filestore/trees.ts).
-// 4. Writes upstream/dev's lead for the TUI's corner (`upstreamReading`), then restarts the service
-//    through the update's handoff (mods/update: checkout move, configs, health check, reinstall,
-//    rollback). `--stage` (the update plugin's build ahead, from the checkout as it stands, which
-//    does not move; `--dotfiles-target <sha>` names the commit the record gives the build) restarts
-//    nothing and writes no config: the plugin's handoff does both, at once (outside the Sabbath rest).
-//    The update stages with `--stage --from-tree`, run from the build's plugin tree
-//    (`<share>/opencode-<version>.plugins/opencode`, mods/update/process/builder.ts): no fork link, no
-//    install and no upstream merge (the tree is sealed; the post-land step merges upstream), and a
-//    build whose version is not the tree's stages nothing (mods/update/process/install.ts `treeStage`).
-//    By hand, the restart runs the next build's own handoff, from its tree when it has one.
+// 1. By hand (no `--stage`), installs this checkout's HEAD as the update installs a target
+//    (mods/update/process/install.ts `installByHand`): the build's plugin tree made from the commit, out of
+//    the checkout's object store (`<share>/opencode-<version>.plugins`), then that tree's own daily run with
+//    `--stage --from-tree` (step 2), then the host's settings (step 3), then the tree's handoff (step 4).
+//    The files as they stand are never installed: an edit not committed runs in the dev launcher alone
+//    (`bun run verify:launch`), and daily says so.
+// 2. `--stage --from-tree` (the update's stage, run from the build's plugin tree, mods/update/process/builder.ts):
+//    builds the fork commit `--fork-target <sha>` as a release binary (channel `latest`, version
+//    `<base>-prime.<fork commit>.<dotfiles commit>.tree`, eight hex each), in a detached worktree of the
+//    fork pinned there (`~/.local/state/opencode-daily/fork-build`), never prime-look's HEAD, which a land's
+//    post-land merge moves; so it shares the installed OpenCode's database and background service, and
+//    each update is a new version. A binary whose version names another pair of commits stops daily, and
+//    the record names the commits built (mods/update/process/pin.ts); `--skip-build` reuses the last build,
+//    which then must name the same pair, and a build whose version is not the tree's stages nothing
+//    (install.ts `treeStage`). It copies the build to `~/.local/share/opencode-prime/`, stages it in the
+//    installed record and writes `~/.local/bin/opencode`, a launcher that runs the build the record installs
+//    (the running one until the handoff installs this one) without the caller's Anthropic routing and,
+//    after a service start or restart, loads the resident location so the server plugins run with no
+//    client (mods/update/filestore/launcher.ts, `residentDir`). `~/.local/bin` comes before `~/.bun/bin` on
+//    PATH; `opencode2` stays the stock release. It restarts nothing and writes no config, and runs no fork
+//    link, install or upstream merge (the tree is sealed; the post-land step merges upstream).
+// 3. By hand only, the host's settings: the role agents' models, Claude's cache lifetime and no auto-update in
+//    `~/.config/opencode/opencode.json`, the Prime theme and the window tab scope in `cli.json`, every other
+//    key and every plugin entry kept as it is, each file written only when its text changes
+//    (`writeSettings`). No plugin entry: each build's plugins are in its tree. The plugin lists are data
+//    (mods/update/trees.ts), which `--tree <dir> --at <place> [--checkout <live checkout>] [--host <name>]`
+//    reads: it writes a build's plugin tree's server entries and overlay (`config/opencode.json`,
+//    `config/cli.json`) into the tree in the making `dir`, every path naming `place`, and nothing else
+//    (mods/update/filestore/trees.ts).
+// 4. By hand, restarts the service through the build's own handoff (mods/update: the record, the restart,
+//    the health check, the rollback), at once; the update plugin's handoff does it after the Sabbath rest.
+//    The staged stage writes upstream/dev's lead for the TUI's corner first (`upstreamReading`).
 import { $ } from "bun"
-import { Effect, Option } from "effect"
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { Effect, Option, Schema } from "effect"
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
@@ -54,17 +51,21 @@ import { readyFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
-import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
-import { builtForTree, flagValue, headOf, programForHand, refusals, restartThroughHandoff, settingsFor, stagedLine, treeStage, updateEntry } from "../mods/update/process/install.ts"
-import { buildsLock, shareDir } from "../mods/update/settings.ts"
+import { forkChecks, mergeUpstream, type Outcome as UpstreamOutcome, ownsFork, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
+import { builtForTree, flagValue, headOf, installByHand, refusals, restartThroughHandoff, settingsFor, STAGED_LINE, treeOptions, treeStage, updateEntry } from "../mods/update/process/install.ts"
+import { buildsLock, shareDir, stepEnv } from "../mods/update/settings.ts"
 import { stageBuild } from "../mods/update/filestore/stage.ts"
-import { RETIRED_PLUGINS } from "../mods/update/filestore/configs.ts"
-import { releaseBuild, runDailyBuild } from "../mods/update/process/pin.ts"
+import { treeStageCommand } from "../mods/update/process/builder.ts"
+import { treeProgram } from "../mods/update/process/handoff.ts"
+import { environment } from "../mods/update/process/run.ts"
+import { releaseBuild, runDailyBuild, versionOf } from "../mods/update/process/pin.ts"
 
 /** This checkout's `opencode/` directory, which daily runs from. */
 const ROOT = resolve(import.meta.dir, "..")
 const MODS = join(ROOT, "mods")
-const CMD = join(ROOT, "cmd")
+
+/** The fork's CLI package at a commit, of which daily by hand reads the version its build names. */
+const decodeCliPackage = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ version: Schema.String })))
 
 /**
  * The directory OpenCode loads a plugin from in the `opencode/` directory `root`: its `cmd/` package
@@ -80,13 +81,6 @@ export const pluginDirIn = (name: string, root: string, at: string = root): stri
 export const pluginDir = (name: string): string => pluginDirIn(name, ROOT)
 const THEME = resolve(import.meta.dir, "../themes/prime.json")
 
-/** Why the upstream merge is skipped, by where daily stages from: a stage from a build's tree has no link into the fork for the merge's checks. */
-const SKIPPED_MERGE = {
-  checkout: "a land's post-land step is merging upstream now",
-  tree: "a stage from a build's tree; the post-land step merges upstream",
-  refused: "a refused stage",
-} as const
-
 /** Stops daily, staging nothing, at the first of `problems` (it throws, as daily's other refusals do); nothing when there are none. */
 const refuse = (problems: ReadonlyArray<string>): void => Effect.runSync(Effect.forEach(problems.slice(0, 1), (problem) => Effect.fail(`daily: ${problem}`), { discard: true }))
 
@@ -94,9 +88,6 @@ export type PluginEntry = string | { readonly package: string; readonly options?
 type Json = Record<string, unknown>
 
 export { BUILTIN_AUTOMATION_OFF, BUILTIN_BTW_OFF }
-
-const packageOf = (entry: unknown): string | undefined =>
-  typeof entry === "string" ? entry : typeof entry === "object" && entry !== null && "package" in entry ? String(entry.package) : undefined
 
 /**
  * The resident location: a directory of its own whose config keeps it loaded
@@ -230,23 +221,12 @@ const retired = (existing: Json) => {
 }
 
 /**
- * The global server config with ours merged in: our plugins (any entry from `owned` dirs, or an
- * earlier copy of one that names no directory, such as `-opencode.tool.automation`, is replaced,
- * a `RETIRED_PLUGINS` entry dropped, every other entry kept, ours first so the auth plugin precedes the pool), each
- * role's model (its other fields kept), the retired `experimental.background_compaction` removed
- * (`retired`), and auto-update off so the stock release never replaces the fork.
+ * The global server config with the host's settings in it: each role's model (its other fields kept),
+ * Claude's cache lifetime, the retired `experimental.background_compaction` removed (`retired`), and
+ * auto-update off so the stock release never replaces the fork. Every other key stays, `plugins`
+ * untouched: each build's plugins are in its tree.
  */
-export const mergeServer = (
-  existing: Json,
-  plugins: ReadonlyArray<PluginEntry>,
-  models: Record<string, string>,
-  owned: ReadonlyArray<string>,
-): Json => {
-  const ours = plugins.map(packageOf)
-  const others = (Array.isArray(existing.plugins) ? existing.plugins : []).filter((entry) => {
-    const path = packageOf(entry)
-    return path === undefined || (!ours.includes(path) && !RETIRED_PLUGINS.includes(path) && !owned.some((dir) => path === dir || path.startsWith(`${dir}/`)))
-  })
+export const mergeServer = (existing: Json, models: Record<string, string>): Json => {
   const agents = (typeof existing.agents === "object" && existing.agents !== null ? existing.agents : {}) as Record<string, Json>
   const providers = record(existing.providers)
   const anthropic = record(providers.anthropic)
@@ -257,7 +237,6 @@ export const mergeServer = (
     // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
     // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
     providers: { ...providers, anthropic: { ...anthropic, settings: { ...settings, cache: { ...record(settings.cache), ttl: CLAUDE_CACHE_TTL } } } },
-    plugins: [...plugins, ...others],
     agents: {
       ...agents,
       ...Object.fromEntries(Object.entries(models).map(([role, model]) => [role, { ...agents[role], model }])),
@@ -272,20 +251,14 @@ const objectAt = (config: Json, key: string): object => {
 }
 
 /**
- * The TUI config with ours merged in: our plugins first (Prime before the rest), the Prime theme,
- * and the fork's `window` tab scope: a window's tabs are the sessions opened in it, never those
- * of the other TUIs on the machine, since herdr gives each session its own space (owner, q61).
- * An entry of ours that names no directory (`-opencode.btw` turns a built-in off) replaces its
- * earlier copy.
+ * The TUI config with the host's settings in it: the Prime theme, and the fork's `window` tab scope:
+ * a window's tabs are the sessions opened in it, never those of the other TUIs on the machine, since
+ * herdr gives each session its own space (owner, q61). Every other key stays, `plugins` untouched.
  */
-export const mergeCli = (existing: Json, plugins: ReadonlyArray<string>, owned: ReadonlyArray<string>): Json => {
-  const others = (Array.isArray(existing.plugins) ? existing.plugins : []).filter((entry) => {
-    const path = packageOf(entry)
-    return path === undefined || (!plugins.includes(path) && !owned.some((dir) => path === dir || path.startsWith(`${dir}/`)))
-  })
+export const mergeCli = (existing: Json): Json => {
   const theme = objectAt(existing, "theme")
   const tabs = objectAt(existing, "tabs")
-  return { ...existing, theme: { ...theme, name: "prime" }, tabs: { ...tabs, scope: "window" }, plugins: [...plugins, ...others] }
+  return { ...existing, theme: { ...theme, name: "prime" }, tabs: { ...tabs, scope: "window" } }
 }
 
 const readJson = (path: string): Json => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {})
@@ -296,27 +269,27 @@ const writeJson = (path: string, value: Json) => {
   writeFileSync(path, jsonText(value), { mode: 0o600 })
 }
 
-/**
- * The plugin directories daily owns in a host's configs: this checkout's `mods/` and `cmd/`, and the
- * loader directory earlier runs loaded the auth plugin through. Any entry under one that the current
- * lists leave out (a deleted plugin, such as the web plugin) is dropped.
- */
-export const ownedDirs = (share: string): ReadonlyArray<string> => [MODS, CMD, join(share, "anthropic-auth")]
+/** Writes `text` at `path` only when the file does not hold it already: a TUI and the service watch these files. */
+const writeChanged = (path: string, text: string) => {
+  if (existsSync(path) && readFileSync(path, "utf8") === text) return
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, text, { mode: 0o600 })
+}
 
 /**
- * Merges ours into the host's server and TUI configs in `config`. Only `--configure` writes them,
- * which the update's handoff runs from the checkout once it moved onto the build's commit, so the
- * service it restarts reads only plugins that checkout has; a stage writes none.
+ * Step 3, by hand only: the host's settings in its global configs under `home` (`mergeServer` with the
+ * role `models`, `mergeCli`), the Prime theme's file beside them and the resident location's config,
+ * each written only when its text changes. Both configs are read before either is written, so one that
+ * does not read stops daily with neither changed. No plugin entry is written or removed.
  */
-export const writeConfigs = (to: {
-  readonly config: string
-  readonly server: ReadonlyArray<PluginEntry>
-  readonly cli: ReadonlyArray<string>
-  readonly models: Record<string, string>
-  readonly owned: ReadonlyArray<string>
-}) => {
-  writeJson(join(to.config, "opencode.json"), mergeServer(readJson(join(to.config, "opencode.json")), to.server, to.models, to.owned))
-  writeJson(join(to.config, "cli.json"), mergeCli(readJson(join(to.config, "cli.json")), to.cli, to.owned))
+export const writeSettings = (home: string, models: Record<string, string>) => {
+  const config = join(home, ".config/opencode")
+  const server = mergeServer(readJson(join(config, "opencode.json")), models)
+  const cli = mergeCli(readJson(join(config, "cli.json")))
+  writeChanged(join(residentDir(home), "opencode.json"), jsonText(residentConfig))
+  writeChanged(join(config, "opencode.json"), jsonText(server))
+  writeChanged(join(config, "cli.json"), jsonText(cli))
+  writeChanged(join(config, "themes/prime.json"), readFileSync(THEME, "utf8"))
 }
 
 /**
@@ -458,36 +431,13 @@ export const pluginPackages = (root: string): ReadonlyArray<{ readonly name: str
  */
 export const tuiEntries = (root: string, dirOf: (name: string) => string): ReadonlyArray<string> => [...tuiPluginsOf(pluginPackages(root)).map(dirOf), ...TUI_OFF]
 
-/** Both global configs as `--configure` writes them over `existing`: the server's and the TUI's. */
-export const configured = (existing: { readonly server: Json; readonly cli: Json }, facts: HostFacts, share: string) => ({
-  server: mergeServer(existing.server, serverEntries(facts, (name) => pluginDir(name)), roleModels(facts.catalog), ownedDirs(share)),
-  cli: mergeCli(existing.cli, tuiEntries(ROOT, (name) => pluginDir(name)), ownedDirs(share)),
-})
-
-/**
- * Step 3, `--configure`: merges this checkout's plugins, the role models and the theme into the
- * host's configs. The update's handoff runs it once it moved the checkout onto the build's commit,
- * right before the restart, so no config names a plugin directory the checkout lacks.
- */
-const configureHost = (home: string, fork: string) =>
-  Effect.gen(function* () {
-    const share = shareDir(home)
-    writeJson(join(residentDir(home), "opencode.json"), residentConfig)
-    const facts = yield* hostFacts(home, fork)
-    // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
-    const loader = join(share, "anthropic-auth")
-    rmSync(loader, { recursive: true, force: true })
-    const config = join(home, ".config/opencode")
-    const written = configured({ server: readJson(join(config, "opencode.json")), cli: readJson(join(config, "cli.json")) }, facts, share)
-    writeJson(join(config, "opencode.json"), written.server)
-    writeJson(join(config, "cli.json"), written.cli)
-    mkdirSync(join(config, "themes"), { recursive: true })
-    copyFileSync(THEME, join(config, "themes/prime.json"))
-    const planner = plannerModel(facts.catalog)
-    console.log(`server plugins: ${serverEntries(facts, (name) => pluginDir(name)).map(packageOf).join(", ")}`)
-    console.log(`roles: ${Object.entries(roleModels(facts.catalog)).map(([role, model]) => `${role} ${model}`).join(", ")}`)
-    console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
-  })
+/** Step 3 by hand: the host's settings (`writeSettings`), and what they say. */
+const settingsByHand = (home: string, catalog: Catalog) => {
+  writeSettings(home, roleModels(catalog))
+  const planner = plannerModel(catalog)
+  console.log(`roles: ${Object.entries(roleModels(catalog)).map(([role, model]) => `${role} ${model}`).join(", ")}`)
+  console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
+}
 
 /**
  * `--tree <dir> --at <place>`: writes a tree's server entries and its overlay (`trees.ts`) into `dir`,
@@ -537,35 +487,34 @@ const treeRun = (argv: ReadonlyArray<string>, home: string, fork: string) =>
     }),
   )
 
-// `--tree`: a build's tree's entries and overlay alone. `--configure`: step 3 alone. Every other run:
-// steps 0 to 2 and 4, the fork merged and built, the build staged, then (by hand) the restart through
-// the handoff, which moves the checkout if it must and runs `--configure`.
+// `--tree`: a build's tree's entries and overlay alone. `--stage --from-tree`: step 0's fork sync and
+// step 2, from a build's tree. By hand: step 0 with the upstream merge, then steps 1, 3 and 4.
 if (import.meta.main) {
   const home = homedir()
   const argv = process.argv
   const args = new Set(argv)
   const env = process.env
+  const log = (line: string) => console.log(line)
   const fork = forkOf(env)
-  const only = Option.orElse(treeRun(argv, home, fork), () => Option.some(configureHost(home, fork)).pipe(Option.filter(() => args.has("--configure"))))
+  const only = treeRun(argv, home, fork)
   if (Option.isSome(only)) await Effect.runPromise(only.value)
   else {
-    // From the update plugin (mods/update): the verified target's fork commit, built instead of
-    // origin's prime-look, and its dotfiles commit, which the record names (the checkout moves onto
-    // it only in the handoff).
+    // From the update (mods/update): the target's fork commit, built instead of origin's prime-look,
+    // and its dotfiles commit, which the record names.
     const forkTarget = flagValue([...args], "--fork-target")
     const dotfilesTarget = flagValue([...args], "--dotfiles-target")
-    // `--from-tree`: the update's stage, run from the build's own plugin tree (mods/update/process/builder.ts).
-    const fromTree = treeStage(ROOT, args.has("--from-tree"), dotfilesTarget)
-    refuse(refusals(fromTree))
+    // `--stage --from-tree`: the update's stage, run from the build's own plugin tree (mods/update/process/builder.ts).
+    const from = treeStage(ROOT, args.has("--stage"), args.has("--from-tree"), dotfilesTarget)
+    refuse(refusals(from))
     // Step 0 (the Mac only): merge upstream OpenCode into prime-look (scripts/upstream.ts).
     const state = join(home, ".local/state/opencode-daily")
     const locks = hostLocks(env)
     const steps = forkSteps(locks, {
-      sync: () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log }),
+      sync: () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log }),
       head: Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()),
       install: Effect.promise(() => $`bun install --frozen-lockfile`.cwd(fork).quiet()),
       checks: (dir) => Effect.promise(() => forkChecks(resolve(MODS, ".."), fork)(dir)),
-      log: console.log,
+      log,
     })
     const upstream = (dryRun: boolean) =>
       mergeUpstream({
@@ -577,59 +526,89 @@ if (import.meta.main) {
         checks: steps.checks,
         worktree: join(state, "upstream-merge"),
         report: join(state, "upstream-conflict.md"),
-        log: console.log,
+        log,
       })
     // Before the merge and the build, so neither starts from a prime-look origin has moved past.
     await steps.move()
     if (args.has("--dry-run")) {
       const outcome = await upstream(true)
-      if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
-      console.log("dry run: nothing merged, built or installed")
+      if (outcome.kind === "skipped") log(`upstream: skipped (${outcome.reason})`)
+      log("dry run: nothing merged, built or installed")
       process.exit(0)
     }
 
-    // The workspace links and vendor packages the plugins import: OpenCode loads plugins in place and
-    // installs nothing. The fork's modules are linked before the install, so it never writes through an
-    // older checkout's whole-directory link into the fork, and again after it, because an install that
-    // changes a package's node_modules drops links it did not make. The TUI plugins resolve `solid-js`
-    // through those links at load time (scripts/link-fork.ts).
-    // A stage from a build's tree does none of it: the tree was installed at its make with no link into
-    // the fork and is sealed, and on Linux its node_modules are hardlinks of Bun's cache, so neither an
-    // install nor a link may write there; nothing runs plugins from the live checkout any more.
-    const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...env, OPENCODE_DEV: fork }).quiet()
-    if (fromTree.kind === "checkout") {
-      await linkFork()
-      await installDotfiles(DOTFILES, Effect.promise(() => $`bun install --frozen-lockfile`.cwd(resolve(MODS, "..")).quiet()))
-      await linkFork()
-    }
-
-    // After the links, since the merge's acceptance tests load the mods through them.
-    // Under the lock a land's post-land step (scripts/post-land.ts) merges under too. A stage from a
-    // tree skips it: the merge's checks link the fork into the tests' checkout, and the tree takes no
-    // link; the post-land step still merges upstream.
-    const merged = fromTree.kind === "checkout" && (await withUpstreamLock(state, () => upstream(false)))
-    const outcome = merged || { kind: "skipped" as const, reason: SKIPPED_MERGE[fromTree.kind] }
-    if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
-    if (outcome.kind === "merged") {
-      if ((await $`git -C ${fork} rev-parse HEAD`.text()).trim() === outcome.merge) {
-        // The build skips its install; the merge may have changed the fork's dependencies.
-        await steps.reinstall()
-        await linkFork()
-      } else console.log(`upstream: ${fork} does not have prime-look checked out, so this build leaves the merge out`)
-    }
-
-    // A stage (`--fork-target`) builds exactly the verified target's fork commit, in a worktree of its
-    // own pinned there, never prime-look's HEAD, which a land's post-land merge moves; by hand, the
-    // checkout as it stands. Either binary must name the commit it was built from (mods/update/process/pin.ts).
-    // The version names the dotfiles commit too (pin.ts `versionOf`), so a dotfiles-only update is a new
-    // version that every open TUI moves onto. `--skip-build` reuses the last binary only when it names the same pair.
     const settings = hostSettings(home, fork)
+    if (from.kind !== "tree") {
+      // Step 0's upstream merge, on the host that owns the fork: its checks are tests of this checkout,
+      // which load the mods through the fork's links (scripts/link-fork.ts), so the merge installs and
+      // links the checkout first; nothing else in daily links or installs it, and nothing running loads it.
+      // The links go before the install, so it never writes through an older whole-directory link into the
+      // fork, and again after it, because an install that changes a package's node_modules drops links it did
+      // not make. Under the lock a land's post-land step (scripts/post-land.ts) merges under too.
+      const merging = !args.has("--no-upstream") && ownsFork(hostname())
+      const linkForkForMerge = Effect.promise(() => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...env, OPENCODE_DEV: fork }).quiet())
+      const forkHead = Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()).pipe(Effect.map((text) => text.trim()))
+      const say = (line: string) => Effect.sync(() => log(line))
+      const code = await Effect.runPromise(
+        Effect.gen(function* () {
+          if (merging) {
+            yield* linkForkForMerge
+            yield* Effect.promise(() => installDotfiles(DOTFILES, Effect.promise(() => $`bun install --frozen-lockfile`.cwd(resolve(MODS, "..")).quiet())))
+            yield* linkForkForMerge
+          }
+          const locked = yield* Effect.promise(() => withUpstreamLock(state, () => upstream(false)))
+          const outcome = Option.getOrElse(Option.fromNullishOr(locked), (): UpstreamOutcome => ({ kind: "skipped", reason: "a land's post-land step is merging upstream now" }))
+          if (outcome.kind === "skipped") yield* say(`upstream: skipped (${outcome.reason})`)
+          if (outcome.kind === "merged") {
+            if ((yield* forkHead) === outcome.merge) {
+              // The merge may have changed the fork's dependencies: the fork and the merge's links again.
+              yield* Effect.promise(steps.reinstall)
+              yield* linkForkForMerge
+            } else yield* say(`upstream: ${fork} does not have prime-look checked out, so this build leaves the merge out`)
+          }
+
+          // Steps 1, 3 and 4: this checkout's HEAD, never its files as they stand, built as the update builds a
+          // target (mods/update/process/install.ts `installByHand`), on the fork's HEAD as step 0 left it.
+          const head = headOf(settings.checkout)
+          const forkCommit = yield* forkHead
+          const cli = decodeCliPackage(yield* Effect.promise(() => $`git -C ${fork} show ${forkCommit}:packages/cli/package.json`.text()))
+          const catalog = yield* Effect.promise(() => loadCatalog(fork))
+          const variables = stepEnv(settings, Option.getOrElse(Option.fromNullishOr(env.PATH), () => ""))
+          const passed = ["--skip-build", "--no-upstream"].filter((flag) => args.has(flag))
+          return yield* Effect.promise(() =>
+            installByHand({
+              checkout: settings.checkout,
+              commit: head,
+              version: versionOf(cli.version, forkCommit, head, true),
+              trees: treeOptions(settings, variables, home, process.pid),
+              stage: (tree) =>
+                $`${[...treeStageCommand(settings, tree, forkCommit, head), ...passed]}`
+                  .cwd(join(tree, "opencode"))
+                  .env(environment(variables))
+                  .then(() => undefined),
+              settings: () => settingsByHand(home, catalog),
+              handoff: (tree) => Effect.runPromise(Effect.sync(() => restartThroughHandoff(settings, "daily by hand", treeProgram(tree)))),
+              log: log,
+            }),
+          )
+        }),
+      )
+      log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`)
+      process.exit(code)
+    }
+
+    // Step 2, from the build's tree: no fork link, no install and no upstream merge (the post-land step merges upstream).
+    log("upstream: skipped (a stage from a build's tree; the post-land step merges upstream)")
+    // The target's fork commit, in a worktree of its own pinned there, never prime-look's HEAD, which a land's
+    // post-land merge moves. The binary must name the commits it was built from (mods/update/process/pin.ts):
+    // the version names the dotfiles commit too (pin.ts `versionOf`), so each update is a new version that
+    // every open TUI moves onto. `--skip-build` reuses the last binary only when it names the same pair.
     const dotfiles = dotfilesTarget[0] ?? headOf(settings.checkout)
     const build = releaseBuild(process.execPath, `cli-${process.platform}-${process.arch}`, {}, args.has("--skip-build"))
-    const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, dotfiles, withTree: fromTree.kind === "tree", bun: process.execPath, build, log: console.log })
+    const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, dotfiles, withTree: true, bun: process.execPath, build, log })
 
     // The tree was made under the version the update read for this target: a build of another stops here, staging nothing.
-    refuse(builtForTree(fromTree, version))
+    refuse(builtForTree(from, version))
 
     // Under the builds lock, from the copy through the staged record (mods/update/filestore/stage.ts).
     // The launcher stays on the build the record installs; the handoff moves it onto this one (stage.ts `writeLauncher`).
@@ -647,17 +626,12 @@ if (import.meta.main) {
     })
     // Upstream against this build, for the TUI's corner (mods/prime/update.ts), written before the
     // restart that makes every open TUI reconnect and read it again.
-    const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), outcome.kind === "skipped" && !args.has("--no-upstream"))
+    const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), !args.has("--no-upstream"))
     if (reading === undefined) rmSync(upstreamFile(home, env.XDG_STATE_HOME), { force: true })
     else writeJson(upstreamFile(home, env.XDG_STATE_HOME), reading)
-    console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
+    log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
-    console.log(`opencode -> ${binary} (${reported})`)
-    if (args.has("--stage")) console.log(stagedLine(fromTree.kind === "tree"))
-    else {
-      const code = restartThroughHandoff(settings, "daily by hand", programForHand(settings, (path) => readFileSync(path, "utf8"), existsSync))
-      console.log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`)
-      process.exitCode = code
-    }
+    log(`opencode -> ${binary} (${reported})`)
+    log(STAGED_LINE)
   }
 }
