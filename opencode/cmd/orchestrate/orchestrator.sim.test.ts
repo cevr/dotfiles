@@ -82,9 +82,8 @@ seeded("a new session runs as the orchestrator with its section after build's pr
     const from = run.requests.length
     yield* run.world.compact(root)
     yield* run.world.until(() => run.requests.slice(from).some((request) => request.kind === "compaction"), 60_000)
-    const summary = run.requests.slice(from).find((request) => request.kind === "compaction")
-    expect(summary?.agent).toBe(ORCHESTRATOR)
-    expect(summary === undefined ? 0 : sections(summary)).toBe(1)
+    const summary = yield* Effect.fromOption(Option.fromNullishOr(run.requests.slice(from).find((request) => request.kind === "compaction")))
+    expect([summary.agent, sections(summary)]).toEqual([ORCHESTRATOR, 1])
     // And so does each turn's request after the compaction.
     const after = (yield* run.turn(root)).filter((request) => request.kind === "primary")
     expect(after.length).toBeGreaterThan(0)
