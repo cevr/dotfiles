@@ -10,7 +10,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { envelopesInJson } from "../mods/subagents/envelope.ts"
+import { envelopesInJson } from "../sim/envelopes.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 

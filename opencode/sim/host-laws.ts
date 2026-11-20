@@ -21,8 +21,9 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
-import { envelope, envelopesInJson } from "../mods/subagents/envelope.ts"
+import { envelopesOf } from "../mods/subagents/envelope.ts"
 import type { OPERATIONS } from "./context.ts"
+import { envelopesInJson } from "./envelopes.ts"
 import {
   CLIENT,
   ELSEWHERE_FOLDER,
@@ -997,7 +998,7 @@ export const LAWS: ReadonlyArray<Law> = [
             Stream.runForEach((event) =>
               Effect.when(
                 Ref.update(notices, (n) => n + 1),
-                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && Option.isSome(envelope(event.data.item.payload.text, "subagent"))),
+                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && envelopesOf(event.data.item.payload.text, "subagent").length > 0),
               ),
             ),
           ),

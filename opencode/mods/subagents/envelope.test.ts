@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Option } from "effect"
-import { answered, envelope, envelopes, envelopesInJson, render, unwrap } from "./envelope.ts"
+import { answered, envelopes, envelopesOf, render, unwrap } from "./envelope.ts"
 
 /** The first envelope of the text, whatever its kind. */
 const first = (text: string) => envelopes(text)[0]
@@ -14,9 +13,6 @@ const NEW_SUBAGENT = '<background-result kind="subagent" sessionID="ses_deliver_
 const NEW_CODEMODE = '<background-result kind="codemode" id="job_1" state="error">\nboom\n</background-result>'
 const NEW_IMAGE = '<background-result kind="image" id="img_1" state="completed">\n/tmp/a.png\n</background-result>'
 const OLD_VIDEO = '<video id="vid_1" state="completed">\n/tmp/a.mp4\n</video>'
-// The same kind of notices as JSON strings, as a model request carries them.
-const JSON_NEW_SHELL = String.raw`"<background-result kind=\"shell\" id=\"sh_1\" state=\"completed\" command=\"ls\">\nok\n</background-result>"`
-const JSON_OLD_SUBAGENT = String.raw`"<subagent sessionID=\"ses_1\" state=\"completed\" description=\"d\">\nAll done\n</subagent>"`
 
 describe("envelope", () => {
   test("reads a shell's notice in either form alike: its kind, attributes and handle body", () => {
@@ -77,10 +73,7 @@ describe("envelope", () => {
     expect(render("kind", "subagent", attributes, "All done")).toBe(OLD_SUBAGENT)
   })
 
-  test("envelopesInJson finds the notices in a request's JSON strings, and none in text that is not JSON", () => {
-    const request = `{"messages":[{"role":"user","content":[{"type":"text","text":${JSON_NEW_SHELL}}]},{"role":"user","content":${JSON_OLD_SUBAGENT}}]}`
-    expect(envelopesInJson(request).map((each) => each.kind)).toEqual(["shell", "subagent"])
-    expect(envelopesInJson(`not json ${NEW_SHELL}`)).toEqual([])
-    expect(Option.map(envelope(`${NEW_SHELL}\n${OLD_SUBAGENT}`, "subagent"), (each) => each.body)).toEqual(Option.some("All done"))
+  test("envelopesOf reads the envelopes of one kind", () => {
+    expect(envelopesOf(`${NEW_SHELL}\n${OLD_SUBAGENT}`, "subagent").map((each) => each.body)).toEqual(["All done"])
   })
 })
