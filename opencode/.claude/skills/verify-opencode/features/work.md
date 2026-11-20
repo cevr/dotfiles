@@ -1,6 +1,6 @@
 # Work
 
-An agent makes, lists, removes and lands isolated workspaces (copy-on-write copies of a repository's base) with the `work` tool, never with OpenCode's worktree tools, which are gone from its tool list. `create` answers the workspace's directory and branch and how to `session_move` there; `list` names each workspace's branch and unsaved work; `remove` trashes one, refusing one that holds work found nowhere else unless `force`; `land` merges a batch onto main, gates once, pushes, trashes the workspaces and wakes the session with the accept check. The tool answers to `rift` as an alias, with the same input and answers, until 2026-12-06.
+An agent makes, lists, removes and lands isolated workspaces (copy-on-write copies of a repository's base) with the `work` tool, never with OpenCode's worktree tools, which are gone from its tool list. `create` answers the workspace's directory and branch and how to move there (`opencode_session_move`); `list` names each workspace's branch and unsaved work; `remove` trashes one, refusing one that holds work found nowhere else unless `force`; `land` merges a batch onto main, gates once, pushes, trashes the workspaces and wakes the session with the accept check. The tool answers to `rift` as an alias, with the same input and answers, until 2026-12-06.
 
 ## Sub-features
 
@@ -24,8 +24,8 @@ An agent makes, lists, removes and lands isolated workspaces (copy-on-write copi
 - **World suites:** `cmd/work/work.sim.test.ts`
 - **Code:** `cmd/work/`, `tests/plugin-start.test.ts` (its real check that the bare entry starts with the work binary on PATH, among daily's server plugins)
 
-1. **Create.** Prompt `verify: call work {"action":"create","branch":"feat/x"}`. The answer starts `Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.`
-2. **List by the alias.** Prompt `verify: call rift {"action":"list"}`. The answer is `Workspaces of /code/app:` and the line `- /code/.rifts/app/feat-x · branch feat/x · clean`.
+1. **Create.** Prompt `verify: call work {"action":"create","branch":"feat/x"}`. The answer starts `Created the workspace /code/.work/app/feat-x from /code/app, on branch feat/x.`
+2. **List by the alias.** Prompt `verify: call rift {"action":"list"}`. The answer is `Workspaces of /code/app:` and the line `- /code/.work/app/feat-x · branch feat/x · clean`.
 3. **Land.** Prompt `verify: call work {"action":"land","workspaces":["feat-x"]}`. The answer starts `Landed 1 workspace(s) as one push`; only the `integrate` workspace is left, and the accept check runs.
 
 ## Driving it with real OpenCode

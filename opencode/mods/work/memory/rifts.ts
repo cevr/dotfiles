@@ -1,6 +1,6 @@
 // Rifts held in memory, for the seam test and the model's tests: warm
 // sources and their Rifts in a mutable world the test reads and changes, laid
-// out as Rift lays them (`<parent>/.rifts/<source>/<name>`).
+// out as work lays them (`<parent>/.work/<source>/<name>`).
 import { Effect, Layer, Option } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
@@ -35,11 +35,11 @@ export const stash = (state: World, path: string, commit: string): void => {
   state.stashed.set(path, [commit, ...(state.stashed.get(path) ?? [])])
 }
 
-/** Where Rift puts a Rift named `name` of `source`. */
+/** Where work puts a workspace named `name` of `source`. */
 export const pathOf = (source: string, name: string): string => {
   const parts = source.split("/")
   const base = parts.pop()
-  return `${parts.join("/")}/.rifts/${base}/${name}`
+  return `${parts.join("/")}/.work/${base}/${name}`
 }
 
 /** A clean Rift on `branch`, as a test sets one up. */

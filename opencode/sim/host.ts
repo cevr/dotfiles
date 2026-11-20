@@ -47,6 +47,7 @@ import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
+import { AUTOMATION_TOOLS } from "../mods/wake/automations.ts"
 import * as Faults from "./faults.ts"
 import * as Http from "./http.ts"
 import * as Locations from "./locations.ts"
@@ -577,15 +578,6 @@ const denied = (name: string, agent: Types.DeepMutable<Agent.Info>) => {
   return rule?.resource === "*" && rule.effect === "deny"
 }
 
-/** OpenCode's automation tools: built in only under `experimental.automations` (real OpenCode turns it on by default only in local and dev builds). */
-export const AUTOMATIONS = [
-  "opencode_automation_create",
-  "opencode_automation_list",
-  "opencode_automation_pause",
-  "opencode_automation_resume",
-  "opencode_automation_delete",
-]
-
 const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optional(Schema.String), background: Schema.optional(Schema.Boolean) })
 
 /** The program the shell runs a command with when the options name none. */
@@ -971,7 +963,8 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     )
 
   /** The tools a request in `directory` offers: the built-ins, then each copy's transform there, in load order. */
-  const builtIn = [...BUILTIN, ...Arr.filter(AUTOMATIONS, () => options.automations === true)]
+  // OpenCode's automation tools are built in only under `experimental.automations` (real OpenCode turns it on by default only in local and dev builds).
+  const builtIn = [...BUILTIN, ...Arr.filter(AUTOMATION_TOOLS, () => options.automations === true)]
   const toolsOf = (directory: string) => {
     const offered = new Map<string, Option.Option<Tool.Info>>(builtIn.map((name) => [name, Option.none()]))
     offered.set("subagent", Option.some(subagentTool))

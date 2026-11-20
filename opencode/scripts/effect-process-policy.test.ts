@@ -12,6 +12,8 @@
  * override does, so the override switches nothing on elsewhere and nothing off anywhere. The real
  * four files carry none of the four rules' findings, and the helper is classified as test code in
  * both configs and the debt policy.
+ *
+ * @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/** mods/wake/process/*.ts
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

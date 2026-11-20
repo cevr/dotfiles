@@ -2,7 +2,8 @@
 // The work tool in real OpenCode (the fork, through its SDK) on the scripted model and the real `work` binary
 // (WORK_BIN, else `work` on PATH), in a scratch HOME: tests/work/run.ts, once per task. The model makes a workspace for a branch
 // with `work` (under `.work/<base>/`), commits in it, lists it, is refused removing it while the commit is found
-// nowhere else, and removes it with force; neither request offers OpenCode's worktree tools. In a second run it
+// nowhere else, and removes it with force; calls `shll` and is told by cmd/tool-names, loaded beside it, to call
+// `shell`; no request offers or names OpenCode's worktree tools. In a second run it
 // commits in a workspace and lands it: one push to the bare origin's main from an integration workspace work
 // made, the workspace trashed, and the accept check's wake after the turn. A third run lists through the alias
 // `rift`, with cmd/work listed bare (no options) as daily lists it, so it finds `work` on PATH (the binary's
@@ -14,7 +15,7 @@ import { Effect, Fiber, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { withProcessEnv } from "./git-repo.ts"
-import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result } from "./work/sim.ts"
+import { ALIAS, BRANCH, COMMIT_SUBJECT, DONE, FLOW, LAND, LAND_SUBJECT, Result, watchedIn } from "./work/sim.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -54,6 +55,7 @@ const boot = (task: string, wake: Option.Option<string>, bare = false) =>
         WORK_E2E_BASE: base,
         WORK_E2E_FORK: path.resolve(FORK),
         WORK_E2E_PLUGIN: path.join(ROOT, "cmd/work"),
+        WORK_E2E_TOOL_NAMES: path.join(ROOT, "cmd/tool-names"),
         WORK_E2E_BIN: path.resolve(WORK_BIN),
         WORK_E2E_BARE: String(bare),
         WORK_E2E_TASK: task,
@@ -77,7 +79,7 @@ const boot = (task: string, wake: Option.Option<string>, bare = false) =>
 if (runnable)
   describe("the work tool in real OpenCode, on the scripted model and the real work binary", () => {
     it.live.layer(BunServices.layer)(
-      "an agent makes, lists and removes a workspace under .work/<base>/ through the work tool, and has no worktree tools",
+      "an agent makes, lists and removes a workspace under .work/<base>/ through the work tool, is told the right name for shll, and has no worktree tools",
       () =>
         Effect.gen(function* () {
           const result = yield* boot(FLOW, Option.none())
@@ -87,14 +89,14 @@ if (runnable)
           for (const request of offered) {
             expect(request.tools).toContain("work")
             expect(request.tools).toContain("rift")
-            // session_move, offered beside them, is still in the request: they are gone, not merely unlisted.
-            expect(request.named).toEqual(["session_move"])
+            // The session move tool, offered beside them, is still in the request: they are gone, not merely unlisted.
+            expect(watchedIn(request.named)).toEqual({ worktree: [], move: true })
           }
-          const [create, commit, list, refused, forced, ...rest] = result.calls
+          const [create, commit, list, refused, forced, misspelled, ...rest] = result.calls
           expect(rest).toEqual([])
           expect([create?.name, create?.status]).toEqual(["work", "completed"])
           expect(create?.said).toContain(`Created the workspace ${result.workspace} from ${result.source}, on branch ${BRANCH}.`)
-          expect(create?.said).toContain(`session_move tool (directory: "${result.workspace}")`)
+          expect(create?.said).toContain(`opencode_session_move tool (directory: "${result.workspace}")`)
           expect(commit?.status).toBe("completed")
           expect(list?.said).toContain(`Workspaces of ${result.source}:`)
           expect(list?.said).toContain(`- ${result.workspace} · branch ${BRANCH} · 1 unpushed`)
@@ -104,6 +106,9 @@ if (runnable)
           expect(forced?.status).toBe("completed")
           expect(forced?.said).toContain(`Moved the workspace ${result.workspace} (branch ${BRANCH}) to the trash; it held 1 unpushed.`)
           expect(result.workspaceThere).toBe(false)
+          // cmd/tool-names answers a near miss with the name to call.
+          expect([misspelled?.name, misspelled?.status]).toEqual(["shll", "error"])
+          expect(misspelled?.said).toContain('There is no \\"shll\\" tool; did you mean \\"shell\\"? Call \\"shell\\" with the same input.')
           expect(result.transcript).toContain(DONE)
         }),
       RUN_MS,

@@ -16,7 +16,7 @@ const owing = (head: string, at: number) => ({
   main: "main",
   command: "bun scripts/post-land.ts",
   sessionID: "ses_1",
-  land: { base: `base-${head}`, head, units: [{ path: `/code/.rifts/app/${head}`, branch: `feat/${head}` }], at },
+  land: { base: `base-${head}`, head, units: [{ path: `/code/.work/app/${head}`, branch: `feat/${head}` }], at },
 })
 
 describe("the owed post-land steps' file", () => {

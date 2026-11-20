@@ -7,6 +7,8 @@
  * oxlint-plugin-effect 0.32.3 decides them. At run time: `forkTurns`, whose reducer was the one
  * accumulator copy, folds generated fork histories as an independent model of a turn does, and
  * leaves its input as it was.
+ *
+ * @reads .oxlintrc.json lint/**
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

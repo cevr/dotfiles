@@ -253,7 +253,7 @@ const textsOf = (random: () => number): ReadonlyArray<string> => {
   const unit = pick([...UNITS, unitName(random)], "alpha")
   const workrift = random() < 0.5
   const lanes = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(laneOf(name, workrift), () => random() < 0.6)))
-  const lane = pick(lanes, laneAt(`/code/.rifts/app/${unit}`, Option.none()))
+  const lane = pick(lanes, laneAt(`/code/.work/app/${unit}`, Option.none()))
   const input = inputOf(random)
   const units = UNITS.flatMap((name) => Option.toArray(Option.liftPredicate(pick<LandUnit>([name, { unit: name, path: `/x/${name}` }], name), () => random() < 0.4)))
   return [
@@ -310,7 +310,7 @@ describe("every call an answer or a refusal names", () => {
 const valueOf = (field: Field, random: () => number) => {
   const pick = pickOf(random)
   const name = unitName(random)
-  if (field === "units") return [name, { unit: pick(UNITS, "alpha"), path: `/code/.rifts/app/${name}` }].filter(() => random() < 0.7)
+  if (field === "units") return [name, { unit: pick(UNITS, "alpha"), path: `/code/.work/app/${name}` }].filter(() => random() < 0.7)
   if (field === "batch") return pick([`batch-${1 + Math.floor(random() * 20)}`, name, "main-abc1234"], "batch-1")
   if (field === "head") return pick(["abc1234", "origin/HEAD", "f00dfeed"], "abc1234")
   if (field === "source") return pick(["/code/app", "../app", "."], ".")
@@ -377,7 +377,7 @@ const riftNameOf = (unit: string, workrift: boolean): string =>
 /** The Rift a lane makes for `unit` on its default branch: named for the unit on the Mac, for its branch (`feat-<unit>`) on the workbox. */
 const laneOf = (unit: string, workrift: boolean): Lane => {
   const branch = laneBranchOf({ unit })
-  return laneAt(`/code/.rifts/app/${riftNameOf(unit, workrift)}`, Option.some(branch))
+  return laneAt(`/code/.work/app/${riftNameOf(unit, workrift)}`, Option.some(branch))
 }
 
 describe("the lane name rule", () => {
@@ -466,7 +466,7 @@ describe("a land", () => {
   })
 
   test("a name two Rifts read as is never picked: the refusal names both and the { unit, path } form", () => {
-    const other = laneAt("/code/.rifts/app/db-2", Option.some("p5/db"))
+    const other = laneAt("/code/.work/app/db-2", Option.some("p5/db"))
     const db = laneOf("db", false)
     const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], false)
     expect(resolved).toEqual({ refused: expect.stringContaining(`2 workspaces read as db: ${db.path}, ${other.path}`) })

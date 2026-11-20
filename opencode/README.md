@@ -14,21 +14,26 @@ bun run daily --dry-run      # fetch upstream, say what would merge, change noth
 
 On the Mac, the host that owns the fork, `daily` first merges upstream
 OpenCode into the fork (`scripts/upstream.ts`): it fetches `upstream/dev`
-and, when `prime-look` lacks some of its commits, merges it (`--no-edit`) in
-a worktree of the fork of its own (`~/.local/state/opencode-daily/upstream-merge`,
-kept between runs so its `node_modules` stay warm), never in the checkout
-`OPENCODE_DEV` builds. A clean merge must then install as its lockfile says,
-typecheck `packages/tui`, `packages/core` and `packages/plugin`, and pass the
-acceptance tests most exposed to host changes (`tests/prime-*`, `tui-cpu`,
-`mail`, `orchestrate`) with `OPENCODE_DEV` at the merge, niced and without
-`ANTHROPIC_BASE_URL`. Green, `prime-look` fast-forwards to the merge (its
-working tree too, where it is checked out), goes to origin, and this build
-is of it. A conflict (aborted) or a red check leaves `prime-look` as it was,
-prints the conflicting files or the failing check, writes them to
+and, when origin's `prime-look` lacks some of its commits, merges it
+(`--no-edit`) into origin's head in a worktree of the fork of its own
+(`~/.local/state/opencode-daily/upstream-merge`, kept between runs so its
+`node_modules` stay warm), never in the checkout `OPENCODE_DEV` builds. A
+`prime-look` with commits origin lacks is not merged (the merge would publish
+them). A clean merge must then install as its lockfile says, pass the fork's
+`bun run check` (lint and typecheck, what its pre-push hook runs, so the push
+skips the hook), and pass the acceptance tests most exposed to host changes
+(`tests/prime-*`, `tui-cpu`, `mail`, `orchestrate`) with `OPENCODE_DEV` at the
+merge, niced and without `ANTHROPIC_BASE_URL`. Green, the merge goes to origin
+first, and only once origin holds it does `prime-look` fast-forward to it (its
+working tree too, where it is checked out), so this build is of it. When origin
+moved during the merge, its push is refused and the merge starts over from
+origin's new head, at most three times. A conflict (aborted), a red check or a
+push that fails leaves `prime-look` as it was, prints the conflicting files,
+the failing check or the push's cause, writes them to
 `~/.local/state/opencode-daily/upstream-conflict.md` for an agent to resolve
-(a red merge is kept on branch `daily/upstream-merge`), and the install goes
-on with the fork as it is. The report goes once `prime-look` is current
-again. The workbox skips the step and pulls origin `prime-look`.
+(a red or unpushed merge is kept on branch `daily/upstream-merge`), and the
+install goes on with the fork as it is. The report goes once `prime-look` is
+current again. The workbox skips the step and pulls origin `prime-look`.
 
 By hand, `bun run daily` installs the checkout's HEAD commit the way the
 update installs a target (below), never the files as they stand: an edit not
@@ -2222,7 +2227,7 @@ instead (The orchestrate tool). `cmd/work`, not enabled yet, is the same tool ov
   local branch, else `origin/<branch>`, else a new one from the source's
   HEAD; default: the name), named after the branch as `workrift` names it
   (`feat/x` → `feat-x`). It answers the workspace's directory and branch and how
-  to move there (`session_move`); it never moves the session itself. On the
+  to move there (`opencode_session_move`); it never moves the session itself. On the
   Mac it runs `work new -branch <branch> <name>` in the base (the workspace
   goes under `.work/<repo>/` beside it; on Rift, `rift create <source>
   --copy-all --name <name>` and a branch switch); on the workbox, `workrift create <branch>` from the session's
@@ -3216,8 +3221,10 @@ renamed from `experimental.schedules` and its schedule tools on 2026-11-16 and
 still reads under the old key) fire an automation by prompting its session
 with its whole action: a real user message each
 time, kilobytes for a watch that fires on every change. The wake plugin takes
-them out of the registry for every agent (`AUTOMATION_TOOLS` in
-`cmd/wake/server.ts`, as the work plugin takes the worktree tools), so a wake
+them out of the registry for every agent (`AUTOMATION_IDS` in
+`mods/wake/automations.ts`, by both ids a fork gives them: `automation_*`
+since upstream 2002222d13, `opencode_automation_*` before it; as the work
+plugin takes the worktree tools), so a wake
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The

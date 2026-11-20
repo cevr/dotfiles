@@ -27,7 +27,7 @@ export interface CreateRequest {
   readonly source: string
   /** The checkout asking for it, the session's directory: `workrift` carries its gh stack metadata over. */
   readonly from: string
-  /** The Rift's directory name under `.rifts/<source>/`. */
+  /** The workspace's directory name under `.work/<source>/`. */
   readonly name: string
   /** The branch to check out in it: the local branch, else the remote one, else a new one from the source's HEAD. */
   readonly branch: string

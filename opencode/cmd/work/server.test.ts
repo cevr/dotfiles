@@ -1,9 +1,9 @@
 // The work plugin's seam: the composition root on a stand-in host whose tool registry holds OpenCode's
 // worktree tools and applies the transform the plugin registers, over workspaces and sessions in memory.
-// It runs cmd/rift's cases (cmd/rift/server.test.ts) on the `work` tool, checks the alias `rift` is the
+// It runs the tool's create, list, remove and land on the `work` tool, checks the alias `rift` is the
 // same tool over generated inputs, that a name a removed workspace still holds is made under a suffix, and
 // the options. tests/work.test.ts runs it in OpenCode on the scripted model and the real `work` binary.
-// Its tests register through sim-tui/effect-test.ts, as cmd/rift/rpc.test.ts's do.
+// Its tests register through sim-tui/effect-test.ts, as cmd/work/rpc.test.ts's do.
 import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Scope } from "effect"
 import { TestClock } from "effect/testing"
@@ -154,11 +154,11 @@ const rng = (seed: number) => {
 const ACTIONS = ["create", "list", "remove", "land", "refresh", "check", "deps", "sources", "prune", "storage", "init", "explode", 7]
 const BRANCHES = ["feat/x", "feat/y", "p5/db", "fix one", ""]
 const NAMES = ["feat-x", "feat-y", "one", "integrate"]
-const PATHS = ["/code/.rifts/app/feat-x", "/code/.rifts/app/one", SOURCE, "/elsewhere", "./feat-y"]
-const TARGETS: ReadonlyArray<Value> = ["feat-x", "feat-y", "p5/db", "nope", "/code/.rifts/app/one", { path: "/code/.rifts/app/feat-x", unit: "x" }, { path: "/code/.rifts/app/feat-y" }, 3]
+const PATHS = ["/code/.work/app/feat-x", "/code/.work/app/one", SOURCE, "/elsewhere", "./feat-y"]
+const TARGETS: ReadonlyArray<Value> = ["feat-x", "feat-y", "p5/db", "nope", "/code/.work/app/one", { path: "/code/.work/app/feat-x", unit: "x" }, { path: "/code/.work/app/feat-y" }, 3]
 
 /** Targets as the JSON string a model sends in place of the list. */
-const JSON_TARGETS = ['["feat-x"]', '[{"path": "/code/.rifts/app/feat-x", "unit": "x"}]', '["nope", "feat-y"]', '[{"path": "/code/.rifts/app/one"}]']
+const JSON_TARGETS = ['["feat-x"]', '[{"path": "/code/.work/app/feat-x", "unit": "x"}]', '["nope", "feat-y"]', '[{"path": "/code/.work/app/one"}]']
 
 /** One generated input of any action, valid or not: fields picked at random, some of the wrong type, some as the JSON string a model sends. */
 const inputOf = (random: () => number) => {
@@ -188,7 +188,7 @@ const MALFORMED: ReadonlyArray<Ask> = [{ workrift: "yes" }, { work: 5 }]
 
 /** Workspaces generated inputs act on, and a repository that lands them. */
 const busyWorld = () =>
-  worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x"), MemoryRifts.clean("/code/.rifts/app/feat-y", "feat/y"), MemoryRifts.clean("/code/.rifts/app/one", "one")], GATED)
+  worldOf([MemoryRifts.clean("/code/.work/app/feat-x", "feat/x"), MemoryRifts.clean("/code/.work/app/feat-y", "feat/y"), MemoryRifts.clean("/code/.work/app/one", "one")], GATED)
 
 describe("the work plugin", () => {
   effectTest(
@@ -259,13 +259,13 @@ describe("the work plugin", () => {
       Effect.gen(function* () {
         const world = worldOf()
         const { call } = yield* start(world)
-        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.rifts/app/feat-x from /code/app, on branch feat/x.")
-        expect(yield* call({ action: "list" })).toBe("Workspaces of /code/app:\n- /code/.rifts/app/feat-x · branch feat/x · clean")
-        MemoryRifts.change(world.rifts, "/code/.rifts/app/feat-x", (workspace) => ({ ...workspace, unpushed: ["d85f04d only here"] }))
+        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.work/app/feat-x from /code/app, on branch feat/x.")
+        expect(yield* call({ action: "list" })).toBe("Workspaces of /code/app:\n- /code/.work/app/feat-x · branch feat/x · clean")
+        MemoryRifts.change(world.rifts, "/code/.work/app/feat-x", (workspace) => ({ ...workspace, unpushed: ["d85f04d only here"] }))
         expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith(
-          "error: /code/.rifts/app/feat-x holds work found nowhere else:\n1 commit(s) on no remote and in no branch of its source:\n  d85f04d only here",
+          "error: /code/.work/app/feat-x holds work found nowhere else:\n1 commit(s) on no remote and in no branch of its source:\n  d85f04d only here",
         )
-        expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the workspace /code/.rifts/app/feat-x (branch feat/x) to the trash; it held 1 unpushed.")
+        expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the workspace /code/.work/app/feat-x (branch feat/x) to the trash; it held 1 unpushed.")
         expect(yield* call({ action: "create" })).toStartWith("error: create needs a branch")
       }),
     ),
@@ -278,15 +278,15 @@ describe("the work plugin", () => {
       Effect.gen(function* () {
         const world = worldOf()
         const { answer, call } = yield* start(world)
-        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.rifts/app/feat-x from")
-        expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith("Moved the workspace /code/.rifts/app/feat-x")
+        expect(yield* call({ action: "create", branch: "feat/x" })).toStartWith("Created the workspace /code/.work/app/feat-x from")
+        expect(yield* call({ action: "remove", name: "feat-x" })).toStartWith("Moved the workspace /code/.work/app/feat-x")
         const again = yield* answer("work", { action: "create", branch: "feat/x" })
-        expect(again.text).toStartWith("Created the workspace /code/.rifts/app/feat-x-2 from /code/app, on branch feat/x.")
+        expect(again.text).toStartWith("Created the workspace /code/.work/app/feat-x-2 from /code/app, on branch feat/x.")
         expect(again.text).toEndWith("The name feat-x is still held by a removed workspace (in the trash until a gc), so this one is feat-x-2.")
-        expect(again.metadata).toMatchObject({ action: "create", path: "/code/.rifts/app/feat-x-2", branch: "feat/x" })
+        expect(again.metadata).toMatchObject({ action: "create", path: "/code/.work/app/feat-x-2", branch: "feat/x" })
         // A name a live workspace holds is no trash's: refused as before.
         world.held.add("feat-y")
-        world.rifts.rifts.set("/code/.rifts/app/feat-y", MemoryRifts.clean("/code/.rifts/app/feat-y", "feat/y"))
+        world.rifts.rifts.set("/code/.work/app/feat-y", MemoryRifts.clean("/code/.work/app/feat-y", "feat/y"))
         expect(yield* call({ action: "create", branch: "feat/y" })).toStartWith("error: work new failed: NameTaken")
       }),
     ),
@@ -297,16 +297,16 @@ describe("the work plugin", () => {
     "a land after its integration workspace was removed merges in a fresh one under a suffix, which is no workspace to land",
     Effect.scoped(
       Effect.gen(function* () {
-        const world = worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x"), MemoryRifts.clean("/code/.rifts/app/feat-y", "feat/y")], GATED)
+        const world = worldOf([MemoryRifts.clean("/code/.work/app/feat-x", "feat/x"), MemoryRifts.clean("/code/.work/app/feat-y", "feat/y")], GATED)
         const { call } = yield* start(world)
         expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
-        expect(yield* call({ action: "remove", name: "integrate" })).toStartWith("Moved the workspace /code/.rifts/app/integrate")
+        expect(yield* call({ action: "remove", name: "integrate" })).toStartWith("Moved the workspace /code/.work/app/integrate")
         expect(yield* call({ action: "land", workspaces: ["feat-y"] })).toStartWith("Landed 1 workspace(s) as one push")
         yield* settle
-        expect([...world.rifts.rifts.keys()].filter((path) => path.includes("integrate"))).toEqual(["/code/.rifts/app/integrate-2"])
+        expect([...world.rifts.rifts.keys()].filter((path) => path.includes("integrate"))).toEqual(["/code/.work/app/integrate-2"])
         expect(yield* call({ action: "land", workspaces: ["integrate-2"] })).toStartWith(
-          "error: Did not land anything: /code/.rifts/app/integrate-2 is the integration workspace land merges in",
+          "error: Did not land anything: /code/.work/app/integrate-2 is the integration workspace land merges in",
         )
       }),
     ),
@@ -317,7 +317,7 @@ describe("the work plugin", () => {
     "lands workspaces as one batch, wakes the session with the accept check's result, and says the workbox's commands need the workbox",
     Effect.scoped(
       Effect.gen(function* () {
-        const world = worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")], GATED)
+        const world = worldOf([MemoryRifts.clean("/code/.work/app/feat-x", "feat/x")], GATED)
         const { call, woken } = yield* start(world)
         expect(yield* call({ action: "land", workspaces: ["feat-x"] })).toStartWith(
           "Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).",
@@ -326,15 +326,15 @@ describe("the work plugin", () => {
         expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
         expect(yield* call({ action: "land", workspaces: ["nope"] })).toStartWith("error: The base /code/app has no workspace named nope.")
         // An orchestrate run names each workspace with its unit, `{ path, unit }`, as an object or as the JSON a model may send.
-        const named = MemoryRifts.clean("/code/.rifts/app/db-2", "p5/db-2")
+        const named = MemoryRifts.clean("/code/.work/app/db-2", "p5/db-2")
         world.rifts.rifts.set(named.path, named)
-        expect(yield* call({ action: "land", rifts: [{ path: "/code/.rifts/app/db-2", unit: "db" }] })).toStartWith(
+        expect(yield* call({ action: "land", rifts: [{ path: "/code/.work/app/db-2", unit: "db" }] })).toStartWith(
           "Landed 1 workspace(s) as one push: abc1234 Merge into main to main (merged p5/db-2;",
         )
         yield* settle
         world.rifts.rifts.set(named.path, named)
-        expect(yield* call({ action: "land", workspaces: '[{"path": "/code/.rifts/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 workspace(s) as one push")
-        expect(yield* call({ action: "land", workspaces: [{ path: "/code/.rifts/app/db-2" }] })).toStartWith("refused input:")
+        expect(yield* call({ action: "land", workspaces: '[{"path": "/code/.work/app/db-2", "unit": "db"}]' })).toStartWith("Landed 1 workspace(s) as one push")
+        expect(yield* call({ action: "land", workspaces: [{ path: "/code/.work/app/db-2" }] })).toStartWith("refused input:")
         expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here this tool offers create, list, remove and land.")
       }),
     ),
@@ -345,7 +345,7 @@ describe("the work plugin", () => {
     "a land on a loaded host runs the post-land step loaded and leaves it owed; it survives a restart, and the minute check runs it settled once the load settles, which pays it",
     Effect.scoped(
       Effect.gen(function* () {
-        const world = worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")], {
+        const world = worldOf([MemoryRifts.clean("/code/.work/app/feat-x", "feat/x")], {
           [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept", { postLand: "bun scripts/post-land.ts" }),
         })
         world.landing.load = { load: 20, cores: 8 }
@@ -381,7 +381,7 @@ describe("the work plugin", () => {
     "a loaded run that ran nothing (exit 0, an empty report) wakes no one, and the step stays owed",
     Effect.scoped(
       Effect.gen(function* () {
-        const world = worldOf([MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")], {
+        const world = worldOf([MemoryRifts.clean("/code/.work/app/feat-x", "feat/x")], {
           [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept", { postLand: "bun scripts/post-land.ts" }),
         })
         world.landing.load = { load: 20, cores: 8 }

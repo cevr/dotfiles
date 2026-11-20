@@ -5,6 +5,9 @@
 // - the docs guard, scripts/verify-docs.test.ts, when the change can turn it red (docs-guard.ts);
 // - for a changed scripts/<name>.ts its own scripts/<name>.test.ts and every scripts/ test whose imports reach it
 //   within scripts/, through any number of steps (fork.ts → daily.ts → daily.test), and a changed scripts/ test itself;
+// - every scripts/ test whose `@reads <glob> …` line (scripts/reach.ts `readsOf`) matches a changed path: a test that
+//   globs or reads files by path text imports none of them, so no walk finds it (Rift U1, bb435bcc: a cmd/work/server.ts
+//   import broke scripts/runtime-imports.test.ts, which reads every cmd/** and mods/** source, and main went red);
 // - scripts/accept.test.ts and scripts/accept-parity.test.ts when the acceptance tree changes (tests/, its parity
 //   baselines among them), the accept scripts change, or a simulated suite a parity manifest counts changes.
 // - tests/git-repo.test.ts, the guard that every test and testbed file makes its repositories through gitInit or
@@ -12,6 +15,7 @@
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
 // - every workbox/test/ test when anything under the repository's workbox/ changes: the diff from opencode/ never
 //   sees that folder, and no gate leg ran its tests (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
+import { Glob } from "bun"
 import { Option } from "effect"
 import { docsGuardDue, type Change } from "./docs-guard.ts"
 
@@ -61,12 +65,14 @@ const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/
 const gitGuarded = (path: string) => /\.test\.tsx?$/.test(path) || /^(tests|testbeds)\/.*\.tsx?$/.test(path)
 
 /**
- * The scripts/ tests and the import specifiers each scripts/ file holds (`import`, `export … from` and `import()`,
- * as Bun's transpiler scans them), from which the selection walks the import graph within scripts/.
+ * The scripts/ tests, the import specifiers each scripts/ file holds (`import`, `export … from` and `import()`,
+ * as Bun's transpiler scans them), from which the selection walks the import graph within scripts/, and the globs
+ * each test declares it reads by path (its `@reads` lines, scripts/reach.ts `readsOf`).
  */
 export interface ScriptsTests {
   readonly files: ReadonlyArray<string>
   readonly imports: (file: string) => ReadonlyArray<string>
+  readonly reads: (file: string) => ReadonlyArray<string>
 }
 
 /** The scripts/ file a relative specifier in the scripts/ file `from` names, if it exists. */
@@ -84,19 +90,30 @@ export const reachedWithin = (test: string, scripts: ScriptsTests, exists: (file
   return seen
 }
 
-/** The tests a changed path selects: itself when it is a scripts/ test, a script's own test, and every scripts/ test whose imports reach it. */
-const testsOf = (path: string, reached: ReadonlyArray<{ readonly test: string; readonly files: ReadonlySet<string> }>): ReadonlyArray<string> => {
-  if (TEST.test(path)) return [path]
-  const own = Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
-  return [...own, ...reached.flatMap((each) => (each.files.has(path) && [each.test]) || [])]
+/** A scripts/ test's inputs: the scripts/ files its imports reach, and the globs of the files it declares it reads. */
+interface Inputs {
+  readonly test: string
+  readonly files: ReadonlySet<string>
+  readonly reads: ReadonlyArray<Glob>
 }
 
-const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [] }
+/**
+ * The tests a changed path selects: itself when it is a scripts/ test, a script's own test, every scripts/ test whose
+ * imports reach it, and every scripts/ test that declares it reads it (runtime-imports.test globs cmd/** and mods/**
+ * and imports neither: Rift U1's cmd/work/server.ts import reached main red, bb435bcc).
+ */
+const testsOf = (path: string, inputs: ReadonlyArray<Inputs>): ReadonlyArray<string> => {
+  if (TEST.test(path)) return [path]
+  const own = Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
+  return [...own, ...inputs.flatMap((each) => ((each.files.has(path) || each.reads.some((glob) => glob.match(path))) && [each.test]) || [])]
+}
+
+const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => [] }
 
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
 export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
   const paths = named(changes)
-  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists) }))
+  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.reads(test).map((glob) => new Glob(glob)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
   if (docsGuardDue(changes)) due.add(DOCS_GUARD)

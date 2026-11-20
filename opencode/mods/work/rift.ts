@@ -6,7 +6,7 @@
 import { Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { RIFT_ALIAS_REMOVAL } from "./tool.ts"
-import type { Workspace } from "./workspace.ts"
+import { MOVE_TOOL, type Workspace } from "./workspace.ts"
 
 /** The actions that run the workbox's own scripts as they are. */
 export const WORKBOX_ACTIONS = ["init", "refresh", "deps", "check", "sources", "prune", "storage"] as const
@@ -122,7 +122,7 @@ export const stateOf = (workspace: Workspace): string => {
 export const created = (workspace: Workspace, source: string): string =>
   [
     `Created the workspace ${workspace.path} from ${source}, on ${at(workspace)}.`,
-    `This session still runs in its own directory. To work in the workspace, move the session there with the session_move tool (directory: "${workspace.path}"), or give each shell call workdir "${workspace.path}".`,
+    `This session still runs in its own directory. To work in the workspace, move the session there with the ${MOVE_TOOL} tool (directory: "${workspace.path}"), or give each shell call workdir "${workspace.path}".`,
   ].join("\n")
 
 /** The answer to a list. */
@@ -151,7 +151,7 @@ export const explainInput = (refusal: InputRefused): string => {
     case "BranchMissing":
       return 'create needs a branch (or a name, which becomes the branch): { action: "create", branch: "feat/x" }.'
     case "TargetMissing":
-      return 'remove needs the workspace: { action: "remove", name: "feat-x" } or { action: "remove", path: "/…/.rifts/repo/feat-x" }.'
+      return 'remove needs the workspace: { action: "remove", name: "feat-x" } or { action: "remove", path: "/…/.work/repo/feat-x" }.'
     case "RiftsMissing":
       return 'land needs the workspaces to land, in order: { action: "land", workspaces: ["feat-x"] }.'
     case "TargetsTwice":

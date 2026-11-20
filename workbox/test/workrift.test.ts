@@ -8,7 +8,7 @@
 // install once, gh stack metadata, the removal rule, a prune that spares kept
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -214,7 +214,39 @@ describe("workrift with no backend file", () => {
       // step once more, its last call, and with none set does nothing else. That call is the only difference.
       const deps = after.find((step) => step.argv === "deps")
       expect(deps?.calls.at(-1)).toMatch(/^git \[-C\] \[[^\]]+\] \[config\] \[--get\] \[workrift\.warm\]$/)
-      expect(after.map((step) => (step === deps ? { ...step, calls: step.calls.slice(0, -1) } : step))).toEqual(before)
+      // refresh and create now say once when the source has no warm step and never warmed (Bite base re-created
+      // cold, 2026-11-19): that line, and the two reads it makes (the warm step, the marker's path), are theirs.
+      const note = "workrift: <S>/root/app has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold\n"
+      const marker = "git [-C] [<S>/root/app] [rev-parse] [--path-format=absolute] [--git-path] [workrift-warmed-tree]"
+      const withoutNote = (step: (typeof after)[number]) => {
+        if (step.argv !== "refresh" && !step.argv.startsWith("create ")) return step
+        expect(step.err.split(note).length - 1, step.argv).toBe(1)
+        const at = step.calls.indexOf(marker)
+        expect(step.calls[at - 1], step.argv).toBe("git [-C] [<S>/root/app] [config] [--get] [workrift.warm]")
+        return { ...step, err: step.err.replace(note, ""), calls: step.calls.filter((_, i) => i !== at && i !== at - 1) }
+      }
+      // create now checks what the base lacks under the lock (its marker, its advance stamp, its hooks) and says
+      // its phases (a create waited 1059 s, 2026-11-20); the Rift backend is on its way out, so create's steps
+      // keep only their rift calls, exit, output and remaining stderr to compare. Every other verb stays exact.
+      // refresh records itself as the lock's holder (whom a waiting create names): one call reads where.
+      const holders = "git [-C] [<S>/root/app] [rev-parse] [--path-format=absolute] [--git-path] [workrift-lock-holders]"
+      const createRift = (step: (typeof after)[number]) => {
+        if (step.argv !== "refresh" || !step.calls.includes(holders)) return createOnly(step)
+        expect(step.calls.filter((call) => call === holders)).toEqual([holders])
+        return { ...step, calls: step.calls.filter((call) => call !== holders) }
+      }
+      const createOnly = (step: (typeof after)[number]) =>
+        step.argv.startsWith("create ")
+          ? {
+              ...step,
+              calls: step.calls.filter((call) => call.startsWith("rift ")),
+              err: step.err
+                .split("\n")
+                .filter((line) => !line.startsWith(`workrift: ${step.argv}: `))
+                .join("\n"),
+            }
+          : step
+      expect(after.map((step) => createRift(step === deps ? { ...step, calls: step.calls.slice(0, -1) } : withoutNote(step)))).toEqual(before.map(createRift))
     },
     60_000,
   )
@@ -506,6 +538,107 @@ describeWork("workrift with the work backend", () => {
       const ran = w.wr(path, "deps")
       expect(ran.code, ran.err).toBe(0)
       expect(existsSync(warmed) ? readFileSync(warmed, "utf8") : "").toBe(before)
+    },
+    30_000,
+  )
+
+  /** The Bite row of workrift's table, for a bench: its warm step and the file its .env links to. */
+  const biteSettings = (w: ReturnType<typeof workBench>) => ({
+    warm: `TURBO_CACHE=local:rw TURBO_CACHE_DIR=${w.root}/.cache/turbo bun run compile`,
+    env: join(w.home, ".config/bite-workbox/bite-env/.env"),
+  })
+  /** A `bun` first on PATH that logs where it ran, its turbo cache folder and its arguments. */
+  const fakeBun = (w: ReturnType<typeof workBench>) => {
+    const log = join(w.dir, "bun-calls")
+    exe(join(w.bin, "bun"), `#!/bin/sh\nprintf '%s %s %s\\n' "$(pwd -P)" "$TURBO_CACHE_DIR" "$*" >>'${log}'\n`)
+    return () => lines(existsSync(log) ? readFileSync(log, "utf8") : "")
+  }
+
+  test(
+    "init of a work base (no .rift) the table names gives it its warm step and .env link, then warms it (Bite base re-created cold, 2026-11-19)",
+    () => {
+      const w = workBench("init-bite", work)
+      const bun = fakeBun(w)
+      const want = biteSettings(w)
+      const bite = join(w.root, "bite")
+      const ran = w.wr(w.dir, "init", w.origin, bite)
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(join(bite, ".rift"))).toBe(false)
+      expect(sh(bite, w.env, "git", "config", "--get", "workrift.warm").trim()).toBe(want.warm)
+      expect(lstatSync(join(bite, ".env")).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(join(bite, ".env"))).toBe(want.env)
+      // The refresh init ends with ran the warm step in the base, with the shared turbo cache.
+      expect(bun()).toEqual([`${bite} ${w.root}/.cache/turbo run compile`])
+      expect(ran.err).not.toContain("start cold")
+      // The link is no change of the base: a create runs, and no note of a cold base.
+      expect(sh(bite, w.env, "git", "status", "--porcelain")).toBe("")
+      const made = w.wr(bite, "create", "feat/warm")
+      expect(made.code, made.err).toBe(0)
+      expect(made.err).not.toContain("start cold")
+    },
+    30_000,
+  )
+
+  test(
+    "a base with no warm step and no marker: refresh and create say in one line that its workspaces start cold, and succeed",
+    () => {
+      const w = workBench("cold", work)
+      const refreshed = w.wr(w.app, "refresh")
+      expect(refreshed.code, refreshed.err).toBe(0)
+      const note = `workrift: ${w.app} has no warm step (git config workrift.warm) and was never warmed; its workspaces start cold`
+      expect(lines(refreshed.err).filter((line) => line.includes("start cold"))).toEqual([note])
+      const made = w.wr(w.app, "create", "feat/cold")
+      expect(made.code, made.err).toBe(0)
+      expect(lines(made.err).filter((line) => line.includes("start cold"))).toEqual([note])
+      // A base the table does not name gets nothing from init.
+      expect(run(w.app, w.env, ["git", "config", "--get", "workrift.warm"]).code).not.toBe(0)
+      expect(existsSync(join(w.app, ".env"))).toBe(false)
+    },
+    30_000,
+  )
+
+  test(
+    "bootstrap's path: check finds a work base with no .rift, and settings gives it the same warm step and link as init",
+    () => {
+      const w = workBench("bootstrap-path", work)
+      const want = biteSettings(w)
+      const bite = w.base("bite")
+      const env = { ...w.env, WORKRIFT_SOURCE: bite }
+      // As bootstrap.sh runs them, from no checkout.
+      expect(run(w.dir, env, [SCRIPT, "check"]).code).toBe(0)
+      const ran = run(w.dir, env, [SCRIPT, "settings"])
+      expect(ran.code, ran.err).toBe(0)
+      expect(ran.err).toBe("")
+      expect(sh(bite, w.env, "git", "config", "--get", "workrift.warm").trim()).toBe(want.warm)
+      expect(readlinkSync(join(bite, ".env"))).toBe(want.env)
+      // Again: nothing changes, nothing is said.
+      const again = run(w.dir, env, [SCRIPT, "settings"])
+      expect({ code: again.code, err: again.err }).toEqual({ code: 0, err: "" })
+      expect(sh(bite, w.env, "git", "status", "--porcelain")).toBe("")
+      // bootstrap carries no copy of its own and no .rift test: it asks workrift.
+      const bootstrap = readFileSync(join(repo, "workbox/bootstrap.sh"), "utf8")
+      expect(bootstrap).not.toContain("workrift.warm")
+      expect(bootstrap).not.toContain(".rift")
+      expect(bootstrap).toContain(`"$local_bin_dir/workrift" settings`)
+    },
+    30_000,
+  )
+
+  test(
+    "settings keeps a warm step set to something else and an .env of its own, and reports each",
+    () => {
+      const w = workBench("kept", work)
+      const want = biteSettings(w)
+      const bite = w.base("bite")
+      sh(bite, w.env, "git", "config", "workrift.warm", "make warm")
+      writeFileSync(join(bite, ".env"), "own\n")
+      const ran = run(w.dir, { ...w.env, WORKRIFT_SOURCE: bite }, [SCRIPT, "settings"])
+      expect(ran.code, ran.err).toBe(0)
+      expect(sh(bite, w.env, "git", "config", "--get", "workrift.warm").trim()).toBe("make warm")
+      expect(ran.err).toContain(`${bite} keeps its warm step 'make warm'; workrift's table has '${want.warm}'`)
+      expect(lstatSync(join(bite, ".env")).isSymbolicLink()).toBe(false)
+      expect(readFileSync(join(bite, ".env"), "utf8")).toBe("own\n")
+      expect(ran.err).toContain(`${bite}/.env is a file of its own`)
     },
     30_000,
   )
@@ -1594,4 +1727,351 @@ describeWork("workrift with the work backend", () => {
     expect(sh(join(path), w.env, SCRIPT, "check").trim()).toBe(`Warm source checks passed: ${w.app}`)
     expect(sh(lib, w.env, SCRIPT, "check").trim()).toBe(`Warm source checks passed: ${lib}`)
   })
+})
+
+/**
+ * A `flock` with util-linux's semantics, through perl's flock(2), first on PATH: `flock [-s|-x] [-n] [-w secs] FD`
+ * locks the open file the caller's descriptor FD holds (the lock stays with that file once this exits, as
+ * util-linux's does), and `flock [-n] FILE COMMAND…` runs COMMAND holding FILE. Exit 1 when -n or -w gives up.
+ */
+const realFlock = (bin: string) =>
+  exe(
+    join(bin, "flock"),
+    [
+      "#!/usr/bin/perl",
+      "use strict; use Fcntl qw(:flock); use Time::HiRes qw(sleep time);",
+      "my ($nb, $sh, $w) = (0, 0, undef);",
+      "while (@ARGV && $ARGV[0] =~ /^-/) { my $o = shift; if ($o eq '-n') { $nb = 1 } elsif ($o eq '-s') { $sh = 1 } elsif ($o eq '-w') { $w = shift } }",
+      "my $t = shift; my $fh;",
+      "if ($t =~ /^\\d+$/ && !@ARGV) { open($fh, '>>&=', $t) or exit 64 } else { open($fh, '>>', $t) or exit 64 }",
+      "my $deadline = defined $w ? time + $w : undef;",
+      "until (flock($fh, ($sh ? LOCK_SH : LOCK_EX) | LOCK_NB)) { exit 1 if $nb || (defined $deadline && time >= $deadline); sleep 0.05 }",
+      "if (@ARGV) { exit(system(@ARGV) >> 8) }",
+      "exit 0;",
+      "",
+    ].join("\n"),
+  )
+
+describeWork("workrift create under load (a create waited 1059 s on the workbox, 2026-11-20)", () => {
+  const work = WORK_BIN ?? "work"
+
+  interface Spawned {
+    readonly code: number
+    readonly out: string
+    readonly err: string
+  }
+  const spawnAll = (cwd: string, env: Env, argvs: ReadonlyArray<ReadonlyArray<string>>) =>
+    Promise.all(
+      argvs.map(async (argv): Promise<Spawned> => {
+        const child = Bun.spawn([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
+        const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
+        return { code: await child.exited, out, err }
+      }),
+    )
+
+  /** A work bench with a real flock and a warm step that logs where it ran and whether the base's lock was free. */
+  const loaded = (label: string) => {
+    const w = workBench(label, work)
+    realFlock(w.bin)
+    const warmed = join(w.dir, "warmed")
+    const lock = join(w.app, ".git/workrift.lock")
+    writeFileSync(lock, "")
+    sh(w.app, w.env, "git", "config", "workrift.warm", `sleep 0.2; if flock -n '${lock}' true; then s=free; else s=held; fi; printf '%s %s\\n' "$(pwd -P)" "$s" >>'${warmed}'`)
+    const warms = () => lines(existsSync(warmed) ? readFileSync(warmed, "utf8") : "")
+    const head = (path: string) => sh(path, w.env, "git", "rev-parse", "HEAD").trim()
+    return { w, lock, warms, head }
+  }
+
+  test(
+    "four creates at once on a base whose last warm was cut warm the base once, under the lock, and no workspace builds again",
+    async () => {
+      const { w, warms } = loaded("cut-warm")
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      expect(warms()).toEqual([`${w.app} held`])
+      // A warm cut short (a restart) leaves the marker empty.
+      writeFileSync(sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-warmed-tree").trim(), "")
+      const ran = await spawnAll(w.app, w.env, ["feat/a", "feat/b", "fix/c", "d"].map((branch) => [SCRIPT, "create", branch]))
+      for (const each of ran) expect(each.code, each.err).toBe(0)
+      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`])
+    },
+    60_000,
+  )
+
+  test(
+    "the workspace's own install and build run after the base's lock is free, never through the hook its branch switch fires under it",
+    () => {
+      const { w, lock, warms } = loaded("hook-under-lock")
+      const hooked = join(w.dir, "hooked")
+      // The copied post-checkout hook, as lefthook-local.yml runs it: it says whether the base's lock was held, then runs `workrift deps`.
+      exe(
+        join(w.app, ".git/hooks/post-checkout"),
+        `#!/bin/sh\nif flock -n '${lock}' true; then s=free; else s=held; fi\nprintf '%s %s\\n' "$(pwd -P)" "$s" >>'${hooked}'\nexec '${SCRIPT}' deps\n`,
+      )
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      const before = warms()
+      w.push("feat/own", { "own.txt": "own\n" })
+      const path = w.create(w.app, "feat/own")
+      // The hook did fire under the lock (work new's switch); the build it would have run waited for the lock to be free.
+      expect(lines(readFileSync(hooked, "utf8"))).toContain(`${path} held`)
+      expect(warms()).toEqual([...before, `${path} free`])
+    },
+    60_000,
+  )
+
+  test(
+    "main moving between creates advances the base at most once a window; a lane in the window starts at today's main, installs a changed lock and builds itself",
+    () => {
+      const { w, warms, head } = loaded("window")
+      const installs = join(w.dir, "installs")
+      sh(w.app, w.env, "git", "config", "workrift.install", `pwd -P >>'${installs}'`)
+      const installed = () => lines(existsSync(installs) ? readFileSync(installs, "utf8") : "")
+      w.push("main", { "bun.lock": "v1\n" })
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      const second = w.push("main", { "bun.lock": "v2\n" })
+      w.create(w.app, "feat/a")
+      expect(head(w.app)).toBe(second)
+      expect(installed()).toEqual([w.app, w.app])
+      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`])
+
+      const third = w.push("main", { "bun.lock": "v3\n" })
+      const ran = w.wr(w.app, "create", "feat/b")
+      expect(ran.code, ran.err).toBe(0)
+      const b = lines(ran.out).at(-1) ?? ""
+      expect(lines(ran.out)).toEqual([b])
+      expect(head(w.app)).toBe(second)
+      expect(head(b)).toBe(third)
+      expect(readFileSync(join(b, "bun.lock"), "utf8")).toBe("v3\n")
+      expect(installed()).toEqual([w.app, w.app, b])
+      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`, `${b} free`])
+      expect(ran.err).toContain(`${w.app} is behind origin/main`)
+
+      // Once the window is over, the next create advances the base again.
+      const stamp = sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-advanced-at").trim()
+      writeFileSync(stamp, `${Math.floor(Date.now() / 1000) - 601}\n`)
+      const c = w.create(w.app, "feat/c")
+      expect(head(w.app)).toBe(third)
+      expect(installed()).toEqual([w.app, w.app, b, w.app])
+      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`, `${b} free`, `${w.app} held`])
+      expect(head(c)).toBe(third)
+    },
+    60_000,
+  )
+
+  test(
+    "create says each step on stderr with the seconds since it began, and whom it waits for; stdout is the path alone",
+    async () => {
+      const { w, lock } = loaded("phases")
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      // A refresh holds the lock (as one that recorded itself would) for a moment.
+      const holder = Bun.spawn(["flock", lock, "sleep", "2"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+      while (run(w.app, w.env, ["flock", "-n", lock, "true"]).code === 0) await Bun.sleep(20)
+      const holders = join(w.app, ".git/workrift-lock-holders")
+      mkdirSync(holders, { recursive: true })
+      const since = Math.floor(Date.now() / 1000)
+      writeFileSync(join(holders, String(holder.pid)), `${since} refresh\n`)
+      const [ran] = await spawnAll(w.app, w.env, [[SCRIPT, "create", "feat/p"]])
+      await holder.exited
+      expect(ran?.code, ran?.err).toBe(0)
+      const path = join(w.root, ".work/app/feat-p")
+      expect(ran?.out).toBe(`${path}\n`)
+      const said = lines(ran?.err ?? "")
+      const at = new Date(since * 1000).toISOString().slice(11, 19)
+      expect(said.filter((line) => line.startsWith("workrift: waiting"))).toEqual([`workrift: waiting for the lock of ${w.app}: held by pid ${holder.pid} since ${at}Z (refresh)`])
+      const steps = said.filter((line) => line.startsWith("workrift: create feat/p: ")).map((line) => line.replace(/ \(\d+s\)$/, ""))
+      expect(steps).toEqual([
+        "workrift: create feat/p: fetch feat/p and main from origin",
+        `workrift: create feat/p: lock ${w.app}`,
+        "workrift: create feat/p: locked",
+        "workrift: create feat/p: clone feat-p",
+        "workrift: create feat/p: workspace: install if its lock file changed",
+        "workrift: create feat/p: workspace: warm step if its tree changed",
+        `workrift: create feat/p: done: ${path}`,
+      ])
+      for (const line of said.filter((line) => line.startsWith("workrift: create feat/p: "))) expect(line).toMatch(/ \(\d+s\)$/)
+      // The lock waited about as long as the holder held it, and the holder's record of this create is gone.
+      expect(Number(said.find((line) => line.includes(": locked"))?.match(/\((\d+)s\)$/)?.[1])).toBeGreaterThanOrEqual(1)
+      expect(readdirSync(holders)).toEqual([String(holder.pid)])
+    },
+    60_000,
+  )
+
+  test(
+    "remove takes the branch name create was given, from anywhere, and refuses a name that is no workspace, that two bases answer to, or a folder inside a checkout",
+    () => {
+      const w0 = workBench("by-name", work)
+      const w = { ...w0, wr: (cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, { ...w0.env, WORKRIFT_PURGE: "0" }, [SCRIPT, ...argv]) }
+      const x = w.create(w.app, "scratch/x")
+      expect(x).toBe(join(w.root, ".work/app/scratch-x"))
+      // From outside any checkout, and from the base, by the name create was given.
+      let ran = w.wr(w.dir, "remove", "--dry-run", "scratch/x")
+      expect(ran.code, ran.err).toBe(0)
+      expect(ran.out).toBe(`would trash: ${x}\n`)
+      ran = w.wr(w.app, "remove", "scratch/x")
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(x)).toBe(false)
+
+      // The trash still holds scratch-x, so the next create of the branch makes scratch-x-2: its name finds that one.
+      const again = w.create(w.app, "scratch/x")
+      expect(again).toBe(join(w.root, ".work/app/scratch-x-2"))
+      ran = w.wr(w.dir, "remove", "scratch/x")
+      expect(ran.code, ran.err).toBe(0)
+      expect(existsSync(again)).toBe(false)
+
+      // A folder inside a checkout is no name: it never stands for the checkout around it.
+      const a = w.create(w.app, "feat/a")
+      mkdirSync(join(a, "src"))
+      ran = w.wr(a, "remove", "src")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("no active workspace of any work base is named src")
+      expect(ran.err).toContain("absolute path")
+      expect(existsSync(a)).toBe(true)
+
+      // Two bases with a workspace for one branch: the name picks neither.
+      const lib = w.base("lib")
+      const one = w.create(w.app, "feat/dup")
+      const two = w.create(lib, "feat/dup")
+      ran = w.wr(w.dir, "remove", "feat/dup")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("several workspaces answer to feat/dup")
+      expect(ran.err).toContain(one)
+      expect(ran.err).toContain(two)
+      for (const kept of [one, two, a]) expect(existsSync(kept)).toBe(true)
+
+      // A name of nothing.
+      ran = w.wr(w.dir, "remove", "no/such")
+      expect(ran.code).toBe(1)
+      expect(ran.err).toContain("no-such")
+      expect(w.active(w.app).map((each) => each.path).sort()).toEqual([a, one].sort())
+    },
+    60_000,
+  )
+
+  test(
+    "a failed base warm holds no window and says so; the same tree is not tried again",
+    () => {
+      const { w, head } = loaded("failed-warm")
+      const tried = join(w.dir, "tried")
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      sh(w.app, w.env, "git", "config", "workrift.warm", `pwd -P >>'${tried}'; exit 3`)
+      const inBase = () => lines(existsSync(tried) ? readFileSync(tried, "utf8") : "").filter((line) => line === w.app)
+      w.push("main", { "one.txt": "1\n" })
+      const a = w.wr(w.app, "create", "feat/a")
+      expect(a.code, a.err).toBe(0)
+      expect(a.err).toContain(`warm step failed in ${w.app}`)
+      expect(inBase()).toEqual([w.app])
+      // The failure held no window: main moves, and the next create advances and tries again.
+      const two = w.push("main", { "two.txt": "2\n" })
+      expect(w.wr(w.app, "create", "feat/b").code).toBe(0)
+      expect(head(w.app)).toBe(two)
+      expect(inBase()).toEqual([w.app, w.app])
+      // Nothing moved: the failed tree is not built again, and the create says why.
+      const c = w.wr(w.app, "create", "feat/c")
+      expect(c.code, c.err).toBe(0)
+      expect(inBase()).toEqual([w.app, w.app])
+      expect(c.err).toContain("is not tried again until main moves or a refresh")
+    },
+    60_000,
+  )
+})
+
+/**
+ * A base whose tracked work.toml declares `[deps]`, made by the real `work` (work-trust.md, 2026-11-20): `work init`
+ * trusts its commands, and a later commit on main that changes the install command leaves the base untrusted
+ * from the moment it fast-forwards. Then `work new` and `work deps` of a branch whose lock differs answer
+ * Untrusted (work new exits 0, work deps 1) and install nothing.
+ */
+describeWork("workrift over a base whose work.toml commands work does not trust", () => {
+  const work = WORK_BIN ?? "work"
+
+  const untrusted = (label: string) => {
+    const w = workBench(label, work)
+    const byWork = join(w.dir, "by-work")
+    const byWorkrift = join(w.dir, "by-workrift")
+    const toml = (install: string) => `[deps]\nlock = "bun.lock"\ninstall = "${install}"\n`
+    w.push("main", { "bun.lock": "v1\n", "work.toml": toml(`pwd -P >>'${byWork}'`) })
+    const lib = w.base("lib")
+    sh(lib, w.env, "git", "config", "workrift.install", `pwd -P >>'${byWorkrift}'`)
+    const read = (file: string) => lines(existsSync(file) ? readFileSync(file, "utf8") : "")
+    const trusted = () => (JSON.parse(w.inBase(lib, "--json", "doctor")) as { trusted: boolean }).trusted
+    expect(trusted()).toBe(true)
+    // A teammate's PR changes the install command: no host has trusted the new one.
+    w.push("main", { "work.toml": toml(`pwd -P >>'${byWork}'; true`) })
+    return { w, lib, byWork: () => read(byWork), byWorkrift: () => read(byWorkrift), trusted }
+  }
+  const note = (lib: string) => `workrift: ${lib}/work.toml runs commands work does not trust on this host`
+
+  test(
+    "create of a branch whose lock differs installs with workrift's own command, says so in one line, and never runs the untrusted one",
+    () => {
+      const u = untrusted("untrusted-create")
+      u.w.push("feat/locked", { "bun.lock": "v2\n" })
+      const ran = u.w.wr(u.lib, "create", "feat/locked")
+      expect(ran.code, ran.err).toBe(0)
+      const path = lines(ran.out).at(-1) ?? ""
+      expect(lines(ran.out)).toEqual([path])
+      expect(u.trusted()).toBe(false)
+      expect(u.byWorkrift()).toContain(path)
+      expect(u.byWork()).not.toContain(path)
+      expect(lines(ran.err).filter((line) => line.startsWith(note(u.lib)))).toHaveLength(1)
+      expect(ran.err).toContain(`work trust in ${u.lib}`)
+    },
+    60_000,
+  )
+
+  test(
+    "deps after a switch to a branch with another lock falls back to workrift's own install when work deps answers Untrusted",
+    () => {
+      const u = untrusted("untrusted-deps")
+      expect(u.w.wr(u.lib, "refresh").code).toBe(0)
+      const path = u.w.create(u.lib, "feat/same")
+      u.w.push("feat/other", { "bun.lock": "v3\n" })
+      sh(path, u.w.env, "git", "fetch", "-q", "origin")
+      sh(path, u.w.env, "git", "switch", "-q", "--detach", "origin/feat/other")
+      const before = u.byWorkrift().filter((line) => line === path).length
+      const ran = u.w.wr(path, "deps")
+      expect(ran.code, ran.err).toBe(0)
+      expect(u.byWorkrift().filter((line) => line === path).length).toBe(before + 1)
+      expect(u.byWork()).not.toContain(path)
+      expect(ran.err).toContain("Untrusted")
+      expect(ran.err).toContain(`work trust in ${u.lib}`)
+      // The same lock again: nothing installs.
+      expect(u.w.wr(path, "deps").code).toBe(0)
+      expect(u.byWorkrift().filter((line) => line === path).length).toBe(before + 1)
+    },
+    60_000,
+  )
+
+  test(
+    "deps stays a loud failure when work's trusted install fails (DepsFailed)",
+    () => {
+      const w = workBench("deps-failed", work)
+      w.push("main", { "bun.lock": "v1\n", "work.toml": `[deps]\nlock = "bun.lock"\ninstall = "exit 3"\n` })
+      const lib = w.base("lib")
+      sh(lib, w.env, "git", "config", "workrift.install", "true")
+      const path = w.create(lib, "feat/f")
+      w.push("feat/g", { "bun.lock": "v2\n" })
+      sh(path, w.env, "git", "fetch", "-q", "origin")
+      sh(path, w.env, "git", "switch", "-q", "--detach", "origin/feat/g")
+      const ran = w.wr(path, "deps")
+      expect(ran.code).not.toBe(0)
+      expect(ran.err).toContain("DepsFailed")
+    },
+    60_000,
+  )
+
+  test(
+    "refresh warns in one line when work doctor finds the base untrusted, and says nothing of trust when it is trusted",
+    () => {
+      const u = untrusted("untrusted-refresh")
+      const ran = u.w.wr(u.lib, "refresh")
+      expect(ran.code, ran.err).toBe(0)
+      expect(lines(ran.err).filter((line) => line.startsWith(note(u.lib)))).toHaveLength(1)
+      // A person reviews the file and allows it: no more warning.
+      u.w.inBase(u.lib, "trust")
+      const again = u.w.wr(u.lib, "refresh")
+      expect(again.code, again.err).toBe(0)
+      expect(again.err).not.toContain("does not trust")
+    },
+    60_000,
+  )
 })

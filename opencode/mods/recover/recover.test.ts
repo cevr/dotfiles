@@ -39,5 +39,5 @@ describe("recoverTarget", () => {
 
 test("movedNotice names where the session went and what is gone", () => {
   const home = (directory: string) => directory.replace(/^\/home\/me/, "~")
-  expect(movedNotice(at("/home/me/repo"), "/home/me/.rifts/x", home)).toBe("Moved to ~/repo: ~/.rifts/x no longer exists")
+  expect(movedNotice(at("/home/me/repo"), "/home/me/.work/x", home)).toBe("Moved to ~/repo: ~/.work/x no longer exists")
 })

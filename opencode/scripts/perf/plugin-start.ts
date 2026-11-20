@@ -30,9 +30,10 @@ import { spawnSync } from "bun"
  */
 const EXPORT_MS = 250
 /**
- * How long the end waits for the stopped service to exit before it kills its group. Its own shutdown
- * gives up after 10 s (`shutdown did not finish within 10s`, Worktree and the plugin supervisors still
- * releasing: on a loaded Mac it read 10-28 s), and nothing here measures a stop.
+ * How long the end waits for the stopped service to exit before it kills its group. On macOS its stop closes
+ * one Bun `fs.watch` per watched plugin source folder (~90 with our plugins), and each close rebuilds Bun's one
+ * FSEventStream, a call to fseventsd under a lock the JS thread waits on (oven-sh/bun#43870): with a slow
+ * fseventsd it read 10 s to past 30 s, past its own 10 s deadline. Nothing here measures a stop.
  */
 const EXIT_MS = 3_000
 

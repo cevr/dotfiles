@@ -8,7 +8,6 @@
     "./server": "./server.ts"
   },
   "dependencies": {
-    "@dotfiles/opencode-cmd-rift": "workspace:*",
     "@dotfiles/opencode-work": "workspace:*"
   }
 }

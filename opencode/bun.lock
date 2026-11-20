@@ -189,13 +189,6 @@
         "@dotfiles/opencode-rex": "workspace:*",
       },
     },
-    "cmd/rift": {
-      "name": "@dotfiles/opencode-cmd-rift",
-      "version": "0.0.0",
-      "dependencies": {
-        "@dotfiles/opencode-work": "workspace:*",
-      },
-    },
     "cmd/skills": {
       "name": "@dotfiles/opencode-cmd-skills",
       "version": "0.0.0",
@@ -248,7 +241,6 @@
       "name": "@dotfiles/opencode-cmd-work",
       "version": "0.0.0",
       "dependencies": {
-        "@dotfiles/opencode-cmd-rift": "workspace:*",
         "@dotfiles/opencode-work": "workspace:*",
       },
     },
@@ -554,8 +546,6 @@
     "@dotfiles/opencode-cmd-recover": ["@dotfiles/opencode-cmd-recover@workspace:cmd/recover"],
 
     "@dotfiles/opencode-cmd-rex": ["@dotfiles/opencode-cmd-rex@workspace:cmd/rex"],
-
-    "@dotfiles/opencode-cmd-rift": ["@dotfiles/opencode-cmd-rift@workspace:cmd/rift"],
 
     "@dotfiles/opencode-cmd-skills": ["@dotfiles/opencode-cmd-skills@workspace:cmd/skills"],
 

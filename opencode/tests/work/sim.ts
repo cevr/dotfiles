@@ -4,7 +4,8 @@
 //
 // - A title request: a short title.
 // - `work flow`: create a workspace for `feat/x` with `work`; commit in it through the shell; list; remove it
-//   (refused: the commit is found nowhere else); remove it with force; then a closing line.
+//   (refused: the commit is found nowhere else); remove it with force; call `shll`, a one-letter miss of
+//   `shell`; then a closing line.
 // - `work land`: create a workspace for `feat/x`; commit a file in it through the shell; land it by
 //   `workspaces`; then a closing line, again after the wake.
 // - `work alias`: list with the alias `rift`; then a closing line.
@@ -20,8 +21,21 @@ export const BRANCH = "feat/x"
 export const COMMIT_SUBJECT = "only here"
 export const LAND_SUBJECT = "feat: land me"
 
-/** The names the test looks for in each request: the worktree tools, and a sibling of theirs that stays. */
-export const WATCHED = ["worktree_create", "worktree_list", "worktree_remove", "session_move"]
+/**
+ * The names the test looks for in each request: the worktree tools, and a sibling of theirs that stays, the
+ * session move tool. Code Mode calls it `opencode.session_move` up to the fork's upstream merge of 8e50929d0d
+ * and `opencode.session.move` from it (`opencode_session_move` without Code Mode, before and after).
+ */
+export const WATCHED = ["worktree_create", "worktree_list", "worktree_remove", "session_move", "session.move"]
+
+/**
+ * What a request names of WATCHED: its worktree names, and whether it names the session move tool (either name;
+ * a later request may carry both, the work answer naming `opencode_session_move` beside Code Mode's catalog).
+ */
+export const watchedIn = (named: ReadonlyArray<string>) => ({
+  worktree: named.filter((name) => name.startsWith("worktree_")),
+  move: named.some((name) => !name.startsWith("worktree_")),
+})
 
 /** What the test reads back about one request. */
 export const Seen = Schema.Struct({
@@ -101,6 +115,7 @@ const scripts = (workspace: string): ReadonlyArray<readonly [string, ReadonlyArr
       { kind: "tool", name: "work", input: { action: "list" } },
       { kind: "tool", name: "work", input: { action: "remove", name: "feat-x" } },
       { kind: "tool", name: "work", input: { action: "remove", name: "feat-x", force: true } },
+      { kind: "tool", name: "shll", input: { command: "echo never", description: "A misspelled tool" } },
     ],
   ],
   [

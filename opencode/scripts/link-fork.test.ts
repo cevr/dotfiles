@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
 /** A fork path that exists on no machine, like a Mac path on the workbox. */
-const ELSEWHERE = "/nonexistent/loop-probe-x/.rifts/opencode/prime-look"
+const ELSEWHERE = "/nonexistent/loop-probe-x/.work/opencode/prime-look"
 /** opencode/: the real scripts run from it. */
 const OPENCODE = join(import.meta.dir, "..")
 
@@ -120,7 +120,7 @@ describe("link-fork", () => {
 
   test("refuses an unexpanded ~ and says to write $HOME", () => {
     const before = snapshot()
-    const { code, err } = run("~/Developer/personal/.rifts/opencode/prime-look")
+    const { code, err } = run("~/Developer/personal/.work/opencode/prime-look")
     expect(code).not.toBe(0)
     expect(err).toContain("$HOME")
     expect(snapshot()).toEqual(before)

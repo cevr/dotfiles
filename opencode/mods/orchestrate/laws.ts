@@ -529,11 +529,11 @@ export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, ne
       scoped((probe) =>
         Effect.gen(function* () {
           const logs = yield* UnitLogs
-          const rift = yield* probe.make(".rifts/app/auth")
-          yield* probe.touch(".rifts/app/auth/README.md")
+          const rift = yield* probe.make(".work/app/auth")
+          yield* probe.touch(".work/app/auth/README.md")
           yield* probe.make("tmp/orchestrate/web/auth")
           expect(yield* logs.find({ unit: "auth", named: [rift], directory: rift })).toBeUndefined()
-          expect(yield* logs.find({ unit: "auth", named: [".rifts/app/auth"], directory: probe.checkout })).toBeUndefined()
+          expect(yield* logs.find({ unit: "auth", named: [".work/app/auth"], directory: probe.checkout })).toBeUndefined()
           expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
           // The run's own unit dir, named next to the Rift, is still found.
           yield* probe.touch("tmp/orchestrate/web/auth/spec.md")

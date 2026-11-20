@@ -322,10 +322,9 @@ esac`)
   stub(stubs, "curl", log, `case "$*" in
   "-fsSL https://releases.herdr.dev/core/install.sh") cat '${installer}' ;;
 esac`)
-  // A Bite base made by `workrift init`, which bootstrap gives its .env link.
+  // The Bite base, which bootstrap asks workrift (a stub here) to give its .env link and warm step.
   const workspaces = join(root, "workspaces")
   mkdirSync(join(workspaces, "bite"), { recursive: true })
-  writeFileSync(join(workspaces, "bite", ".rift"), "")
   const result = await run(["/bin/sh", join(box, "bootstrap.sh")], {
     HOME: home,
     USER: "exedev",
@@ -412,12 +411,12 @@ describe("bootstrap", () => {
       expect(existsSync(join(result.home, ".config", "systemd", "user", "herdr-bite.service"))).toBe(false)
       expect(existsSync(join(result.home, ".config", "herdr", "config.toml"))).toBe(false)
       expect(existsSync(join(result.home, ".config", "bite-workbox", "herdr-plugins.txt"))).toBe(false)
-      // The Bite base under WORKBOX_WORKSPACES_DIR, never /workspaces/bite, gets the .env link and the warm step.
-      const bite = join(result.workspaces, "bite")
-      expect(readlinkSync(join(bite, ".env"))).toBe(join(result.home, ".config", "bite-workbox", "bite-env", ".env"))
-      expect(result.calls).toContain(
-        `git -C ${bite} config workrift.warm TURBO_CACHE=local:rw TURBO_CACHE_DIR=${result.workspaces}/.cache/turbo bun run compile`,
-      )
+      // The Bite base's .env link and warm step come from workrift (its one writer, tested in
+      // workrift.test.ts): bootstrap asks whether the base is one, then for its settings, and writes neither.
+      // (The last check is the run's own --check at its end.)
+      expect(result.calls.filter((c) => c.startsWith("workrift "))).toEqual(["workrift check", "workrift settings", "workrift check"])
+      expect(all).not.toContain("workrift.warm")
+      expect(existsSync(join(result.workspaces, "bite", ".env"))).toBe(false)
       expect(all).not.toMatch(/(^|\s)\/workspaces\//m)
     }
   }, 60_000)

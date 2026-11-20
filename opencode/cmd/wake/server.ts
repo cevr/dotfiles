@@ -3,7 +3,7 @@
  * wakes model (`@dotfiles/opencode-wake/model`) on the plugin's storage, the
  * session inbox, owned `/bin/sh` checks and the Bun.cron backstop, registers
  * the `wake`, `monitor`, `wake_cancel`, `wake_list` and `job` tools, takes
- * OpenCode's automation tools (`AUTOMATION_TOOLS`) out of the registry, and
+ * OpenCode's automation tools (`AUTOMATION_IDS`) out of the registry, and
  * answers the wakes RPC (`WAKES`) the tray, the OS jobs and the schedule
  * migration (`scripts/migrate-schedules.ts`, over `set`) and the image plugin
  * (`cmd/image`, a job over `set`) call.
@@ -39,6 +39,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Ref, Schema, Stream } from "effect"
+import { AUTOMATION_IDS } from "@dotfiles/opencode-wake/automations"
 import * as CronBackstop from "@dotfiles/opencode-wake/cron/backstop"
 import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
 import { DEFAULT_WAIT_MS, MAX_WAIT_MS } from "@dotfiles/opencode-wake/job"
@@ -65,21 +66,6 @@ import {
   WakeInput,
 } from "@dotfiles/opencode-wake/tools"
 import { type Armed, type Board, type Cancelled, type Due, type Killed, type Pending, SetAsk, WAKES, type WakeRejected } from "@dotfiles/opencode-wake/wake"
-
-/**
- * OpenCode's automation tools, by their registry ids; the wake tools replace
- * them. An automation fires by prompting its session with its whole action, a
- * real user message each time; a wake or a monitor fires as a short
- * synthetic notice. They are offered only under `experimental.automations`,
- * and removed here for every agent either way.
- */
-export const AUTOMATION_TOOLS = [
-  "opencode_automation_create",
-  "opencode_automation_list",
-  "opencode_automation_pause",
-  "opencode_automation_resume",
-  "opencode_automation_delete",
-] as const
 
 export const Options = Schema.Struct({
   /** `cron` (default): an OS job per entry through Bun.cron. `off`: jobs held in memory, for a server whose wakes must not outlive it. */
@@ -199,7 +185,11 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       const wakes = Context.get(services, Model.WakesModel)
 
       yield* ctx.tool.transform((editor) => {
-        for (const id of AUTOMATION_TOOLS) editor.remove(id)
+        // The wake tools replace OpenCode's automation tools: an automation fires by prompting its session with its
+        // whole action, a real user message each time; a wake or a monitor fires as a short synthetic notice. They are
+        // offered only under `experimental.automations`, and removed here for every agent either way, by every id a
+        // fork gives them (removing an id the registry lacks does nothing).
+        for (const id of AUTOMATION_IDS) editor.remove(id)
         // Direct tools beside the others, so they are offered without code mode and reached from a kernel cell.
         editor.add({
           name: NAMES.wake,

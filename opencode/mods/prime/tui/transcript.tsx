@@ -1,8 +1,9 @@
 // Transcript rows in the Prime look: the user prompt behind fx's heavy `┃` rail (bold text, no band)
 // and plain assistant text. A thought is a node of its step's group (tools.tsx).
 import { RGBA, type BoxRenderable } from "@opentui/core"
-import { createMemo, createSignal, Show } from "solid-js"
-import { governingAsk, oneLine } from "../ask.ts"
+import { createEffect, createMemo, createSignal, Show, untrack } from "solid-js"
+import { NO_PIN, oneLine, pinnedAsk } from "../ask.ts"
+import { Option } from "effect"
 import { inboxOf, isWaiting } from "../pending.ts"
 import { attachedLine, promptText } from "../prompt.ts"
 import type { Host, Overlay, Palette } from "./host.ts"
@@ -117,12 +118,25 @@ function cover(theme: Palette) {
  * row under it rather than reserving one, so the transcript keeps its height
  * as the reader crosses the bottom; every row still reaches view, since the
  * top row the pin covers moves on with a one-row scroll and the transcript's
- * own first row is the splash's blank margin.
+ * own first row is the splash's blank margin. A prompt older than the loaded
+ * window comes from the session's prompts read apart from it (opencode/asks.ts);
+ * a click on one reads the window back to it (the fork's reveal).
  */
 export function PinnedAsk(props: { host: Host; input: Overlay }) {
-  const ask = createMemo(() =>
-    props.input.away ? governingAsk(props.host.messages(props.input.sessionID), props.input.messages) : undefined,
-  )
+  const sessionID = () => props.input.sessionID
+  const pin = createMemo(() => {
+    if (!props.input.away) return NO_PIN
+    return pinnedAsk(props.host.messages(sessionID()), props.input.messages, props.host.asks(sessionID()))
+  })
+  const ask = () => Option.getOrUndefined(pin().ask)
+  // The first page once the view leaves the bottom, a page more only when the pin needs an older prompt.
+  createEffect(() => {
+    if (!props.input.away) return
+    if (pin().wants || !untrack(() => props.host.asks(sessionID()).read)) props.host.readAsks(sessionID())
+  })
+  // Prompts that arrive join the index, so it keeps them once a re-read window no longer holds them.
+  // It walks the window (tracked) only once the index is read; it stops after its own write, which changes nothing more.
+  createEffect(() => props.host.learnAsks(sessionID(), props.host.messages(sessionID())))
   // Unmeasured, the text keeps its length and the host's truncate cuts it.
   const [width, setWidth] = createSignal(Infinity)
   const [hover, setHover] = createSignal(false)
@@ -148,7 +162,7 @@ export function PinnedAsk(props: { host: Host; input: Overlay }) {
           onMouseUp={() => props.input.reveal(found().id)}
         >
           <text wrapMode="none" truncate fg={hover() ? theme().text.muted : theme().text.base}>
-            <span style={{ bold: true }}>{oneLine(found().text ?? "", width() - 2)}</span>
+            <span style={{ bold: true }}>{oneLine(found().text, width() - 2)}</span>
           </text>
         </box>
       )}

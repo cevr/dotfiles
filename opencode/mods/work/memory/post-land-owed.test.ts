@@ -25,7 +25,7 @@ import { Landing } from "../service.ts"
 import { CHECK_EVERY, MAX_WAIT, SETTLE } from "../owed.ts"
 
 const SOURCE = "/code/app"
-const POST_LAND = "/code/.rifts/app/post-land"
+const POST_LAND = "/code/.work/app/post-land"
 const CORES = 12
 /** The rift plugin instances one server runs at once. */
 const INSTANCES = 3
