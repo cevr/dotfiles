@@ -5,7 +5,7 @@
 // apart from the transcript (mods/prime/opencode/asks.ts). A click on the pin reads the transcript back to that
 // prompt and shows it at the top (the fork's overlay reveal); a little further up, the pin is the turn before's
 // prompt. The prompts are read once, one page, not once a scroll frame.
-import { Effect, Exit, Option } from "effect"
+import { Data, Effect, Exit, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import type { Model, Took } from "../../sim-tui/server.ts"
 
@@ -36,6 +36,8 @@ interface Played {
   readonly promptReads: number
   /** Those it had made when the session was open at the bottom, before any scroll. */
   readonly promptReadsAtBottom: number
+  /** Whether the click on the pin read the transcript back to the unloaded prompt (the fork's overlay reveal). */
+  readonly revealed: boolean
   /** Every session.messages read of the far session, in order: `newest` first, then `cursor`. */
   readonly pages: ReadonlyArray<string>
 }
@@ -54,11 +56,31 @@ const scenario = (seed: number) =>
     onNone: () => play(seed).pipe(Effect.tap((run) => Effect.sync(() => played.set(seed, run)))),
   })
 
+/** The click on the pin found no reveal that reads back: the fork lacks the overlay's reveal change. */
+class NoReveal extends Data.TaggedError("NoReveal")<{ readonly message: string }> {}
+/**
+ * The scenario, for the tests after the click: they fail naming the cause when the click did not read the
+ * transcript back, which is the fork's `session.transcript.overlay` reveal still `jumpToMessage` (before f694870eb5,
+ * "fix(tui): the transcript overlay's reveal reads back to a message older than the loaded pages").
+ */
+const revealedScenario = (seed: number) =>
+  scenario(seed).pipe(
+    Effect.filterOrFail(
+      (run) => run.revealed,
+      () =>
+        new NoReveal({
+          message:
+            "the click on the pinned prompt did not read the transcript back to it within 10 s: the fork's overlay reveal does not load older pages (it needs f694870eb5, the reveal as jumpToTurn; check OPENCODE_DEV's head)",
+        }),
+    ),
+  )
+
 const play = (seed: number) =>
   App.seed(BOOT, { key: "prime-pin-far", seed, model, pagedMessages: true }, (tui) =>
     Effect.gen(function* () {
       const frames: Record<Name, ReadonlyArray<string>> = { "far-bottom": [], "far-pinned": [], "far-revealed": [], "far-crossed": [] }
       const save = (name: Name) => Effect.sync(() => (frames[name] = tui.text()))
+      const reveal = { done: false }
       const far = tui.server.session({ title: "The survey" })
       tui.server.history(far, [
         { ask: ASK_ONE, steps: steps("one", 3) },
@@ -91,7 +113,8 @@ const play = (seed: number) =>
       // A fork whose reveal cannot read back leaves the view where it was: the frames after it stay empty and only
       // the tests that read them fail, not the ones before.
       const revealed = yield* Effect.exit(tui.until("far-revealed", (shown) => shown.join("\n").includes("three step 01"), 10_000))
-      if (Exit.isSuccess(revealed)) {
+      reveal.done = Exit.isSuccess(revealed)
+      if (reveal.done) {
         yield* tui.advance(500)
         yield* save("far-revealed")
         // A little further up, into the second turn's steps: its prompt is the pin.
@@ -100,12 +123,14 @@ const play = (seed: number) =>
         yield* save("far-crossed")
       }
       const reads = messageReads(tui.server.requests(), far)
-      return {
+      const run: Played = {
         frames,
         promptReadsAtBottom,
+        revealed: reveal.done,
         promptReads: promptReadsOf(tui.server.requests(), far),
         pages: reads.filter((request) => !prompts(request)).map((request) => ["newest", "cursor"][Number(new URLSearchParams(request.query).has("cursor"))] ?? ""),
       }
+      return run
     }),
   )
 
@@ -128,7 +153,7 @@ seeded("scrolled into the third turn's loaded steps, the pin is its prompt, whic
 
 seeded("a click on the pin reads the transcript back to the third prompt and shows it at the top", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const run = yield* scenario(seed)
+    const run = yield* revealedScenario(seed)
     const shown = run.frames["far-revealed"]
     expect(shown[FIRST]).toBe(` ┃ ${ASK_THREE}`)
     expect(shown.slice(FIRST + 1).find((line) => line.trim() !== "")?.trim()).toBe("three step 01")
@@ -138,7 +163,7 @@ seeded("a click on the pin reads the transcript back to the third prompt and sho
 
 seeded("scrolled up across into the second turn, the pin changes to its prompt", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const shown = (yield* scenario(seed)).frames["far-crossed"]
+    const shown = (yield* revealedScenario(seed)).frames["far-crossed"]
     expect(shown[FIRST]).toBe(` ┃ ${ASK_TWO}`)
     expect(shown[FIRST + 1]).toMatch(/two step 0\d/)
   }),
