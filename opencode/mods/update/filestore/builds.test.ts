@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { spawnSync, write } from "bun"
+import { argv, env, spawnSync, write } from "bun"
 import { holdingIfFree } from "@dotfiles/opencode-work/process/flock"
 import { Effect, Exit, Option, Ref } from "effect"
-import { buildName, FRESH_MS, stagingName } from "../builds.ts"
-import { treeOf } from "../trees.ts"
+import { buildName, FRESH_MS, isBuild, prunable, stagingName } from "../builds.ts"
+import { buildOfTree, treeOf } from "../trees.ts"
 import type { Build, Record } from "../record.ts"
 import { Builds } from "../service.ts"
 import * as BuildsLayer from "./builds.ts"
+import * as TreesLayer from "./trees.ts"
 
 /**
  * Six builds, oldest first: v0 … v5; v5 is the one a concurrent stage brings. v0 and v1 are of the
@@ -77,7 +78,7 @@ const pruneOn = (host: Scratch, options: Partial<BuildsLayer.Options>, read: Eff
   )
 
 /** Removes the scratch host, a sealed tree in it too. */
-const removeHost = (host: Scratch) => Effect.sync(() => void sh(["/bin/sh", "-c", `chmod -R u+w '${host.dir}' && rm -rf '${host.dir}'`]))
+const removeHost = (host: Pick<Scratch, "dir">) => Effect.sync(() => void sh(["/bin/sh", "-c", `chmod -R u+w '${host.dir}' && rm -rf '${host.dir}'`]))
 
 /** Runs `body` on a fresh scratch host, removing the host after. */
 const onHost = <A>(runs: (share: string) => ReadonlyArray<string>, body: (host: Scratch) => Effect.Effect<A>, self = true) =>
@@ -312,5 +313,154 @@ describe("pruning trees with their builds (scratch hosts)", () => {
           const { left: after } = yield* pruneOn(host, { freshMs: FRESH_MS })
           expect(after).toContain(treeOf(buildName(V[0])))
         }),
+    ))
+})
+
+// Making a tree (`filestore/trees.ts`), here beside the prune that takes it away: the make runs on a
+// scratch git repository with its own stand-in daily, under bun:test as every case of this file does.
+
+const TREE_VERSION = "2.2.7-prime.f0f0f0f0.d0d0d0d0"
+
+/** Runs `argv` in `cwd` and answers what it printed; a failure fails the case with its stderr. */
+const ran = (argv: ReadonlyArray<string>, cwd: string) => {
+  const done = spawnSync([...argv], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  expect({ argv, code: done.exitCode, err: done.stderr.toString().slice(-800) }).toMatchObject({ code: 0 })
+  return done.stdout.toString()
+}
+
+/** `text`'s lines, the empty ones dropped. */
+const linesOf = (text: string) => text.split("\n").filter((line) => line !== "")
+
+/**
+ * The stand-in for the commit's own `scripts/daily.ts --tree <dir> --at <place>`: one server entry for
+ * `cmd/a` and both overlay files, as the real one writes them (scripts/daily.ts `writeTree`).
+ */
+const STAND_IN_DAILY = `import { mkdirSync, writeFileSync } from "node:fs"
+const argv = process.argv
+const dir = argv[argv.indexOf("--tree") + 1]
+const at = argv[argv.indexOf("--at") + 1]
+mkdirSync(dir + "/entries/server/a", { recursive: true })
+mkdirSync(dir + "/config", { recursive: true })
+writeFileSync(dir + "/entries/server/a/package.json", JSON.stringify({ name: "@dotfiles/opencode-entry-a", exports: { "./server": "./server.ts" } }))
+writeFileSync(dir + "/entries/server/a/server.ts", 'export { default } from "../../../opencode/cmd/a/server.ts"\\n')
+writeFileSync(dir + "/config/opencode.json", JSON.stringify({ plugins: [at + "/entries/server/a"] }))
+writeFileSync(dir + "/config/cli.json", JSON.stringify({ plugins: [at + "/opencode/cmd/a"] }))
+`
+
+/** The scratch repository's files: a workspace of a mod and its `cmd/` package, which imports the mod, the host's `effect`, and `extra`. */
+const repoFiles = (extra: string): ReadonlyArray<readonly [string, string]> => [
+  [".gitignore", "node_modules\n"],
+  ["opencode/package.json", `{ "name": "scratch", "private": true, "workspaces": ["mods/*", "cmd/*"] }\n`],
+  ["opencode/mods/a/package.json", `{ "name": "@dotfiles/opencode-a", "private": true, "exports": { "./*": "./*.ts" } }\n`],
+  ["opencode/mods/a/x.ts", "export const x = 1\n"],
+  ["opencode/cmd/a/package.json", `{ "name": "@dotfiles/opencode-cmd-a", "private": true, "exports": { "./server": "./server.ts" }, "dependencies": { "@dotfiles/opencode-a": "workspace:*" } }\n`],
+  ["opencode/cmd/a/server.ts", `import { x } from "@dotfiles/opencode-a/x"\nimport { Effect } from "effect"\n${extra}export default Effect.succeed(x)\n`],
+  ["opencode/scripts/daily.ts", STAND_IN_DAILY],
+  ["README.md", "outside opencode/, so never in a tree\n"],
+]
+
+/** A scratch host for a make: a git repository with one commit of `repoFiles(extra)`, its lockfile made, an empty share directory, and the make's options. */
+interface TreeHost {
+  readonly dir: string
+  readonly repo: string
+  readonly commit: string
+  readonly options: TreesLayer.Options
+}
+
+const treeHost = (extra: string): Effect.Effect<TreeHost> =>
+  Effect.gen(function* () {
+    const dir = ran(["realpath", ran(["mktemp", "-d", "-t", "update-trees"], "/").trim()], "/").trim()
+    const repo = `${dir}/repo`
+    yield* Effect.forEach(repoFiles(extra), ([path, text]) => Effect.promise(() => write(`${repo}/${path}`, text, { createPath: true })), { discard: true })
+    const bun = Option.getOrElse(Option.fromNullishOr(argv.at(0)), () => "bun")
+    ran([bun, "install"], `${repo}/opencode`)
+    ran(["git", "init", "-q", "-b", "main"], repo)
+    ran(["git", "add", "-A"], repo)
+    ran(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "scratch"], repo)
+    ran(["mkdir", "-p", `${dir}/share`, `${dir}/home`], dir)
+    const path = Option.getOrElse(Option.fromNullishOr(env.PATH), () => "/usr/bin:/bin")
+    return { dir, repo, commit: ran(["git", "rev-parse", "HEAD"], repo).trim(), options: { share: `${dir}/share`, checkout: repo, bun, env: { PATH: path, HOME: `${dir}/home` }, pid: 4242, overlay: [] } }
+  })
+
+/** Runs `body` on a fresh scratch host for a make, removing it after. */
+const onTreeHost = <A, E>(body: (host: TreeHost) => Effect.Effect<A, E>, extra = "") => Effect.runPromise(Effect.acquireUseRelease(treeHost(extra), body, removeHost))
+
+/** Every file path under `root` but in a `node_modules`, sorted. */
+const sourcesUnder = (root: string) =>
+  linesOf(ran(["find", root, "-name", "node_modules", "-prune", "-o", "-type", "f", "-print"], root))
+    .map((line) => line.slice(root.length + 1))
+    .sort()
+
+/** What a share directory holds that reads as a tree, and whether the build's binary would bind a tree's overlay. */
+const treesIn = (share: string) => ({
+  read: left(share).filter((name) => Option.isSome(Option.filter(buildOfTree(name), isBuild))),
+  bound: spawnSync(["test", "-e", `${share}/${treeOf(buildName(TREE_VERSION))}/config`]).exitCode === 0,
+})
+
+describe("making a build's plugin tree (scratch repositories)", () => {
+  test("the tree's opencode/ is the commit's, its links stay in it (or Bun's cache), nothing outside node_modules is writable, and a second make is a no-op", () =>
+    onTreeHost((host) =>
+      Effect.gen(function* () {
+        const tree = yield* TreesLayer.make(host.options, TREE_VERSION, host.commit)
+        expect(tree).toBe(`${host.options.share}/${treeOf(buildName(TREE_VERSION))}`)
+
+        // The commit's opencode/, file for file and byte for byte, beside what the overlay added.
+        const committed = linesOf(ran(["git", "ls-tree", "-r", "--name-only", "HEAD", "opencode"], host.repo))
+          .map((path) => path.slice("opencode/".length))
+          .sort()
+        expect(sourcesUnder(`${tree}/opencode`)).toEqual(committed)
+        for (const path of committed) expect(ran(["cat", `${tree}/opencode/${path}`], tree)).toBe(ran(["git", "show", `HEAD:opencode/${path}`], host.repo))
+        expect(sourcesUnder(tree).filter((path) => !path.startsWith("opencode/"))).toEqual(["config/cli.json", "config/opencode.json", "entries/server/a/package.json", "entries/server/a/server.ts"])
+        expect(ran(["cat", `${tree}/config/opencode.json`], tree)).toBe(`{"plugins":["${tree}/entries/server/a"]}`)
+
+        // Every link resolves inside the tree, or into Bun's cache.
+        const links = linesOf(ran(["find", tree, "-type", "l"], tree))
+        expect(links.length).toBeGreaterThan(0)
+        const cache = `${Option.getOrElse(Option.fromNullishOr(env.HOME), () => "")}/.bun/install/cache/`
+        const real = linesOf(ran(["realpath", ...links], tree))
+        expect(real.filter((path) => !path.startsWith(`${tree}/`) && !path.startsWith(cache))).toEqual([])
+
+        // Sealed: no file or directory outside node_modules keeps a write bit, and a write there is refused.
+        expect(ran(["find", tree, "-name", "node_modules", "-prune", "-o", "-perm", "-u+w", "-print"], tree)).toBe("")
+        expect(spawnSync(["/bin/sh", "-c", `printf changed > '${tree}/opencode/cmd/a/server.ts'`], { stderr: "pipe" }).exitCode).not.toBe(0)
+        expect(spawnSync(["/bin/sh", "-c", `printf new > '${tree}/opencode/new.ts'`], { stderr: "pipe" }).exitCode).not.toBe(0)
+
+        // A second make of the same version answers the same tree and touches nothing.
+        const before = ran(["ls", "-laR", tree], tree)
+        expect(yield* TreesLayer.make({ ...host.options, pid: 4343 }, TREE_VERSION, host.commit)).toBe(tree)
+        expect(ran(["ls", "-laR", tree], tree)).toBe(before)
+        expect(left(host.options.share)).toEqual([treeOf(buildName(TREE_VERSION))])
+      }),
+    ))
+
+  test("a make stopped after any step leaves nothing that reads as a tree or that a binary binds, and a prune takes what it left", () =>
+    onTreeHost((host) =>
+      Effect.gen(function* () {
+        const place = TreesLayer.placeOf(host.options.share, TREE_VERSION, host.options.pid)
+        const all = TreesLayer.steps(host.options, place, host.commit)
+        expect(all.map((step) => step.name)).toEqual(["archive", "install", "overlay", "check", "seal", "place"])
+        const record: Record = { version: TREE_VERSION, command: [`${host.options.share}/${buildName(TREE_VERSION)}`], dotfiles: "d".repeat(40), fork: "f".repeat(40) }
+        const making = place.making.slice(place.making.lastIndexOf("/") + 1)
+        for (const step of all.slice(0, -1)) {
+          yield* step.run
+          expect({ step: step.name, ...treesIn(host.options.share) }).toEqual({ step: step.name, read: [], bound: false })
+          expect({ step: step.name, pruned: prunable(left(host.options.share), record, Option.some({ executables: [], commands: [] })) }).toEqual({ step: step.name, pruned: [making] })
+        }
+        yield* Effect.forEach(all.slice(-1), (step) => step.run, { discard: true })
+        expect(treesIn(host.options.share)).toEqual({ read: [treeOf(buildName(TREE_VERSION))], bound: true })
+      }),
+    ))
+
+  test("a tree whose plugin imports what neither its host serves nor its install holds fails its check, naming it, and leaves nothing", () =>
+    onTreeHost(
+      (host) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(TreesLayer.make(host.options, TREE_VERSION, host.commit))
+          const failure = Exit.findErrorOption(exit)
+          expect(Option.map(failure, (failed) => failed.step)).toEqual(Option.some("check the tree"))
+          expect(Option.map(failure, (failed) => failed.message.includes("cmd/a/server.ts (server): cmd/a/server.ts imports left-pad"))).toEqual(Option.some(true))
+          expect(sh(["ls", "-A", host.options.share]).stdout.toString()).toBe("")
+        }),
+      `import "left-pad"\n`,
     ))
 })

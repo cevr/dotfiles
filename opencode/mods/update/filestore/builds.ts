@@ -124,6 +124,9 @@ const removeEntry = (path: string, name: string): Effect.Effect<number, UpdateFa
     }),
   )
 
+/** Deletes a tree in the making a failed make left (`filestore/trees.ts`), sealed or not; nothing when there is none. */
+export const removeMaking = (path: string): Effect.Effect<void> => removeEntry(path, path).pipe(Effect.ignore)
+
 /**
  * Deletes one build or tree, answering its size; none, leaving it, when it changed within `freshMs`
  * of now (`builds.ts` `isFresh`, by the newer of its mtime and ctime: a copy keeps its source's mtime,

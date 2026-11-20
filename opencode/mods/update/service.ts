@@ -124,6 +124,26 @@ export class Builds extends Context.Service<
   }
 >()("dotfiles-opencode/update/Builds") {}
 
+/**
+ * The builds' plugin trees (`trees.ts`): `opencode-<version>.plugins` beside each build in the share
+ * directory, which the build's every process loads its plugins from. A tree is made once, checked and
+ * sealed, and never written after; a prune deletes it with its build (`Builds`).
+ */
+export class Trees extends Context.Service<
+  Trees,
+  {
+    /**
+     * Makes the tree of build `version` from dotfiles commit `commit`, out of the checkout's object
+     * store (never a checkout), and answers its path; a tree already there is answered as it is. The
+     * tree appears by one rename once installed, written, checked and sealed: a make stopped at any
+     * step leaves nothing that reads as a tree.
+     */
+    readonly make: (version: string, commit: string) => Effect.Effect<string, UpdateFailed>
+    /** Fails, naming each, when a process of the tree at `tree` would import something its install lacks. */
+    readonly check: (tree: string) => Effect.Effect<void, UpdateFailed>
+  }
+>()("dotfiles-opencode/update/Trees") {}
+
 /** The installed record (`record.ts`); a write points the launcher at the build it installs (`filestore/launcher.ts`). */
 export class Records extends Context.Service<
   Records,
