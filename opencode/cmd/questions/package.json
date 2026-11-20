@@ -9,6 +9,7 @@
     "./tui": "./tui.tsx"
   },
   "dependencies": {
+    "@dotfiles/opencode-digest": "workspace:*",
     "@dotfiles/opencode-questions": "workspace:*"
   }
 }

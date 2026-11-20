@@ -10,6 +10,7 @@ import type { ItemInput } from "../item.ts"
 import { layer as queues, QueueModel } from "../model.ts"
 import { NoteRefused, QueueHost, type Root } from "../service.ts"
 import type { Linked } from "../stale.ts"
+import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as MemoryStore from "./store.ts"
 
 const T0 = Date.parse("2026-11-18T08:00:00Z")
@@ -59,7 +60,7 @@ const sweepTest = <A, E>(name: string, body: (world: World) => Effect.Effect<A, 
     name,
     TestClock.setTime(T0).pipe(
       Effect.andThen(body(world)),
-      Effect.provide(Layer.merge(freshness, queues).pipe(Layer.provide(Layer.merge(MemoryStore.layer(MemoryStore.empty()), hostOf(world))))),
+      Effect.provide(Layer.merge(freshness, queues).pipe(Layer.provide(Layer.mergeAll(MemoryStore.layer(MemoryStore.empty()), hostOf(world), MemoryDigest.writer())))),
       Effect.provide(TestClock.layer()),
     ),
     TIMEOUT_MS,

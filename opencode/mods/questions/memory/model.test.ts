@@ -1,5 +1,6 @@
 // The questions model over the memory doubles: what the server does with a
 // question from ask to delivery, without OpenCode.
+import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as MemoryCourier from "./courier.ts"
@@ -10,7 +11,7 @@ import { AskFor, type Sheet } from "../question.ts"
 import { Changes, Courier, QuestionStore } from "../service.ts"
 
 /** The model over `sheets` and `sessions`, as one server would build it; `onDeliver` runs as a message goes. */
-const rig = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_a"), onDeliver: (sessionID: string) => void = () => {}) => {
+const rig = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_a"), onDeliver: (sessionID: string) => void = () => {}, digest = MemoryDigest.empty()) => {
   const changed: Array<string> = []
   const courier = Layer.effect(
     Courier,
@@ -25,6 +26,7 @@ const rig = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_a
     }),
   ).pipe(Layer.provide(MemoryCourier.layer(sessions)))
   const layer = Model.layer.pipe(
+    Layer.provide(MemoryDigest.writer(digest)),
     Layer.provide(MemoryStore.layer(sheets)),
     Layer.provide(courier),
     Layer.provide(MemoryCourier.layer(sessions)),
@@ -34,7 +36,7 @@ const rig = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_a
   const fail = <A, E>(body: (model: QuestionsModel["Service"]) => Effect.Effect<A, E>) =>
     Effect.runPromise(QuestionsModel.use(body).pipe(Effect.flip, Effect.provide(layer)))
   const texts = (sessionID: string) => (sessions.inboxes.get(sessionID) ?? []).map((message) => message.letter.text)
-  return { sheets, sessions, changed, run, fail, texts }
+  return { sheets, sessions, changed, run, fail, texts, digest }
 }
 
 const port = { question: "Which port?", header: "Port", options: [{ label: "8080" }, { label: "3000" }], assume: "8080" }
@@ -401,6 +403,8 @@ describe("QuestionsModel", () => {
       }),
     ).pipe(Layer.provide(MemoryStore.layer(sheets)))
     const layer = Model.layer.pipe(
+      Layer.provide(MemoryDigest.writer()),
+    Layer.provide(MemoryDigest.writer()),
       Layer.provide(counted),
       Layer.provide(MemoryCourier.layer(MemoryCourier.empty("ses_a"))),
       Layer.provide(Layer.succeed(Changes, { changed: () => Effect.void })),

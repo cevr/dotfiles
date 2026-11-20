@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-digest": "workspace:*",
     "@dotfiles/opencode-orchestrate": "workspace:*",
     "@dotfiles/opencode-pool": "workspace:*",
     "@dotfiles/opencode-questions": "workspace:*",

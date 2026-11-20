@@ -10,7 +10,9 @@
   "dependencies": {
     "@dotfiles/opencode-anthropic-auth": "workspace:*",
     "@dotfiles/opencode-cmd-anthropic-auth": "workspace:*",
+    "@dotfiles/opencode-cmd-digest": "workspace:*",
     "@dotfiles/opencode-cmd-guard": "workspace:*",
+    "@dotfiles/opencode-digest": "workspace:*",
     "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
     "@dotfiles/opencode-cmd-orchestrate": "workspace:*",
     "@dotfiles/opencode-cmd-mail": "workspace:*",

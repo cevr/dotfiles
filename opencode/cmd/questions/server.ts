@@ -31,6 +31,8 @@
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Ref, Schema, Stream } from "effect"
+import { DIGEST } from "@dotfiles/opencode-digest/event"
+import * as Relay from "@dotfiles/opencode-digest/relay"
 import { AskedQuestion, AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencode-questions/ask"
 import * as Model from "@dotfiles/opencode-questions/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
@@ -87,7 +89,9 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
       // Changes are announced once the RPC is registered; one before then has no reader to tell.
       const announce = yield* Ref.make<(sessionID: string) => Effect.Effect<void>>(() => Effect.void)
       const changes = Layer.succeed(Changes, { changed: (sessionID) => Effect.flatMap(Ref.get(announce), (emit) => emit(sessionID)) })
-      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(Layer.merge(externals(ctx), changes))))
+      // The owner's questions go to the digest through its RPC, held while the digest plugin is not up.
+      const digest = Relay.layer((line) => ctx.rpc(DIGEST).append({ line }))
+      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(Layer.mergeAll(externals(ctx), changes, digest))))
       const questions = Context.get(services, Model.QuestionsModel)
 
       yield* ctx.tool.transform((editor) => {

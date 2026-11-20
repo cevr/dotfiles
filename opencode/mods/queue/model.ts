@@ -5,7 +5,9 @@
 // each see the other's result.
 import { Array as Arr, Clock, Context, Effect, Layer, Option, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
+import { DigestLog } from "@dotfiles/opencode-digest/event"
 import { letterOf, noticeOf } from "./answer.ts"
+import { changesOf } from "./digest.ts"
 import { AnswerItem, type Command, commandOf, EMPTY, namedOf, Queue, type QueueInput, type Rejection, sameTouches, type Snapshot, touchedOf } from "./queue.ts"
 import { QueueHost, QueueStore, type NoteRefused, type QueueUnreadable, type QueueUnwritable } from "./service.ts"
 
@@ -32,6 +34,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const store = yield* QueueStore
     const host = yield* QueueHost
+    const digest = yield* DigestLog
     const lock = yield* Semaphore.make(1)
     /** Decide `command` on the stored queue, run `deliver` with the list it leads to, then store that list. */
     const apply = <E>(sessionID: string, command: Command, deliver: (items: Snapshot["items"]) => Effect.Effect<void, E>) =>
@@ -50,6 +53,8 @@ export const layer = Layer.effect(
           const revision = Arr.match(events, { onEmpty: () => current.revision, onNonEmpty: () => current.revision + 1 })
           const next = { revision, items, touched }
           yield* store.write(sessionID, next)
+          // One digest line per item written or removed; the digest never fails or holds up the change.
+          yield* Effect.forEach(changesOf(sessionID, current.items, items, now), digest.append, { discard: true })
           return next
         }),
       )

@@ -48,6 +48,8 @@ import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
 import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
 import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
+import { make as makeDigest } from "@dotfiles/opencode-cmd-digest/server"
+import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as MemoryQueue from "@dotfiles/opencode-queue/memory/store"
 import { make as makeStatus } from "@dotfiles/opencode-cmd-status/server"
 import * as StatusCallLog from "@dotfiles/opencode-status/memory/call-log"
@@ -274,6 +276,12 @@ export const status = (world: World) => makeStatus((options) => Layer.merge(Stat
 
 /** The queue plugin (`cmd/queue/server.ts`'s `make`) on the world: its store the memory one (`memory`), which keeps the store's laws. */
 export const queue = (memory: MemoryQueue.MemoryQueues = MemoryQueue.empty()) => makeQueue(() => MemoryQueue.layer(memory))
+
+/**
+ * The digest plugin (`cmd/digest/server.ts`'s `make`) on the world: its log the memory one (`memory`), never the host's
+ * file log, so a simulation's facts land in `memory` and nowhere on disk.
+ */
+export const digest = (memory: MemoryDigest.MemoryLines = MemoryDigest.empty()) => makeDigest(() => MemoryDigest.layer(memory))
 
 /** What the work plugin keeps outside OpenCode, in memory: its workspaces, a landing and the owed post-land steps. */
 export interface WorkDoubles {

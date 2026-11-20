@@ -4,6 +4,7 @@
 // letter under faults over the memory doubles (the courier refuses once, or
 // the write that marks the letter sent fails once): after `resend` the
 // session it is put to holds exactly one letter, under the id recorded first.
+import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import { Effect, Exit, Layer, Option, Random, Schema } from "effect"
 import * as MemoryCourier from "@dotfiles/opencode-questions/memory/courier"
 import * as MemoryStore from "@dotfiles/opencode-questions/memory/store"
@@ -117,6 +118,7 @@ const rig = (failMark: boolean) => {
     }),
   ).pipe(Layer.provide(MemoryStore.layer(sheets)))
   const layer = Model.layer.pipe(
+    Layer.provide(MemoryDigest.writer()),
     Layer.provide(store),
     Layer.provide(MemoryCourier.layer(sessions)),
     Layer.provide(Layer.succeed(Changes, Changes.of({ changed: () => Effect.void }))),

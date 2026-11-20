@@ -8,6 +8,7 @@
     "./*": "./*.ts"
   },
   "dependencies": {
+    "@dotfiles/opencode-digest": "workspace:*",
     "@dotfiles/opencode-orchestrate": "workspace:*",
     "@dotfiles/opencode-prime": "workspace:*",
     "@dotfiles/opencode-work": "workspace:*"

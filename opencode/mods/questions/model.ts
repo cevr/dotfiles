@@ -56,7 +56,9 @@ import {
   type ReplyRejection,
   type Sheet,
 } from "./question.ts"
+import { DigestLog } from "@dotfiles/opencode-digest/event"
 import { askerOf } from "./asker.ts"
+import { linesOf } from "./digest.ts"
 import { type Answered, askedLetterOf, letterOf, noticeOf, withdrawnOf } from "./reply.ts"
 import { Changes, Courier, type DeliveryRefused, Family, QuestionStore, type QuestionsUnreadable } from "./service.ts"
 
@@ -125,6 +127,19 @@ export const layer = Layer.effect(
     const changes = yield* Changes
     const family = yield* Family
     const lock = yield* Semaphore.make(1)
+    const digest = yield* DigestLog
+
+    /**
+     * The owner's questions that opened, were answered or closed, one digest line each, under the root of the
+     * asking session's tree. The digest never fails or holds up the change; a lost parent files it under the session.
+     */
+    const tellDigest = (sessionID: string, before: Sheet, after: Sheet, events: ReadonlyArray<Event>, now: number) =>
+      Effect.gen(function* () {
+        const probe = linesOf(sessionID, sessionID, before, after, events, now)
+        if (probe.length === 0) return
+        const root = Option.getOrElse(Option.fromUndefinedOr(yield* rootOf(sessionID)), () => sessionID)
+        yield* Effect.forEach(linesOf(root, sessionID, before, after, events, now), digest.append, { discard: true })
+      }).pipe(Effect.ignoreCause)
 
     /** Decide on the session's sheet and store what it records; the events. */
     const apply = <J,>(sessionID: string, decide: (sheet: Sheet, now: number) => Effect.Effect<ReadonlyArray<Event>, J>) =>
@@ -134,8 +149,10 @@ export const layer = Layer.effect(
           const now = yield* Clock.currentTimeMillis
           const events = yield* decide(sheet, now)
           if (events.length === 0) return events
-          yield* store.write(sessionID, fold(Questions, events, sheet))
+          const after = fold(Questions, events, sheet)
+          yield* store.write(sessionID, after)
           yield* changes.changed(sessionID)
+          yield* tellDigest(sessionID, sheet, after, events, now)
           return events
         }),
       )

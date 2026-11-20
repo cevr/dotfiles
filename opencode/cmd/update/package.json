@@ -8,6 +8,7 @@
     "./server": "./server.ts"
   },
   "dependencies": {
+    "@dotfiles/opencode-digest": "workspace:*",
     "@dotfiles/opencode-update": "workspace:*"
   }
 }

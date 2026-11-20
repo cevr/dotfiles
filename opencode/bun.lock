@@ -50,6 +50,14 @@
         "@dotfiles/opencode-cache": "workspace:*",
       },
     },
+    "cmd/digest": {
+      "name": "@dotfiles/opencode-cmd-digest",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
+      },
+    },
     "cmd/escape": {
       "name": "@dotfiles/opencode-cmd-escape",
       "version": "0.0.0",
@@ -131,6 +139,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-pool": "workspace:*",
         "@dotfiles/opencode-questions": "workspace:*",
@@ -161,6 +170,7 @@
       "name": "@dotfiles/opencode-cmd-questions",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-questions": "workspace:*",
       },
     },
@@ -169,6 +179,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
       },
     },
@@ -226,6 +237,7 @@
       "name": "@dotfiles/opencode-cmd-update",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-update": "workspace:*",
       },
     },
@@ -362,6 +374,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-update": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
@@ -390,6 +403,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
       },
     },
     "mods/queue": {
@@ -397,6 +411,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
@@ -443,6 +458,7 @@
       "name": "@dotfiles/opencode-update",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-prime": "workspace:*",
         "@dotfiles/opencode-work": "workspace:*",
@@ -470,6 +486,7 @@
       "dependencies": {
         "@dotfiles/opencode-anthropic-auth": "workspace:*",
         "@dotfiles/opencode-cmd-anthropic-auth": "workspace:*",
+        "@dotfiles/opencode-cmd-digest": "workspace:*",
         "@dotfiles/opencode-cmd-guard": "workspace:*",
         "@dotfiles/opencode-cmd-idle-compact": "workspace:*",
         "@dotfiles/opencode-cmd-mail": "workspace:*",
@@ -480,6 +497,7 @@
         "@dotfiles/opencode-cmd-queue": "workspace:*",
         "@dotfiles/opencode-cmd-status": "workspace:*",
         "@dotfiles/opencode-cmd-wake": "workspace:*",
+        "@dotfiles/opencode-digest": "workspace:*",
         "@dotfiles/opencode-guard": "workspace:*",
         "@dotfiles/opencode-idle-compact": "workspace:*",
         "@dotfiles/opencode-mail": "workspace:*",
@@ -516,6 +534,8 @@
     "@dotfiles/opencode-cmd-btw": ["@dotfiles/opencode-cmd-btw@workspace:cmd/btw"],
 
     "@dotfiles/opencode-cmd-cache": ["@dotfiles/opencode-cmd-cache@workspace:cmd/cache"],
+
+    "@dotfiles/opencode-cmd-digest": ["@dotfiles/opencode-cmd-digest@workspace:cmd/digest"],
 
     "@dotfiles/opencode-cmd-escape": ["@dotfiles/opencode-cmd-escape@workspace:cmd/escape"],
 

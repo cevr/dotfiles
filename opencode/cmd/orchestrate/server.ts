@@ -131,7 +131,10 @@ import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
 import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
+import * as Relay from "@dotfiles/opencode-digest/relay"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
+import * as Digest from "./digest.ts"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
 import { STATUS } from "@dotfiles/opencode-status/status"
@@ -678,6 +681,8 @@ export const make = (
       const runFiles = Context.get(services, RunFiles)
       const unitLogs = Context.get(services, UnitLogs)
       const checkout = ctx.location.directory
+      // The run's facts go to the digest through its RPC, held while the digest plugin is not up (cmd/orchestrate/digest.ts).
+      const digest = Digest.make(Context.get(yield* Layer.build(Relay.layer((line) => ctx.rpc(DIGEST).append({ line }))), DigestLog), checkout)
       /** The run dirs the run tables name, once each. */
       const runDirsOf = (tables: ReadonlyArray<RunTable>): ReadonlyArray<string> => Arr.dedupe(tables.flatMap((run) => Option.toArray(Option.fromUndefinedOr(run.dir))))
       /**
@@ -831,11 +836,13 @@ export const make = (
             // Delivered or cancelled, the item no longer waits in the inbox.
             if (event.type === "session.inbox.delivered" || event.type === "session.inbox.cancelled") return idleRoots.ended(event.data.sessionID, event.data.inboxID)
             const item = event.data.item
+            // A land notice of the work plugin's (`{ rift: "land" }`): its check is a digest line.
+            const noted = Effect.forEach(Option.toArray(Digest.landNoticeOf(item)), (text) => digest.notice(event.data.sessionID, text), { discard: true })
             // New input: the owner's prompt or another plugin's message; never the nudge or the brief.
             const heard =
               item.type === "user" ||
               (item.type === "synthetic" && item.payload.metadata?.[MARK] === undefined && item.payload.metadata?.[SteerLive.BRIEF_MARK] === undefined)
-            return heard ? idleRoots.heard(event.data.sessionID, event.data.inboxID) : Effect.void
+            return noted.pipe(Effect.andThen(heard ? idleRoots.heard(event.data.sessionID, event.data.inboxID) : Effect.void))
           }),
           Effect.ignoreCause,
         ),
@@ -1022,6 +1029,16 @@ export const make = (
       /** Why a call does not run: the input rule, then its names. */
       const refusedInput = (input: Tools.OrchestrateInput) => Option.orElse(Tools.inputRefusal(input), () => Tools.nameRefusal(input))
 
+      /** A lane's digest lines, with its run dir when the unit's folder is found; off the call's path, never failing it. */
+      const noteLane = (root: string, unit: string, lane: Tools.Lane) =>
+        runs.list.pipe(
+          Effect.flatMap((tables) => unitDirOf(unit, tables)),
+          Effect.orElseSucceed(() => Option.none<string>()),
+          Effect.flatMap((dir) => digest.lane(root, unit, lane, Option.map(dir, dirname))),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        )
+
       /** A lane: the unit's Rift, answered when one is its own, else made. */
       const lane = (input: Tools.OrchestrateInput, sessionID: string) =>
         Effect.gen(function* () {
@@ -1043,10 +1060,12 @@ export const make = (
               onNone: () => Effect.succeed(found),
               onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
             })
+            yield* noteLane(sessionID, unit, lane)
             return Tools.laneAnswer(unit, lane, false, warnings)
           }
           const ask = { sessionID, branch, name: decided.make, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
+          yield* noteLane(sessionID, unit, created.rift)
           return Tools.laneAnswer(unit, created.rift, true, warnings)
         })
 
@@ -1139,7 +1158,7 @@ export const make = (
               ),
               (move) => unitLogs.append(move.dir, { unit: move.unit, to: "merged", round: move.round, note: pushed }),
               { discard: true },
-            ),
+            ).pipe(Effect.andThen(digest.landed(sessionID, rifts.map((rift) => rift.unit), pushed))),
           { discard: true })
           return Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text)
         })
@@ -1217,6 +1236,14 @@ export const make = (
             event.input = input
             return outcome
           }),
+          // A step's start is a digest line, off the call's path.
+          Effect.tap((outcome) =>
+            Effect.forEach(
+              Option.toArray(Option.filter(outcome, (begun) => begun._tag === "SubagentStarted")),
+              (begun) => digest.started(event.sessionID, Option.fromUndefinedOr(begun.child), begun.agent, Option.getOrElse(Option.fromUndefinedOr(begun.description), () => "")).pipe(Effect.forkIn(scope)),
+              { discard: true },
+            ),
+          ),
           // A heavy role's started prompt ends with its footer: a new start's and a follow-up's alike. A latched
           // start's gets its own when it opens (`start`).
           Effect.flatMap((outcome) => {
@@ -1232,6 +1259,17 @@ export const make = (
         )
       })
 
+      /** A step's hand-back as a digest line, under the session that started it; a session that is no step's writes none. */
+      const noteHandBack = (sessionID: string) =>
+        Effect.gen(function* () {
+          const agent = Option.fromUndefinedOr(yield* sessions.agentOf(sessionID))
+          const parent = Option.fromUndefinedOr(yield* sessions.parentOf(sessionID))
+          const words = Option.getOrElse(Option.fromUndefinedOr(yield* sessions.lastWordsOf(sessionID)), () => "")
+          yield* Effect.forEach(Option.toArray(Option.zipWith(agent, parent, (role, root) => ({ role, root }))), (step) => digest.handedBack(step.root, sessionID, step.role, words), {
+            discard: true,
+          })
+        }).pipe(Effect.ignoreCause)
+
       // A role's subagent that goes idle may have handed back: its unit moves in the run's log, and a verifier's
       // `accepted` records the fleet target (once per verdict, off the idle path: the record reads git).
       yield* ctx.session.hook("experimental.idle", (event) =>
@@ -1240,6 +1278,7 @@ export const make = (
           backgrounds.set(event.sessionID, event.background.filter((work) => work.sessionID === event.sessionID).length)
           yield* orchestrate.handBack({ sessionID: event.sessionID })
           yield* verdicts.handBack(event.sessionID).pipe(Effect.ignoreCause, Effect.forkIn(scope))
+          yield* noteHandBack(event.sessionID).pipe(Effect.forkIn(scope))
         }),
       )
       yield* ctx.tool.hook("execute.after", (event) => {

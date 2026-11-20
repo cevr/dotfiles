@@ -7,13 +7,16 @@ import * as Records from "@dotfiles/opencode-update/filestore/records"
 import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Stage from "@dotfiles/opencode-update/filestore/stage"
 import * as Source from "@dotfiles/opencode-update/git/source"
-import { EXIT_CODES, handoff } from "@dotfiles/opencode-update/model"
+import { DigestLog } from "@dotfiles/opencode-digest/event"
+import * as DigestFile from "@dotfiles/opencode-digest/filestore/log"
+import { installOf } from "@dotfiles/opencode-update/digest"
+import { EXIT_CODES, handoff, type Outcome } from "@dotfiles/opencode-update/model"
 import * as HandoffMark from "@dotfiles/opencode-update/process/mark"
 import * as Service from "@dotfiles/opencode-update/process/service"
 import { buildsLock, files, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "@dotfiles/opencode-update/settings"
 import { configPaths, treeOptions } from "@dotfiles/opencode-update/process/install"
 import { argv } from "bun"
-import { Config, Effect, Layer } from "effect"
+import { Array as Arr, Clock, Config, Effect, Layer, Option } from "effect"
 
 /** Every implementation the handoff runs on. */
 export const live = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string, home: string) =>
@@ -37,7 +40,22 @@ export const live = (settings: Settings, env: Readonly<globalThis.Record<string,
  * `DOTFILES_UPDATE_SETTINGS`, its reason as its argument. It answers its exit code: 0 only for a
  * proven build (`EXIT_CODES`), 1 when its settings do not read.
  */
-export const main = handoff(argv.slice(2).join(" ")).pipe(Effect.map((outcome) => EXIT_CODES[outcome]))
+export const main = Effect.gen(function* () {
+  const reason = argv.slice(2).join(" ")
+  const outcome = yield* handoff(reason)
+  yield* noteInstall(outcome, reason)
+  return EXIT_CODES[outcome]
+})
+
+/** The install's outcome as one digest line, on this host's digest log; a line not written changes no outcome. */
+const noteInstall = (outcome: Outcome, reason: string) =>
+  Effect.gen(function* () {
+    const settings = yield* Config.schema(SettingsJson, HANDOFF_SETTINGS)
+    const t = yield* Clock.currentTimeMillis
+    const repo = Option.getOrElse(Arr.last(settings.checkout.replace(/\/+$/, "").split("/")), () => settings.checkout)
+    const log = yield* DigestLog
+    yield* log.append(installOf(settings.host, outcome, reason, repo, t))
+  }).pipe(Effect.ignoreCause)
 
 /** The implementations, from the settings in the environment. */
 export const Live = Layer.unwrap(
@@ -46,7 +64,9 @@ export const Live = Layer.unwrap(
     const path = yield* Config.String("PATH").pipe(Config.withDefault(""))
     const state = yield* Config.String("XDG_STATE_HOME").pipe(Config.option)
     const home = yield* Config.String("HOME").pipe(Config.withDefault(""))
-    return live(settings, stepEnv(settings, path), Service.registrationFile(state, home), home)
+    // The digest's log, written straight to its file: the handoff outlives the server whose digest plugin owns it.
+    const digest = DigestFile.writer(`${Option.getOrElse(Option.filter(state, (dir) => dir !== ""), () => `${home}/.local/state`)}/opencode-digest`)
+    return Layer.merge(live(settings, stepEnv(settings, path), Service.registrationFile(state, home), home), digest)
   }),
 )
 

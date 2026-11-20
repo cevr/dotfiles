@@ -17,6 +17,11 @@ export const OWNERS = ["mine", "other"] as const
 export const Owner = Schema.Literals(OWNERS)
 export type Owner = typeof Owner.Type
 
+/** An item's colour, set by the agent: red is the one the digest ever shows a message red for. */
+export const LEVELS = ["red", "amber", "green"] as const
+export const Level = Schema.Literals(LEVELS)
+export type Level = typeof Level.Type
+
 /** At most this many `after` ids and `on` outcomes on one item. */
 export const MAX_LINKS = 8
 /** An outcome's name and what follows it stay this short. */
@@ -46,6 +51,10 @@ export const Item = Schema.Struct({
   detail: Schema.optionalKey(Schema.String),
   /** The subagent session doing this work; the sidebar shows its live state instead of `state`. */
   session: Schema.optionalKey(Schema.String),
+  /** The orchestrate unit this item is about: the digest puts that unit's rounds under it. */
+  unit: Schema.optionalKey(Schema.String),
+  /** Its colour, as the agent judges it; only `red` shows red in the digest. */
+  level: Schema.optionalKey(Level),
   /** The ids of the items this one waits on. */
   after: Schema.optionalKey(Schema.Array(Schema.String)),
   /** What follows each outcome, in the order written: `{ accepted: "land" }`, an item's id or a few words. */
@@ -74,6 +83,8 @@ export const ItemInput = Schema.Struct({
   session: Schema.optional(Schema.String).annotate({
     description: "The subagent session id doing this work (from the subagent tool's result). The sidebar then shows that session's live state; do not copy its status.",
   }),
+  unit: Schema.optional(Schema.String).annotate({ description: "The orchestrate unit this item is about (its name, as in its lane); '' clears." }),
+  level: Schema.optional(Schema.String).annotate({ description: `How it stands: ${LEVELS.join(", ")}. Only red shows red in the digest; '' clears.` }),
   after: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Ids of the items this one waits on, e.g. ['impl-r1']. [] clears." }),
   on: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description: "What follows each outcome: an item id or a few words, e.g. {accepted: 'land', changes: 'fix round 2', failed: 'tell owner'}. {} clears.",
@@ -162,6 +173,32 @@ const checkedChoices = (id: string, choices: ReadonlyArray<Choice>): Result.Resu
   return Result.succeed(choices)
 }
 
+/** An item's place in the digest: the unit it is about, and its colour. */
+export interface Tags {
+  readonly unit?: string
+  readonly level?: Level
+}
+
+const isLevel = Schema.is(Level)
+
+/** A tag as written ('' clears), else as it was. */
+const tagOf = (written: Option.Option<string>, before: Option.Option<string>): Option.Option<string> =>
+  Option.match(written, { onNone: () => before, onSome: (text) => Option.liftPredicate(oneLine(text), (line) => line !== "") })
+
+/**
+ * The unit and level of the item `input` describes over `previous`: as written, else as they were; an empty one
+ * is left out, so '' clears it. A level is one of LEVELS.
+ */
+export const tagsOf = (id: string, input: Pick<ItemInput, "unit" | "level">, previous: Option.Option<Tags>): Result.Result<Tags, InvalidItem> => {
+  const unit = tagOf(Option.fromNullishOr(input.unit), Option.flatMapNullishOr(previous, (item) => item.unit))
+  const level = tagOf(Option.fromNullishOr(input.level), Option.flatMapNullishOr(previous, (item) => item.level))
+  if (Option.exists(level, (each) => !isLevel(each))) return Result.fail(new InvalidItem({ id, reason: `level must be one of ${LEVELS.join(", ")}` }))
+  return Result.succeed({
+    ...Option.match(unit, { onNone: () => ({}), onSome: (each) => ({ unit: each }) }),
+    ...Option.match(Option.filter(level, isLevel), { onNone: () => ({}), onSome: (each) => ({ level: each }) }),
+  })
+}
+
 /** An item's links: the items it waits on, and what follows each of its outcomes. */
 export interface Links {
   readonly after?: ReadonlyArray<string>
@@ -217,6 +254,7 @@ export const itemOf = (input: ItemInput, previous: Item | undefined, now: number
       at = new Date(time).toISOString()
     }
     const links = yield* Effect.fromResult(linksOf(id, input, Option.fromNullishOr(previous)))
+    const tags = yield* Effect.fromResult(tagsOf(id, input, Option.fromNullishOr(previous)))
     const choices = yield* Effect.fromResult(choicesOf(id, input, Option.fromNullishOr(previous)))
     if (stateText === "scheduled" && at === undefined) return yield* new InvalidItem({ id, reason: "a scheduled item needs at (ISO 8601)" })
     const doneAt = stateText !== "done" ? undefined : previous?.state === "done" && previous.doneAt !== undefined ? previous.doneAt : now
@@ -229,6 +267,7 @@ export const itemOf = (input: ItemInput, previous: Item | undefined, now: number
       ...(at === undefined ? {} : { at }),
       ...(kept.detail === undefined ? {} : { detail: kept.detail }),
       ...(kept.session === undefined ? {} : { session: kept.session }),
+      ...tags,
       ...links,
       ...Option.match(choices, { onNone: () => ({}), onSome: (kept) => ({ choices: kept }) }),
       ...(doneAt === undefined ? {} : { doneAt }),

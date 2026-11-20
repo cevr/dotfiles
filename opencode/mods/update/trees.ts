@@ -88,6 +88,8 @@ export const SEEDS: ReadonlyArray<{ readonly glob: string; readonly host: Host }
 export const SERVER_PLUGINS: ReadonlyArray<string> = [
   "anthropic-auth",
   "pool",
+  // The digest's log owner goes before its writers (orchestrate, queue, questions), so their first lines find its RPC.
+  "digest",
   "orchestrate",
   "guard",
   "kernel",

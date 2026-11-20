@@ -10,6 +10,7 @@ import type { ItemInput } from "../item.ts"
 import { layer as queues, QueueModel } from "../model.ts"
 import { explain } from "../queue.ts"
 import { type NoteKind, NoteRefused, QueueHost } from "../service.ts"
+import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as MemoryStore from "./store.ts"
 
 const TIMEOUT_MS = 10_000
@@ -52,7 +53,7 @@ const answerTest = <A, E>(name: string, body: (world: World) => Effect.Effect<A,
     name,
     TestClock.setTime(T0).pipe(
       Effect.andThen(body(world)),
-      Effect.provide(queues.pipe(Layer.provide(Layer.merge(MemoryStore.layer(MemoryStore.empty()), hostOf(world))))),
+      Effect.provide(queues.pipe(Layer.provide(Layer.mergeAll(MemoryStore.layer(MemoryStore.empty()), hostOf(world), MemoryDigest.writer())))),
       Effect.provide(TestClock.layer()),
     ),
     TIMEOUT_MS,

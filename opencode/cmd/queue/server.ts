@@ -30,6 +30,8 @@ import { Plugin, Tool } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
 import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
+import { DIGEST } from "@dotfiles/opencode-digest/event"
+import * as Relay from "@dotfiles/opencode-digest/relay"
 import { answersOf } from "@dotfiles/opencode-queue/answer"
 import { DESCRIPTION, listing } from "@dotfiles/opencode-queue/description"
 import * as FileStore from "@dotfiles/opencode-queue/filestore/store"
@@ -82,7 +84,9 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
       // One store for the model and the sweep, so the sweep reads what the tool wrote. The model sends the owner's
       // answers through the host, a plain view of the context: building it reads nothing of the host.
       const store = Layer.succeedContext(yield* Layer.build(externals(options)))
-      const queue = Context.get(yield* Layer.build(Model.layer.pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(store))), Model.QueueModel)
+      // Each change's items go to the digest through its RPC, held while the digest plugin is not up.
+      const digest = Relay.layer((line) => ctx.rpc(DIGEST).append({ line }))
+      const queue = Context.get(yield* Layer.build(Model.layer.pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(store), Layer.provide(digest))), Model.QueueModel)
 
       // A queue that cannot be read fails the call, and the sidebar keeps what it drew.
       yield* ctx.rpc.register(QUEUE, { get: (input) => queue.get(sessionOf(input)).pipe(Effect.orDie) }).pipe(Effect.orDie)

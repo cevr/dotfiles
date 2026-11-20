@@ -1,0 +1,15 @@
+{
+  "name": "@dotfiles/opencode-cmd-digest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The digest mod's OpenCode plugin and script: the server plugin that owns the host's digest log and answers its append RPC (server), and `digest export`, which writes the page's data from the log (export).",
+  "exports": {
+    "./server": "./server.ts",
+    "./export": "./export.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-digest": "workspace:*"
+  }
+}
