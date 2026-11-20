@@ -9,7 +9,7 @@
 //   rules still refuse, no ledger is kept and old options load, and a verdict publishes the fleet target once.
 // - The lane name rule on either naming, the rift tool's description, and the tool's name against the registry's.
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
-import { VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
+import { laneNote, lanePathOf, VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
 import { RIFT_DESCRIPTION } from "@dotfiles/opencode-work/rift"
 import { Array as Arr, Effect, Match, Option, Order, Result, Schema } from "effect"
 import { nearest } from "../../mods/tool-names/near-miss.ts"
@@ -28,8 +28,8 @@ const PARENT_LAND = "orchestrate: land is the root's: a subagent never lanes, la
 /** Words only the deleted batch machine said. */
 const MACHINE_WORDS = /refused by the\s+machine|the machine holds no unit|the machine's rule/
 
-/** The Rift a lane's answer ends with: its `(rift: <path>)`. */
-const suffixOf = (answer: string): string => Option.getOrElse(Option.flatMap(Option.fromNullishOr(/\(rift: ([^)]+)\)\s*$/.exec(answer)), (match) => Arr.get(match, 1)), () => "")
+/** The workspace a lane's answer ends with: its `(lane: <path>)` (tools.ts `lanePathOf`, which takes the old `(rift: <path>)` too). */
+const suffixOf = (answer: string): string => Option.getOrElse(lanePathOf(answer), () => "")
 
 /** The Rift a lane of `unit` makes on the Mac, in the run's warm source. */
 const pathOf = (unit: string) => `/scratch/.work/work/${unit}`
@@ -206,7 +206,7 @@ seeded("A1: no batch rule refuses, and a land takes what it names", ({ seed, exp
       const round = 1 + Math.floor(random() * 3)
       const verdict = pick(["ready", "ready", "blocked", "none"] as const, "ready")
       const suffixes = [
-        ...Option.toArray(Option.filter(Option.map(Option.fromUndefinedOr(model.lanes.get(unit)), (found) => `(rift: ${found.path})`), coin)),
+        ...Option.toArray(Option.filter(Option.map(Option.fromUndefinedOr(model.lanes.get(unit)), (found) => (coin() ? laneNote(found.path) : `(rift: ${found.path})`)), coin)),
         ...Arr.filter([`(folds: ${pick(UNITS, "u1")}/M1)`], coin),
         ...Arr.filter(["(departs: the owner asked)"], () => random() < 0.3),
       ]
@@ -379,7 +379,7 @@ seeded("A2: a restart and a new root lose nothing: the new root lands the unit t
     const run = yield* boot(seed, true)
     const root = yield* run.world.session(WORK)
     const laned = yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "a" })
-    yield* implement(run, root, "a", 1, `implementor a r1 (rift: ${suffixOf(laned.text)})`, "ready")
+    yield* implement(run, root, "a", 1, `implementor a r1 ${laneNote(suffixOf(laned.text))}`, "ready")
     yield* run.world.restart
     const next = yield* run.world.session(WORK)
     const from = run.memory.landing.steps.length

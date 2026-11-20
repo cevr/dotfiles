@@ -113,10 +113,10 @@ export const STEP_ORDER = ["lane", "implement", "ready", "land", "verify"] as co
 
 export const ORCHESTRATE_DESCRIPTION = [
   "The steps of an orchestrate run, for the root session that runs its units, in this order: lane → implement → ready → land → verify. Every answer is read at the call from the run tables (the units' log.md files, as the skill's status script derives them) and the base's workspaces, so a restart or another root session gets the same answer; status names the one next call.",
-  `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")]])} makes the unit's workspace (an isolated copy-on-write copy of the base), named for the unit, on branch \`branch\`, else \`<run>/<unit>\`, else \`feat/<unit>\`. A lane that exists is answered, never made again by hand. Each answer ends with the \`(rift: <path>)\` its implementor's description takes.`,
-  'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)", prompt, background: true }). Its start and its hand-back move the unit in its log.md.',
+  `lane: ${callOf("lane", [["unit", quote("billing")], ["run", quote("pc")]])} makes the unit's workspace (an isolated copy-on-write copy of the base), named for the unit, on branch \`branch\`, else \`<run>/<unit>\`, else \`feat/<unit>\`. A lane that exists is answered, never made again by hand. Each answer ends with the \`(lane: <path>)\` its implementor's description takes.`,
+  'implement: a subagent call, not an action: subagent({ agent: "implementor", description: "implementor <unit> r1 (lane: <path>)", prompt, background: true }). Its start and its hand-back move the unit in its log.md.',
   "ready: the implementor's hand-back, `implementor <unit> r<N>: ready <request path>`, which the plugin writes to the unit's log.md when the implementor goes idle.",
-  `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their workspaces merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a workspace the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you.`,
+  `land: ${landCallOf([])} lands every unit the run tables show ready that has a lane: their workspaces merged onto the default branch as one push, by their receipts, with one merge check. Name units to land those instead, or { unit, path } to land a workspace the plugin cannot name. A named unit that is not ready lands with a warning. A land does not wait for the deep run or the post-land step: they run in the background and wake you only when one fails or needs action: no notice means green.`,
   `verify: ${VERIFY_CALL} verifies main since the last verify, every ${VERIFY_EVERY} lands or ${VERIFY_MAX_AGE_MS / 3_600_000} h: it writes the batch file (base, head, the merges and units between them) into the run dir, makes the verifier's clean checkout, the workspace verify-<batch> detached at head (default: origin's default branch head, read then), and answers the one subagent call that starts it: subagent({ agent: "verifier", description: "verifier <batch> r1", prompt, background: true }). ${verifyCallOf("batch-7")} names a batch you wrote yourself.`,
   `status: ${STATUS_CALL} answers the run tables, each open unit's lane, and one next: line naming the call to make. Call it after a compaction, or whenever the next step is unclear. A land's and a status's answer start with a warning line when a verify is due.`,
   "A subagent never lanes, lands or verifies: the root does. The work tool is for a session that runs no units; in a root that runs units, lane replaces work's create and land replaces work's land.",
@@ -292,16 +292,25 @@ export const resolveLand = (input: OrchestrateInput, runs: ReadonlyArray<Run>, l
 
 // ── The answers ──
 
-/** A lane's answer: the Rift, its branch, head and unsaved work, whether it was made, and the implementor's suffix last. */
+/** A lane's answer: the workspace, its branch, head and unsaved work, whether it was made, and the implementor's suffix last. */
 export const laneAnswer = (unit: string, lane: Lane, made: boolean): string =>
   [
     `orchestrate: lane ${unit}: ${lane.path} · ${Option.getOrElse(Option.map(Option.fromUndefinedOr(lane.branch), (branch) => `branch ${branch}`), () => `detached at ${lane.head}`)} · head ${lane.head} · ${lane.state}${Match.value(made).pipe(
       Match.when(true, () => "; made now."),
       Match.orElse(() => "; it existed, so nothing was made."),
     )}`,
-    `Start its implementor: subagent({ agent: "implementor", description: "implementor ${unit} r1 (rift: ${lane.path})", prompt, background: true }).`,
-    `(rift: ${lane.path})`,
+    `Start its implementor: subagent({ agent: "implementor", description: "implementor ${unit} r1 ${laneNote(lane.path)}", prompt, background: true }).`,
+    laneNote(lane.path),
   ].join("\n")
+
+/** The note naming a unit's lane, as its implementor's description carries it: `(lane: <path>)`. */
+export const laneNote = (path: string): string => `(lane: ${path})`
+
+/**
+ * The lane path a description or a lane's answer names in its note: `(lane: <path>)`, or `(rift: <path>)` as
+ * notes said before the rename (stored sessions and sessions in flight hold it); none without a note.
+ */
+export const lanePathOf = (text: string): Option.Option<string> => Option.fromNullishOr(/\((?:lane|rift): ([^)]+)\)/.exec(text)?.[1])
 
 /**
  * The commit a land pushed, as the land's answer names it first (`Landed <n> workspace(s) as one push: <sha> …`, or
@@ -315,7 +324,7 @@ export const roundIn = (unit: string, runs: ReadonlyArray<Run>): Option.Option<n
     Option.map(Arr.findFirst(run.units, (each) => each.unit === unit), (each) => Option.getOrElse(Option.filter(Option.map(Option.fromUndefinedOr(each.round), Number), (n) => Number.isInteger(n) && n > 0), () => 1)),
   )
 
-/** A land's answer: its warnings, the rift land's own text, then the verify to make. */
+/** A land's answer: its warnings, the work tool's land text, then the verify to make. */
 export const landAnswer = (warnings: ReadonlyArray<string>, text: string): string => [...warnings, text, LAND_NEXT].join("\n")
 
 /** A land's last line: the verify of main, when it is due. */

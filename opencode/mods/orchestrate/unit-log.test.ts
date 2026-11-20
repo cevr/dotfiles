@@ -9,6 +9,9 @@ describe("a role's start", () => {
     expect(startOf("planner", "planner auth r1")).toEqual({ unit: "auth", to: "plan", round: 1, note: "" })
     expect(startOf("implementor", "implementor auth r1")).toEqual({ unit: "auth", to: "implement", round: 1, note: "spec.md" })
     expect(startOf("implementor", "implementor auth r3 (fresh)")).toEqual({ unit: "auth", to: "implement", round: 3, note: "round-2-findings.md" })
+    // The lane note a lane's answer hands on, in its words now and before the rename (a session in flight holds either).
+    for (const note of ["(lane: /code/.work/app/auth)", "(rift: /code/.rifts/app/auth)"])
+      expect(startOf("implementor", `implementor auth r1 ${note}`)).toEqual({ unit: "auth", to: "implement", round: 1, note: "spec.md" })
     // The suffix form the guard routes too.
     expect(startOf("implementor", "pkg-lower r2 implementor")).toEqual({ unit: "pkg-lower", to: "implement", round: 2, note: "round-1-findings.md" })
   })
