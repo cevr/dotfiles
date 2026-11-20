@@ -12,17 +12,16 @@ describe("daily's part of the update", () => {
     expect(flagValue(["bun", "daily.ts"], "--fork-target")).toEqual([])
   })
 
-  test("writes the host's settings: full paths, and a Syncthing follower moves its checkout by reset", () => {
+  test("writes the host's settings: full paths, and no way to move the checkout", () => {
     const settings = settingsFor(HOST)
-    expect(settings.mode).toBe("reset")
-    expect(settingsFor({ ...HOST, host: "Cristians-MacBook-Pro.local" }).mode).toBe("ff")
+    expect(settings).not.toHaveProperty("mode")
     expect(settings.record).toBe("/h/.local/state/opencode/installed.json")
     expect(settings.notice).toBe("/h/.local/state/opencode-daily/upstream.json")
     expect(settings.config).toEqual(["/h/.config/opencode/opencode.json", "/h/.config/opencode/cli.json"])
     expect(settings.state).toBe("/h/.local/state/opencode-update")
   })
 
-  test("strips the server config, the first of the configs, by what the live checkout owns in it", () => {
+  test("reads the server config, the first of the configs, by what the live checkout owned in it", () => {
     const paths = configPaths(settingsFor(HOST), HOST.home)
     expect(paths.server).toBe("/h/.config/opencode/opencode.json")
     expect(paths.owned.dirs).toEqual(["/h/dotfiles/opencode/mods", "/h/dotfiles/opencode/cmd", "/h/.local/share/opencode-prime/anthropic-auth"])
@@ -36,12 +35,6 @@ describe("daily's part of the update", () => {
   test("daily by hand says it installs the commit, never the edits as they stand, and how many files under opencode/ differ", () => {
     expect(notInstalledLine("c".repeat(40), 0)).toBe(`daily: installing commit ${"c".repeat(10)}; uncommitted edits in this checkout are not installed (to run them: bun run verify:launch)`)
     expect(notInstalledLine("c".repeat(40), 3)).toBe(`${notInstalledLine("c".repeat(40), 0)}; 3 files under opencode/ differ from it`)
-  })
-
-  test("strips the TUI config late, the one named cli.json, by the same directories and the TUI's built-ins off", () => {
-    const paths = configPaths(settingsFor(HOST), HOST.home)
-    expect(paths.tui).toBe("/h/.config/opencode/cli.json")
-    expect(paths.tuiOwned).toEqual({ dirs: paths.owned.dirs, names: ["-opencode.btw"] })
   })
 })
 

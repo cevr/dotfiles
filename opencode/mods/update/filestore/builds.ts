@@ -2,7 +2,7 @@ import { spawn, readableStreamToText } from "bun"
 import { chmod, lstat, readdir, readFile, readlink, rm, stat, unlink } from "node:fs/promises"
 import { holdingIfFree } from "@dotfiles/opencode-work/process/flock"
 import { Array as Arr, Clock, Data, Duration, Effect, Layer, Match, Option, Schedule } from "effect"
-import { FRESH_MS, isBuild, isFresh, oldFormat, prunable, type Running } from "../builds.ts"
+import { FRESH_MS, isBuild, isFresh, prunable, type Running } from "../builds.ts"
 import type { Record } from "../record.ts"
 import { Builds, type Pruned, UpdateFailed } from "../service.ts"
 
@@ -195,8 +195,5 @@ export const layer = (options: Options) => {
         return Arr.getSomes(removed)
       }),
     ).pipe(Effect.withSpan("Builds.prune"))
-  const oldRunning = Effect.all({ now: running, names: Effect.tryPromise({ try: () => readdir(options.share), catch: failed("list the builds") }) }).pipe(
-    Effect.map(({ now, names }) => oldFormat(names, now.executables)),
-  )
-  return Layer.succeed(Builds, Builds.of({ prune, oldRunning }))
+  return Layer.succeed(Builds, Builds.of({ prune }))
 }

@@ -579,7 +579,7 @@ if (import.meta.main) {
             installByHand({
               checkout: settings.checkout,
               commit: head,
-              version: versionOf(cli.version, forkCommit, head, true),
+              version: versionOf(cli.version, forkCommit, head),
               trees: treeOptions(settings, variables, home, process.pid),
               stage: (tree) =>
                 $`${[...treeStageCommand(settings, tree, forkCommit, head), ...passed]}`
@@ -605,7 +605,7 @@ if (import.meta.main) {
     // every open TUI moves onto. `--skip-build` reuses the last binary only when it names the same pair.
     const dotfiles = dotfilesTarget[0] ?? headOf(settings.checkout)
     const build = releaseBuild(process.execPath, `cli-${process.platform}-${process.arch}`, {}, args.has("--skip-build"))
-    const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, dotfiles, withTree: true, bun: process.execPath, build, log })
+    const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, dotfiles, bun: process.execPath, build, log })
 
     // The tree was made under the version the update read for this target: a build of another stops here, staging nothing.
     refuse(builtForTree(from, version))

@@ -1,21 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { listsOurs, oursOf, stripped } from "./configs.ts"
+import { listsOurs, oursOf } from "./configs.ts"
 
 const OWNED = oursOf("/h/dotfiles", "/h/.local/share/opencode-prime")
 const UPDATE = { package: "/h/dotfiles/opencode/cmd/update", options: { host: "bite-cristian" } }
 
-describe("the first tree install's strip of the server config", () => {
-  test("drops our entries (the checkout's mods and cmd, the old auth loader, the built-ins off, the retired names), keeps the rest in order and every other key", () => {
+describe("the handoff's read of the server config for entries of ours (R2)", () => {
+  test("finds our entries: the checkout's mods and cmd, the old auth loader, the built-ins off, the retired names", () => {
     const config = {
       $schema: "https://opencode.ai/config.json",
       model: "anthropic/claude-opus",
       plugins: ["/elsewhere/plugin", "/h/dotfiles/opencode/mods/prime", UPDATE, "/h/.local/share/opencode-prime/anthropic-auth/index.ts", "-opencode.tool.schedule", { package: "foreign-plugin" }, 7],
     }
     expect(listsOurs(config, OWNED)).toBe(true)
-    expect(stripped(config, OWNED)).toEqual({ $schema: "https://opencode.ai/config.json", model: "anthropic/claude-opus", plugins: ["/elsewhere/plugin", { package: "foreign-plugin" }, 7] })
+    for (const each of config.plugins) expect(listsOurs({ plugins: [each] }, OWNED)).toBe([1, 2, 3, 4].includes(config.plugins.indexOf(each)))
   })
 
-  test("a config with nothing of ours lists none, so the strip writes nothing", () => {
+  test("a config with nothing of ours lists none", () => {
     expect(listsOurs({ plugins: ["/elsewhere/plugin", "/h/dotfiles/opencode-other/mods"] }, OWNED)).toBe(false)
     expect(listsOurs({ model: "anthropic/claude-opus" }, OWNED)).toBe(false)
     expect(listsOurs({ plugins: "not a list" }, OWNED)).toBe(false)

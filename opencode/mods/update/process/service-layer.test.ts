@@ -30,7 +30,6 @@ const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 const settingsIn = (dir: string): Settings => ({
   host: "test",
   checkout: dir,
-  mode: "ff",
   fork: dir,
   bun: "bun",
   launcher: `${dir}/opencode`,

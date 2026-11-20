@@ -1,10 +1,10 @@
 import { env, spawnSync } from "bun"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { buildName } from "../builds.ts"
-import { oursOf, tuiOursOf } from "../filestore/configs.ts"
+import { oursOf } from "../filestore/configs.ts"
 import { makeAndStage } from "../filestore/stage.ts"
 import type { Options as TreeOptions } from "../filestore/trees.ts"
-import { buildsLock, files, HANDOFF_SETTINGS, modeOf, type Settings, SettingsJson, shareDir, stepEnv } from "../settings.ts"
+import { buildsLock, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "../settings.ts"
 import { buildOfTree } from "../trees.ts"
 import type { Program } from "./handoff.ts"
 import { environment } from "./run.ts"
@@ -34,7 +34,6 @@ export interface Host {
 export const settingsFor = (host: Host): Settings => ({
   host: host.host,
   checkout: host.checkout,
-  mode: modeOf(host.host),
   fork: host.fork,
   bun: host.bun,
   launcher: host.launcher,
@@ -67,13 +66,9 @@ export const treeOptions = (settings: Settings, stepVariables: Readonly<globalTh
 
 /** The global configs as the update keeps, restores and strips them (`filestore/configs.ts`): the server config is the first, the TUI's the one named `cli.json`. */
 export const configPaths = (settings: Settings, home: string) => ({
-  config: settings.config,
-  kept: files(settings).kept,
   server: Option.getOrElse(Arr.head(settings.config), () => `${home}/.config/opencode/opencode.json`),
   under: `${settings.checkout}/opencode`,
   owned: oursOf(settings.checkout, shareDir(home)),
-  tui: Option.getOrElse(Arr.findFirst(settings.config, (path) => lastPart(path) === "cli.json"), () => `${home}/.config/opencode/cli.json`),
-  tuiOwned: tuiOursOf(settings.checkout, shareDir(home)),
 })
 
 /** What daily says once it staged a build: what a handoff will do with it. It writes the record and restarts, and moves no checkout and writes no config. */

@@ -1,6 +1,6 @@
 import { Array as Arr, Option } from "effect"
 import type { Record } from "./record.ts"
-import { buildOfTree, makingTree, namedBy, treeOf } from "./trees.ts"
+import { buildOfTree, makingTree, namedBy } from "./trees.ts"
 
 /**
  * How many of the record's superseded builds stay on disk, the newest: a TUI on one of them moves
@@ -62,15 +62,6 @@ export const keptOf = (record: Record, running: ReadonlyArray<string>): Readonly
   const previous = (record.previous ?? Arr.empty<string>()).slice(-PREVIOUS_ON_DISK).map(buildName)
   return new Set([...recorded, ...previous, ...running.map(baseName)])
 }
-
-/**
- * The running executables (`running`, by path) that are old-format builds: a build (`isBuild`) whose
- * tree is not among the share directory's entries `names`, so it reads its plugins from the global
- * configs. Each by its name, once. A build that runs keeps its tree through a prune (`keptOf`), so a
- * tree build never reads as old.
- */
-export const oldFormat = (names: ReadonlyArray<string>, running: ReadonlyArray<string>): ReadonlyArray<string> =>
-  Arr.dedupe(Arr.filter(Arr.map(running, baseName), (name) => isBuild(name) && !names.includes(treeOf(name))))
 
 /** What runs on the host, as a prune reads it: each process's executable by path, and each one's whole command line. */
 export interface Running {

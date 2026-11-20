@@ -28,7 +28,7 @@ export const canonical = (directory: string): string => directory.replace(/(.)\/
 /** Every implementation the updater runs on, for these options and step variables, in the home `home`. */
 export const live = (options: Options, env: Readonly<globalThis.Record<string, string>>, home: string) =>
   Layer.mergeAll(
-    Source.layer({ root: options.checkout, mode: options.mode, bun: options.bun, fork: options.fork, env, bin: Source.binScript(process.platform) }),
+    Source.layer({ root: options.checkout, env, bin: Source.binScript(process.platform) }),
     Builder.layer(options, env),
     Stage.treesLayer(treeOptions(options, env, home, process.pid)),
     Handoff.layer(options, env),

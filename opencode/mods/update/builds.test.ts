@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, oldFormat, PREVIOUS_ON_DISK, prunable, type Running, stagingName } from "./builds.ts"
+import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, PREVIOUS_ON_DISK, prunable, type Running, stagingName } from "./builds.ts"
 import { type Build, type Record, recordText } from "./record.ts"
 import { buildOfTree, makingName, makingTree, namedBy, treeOf } from "./trees.ts"
 
@@ -252,11 +252,6 @@ describe("acceptance: a prune over share directories of both build formats, with
       }
       // With what runs unread, nothing goes.
       expect(prunable(listing.map((made) => made.name), record, Option.none())).toEqual([])
-      // The old-format builds that run (the late strip's hold): each running build with no tree listed, by the generator's own record.
-      const builtNames = new Set(listing.filter((made) => made.kind === "build").map((made) => made.name))
-      const treesOf = new Set(listing.filter((made) => made.kind === "tree").map((made) => made.of))
-      const runningOld = new Set(running.executables.map((path) => lastPart(path.replace(/ \(deleted\)$/, ""))).filter((name) => builtNames.has(name) && !treesOf.has(name)))
-      expect(new Set(oldFormat(listing.map((made) => made.name), running.executables)), `old-format at ${where}`).toEqual(runningOld)
       for (const made of listing.filter((each) => each.kind === "build" && each.name.endsWith(".tree"))) {
         if (pruned.has(made.name)) reached.treeGone.push(made.name)
         else reached.treeKept.push(made.name)

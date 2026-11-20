@@ -91,9 +91,6 @@ const recordLine = (record: Record) =>
     ...Option.toArray(Option.map(Option.fromNullishOr(record.staged), (staged) => `staged ${staged.version}`)),
   ].join(" ")
 
-/** A step no update takes any more: called, it says so in the calls. */
-const gone = (host: { readonly calls: Array<string> }, name: string) => Effect.sync(() => void host.calls.push(name))
-
 /** Fake git, build and exec: each seam records its call and answers from the world. */
 const fakes = (host: World) =>
   Layer.mergeAll(
@@ -106,9 +103,6 @@ const fakes = (host: World) =>
           return Effect.die(new Error("git fetch: the origin's ref did not parse"))
         }),
         fetch: (commit) => Effect.sync(() => void host.calls.push(`fetch ${commit.slice(0, 1)}`)),
-        head: Effect.sync(() => PRIOR),
-        advance: () => gone(host, "advance"),
-        reinstall: gone(host, "reinstall"),
         commands: Effect.sync(() => void host.calls.push("commands")),
       }),
     ),
@@ -171,21 +165,15 @@ const fakes = (host: World) =>
               return Effect.succeed([{ name: "opencode-2.2.5-prime.old", bytes: 225_000_000 }])
             }),
           ),
-        oldRunning: gone(host, "old running").pipe(Effect.as([])),
       }),
     ),
     Layer.succeed(
       Configs,
       Configs.of({
-        keep: gone(host, "keep config"),
-        restore: gone(host, "restore config"),
         ours: Effect.suspend(() => {
           if (host.serverConfig === "unreadable") return failure("read the server config")
           return Effect.succeed(Option.filter(Option.some({ file: "/h/.config/opencode/opencode.json", under: "/h/dotfiles/opencode" }), () => host.serverConfig === "ours"))
         }),
-        strip: gone(host, "strip"),
-        tuiOurs: gone(host, "tui ours").pipe(Effect.as(false)),
-        stripTui: gone(host, "strip tui"),
       }),
     ),
     Layer.succeed(
@@ -805,7 +793,7 @@ describe("the watchdog outside the resident location", () => {
  *
  *   I1  a running process holds plugin code of exactly its own build's dotfiles commit;
  *   I2  no step reloads plugins in a process that keeps running;
- *   I3  the live checkout never moves (no update step, and no rollback, moves git);
+ *   I3  the live checkout never moves: `Source` has no step that moves it, so this model has none;
  *   I4  a prune deletes no binary or tree a model process runs, or the record keeps.
  *   (I5 to I7 below, with the starts and the trees.)
  *
@@ -845,8 +833,6 @@ describe("plugin trees", () => {
   interface Host {
     /** The live checkout's commit. */
     head: string
-    /** How often the live checkout moved. */
-    moves: number
     procs: Array<Proc>
     record: Option.Option<Record>
     /** What the service reads as after each restart, in order. */
@@ -883,17 +869,6 @@ describe("plugin trees", () => {
 
   const started = (host: Host, name: string, version: string): Proc => ({ name, version, ...bind(host, name, version), reloads: 0 })
 
-  /** The live checkout moved (no update step may): every process that loads from it reloads, onto the commit it moved to. */
-  const checkoutMoved = (host: Host, commit: string) => {
-    if (host.head === commit) return
-    host.head = commit
-    host.moves += 1
-    for (const proc of host.procs.filter((each) => each.from === "live")) {
-      proc.loaded = commit
-      proc.reloads += 1
-    }
-  }
-
   /** The build the launcher starts (the record's installed one), and the one the service's unit starts again after a crash (the running service's). */
   const launched = (host: Host) => Option.getOrThrow(host.record).version
   const unitBuild = (host: Host) => Option.getOrElse(Option.map(Option.fromNullishOr(host.procs.find((proc) => proc.name === "service")), (proc) => proc.version), () => launched(host))
@@ -924,7 +899,6 @@ describe("plugin trees", () => {
     // I1: exactly its build's plugins: none, both lists or another commit's all break it.
     ...host.procs.filter((proc) => proc.loaded !== dotfilesOf(proc.version)).map((proc) => `I1: ${proc.name} runs ${proc.version} with plugins of ${proc.loaded.slice(0, 8)}`),
     ...host.procs.filter((proc) => proc.reloads > 0).map((proc) => `I2: ${proc.name} reloaded its plugins ${proc.reloads} times while running`),
-    ...[host.moves].values().filter((moves) => moves > 0).map((moves) => `I3: the live checkout moved ${moves} times`).toArray(),
     ...host.lost.map((what) => `I4: the prune deleted ${what}`),
     ...host.starts,
     // I7: a tree is only ever beside its build's binary: a stage that failed takes its tree with it.
@@ -966,8 +940,8 @@ describe("plugin trees", () => {
     if (doomed.includes("pool-auth")) host.lost.push("pool-auth")
   }
 
-  /** The steps no update takes any more: each, called, is a call the assertions find. */
-  const GONE = ["advance", "reinstall", "configure", "keep config", "restore config", "strip", "tui ours", "strip tui", "old running"] as const
+  /** Every effect an update may have: anything else (a checkout move, a config write) is a step of no update. */
+  const EFFECTS = ["fetch", "make tree", "stage", "remove tree", "handoff", "record", "record (good)", "restart", "prune", "commands", "reject build", "reject tree", "reject config", "reject health"]
 
   const treeFakes = (host: Host) =>
     Layer.mergeAll(
@@ -976,13 +950,6 @@ describe("plugin trees", () => {
         Source.of({
           verified: Effect.sync(() => Option.some(host.target)),
           fetch: () => Effect.sync(() => call(host, "fetch")),
-          head: Effect.sync(() => host.head),
-          advance: (commit: string) =>
-            Effect.sync(() => {
-              call(host, "advance")
-              checkoutMoved(host, commit)
-            }),
-          reinstall: Effect.sync(() => call(host, "reinstall")),
           commands: Effect.sync(() => call(host, "commands")),
         }),
       ),
@@ -1045,18 +1012,12 @@ describe("plugin trees", () => {
                 return []
               }),
             ),
-          oldRunning: Effect.sync(() => call(host, "old running")).pipe(Effect.as([])),
         }),
       ),
       Layer.succeed(
         Configs,
         Configs.of({
-          keep: Effect.sync(() => call(host, "keep config")),
-          restore: Effect.sync(() => call(host, "restore config")),
           ours: Effect.sync(() => Option.filter(Option.some({ file: "/h/.config/opencode/opencode.json", under: "/h/dotfiles/opencode" }), () => host.globalOurs)),
-          strip: Effect.sync(() => call(host, "strip")),
-          tuiOurs: Effect.sync(() => call(host, "tui ours")).pipe(Effect.as(false)),
-          stripTui: Effect.sync(() => call(host, "strip tui")),
         }),
       ),
       Layer.succeed(Log, Log.of({ line: () => Effect.void })),
@@ -1117,7 +1078,6 @@ describe("plugin trees", () => {
     const { first, running, good, ours } = START_OF[start]
     const host: Host = {
       head: PRIOR,
-      moves: 0,
       procs: [],
       record: Option.some({ ...proven({ version: running.version, command: running.command, dotfiles: running.dotfiles, fork: running.fork }), good }),
       readings: [],
@@ -1241,8 +1201,8 @@ describe("plugin trees", () => {
             ran.found.slice(0, 1).map((first) => `${each.start}, ${each.tuis} TUIs, ${each.ending} then ${each.second} (${ran.outcomes.join(", ")}): ${first} [${ran.calls.map((calls) => calls.join(", ")).join(" | ")}]`),
           )
           expect(failures.slice(0, 5)).toEqual([])
-          // No step of the old scheme, in any scenario's effects.
-          expect([...new Set(runs.flatMap(({ ran }) => ran.calls.flat()).filter((call) => GONE.some((name) => call === name)))]).toEqual([])
+          // No effect but an update's own, in any scenario: no checkout move, no config write, no reinstall.
+          expect([...new Set(runs.flatMap(({ ran }) => ran.calls.flat()).filter((call) => !EFFECTS.includes(call)))]).toEqual([])
           // R2: a host whose server config lists ours refuses every handed-off update before any write or restart.
           const listing = runs.filter(({ ran }) => ran.host.globalOurs).flatMap(({ ran }) => ran.calls.filter((calls) => calls.includes("handoff")).map(afterHandoff))
           expect([listing.length > 0, [...new Set(listing.map((calls) => calls.join(", ")))]]).toEqual([true, ["reject config"]])
@@ -1258,10 +1218,9 @@ describe("plugin trees", () => {
         },
       ))
 
-    test("a rollback moves no git: it ends on the good build with the checkout where it was", () =>
+    test("a rollback ends on the good build by a record write, the invariant whole", () =>
       check(scenario("on trees", 1, ["rolled back", "healthy"], []), (ran) => {
         expect(ran.outcomes[0]).toBe("rolled-back")
-        expect(ran.host.head).toBe(PRIOR)
         expect(ran.found).toEqual([])
       }))
   })

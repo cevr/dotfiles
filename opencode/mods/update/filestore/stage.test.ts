@@ -12,7 +12,7 @@ import { buildsLock, files } from "../settings.ts"
 import { treeOf } from "../trees.ts"
 import * as BuildsFile from "./builds.ts"
 import * as ConfigFile from "./configs.ts"
-import { oursOf, type Paths as ConfigPaths, tuiKeptOf, tuiOursOf } from "./configs.ts"
+import { oursOf, type Paths as ConfigPaths } from "./configs.ts"
 import * as LogFile from "./log.ts"
 import * as NoticeFile from "./notice.ts"
 import * as RecordFile from "./records.ts"
@@ -155,29 +155,13 @@ describe("the launcher a stage and the handoff leave", () => {
     ))
 })
 
-/** The late strip's TUI config before it: ours (the checkout's, a built-in off) among a foreign plugin and other keys. */
-const TUI_BEFORE = `{
-  "theme": { "name": "prime" },
-  "tabs": { "scope": "window" },
-  "plugins": ["/h/dotfiles/opencode/cmd/prime", "/mine/tui-plugin", "/h/dotfiles/opencode/cmd/queue", "-opencode.btw"]
-}
-`
-
 /** Runs `body` against the real file-backed configs over a scratch config directory, removing it after. */
 const onConfigs = <E>(body: (paths: ConfigPaths, text: (path: string) => string) => Effect.Effect<void, E, Configs>) =>
   Effect.runPromise(
     Effect.acquireUseRelease(
-      Effect.sync(() => sh("mktemp -d -t update-late-strip").stdout.toString().trim()),
+      Effect.sync(() => sh("mktemp -d -t update-configs").stdout.toString().trim()),
       (dir) => {
-        const paths: ConfigPaths = {
-          config: [`${dir}/opencode.json`, `${dir}/cli.json`],
-          kept: `${dir}/kept`,
-          server: `${dir}/opencode.json`,
-          under: "/h/dotfiles/opencode",
-          owned: oursOf("/h/dotfiles", "/h/.local/share/opencode-prime"),
-          tui: `${dir}/cli.json`,
-          tuiOwned: tuiOursOf("/h/dotfiles", "/h/.local/share/opencode-prime"),
-        }
+        const paths: ConfigPaths = { server: `${dir}/opencode.json`, under: "/h/dotfiles/opencode", owned: oursOf("/h/dotfiles", "/h/.local/share/opencode-prime") }
         return body(paths, (path) => sh(`cat '${path}'`).stdout.toString()).pipe(Effect.provide(ConfigFile.layer(paths)))
       },
       (dir) => Effect.sync(() => void spawnSync(["rm", "-rf", dir])),
@@ -205,44 +189,6 @@ describe("the handoff's read of the server config, on files (R2)", () => {
         put(paths.server, broken)
         expect(yield* Effect.flip(configs.ours)).toMatchObject({ step: "read the server config" })
         expect(text(paths.server)).toBe(broken)
-      }),
-    ))
-})
-
-describe("the late strip of the TUI config, on files", () => {
-  test("keeps the TUI config byte for byte under its own name, then drops our entries (the checkout's, the built-ins off) and keeps every other key and entry", () =>
-    onConfigs((paths, text) =>
-      Effect.gen(function* () {
-        put(paths.tui, TUI_BEFORE)
-        put(paths.server, "{}\n")
-        const configs = yield* Configs
-        expect(yield* configs.tuiOurs).toBe(true)
-        yield* configs.stripTui
-        expect(text(tuiKeptOf(paths))).toBe(TUI_BEFORE)
-        expect(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(text(paths.tui))).toEqual({ theme: { name: "prime" }, tabs: { scope: "window" }, plugins: ["/mine/tui-plugin"] })
-        expect(yield* configs.tuiOurs).toBe(false)
-        // The migration's copies are not the late strip's: a restore of them never brings the TUI config back.
-        expect(exists(`${paths.kept}/cli.json`)).toBe(false)
-        // A second strip writes nothing and keeps the first copy.
-        yield* configs.stripTui
-        expect(text(tuiKeptOf(paths))).toBe(TUI_BEFORE)
-      }),
-    ))
-
-  test("a TUI config that is absent or lists none of ours is not written; one that is not JSON fails, written nothing", () =>
-    onConfigs((paths, text) =>
-      Effect.gen(function* () {
-        const configs = yield* Configs
-        expect(yield* configs.tuiOurs).toBe(false)
-        yield* configs.stripTui
-        expect([exists(paths.tui), exists(tuiKeptOf(paths))]).toEqual([false, false])
-        const foreign = `{ "plugins": ["/mine/tui-plugin"] }\n`
-        put(paths.tui, foreign)
-        yield* configs.stripTui
-        expect([text(paths.tui), exists(tuiKeptOf(paths))]).toEqual([foreign, false])
-        put(paths.tui, `{ // a comment\n "plugins": ["/h/dotfiles/opencode/cmd/prime"] }\n`)
-        expect(yield* Effect.flip(configs.stripTui)).toMatchObject({ step: "read the TUI config" })
-        expect(exists(tuiKeptOf(paths))).toBe(false)
       }),
     ))
 })
@@ -345,9 +291,6 @@ describe("daily by hand on a from-scratch host", () => {
                 Source.of({
                   verified: Effect.die("a handoff reads no target"),
                   fetch: () => Effect.die("a handoff fetches nothing"),
-                  head: Effect.die("a handoff reads no checkout"),
-                  advance: () => Effect.die("a tree build's handoff moves no checkout"),
-                  reinstall: Effect.die("a tree build's handoff reinstalls nothing"),
                   commands: Effect.sync(() => void effects.push("commands")),
                 }),
               ),

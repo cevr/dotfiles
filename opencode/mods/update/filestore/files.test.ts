@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { kept } from "../git/source.ts"
 import { appended, KEPT_LINES } from "./log.ts"
 import { withFailure } from "./notice.ts"
 
@@ -20,13 +19,5 @@ describe("the update's files", () => {
     expect(withFailure(Option.some(reading), Option.some("pool: not loaded"), "now")).toEqual({ ...reading, failed: "pool: not loaded" })
     expect(withFailure(Option.some({ ...reading, failed: "old" }), Option.none(), "now")).toEqual(reading)
     expect(withFailure(Option.none(), Option.some("guard: not loaded"), "now")).toEqual({ commits: 0, blocked: false, upstream: "", build: "", at: "now", failed: "guard: not loaded" })
-  })
-
-  test("a reset leaves the files each host keeps its own", () => {
-    expect(kept("codex/config.toml")).toBe(true)
-    expect(kept("skills/.system/x/SKILL.md")).toBe(true)
-    expect(kept("workbox/herdr-config.toml")).toBe(true)
-    expect(kept("codex/other.toml")).toBe(false)
-    expect(kept("opencode/package.json")).toBe(false)
   })
 })

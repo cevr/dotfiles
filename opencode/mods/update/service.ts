@@ -12,17 +12,6 @@ export class UpdateFailed extends Schema.TaggedError<UpdateFailed>()("UpdateFail
 }) {}
 
 /**
- * The checkout could not move to the target (git refused: an untracked file the target tracks with
- * other content, a diverged branch): nothing moved, so nothing is installed or rejected, and the
- * next check tries again. Measured 2026-11-15: the Mac kept batch ck for hours because an untracked
- * copy of a file the target had just added made git refuse, and the refusal was a rejection.
- */
-export class CheckoutStuck extends Schema.TaggedError<CheckoutStuck>()("CheckoutStuck", {
-  step: Schema.String,
-  message: Schema.String,
-}) {}
-
-/**
  * The live dotfiles checkout, and the verified target on its origin. The checkout is only an object
  * store (`trees.ts`): `fetch` brings a commit into it, and no update moves it.
  */
@@ -33,22 +22,10 @@ export class Source extends Context.Service<
     readonly verified: Effect.Effect<Option.Option<Target>, UpdateFailed>
     /** Brings `commit` into the checkout's object store, when it lacks it; never moves the checkout. */
     readonly fetch: (commit: string) => Effect.Effect<void, UpdateFailed>
-    /** The commit the checkout is on. */
-    readonly head: Effect.Effect<string, UpdateFailed>
-    /**
-     * Moves the checkout to `commit` and installs its dependencies as its lockfile pins them, then the
-     * host's commands into `~/.local/bin` (`git/source.ts` `binScript`). A failed install moves
-     * the checkout back to where it was, so no plugin ever loads from a tree whose dependencies are
-     * missing. An untracked file the commit tracks with the same content is the commit's own file
-     * and goes first; when git still refuses the move, the failure is `CheckoutStuck`.
-     */
-    readonly advance: (commit: string) => Effect.Effect<void, UpdateFailed | CheckoutStuck>
-    /** Installs the checkout's dependencies again, as it stands. */
-    readonly reinstall: Effect.Effect<void, UpdateFailed>
     /**
      * Runs the host's commands script of the checkout as it stands (`git/source.ts` `binScript`), with no
-     * move: a tree build's handoff runs it once proven, as `advance` did after each move, and the script
-     * links what is in a plugin tree through `current.plugins`. None when the host has no script.
+     * move: a handoff runs it once proven, and the script links what is in a plugin tree through
+     * `current.plugins`. None when the host has no script.
      */
     readonly commands: Effect.Effect<void, UpdateFailed>
   }
@@ -124,12 +101,6 @@ export class Builds extends Context.Service<
      * runs does not read.
      */
     readonly prune: (read: Effect.Effect<Option.Option<Record>>) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
-    /**
-     * The running executables that are old-format builds: a build of the share directory with no tree
-     * beside it, which reads its plugins from the global configs (`builds.ts` `oldFormat`). Fails when
-     * what runs does not read.
-     */
-    readonly oldRunning: Effect.Effect<ReadonlyArray<string>, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builds") {}
 
@@ -150,7 +121,7 @@ export class Trees extends Context.Service<
     readonly make: (version: string, commit: string) => Effect.Effect<string, UpdateFailed>
     /** Fails, naming each, when a process of the tree at `tree` would import something its install lacks. */
     readonly check: (tree: string) => Effect.Effect<void, UpdateFailed>
-    /** Whether build `version` has its tree beside it (its overlay there): a build with none runs on the old scheme's global configs. */
+    /** Whether build `version` has its tree beside it (its overlay there): the handoff installs no build without one. */
     readonly has: (version: string) => Effect.Effect<boolean>
     /**
      * Deletes the tree of build `version`, which a stage that failed made: nothing will run that build,
@@ -173,7 +144,7 @@ export class Records extends Context.Service<
 
 /**
  * The target this host failed on (`update.ts` `Rejected`), in the update's own directory: a failed
- * advance or build, or a restart that did not prove healthy. Writing never fails the run: a lost
+ * build, a refusal, or a restart that did not prove healthy. Writing never fails the run: a lost
  * rejection costs one more try of that target.
  */
 export class Rejections extends Context.Service<
@@ -260,21 +231,8 @@ export interface ListedOurs {
 export class Configs extends Context.Service<
   Configs,
   {
-    /** Keeps the config the running build runs with, before a stage writes the next one. */
-    readonly keep: Effect.Effect<void, UpdateFailed>
-    /** Puts the kept config back. */
-    readonly restore: Effect.Effect<void, UpdateFailed>
     /** The server config, when it lists plugin entries of ours (by the old writer's ownership rule); none when it lists none. */
     readonly ours: Effect.Effect<Option.Option<ListedOurs>, UpdateFailed>
-    /** Removes our plugin entries from the server config, every other key and entry kept; the TUI config is left alone. */
-    readonly strip: Effect.Effect<void, UpdateFailed>
-    /** Whether the TUI config (`cli.json`) still lists plugin entries of ours: the late strip is to do. */
-    readonly tuiOurs: Effect.Effect<boolean, UpdateFailed>
-    /**
-     * Keeps a copy of the TUI config (its own, beside the migration's), then removes our plugin entries
-     * from it, every other key and entry kept: the late strip, once no old-format build runs.
-     */
-    readonly stripTui: Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Configs") {}
 

@@ -170,8 +170,8 @@ export const asker = (client: HttpClient.HttpClient, registration: string, resid
 /**
  * The server configs the installed build reads, by the record's text: the global one, and the build's
  * tree's (`<build>.plugins/config/opencode.json`, which the fork's adjacent binding adds over it) when
- * the record names a build. Once the first tree install strips our entries from the global config,
- * only the tree's names our plugins, so a check of the global alone would check none of them.
+ * the record names a build. The global config lists no plugin of ours (the handoff refuses one that
+ * does), so only the tree's names our plugins, and a check of the global alone would check none of them.
  */
 export const serverConfigsOf = (server: string, recordText: Option.Option<string>): ReadonlyArray<string> => [
   server,
