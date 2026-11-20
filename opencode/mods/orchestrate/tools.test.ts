@@ -20,6 +20,12 @@ import {
   laneBranchOf,
   laneDecision,
   lanesOf,
+  implementorDescriptionOf,
+  namingWarnings,
+  PURPOSE_MAX,
+  purposeHint,
+  reusedOf,
+  workriftFolderOf,
   type MainBatch,
   type MainSince,
   mainBatchPathOf,
@@ -176,7 +182,7 @@ describe("the orchestrate tool's description", () => {
   })
 
   test("names the two subagent calls with their description forms", () => {
-    expect(paragraphs[headings.indexOf("implement")]).toContain('subagent({ agent: "implementor", description: "implementor <unit> r1 (rift: <path>)"')
+    expect(paragraphs[headings.indexOf("implement")]).toContain('subagent({ agent: "implementor", description: "implementor <unit> r1 — <purpose> (lane: <path>)"')
     expect(paragraphs[headings.indexOf("verify")]).toContain('subagent({ agent: "verifier", description: "verifier <batch> r1"')
   })
 
@@ -317,10 +323,11 @@ const valueOf = (field: Field, random: () => number) => {
   if (field === "departs") return "the owner asked for this one alone"
   if (field === "run") return pick(["pc", "p5", "pipeline-codify"], "pc")
   if (field === "branch") return `${pick(["feat", "fix", "pc"], "feat")}/${name}`
+  if (field === "purpose") return pick(["Land notices only when red", "Bill each seat once", ""], "Bill each seat once")
   return name
 }
 
-const ALL: ReadonlyArray<Field> = ["unit", "run", "branch", "source", "units", "departs", "batch", "head"]
+const ALL: ReadonlyArray<Field> = ["unit", "run", "branch", "source", "purpose", "units", "departs", "batch", "head"]
 
 /** A generated call: an action, and any subset of the fields with generated values. */
 const inputOf = (random: () => number): OrchestrateInput => {
@@ -372,7 +379,7 @@ describe("the input rule", () => {
 
 /** A lane's Rift name for `unit`: the unit on the Mac, its branch with `-` for `/` on the workbox. */
 const riftNameOf = (unit: string, workrift: boolean): string =>
-  Option.getOrElse(Option.map(Option.liftPredicate(laneBranchOf({ unit }), () => workrift), (branch) => branch.replaceAll("/", "-")), () => unit)
+  Option.getOrElse(Option.map(Option.liftPredicate(laneBranchOf({ unit }), () => workrift), workriftFolderOf), () => unit)
 
 /** The Rift a lane makes for `unit` on its default branch: named for the unit on the Mac, for its branch (`feat-<unit>`) on the workbox. */
 const laneOf = (unit: string, workrift: boolean): Lane => {
@@ -422,6 +429,120 @@ describe("the lane name rule", () => {
   })
 })
 
+// ── One lane, one unit, one branch ──
+
+describe("a lane is one unit's for its life", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrateInput)
+  // The Ergo run's measured case (facts.md): the lane ui-input holds branch wf10/ui-hover-areas.
+  const reused = laneAt("/code/.rifts/app/ui-input", Option.some("wf10/ui-hover-areas"))
+
+  test("a lane of a unit whose lane now holds another unit's branch is refused, naming both, on either host", () => {
+    const mac = laneDecision("ui-input", "feat/ui-input", "ui-input", false, [reused])
+    expect(mac).toEqual({ refused: expect.stringContaining("ui-input's lane /code/.rifts/app/ui-input holds branch wf10/ui-hover-areas") })
+    expect(mac).toEqual({ refused: expect.stringContaining('orchestrate({ action: "lane", unit: "ui-hover-areas" })') })
+    const box = laneAt("/code/.rifts/app/feat-ui-input", Option.some("wf10/ui-hover-areas"))
+    expect(laneDecision("ui-input", "feat/ui-input", "feat-ui-input", true, [box])).toEqual({ refused: expect.stringContaining("holds branch wf10/ui-hover-areas") })
+    const detached = laneAt("/code/.rifts/app/ui-input", Option.none(), "def5678")
+    expect(laneDecision("ui-input", "feat/ui-input", "ui-input", false, [detached])).toEqual({ refused: expect.stringContaining("no branch (detached at def5678)") })
+  })
+
+  test("a second round of the same unit gets its own lane back, on any prefix of its branch", () => {
+    for (const workrift of [false, true]) {
+      const own = laneOf("billing", workrift)
+      expect(laneDecision("billing", "feat/billing", riftNameOf("billing", workrift), workrift, [own, reused])).toEqual({ found: own })
+    }
+    const pc = laneAt("/code/.rifts/app/billing", Option.some("pc/billing"))
+    expect(laneDecision("billing", "custom/billing", "billing", false, [pc])).toEqual({ found: pc })
+    // A lane made again under a suffix after its name's lane was removed (`billing-2`) is still billing's.
+    const again = laneAt("/code/.rifts/app/billing-2", Option.some("feat/billing"))
+    expect(reusedOf(again, false)).toEqual(Option.none())
+    expect(laneDecision("billing", "feat/billing", "billing", false, [again])).toEqual({ found: again })
+  })
+
+  test("the unit whose branch a reused lane holds is made a lane of its own", () => {
+    expect(laneDecision("ui-hover-areas", "feat/ui-hover-areas", "ui-hover-areas", false, [reused])).toEqual({ make: "ui-hover-areas" })
+  })
+
+  test("a branch that does not name the unit is refused at the lane, with <prefix>/<unit>", () => {
+    expect(nameRefusal(decode({ action: "lane", unit: "billing", branch: "fix/invoices" }))).toEqual(Option.some(expect.stringContaining('branch: "fix/billing"')))
+    expect(nameRefusal(decode({ action: "lane", unit: "billing", branch: "invoices" }))).toEqual(Option.some(expect.stringContaining('branch: "feat/billing"')))
+    for (const branch of ["cristian/billing", "feat/billing", "billing"]) expect(nameRefusal(decode({ action: "lane", unit: "billing", branch }))).toEqual(Option.none())
+  })
+
+  test("a land of a reused lane refuses with the fix, by name or by path; a land of no units leaves it out", () => {
+    const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "ui-input", state: "ready" }, { unit: "ui-hover-areas", state: "ready" }] }]
+    for (const unit of ["ui-input", "ui-hover-areas"]) {
+      const resolved = resolveLand({ action: "land", units: [unit] }, runs, [reused], false)
+      expect(resolved).toEqual({ refused: expect.stringContaining("a lane is never reused for another unit") })
+      expect(resolved).toEqual({ refused: expect.stringContaining('orchestrate({ action: "lane", unit: "ui-hover-areas" })') })
+    }
+    expect(resolveLand({ action: "land", units: [{ unit: "ui-input", path: reused.path }] }, runs, [reused], false)).toEqual({ refused: expect.stringContaining("holds branch wf10/ui-hover-areas") })
+    expect(resolveLand({ action: "land" }, runs, [reused], false)).toEqual({ nothing: expect.stringContaining("no unit is ready with a lane") })
+    // Once the unit has its own lane, it lands from it, and the reused one is left alone.
+    const own = laneOf("ui-hover-areas", false)
+    expect(resolveLand({ action: "land", units: ["ui-hover-areas"] }, runs, [reused, own], false)).toEqual({ rifts: [{ unit: "ui-hover-areas", path: own.path }], warnings: [] })
+    expect(readyWithLane(runs, [reused, own], false)).toEqual(["ui-hover-areas"])
+  })
+
+  test("status flags a reused lane under each unit that reads it, and the next call skips it", () => {
+    const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "ui-input", state: "ready" }] }]
+    const text = statusAnswer(runs, [reused], false)
+    expect(text).toContain(`- ui-input: ready · lane ${reused.path} (branch wf10/ui-hover-areas) · REUSED: branch wf10/ui-hover-areas is not ui-input's; a land of it refuses.`)
+    expect(text).toContain("next: none")
+    expect(reusedOf(laneOf("ui-input", false), false)).toEqual(Option.none())
+    expect(reusedOf(laneOf("ui-input", true), true)).toEqual(Option.none())
+  })
+})
+
+describe("a lane's purpose", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrateInput)
+  const lane = { ...laneOf("land-notices", false), purpose: "Land notices only when red" }
+
+  test("is taken by lane alone, one line of at most 80 characters", () => {
+    expect(inputRefusal(decode({ action: "lane", unit: "billing", purpose: "Bill each seat once" }))).toEqual(Option.none())
+    expect(inputRefusal(decode({ action: "land", purpose: "x" }))).toEqual(Option.some(expect.stringContaining("purpose belongs to lane")))
+    expect(nameRefusal(decode({ action: "lane", unit: "billing", purpose: "x".repeat(PURPOSE_MAX) }))).toEqual(Option.none())
+    for (const purpose of ["x".repeat(PURPOSE_MAX + 1), "two\nlines", "  "]) expect(nameRefusal(decode({ action: "lane", unit: "billing", purpose }))).toEqual(Option.some(expect.stringContaining("one line of plain words")))
+  })
+
+  test("shows in the lane's answer, its implementor's description and status; a lane with none answers the hint", () => {
+    const answer = laneAnswer("land-notices", lane, true)
+    expect(answer).toContain("Purpose: Land notices only when red")
+    expect(answer).toContain(`description: "implementor land-notices r1 — Land notices only when red (lane: ${lane.path})"`)
+    expect(answer.split("\n").at(-1)).toBe(`(lane: ${lane.path})`)
+    const bare = laneAnswer("land-notices", laneOf("land-notices", false), false)
+    expect(bare).toContain(purposeHint("land-notices"))
+    expect(bare).toContain(`description: "implementor land-notices r1 (lane: ${lane.path})"`)
+    expect(statusAnswer([{ name: "app", units: [{ unit: "land-notices", state: "implement" }] }], [lane], false)).toContain(`lane ${lane.path} (branch feat/land-notices) — Land notices only when red`)
+    expect(implementorDescriptionOf("land-notices", 2, lane)).toBe(`implementor land-notices r2 — Land notices only when red (lane: ${lane.path})`)
+  })
+})
+
+describe("the naming rule warns, never refuses", () => {
+  const lanes = (...names: ReadonlyArray<string>) => names.map((name) => laneOf(name, false))
+
+  test("a name ending in a round, one that is only a code, and one with the prefix every other lane shares each warn with what to use", () => {
+    expect(namingWarnings("poll-entry-r2", [])).toEqual([expect.stringMatching(/ends in a round: .* Name it poll-entry\.$/)])
+    expect(namingWarnings("np12m", [])).toEqual([expect.stringContaining("is only a code")])
+    expect(namingWarnings("wf10-ui-input", lanes("wf10-flip", "wf10-nb-cut"))).toEqual([expect.stringContaining("Name it ui-input, and pass the run as run: \"wf10\"")])
+    expect(namingWarnings("wf10-wt1a", lanes("wf10-flip", "wf10-nb-cut"))).toHaveLength(2)
+  })
+
+  test("a clean name warns of nothing, nor does a prefix one other lane or a verify checkout shares", () => {
+    expect(namingWarnings("land-notices-red", lanes("billing", "upstream-sync"))).toEqual([])
+    expect(namingWarnings("lane-names", lanes("lane-accept"))).toEqual([])
+    expect(namingWarnings("lane-names", [...lanes("lane-accept"), laneAt("/code/.rifts/app/verify-batch-1", Option.none())])).toEqual([])
+    expect(namingWarnings("ui-input", lanes("ui-hover", "ui-group"))).toEqual([expect.stringContaining("starts with ui")])
+    expect(namingWarnings("partner", lanes("ui-hover", "ui-group"))).toEqual([])
+  })
+
+  test("the warnings head the lane's answer, which still makes the lane", () => {
+    const answer = laneAnswer("poll-entry-r2", laneOf("poll-entry-r2", false), true, namingWarnings("poll-entry-r2", []))
+    expect(answer.split("\n")[0]).toContain("orchestrate: warning: poll-entry-r2 ends in a round")
+    expect(answer).toContain("; made now.")
+  })
+})
+
 // ── The land ──
 
 describe("a land", () => {
@@ -466,9 +587,10 @@ describe("a land", () => {
   })
 
   test("a name two Rifts read as is never picked: the refusal names both and the { unit, path } form", () => {
-    const other = laneAt("/code/.rifts/app/db-2", Option.some("p5/db"))
-    const db = laneOf("db", false)
-    const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], false)
+    // On the workbox each branch's Rift is named for it, so feat/db and p5/db are two lanes of db, neither reused.
+    const other = laneAt("/code/.rifts/app/p5-db", Option.some("p5/db"))
+    const db = laneOf("db", true)
+    const resolved = resolveLand({ action: "land", units: ["db"] }, runs, [db, other], true)
     expect(resolved).toEqual({ refused: expect.stringContaining(`2 workspaces read as db: ${db.path}, ${other.path}`) })
     expect(resolved).toEqual({ refused: expect.stringContaining('{ unit: "db", path: "<its workspace>" }') })
   })

@@ -28,8 +28,8 @@ const PARENT_LAND = "orchestrate: land is the root's: a subagent never lanes, la
 /** Words only the deleted batch machine said. */
 const MACHINE_WORDS = /refused by the\s+machine|the machine holds no unit|the machine's rule/
 
-/** The Rift a lane's answer ends with: its `(rift: <path>)`. */
-const suffixOf = (answer: string): string => Option.getOrElse(Option.flatMap(Option.fromNullishOr(/\(rift: ([^)]+)\)\s*$/.exec(answer)), (match) => Arr.get(match, 1)), () => "")
+/** The Rift a lane's answer ends with: its `(lane: <path>)`. */
+const suffixOf = (answer: string): string => Option.getOrElse(Option.flatMap(Option.fromNullishOr(/\(lane: ([^)]+)\)\s*$/.exec(answer)), (match) => Arr.get(match, 1)), () => "")
 
 /** The Rift a lane of `unit` makes on the Mac, in the run's warm source. */
 const pathOf = (unit: string) => `/scratch/.rifts/work/${unit}`
@@ -379,6 +379,7 @@ seeded("A2: a restart and a new root lose nothing: the new root lands the unit t
     const run = yield* boot(seed, true)
     const root = yield* run.world.session(WORK)
     const laned = yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "a" })
+    // The old `(rift: <path>)` form still names the unit.
     yield* implement(run, root, "a", 1, `implementor a r1 (rift: ${suffixOf(laned.text)})`, "ready")
     yield* run.world.restart
     const next = yield* run.world.session(WORK)

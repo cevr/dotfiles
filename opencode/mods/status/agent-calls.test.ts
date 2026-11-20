@@ -74,6 +74,10 @@ describe("a run's session", () => {
     expect(stepUnit("verifier batch-3 r1")).toEqual(Option.some("batch-3"))
     expect(stepUnit("push r2 implementor")).toEqual(Option.some("push"))
     expect(stepUnit("closure-flake verifier r1 (Opus)")).toEqual(Option.some("closure-flake"))
+    // The lane tool's form, with a purpose and without, and the old (rift: …) form.
+    expect(stepUnit("implementor land-notices r2 — Land notices only when red (lane: /x/land-notices)")).toEqual(Option.some("land-notices"))
+    expect(stepUnit("implementor land-notices r1 (lane: /x/land-notices)")).toEqual(Option.some("land-notices"))
+    expect(stepUnit("implementor land-notices r1 (rift: /x/land-notices)")).toEqual(Option.some("land-notices"))
     for (const prose of ["Fix the verifier's timeout", "Ask the planner about X", "Fix verifier", "r2 verifier", ""]) expect(stepUnit(prose)).toEqual(Option.none())
   })
 
