@@ -299,7 +299,7 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
-    name: "a session made with no agent or model of its own says so at every agent switch and at its first model switch; then a switch to the model it has says nothing",
+    name: "a session made with no agent or model of its own says so at its first agent switch and its first model switch; then a switch to the model it has says nothing",
     routes: ["session.switchAgent", "session.switchModel"],
     kinds: ["session.agent.selected", "session.model.selected"],
     run: (server) =>
@@ -316,8 +316,11 @@ export const LAWS: ReadonlyArray<Law> = [
         const again = (yield* server.sent).length
         failures.push(...expectStatus("same agent", yield* server.call(agent), 204), ...expectStatus("same model", yield* server.call(model), 204))
         yield* server.settle
-        const said = yield* kindsOf(server, sessionID, again)
-        if (said.join(",") !== "session.agent.selected") failures.push(`the switches to the same said: ${said.join(", ")}, not session.agent.selected alone`)
+        const said = yield* kindsOf(server, sessionID, again).pipe(Effect.map((kinds) => kinds.join(",")))
+        // A switch to the agent it now runs as says nothing since the fork's upstream merge of c18c9236f7
+        // ("skip selecting the agent a session already runs as"); the fork before it says so at every agent
+        // switch. Both pass until the installed fork carries it; then only "".
+        if (said !== "" && said !== "session.agent.selected") failures.push(`the switches to the same said: ${said}, not nothing (nor, before c18c9236f7, session.agent.selected alone)`)
         return failures
       }),
   },

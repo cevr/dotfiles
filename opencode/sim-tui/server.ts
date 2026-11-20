@@ -564,7 +564,7 @@ export const make = (options: Options) => {
   const sequences = new Map<string, number>()
   // The sessions that chose their own agent and model, as the real server keeps them: a switch to the one
   // chosen says nothing. A session made with none (`own: false`, as a bare session.create makes one) says
-  // so at every agent switch, and at its first model switch, even to the default.
+  // so at its first agent switch and its first model switch, even to the default (see switchTo).
   const chosen = new Set<string>()
   /** Answers and events the fork's schemas refused: each fails the test's next step. */
   const broken: Array<string> = []
@@ -984,11 +984,20 @@ export const make = (options: Options) => {
     const sessionID = info.id
     const previousAgent = info.agent
     const previousModel = info.model
+    // As core's Session.switchAgent since upstream c18c9236f7: a switch to the agent the session runs as says
+    // nothing; with none of its own it runs as the agent its last step recorded, and before any step as none.
+    const runsAs = chosen.has(`${sessionID} agent`)
+      ? Option.some(previousAgent)
+      : Option.flatMap(
+          Option.fromUndefinedOr(list(sessionID).findLast((message) => message.type === "assistant")),
+          (message) => (message.type === "assistant" ? Option.some(message.agent) : Option.none()),
+        )
     if (identifier === "session.switchAgent")
       Option.map(
-        Option.fromUndefinedOr(body.agent).pipe(Option.filter((next) => next !== previousAgent || !chosen.has(`${sessionID} agent`))),
+        Option.fromUndefinedOr(body.agent).pipe(Option.filter((next) => !Option.contains(runsAs, next))),
         (next) => {
           info.agent = next
+          chosen.add(`${sessionID} agent`)
           emit("session.agent.selected", { sessionID, agent: next, previous: previousAgent })
         },
       )
