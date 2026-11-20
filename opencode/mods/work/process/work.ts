@@ -11,6 +11,7 @@ import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
+import { describeBranch, purposeField, purposeOf } from "./purpose.ts"
 import { unpushed as unpushedOf } from "./unpushed.ts"
 
 export interface Options {
@@ -235,7 +236,12 @@ export const layer = (options: Options) => {
     const stashOf = (at: string) => git(at, "stash", "list", "--format=%H").pipe(Effect.map(lines))
     const inherited = yield* Effect.forEach(chain, stashOf).pipe(Effect.map((each) => each.flat()))
     const stashes = ownStashes(yield* stashOf(path), inherited)
-    return { ...base, git: true, branch: Option.getOrUndefined(branch), head, uncommitted, unpushed, stashes } satisfies Workspace
+    const purpose = yield* purposeOf({ git, spawn }, path, branch)
+    return { ...base, git: true, branch: Option.getOrUndefined(branch), head, uncommitted, unpushed, stashes, ...purposeField(purpose) } satisfies Workspace
+  })
+
+  const describe = Effect.fn("WorkRifts.describe")(function* (path: string, purpose: string) {
+    yield* describeBranch({ git, spawn }, path, purpose)
   })
 
   /** Whether the checkout at `path` has `ref`. */
@@ -402,5 +408,5 @@ export const layer = (options: Options) => {
     yield* trash(known, withChildren)
   })
 
-  return Layer.succeed(Rifts, Rifts.of({ source, create, list, inspect, remove }))
+  return Layer.succeed(Rifts, Rifts.of({ source, create, list, inspect, describe, remove }))
 }

@@ -198,13 +198,34 @@ const rpcAnswer = (rpc: (method: string, input: Ask) => Effect.Effect<object, un
 
 describe("the rift RPC of the work plugin", () => {
   effectTest(
-    "registers under RIFT_RPC's id with its four methods, and no other RPC",
+    "registers under RIFT_RPC's id with its five methods, and no other RPC",
     Effect.scoped(
       Effect.gen(function* () {
         const { rpcs, methods } = yield* start(worldOf())
         expect([...rpcs.keys()]).toEqual([RIFT_RPC.id])
-        expect([...(rpcs.get(RIFT_RPC.id)?.keys() ?? [])].sort()).toEqual(["create", "inspect", "land", "list"])
-        expect([...(methods.get(RIFT_RPC.id) ?? [])].sort()).toEqual(["create", "inspect", "land", "list"])
+        expect([...(rpcs.get(RIFT_RPC.id)?.keys() ?? [])].sort()).toEqual(["create", "describe", "inspect", "land", "list"])
+        expect([...(methods.get(RIFT_RPC.id) ?? [])].sort()).toEqual(["create", "describe", "inspect", "land", "list"])
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+
+  effectTest(
+    "a purpose given to create, or set by describe, is the workspace's branch description: list and inspect carry it",
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { rpc } = yield* start(worldOf())
+        const created = yield* Schema.decodeUnknownEffect(Created)(yield* rpc("create", { sessionID: SESSION, branch: "feat/billing", purpose: "Bill each seat once" }))
+        expect(created).toMatchObject({ outcome: "answered", rift: { path: "/code/.work/app/feat-billing", branch: "feat/billing", purpose: "Bill each seat once" } })
+        const described = yield* Schema.decodeUnknownEffect(Inspected)(yield* rpc("describe", { sessionID: SESSION, path: "/code/.work/app/feat-x", purpose: "Show x" }))
+        expect(described).toMatchObject({ outcome: "answered", rift: { path: "/code/.work/app/feat-x", purpose: "Show x" } })
+        const listed = yield* Schema.decodeUnknownEffect(Listed)(yield* rpc("list", { sessionID: SESSION }))
+        expect(listed.outcome === "answered" && listed.rifts.map((lane) => [lane.path, lane.purpose])).toEqual([
+          ["/code/.work/app/feat-billing", "Bill each seat once"],
+          ["/code/.work/app/feat-x", "Show x"],
+        ])
+        const nowhere = yield* Schema.decodeUnknownEffect(Inspected)(yield* rpc("describe", { sessionID: SESSION, path: "/elsewhere", purpose: "x" }))
+        expect(nowhere).toMatchObject({ outcome: "failed" })
       }),
     ),
     TIMEOUT_MS,

@@ -168,7 +168,7 @@ import * as Tools from "@dotfiles/opencode-orchestrate/tools"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
 import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
-import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
+import { Created, Inspected, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ORCHESTRATOR, orchestrator, ROLE_CACHE_TTL, ROLES, withSection } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
@@ -1006,8 +1006,17 @@ export const make = (
       // tool, every answer computed at the call (above). No batch rule refuses it: a land of a unit the run tables show
       // in another state than `ready` lands with a warning first.
       /** A new Rift, made by the rift plugin's create. */
-      const createRift = (ask: { readonly sessionID: string; readonly branch: string; readonly name: string; readonly source?: string; readonly at?: string }) =>
-        riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+      const createRift = (ask: {
+        readonly sessionID: string
+        readonly branch: string
+        readonly name: string
+        readonly source?: string
+        readonly at?: string
+        readonly purpose?: string
+      }) => riftRpc().create(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Created)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
+      /** A Rift's purpose set, by the rift plugin's describe: its branch's description. */
+      const describeRift = (ask: { readonly sessionID: string; readonly path: string; readonly purpose: string }) =>
+        riftRpc().describe(ask).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Inspected)), Effect.mapError(unanswered), Effect.flatMap(answeredOr))
       /** Whether a session is a subagent's: the root lanes, lands and verifies. */
       const isChild = (sessionID: string) => Effect.map(sessions.parentOf(sessionID), Predicate.isNotUndefined)
       /** Why a call does not run: the input rule, then its names. */
@@ -1024,10 +1033,21 @@ export const make = (
           const name = Option.getOrElse(Option.liftPredicate(workriftName(branch), () => listed.workrift), () => unit)
           const decided = Tools.laneDecision(unit, branch, name, listed.workrift, listed.rifts)
           if ("refused" in decided) return yield* failWith(decided.refused)
-          if ("found" in decided) return Tools.laneAnswer(unit, decided.found, false)
-          const ask = { sessionID, branch, name: decided.make }
+          const purpose = Option.map(Option.fromUndefinedOr(input.purpose), (text) => text.trim())
+          // The naming rule warns, never refuses (tools.ts `namingWarnings`).
+          const warnings = Tools.namingWarnings(unit, listed.rifts)
+          if ("found" in decided) {
+            // A purpose given for a lane that exists becomes its purpose; the same one again writes nothing.
+            const found = decided.found
+            const lane = yield* Option.match(Option.filter(purpose, (text) => text !== found.purpose), {
+              onNone: () => Effect.succeed(found),
+              onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
+            })
+            return Tools.laneAnswer(unit, lane, false, warnings)
+          }
+          const ask = { sessionID, branch, name: decided.make, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
-          return Tools.laneAnswer(unit, created.rift, true)
+          return Tools.laneAnswer(unit, created.rift, true, warnings)
         })
 
       /** A verify's clean checkout: the workspace `verify-<batch>` detached at `at`, answered when it exists, else made. */
