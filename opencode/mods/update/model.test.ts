@@ -124,6 +124,7 @@ const fakes = (host: World) =>
           if (host.reinstallFails) return failure("install the dependencies again")
           return Effect.void
         }),
+        commands: Effect.die(new Error("the old scheme runs the host's commands in advance")),
       }),
     ),
     Layer.succeed(
@@ -1122,6 +1123,7 @@ describe("plugin trees", () => {
               checkoutMoved(host, commit)
             }),
           reinstall: Effect.sync(() => call(host, "reinstall")),
+          commands: Effect.sync(() => call(host, "commands")),
         }),
       ),
       Layer.succeed(
@@ -1427,8 +1429,9 @@ describe("plugin trees", () => {
       check(scenario("on trees", 1, ["healthy", "healthy"], []), (ran) => {
         expect(ran.outcomes).toEqual(["proven", "proven"])
         // The first proven handoff with no old-format build running takes the old scheme's entries out of the TUI config, once.
-        expect(ran.calls[0]).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune", "strip tui"])
-        expect(ran.calls[1]).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune"])
+        // Then the host's commands, as a checkout move ran them.
+        expect(ran.calls[0]).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune", "strip tui", "commands"])
+        expect(ran.calls[1]).toEqual(["fetch", "make tree", "stage", "handoff", "record", "restart", "record (good)", "prune", "commands"])
         expect([ran.host.tuiOurs, ran.found]).toEqual([false, []])
       }))
 
@@ -1437,7 +1440,7 @@ describe("plugin trees", () => {
         expect(ran.outcomes).toEqual(["proven", "proven"])
         // tui-0 still runs the old build when the first handoff ends; it moves at its idle moment, before the second.
         expect(ran.calls[0].includes("strip tui")).toBe(false)
-        expect(ran.calls[1].slice(-2)).toEqual(["prune", "strip tui"])
+        expect(ran.calls[1].slice(-3)).toEqual(["prune", "strip tui", "commands"])
         expect([ran.host.tuiOurs, ran.found]).toEqual([false, []])
       }))
 
@@ -1456,7 +1459,7 @@ describe("plugin trees", () => {
     test("the first tree install keeps the config and strips our entries right before the record; nothing else is new", () =>
       check(once("first install", "healthy"), (ran) => {
         expect(ran.outcome).toBe("proven")
-        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record", "restart", "record (good)", "prune"])
+        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record", "restart", "record (good)", "prune", "commands"])
         expect([ran.host.globalOurs, ran.found]).toEqual([false, []])
       }))
 
@@ -1475,7 +1478,7 @@ describe("plugin trees", () => {
     test("a host on the old scheme's last build re-stages the same commits as a tree build, by itself, at another version, and strips once", () =>
       check(once("same commits", "healthy"), (ran) => {
         expect(ran.outcome).toBe("proven")
-        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record", "restart", "record (good)", "prune"])
+        expect(ran.calls).toEqual(["fetch", "make tree", "stage", "handoff", "keep config", "strip", "record", "restart", "record (good)", "prune", "commands"])
         expect(Option.map(ran.host.record, (record) => record.version)).toEqual(Option.some(GOOD_T.version))
         expect(ran.found).toEqual([])
       }))

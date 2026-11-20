@@ -70,7 +70,7 @@ const fakes = (host: World): Externals => {
       ),
     live: () =>
       Layer.mergeAll(
-        Layer.succeed(Source, Source.of({ verified: Effect.succeed(Option.none()), fetch: () => unused("fetch"), head: unused("head"), advance: () => unused("advance"), reinstall: unused("reinstall") })),
+        Layer.succeed(Source, Source.of({ verified: Effect.succeed(Option.none()), fetch: () => unused("fetch"), head: unused("head"), advance: () => unused("advance"), reinstall: unused("reinstall"), commands: unused("commands") })),
         Layer.succeed(Builder, Builder.of({ version: () => unused("version"), binds: () => unused("binds"), stage: () => unused("stage"), configure: unused("configure") })),
         Layer.succeed(Trees, Trees.of({ make: () => unused("make"), check: () => unused("check"), has: () => unused("has"), remove: () => unused("remove") })),
         Layer.succeed(Handoff, Handoff.of({ start: () => unused("handoff") })),

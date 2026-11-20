@@ -189,5 +189,5 @@ export const layer = (checkout: Checkout) => {
     )
   })
 
-  return Layer.succeed(Source, Source.of({ verified, fetch, head, advance, reinstall: install }))
+  return Layer.succeed(Source, Source.of({ verified, fetch, head, advance, reinstall: install, commands: scripts }))
 }

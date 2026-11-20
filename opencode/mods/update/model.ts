@@ -266,6 +266,17 @@ const lateStrip = Effect.gen(function* () {
   }).pipe(Effect.catch((failed) => log.line(`late strip: the TUI config is left as it is: ${failed.step}: ${failed.message}`)))
 })
 
+/**
+ * The host's commands (`Source.commands`), after a proven tree handoff: what `advance` ran after each
+ * move of the checkout, which no longer moves. Its links into a plugin tree go through `current.plugins`,
+ * which the record write pointed at the proven build. A failure is logged; it never changes the outcome.
+ */
+const hostCommands = Effect.gen(function* () {
+  const source = yield* Source
+  const log = yield* Log
+  yield* source.commands.pipe(Effect.catch((failed) => log.line(`handoff: the host's commands were not installed: ${failed.step}: ${failed.message}`)))
+})
+
 /** A step that failed on the restart path, as the health it leaves: sick, for good. */
 const failedStep = (step: string) => (failed: UpdateFailed | CheckoutStuck) => Health.Sick({ plugin: step, cause: failed.message, final: true })
 
@@ -491,7 +502,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
     hadLogins: ReadonlyArray<string>,
     reinstall: boolean,
     back: () => Effect.Effect<Option.Option<Health>>,
-    last: Effect.Effect<void, never, Builds | Configs | Log> = Effect.void,
+    last: Effect.Effect<void, never, Builds | Configs | Log | Source> = Effect.void,
   ) {
     let stage: Stage = "first"
     let health = yield* restartAndRead(stage, hadLogins)
@@ -550,7 +561,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builder | Builds 
       if (migrated.success) yield* configs.restore.pipe(Effect.catch((back) => log.line(`handoff: putting the config back failed: ${back.message}`)))
       return yield* end("gave-up", tried, failedInstall.value, `${describeHealth(failedInstall.value)}; the service was not restarted`)
     }
-    return yield* ladder(tried, hadLogins, false, rollBackTree, lateStrip)
+    return yield* ladder(tried, hadLogins, false, rollBackTree, lateStrip.pipe(Effect.andThen(hostCommands)))
   }
   const moved = yield* Effect.forEach(Option.toArray(tried), moveOnto).pipe(Effect.map(Arr.head), Effect.result)
   if (Result.isFailure(moved)) return yield* unmovedEnd(moved.failure, tried)

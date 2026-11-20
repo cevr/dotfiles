@@ -47,6 +47,12 @@ export class Source extends Context.Service<
     readonly advance: (commit: string) => Effect.Effect<void, UpdateFailed | CheckoutStuck>
     /** Installs the checkout's dependencies again, as it stands. */
     readonly reinstall: Effect.Effect<void, UpdateFailed>
+    /**
+     * Runs the host's commands script of the checkout as it stands (`git/source.ts` `binScript`), with no
+     * move: a tree build's handoff runs it once proven, as `advance` did after each move, and the script
+     * links what is in a plugin tree through `current.plugins`. None when the host has no script.
+     */
+    readonly commands: Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Source") {}
 

@@ -315,6 +315,37 @@ describe("the advance step over real git and bun", () => {
   )
 
   test(
+    "a tree build's handoff runs the host's commands with no move: rex-show, part of the plugins, links through current.plugins once the installed build has a tree, the checkout's before",
+    () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { root, a } = yield* scratch
+          const script = yield* Effect.promise(() => file(new URL("../../../../local-bin.sh", import.meta.url)).text())
+          yield* files(root, [["local-bin.sh", script]])
+          const home = sh(".", ["mktemp", "-d", "-t", "update-source-home"]).out
+          const env = { ...GIT_ENV, HOME: home }
+          const commands = Effect.gen(function* () {
+            return yield* (yield* Source).commands
+          }).pipe(Effect.provide(SourceLive.layer({ root, mode: "ff", bun: BUN, fork: "/nonexistent/loop-probe-x", env, bin: Option.some(SourceLive.MAC_BIN) })), Effect.exit)
+          const rexShow = () => sh(home, ["readlink", ".local/bin/rex-show"]).out
+          expect(Exit.isSuccess(yield* commands)).toBe(true)
+          expect(rexShow()).toBe(`${root}/opencode/cmd/rex/show.ts`)
+          // The installed build's tree, as the record write links it.
+          const share = `${home}/.local/share/opencode-prime`
+          yield* files(share, [["opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts", "// rex-show\n"]])
+          sh(share, ["ln", "-s", "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins", "current.plugins"])
+          expect(Exit.isSuccess(yield* commands)).toBe(true)
+          expect(rexShow()).toBe(`${share}/current.plugins/opencode/cmd/rex/show.ts`)
+          expect(sh(home, ["readlink", ".local/bin/hours"]).out).toBe(`${root}/skills/track-work-hours/scripts/hours`)
+          // No move: the checkout stays on its commit, with the script as it stands, uncommitted.
+          expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
+          spawnSync(["rm", "-rf", root, home])
+        }),
+      ),
+    60_000,
+  )
+
+  test(
     "a target whose sim-tui links the fork's protocol installs, and the next one too: the fork's modules stay as they were",
     () =>
       Effect.runPromise(
