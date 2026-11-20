@@ -179,7 +179,7 @@ export const select = (mode: Mode, candidates: ReadonlyArray<Candidate>, ledger:
 
 const NAMED_PACKAGE = /(?<![\w.-])(cmd|mods)\/([a-z0-9][a-z0-9-]*)/g
 
-/** The packages (`mods/prime`, `cmd/rift`) the texts name. */
+/** The packages (`mods/prime`, `cmd/work`) the texts name. */
 export const namedPackages = (texts: ReadonlyArray<string>): ReadonlySet<string> =>
   new Set(texts.flatMap((text) => [...text.matchAll(NAMED_PACKAGE)].map((match) => `${match[1]}/${match[2]}`)))
 

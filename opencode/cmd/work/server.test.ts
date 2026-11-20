@@ -1,9 +1,9 @@
 // The work plugin's seam: the composition root on a stand-in host whose tool registry holds OpenCode's
 // worktree tools and applies the transform the plugin registers, over workspaces and sessions in memory.
-// It runs cmd/rift's cases (cmd/rift/server.test.ts) on the `work` tool, checks the alias `rift` is the
+// It runs the tool's create, list, remove and land on the `work` tool, checks the alias `rift` is the
 // same tool over generated inputs, that a name a removed workspace still holds is made under a suffix, and
 // the options. tests/work.test.ts runs it in OpenCode on the scripted model and the real `work` binary.
-// Its tests register through sim-tui/effect-test.ts, as cmd/rift/rpc.test.ts's do.
+// Its tests register through sim-tui/effect-test.ts, as cmd/work/rpc.test.ts's do.
 import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Scope } from "effect"
 import { TestClock } from "effect/testing"

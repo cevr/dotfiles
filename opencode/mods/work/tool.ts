@@ -1,6 +1,6 @@
 // The `work` tool's own words (cmd/work), and the alias `rift` it keeps for one release: the same input
-// and the same answers as cmd/rift's `rift` tool, over Ergo's `work` binary. The answers themselves are
-// rift.ts's, model.ts's and land.ts's, one model under both roots.
+// and the same answers, over Ergo's `work` binary. The answers themselves are rift.ts's, model.ts's and
+// land.ts's, one model under both names.
 
 /** The day the alias `rift` (and the land input's `rifts`) goes: work-cleanup deletes both. */
 export const RIFT_ALIAS_REMOVAL = "2026-12-06"

@@ -53,8 +53,7 @@ import { make as makeStatus } from "@dotfiles/opencode-cmd-status/server"
 import * as StatusCallLog from "@dotfiles/opencode-status/memory/call-log"
 import { RunTables, RunsUnreadable } from "@dotfiles/opencode-status/service"
 import { Effect, Layer, Option, Result, Schema } from "effect"
-import { live as riftLive } from "../cmd/rift/server.ts"
-import { make as makeWork } from "../cmd/work/server.ts"
+import { hostSystems, make as makeWork } from "../cmd/work/server.ts"
 import * as MemoryDebts from "../mods/work/memory/debts.ts"
 import * as MemoryLanding from "../mods/work/memory/landing.ts"
 import * as MemoryRifts from "../mods/work/memory/rifts.ts"
@@ -284,14 +283,13 @@ export interface WorkDoubles {
 }
 
 /**
- * The work plugin (`cmd/work/server.ts`'s `make`) on the world: OpenCode's adapters on its context (cmd/rift's `live`,
- * whose process systems the memory doubles in `doubles` replace) and no workbox. The world loads it and never
- * cmd/rift beside it: both register the `rift` tool and the rift RPC.
+ * The work plugin (`cmd/work/server.ts`'s `make`) on the world: OpenCode's adapters on its context (its `hostSystems`,
+ * whose process systems the memory doubles in `doubles` replace) and no workbox.
  */
 export const work = (doubles: WorkDoubles) =>
   makeWork((ctx, options) =>
     Layer.merge(
-      riftLive(ctx, options),
+      hostSystems(ctx, options),
       Layer.mergeAll(MemoryRifts.layer(doubles.rifts), MemoryLanding.layer(doubles.landing), MemoryDebts.layer(doubles.debts), MemoryWorkbox.layer(false)),
     ),
   )
