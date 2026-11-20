@@ -1842,16 +1842,29 @@ describe("the agents", () => {
         for (const [id, mode] of [["build", "primary"], ["explore", "subagent"], ["planner", "subagent"], ["worker", "subagent"]] as const)
           agents[id] = { id, mode, permissions: [], request: { settings: {} } }
         agents.hidden = { id: "hidden", mode: "primary", hidden: true, permissions: [], request: { settings: {} } }
+        agents.build!.permissions.push({ action: "question", resource: "*", effect: "allow" })
+        let chosen: string | undefined
         const editor = {
           list: () => Object.values(agents),
+          get: (id: string) => agents[id],
+          default: (id: string | undefined) => {
+            chosen = id
+          },
+          // As the fork's editor: an agent not there yet is made, then edited.
           update: (id: string, edit: (agent: EditedAgent) => void) => {
-            const agent = agents[id]
-            if (agent) edit(agent)
+            const agent = (agents[id] ??= { id, mode: "primary", permissions: [], request: { settings: {} } })
+            edit(agent)
+            agent.id = id
           },
         }
         expect(plugin.transforms).toHaveLength(1)
         plugin.transforms[0]!(editor)
         expect(agents.build!.request.settings.compactionWindow).toBe(400_000)
+        // The orchestrator: build's fields under its own name, primary, the default, with the window.
+        expect(chosen).toBe("orchestrator")
+        expect(agents.orchestrator).toMatchObject({ id: "orchestrator", mode: "primary", permissions: agents.build!.permissions, request: { settings: { compactionWindow: 400_000 } } })
+        expect(agents.orchestrator!.request.settings.cacheTTL).toBeUndefined()
+        expect(agents.orchestrator!.permissions).not.toBe(agents.build!.permissions)
         expect(agents.hidden!.request.settings.compactionWindow).toBeUndefined()
         expect(agents.explore!.request.settings.compactionWindow).toBeUndefined()
         expect(agents.planner).toMatchObject({

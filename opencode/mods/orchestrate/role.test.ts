@@ -1,6 +1,21 @@
 // The guard's routing: which agent a subagent call runs as.
 import { describe, expect, test } from "bun:test"
-import { codexFallback, definitions, ROLES, route, unspecific } from "./role.ts"
+import { codexFallback, definitions, ORCHESTRATOR, orchestrator, ROLES, route, unspecific, withSection } from "./role.ts"
+
+describe("the orchestrator's section", () => {
+  const system = [
+    { type: "text" as const, text: "build's prompt" },
+    { type: "text" as const, text: "instructions" },
+  ]
+  test("goes after build's prompt, in its first part, for the orchestrator only", () => {
+    expect(withSection(ORCHESTRATOR, system)).toEqual([{ type: "text", text: `build's prompt\n\n${orchestrator.section}` }, system[1]!])
+    expect(system[0]!.text).toBe("build's prompt")
+    for (const agent of ["build", ...ROLES]) expect(withSection(agent, system)).toBe(system)
+  })
+  test("stands alone in a request with no system part", () => {
+    expect(withSection(ORCHESTRATOR, [])).toEqual([{ type: "text", text: orchestrator.section }])
+  })
+})
 
 describe("the agents' prompts", () => {
   test("the worker, like each role, goes on after a compaction instead of handing off", () => {

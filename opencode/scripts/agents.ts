@@ -13,6 +13,9 @@
 // as OpenCode's own plugins define build, plan and general, so an agent file
 // in the owner's config still overrides a role, and the plugin can give each
 // role its compaction window (config agent files cannot set it).
+// Beside the roles it writes `orchestrator`: the description and prompt
+// section of the primary agent a new session opens with (the plugin derives
+// its other fields from build), the section carrying SKILL.md's no-block rule.
 //
 // Usage: bun scripts/agents.ts [--check] [--root <dir>] [--source <orchestrate skill dir>]
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -94,6 +97,26 @@ export interface Definition {
 
 export const OUT = "mods/orchestrate/agents.json"
 
+/** The primary agent a new session opens with: build's tools, permissions and prompt, with `section` after the prompt. */
+export const ORCHESTRATOR = "orchestrator"
+const ORCHESTRATOR_DESCRIPTION =
+  "The default agent: build with the orchestrate rules. Coordinates a run's units through planner, implementor and verifier subagents; answers a plain question or makes a small edit directly."
+/** The skill line the orchestrator carries word for word: SKILL.md's rule under "Between messages". */
+export const NO_BLOCK = "- **Never block on the shell.**"
+
+/** The orchestrator's section: who it is, and the skill's no-block rule word for word. */
+export const orchestratorSection = (skill: string) => {
+  const rule = skill.split("\n").find((line) => line.startsWith(NO_BLOCK))
+  if (!rule) throw new Error(`SKILL.md lost its rule "${NO_BLOCK}" under "Between messages"`)
+  return [
+    "# Orchestrator",
+    "",
+    "When the owner gives you a run, you are its root: you coordinate it through planner, implementor and verifier subagents and write no product code yourself. Load the `orchestrate` skill before you coordinate; it is the source of truth, and this section only repeats one of its rules. A plain question or a small edit needs no run: answer it or make it directly, without ceremony.",
+    "",
+    rule.slice(2).trim(),
+  ].join("\n")
+}
+
 const loadSource = async (dir: string): Promise<Source> => {
   const script = join(dir, "scripts/agents.ts")
   if (!existsSync(script)) throw new Error(`no orchestrate skill at ${dir}: ${script} is missing`)
@@ -127,7 +150,9 @@ export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Bu
   }
   const worker = parseAgent(readFileSync(join(source.AGENTS, `${WORKER}.md`), "utf8"))
   agents[WORKER] = define(worker.fields.description!, worker.body)
-  return { path: join(root, OUT), text: `${JSON.stringify({ written: WRITTEN, agents }, null, 2)}\n` }
+  // The orchestrator is no role: it takes build's fields where the plugin defines it, and only adds its section.
+  const orchestrator = { description: ORCHESTRATOR_DESCRIPTION, section: orchestratorSection(readFileSync(join(sourceDir, "SKILL.md"), "utf8")) }
+  return { path: join(root, OUT), text: `${JSON.stringify({ written: WRITTEN, agents, [ORCHESTRATOR]: orchestrator }, null, 2)}\n` }
 }
 
 /** Whether the file on disk differs from what the source makes. */

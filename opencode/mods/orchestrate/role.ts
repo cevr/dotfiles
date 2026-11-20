@@ -34,12 +34,34 @@ export const Definition = Schema.Struct({
 })
 export interface Definition extends Schema.Schema.Type<typeof Definition> {}
 
+/** The primary agent a new session opens with: build's fields, its description, and a section after build's prompt. */
+export const ORCHESTRATOR = "orchestrator"
+const Orchestrator = Schema.Struct({ description: Schema.String, section: Schema.String })
+
 const Generated = Schema.Struct({
   agents: Schema.Struct({ planner: Definition, implementor: Definition, verifier: Definition, worker: Definition }),
+  orchestrator: Orchestrator,
 })
 
+const decoded = Schema.decodeUnknownSync(Generated)(generated)
+
 /** Each role's definition. agents.json is checked by `bun run agents -- --check`, so a bad file fails at load. */
-export const definitions: Readonly<Record<Role, Definition>> = Schema.decodeUnknownSync(Generated)(generated).agents
+export const definitions: Readonly<Record<Role, Definition>> = decoded.agents
+
+/** The orchestrator's description and prompt section, from the same file. */
+export const orchestrator: typeof Orchestrator.Type = decoded.orchestrator
+
+/**
+ * The system parts an `agent`'s request carries: for the orchestrator, the first part (build's prompt, as the host
+ * made it for the request) with the section after it; for every other agent, `system` as it is.
+ */
+export const withSection = <P extends { readonly type: "text"; readonly text: string }>(agent: string, system: ReadonlyArray<P>): ReadonlyArray<P> => {
+  const section = orchestrator.section
+  if (agent !== ORCHESTRATOR) return system
+  const [first, ...rest] = system
+  if (first === undefined) return [{ type: "text", text: section } as P]
+  return [{ ...first, text: `${first.text}\n\n${section}` }, ...rest]
+}
 
 /** A role's reasoning effort, a model variant id such as `high`. The worker runs at the model's own. */
 export const effort = (role: Role): string | undefined => definitions[role].effort

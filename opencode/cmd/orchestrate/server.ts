@@ -7,6 +7,8 @@
  *
  * - Roles: the planner, implementor, verifier and worker agents, from
  *   agents.json (the orchestrate skill's prompts, written by `bun run agents`).
+ * - Orchestrator: the default primary agent, build's fields under its own name,
+ *   with agents.json's section (the skill's no-block rule) after build's prompt.
  * - Guard: a subagent call with no agent, or with the general agent, runs as the
  *   lean `worker`; a former role name (`orchestrate-*`, `orchestrate-reviewer`)
  *   runs as the role. A new role subagent runs at the role's reasoning effort,
@@ -168,7 +170,7 @@ import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
 import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
 import { Created, LandAnswered, Listed, RIFT_RPC, workriftName } from "@dotfiles/opencode-work/rpc"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
-import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
+import { definitions, ORCHESTRATOR, orchestrator, ROLE_CACHE_TTL, ROLES, withSection } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
@@ -204,6 +206,8 @@ export const UNIT_LOG = join(TuiDirs.dirs().home, ".claude/skills/orchestrate/sc
 export const SKILL_DIR = join(TuiDirs.dirs().home, ".claude/skills/orchestrate")
 
 const SUBAGENT = "subagent"
+/** The host's built-in primary agent, which the orchestrator is derived from. */
+const BUILD = "build"
 
 /** How many merges on the default branch a verify reads at most. */
 const MERGES_READ = 1_000
@@ -840,7 +844,21 @@ export const make = (
       // Each role and each primary agent compacts at `WINDOW`. Config agent files
       // cannot set a window, and the config's agents arrive after this, so a primary agent
       // defined only in a config file keeps the model's ceiling.
+      // The orchestrator (owner's exception to the freeze, 2026-11-20) is build as the host's plugins defined it, under
+      // its own name and description, and the default a new session opens with. It is defined before the windows, so
+      // it gets its own; the config's plugin runs after, so its `default_agent` and an `orchestrator` file still win.
+      // Its section goes after build's prompt in the context, compaction and generate hooks (`withSection`).
       yield* ctx.agent.transform((editor) => {
+        const build = editor.get(BUILD)
+        if (build !== undefined) {
+          editor.update(ORCHESTRATOR, (item) => {
+            Object.assign(item, structuredClone(build))
+            item.name = Agent.Name.make("Orchestrator")
+            item.description = orchestrator.description
+            item.mode = "primary"
+          })
+          editor.default(ORCHESTRATOR)
+        }
         for (const agent of editor.list()) {
           if (agent.mode === "subagent" || agent.hidden) continue
           editor.update(agent.id, (item) => {
@@ -895,8 +913,16 @@ export const make = (
       // request sends them). An addition to `system` would sit before every message and cost the whole cache. The
       // host's history fallback (a conversation too large to send whole) drops what follows the kept tail, so on that
       // path the summary goes without the keep-list.
+      // The orchestrator's section goes after build's prompt in every request it makes: the turn's (`context`), the
+      // summary's and the host's own (`generate`), so the three keep one cached prefix. Other agents' stay as they are.
+      const sectioned = (event: { readonly agent: string; readonly system: Array<{ type: "text"; text: string }> }) => {
+        event.system.splice(0, event.system.length, ...withSection(event.agent, event.system))
+      }
+      yield* ctx.session.hook("context", (event) => Effect.sync(() => sectioned(event)))
+      yield* ctx.session.hook("generate", (event) => Effect.sync(() => sectioned(event)))
       yield* ctx.session.hook("compaction", (event) =>
         Effect.sync(() => {
+          sectioned(event)
           event.messages.push(keepMessage())
         }),
       )
