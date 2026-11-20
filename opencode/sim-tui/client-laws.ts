@@ -104,6 +104,11 @@ const read = <S extends Schema.Decoder<unknown>>(schema: S, answer: Answer) => O
 const shown = (answer: Answer) => Schema.encodeSync(Json)(Option.getOrElse(answer.body, () => ""))
 
 const MessageList = Schema.Struct({ data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String })) })
+const PromptPage = Schema.Struct({
+  data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String, text: Schema.optional(Schema.String) })),
+  // Real OpenCode answers a page with no messages `next: null`.
+  cursor: Schema.Struct({ next: Schema.optional(Schema.NullOr(Schema.String)) }),
+})
 const Outline = Schema.Struct({
   data: Schema.Array(Schema.Struct({ type: Schema.String, id: Schema.String, summary: Schema.optional(Schema.String) })),
 })
@@ -458,6 +463,34 @@ export const LAWS: ReadonlyArray<Law> = [
         const back = yield* server.call(get(`/api/session/${sessionID}/outline?before=${last}&limit=1`))
         failures.push(...expectStatus("outline before", back, 200))
         if (drawn(back).map((entry) => entry.id).join(",") !== first) failures.push(`outline before the reply: ${shown(back)}`)
+        return failures
+      }),
+  },
+  {
+    name: "a session's prompts list apart from its other messages, newest first, a page at a time by the cursor, until a page comes back empty",
+    routes: ["session.messages"],
+    kinds: [],
+    run: (server) =>
+      Effect.gen(function* () {
+        const sessionID = yield* server.session
+        yield* prompt(server, sessionID, "First prompt.")
+        yield* server.settle
+        yield* prompt(server, sessionID, "Second prompt.")
+        yield* server.settle
+        const page = (query: string) => server.call(get(`/api/session/${sessionID}/message?${query}`))
+        const said = (answer: Answer) =>
+          Option.match(read(PromptPage, answer), { onNone: () => "unreadable", onSome: (found) => found.data.map((message) => `${message.type}: ${message.text ?? ""}`).join(" | ") })
+        const next = (answer: Answer) => Option.match(read(PromptPage, answer), { onNone: () => "", onSome: (found) => found.cursor.next ?? "" })
+        const failures: Array<string> = []
+        const newest = yield* page("type=user&order=desc&limit=1")
+        failures.push(...expectStatus("prompts, newest page", newest, 200))
+        if (said(newest) !== "user: Second prompt.") failures.push(`the newest prompt: ${shown(newest)}`)
+        const older = yield* page(`type=user&limit=1&cursor=${next(newest)}`)
+        failures.push(...expectStatus("prompts, the page after", older, 200))
+        if (said(older) !== "user: First prompt.") failures.push(`the prompt before it: ${shown(older)}`)
+        const end = yield* page(`type=user&limit=1&cursor=${next(older)}`)
+        failures.push(...expectStatus("prompts, past the first", end, 200))
+        if (said(end) !== "") failures.push(`past the session's first prompt: ${shown(end)}`)
         return failures
       }),
   },

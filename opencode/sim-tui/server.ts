@@ -107,6 +107,8 @@ export interface Took {
   readonly at: number
   readonly method: string
   readonly path: string
+  /** The request's query as it came (`?limit=20`), empty for none. */
+  readonly query: string
   /** The request's body as it came, empty for none. */
   readonly body: string
 }
@@ -217,6 +219,52 @@ const outlineEntry = (message: Message) => {
     tools: message.content.filter((part) => part.type === "tool").length,
     thoughts: message.content.filter((part) => part.type === "reasoning" && part.text.trim() !== "").length,
   }
+}
+
+/** A page cursor as the real server writes it (server handlers/message.ts): base64url JSON of the message, order and way. */
+const MessageCursor = Schema.fromJsonString(
+  Schema.Struct({ id: Schema.String, order: Schema.Literals(["asc", "desc"]), direction: Schema.Literals(["previous", "next"]) }),
+)
+const encodeCursor = (id: string, order: "asc" | "desc", direction: "previous" | "next") =>
+  Buffer.from(Schema.encodeSync(MessageCursor)({ id, order, direction })).toString("base64url")
+const decodeCursor = (text: string) => Schema.decodeUnknownOption(MessageCursor)(Buffer.from(text, "base64url").toString("utf8"))
+const ORDERS: ReadonlyArray<"asc" | "desc"> = ["asc", "desc"]
+const DEFAULT_ORDER: "asc" | "desc" = "desc"
+/** The real server's page when `limit` is not given. */
+const MESSAGE_PAGE = 50
+
+/**
+ * One page of `messages` (oldest first) as the real server's session.messages answers it: `order` (newest first by
+ * default) from the cursor when one is given, `limit` of them after the cursor's message the way it points, and a
+ * cursor on the page's first and last message. None for a cursor the double cannot read, or one naming a message the
+ * list does not hold.
+ */
+const pageOf = <M extends { readonly id: string }>(messages: ReadonlyArray<M>, query: URLSearchParams) => {
+  const limit = Number(query.get("limit") ?? MESSAGE_PAGE)
+  const given = Option.fromNullishOr(query.get("cursor"))
+  const cursor = Option.flatMap(given, decodeCursor)
+  if (Option.isSome(given) && Option.isNone(cursor)) return Option.none()
+  const order = Option.match(cursor, {
+    onNone: () => Option.getOrElse(Arr.findFirst(ORDERS, (each) => each === query.get("order")), () => DEFAULT_ORDER),
+    onSome: (each) => each.order,
+  })
+  const sequence = { asc: messages, desc: messages.toReversed() }[order]
+  const anchored = Option.map(cursor, (each) => ({ at: sequence.findIndex((message) => message.id === each.id), direction: each.direction }))
+  if (Option.isSome(anchored) && anchored.value.at === -1) return Option.none()
+  const data = Option.match(anchored, {
+    onNone: () => sequence.slice(0, limit),
+    onSome: ({ at, direction }) =>
+      ({ next: () => sequence.slice(at + 1, at + 1 + limit), previous: () => sequence.slice(Math.max(0, at - limit), at) })[direction](),
+  })
+  const first = Arr.head(data)
+  const last = Arr.last(data)
+  return Option.some({
+    data,
+    cursor: {
+      ...Option.match(first, { onNone: () => ({}), onSome: (each) => ({ previous: encodeCursor(each.id, order, "previous") }) }),
+      ...Option.match(last, { onNone: () => ({}), onSome: (each) => ({ next: encodeCursor(each.id, order, "next") }) }),
+    },
+  })
 }
 
 type Delivery = "steer" | "queue"
@@ -495,6 +543,21 @@ export interface Options {
   readonly model: Model
   /** Our server plugins' RPCs the test stands in for; none by default. */
   readonly rpc?: Rpc
+  /**
+   * session.messages answers a page at a time (`limit`, `order`, `cursor`) as the real server does, so the client
+   * opens a session on its newest page; off by default, where it answers every message at once.
+   */
+  readonly pagedMessages?: boolean
+}
+
+/** How a played step ends: a step before the turn's last calls on, the last stops. */
+const ENDS: ReadonlyArray<"stop" | "tool-calls"> = ["tool-calls", "stop"]
+const CALLS_ON: "stop" | "tool-calls" = "tool-calls"
+
+/** A turn played before the TUI opened its session (`history`): the prompt and the text of each step answering it. */
+export interface PlayedTurn {
+  readonly ask: string
+  readonly steps: ReadonlyArray<string>
 }
 
 /** A completed call's metadata, as far as the double fills it. */
@@ -964,7 +1027,6 @@ export const make = (options: Options) => {
       },
     )
 
-  const ordered = (sessionID: string) => list(sessionID).toReversed()
   const family = (sessionID: string): ReadonlyArray<string> => [
     sessionID,
     ...Array.from(sessions.values()).filter((each) => each.parentID === sessionID).flatMap((each) => family(each.id)),
@@ -1083,7 +1145,19 @@ export const make = (options: Options) => {
       Effect.succeed(json("session.list", { data: Array.from(sessions.values()).toSorted((a, b) => Number(a.id > b.id) - Number(a.id < b.id)), cursor: {} })),
     "session.get": ({ sessionID }) => Effect.succeed(withSession(sessionID, (info) => json("session.get", { data: info }))),
     "session.active": () => Effect.succeed(json("session.active", { data: Object.fromEntries(Array.from(running.keys(), (each) => [each, { type: "running" }])) })),
-    "session.messages": ({ sessionID }) => Effect.succeed(json("session.messages", { data: ordered(sessionID), cursor: {} })),
+    "session.messages": ({ sessionID, query }) => {
+      // `type` keeps the messages of that kind, as the real server's does. Pages (`limit`, `order`, `cursor`) only
+      // when the seed asks for them (`pagedMessages`); else every message, newest first, in one answer.
+      const kind = Option.fromNullishOr(query.get("type"))
+      const kept = list(sessionID).filter((message) => Option.match(kind, { onNone: () => true, onSome: (type) => message.type === type }))
+      if (!options.pagedMessages) return Effect.succeed(json("session.messages", { data: kept.toReversed(), cursor: {} }))
+      return Effect.succeed(
+        Option.match(pageOf(kept, query), {
+          onNone: () => failure(400, "InvalidCursorError", "Invalid cursor"),
+          onSome: (page) => json("session.messages", page),
+        }),
+      )
+    },
     "session.message": ({ sessionID, params }) => {
       const messageID = params.get("messageID") ?? ""
       return Effect.succeed(
@@ -1218,7 +1292,7 @@ export const make = (options: Options) => {
         return {}
       },
     })
-    requests.push({ at: now(), method: raw.method, path: url.pathname, body: text })
+    requests.push({ at: now(), method: raw.method, path: url.pathname, query: url.search, body: text })
     state.inflight += 1
     const call: Call = { sessionID: params.get("sessionID") ?? "", params, query: url.searchParams, body, raw: text }
     const result = yield* served(route, call).pipe(Effect.ensuring(Effect.sync(() => (state.inflight -= 1))))
@@ -1270,6 +1344,32 @@ export const make = (options: Options) => {
     answer: () => {
       state.silent = false
       for (const wake of held.splice(0)) wake()
+    },
+    /**
+     * Puts turns in the session as the server holds a session played before the TUI opened it: each prompt, then one
+     * finished step per text (the last ends the turn, the others call on), with no events, since no TUI was there.
+     */
+    history: (sessionID: string, turns: ReadonlyArray<PlayedTurn>) => {
+      const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+      for (const turn of turns) {
+        list(sessionID).push({ id: id("msg"), time: { created: now() }, text: turn.ask, type: "user" })
+        turn.steps.forEach((step, index) => {
+          const finished = Option.getOrElse(Arr.get(ENDS, Number(index === turn.steps.length - 1)), () => CALLS_ON)
+          list(sessionID).push({
+            id: id("msg"),
+            type: "assistant",
+            time: { created: now(), firstToken: now(), streamed: now(), completed: now() },
+            agent: "build",
+            model: MODEL_REF,
+            content: [{ type: "text", text: step }],
+            finish: finished,
+            rawFinish: finishOf(finished),
+            cost: 0,
+            tokens,
+          })
+        })
+      }
+      touch(sessionID, { idle: now() })
     },
     retitle: (namer: (prompt: string) => string) => {
       state.titles = namer

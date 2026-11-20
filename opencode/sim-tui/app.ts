@@ -764,6 +764,8 @@ export interface SeedOptions {
   readonly title?: (text: string) => string
   /** Our server plugins' RPCs the seed stands in for (the double's `rpc`). */
   readonly rpc?: Server.Rpc
+  /** The double answers session.messages a page at a time, as the real server does (the double's `pagedMessages`). */
+  readonly pagedMessages?: boolean
   /** The root session's metadata as the server holds it when the TUI first reads it (a plugin's value on it, such as a queued model switch). */
   readonly metadata?: (sessionID: string) => Readonly<Record<string, Schema.Json>>
 }
@@ -846,7 +848,13 @@ export const seed = <A, E>(options: BootOptions, seedOptions: SeedOptions, body:
       const draw = drawFrom(hash(`${seedOptions.key}`) ^ seedOptions.seed)
       // The fork's Identifier keeps the last time it drew at; a seed's first id must not depend on the seed before.
       Identifier.create(false, 0)
-      const server = Server.make({ draw, now: TuiClock.system.now, model: seedOptions.model, rpc: Option.getOrElse(Option.fromUndefinedOr(seedOptions.rpc), () => Server.noRpc) })
+      const server = Server.make({
+        draw,
+        now: TuiClock.system.now,
+        model: seedOptions.model,
+        rpc: Option.getOrElse(Option.fromUndefinedOr(seedOptions.rpc), () => Server.noRpc),
+        pagedMessages: seedOptions.pagedMessages ?? false,
+      })
       Option.map(Option.fromUndefinedOr(seedOptions.title), server.retitle)
       const sessionID = server.session({ metadata: seedOptions.metadata })
       app.current = server

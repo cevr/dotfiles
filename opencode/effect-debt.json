@@ -741,7 +741,7 @@
     "mods/prime/tui/live.tsx": {"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":1,"effect/noNullish":1,"effect/noTernary":5},
     "mods/prime/tui/notice.tsx": {"effect/noNullish":4,"effect/noTernary":5},
     "mods/prime/tui/tools.tsx": {"effect/noNullish":7,"effect/noTernary":19},
-    "mods/prime/tui/transcript.tsx": {"effect/noGlobals":1,"effect/noNullish":3,"effect/noTernary":5},
+    "mods/prime/tui/transcript.tsx": {"effect/noGlobals":1,"effect/noNullish":2,"effect/noTernary":4},
     "mods/prime/update.test.ts": {"effect/noGlobals":2,"effect/noNullish":3},
     "mods/prime/update.ts": {"effect/noNullish":8,"effect/noTernary":1},
     "mods/prime/usage.test.ts": {"effect/noAs":1,"effect/noNullish":12},
