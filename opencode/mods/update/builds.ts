@@ -1,5 +1,6 @@
 import { Array as Arr, Option } from "effect"
 import type { Record } from "./record.ts"
+import { buildOfTree, makingTree, namedBy } from "./trees.ts"
 
 /**
  * How many of the record's superseded builds stay on disk, the newest: a TUI on one of them moves
@@ -62,15 +63,36 @@ export const keptOf = (record: Record, running: ReadonlyArray<string>): Readonly
   return new Set([...recorded, ...previous, ...running.map(baseName)])
 }
 
+/** What runs on the host, as a prune reads it: each process's executable by path, and each one's whole command line. */
+export interface Running {
+  readonly executables: ReadonlyArray<string>
+  readonly commands: ReadonlyArray<string>
+}
+
 /**
- * The share directory entries a prune deletes: the builds (e) outside the kept set (`keptOf`). With
- * the running executables unread (`running` none), none: a build a process runs must never go.
+ * Whether a share directory entry is a tree (`trees.ts`) a prune deletes: the tree of a build outside
+ * the kept set, whether or not that build is still on disk, that no running process's command line
+ * names (`trees.ts` `namedBy`: a wake job runs a script inside it); or a tree in the making a make that
+ * stopped left (`trees.ts` `makingName`), which nothing loads.
  */
-export const prunable = (names: ReadonlyArray<string>, record: Record, running: Option.Option<ReadonlyArray<string>>): ReadonlyArray<string> =>
+const prunableTree = (name: string, kept: ReadonlySet<string>, commands: ReadonlyArray<string>): boolean => {
+  if (Option.isSome(makingTree(name))) return true
+  return Option.match(Option.filter(buildOfTree(name), isBuild), {
+    onNone: () => false,
+    onSome: (build) => !kept.has(build) && !commands.some((command) => namedBy(name, command)),
+  })
+}
+
+/**
+ * The share directory entries a prune deletes: the builds (e) outside the kept set (`keptOf`), and
+ * their trees with them (`prunableTree`). With what runs unread (`running` none), none: a build or
+ * a tree a process runs must never go.
+ */
+export const prunable = (names: ReadonlyArray<string>, record: Record, running: Option.Option<Running>): ReadonlyArray<string> =>
   Option.match(running, {
     onNone: () => Arr.empty<string>(),
-    onSome: (paths) => {
-      const kept = keptOf(record, paths)
-      return names.filter((name) => isBuild(name) && !kept.has(name))
+    onSome: (now) => {
+      const kept = keptOf(record, now.executables)
+      return names.filter((name) => (isBuild(name) && !kept.has(name)) || prunableTree(name, kept, now.commands))
     },
   })

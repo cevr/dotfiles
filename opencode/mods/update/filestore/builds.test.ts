@@ -3,6 +3,7 @@ import { spawnSync, write } from "bun"
 import { holdingIfFree } from "@dotfiles/opencode-work/process/flock"
 import { Effect, Exit, Option, Ref } from "effect"
 import { buildName, FRESH_MS, stagingName } from "../builds.ts"
+import { treeOf } from "../trees.ts"
 import type { Build, Record } from "../record.ts"
 import { Builds } from "../service.ts"
 import * as BuildsLayer from "./builds.ts"
@@ -62,7 +63,7 @@ const left = (share: string) => sh(["ls", share]).stdout.toString().trim().split
  */
 const NO_FRESH = -60_000
 const layerOn = (host: Scratch, options: Partial<BuildsLayer.Options>) =>
-  BuildsLayer.layer({ share: host.share, lock: host.lock, lockWaitMs: 0, freshMs: NO_FRESH, platform: "linux", proc: host.proc, ps: ["/bin/sh", "-c", "exit 1"], ...options })
+  BuildsLayer.layer({ share: host.share, lock: host.lock, lockWaitMs: 0, freshMs: NO_FRESH, platform: "linux", proc: host.proc, ps: ["/bin/sh", "-c", "exit 1"], psArgs: ["/bin/sh", "-c", "true"], ...options })
 
 /**
  * Prunes the scratch host with `options` over it, the record read with `read` (by default, `recordIn`);
@@ -75,7 +76,8 @@ const pruneOn = (host: Scratch, options: Partial<BuildsLayer.Options>, read: Eff
     Effect.map((exit) => ({ exit, left: left(host.share) })),
   )
 
-const removeHost = (host: Scratch) => Effect.sync(() => void sh(["rm", "-rf", host.dir]))
+/** Removes the scratch host, a sealed tree in it too. */
+const removeHost = (host: Scratch) => Effect.sync(() => void sh(["/bin/sh", "-c", `chmod -R u+w '${host.dir}' && rm -rf '${host.dir}'`]))
 
 /** Runs `body` on a fresh scratch host, removing the host after. */
 const onHost = <A>(runs: (share: string) => ReadonlyArray<string>, body: (host: Scratch) => Effect.Effect<A>, self = true) =>
@@ -238,6 +240,77 @@ describe("a prune and daily's stage, serialized on the builds lock", () => {
           yield* Effect.when(stage.rename, Ref.get(renamed).pipe(Effect.map((done) => !done)))
           yield* stage.writeRecord
           expect(left(host.share)).toContain(buildName(NEW))
+        }),
+    ))
+})
+
+/**
+ * A sealed tree beside build `version` as a make leaves it (`filestore/trees.ts`): ten bytes of source
+ * and ten in a package of its `node_modules`, every file and directory read-only but the `node_modules`.
+ */
+const plantTree = (share: string, version: string) => {
+  const tree = `${share}/${treeOf(buildName(version))}`
+  sh(["mkdir", "-p", `${tree}/opencode/cmd/wake`, `${tree}/opencode/node_modules/pkg`, `${tree}/config`])
+  sh(["/bin/sh", "-c", `printf xxxxxxxxxx > '${tree}/opencode/cmd/wake/job.ts'; printf yyyyyyyyyy > '${tree}/opencode/node_modules/pkg/index.js'`])
+  sh(["chmod", "a-w", `${tree}/opencode/cmd/wake/job.ts`, `${tree}/opencode/cmd/wake`, `${tree}/opencode/cmd`, `${tree}/config`, `${tree}/opencode`, tree])
+  return tree
+}
+
+describe("pruning trees with their builds (scratch hosts)", () => {
+  test("a sealed tree goes with its build, after it, answering every byte it held, its node_modules too; a kept build's tree stays", () =>
+    onHost(
+      () => [],
+      (host) =>
+        Effect.gen(function* () {
+          plantTree(host.share, V[0])
+          plantTree(host.share, V[4])
+          const { exit, left: after } = yield* pruneOn(host, {})
+          const pruned = Exit.match(exit, { onFailure: () => [], onSuccess: (each) => each })
+          expect(pruned.map((each) => each.name)).toEqual([buildName(V[0]), treeOf(buildName(V[0]))])
+          expect(pruned.filter((each) => each.bytes >= 20).map((each) => each.name)).toEqual([treeOf(buildName(V[0]))])
+          expect(after).not.toContain(treeOf(buildName(V[0])))
+          expect(after).toContain(treeOf(buildName(V[4])))
+        }),
+    ))
+
+  test("on Linux a tree a process's command line names stays, read from its /proc cmdline; its build goes", () =>
+    onHost(
+      () => [],
+      (host) =>
+        Effect.gen(function* () {
+          const tree = plantTree(host.share, V[0])
+          sh(["mkdir", "-p", `${host.proc}/300`])
+          yield* Effect.promise(() => write(`${host.proc}/300/cmdline`, `/usr/bin/bun\0${tree}/opencode/cmd/wake/job.ts\0--id\0`))
+          const { exit, left: after } = yield* pruneOn(host, {})
+          expect(exit).toEqual(Exit.succeed([{ name: buildName(V[0]), bytes: 10 }]))
+          expect(after).toContain(treeOf(buildName(V[0])))
+        }),
+    ))
+
+  test("elsewhere a tree ps's command lines name stays; when they do not read, nothing goes (fail closed)", () =>
+    onHost(
+      () => [],
+      (host) =>
+        Effect.gen(function* () {
+          const tree = plantTree(host.share, V[0])
+          const ps = ["/bin/sh", "-c", "echo /bin/zsh"]
+          const named = yield* pruneOn(host, { platform: "darwin", ps, psArgs: ["/bin/sh", "-c", `echo '/usr/bin/bun ${tree}/opencode/cmd/wake/job.ts'`] })
+          expect(named.exit).toEqual(Exit.succeed([{ name: buildName(V[0]), bytes: 10 }]))
+          expect(named.left).toContain(treeOf(buildName(V[0])))
+          const unread = yield* pruneOn(host, { platform: "darwin", ps, psArgs: ["/bin/sh", "-c", "exit 1"] })
+          expect(Option.map(Exit.findErrorOption(unread.exit), (failed) => failed.step)).toEqual(Option.some("list the running processes"))
+          expect(unread.left).toContain(treeOf(buildName(V[0])))
+        }),
+    ))
+
+  test("a tree changed within FRESH_MS stays, whatever the record says", () =>
+    onHost(
+      () => [],
+      (host) =>
+        Effect.gen(function* () {
+          plantTree(host.share, V[0])
+          const { left: after } = yield* pruneOn(host, { freshMs: FRESH_MS })
+          expect(after).toContain(treeOf(buildName(V[0])))
         }),
     ))
 })
