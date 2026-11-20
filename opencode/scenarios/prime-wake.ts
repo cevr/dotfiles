@@ -26,7 +26,7 @@ import { Effect, Schedule, Stream } from "effect"
 import { cpSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
-import { envelopesIn } from "../mods/subagents/envelope.ts"
+import { envelopesInJson } from "../mods/subagents/envelope.ts"
 
 const root = process.cwd()
 const out = resolve(process.env.SCENARIO_OUT ?? "out")
@@ -54,14 +54,14 @@ const finish = (words: string) => Stream.make(Llm.text(words), Llm.finish())
 const check = `for i in $(seq 600); do [ -e '${WORKER.release}' ] && exit 0; sleep 0.2; done`
 
 /** The worker's next step: start its shell, then wait, then answer once the shell's notice is in. */
-const work = (request: string, sent: unknown) => {
+const work = (request: string) => {
   if (!request.includes(WORKER.shell))
     return Stream.make(
       Llm.toolCall({ index: 0, id: WORKER.shell, name: "shell", input: { command: check, background: true } }),
       Llm.finish("tool-calls"),
     )
   // The shell's stop notice, in either envelope (mods/subagents/envelope.ts).
-  if (envelopesIn(sent).some((each) => each.kind === "shell")) return finish(WORKER.answer)
+  if (envelopesInJson(request).some((each) => each.kind === "shell")) return finish(WORKER.answer)
   return finish(WAITING)
 }
 
@@ -106,7 +106,7 @@ export default OpenCodeDriver.use(
         const s = JSON.stringify(req)
         if (s.includes("You name conversations")) return finish("slow check")
         // The worker's request carries its brief but never the parent's prompt.
-        if (!s.includes(ASK) && s.includes(WORKER.prompt)) return work(s, req)
+        if (!s.includes(ASK) && s.includes(WORKER.prompt)) return work(s)
         return lead(s)
       })
       // Under load the host's startup panel can still sit beneath the rows; a

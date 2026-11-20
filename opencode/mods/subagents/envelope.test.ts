@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { answered, envelope, envelopes, envelopesIn, render, unwrap } from "./envelope.ts"
+import { Option } from "effect"
+import { answered, envelope, envelopes, envelopesInJson, render, unwrap } from "./envelope.ts"
+
+/** The first envelope of the text, whatever its kind. */
+const first = (text: string) => envelopes(text)[0]
 
 // Notices as the fork writes them: before upstream e51247f626 (a tag per kind) and since (one <background-result> tag).
 const OLD_SHELL = '<shell id="sh_1a2b" state="completed" command="sleep 300 > /dev/null">\nsh_1a2b · killed SIGTERM · 1.2 s · next 0\n(no new output)\n</shell>'
@@ -10,6 +14,9 @@ const NEW_SUBAGENT = '<background-result kind="subagent" sessionID="ses_deliver_
 const NEW_CODEMODE = '<background-result kind="codemode" id="job_1" state="error">\nboom\n</background-result>'
 const NEW_IMAGE = '<background-result kind="image" id="img_1" state="completed">\n/tmp/a.png\n</background-result>'
 const OLD_VIDEO = '<video id="vid_1" state="completed">\n/tmp/a.mp4\n</video>'
+// The same kind of notices as JSON strings, as a model request carries them.
+const JSON_NEW_SHELL = String.raw`"<background-result kind=\"shell\" id=\"sh_1\" state=\"completed\" command=\"ls\">\nok\n</background-result>"`
+const JSON_OLD_SUBAGENT = String.raw`"<subagent sessionID=\"ses_1\" state=\"completed\" description=\"d\">\nAll done\n</subagent>"`
 
 describe("envelope", () => {
   test("reads a shell's notice in either form alike: its kind, attributes and handle body", () => {
@@ -17,7 +24,7 @@ describe("envelope", () => {
       [OLD_SHELL, "kind"],
       [NEW_SHELL, "background-result"],
     ] as const)
-      expect(envelope(text)).toMatchObject({
+      expect(first(text)).toMatchObject({
         kind: "shell",
         form,
         attributes: { id: "sh_1a2b", state: "completed", command: "sleep 300 > /dev/null" },
@@ -26,12 +33,12 @@ describe("envelope", () => {
   })
 
   test("reads a subagent's, a code-mode job's, an image's and a video's notice", () => {
-    expect(envelope(OLD_SUBAGENT)).toMatchObject({ kind: "subagent", attributes: { sessionID: "ses_deliver_child", state: "completed" }, body: "All done" })
-    expect(envelope(NEW_SUBAGENT)).toMatchObject({ kind: "subagent", attributes: { sessionID: "ses_deliver_child", state: "completed" }, body: "All done" })
-    expect(envelope(NEW_SUBAGENT)?.attributes).not.toHaveProperty("kind")
-    expect(envelope(NEW_CODEMODE)).toMatchObject({ kind: "codemode", attributes: { state: "error" }, body: "boom" })
-    expect(envelope(NEW_IMAGE)).toMatchObject({ kind: "image", body: "/tmp/a.png" })
-    expect(envelope(OLD_VIDEO)).toMatchObject({ kind: "video", body: "/tmp/a.mp4" })
+    expect(first(OLD_SUBAGENT)).toMatchObject({ kind: "subagent", attributes: { sessionID: "ses_deliver_child", state: "completed" }, body: "All done" })
+    expect(first(NEW_SUBAGENT)).toMatchObject({ kind: "subagent", attributes: { sessionID: "ses_deliver_child", state: "completed" }, body: "All done" })
+    expect(first(NEW_SUBAGENT)!.attributes).not.toHaveProperty("kind")
+    expect(first(NEW_CODEMODE)).toMatchObject({ kind: "codemode", attributes: { state: "error" }, body: "boom" })
+    expect(first(NEW_IMAGE)).toMatchObject({ kind: "image", body: "/tmp/a.png" })
+    expect(first(OLD_VIDEO)).toMatchObject({ kind: "video", body: "/tmp/a.mp4" })
   })
 
   test("a user's shell notice leads with a line before its envelope", () => {
@@ -41,7 +48,7 @@ describe("envelope", () => {
 
   test("a command whose quoted value holds a newline and a `>` stays in the opening tag", () => {
     const text = '<background-result kind="shell" id="sh_9" state="error" command="echo a >b\nexit 3">\nExit code: 3\n</background-result>'
-    expect(envelope(text)).toMatchObject({ attributes: { command: "echo a >b\nexit 3" }, body: "Exit code: 3" })
+    expect(first(text)).toMatchObject({ attributes: { command: "echo a >b\nexit 3" }, body: "Exit code: 3" })
   })
 
   test("an envelope another holds stays in the outer one's body", () => {
@@ -70,8 +77,10 @@ describe("envelope", () => {
     expect(render("kind", "subagent", attributes, "All done")).toBe(OLD_SUBAGENT)
   })
 
-  test("envelopesIn finds the notices in a request's JSON values", () => {
-    const request = JSON.parse(JSON.stringify({ messages: [{ role: "user", content: [{ type: "text", text: NEW_SHELL }] }, { role: "user", content: OLD_SUBAGENT }] }))
-    expect(envelopesIn(request).map((each) => each.kind)).toEqual(["shell", "subagent"])
+  test("envelopesInJson finds the notices in a request's JSON strings, and none in text that is not JSON", () => {
+    const request = `{"messages":[{"role":"user","content":[{"type":"text","text":${JSON_NEW_SHELL}}]},{"role":"user","content":${JSON_OLD_SUBAGENT}}]}`
+    expect(envelopesInJson(request).map((each) => each.kind)).toEqual(["shell", "subagent"])
+    expect(envelopesInJson(`not json ${NEW_SHELL}`)).toEqual([])
+    expect(Option.map(envelope(`${NEW_SHELL}\n${OLD_SUBAGENT}`, "subagent"), (each) => each.body)).toEqual(Option.some("All done"))
   })
 })

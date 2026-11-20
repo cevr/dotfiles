@@ -21,7 +21,7 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
-import { envelope, envelopesIn } from "../mods/subagents/envelope.ts"
+import { envelope, envelopesInJson } from "../mods/subagents/envelope.ts"
 import type { OPERATIONS } from "./context.ts"
 import {
   CLIENT,
@@ -180,9 +180,7 @@ const count = (text: string, part: string) => text.split(part).length - 1
 
 /** How many notices of `childID`'s idle reports the session's context holds, in either envelope (envelope.ts). */
 const childNotices = (ctx: Plugin.Context, sessionID: SessionID, childID: string) =>
-  ctx.session
-    .context({ sessionID })
-    .pipe(Effect.map((messages) => envelopesIn(messages).filter((each) => each.kind === "subagent" && each.attributes.sessionID === childID).length))
+  contextText(ctx, sessionID).pipe(Effect.map((text) => envelopesInJson(text).filter((each) => each.kind === "subagent" && each.attributes.sessionID === childID).length))
 
 /** A provider's socket frame's event type, as OpenAI's Responses names it, or `?` for a frame that names none. */
 const frameType = (frame: string) =>
@@ -999,7 +997,7 @@ export const LAWS: ReadonlyArray<Law> = [
             Stream.runForEach((event) =>
               Effect.when(
                 Ref.update(notices, (n) => n + 1),
-                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && envelope(event.data.item.payload.text)?.kind === "subagent"),
+                Effect.succeed(event.data.sessionID === parent.id && event.data.item.type === "synthetic" && Option.isSome(envelope(event.data.item.payload.text, "subagent"))),
               ),
             ),
           ),

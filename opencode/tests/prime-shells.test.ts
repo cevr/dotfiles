@@ -10,7 +10,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { envelopesIn } from "../mods/subagents/envelope.ts"
+import { envelopesInJson } from "../mods/subagents/envelope.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -19,7 +19,7 @@ const names = ["moved", "list", "killed", "blocking", "user", "user-list", "user
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 let requests: ReadonlyArray<string> = []
 /** The shell stop notices a model request (as JSON) carries, in either envelope (envelope.ts). */
-const shellNotices = (request: string) => envelopesIn(JSON.parse(request)).filter((each) => each.kind === "shell")
+const shellNotices = (request: string) => envelopesInJson(request).filter((each) => each.kind === "shell")
 
 /** The transcript's lines, without the sidebar's column. */
 const transcript = (lines: ReadonlyArray<string>) => lines.map((line) => line.slice(0, 108).trimEnd())

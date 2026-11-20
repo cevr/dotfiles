@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path"
 import { Option, Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
-import { envelope } from "../mods/subagents/envelope.ts"
+import { envelopes } from "../mods/subagents/envelope.ts"
 import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, REPORT_HEARD, REPORT_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK, isReport } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
@@ -105,7 +105,7 @@ const stoppedChild = (result: Result) => {
   expect((cell?.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(
     /^read: running\nstopped: stopped, stopped\nagain: stopped, it was not running \(stopped\)\nlater: stopped\nlate file: none\nother: .*ses_\w+ is not a subagent of this session: a session reaches only its own subagents\.$/,
   )
-  const notices = noticesOf(result).flatMap((text) => envelope(text, "subagent") ?? [])
+  const notices = noticesOf(result).flatMap((text) => envelopes(text)).filter((each) => each.kind === "subagent")
   expect(notices).toHaveLength(1)
   expect(notices[0]!.attributes.state).toBe("cancelled")
   // The child's model requests are its shell's call and its stalled turn: nothing ran it again after the stop.
@@ -285,11 +285,11 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
           ].join(""),
         )
         const closed = said.findIndex((text) => text.includes(DONE))
-        const report = said.findIndex((text) => envelope(text, "subagent")?.attributes.state === "completed")
+        const report = said.findIndex((text) => envelopes(text).some((each) => each.kind === "subagent" && each.attributes.state === "completed"))
         const answered = said.findIndex((text) => text.includes(REPORT_HEARD))
         expect({ closed: closed >= 0, report: report > closed, answered: answered > report }).toEqual({ closed: true, report: true, answered: true })
         // One request answered the report, and it was the report the parent read last.
-        expect(result.seen.filter((request) => request.task === REPORT_TASK && isReport(request.last)).map((request) => envelope(request.last, "subagent")?.attributes.state)).toEqual([
+        expect(result.seen.filter((request) => request.task === REPORT_TASK && isReport(request.last)).flatMap((request) => envelopes(request.last).filter((each) => each.kind === "subagent").map((each) => each.attributes.state))).toEqual([
           "completed",
         ])
       }),
