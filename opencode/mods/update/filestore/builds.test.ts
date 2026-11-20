@@ -8,6 +8,7 @@ import type { Build, Record } from "../record.ts"
 import { Builds } from "../service.ts"
 import * as BuildsLayer from "./builds.ts"
 import * as TreesLayer from "./trees.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 
 /**
  * Six builds, oldest first: v0 … v5; v5 is the one a concurrent stage brings. v0 and v1 are of the
@@ -374,7 +375,7 @@ const treeHost = (extra: string): Effect.Effect<TreeHost> =>
     yield* Effect.forEach(repoFiles(extra), ([path, text]) => Effect.promise(() => write(`${repo}/${path}`, text, { createPath: true })), { discard: true })
     const bun = Option.getOrElse(Option.fromNullishOr(argv.at(0)), () => "bun")
     ran([bun, "install"], `${repo}/opencode`)
-    ran(["git", "init", "-q", "-b", "main"], repo)
+    gitInit(repo, ["-q", "-b", "main"])
     ran(["git", "add", "-A"], repo)
     ran(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "scratch"], repo)
     ran(["mkdir", "-p", `${dir}/share`, `${dir}/home`], dir)
