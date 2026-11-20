@@ -28,7 +28,11 @@ fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
 service from workload memory pressure. It caps user sessions, which hold the
 terminals and every agent, at 52 GB of memory and 1 GB of swap. It caps
 `/dev/shm` at 8 GB because no process owns its files and the kernel cannot
-reclaim them. It starts the herdr-core core and the OpenCode service at boot. It
+reclaim them. It raises the inotify limits to 4194304 watches and 1024
+instances (`systemd/sysctl.d/90-inotify.conf`, which the Hetzner box's
+`provision.sh sysctl` installs too): the Bite lab's standby keepers watch each
+file, about 286,000 each. `--check` warns when a live value is below the
+file's. It starts the herdr-core core and the OpenCode service at boot. It
 uses `/workspaces/.cache/turbo` as a local Turbo cache.
 
 ## Terminals: herdr-core

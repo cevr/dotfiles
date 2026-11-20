@@ -6,7 +6,7 @@
 #   2. two loop "NVMe drives", the first laid out as installimage leaves it
 #      (ESP, /boot, swap, one btrfs with @root @home @tmp @workspaces), then
 #      layout.sh (raid1, mdraid1 /boot and swap, the second ESP), twice;
-#   3. provision.sh's user, keys, packages, sshd and upgrades phases, twice,
+#   3. provision.sh's user, keys, packages, sshd, upgrades and sysctl phases, twice,
 #      then ssh into the test sshd with a test key and sudo;
 #   4. sync.sh from a scratch "exe box" btrfs (a home with hard links,
 #      reflinks, xattrs and a nested subvolume; /workspaces with a warm source,
@@ -40,7 +40,7 @@ cleanup() {
     systemctl disable --now bite-workbox-sshd.service >/dev/null 2>&1
     rm -f /etc/systemd/system/bite-workbox-sshd.service /etc/systemd/system/bite.slice \
         /etc/ssh/bite-workbox-sshd_config /etc/ssh/bite-workbox-ssh-host-ed25519-key \
-        /etc/ssh/bite-workbox-ssh-host-ed25519-key.pub "/etc/sudoers.d/90-$user"
+        /etc/ssh/bite-workbox-ssh-host-ed25519-key.pub "/etc/sudoers.d/90-$user" /etc/sysctl.d/90-inotify.conf
     systemctl daemon-reload
     systemctl stop bite.slice >/dev/null 2>&1
     for s in $(awk 'NR > 1 { print $1 }' /proc/swaps); do
@@ -162,9 +162,9 @@ pass "mdadm.conf, /tmp 1777"
 step "provision.sh"
 ssh-keygen -q -t ed25519 -N '' -C hb-test -f "$work/id_test"
 export HB_APT_REPOS=0 HB_PACKAGES="btrbk sshfs mdadm rsync zstd attr" HB_SSH_LISTEN=127.0.0.1 HB_SSH_PORT=2299
-HB_EXTRA_KEYS=$(cat "$work/id_test.pub") bash "$here/provision.sh" user keys packages sshd upgrades > "$work/prov-1.log" ||
+HB_EXTRA_KEYS=$(cat "$work/id_test.pub") bash "$here/provision.sh" user keys packages sshd upgrades sysctl > "$work/prov-1.log" ||
     { cat "$work/prov-1.log"; fail "provision.sh"; }
-HB_EXTRA_KEYS=$(cat "$work/id_test.pub") bash "$here/provision.sh" user keys packages sshd upgrades > "$work/prov-2.log" ||
+HB_EXTRA_KEYS=$(cat "$work/id_test.pub") bash "$here/provision.sh" user keys packages sshd upgrades sysctl > "$work/prov-2.log" ||
     { cat "$work/prov-2.log"; fail "provision.sh rerun"; }
 grep -E '^==> (installed|installing|user )' "$work/prov-2.log" && fail "provision.sh's rerun changed something"
 grep -q 'authorized_keys: 0 added, 3 in all' "$work/prov-2.log" || { cat "$work/prov-2.log"; fail "authorized_keys"; }
@@ -181,6 +181,8 @@ nft -c -f "$here/firewall.nft" || fail "firewall.nft does not parse"
 pass "firewall.nft parses"
 grep -qx 'APT::Periodic::Unattended-Upgrade "1";' /etc/apt/apt.conf.d/20auto-upgrades || fail "unattended upgrades"
 pass "unattended upgrades on"
+[[ $(sysctl -n fs.inotify.max_user_watches) -ge 4194304 && $(sysctl -n fs.inotify.max_user_instances) -ge 1024 ]] || fail "inotify limits"
+pass "inotify limits raised"
 bash "$here/provision.sh" bootstrap | grep -q 'the home has no dotfiles yet' || fail "bootstrap phase before the sync"
 pass "bootstrap phase waits for the synced home"
 
