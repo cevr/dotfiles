@@ -26,6 +26,7 @@ import { Effect, Schedule, Stream } from "effect"
 import { cpSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { envelopesInJson } from "../sim/envelopes.ts"
 
 const root = process.cwd()
 const out = resolve(process.env.SCENARIO_OUT ?? "out")
@@ -59,8 +60,8 @@ const work = (request: string) => {
       Llm.toolCall({ index: 0, id: WORKER.shell, name: "shell", input: { command: check, background: true } }),
       Llm.finish("tool-calls"),
     )
-  // The shell's stop notice: `<shell id="…" state="completed" command="…">`.
-  if (request.includes("<shell id=")) return finish(WORKER.answer)
+  // The shell's stop notice, in either envelope (mods/subagents/envelope.ts).
+  if (envelopesInJson(request).some((each) => each.kind === "shell")) return finish(WORKER.answer)
   return finish(WAITING)
 }
 

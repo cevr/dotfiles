@@ -86,6 +86,16 @@ describe('opencodeSession', () => {
     expect(messages[3]!.text).toContain('kernel:edit: tool.execution: Error: Could not find oldString');
   });
 
+  test('a harness turn in a user message is never the owner: a <system-update>, a <background-result>', () => {
+    const turns = [
+      '<system-update>\nPlan mode is active.\n</system-update>',
+      '<background-result kind="shell" id="sh_1" state="completed" command="ls">\na\n</background-result>',
+    ].map((text, n) => ({ type: 'user', time: at(1 + n), text }));
+    const r = opencodeSession(root, [...turns, assistant(9)], opts);
+    expect(r.session.human).toBe(0);
+    expect(r.messages).toEqual([]);
+  });
+
   test("a child's user turns are its brief, never the owner's", () => {
     const r = opencodeSession(child, [{ type: 'user', time: at(1), text: 'Implement round 1 of /r/u/spec.md' }, assistant(2)], opts);
     expect(r.session).toMatchObject({ sub: true, parent: 'ses_root', human: 0, peer: 0, model: 'claude-opus-5-5@medium' });

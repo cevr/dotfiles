@@ -11,6 +11,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { envelopesInJson } from "../sim/envelopes.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -77,7 +78,7 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
 
   test("killed through its handle, the proof wait sends no notice: the worker only ever heard of the short shell", kept.test(() => {
     const last = requests.findLast((request) => request.includes("Worker brief P.") && request.includes("call_kill")) ?? ""
-    expect(last.match(/<shell id=/g)?.length).toBe(1)
+    expect(envelopesInJson(last).filter((each) => each.kind === "shell")).toHaveLength(1)
   }))
 
   test("once it stopped, its row is no longer live, the dock's count line goes and the panel lists none: both agree", kept.test(() => {

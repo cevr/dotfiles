@@ -284,6 +284,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     ])
     // The subagent's result envelope never shows.
     expect(all.text).not.toContain("<subagent")
+    expect(all.text).not.toContain("<background-result")
   }))
 
   test("Overview: each group is its header, plus a row per failure; no thinking, no diffs, no blank rows", kept.test(() => {

@@ -180,6 +180,10 @@ describe("a row's state", () => {
   test("a background one ends as its stop notice says, at the notice's time", () => {
     const parent = (state: string, text = "") => ({ messages: [step([launch("a", {})]), notice("a", state, 500, text)] })
     expect(one({ messages: [step([]), step([])] }, parent("completed"))).toMatchObject({ state: "done", update: "2 steps", ended: 500 })
+    expect(
+      one({}, parent("error", '<background-result kind="subagent" sessionID="a" state="error" description="x">\nRate limited. Try later.\n</background-result>')),
+    ).toMatchObject({ state: "failed", update: "Rate limited.", ended: 500 })
+    // A stored session keeps the fork's notices from before upstream e51247f626.
     expect(one({}, parent("error", '<subagent state="error">\nRate limited. Try later.\n</subagent>'))).toMatchObject({
       state: "failed",
       update: "Rate limited.",

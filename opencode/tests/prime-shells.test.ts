@@ -10,6 +10,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
+import { envelopesInJson } from "../sim/envelopes.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -17,6 +18,8 @@ const label = "prime-shells"
 const names = ["moved", "list", "killed", "blocking", "user", "user-list", "user-killed"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 let requests: ReadonlyArray<string> = []
+/** The shell stop notices a model request (as JSON) carries, in either envelope (envelope.ts). */
+const shellNotices = (request: string) => envelopesInJson(request).filter((each) => each.kind === "shell")
 
 /** The transcript's lines, without the sidebar's column. */
 const transcript = (lines: ReadonlyArray<string>) => lines.map((line) => line.slice(0, 108).trimEnd())
@@ -97,9 +100,9 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(lineOf(killed, `● Killed ${bg}`)).toBe(`● Killed ${bg}`)
     // Nothing left active: the dock's count line is not drawn.
     expect(lineOf(killed, DOCK)).toBeUndefined()
-    expect(requests.some((request) => request.includes(`<shell id=\\"${long}\\"`) || request.includes(`<shell id=\\"${bg}\\"`))).toBe(false)
+    expect(requests.some((request) => shellNotices(request).some((each) => each.attributes.id === long || each.attributes.id === bg))).toBe(false)
     // The reader's kill later does send one: the check above can see a notice.
-    expect(requests.some((request) => request.includes(`<shell id=\\"`))).toBe(true)
+    expect(requests.some((request) => shellNotices(request).length > 0)).toBe(true)
   }))
 
   test("a click on the dock's count lists the session's shells: state, runtime and last line, and the kill key", kept.test(() => {
@@ -125,7 +128,9 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(list).toMatch(/Long sleeper killed · \d+s · tick 1/)
     expect(list).toMatch(/Background sleeper killed · \d+s · bg/)
     expect(lineOf(frames["user-killed"], "Heard the blocking sleeper was killed.")).toBeDefined()
-    expect(requests.some((request) => /<shell id=\\"sh_\w+\\" [^>]*command=\\"sleep 300\\">\\nsh_\w+ · killed SIGTERM · /.test(request))).toBe(true)
+    expect(
+      requests.some((request) => shellNotices(request).some((each) => each.attributes.command === "sleep 300" && /^sh_\w+ · killed SIGTERM · /.test(each.body))),
+    ).toBe(true)
     expect(lineOf(frames["user-killed"], DOCK)).toBeUndefined()
   }))
 })

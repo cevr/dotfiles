@@ -2,6 +2,7 @@
 // under the host's canonical name, how it stands, the words that stand for
 // it (its preview, its line counts, its time) and what it touched.
 import { Option } from "effect"
+import { unwrap } from "@dotfiles/opencode-subagents/envelope"
 import { shellAction } from "@dotfiles/opencode-subagents/shell"
 import { toolsInCode } from "./kernel.ts"
 import { questionSource } from "./question-call.ts"
@@ -151,8 +152,8 @@ export function toolOutput(part: ToolPart) {
   const joined = (part.state.content ?? []).flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
   const handle = typeof part.state.metadata?.id === "string" && part.state.metadata.id.startsWith("sh_")
   const output = handle ? joined.replace(SHELL_HEADER, "") : joined
-  // A subagent's answer arrives wrapped in a <subagent ...> envelope; show the message only.
-  return output.replace(/^<\/?subagent\b[^>]*>\n?/gm, "")
+  // A subagent's answer may arrive in the host's envelope (either form, envelope.ts); show the message only.
+  return unwrap(output, "subagent")
 }
 
 function lines(value: string) {
