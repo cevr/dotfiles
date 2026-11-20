@@ -21,9 +21,13 @@
 import { Sessions as CacheSessions } from "@dotfiles/opencode-idle-compact/service"
 import * as CacheReads from "@dotfiles/opencode-idle-compact/opencode/sessions"
 import type { Plugin } from "@opencode/plugin/effect"
-import { Model } from "@opencode/schema/model"
-import { Provider } from "@opencode/schema/provider"
-import { SessionID } from "@opencode/schema/session-id"
+// At run time a plugin gets only `effect` and `@opencode/plugin` from OpenCode; any other package comes
+// from the checkout's own node_modules, links that point nowhere in a copy of it. So this file imports
+// `@opencode/schema` for its types only and brands the ids itself, as the queue's host does
+// (mods/queue/opencode/host.ts; scripts/runtime-imports.test.ts holds it).
+import type { Model } from "@opencode/schema/model"
+import type { Provider } from "@opencode/schema/provider"
+import type { SessionID as HostSessionID } from "@opencode/schema/session-id"
 import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
 import { type CacheFacts, type CatalogEntry, type ModelRef, readMetadata } from "../pending.ts"
 import { CatalogUnreadable, Sessions, SessionUnreadable, SessionUnwritable } from "../service.ts"
@@ -50,11 +54,21 @@ const readProviders = Schema.decodeUnknownOption(Schema.Array(CatalogProvider))
 const kindOf = (settings: typeof CatalogModel.Type.settings): Option.Option<string> =>
   Option.flatMap(Option.fromUndefinedOr(settings), (set) => Option.flatMap(Option.fromUndefinedOr(set.compaction), (compaction) => Option.fromUndefinedOr(compaction.type)))
 
+/** The host's ids, branded here as the host brands them (see the header). */
+const ProviderID = Schema.String.pipe(Schema.brand("Provider.ID"))
+const ModelID = Schema.String.pipe(Schema.brand("Model.ID"))
+const VariantID = Schema.String.pipe(Schema.brand("Model.VariantID"))
+const SessionIDBrand = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const providerIDOf = (id: string): Provider.ID => ProviderID.make(id)
+const modelIDOf = (id: string): Model.ID => ModelID.make(id)
+const variantIDOf = (id: string): Model.VariantID => VariantID.make(id)
+const SessionID = { make: (id: string): HostSessionID => SessionIDBrand.make(id) }
+
 /** A reference as the host's `switchModel` takes it. */
 const hostRef = (model: ModelRef) =>
   Option.match(Option.fromUndefinedOr(model.variant), {
-    onNone: () => ({ providerID: Provider.ID.make(model.providerID), id: Model.ID.make(model.id) }),
-    onSome: (variant) => ({ providerID: Provider.ID.make(model.providerID), id: Model.ID.make(model.id), variant: Model.VariantID.make(variant) }),
+    onNone: () => ({ providerID: providerIDOf(model.providerID), id: modelIDOf(model.id) }),
+    onSome: (variant) => ({ providerID: providerIDOf(model.providerID), id: modelIDOf(model.id), variant: variantIDOf(variant) }),
   })
 
 export const fromContext = (ctx: Plugin.Context): Layer.Layer<Sessions> => {
