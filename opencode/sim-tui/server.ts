@@ -986,12 +986,14 @@ export const make = (options: Options) => {
     const previousModel = info.model
     // As core's Session.switchAgent since upstream c18c9236f7: a switch to the agent the session runs as says
     // nothing; with none of its own it runs as the agent its last step recorded, and before any step as none.
-    const runsAs = chosen.has(`${sessionID} agent`)
-      ? Option.some(previousAgent)
-      : Option.flatMap(
-          Option.fromUndefinedOr(list(sessionID).findLast((message) => message.type === "assistant")),
-          (message) => (message.type === "assistant" ? Option.some(message.agent) : Option.none()),
-        )
+    const lastStep = Option.map(
+      Option.fromUndefinedOr(list(sessionID).findLast((message): message is AssistantMessage => message.type === "assistant")),
+      (message) => message.agent,
+    )
+    const runsAs = Option.some(previousAgent).pipe(
+      Option.filter(() => chosen.has(`${sessionID} agent`)),
+      Option.orElse(() => lastStep),
+    )
     if (identifier === "session.switchAgent")
       Option.map(
         Option.fromUndefinedOr(body.agent).pipe(Option.filter((next) => !Option.contains(runsAs, next))),
