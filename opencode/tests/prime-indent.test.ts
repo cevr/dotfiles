@@ -2,8 +2,9 @@
 // Runs scenarios/prime-indent.ts with the Prime look, once per transcript
 // verbosity, and asserts that every row of the turn starts in one column, the
 // one Prime's `● Ran …` call rows use: each call row, the grouped run, the
-// inline tool, the prose, a program's notice (`◈ rift land · accept passed`,
-// drawn by the host) and, at low verbosity, the host's `+ N commands` summary
+// inline tool, the prose, a program's notice (`◈ lane land · accept FAILED`,
+// drawn by the host, and a stored one in the old words, `◈ rift land · …`,
+// which the host draws as written) and, at low verbosity, the host's `+ N commands` summary
 // row, folded and unfolded. The host draws its own rows at its layout
 // `gutter`, which Prime sets to its own. It needs OPENCODE_DEV, the fork.
 import { beforeAll, describe, expect, test } from "bun:test"
@@ -17,7 +18,9 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-indent.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
 
 const root = join(import.meta.dir, "..")
-const NOTICE = "rift land · accept passed"
+const NOTICE = "lane land · accept FAILED"
+/** A land notice a session stored before the rename, drawn as it was written. */
+const STORED = "rift land · accept passed"
 const frames: Record<string, ReadonlyArray<string>> = {}
 const kept = keptScratch(Boolean(fork), "prime-indent-")
 
@@ -55,6 +58,7 @@ const TURN = {
   grouped: "● Ran echo two, echo three",
   inline: "● Searched *.md",
   prose: "All rows drawn.",
+  stored: `◈ ${STORED}`,
   notice: `◈ ${NOTICE}`,
 }
 
@@ -72,9 +76,9 @@ describe.skipIf(!fork)("every transcript row starts in one column in the Prime l
 
   test("low, folded: the host's `+ N commands` summary row and the notice start where the prose does", kept.test(() => {
     const frame = frames["indent-low-folded"]!
-    const kinds = { summary: /^\+ \d+ commands?/, prose: TURN.prose, notice: TURN.notice }
+    const kinds = { summary: /^\+ \d+ commands?/, prose: TURN.prose, stored: TURN.stored, notice: TURN.notice }
     const prose = row(frame, TURN.prose).column
-    expect(columns(frame, kinds)).toEqual({ summary: prose, prose, notice: prose })
+    expect(columns(frame, kinds)).toEqual({ summary: prose, prose, stored: prose, notice: prose })
   }))
 
   test("low, unfolded: the summary row, the calls it holds, the prose and the notice start in the call rows' column", kept.test(() => {
