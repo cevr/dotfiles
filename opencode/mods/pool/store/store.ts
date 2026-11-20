@@ -663,7 +663,7 @@ export class StoreSource {
       // for the whole wait serves what the file holds after it (waitedOut).
       return yield* serialized(this.state, this.locked(this.refreshLocked(label))).pipe(
         Effect.catchIf(
-          (error) => usable && error._tag === "StoreCredentialError" && error.kind === "busy",
+          (error): error is StoreCredentialError => usable && error._tag === "StoreCredentialError" && error.kind === "busy",
           (busy) => this.waitedOut(label, stored.refresh, busy),
         ),
       )
@@ -677,12 +677,21 @@ export class StoreSource {
    * means a held trade retired it; either fails `busy`, so the pool fails over, and a later request reads again.
    */
   private waitedOut(label: string, refresh: string, busy: StoreCredentialError): Effect.Effect<{ access: string; expires: number }, StoreCredentialError> {
-    return this.read(label).pipe(
-      Effect.orElseSucceed((): Stored => null),
-      Effect.flatMap((now) => {
-        const same = now && isStoreOwned(now) && now.refresh === refresh
-        if (!same || this.state.pending.has(label) || this.state.rejected.get(label) === refresh || !this.fresh(now.expires)) return Effect.fail(busy)
-        return Effect.succeed({ access: now.access, expires: now.expires })
+    return Effect.option(this.read(label)).pipe(
+      Effect.flatMap((read) => {
+        const same = Option.filter(
+          Option.flatMap(read, Option.fromNullishOr),
+          (now) =>
+            isStoreOwned(now) &&
+            now.refresh === refresh &&
+            !this.state.pending.has(label) &&
+            this.state.rejected.get(label) !== refresh &&
+            this.fresh(now.expires),
+        )
+        return Option.match(same, {
+          onNone: () => Effect.fail(busy),
+          onSome: (now) => Effect.succeed({ access: now.access, expires: now.expires }),
+        })
       }),
     )
   }

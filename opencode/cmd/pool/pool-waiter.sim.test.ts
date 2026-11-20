@@ -8,9 +8,18 @@
 // - no token is served after the file replaced its login with a newer one (a held write landed, another writer);
 // - no token is served after a provider refused it (401) in this process;
 // and every turn ends, served or failed (busy, so the pool fails over), none left waiting once the faults stop.
-import { Cause, Effect, Exit, Fiber, Option } from "effect"
+import { Cause, Effect, Exit, Fiber, Match, Option } from "effect"
 import * as MemorySlots from "@dotfiles/opencode-pool/memory/slots"
-import { decodeStoredOAuth, encodeRefresh, type SlotFiles, STORE_PREFIX, StoreSource, storeProcess } from "@dotfiles/opencode-pool/store/store"
+import {
+  decodeStoredOAuth,
+  encodeRefresh,
+  type SlotFiles,
+  STORE_PREFIX,
+  type StoreCredentialError,
+  StoreSource,
+  type StoreUnreadable,
+  storeProcess,
+} from "@dotfiles/opencode-pool/store/store"
 import * as Provider from "../../sim/provider.ts"
 import { below, generator, line } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
@@ -42,25 +51,27 @@ type Command =
   | { readonly type: "advance"; readonly ms: number }
 
 const STEPS = [1_000, 5_000, 10_000, 15_000, 20_000, 30_000, 45_000, 60_000, 2 * MINUTE] as const
+/** A token past its expiry, or due its refresh but still good. */
+const EXPIRIES = [-1_000, 3 * MINUTE] as const
 
 const commandOf = (random: ReturnType<typeof generator>): Command => {
   const pick = below(random, 16)
   if (pick < 5) return { type: "turn" }
   if (pick < 7) return { type: "trade", fails: 1 + below(random, 6) }
   if (pick < 8) return { type: "slow", delayMs: (1 + below(random, 10)) * MINUTE }
-  if (pick < 9) return { type: "expire", inMs: below(random, 2) === 0 ? -1_000 : 3 * MINUTE }
+  if (pick < 9) return { type: "expire", inMs: EXPIRIES[below(random, EXPIRIES.length)] }
   if (pick < 10) return { type: "write-fails", times: 1 + below(random, 5) }
   return { type: "advance", ms: STEPS[below(random, STEPS.length)] }
 }
 
 /**
- * Up to 40 commands; at a point the seed chooses, the class's shape: another holder's trade whose write fails a few
+ * Up to 40 commands; at a point the seed chooses, the class's run: another holder's trade whose write fails a few
  * times, turns that wait on it, then a slow trade that holds the lock past their waits.
  */
 const commandsOf = (seed: number): ReadonlyArray<Command> => {
   const random = generator(`pool-waiter:${seed}`)
   const commands = Array.from({ length: 10 + below(random, 31) }, () => commandOf(random))
-  const shape: Array<Command> = [
+  const run: Array<Command> = [
     { type: "trade", fails: 2 + below(random, 5) },
     { type: "turn" },
     { type: "turn" },
@@ -69,7 +80,7 @@ const commandsOf = (seed: number): ReadonlyArray<Command> => {
     { type: "slow", delayMs: 10 * MINUTE },
     { type: "advance", ms: STEPS[below(random, STEPS.length)] },
   ]
-  commands.splice(below(random, commands.length + 1), 0, ...shape)
+  commands.splice(below(random, commands.length + 1), 0, ...run)
   return commands
 }
 
@@ -87,6 +98,17 @@ const TRACE: ReadonlyArray<Command> = [
   { type: "slow", delayMs: 10 * MINUTE },
   { type: "advance", ms: 2 * MINUTE },
 ]
+
+/** The kind a resolve failed with, `StoreUnreadable` for an unreadable store, `died` for a defect. */
+const failedWith = (cause: Cause.Cause<StoreCredentialError | StoreUnreadable>): string =>
+  Option.match(Cause.findErrorOption(cause), {
+    onNone: () => "died",
+    onSome: (error) =>
+      Match.value(error).pipe(
+        Match.tag("StoreCredentialError", (failed): string => failed.kind),
+        Match.orElse((failed) => failed._tag),
+      ),
+  })
 
 /** The model run on `commands`: what broke the property, and how each turn ended. */
 const model = (seed: number, commands: ReadonlyArray<Command>) =>
@@ -138,9 +160,8 @@ const model = (seed: number, commands: ReadonlyArray<Command>) =>
       Effect.gen(function* () {
         const exit = yield* Effect.exit(ours.resolveEffect(ID))
         if (Exit.isFailure(exit)) {
-          const error = Cause.findErrorOption(exit.cause)
-          if (Option.isNone(error)) broken.push(`turn ${n} died: ${Cause.pretty(exit.cause)}`)
-          return Option.match(error, { onNone: () => "died", onSome: (failed) => ("kind" in failed ? failed.kind : failed._tag) })
+          if (Option.isNone(Cause.findErrorOption(exit.cause))) broken.push(`turn ${n} died: ${Cause.pretty(exit.cause)}`)
+          return failedWith(exit.cause)
         }
         const { access } = exit.value
         if (superseded.has(access)) broken.push(`turn ${n} at ${world.now()}: served a token whose login the file had replaced`)
@@ -149,7 +170,7 @@ const model = (seed: number, commands: ReadonlyArray<Command>) =>
           provider.fetch(`${Provider.ORIGIN}/v1/messages`, {
             method: "POST",
             headers: { authorization: `Bearer ${access}`, "content-type": "application/json" },
-            body: JSON.stringify({ model: "claude-fake", tools: [{ name: "tool" }] }),
+            body: line({ model: "claude-fake", tools: [{ name: "tool" }] }),
           }),
         )
         if (response.status !== 401) return "served"
@@ -190,18 +211,33 @@ const model = (seed: number, commands: ReadonlyArray<Command>) =>
     return { broken, outcomes }
   })
 
+/** A login as a test writes it to the file. */
+interface Login {
+  readonly access: string
+  readonly refresh: string
+  readonly expires: number
+}
+
+/** What a test does while a resolve waits: write a login or any text to the file, or tell the store of a refusal. */
+interface During {
+  readonly put: (login: Login) => void
+  readonly raw: (text: string) => void
+  readonly source: StoreSource
+  /** The login the file held when the resolve read it. */
+  readonly first: { readonly access: string; readonly refresh: string }
+}
+
 /**
  * One resolve in this process of a login due its refresh but still good, while another process holds the store's lock
- * for the whole wait; `during` changes the file (or tells the store of a refusal) once the resolve has read it and is
- * waiting. How the resolve ended, and the login it read first.
+ * for the whole wait; `during` runs once the resolve has read the file and is waiting. How the resolve ended, the login
+ * it read first, and how many trades went out.
  */
-const waited = (seed: number, during: (put: (login: { access: string; refresh: string; expires: number }) => void, source: StoreSource, first: { access: string; refresh: string }) => void, text?: string) =>
+const waited = (seed: number, during: (now: During) => void) =>
   Effect.gen(function* () {
     const world = World.make({ seed, script: () => World.say(""), anthropic: { accounts: Provider.accounts(seed, [LOGIN]) } })
     const provider = world.provider()
     const slots = MemorySlots.make()
-    const put = (login: { access: string; refresh: string; expires: number }) =>
-      slots.put(SLOT, encodeRefresh({ type: "oauth", ...login, metadata: { owner: "store" } }, login))
+    const put = (login: Login) => slots.put(SLOT, encodeRefresh({ type: "oauth", ...login, metadata: { owner: "store" } }, login))
     const first = provider.tokens(LOGIN)
     put({ ...first, expires: World.START + 3 * MINUTE })
     const context = yield* world.runtime.run(Effect.context<never>())
@@ -209,20 +245,16 @@ const waited = (seed: number, during: (put: (login: { access: string; refresh: s
     const release = slots.hold(STORE)
     const fiber = world.runtime.fork(Effect.exit(source.resolveEffect(ID)))
     yield* world.runtime.settle
-    during(put, source, first)
-    if (text !== undefined) slots.put(SLOT, text)
+    during({ put, raw: (text) => slots.put(SLOT, text), source, first })
     yield* world.until(() => Option.isSome(Option.fromNullishOr(fiber.pollUnsafe())), 2 * MINUTE, 1_000)
     release()
     const trades = provider.received().filter((request) => request.path === "/v1/oauth/token").length
     return { exit: yield* Fiber.join(fiber), first, trades }
   })
 
-/** The kind a resolve failed with; none when it served. */
-const kindOf = (exit: Exit.Exit<{ access: string }, { readonly _tag: string }>) =>
-  Exit.match(exit, {
-    onSuccess: () => "served",
-    onFailure: (cause) => Option.match(Cause.findErrorOption(cause), { onNone: () => "died", onSome: (error) => ("kind" in error ? String(error.kind) : error._tag) }),
-  })
+/** How a resolve ended: `served`, or the kind it failed with. */
+const kindOf = (exit: Exit.Exit<{ access: string }, StoreCredentialError | StoreUnreadable>) =>
+  Exit.match(exit, { onSuccess: () => "served", onFailure: failedWith })
 
 seeded("after a whole wait, the file still holding the login read before it serves that token", ({ seed, expect }) =>
   Effect.gen(function* () {
@@ -234,28 +266,28 @@ seeded("after a whole wait, the file still holding the login read before it serv
 
 seeded("after a whole wait, another login in the file, good for hours, fails busy: the holder may be trading it", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const { exit } = yield* waited(seed, (put) => put({ access: "sim-access-other", refresh: "sim-refresh-other", expires: World.START + 8 * HOUR }))
+    const { exit } = yield* waited(seed, ({ put }) => put({ access: "sim-access-other", refresh: "sim-refresh-other", expires: World.START + 8 * HOUR }))
     expect(kindOf(exit), `seed ${seed}`).toBe("busy")
   }),
 )
 
 seeded("after a whole wait, the same login with a new access token in the file serves the file's token", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const { exit } = yield* waited(seed, (put, _source, first) => put({ access: "sim-access-renewed", refresh: first.refresh, expires: World.START + 3 * MINUTE }))
+    const { exit } = yield* waited(seed, ({ put, first }) => put({ access: "sim-access-renewed", refresh: first.refresh, expires: World.START + 3 * MINUTE }))
     expect(Exit.isSuccess(exit) && exit.value.access, `seed ${seed}`).toBe("sim-access-renewed")
   }),
 )
 
 seeded("after a whole wait, the same login a provider refused meanwhile fails busy", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const { exit } = yield* waited(seed, (_put, source, first) => source.rejected(ID, first.access))
+    const { exit } = yield* waited(seed, ({ source, first }) => source.rejected(ID, first.access))
     expect(kindOf(exit), `seed ${seed}`).toBe("busy")
   }),
 )
 
 seeded("after a whole wait, a file that no longer decodes fails busy", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const { exit } = yield* waited(seed, () => {}, "{ not a sign-in")
+    const { exit } = yield* waited(seed, ({ raw }) => raw("{ not a sign-in"))
     expect(kindOf(exit), `seed ${seed}`).toBe("busy")
   }),
 )
