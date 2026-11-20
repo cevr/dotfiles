@@ -1970,7 +1970,7 @@ by cause, by first changed segment, the unexplained part (`login`, `prefix`,
 `unchanged`) per host and day, and the costliest session-hours.
 
 `bun scripts/cache-audit.ts [--since 7d] [--host <name>] [--top 10] [--json]
-[--static] [--primary build,plan] [--file <ledger.jsonl>]...` audits it for
+[--static] [--primary build,plan,orchestrator] [--file <ledger.jsonl>]...` audits it for
 the weekly dream (`mods/cache/audit.ts`). The north star is the hit rate,
 `read / (read + write + uncached)`, overall and per host, agent and model,
 with the writes' share of the prompt and of its cost (Anthropic's list
@@ -1984,7 +1984,8 @@ before: Anthropic keeps a cache per lifetime), `restart` (the server judged it
 first although the ledger holds an earlier request, or against a `restored`
 one, with the segment that changed), `tool-set`, `system-prompt` or `message-edit` (by the
 first changed segment), else `dropped`. A session's first request is a cold
-start: `subagent-first` on an agent outside `--primary`, else
+start: `subagent-first` on an agent outside `--primary` (by default build,
+plan and the orchestrator a new root session opens with), else
 `session-start`. It ranks the causes and sessions by the tokens written
 again, and weighs lifetimes under an hour (the roles' 5 minutes): the hour's
 dearer writes against the expiries an hour would have covered. `--static`

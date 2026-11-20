@@ -38,7 +38,7 @@ import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { iso } from "@dotfiles/opencode-pool/usage-text"
-import { definitions } from "@dotfiles/opencode-orchestrate/role"
+import { definitions, ORCHESTRATOR, orchestrator } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { eventuallyPasses } from "../../tests/wait.ts"
@@ -1888,6 +1888,28 @@ describe("the agents", () => {
         for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system, messages })
         expect(system).toEqual([])
         expect(messages).toEqual([...conversation, { role: "user", content: [{ type: "text", text: KEEP }] }])
+      }),
+    ))
+
+  test("each request the orchestrator makes, the turn's, the host's own (generate) and the summary's, carries its section exactly once after build's prompt; another agent's none", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY })
+        const BUILD_PROMPT = "You are the build agent."
+        const count = (text: string) => text.split(orchestrator.section).length - 1
+        for (const name of ["context", "generate", "compaction"]) {
+          const sent = (agent: string) =>
+            Effect.gen(function* () {
+              const event = { sessionID: "root", agent, system: [{ type: "text" as const, text: BUILD_PROMPT }, { type: "text" as const, text: "env" }], messages: [] }
+              for (const hook of plugin.hooks[name] ?? []) yield* hook(event)
+              return event.system
+            })
+          const orchestrated = yield* sent(ORCHESTRATOR)
+          expect([name, orchestrated.map((part) => count(part.text))]).toEqual([name, [1, 0]])
+          expect(orchestrated[0]?.text.startsWith(BUILD_PROMPT)).toBe(true)
+          expect(orchestrated[1]?.text).toBe("env")
+          expect([name, yield* sent("build")]).toEqual([name, [{ type: "text", text: BUILD_PROMPT }, { type: "text", text: "env" }]])
+        }
       }),
     ))
 })

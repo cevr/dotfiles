@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { audit, classify, detect, renderAudit, usageOf } from "./audit.ts"
 import type { LedgerLine } from "./request-log.ts"
 
+/** The primary agents the audit is given: the caller names them (scripts/cache-audit.ts). */
+const primary: ReadonlySet<string> = new Set(["build"])
+
 const MIN = 60_000
 const HOUR = 60 * MIN
 const T0 = Date.parse("2026-11-06T12:00:00Z")
@@ -105,7 +108,7 @@ describe("the audit over a window", () => {
   ]
 
   test("breaks by cause, cold starts by kind, sessions ranked by wasted writes", () => {
-    const result = audit(lines, { since: T0 })
+    const result = audit(lines, { since: T0, primary })
     expect(result.overall.requests).toBe(7)
     expect(result.breaks).toMatchObject({ count: 2, wasted: 140_000 })
     expect(result.breaks.byCause.map((tally) => [tally.cause, tally.count, tally.wasted])).toEqual([
@@ -126,13 +129,22 @@ describe("the audit over a window", () => {
   })
 
   test("the trade of lifetimes under an hour: the writes' extra at 2× against the expiries an hour would have covered", () => {
-    expect(audit(lines, { since: T0 }).shortLifetime).toEqual({
+    expect(audit(lines, { since: T0, primary }).shortLifetime).toEqual({
       requests: 2,
       write: 80_000,
       extraAtHour: 60_000,
       expiriesInsideHour: 1,
       savedAtHour: 46_000,
     })
+  })
+
+  test("a session's first request is a session start on a primary agent the caller names, else a subagent's", () => {
+    const first = (sessionID: string, agent: string) => row(T0 + MIN, { sessionID, agent, cause: "first", read: 0, write: 50_000, prompt: 50_000 })
+    const result = audit([first("ses_root", "root-agent"), first("ses_role", "verifier")], { since: T0, primary: new Set(["root-agent"]) })
+    expect(result.coldStarts.map((tally) => [tally.cause, tally.count])).toEqual([
+      ["session-start", 1],
+      ["subagent-first", 1],
+    ])
   })
 
   test("a host, a top and the primary agents narrow it", () => {
@@ -143,7 +155,7 @@ describe("the audit over a window", () => {
   })
 
   test("it renders the north star first, and an empty window says so", () => {
-    expect(renderAudit(audit(lines, { since: T0 })).split("\n")[1]).toContain("overall")
-    expect(renderAudit(audit(lines, { since: T0 + 10 * HOUR }))).toBe("no ledger lines in the window")
+    expect(renderAudit(audit(lines, { since: T0, primary })).split("\n")[1]).toContain("overall")
+    expect(renderAudit(audit(lines, { since: T0 + 10 * HOUR, primary }))).toBe("no ledger lines in the window")
   })
 })

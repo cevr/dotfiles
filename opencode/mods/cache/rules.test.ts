@@ -35,7 +35,9 @@ const clean: Facts = {
   roleCacheTtl: "5m",
 }
 
-const quiet = audit([row(T0), row(T0 + 60_000)], { since: T0 })
+/** The primary agents the audit is given: the caller names them (scripts/cache-audit.ts). */
+const primary: ReadonlySet<string> = new Set(["build"])
+const quiet = audit([row(T0), row(T0 + 60_000)], { since: T0, primary })
 const statuses = (facts: Facts, lines = quiet) => judgeRules(facts, lines).map((rule) => rule.status)
 
 describe("the caching rules", () => {
@@ -68,7 +70,7 @@ describe("the caching rules", () => {
         row(T0 + 60_000, { read: 0, write: 100_000, cause: "prefix", change: { segment: "tool mcp_kernel", offsetTokens: 0 } }),
         row(T0 + 120_000, { model: "openai/gpt", read: 0, write: 0 }),
       ],
-      { since: T0 },
+      { since: T0, primary },
     )
     const rules = judgeRules(clean, broken)
     expect(rules[2]?.status).toBe("fail")
@@ -80,7 +82,7 @@ describe("the caching rules", () => {
     const role = { sessionID: "ses_r", agent: "implementor", ttlMs: 300_000 }
     const expiring = audit(
       [row(T0, { ...role, write: 1_000, read: 99_000 }), row(T0 + 600_000, { ...role, cause: "expired", read: 0, write: 100_000 })],
-      { since: T0 },
+      { since: T0, primary },
     )
     expect(judgeRules(clean, expiring)[6]?.status).toBe("warn")
   })

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { audit } from "../mods/cache/audit.ts"
 import { DEFAULT_DIR, FILE_NAME } from "../mods/cache/filestore/request-log.ts"
+import type { LedgerLine } from "../mods/cache/request-log.ts"
+import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
 import { scratch } from "../tests/scratch.ts"
 import { parseArgs, probe } from "./cache-audit.ts"
 
@@ -9,13 +12,13 @@ const NOW = Date.parse("2026-11-06T12:00:00Z")
 const DAY = 86_400_000
 
 describe("cache-audit's command line", () => {
-  test("by default: the last 7 days of this machine's ledger, build and plan as the primary agents, no static check", () => {
+  test("by default: the last 7 days of this machine's ledger, build, plan and the orchestrator as the primary agents, no static check", () => {
     expect(parseArgs([], NOW)).toEqual({
       since: NOW - 7 * DAY,
       top: 10,
       json: false,
       static: false,
-      primary: new Set(["build", "plan"]),
+      primary: new Set(["build", "plan", ORCHESTRATOR]),
       files: [join(DEFAULT_DIR, FILE_NAME)],
     })
   })
@@ -32,6 +35,28 @@ describe("cache-audit's command line", () => {
     })
     expect(() => parseArgs(["--since", "last week"], NOW)).toThrow("--since last week: give 30m, 24h, 7d or an ISO time")
     expect(() => parseArgs(["--verbose"], NOW)).toThrow("unknown flag --verbose")
+  })
+
+  test("by default a root session's first request is a session start on build, plan and the orchestrator alike; a role's is a subagent's", () => {
+    const first = (sessionID: string, agent: string): LedgerLine => ({
+      at: NOW - DAY,
+      host: "mac",
+      sessionID,
+      kind: "primary",
+      agent,
+      model: "anthropic/claude-opus",
+      ttlMs: 3_600_000,
+      prompt: 50_000,
+      read: 0,
+      write: 50_000,
+      cause: "first",
+    })
+    const args = parseArgs([], NOW)
+    const result = audit([first("ses_build", "build"), first("ses_plan", "plan"), first("ses_root", ORCHESTRATOR), first("ses_role", "verifier")], args)
+    expect(result.coldStarts.map((tally) => [tally.cause, tally.count, tally.wasted])).toEqual([
+      ["session-start", 3, 150_000],
+      ["subagent-first", 1, 50_000],
+    ])
   })
 })
 
