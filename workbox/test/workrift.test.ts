@@ -1837,8 +1837,12 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       for (const [i, each] of ran.entries()) {
         expect(each.code, each.err).toBe(0)
         expect(lines(each.out)).toEqual([paths[i]])
-        const locked = each.err.match(/: locked \((\d+)s\)/)
-        expect({ branch: branches[i], locked: Number(locked?.[1]) <= 2 }, each.err).toEqual({ branch: branches[i], locked: true })
+        // The wait for the base's lock (from its 'lock' line to its 'locked' line; a fetch that lost the ref race to a
+        // sibling retries before it, a second later) is at most an advance's move (install: sleep 1), never its warm
+        // (sleep 3) nor a queue of copies.
+        const asked = Number(each.err.match(/: lock \/\S+ \((\d+)s\)/)?.[1])
+        const locked = Number(each.err.match(/: locked \((\d+)s\)/)?.[1])
+        expect({ branch: branches[i], waited: locked - asked <= 2 }, each.err).toEqual({ branch: branches[i], waited: true })
       }
       const pids = await settle(...ran.map((each) => each.err))
       expect(pids.length).toBeGreaterThanOrEqual(1)

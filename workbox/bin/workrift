@@ -621,7 +621,11 @@ lock_advance() {
   fi
   advance_holder_file=$(lock_holders_dir "$1")/$holder_pid.advance
   mkdir -p "${advance_holder_file%/*}"
-  printf '%s %s\n' "$(date +%s)" "advance ($lock_purpose)" >"$advance_holder_file"
+  case "$lock_purpose" in
+    advance) a_purpose=advance ;;
+    *) a_purpose="advance ($lock_purpose)" ;;
+  esac
+  printf '%s %s\n' "$(date +%s)" "$a_purpose" >"$advance_holder_file"
   trap 'rm -f "${holder_file:-}" "$advance_holder_file"' EXIT
 }
 
