@@ -35,7 +35,7 @@ describe("a digest line", () => {
     expect(Option.map(decodeLine(answered), (event) => event._tag === "Answered" && Option.isNone(event.via))).toEqual(Option.some(true))
     expect(Option.map(decodeLine('{"_tag":"Item","v":1,"t":5,"root":"r","id":"a","text":"x","state":"needs-you","owner":"mine"}'), (event) => event._tag === "Item" && Option.isNone(event.answer))).toEqual(Option.some(true))
     const given = encodeLine({ ...item, answer: Option.some("Friday") })
-    expect(Option.map(decodeLine(given), (event) => (event._tag === "Item" ? Option.getOrUndefined(event.answer) : undefined))).toEqual(Option.some("Friday"))
+    expect(Option.map(decodeLine(given), (event) => event._tag === "Item" && event.answer)).toEqual(Option.some(Option.some("Friday")))
   })
 
   test("a newer line with a field this reader does not know decodes, the field dropped", () => {

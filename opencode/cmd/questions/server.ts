@@ -30,7 +30,7 @@
  * - A deleted or archived session's questions go.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Ref, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Match, Option, Ref, Schema, Stream } from "effect"
 import { DIGEST } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { AskedQuestion, AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencode-questions/ask"
@@ -79,6 +79,13 @@ const WithdrawForInput = Schema.Struct({ plugin: Schema.String, key: Schema.Stri
 
 const done: Reply = { ok: true }
 const refused = (failure: Rejection | QuestionsUnreadable | DeliveryRefused): Reply => ({ ok: false, message: messageOf(failure) })
+/** A refusal because none of it was open any more: another answer closed it first. */
+const closedOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused): Pick<Reply, "closed"> =>
+  Match.value(failure).pipe(
+    Match.tag("NotOpen", (): Pick<Reply, "closed"> => ({ closed: true })),
+    Match.orElse(() => ({})),
+  )
+
 const malformed = (error: Schema.SchemaError): Reply => ({ ok: false, message: `malformed request: ${error.message}` })
 
 /** The plugin on `externals`: the plugin's storage and inbox in OpenCode, the memory doubles in the seam test. */
@@ -174,7 +181,7 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
                   questions.answer(sessionID, answers, [], Option.none(), via).pipe(
                     Effect.map(({ skipped }): Reply => (skipped.length === 0 ? done : { ok: true, message: `No longer open, so not sent: ${skipped.join(", ")}.` })),
                     // Another answer (the tray's, or the page's) closed it first: say so, so the caller can tell whose.
-                    Effect.catch((failure) => Effect.succeed(failure._tag === "NotOpen" ? { ...refused(failure), closed: true as const } : refused(failure))),
+                    Effect.catch((failure) => Effect.succeed<Reply>({ ...refused(failure), ...closedOf(failure) })),
                   ),
               }),
             ),

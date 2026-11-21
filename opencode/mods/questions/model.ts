@@ -161,7 +161,7 @@ export const layer = Layer.effect(
           const events = yield* decide(sheet, now)
           if (events.length === 0) return events
           const after = fold(Questions, events, sheet)
-          if (!(yield* store.writeIf(sessionID, after, sheet.rev))) {
+          if (!(yield* store.writeIf(sessionID, after, Option.fromUndefinedOr(sheet.rev)))) {
             if (tries >= MAX_CONFLICTS) return yield* Effect.die(new Error(`questions: ${sessionID}'s sheet changed under ${MAX_CONFLICTS} writes in a row`))
             return yield* attempt(tries + 1)
           }

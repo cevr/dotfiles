@@ -411,7 +411,7 @@ const unheld = (state: Sheet, command: AnswerQuestions): Option.Option<NotHeld> 
  * the message names it. A question both answered and dismissed is answered.
  */
 export const decideAnswers = (state: Sheet, command: AnswerQuestions, now: number): Effect.Effect<ReadonlyArray<Event>, ReplyRejection> => {
-  const recorded = { delivery: command.delivery, at: now, ...(command.via === undefined ? {} : { via: command.via }) }
+  const recorded = { delivery: command.delivery, at: now, ...Option.getOrElse(Option.map(Option.fromUndefinedOr(command.via), (via) => ({ via })), () => ({})) }
   const empty = command.answers.find((given) => given.answer.trim() === "")
   if (empty !== undefined) return Effect.fail(new EmptyAnswer({ id: empty.id }))
   const refused = unheld(state, command)

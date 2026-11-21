@@ -238,8 +238,8 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ctx.storage.remove("law:a")
         yield* ensure(Option.isNone(Option.fromNullishOr(yield* ctx.storage.get("law:a"))), "a removed key still answered")
         // setIf: into an absent key only with no rev; over a stored value only at its rev (none counts as 0).
-        yield* ensure(yield* ctx.storage.setIf("law:rev", { rev: 1 }, undefined), "setIf did not insert an absent key")
-        yield* ensure(!(yield* ctx.storage.setIf("law:rev", { rev: 1 }, undefined)), "setIf inserted over a present key")
+        yield* ensure(yield* ctx.storage.setIf("law:rev", { rev: 1 }), "setIf did not insert an absent key")
+        yield* ensure(!(yield* ctx.storage.setIf("law:rev", { rev: 1 })), "setIf inserted over a present key")
         yield* ensure(!(yield* ctx.storage.setIf("law:rev", { rev: 2 }, 0)), "setIf wrote over another rev")
         yield* ensure(yield* ctx.storage.setIf("law:rev", { rev: 2 }, 1), "setIf refused its own rev")
         yield* ensure(yield* ctx.storage.setIf("law:c", { rev: 1 }, 0), "setIf refused a value without a rev at rev 0")

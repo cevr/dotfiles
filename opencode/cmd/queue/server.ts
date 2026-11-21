@@ -29,7 +29,7 @@
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
-import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
+import { Array as Arr, Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { DIGEST } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { answersOf } from "@dotfiles/opencode-queue/answer"
@@ -92,15 +92,15 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
       // A queue that cannot be read fails the call, and the sidebar keeps what it drew.
       // `answer` is the Queue tab's form submit by another way (the digest page): the same send, and it says when it
       // replaced an answer the item already had.
-      const answer = (input: unknown) =>
+      const answer: Parameters<typeof ctx.rpc.register<typeof QUEUE>>[1]["answer"] = (input) =>
         Schema.decodeUnknownEffect(AnswerInput)(input).pipe(
           Effect.matchEffect({
             onFailure: (error) => Effect.succeed<AnswerReply>({ ok: false, message: `malformed request: ${error.message}` }),
             onSuccess: ({ sessionID, id, answer: given }) =>
               Effect.gen(function* () {
-                const before = (yield* queue.get(sessionID)).items.find((item) => item.id === id)?.answered
+                const before = Option.flatMap(Arr.findFirst((yield* queue.get(sessionID)).items, (item) => item.id === id), (item) => Option.fromUndefinedOr(item.answered))
                 yield* queue.answer(sessionID, id, given)
-                return before === undefined ? { ok: true } : { ok: true, replaced: before }
+                return Option.match(before, { onNone: (): AnswerReply => ({ ok: true }), onSome: (replaced): AnswerReply => ({ ok: true, replaced }) })
               }).pipe(Effect.catch((failure) => Effect.succeed<AnswerReply>({ ok: false, message: messageOf(failure) }))),
           }),
         )

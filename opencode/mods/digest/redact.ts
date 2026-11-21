@@ -11,6 +11,8 @@
 // lowercase hex (at most 4 bits a character, as a commit hash is), one split by spaces or `/` into short runs, and
 // any secret whose shape is not on the list. Redaction is a net under the log, not a reason to paste a token.
 
+import { Option } from "effect"
+
 /** What a secret is replaced with. */
 export const REDACTED = "[redacted]"
 
@@ -47,6 +49,6 @@ const isRandom = (run: string): boolean => /[A-Za-z]/.test(run) && /[0-9]/.test(
 
 /** `text` with each secret shape replaced by REDACTED; the same text when it holds none. */
 export const redact = (text: string): string => {
-  const known = KNOWN.reduce((kept, shape) => kept.replace(shape, REDACTED), text)
-  return known.replace(RUN, (run) => (isRandom(run) ? REDACTED : run))
+  const known = KNOWN.reduce((kept, form) => kept.replace(form, REDACTED), text)
+  return known.replace(RUN, (run) => Option.getOrElse(Option.as(Option.liftPredicate(run, isRandom), REDACTED), () => run))
 }

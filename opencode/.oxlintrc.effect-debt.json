@@ -221,7 +221,8 @@
     {
       "files": [
         "mods/digest/relay.test.ts",
-        "mods/questions/memory/digest.test.ts"
+        "mods/questions/memory/digest.test.ts",
+        "mods/questions/memory/contended.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",

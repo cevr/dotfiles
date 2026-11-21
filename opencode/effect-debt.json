@@ -150,6 +150,8 @@
     {"file":"mods/orchestrate/filestore/digest-reads.ts","rule":"effect/noNodeBuiltinImport","reason":"file store adapter: the host's name (node:os) and a findings file's text (node:fs/promises) for the run's digest lines"},
     {"file":"mods/questions/memory/digest.test.ts","rule":"effect/noAsyncFunction","reason":"Promise bridge: bun's test runner takes promises; each case awaits the model's run over the memory doubles"},
     {"file":"mods/questions/memory/digest.test.ts","rule":"effect/noEffectRunInTests","reason":"Promise bridge: bun's test runner takes promises; each case runs the model over the memory doubles to one"},
+    {"file":"mods/questions/memory/contended.test.ts","rule":"effect/noAsyncFunction","reason":"Promise bridge: bun's test runner takes promises; each case awaits two copies of the model racing over one memory store"},
+    {"file":"mods/questions/memory/contended.test.ts","rule":"effect/noEffectRunInTests","reason":"Promise bridge: bun's test runner takes promises; each case runs the race of two model copies over the memory doubles to one"},
     {"file":"cmd/digest/server.test.ts","rule":"effect/noEffectRunInTests","reason":"Promise bridge: the state directories' source is installed for one synchronous read and put back (acquireUseRelease run to one), and sim/'s path read from this file's URL"},
     {"file":"mods/digest/filestore/page.ts","rule":"effect/noNodeBuiltinImport","reason":"file store adapter: the page's data.js is written to a sibling and renamed over it (node:fs/promises), so an open page never reads half of it"},
     {"file":"cmd/digest/export.test.ts","rule":"effect/noAsyncFunction","reason":"Promise bridge: bun's test runner takes promises; each case awaits the export over a scratch log"},

@@ -20,7 +20,7 @@ import { QuestionStore, QuestionsUnreadable } from "../service.ts"
 /** The plugin's storage, as the plugin context provides it. */
 export interface Storage {
   readonly get: (key: string) => Effect.Effect<unknown>
-  readonly setIf: (key: string, value: Schema.Json, rev: number | undefined) => Effect.Effect<boolean>
+  readonly setIf: (key: string, value: Schema.Json, rev?: number) => Effect.Effect<boolean>
   readonly remove: (key: string) => Effect.Effect<void>
   readonly scan: (options: {
     readonly prefix: string
@@ -67,11 +67,15 @@ export const layer = (storage: Storage) =>
           value === undefined
             ? Effect.succeed(EMPTY)
             : decode(value).pipe(
-                Effect.map((sheet) => ({ ...sheet, rev: sheet.rev ?? 0 })),
+                Effect.map((sheet) => ({ ...sheet, rev: Option.getOrElse(Option.fromUndefinedOr(sheet.rev), () => 0) })),
                 Effect.mapError((error) => new QuestionsUnreadable({ message: `the questions of ${sessionID} do not read: ${error.message}` }))),
         ),
       ),
-    writeIf: (sessionID, sheet, rev) => storage.setIf(keyOf(sessionID), jsonOf(sheet, (rev ?? 0) + 1), rev),
+    writeIf: (sessionID, sheet, rev) =>
+      Option.match(rev, {
+        onNone: () => storage.setIf(keyOf(sessionID), jsonOf(sheet, 1)),
+        onSome: (read) => storage.setIf(keyOf(sessionID), jsonOf(sheet, read + 1), read),
+      }),
     remove: (sessionID) => storage.remove(keyOf(sessionID)),
     sessions: Effect.gen(function* () {
       const found: Array<string> = []
@@ -90,9 +94,12 @@ export class NoConditionalWrite extends Schema.TaggedError<NoConditionalWrite>()
 
 /** The sheets in the plugin context's storage; a fork without `storage.setIf` fails the plugin's start. */
 export const fromContext = (ctx: Plugin.Context): Layer.Layer<QuestionStore, NoConditionalWrite> =>
-  Predicate.isFunction(Reflect.get(ctx.storage, "setIf"))
-    ? layer(ctx.storage)
-    : Layer.effect(
+  // The types say it is there; an older fork's storage, loaded under them, has none.
+  Option.match(Option.liftPredicate(ctx.storage, (storage) => Predicate.isFunction(storage.setIf)), {
+    onSome: layer,
+    onNone: () =>
+      Layer.effect(
         QuestionStore,
         Effect.fail(new NoConditionalWrite({ message: "questions: this OpenCode build has no storage.setIf, so an answer cannot close its question once; install the fork built with the dotfiles that need it" })),
-      )
+      ),
+  })

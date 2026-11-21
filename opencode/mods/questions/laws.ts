@@ -1,7 +1,7 @@
 // What every implementation of QuestionStore and Courier owes, as shared test
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, type Layer, type Scope } from "effect"
+import { Effect, type Layer, Option, type Scope } from "effect"
 import { EMPTY, type Sheet } from "./question.ts"
 import { letterOf, type Letter } from "./reply.ts"
 import { Courier, QuestionStore } from "./service.ts"
@@ -49,9 +49,9 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          expect(yield* run((store) => store.writeIf("ses_a", one, undefined))).toBe(true)
+          expect(yield* run((store) => store.writeIf("ses_a", one, Option.none()))).toBe(true)
           expect(yield* run((store) => store.read("ses_a"))).toEqual({ ...one, rev: 1 })
-          expect(yield* run((store) => store.writeIf("ses_a", two, 1))).toBe(true)
+          expect(yield* run((store) => store.writeIf("ses_a", two, Option.some(1)))).toBe(true)
           expect(yield* run((store) => store.read("ses_a"))).toEqual({ ...two, rev: 2 })
           expect(yield* run((store) => store.read("ses_b"))).toEqual(EMPTY)
         }),
@@ -61,14 +61,14 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.writeIf("ses_a", one, undefined))
+          yield* run((store) => store.writeIf("ses_a", one, Option.none()))
           // Another writer read none stored, or the sheet before its last write: both lost.
-          expect(yield* run((store) => store.writeIf("ses_a", two, undefined))).toBe(false)
-          expect(yield* run((store) => store.writeIf("ses_a", two, 0))).toBe(false)
-          expect(yield* run((store) => store.writeIf("ses_a", two, 2))).toBe(false)
+          expect(yield* run((store) => store.writeIf("ses_a", two, Option.none()))).toBe(false)
+          expect(yield* run((store) => store.writeIf("ses_a", two, Option.some(0)))).toBe(false)
+          expect(yield* run((store) => store.writeIf("ses_a", two, Option.some(2)))).toBe(false)
           expect(yield* run((store) => store.read("ses_a"))).toEqual({ ...one, rev: 1 })
           // None stored has no rev to match.
-          expect(yield* run((store) => store.writeIf("ses_b", two, 0))).toBe(false)
+          expect(yield* run((store) => store.writeIf("ses_b", two, Option.some(0)))).toBe(false)
           expect(yield* run((store) => store.read("ses_b"))).toEqual(EMPTY)
         }),
       ))
@@ -77,8 +77,8 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.writeIf("ses_a", one, undefined))
-          const both = yield* Effect.all([run((store) => store.writeIf("ses_a", two, 1)), run((store) => store.writeIf("ses_a", one, 1))], { concurrency: "unbounded" })
+          yield* run((store) => store.writeIf("ses_a", one, Option.none()))
+          const both = yield* Effect.all([run((store) => store.writeIf("ses_a", two, Option.some(1))), run((store) => store.writeIf("ses_a", one, Option.some(1)))], { concurrency: "unbounded" })
           expect(both.filter(Boolean)).toHaveLength(1)
           expect((yield* run((store) => store.read("ses_a"))).rev).toBe(2)
         }),
@@ -88,8 +88,8 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.writeIf("ses_a", one, undefined))
-          yield* run((store) => store.writeIf("ses_b", two, undefined))
+          yield* run((store) => store.writeIf("ses_a", one, Option.none()))
+          yield* run((store) => store.writeIf("ses_b", two, Option.none()))
           expect((yield* run((store) => store.sessions)).toSorted()).toEqual(["ses_a", "ses_b"])
         }),
       ))
@@ -98,13 +98,13 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.writeIf("ses_a", one, undefined))
+          yield* run((store) => store.writeIf("ses_a", one, Option.none()))
           yield* run((store) => store.remove("ses_a"))
           expect(yield* run((store) => store.read("ses_a"))).toEqual(EMPTY)
           expect(yield* run((store) => store.sessions)).toEqual([])
           yield* run((store) => store.remove("ses_a"))
           // Removed, it is absent again: a write at none stored lands.
-          expect(yield* run((store) => store.writeIf("ses_a", two, undefined))).toBe(true)
+          expect(yield* run((store) => store.writeIf("ses_a", two, Option.none()))).toBe(true)
         }),
       ))
 
@@ -113,7 +113,7 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
         Effect.gen(function* () {
           const probe = yield* make
           const run = using(probe)
-          yield* run((store) => store.writeIf("ses_a", one, undefined))
+          yield* run((store) => store.writeIf("ses_a", one, Option.none()))
           yield* probe.spoil("ses_a")
           const failure = yield* run((store) => store.read("ses_a")).pipe(Effect.flip)
           expect(failure._tag).toBe("QuestionsUnreadable")

@@ -93,7 +93,7 @@ const start = (options: Record<string, unknown> = {}, externals: Parameters<type
         Effect.orDie,
       )
     /** The RPC's `answer`, as the digest page calls it. */
-    const answer = (input: unknown) => Effect.suspend(() => Option.match(Option.fromUndefinedOr(rpc[QUEUE.id]?.answer), { onNone: () => Effect.die(new Error("no answer method")), onSome: (each) => each(input) }))
+    const answer = (input: Parameters<Handler>[0]) => Effect.suspend(() => Option.match(Option.fromUndefinedOr(rpc[QUEUE.id]?.answer), { onNone: () => Effect.die(new Error("no answer method")), onSome: (each) => each(input) }))
     return { tool, call, fail, get, deleteSession, reply, sent, answer }
   })
 
