@@ -13,8 +13,8 @@ const BOOT: App.BootOptions = { file: FILE, plugins: ["cmd/prime"], width: 100, 
 const model: Model = ({ step }) => [[text("Done.")]][step] ?? []
 
 App.effectTest(
-  "a boot past its CPU fails, saying so, and closes its app: no route plugin's navigate is left for the next boot",
-  Effect.flip(App.bootWithin(BOOT, 0)).pipe(
+  "a boot past its CPU on a settled host fails, saying so, and closes its app: no route plugin's navigate is left for the next boot",
+  Effect.flip(App.bootWithin(BOOT, 0, Effect.succeed({ load: 3, cores: 12 }))).pipe(
     Effect.map((error) => {
       expect(error.message).toContain("past the 0 ms of CPU a boot has")
       expect(Option.isNone(router().navigate)).toBe(true)

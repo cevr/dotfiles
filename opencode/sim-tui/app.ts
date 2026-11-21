@@ -17,13 +17,19 @@
 //   modification time, which no fake timer reaches.
 // - `settle` waits on events, never on time: no request in flight, every
 //   queued event sent and the client given turns to read it, and two renders
-//   in a row equal. It counts passes, and fails naming what never came to rest.
+//   in a row equal. It counts passes, and fails naming what never came to rest:
+//   everything it waits on is in this process, so its passes hold on any host.
+// - What waits on real I/O (the boot's plugins, the host's own loader reading
+//   them; the close's server and folders) waits in wall time (`within`), never
+//   in a count of passes: on a loaded host a plugin's import outlasted 10 000
+//   passes and the boot said the route plugin never loaded.
+// - The boot's CPU time is judged only on a settled host (sim/seed.ts
+//   `cpuVerdict`); past its limit on a loaded one it is reported, not judged.
 import "@opentui/solid/preload"
 import "@opencode-tui/test/preload.ts"
 import { jest } from "bun:test"
 import * as NodeServices from "@effect/platform-node/NodeServices"
-import { Clock, Config, ConfigProvider, Console, Data, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { Clock, Config, ConfigProvider, Console, Data, Effect, Fiber, FileSystem, Option, Path, Schema } from "effect"
 import { createAppFixture } from "@opencode-tui/test/fixture/app.ts"
 import { createFetch } from "@opencode-tui/test/fixture/tui-client.ts"
 import * as TuiClock from "../decider/tui-clock.ts"
@@ -33,6 +39,7 @@ import { MockTreeSitterClient } from "@opentui/core/testing"
 import { effectTest } from "./effect-test.ts"
 import * as Server from "./server.ts"
 import * as Seed from "../sim/seed.ts"
+import { wallTime } from "../sim/wall-clock.ts"
 import { router } from "./route/registry.ts"
 
 /** Where every seed's virtual clock starts: 2026-11-04 15:00 UTC, a Wednesday afternoon. */
@@ -48,6 +55,13 @@ export const CLOSE_TEST = "sim-tui: the app closes and the process gets its real
 export const BOOT_TIMEOUT_MS = 120_000
 /** The last test closes the app; its finalizers run in no virtual time. */
 const CLOSE_TIMEOUT_MS = 30_000
+/**
+ * The wall time a boot waits for the TUI to say it is ready and every plugin to load (`within`): three quarters of
+ * the boot test's timeout, so the boot fails naming what never loaded before bun's timeout cuts it unnamed.
+ */
+export const LOAD_DEADLINE_MS = (BOOT_TIMEOUT_MS * 3) / 4
+/** The wall time a close waits for the app to shut down, its virtual time moved (`close`): two thirds of the close test's timeout. */
+const CLOSE_DEADLINE_MS = (CLOSE_TIMEOUT_MS * 2) / 3
 
 /**
  * A simulated TUI file's runner: sim/seed.ts's, on the file's first `count` seeds. A file whose
@@ -63,9 +77,9 @@ export const runner = (file: string, count: number) => {
   }
 }
 /**
- * The CPU time a file's first boot may take, judged on any host as `sim/seed.ts` judges a file's
- * seeds: the boot waits on no real clock, so on a quiet host its wall time is its CPU time, and on
- * a loaded one the wall time is the host's. The wall time is reported beside it, never judged.
+ * The CPU time a file's first boot may take, judged as `sim/seed.ts` judges a file's seeds: on a
+ * settled host only (`cpuVerdict`), since on a loaded one the same boot takes more CPU (2.7-3.0 s at
+ * load 8 on 12 cores, 3.4-3.8 s at load 12-55). The wall time is reported beside it, never judged.
  */
 export const BOOT_LIMIT_MS = 4_000
 /** Render passes `settle` may take before it says what never came to rest. */
@@ -214,15 +228,32 @@ const cpuNow = () => {
   return (usage.user + usage.system) / 1_000
 }
 
-/** The 1-minute load average: `/proc/loadavg` on Linux, `sysctl vm.loadavg` on macOS. */
-const loadNow = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  const text = yield* fs.readFileString("/proc/loadavg").pipe(
-    Effect.catch(() => Stream.mkString(spawner.streamString(ChildProcess.make("sysctl", ["-n", "vm.loadavg"], { stdin: "ignore", forceKillAfter: "3 seconds" })))),
-  )
-  return Number(text.replaceAll(/[{}]/g, " ").trim().split(/\s+/)[0] ?? "0") || 0
-}).pipe(Effect.orElseSucceed(() => 0))
+/** Something a wait waits on (`within`): what its failure says when it is not done, and whether it is. */
+export interface Awaited {
+  readonly what: string
+  readonly done: () => boolean
+}
+
+/**
+ * Runs `step` until every one of `awaited` is done, or until `deadlineMs` of wall time has passed (`wallTime`: a
+ * child's sleep, which bun's fake timers cannot move), and answers the passes it ran; past the deadline it fails
+ * naming the first not done, the wall time it waited and its passes. For a wait on real I/O: a count of passes
+ * alone gave up however long each real turn took, and a loaded host's import of a plugin outlasted 10 000 of them.
+ */
+export const within = <E, R>(awaited: ReadonlyArray<Awaited>, step: Effect.Effect<void, E, R>, deadlineMs: number) =>
+  Effect.gen(function* () {
+    const box = { over: false }
+    const passes = { run: 0 }
+    const all = () => awaited.every((each) => each.done())
+    const timer = yield* Effect.forkChild(Effect.andThen(wallTime(deadlineMs), Effect.sync(() => (box.over = true))))
+    const run = Effect.gen(function* () {
+      for (; !all() && !box.over; passes.run++) yield* step
+    })
+    yield* Effect.ensuring(run, Fiber.interrupt(timer))
+    const missing = awaited.find((each) => !each.done())
+    if (missing) return yield* fail(`${missing.what} within ${deadlineMs} ms of wall time (${passes.run} passes)`)
+    return passes.run
+  })
 
 /** The virtual clock our plugins read (decider/tui-clock.ts), on the fake timers, each timer it sets recorded. */
 const simClock = (record: (entry: TraceEntry) => void, began: () => number): TuiClock.Clock => ({
@@ -525,16 +556,26 @@ const close = (app: Booted) =>
     void app.fixture[Symbol.asyncDispose]().finally(() => {
       done.closed = true
     })
-    // Nothing renders any more: time moves and the process takes its turns, no frame drawn.
-    for (let waited = 0; !done.closed && waited < UNTIL_MS; waited += POLL_MS) {
-      jest.advanceTimersByTime(POLL_MS)
+    // Nothing renders any more: time moves, to UNTIL_MS of virtual time, and the process takes its turns, no frame
+    // drawn, until it has shut down or CLOSE_DEADLINE_MS of wall time has passed (its server and folders are real I/O).
+    const moved = { ms: 0 }
+    const step = Effect.gen(function* () {
+      if (moved.ms < UNTIL_MS) {
+        jest.advanceTimersByTime(POLL_MS)
+        moved.ms += POLL_MS
+      }
       for (let turn = 0; turn < PASSES && !done.closed; turn++) yield* Effect.yieldNow
-    }
-    harness.release()
-    harness.booted = Option.none()
-    router().navigate = Option.none()
-    router().tabs = Option.none()
-    if (!done.closed) return yield* fail(`${app.options.file}: the app did not shut down within ${UNTIL_MS} ms`)
+    })
+    yield* within([{ what: `${app.options.file}: the app did not shut down in ${UNTIL_MS} ms of virtual time`, done: () => done.closed }], step, CLOSE_DEADLINE_MS).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          harness.release()
+          harness.booted = Option.none()
+          router().navigate = Option.none()
+          router().tabs = Option.none()
+        }),
+      ),
+    )
   })
 
 /** The router's navigate the route plugin lent (route/registry.ts). */
@@ -544,7 +585,8 @@ const navigateTo = (sessionID: string) =>
     onSome: (navigate) => Effect.sync(() => navigate(sessionID)),
   })
 
-const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs: number) {
+const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs: number, hostLoad: Effect.Effect<Seed.HostLoad>) {
+  const before = yield* hostLoad
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
@@ -633,17 +675,27 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs
   // so the next boot starts alone; an app left up kept rendering, and the next boot took its navigate for its own.
   yield* Effect.gen(function* () {
     // Ready, then every plugin loaded: the route plugin, loaded last, has lent its navigate.
-    for (let pass = 0; pass < PASSES * 25 && !(ready.done && Option.isSome(router().navigate)); pass++) yield* pump(app, true, true)
-    if (!ready.done) return yield* fail("the TUI never said it was ready")
-    if (Option.isNone(router().navigate)) return yield* fail("the route plugin (sim-tui/route) never loaded")
+    const loads: ReadonlyArray<Awaited> = [
+      { what: "the TUI never said it was ready", done: () => ready.done },
+      { what: "the route plugin (sim-tui/route) never loaded", done: () => Option.isSome(router().navigate) },
+    ]
+    const passes = yield* within(loads, pump(app, true, true), LOAD_DEADLINE_MS)
     yield* settleOn(app)
     const took = (yield* realNow) - began
     const used = cpuNow() - cpu
-    const load = yield* loadNow
-    yield* Console.log(`sim-tui boot ${options.file}: cpu ${Math.round(used)} ms of its ${limitMs}, wall ${Math.round(took)} ms (reported, not judged; load ${load.toFixed(1)}, ${navigator.hardwareConcurrency} cores)`)
+    const after = yield* hostLoad
+    // The highest of the two reads: the 1-minute load lags the host's, either way.
+    const read: Seed.HostLoad = { load: Math.max(before.load, after.load), cores: after.cores }
+    yield* Console.log(
+      `sim-tui boot ${options.file}: cpu ${Math.round(used)} ms of its ${limitMs}, ${passes} passes to load, wall ${Math.round(took)} ms (reported, not judged; load ${before.load.toFixed(1)} at the start, ${after.load.toFixed(1)} at the end, ${after.cores} cores)`,
+    )
     jest.setSystemTime(wall + took)
-    if (used > limitMs)
-      return yield* fail(`${options.file}: the boot took ${Math.round(used)} ms of CPU time (${Math.round(took)} ms of wall time), past the ${limitMs} ms of CPU a boot has`)
+    const verdict = Seed.cpuVerdict(used, limitMs, read.load, read.cores)
+    if (verdict === "unjudged") yield* Console.log(Seed.unjudgedLine(options.file, `boot: ${Math.round(used)} ms of CPU time, past the ${limitMs} ms a boot has`, read))
+    if (verdict === "over")
+      return yield* fail(
+        `${options.file}: the boot took ${Math.round(used)} ms of CPU time (${Math.round(took)} ms of wall time), past the ${limitMs} ms of CPU a boot has, on a settled host (load ${read.load.toFixed(1)}, ${read.cores} cores)`,
+      )
   }).pipe(Effect.tapError(() => Effect.ignore(close(app))))
   harness.booted = Option.some(app)
   return app
@@ -653,7 +705,7 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs
 export const shutdown = Effect.gen(function* () {
   if (Option.isSome(harness.booted)) {
     const app = harness.booted.value
-    const load = yield* loadNow
+    const { load } = yield* Seed.hostLoad
     const { wall, cpu, seeds } = app.spent
     yield* Console.log(`sim-tui seeds ${app.options.file}: ${seeds} seed runs, cpu ${Math.round(cpu)} ms (sim/seed.ts judges a file's seeds on it), wall ${Math.round(wall)} ms (reported, not judged; load ${load.toFixed(1)})`)
     yield* close(app)
@@ -666,15 +718,16 @@ export const shutdown = Effect.gen(function* () {
 export const boot = (options: BootOptions) => bootWithin(options, BOOT_LIMIT_MS)
 
 /**
- * `boot` with `limitMs` of CPU for the boot in place of BOOT_LIMIT_MS: for the harness's own test of a boot that
- * fails its check (sim-tui/boot-fail.test.tsx), never a file's way to more time.
+ * `boot` with `limitMs` of CPU for the boot in place of BOOT_LIMIT_MS, and `host` read for the load in place of this
+ * host's: for the harness's own tests of a boot past its check (sim-tui/boot-fail.test.tsx, boot-loaded.test.tsx),
+ * never a file's way to more time.
  */
-export const bootWithin = (options: BootOptions, limitMs: number) =>
+export const bootWithin = (options: BootOptions, limitMs: number, host: Effect.Effect<Seed.HostLoad> = Seed.hostLoad) =>
   Effect.gen(function* () {
     const found = harness.booted.pipe(Option.filter((app) => app.options.file === options.file))
     if (Option.isSome(found)) return found.value
     if (Option.isSome(harness.booted)) yield* close(harness.booted.value)
-    return yield* start(options, Math.min(limitMs, BOOT_LIMIT_MS))
+    return yield* start(options, Math.min(limitMs, BOOT_LIMIT_MS), host)
   }).pipe(Effect.provide(NodeServices.layer))
 
 export { effectTest } from "./effect-test.ts"

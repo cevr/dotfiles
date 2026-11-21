@@ -103,3 +103,24 @@ reported at its close (`sim-tui seeds <file>: …`). A seed costs 0.2–0.25 s o
 CPU (all threads: the JIT's helper threads run beside it), so a file runs the seed count
 that leaves a fifth of its budget free: 16 for prime-escape and prime-sidebar,
 3 a case for escape-states' five cases.
+
+CPU time is judged only on a settled host, its 1-minute load (the higher of
+the reads at the start and the end) under the cores (`Seed.cpuVerdict`): past
+them the same boot takes more CPU (own-tabs: 2.7–3.0 s at load 8 on 12 cores,
+3.4–3.8 s at load 12–55, 4.0–4.3 s in a deep run at load 40–51). Past its
+limit on a loaded host a boot or a file's seeds pass, printing
+`sim-unjudged <file> <what>, on a loaded host (…): reported, not judged`; the
+acceptance run's swarm reads that line and owes the suite, `waits for a
+settled host`, so its closing line counts it.
+
+## Waits on real I/O
+
+The boot waits for the TUI to say it is ready and for every plugin to load
+(the host's loader imports them, real I/O), and a close for the app's server
+and folders to go. Both wait in wall time (`within`: a child's sleep, which no
+fake timer moves): 90 s for a boot (three quarters of its test's 120 s), 20 s
+for a close, failing with what never loaded, the wall time waited and the
+passes run. A count of passes alone gave up however long each real turn took:
+on a loaded host the route plugin's import outlasted 10 000 passes. A calm
+boot loads in under 20 passes, reported on its boot line. A settle's 400
+passes stay a count: everything it waits on is in this process.
