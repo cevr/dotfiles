@@ -1877,13 +1877,16 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const ran = await spawnAll(w.app, w.env, ["feat/a", "feat/b", "fix/c", "d"].map((branch) => [SCRIPT, "create", branch]))
       for (const each of ran) expect(each.code, each.err).toBe(0)
       await settle(...ran.map((each) => each.err))
-      // One advance at a time: the base warms once more, however many creates found it unwarmed.
-      expect(warms().filter((line) => line.startsWith(`${w.app} `))).toEqual([`${w.app} free`, `${w.app} free`])
+      // One advance at a time: the base warms once more, however many creates found it unwarmed. (Whether the base's
+      // lock was free during a build is not read here: a copy beside it holds it shared, and that is allowed; the seven
+      // creates test shows no copy waits for a warm.)
+      const where = (line: string) => line.replace(/ (free|held)$/, "")
+      expect(warms().filter((line) => where(line) === w.app)).toHaveLength(2)
       const paths = ran.map((each) => lines(each.out).at(-1) ?? "")
-      // A copy made before the base's warm ended carries no marker and builds itself, once, with the lock free; one made after carries the build.
-      const own = warms().filter((line) => !line.startsWith(`${w.app} `))
+      // A copy made before the base's warm ended carries no marker and builds itself, once; one made after carries the build.
+      const own = warms().map(where).filter((path) => path !== w.app)
       expect(new Set(own).size).toBe(own.length)
-      for (const line of own) expect(paths.map((path) => `${path} free`)).toContain(line)
+      for (const path of own) expect(paths).toContain(path)
     },
     60_000,
   )
@@ -1921,6 +1924,9 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       // refresh warms with the base's lock free (2026-11-21).
       expect(warms()).toEqual([`${w.app} free`])
       const sorted = (items: ReadonlyArray<string>) => [...items].sort()
+      // A workspace's build may run while the advance its create started holds the base's lock for its move (allowed:
+      // the build reads the workspace only), so a workspace's line is read for its path alone.
+      const where = (line: string) => (line.startsWith(`${w.app} `) ? line : line.replace(/ (free|held)$/, ""))
       // main moved: the copy is of the base as it was; the workspace installs and builds itself, and the advance the
       // create started after its copy moves, installs and warms the base, the warm with the base's lock free.
       const second = w.push("main", { "bun.lock": "v2\n" })
@@ -1928,7 +1934,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(head(w.app)).toBe(second)
       expect(head(a)).toBe(second)
       expect(sorted(installed())).toEqual(sorted([w.app, a, w.app]))
-      expect(sorted(warms())).toEqual(sorted([`${w.app} free`, `${a} free`, `${w.app} free`]))
+      expect(sorted(warms().map(where))).toEqual(sorted([`${w.app} free`, a, `${w.app} free`]))
 
       // Inside the window: no advance; the lane starts at today's main and installs and builds itself.
       const third = w.push("main", { "bun.lock": "v3\n" })
@@ -1950,7 +1956,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const c = w.create(w.app, "feat/c")
       expect(head(w.app)).toBe(third)
       expect(sorted(installed().slice(4))).toEqual(sorted([c, w.app]))
-      expect(sorted(warms().slice(4))).toEqual(sorted([`${c} free`, `${w.app} free`]))
+      expect(sorted(warms().slice(4).map(where))).toEqual(sorted([c, `${w.app} free`]))
       expect(head(c)).toBe(third)
     },
     60_000,
