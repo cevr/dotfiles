@@ -12,6 +12,15 @@
 //   and on a loaded one (the gate runs every file at once, at a load past the
 //   cores) the wall time is the host's, not the file's. The wall time is
 //   reported beside it, never judged.
+// - CPU time is judged only on a settled host, its 1-minute load under the
+//   cores (`cpuVerdict`): past them the process's threads wait their turn on
+//   slower cores and the same work takes more CPU (a sim-tui boot measured
+//   2.7-3.0 s of CPU at load 8 on 12 cores, 3.4-3.8 s at load 12-55, and
+//   4.0-4.3 s in a deep run at load 40-51). Past its budget on a loaded host a
+//   file passes, printing `sim-unjudged <file> <what>` (`UNJUDGED`): the
+//   acceptance run reads that line and owes the file, `waits for a settled
+//   host`, so its closing line counts it and a real slowdown cannot hide
+//   behind a host that is always busy.
 // - A test (`seeded`, and `effect`) has `TIMEOUT_MS` of wall time, the
 //   runner's own, with bun's timeout `TIMEOUT_GRACE_MS` past it. The body runs
 //   raced against the runner's timeout, so a test past it is
@@ -42,6 +51,7 @@
 // `--parallel` gives each file its own process, so the process's CPU time over
 // a seed is that seed's.
 import { expect as bunExpect, test } from "bun:test"
+import { availableParallelism, loadavg } from "node:os"
 import { Cause, Clock, Config, Console, Data, Effect, Exit, Fiber, Option } from "effect"
 import found from "./seeds.json"
 import { wallTime } from "./wall-clock.ts"
@@ -60,6 +70,33 @@ export const TIMEOUT_GRACE_MS = 5_000
 export const EXPECTS = "sim-expects"
 /** The prefix of the line a swarm prints after each seed that passed. */
 export const SWARMED = "sim-swarm"
+/** The prefix of the line a CPU budget past its limit on a loaded host prints: `sim-unjudged <file> <what>` (`unjudgedLine`). */
+export const UNJUDGED = "sim-unjudged"
+
+/** The host's 1-minute load and its cores, as a CPU budget reads them (`cpuVerdict`). */
+export interface HostLoad {
+  readonly load: number
+  readonly cores: number
+}
+/** This host's load and cores. */
+export const hostLoad: Effect.Effect<HostLoad> = Effect.sync(() => ({ load: loadavg()[0] ?? 0, cores: availableParallelism() }))
+
+/** How a CPU budget holds: within its limit, past it on a settled host (judged: the test fails), or past it on a loaded one (reported, not judged). */
+export type CpuVerdict = "within" | "over" | "unjudged"
+
+/**
+ * A CPU budget's verdict: `cpuMs` against `limitMs`, judged only when the 1-minute `load` (the highest read over what
+ * was measured) is under the host's `cores`; past the limit on a host at or past its cores it is reported, not judged.
+ */
+export const cpuVerdict = (cpuMs: number, limitMs: number, load: number, cores: number): CpuVerdict => {
+  if (cpuMs <= limitMs) return "within"
+  if (load < cores) return "over"
+  return "unjudged"
+}
+
+/** The line a budget past its limit on a loaded host prints, which scripts/accept-plan.ts `swarmRead` reads back. */
+export const unjudgedLine = (file: string, what: string, host: HostLoad) =>
+  `${UNJUDGED} ${file} ${what}, on a loaded host (load ${host.load.toFixed(1)}, ${host.cores} cores): reported, not judged`
 
 /** The seeds a swarm once found failing, by file as `bun test` names it from opencode/ (`sim/seeds.json`). */
 export const FOUND: Readonly<Record<string, ReadonlyArray<number>>> = found
@@ -149,10 +186,11 @@ const cpuMs = Effect.sync(() => {
   return (used.user + used.system) / 1000
 })
 
-/** What a file's seeds have spent so far, ms. */
+/** What a file's seeds have spent so far, ms; `unjudged` once they passed the budget on a loaded host, for the rest of the file. */
 export interface Spent {
   cpu: number
   wall: number
+  unjudged?: boolean
 }
 
 /** The failure of a file past its budget: the CPU time judged, the wall time beside it. */
@@ -161,9 +199,18 @@ export const overBudget = (file: string, spent: Spent, budgetMs: number) =>
 
 /**
  * One seed of a body, its time charged to `spent`: its expect calls, or the failure naming the seed, or the file's
- * once its seeds are past `budgetMs` of CPU time.
+ * once its seeds are past `budgetMs` of CPU time on a settled `host` (`cpuVerdict`). Past it on a loaded host the
+ * file is reported (`unjudgedLine`) and not judged again: its CPU time so far holds the load's.
  */
-export const once = <E>(file: string, spent: Spent, name: string, seed: number, body: (run: Seeded) => Effect.Effect<void, E>, budgetMs = BUDGET_MS) =>
+export const once = <E>(
+  file: string,
+  spent: Spent,
+  name: string,
+  seed: number,
+  body: (run: Seeded) => Effect.Effect<void, E>,
+  budgetMs = BUDGET_MS,
+  host: Effect.Effect<HostLoad> = hostLoad,
+) =>
   Effect.gen(function* () {
     const count = { calls: 0 }
     const began = yield* Clock.currentTimeMillis
@@ -173,7 +220,12 @@ export const once = <E>(file: string, spent: Spent, name: string, seed: number, 
     spent.wall += (yield* Clock.currentTimeMillis) - began
     if (Exit.isFailure(exit))
       return yield* Effect.fail(new SeedFailed({ message: `SIM_SEED=${seed} bun test ${file}: ${name}\n${Cause.pretty(exit.cause)}` }))
-    if (spent.cpu > budgetMs) return yield* Effect.fail(new SeedFailed({ message: overBudget(file, spent, budgetMs) }))
+    if (spent.cpu > budgetMs && !spent.unjudged) {
+      const read = yield* host
+      if (cpuVerdict(spent.cpu, budgetMs, read.load, read.cores) === "over") return yield* Effect.fail(new SeedFailed({ message: overBudget(file, spent, budgetMs) }))
+      spent.unjudged = true
+      yield* Console.log(unjudgedLine(file, `seeds: ${Math.round(spent.cpu)} ms of CPU time, past the ${budgetMs} ms a simulated file has`, read))
+    }
     return count.calls
   })
 

@@ -6,7 +6,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices"
 import { Effect, Exit, FileSystem, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { TestClock } from "effect/testing"
 import * as Seed from "./seed.ts"
 
@@ -24,20 +24,52 @@ const busy = (ms: number) =>
     }
   })
 
-/** What `body` on seeds 1 and 2 under `budgetMs` spent, and the message it failed with ("" when it passed). */
-const run = (body: Effect.Effect<unknown>, budgetMs: number) =>
+/** A settled host and a loaded one, as the budget reads them: the judgement never depends on the host the test runs on. */
+const SETTLED: Seed.HostLoad = { load: 3, cores: 12 }
+const LOADED: Seed.HostLoad = { load: 40, cores: 12 }
+
+/** What `body` on seeds 1 and 2 under `budgetMs` on `host` spent, and the message it failed with ("" when it passed). */
+const run = (body: Effect.Effect<unknown>, budgetMs: number, host: Seed.HostLoad = SETTLED) =>
   Effect.gen(function* () {
     const spent: Seed.Spent = { cpu: 0, wall: 0 }
-    const exit = yield* Effect.exit(Effect.forEach([1, 2], (seed) => Seed.once(FILE, spent, "probe", seed, () => Effect.asVoid(body), budgetMs)))
+    const exit = yield* Effect.exit(Effect.forEach([1, 2], (seed) => Seed.once(FILE, spent, "probe", seed, () => Effect.asVoid(body), budgetMs, Effect.succeed(host))))
     return { spent, failed: Exit.match(exit, { onFailure: String, onSuccess: () => "" }) }
   })
 
+describe("a CPU budget's verdict", () => {
+  test("is judged under the cores, reported at or past them, and within the limit at any load", () => {
+    expect([
+      Seed.cpuVerdict(4_001, 4_000, 3, 12),
+      Seed.cpuVerdict(4_001, 4_000, 11.9, 12),
+      Seed.cpuVerdict(4_001, 4_000, 12, 12),
+      Seed.cpuVerdict(4_262, 4_000, 48, 12),
+      Seed.cpuVerdict(4_000, 4_000, 48, 12),
+      Seed.cpuVerdict(2_700, 4_000, 3, 12),
+    ]).toEqual(["over", "over", "unjudged", "unjudged", "within", "within"])
+  })
+
+  test("a reported budget's line names its file, what passed its limit and the host's load", () => {
+    expect(Seed.unjudgedLine("cmd/a.sim.test.tsx", "boot: 4262 ms of CPU time, past the 4000 ms a boot has", { load: 41.24, cores: 12 })).toBe(
+      "sim-unjudged cmd/a.sim.test.tsx boot: 4262 ms of CPU time, past the 4000 ms a boot has, on a loaded host (load 41.2, 12 cores): reported, not judged",
+    )
+  })
+})
+
 describe("the seed runner's budget", () => {
-  Seed.effect("a file whose seeds spend more CPU than the budget fails, naming its CPU and wall time",
+  Seed.effect("a file whose seeds spend more CPU than the budget on a settled host fails, naming its CPU and wall time",
     Effect.gen(function* () {
       const { spent, failed } = yield* run(busy(40), 60)
       expect(spent.cpu).toBeGreaterThan(60)
       expect(failed).toMatch(/sim\/budget-probe\.sim\.test\.ts: its seeds took \d+ ms of CPU time \(\d+ ms of wall time\), past the 60 ms of CPU a simulated file has/)
+    }),
+  )
+
+  Seed.effect("past the budget on a loaded host, a file passes, reported and not judged again for its other seeds",
+    Effect.gen(function* () {
+      const { spent, failed } = yield* run(busy(40), 30, LOADED)
+      expect(spent.cpu).toBeGreaterThan(60)
+      expect(spent.unjudged).toBe(true)
+      expect(failed).toBe("")
     }),
   )
 
