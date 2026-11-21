@@ -289,6 +289,10 @@ export type Externals =
 export type Background = (sessionID: string) => number
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+/** A directory as the host's session list takes it. */
+type Directory = NonNullable<NonNullable<Parameters<Plugin.Context["session"]["list"]>[0]>["directory"]>
+/** The sessions of one lane read for status: a lane holds a few, the newest first. */
+const SESSIONS_IN_LANE = 20
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type HostSession = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
 /** What the guard reads of the host's session record. */
@@ -371,6 +375,7 @@ export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background
     SessionsLive.layer(
       (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(stepSessionOf)),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
+      (directory) => ctx.session.list({ directory: directory as Directory, order: "desc", limit: SESSIONS_IN_LANE }).pipe(Effect.map((page) => page.data.map((session) => session.id))),
     ),
     ModelsLive.layer({
       session: (sessionID) =>

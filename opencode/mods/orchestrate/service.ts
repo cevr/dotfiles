@@ -10,6 +10,7 @@ import type { Calls, Held } from "./ledger.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
+import type { HeadSeen } from "./lost.ts"
 import type { Merge, UnitFiles, Verified } from "./tools.ts"
 import type { Transition } from "./unit-log.ts"
 
@@ -60,6 +61,8 @@ export class Sessions extends Context.Service<
     readonly lastWordsOf: (sessionID: string) => Effect.Effect<string | undefined>
     /** When the session's last turn ended (epoch ms), while no turn runs; none while it works, before it ran, or unread. */
     readonly idleSinceOf: (sessionID: string) => Effect.Effect<Option.Option<number>>
+    /** The sessions whose directory is `directory` (one a lane's agent started in, or moved to); none when unread. */
+    readonly inDirectory: (directory: string) => Effect.Effect<ReadonlyArray<string>>
   }
 >()("dotfiles-opencode/orchestrate/Sessions") {}
 
@@ -259,8 +262,30 @@ export class RunFiles extends Context.Service<
     readonly units: (runDir: string) => Effect.Effect<ReadonlyArray<UnitFiles>>
     readonly unit: (unitDir: string) => Effect.Effect<UnitFiles>
     readonly write: (path: string, text: string) => Effect.Effect<void, RunFileUnwritten>
+    /** When the file at `path` was last written (epoch ms); none when it is not there. */
+    readonly writtenAt: (path: string) => Effect.Effect<Option.Option<number>>
   }
 >()("dotfiles-opencode/orchestrate/RunFiles") {}
+
+/**
+ * Committed work and who is on it, as git, the files and the processes say at the call (lost.ts reads it). Never
+ * fails, never fetches, never writes in a lane: what cannot be read is none, or nothing.
+ * - `heads`: each of `heads` against the default branch `main` (a ref or commit) of `repo`, read in `repo` with the
+ *   objects of `lanes` borrowed read-only (`GIT_ALTERNATE_OBJECT_DIRECTORIES`), so a lane's commits are seen without a
+ *   fetch: on it, patch-equivalent, absent (its own commits not there) or unknown; and its commit time.
+ * - `touchedAt`: when the lane's HEAD last moved (its HEAD reflog's last write; epoch ms).
+ * - `held`: the paths of `lanes` some process has its working directory in, now.
+ * - `lands`: the commit times of `main`'s first-parent line in `repo` (epoch ms), newest first, at most `limit`.
+ */
+export class WorkGit extends Context.Service<
+  WorkGit,
+  {
+    readonly heads: (repo: string, main: string, lanes: ReadonlyArray<string>, heads: ReadonlyArray<string>) => Effect.Effect<ReadonlyMap<string, HeadSeen>>
+    readonly touchedAt: (lane: string) => Effect.Effect<Option.Option<number>>
+    readonly held: (lanes: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>>
+    readonly lands: (repo: string, main: string, limit: number) => Effect.Effect<ReadonlyArray<number>>
+  }
+>()("dotfiles-opencode/orchestrate/WorkGit") {}
 
 /**
  * What the other plugins hold for a session: its wakes, its open questions

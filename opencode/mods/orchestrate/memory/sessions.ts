@@ -16,9 +16,12 @@ export const layer = (sessions: Readonly<Record<string, Session>>) => {
     const session = Object.hasOwn(sessions, sessionID) ? sessions[sessionID] : undefined
     return session === undefined ? Effect.fail(`no session ${sessionID}`) : Effect.succeed(session)
   }
-  return OpenCodeSessions.layer(get, (sessionID) =>
-    get(sessionID).pipe(
-      Effect.map((session) => (session.lastWords === undefined ? [] : [{ type: "assistant", content: [{ type: "text", text: session.lastWords }] }])),
-    ),
+  return OpenCodeSessions.layer(
+    get,
+    (sessionID) =>
+      get(sessionID).pipe(
+        Effect.map((session) => (session.lastWords === undefined ? [] : [{ type: "assistant", content: [{ type: "text", text: session.lastWords }] }])),
+      ),
+    (directory) => Effect.succeed(Object.entries(sessions).flatMap(([id, session]) => (session.directory === directory ? [id] : []))),
   )
 }
