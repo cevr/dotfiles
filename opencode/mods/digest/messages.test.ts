@@ -11,6 +11,8 @@ const back = (unit: string, round: number, digest: Option.Option<string>, t = 10
   E.cases.HandBack.make({ v, t, root: "r", session: "s", role: "implementor", unit, round, verdict: "ready", file: Option.none(), digest })
 const item = (id: string, text: string, extra: Partial<{ state: string; level: "red" | "green"; unit: string; t: number }> = {}) =>
   E.cases.Item.make({
+    answer: Option.none(),
+    choices: Option.none(),
     v,
     t: extra.t ?? 20,
     root: "r",
@@ -56,7 +58,7 @@ describe("messages", () => {
     const asked = E.cases.Asked.make({ v, t: 5, root: "r", session: "s", id: "q1", question: "Keep the alias?", header: Option.none(), options: ["Keep", "Cut"], assume: "Keep" })
     const open = only([run("r", "demo"), asked])
     expect([open.level, open.messages[0]!.open, open.messages[0]!.kind]).toEqual(["need", true, "needs"])
-    const answered = E.cases.Answered.make({ v, t: 6, root: "r", session: "s", id: "q1", answer: "Cut", matches: false, question: Option.none(), assume: Option.none() })
+    const answered = E.cases.Answered.make({ via: Option.none(), v, t: 6, root: "r", session: "s", id: "q1", answer: "Cut", matches: false, question: Option.none(), assume: Option.none() })
     const done = only([run("r", "demo"), asked, answered])
     expect(done.level).toBe("none")
     expect(done.messages.map((message) => [message.kind, Option.getOrNull(message.decided)])).toEqual([["decided", [{ q: "Keep the alias?", assumed: "Keep", said: "Cut", matches: false }]]])

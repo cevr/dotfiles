@@ -3,6 +3,8 @@ import { Option } from "effect"
 import { byteLength, decodeLine, decodeLines, DigestEvent, digestLineOf, encodeLine, MAX_LINE, VERSION } from "./event.ts"
 
 const item = DigestEvent.cases.Item.make({
+  answer: Option.none(),
+  choices: Option.none(),
   v: VERSION,
   t: 1_000,
   root: "ses_root",
@@ -26,6 +28,14 @@ describe("a digest line", () => {
     const old = '{"_tag":"Item","v":1,"t":5,"root":"r","id":"a","text":"x","state":"done","owner":"mine"}'
     const read = decodeLine(old)
     expect(Option.map(read, (event) => event._tag === "Item" && Option.isNone(event.level))).toEqual(Option.some(true))
+  })
+
+  test("an answer line from before `via`, and an item from before `answer`, decode with none; new ones keep them", () => {
+    const answered = '{"_tag":"Answered","v":1,"t":5,"root":"r","session":"s","id":"q1","answer":"Keep it","matches":true}'
+    expect(Option.map(decodeLine(answered), (event) => event._tag === "Answered" && Option.isNone(event.via))).toEqual(Option.some(true))
+    expect(Option.map(decodeLine('{"_tag":"Item","v":1,"t":5,"root":"r","id":"a","text":"x","state":"needs-you","owner":"mine"}'), (event) => event._tag === "Item" && Option.isNone(event.answer))).toEqual(Option.some(true))
+    const given = encodeLine({ ...item, answer: Option.some("Friday") })
+    expect(Option.map(decodeLine(given), (event) => (event._tag === "Item" ? Option.getOrUndefined(event.answer) : undefined))).toEqual(Option.some("Friday"))
   })
 
   test("a newer line with a field this reader does not know decodes, the field dropped", () => {

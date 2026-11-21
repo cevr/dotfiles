@@ -14,7 +14,7 @@ const T = Date.parse("2026-11-20T12:00:00Z")
 const base = { v: VERSION, root: "ses_root" } as const
 const EVENTS = [
   DigestEvent.cases.Run.make({ ...base, t: T, host: "mac", repo: "demo", dir: Option.some("/nonexistent/run-1"), name: Option.some("run-1") }),
-  DigestEvent.cases.Item.make({ ...base, t: T + 1, id: "pay", text: "Pick the billing day.", state: "needs-you", owner: "mine", who: Option.none(), level: Option.some("red"), unit: Option.none() }),
+  DigestEvent.cases.Item.make({ answer: Option.none(), choices: Option.none(), ...base, t: T + 1, id: "pay", text: "Pick the billing day.", state: "needs-you", owner: "mine", who: Option.none(), level: Option.some("red"), unit: Option.none() }),
 ]
 
 /** data.js's global, read back as the page reads it. */

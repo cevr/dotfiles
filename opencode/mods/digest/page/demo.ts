@@ -39,7 +39,7 @@ const random = (start: number) => {
 const run = (root: string, repo: string, t: number) => E.cases.Run.make({ v, t, root, host: "mac", repo, dir: none, name: Option.some(repo) })
 const lane = (root: string, unit: string, purpose: string, t: number) => E.cases.Lane.make({ v, t, root, unit, purpose: Option.some(purpose), branch: Option.some(`feat/${unit}`), path: none })
 const item = (root: string, id: string, text: string, t: number, extra: { readonly state?: string; readonly level?: "red" | "amber" | "green"; readonly unit?: string } = {}) =>
-  E.cases.Item.make({ v, t, root, id, text, state: extra.state ?? "running", owner: "mine", who: none, level: Option.fromUndefinedOr(extra.level), unit: Option.fromUndefinedOr(extra.unit) })
+  E.cases.Item.make({ answer: Option.none(), choices: Option.none(), v, t, root, id, text, state: extra.state ?? "running", owner: "mine", who: none, level: Option.fromUndefinedOr(extra.level), unit: Option.fromUndefinedOr(extra.unit) })
 const back = (root: string, unit: string, round: number, t: number, digest: string) =>
   E.cases.HandBack.make({ v, t, root, session: `s-${unit}-${round}`, role: "implementor", unit, round, verdict: "ready", file: Option.some(`/runs/${root}/${unit}/round-${round}-request.md`), digest: Option.some(digest) })
 const verdict = (root: string, batch: string, round: number, t: number, units: ReadonlyArray<{ readonly unit: string; readonly round: number; readonly verdict: string }>, digest: string) =>
@@ -61,7 +61,7 @@ const harbor = (): ReadonlyArray<E> => {
     verdict(r, "batch-b", 1, NOW - 26 * H, [{ unit: "billing", round: 2, verdict: "accepted" }, { unit: "search", round: 1, verdict: "accepted" }], "Billing and search are accepted. Both land together this morning."),
     ask(r, "q1", "Keep the old CSV export for one more release? Two customers still download it weekly.", ["Keep it", "Cut it"], "Keep it", NOW - 20 * H),
     item(r, "importer", "The importer stops at row 4,812. A null currency in the 2019 archive breaks the parse; the unit waits for a decision on defaulting it.", NOW - 9 * H, { level: "red", unit: "importer" }),
-    E.cases.Answered.make({ v, t: NOW - 7 * H, root: r, session: "s-ask-q0", id: "q0", answer: "Weekly", matches: false, question: Option.some("How often should the archive import run?"), assume: Option.some("Nightly") }),
+    E.cases.Answered.make({ via: Option.none(), v, t: NOW - 7 * H, root: r, session: "s-ask-q0", id: "q0", answer: "Weekly", matches: false, question: Option.some("How often should the archive import run?"), assume: Option.some("Nightly") }),
     item(r, "search-ship", "Search ships to everyone. The index rebuild took 11 minutes and nothing timed out.", NOW - 5 * H, { state: "done", level: "green" }),
     ask(r, "q2", "Name the new billing page Plans or Pricing?", ["Plans", "Pricing"], "Plans", NOW - 3 * H),
     item(r, "docs", "The billing guide is rewritten for the new plans. A review is open.", NOW - 1.5 * H, { state: "running" }),
