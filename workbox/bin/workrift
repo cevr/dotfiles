@@ -331,11 +331,24 @@ workspace_name() {
     sed 's/^-*//; s/-*$//'
 }
 
+# A fetch of one refspec into the base, outside any lock. Creates that start
+# together fetch origin's default branch together, and Git refuses the second
+# update of a ref the first one just moved ("cannot lock ref ... is at X but
+# expected Y"): that fetch is tried again, up to three times.
+fetch_ref() {
+  f_try=1
+  while ! git -C "$1" fetch --no-tags origin "$2"; do
+    [ "$f_try" -lt 3 ] || fail "fetch of $2 into $1 failed three times"
+    f_try=$((f_try + 1))
+    sleep 1
+  done
+}
+
 fetch_branch() {
   source_path=$1
   branch=$2
   if git -C "$source_path" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
-    git -C "$source_path" fetch --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+    fetch_ref "$source_path" "+refs/heads/$branch:refs/remotes/origin/$branch"
   else
     status=$?
     # ls-remote exits 2 when the branch does not exist; anything else is a real failure.
@@ -378,7 +391,7 @@ create_workspace() {
   fetch_branch "$source_path" "$branch"
   # The source's HEAD lags the default branch until the next refresh, so new
   # branches start from a freshly fetched remote default branch instead.
-  git -C "$source_path" fetch --no-tags origin "+refs/heads/$main:refs/remotes/origin/$main"
+  fetch_ref "$source_path" "+refs/heads/$main:refs/remotes/origin/$main"
 
   if gh_stack_metadata=$(find_gh_stack_metadata "$source_path" "$branch"); then
     :
