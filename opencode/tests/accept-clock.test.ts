@@ -8,14 +8,19 @@
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
+import { readFileSync } from "node:fs"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { timedCounts, timedFilter } from "../scripts/accept-plan.ts"
 
-/** The real runs of scripts/accept.test.ts that carry a clock bound. */
-const TIMED_RUNS = "a land run under its budget|a deep run yields the lock to a land run|a land run's swarm"
+/** The real runs of scripts/accept.test.ts that carry a clock bound (scripts/accept-plan.ts `TIMED_RUNS`). */
+const TIMED_RUNS = timedFilter
 
-/** How many tests TIMED_RUNS names: a filter that matched fewer would judge less. 7 since d0157629 added the box-stop
- * test to "a land run's swarm". */
-const TIMED_COUNT = 7
+/**
+ * How many tests TIMED_RUNS names, counted from scripts/accept.test.ts's text: a filter that matched fewer would judge
+ * less. Derived, not kept by hand: a hand-kept 7 went stale when sim-load added a test to "a land run's swarm", and
+ * only this deep file saw it. scripts/accept.test.ts checks the count against its own text in the gate.
+ */
+const TIMED_COUNT = timedCounts(readFileSync("scripts/accept.test.ts", "utf8")).reduce((sum, each) => sum + each.tests, 0)
 
 /** The timed runs' bun test, from opencode/, with its output and its exit code. */
 const timedRuns = Effect.gen(function* () {
