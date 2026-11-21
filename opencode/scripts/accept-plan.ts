@@ -118,6 +118,14 @@ export const swarmRead = (output: string, file: string) => {
   return { passed, failing }
 }
 
+/**
+ * What of a suite's CPU budgets its run reported and did not judge, past their limit on a loaded host: each
+ * `sim-unjudged <file> <what>` line (sim/seed.ts `unjudgedLine`) as its `<what>`. The run owes such a suite, `waits
+ * for a settled host`, so a real slowdown shows in the closing line however busy the host always is.
+ */
+export const unjudgedRead = (output: string, file: string) =>
+  output.split("\n").flatMap((line) => Arr.filter([line.slice(`sim-unjudged ${file} `.length).trim()], () => line.startsWith(`sim-unjudged ${file} `)))
+
 /** Where the line under way at `at` ends in `text` (past its newline): `at` itself at a line's start, the text's end when the line has none. */
 const lineEnd = (text: string, at: number) => {
   if (at <= 0 || text[at - 1] === "\n") return Math.max(0, at)

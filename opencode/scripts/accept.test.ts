@@ -12,7 +12,7 @@ import { Option } from "effect"
 import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
-import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, timingSigns } from "./accept-plan.ts"
+import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, timingSigns, unjudgedRead } from "./accept-plan.ts"
 import { offUntil, parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
 import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
@@ -794,6 +794,19 @@ describe("the swarm's plan", () => {
     ])
   })
 
+  test("reads what of a suite's CPU budgets its run reported, not judged: its own lines only", () => {
+    const output = [
+      "sim-unjudged cmd/a.sim.test.tsx boot: 4262 ms of CPU time, past the 4000 ms a boot has, on a loaded host (load 41.2, 12 cores): reported, not judged",
+      "sim-unjudged cmd/b.sim.test.tsx boot: 4100 ms of CPU time, past the 4000 ms a boot has, on a loaded host (load 40.0, 12 cores): reported, not judged",
+      "sim-swarm cmd/a.sim.test.tsx 900",
+      "",
+    ].join("\n")
+    expect([unjudgedRead(output, "cmd/a.sim.test.tsx"), unjudgedRead(output, "cmd/c.sim.test.tsx")]).toEqual([
+      ["boot: 4262 ms of CPU time, past the 4000 ms a boot has, on a loaded host (load 41.2, 12 cores): reported, not judged"],
+      [],
+    ])
+  })
+
   test("reads a stopped suite's swarm: a seed that failed before the stop fails, one that failed only as it was stopped is named apart, a line under way at the stop counts as before it", () => {
     const file = "cmd/a.sim.test.tsx"
     const out = ["sim-swarm cmd/a.sim.test.tsx 900", "sim-swarm cmd/a.sim.test.tsx 901", ""].join("\n")
@@ -907,6 +920,28 @@ describe("a land run's swarm", () => {
         ],
         closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 1, deep: 0, budget: 1 }),
       })
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a suite whose boot was past its CPU on a loaded host, reported, not judged, is owed, waits for a settled host: the closing line counts it",
+    async () => {
+      using dir = scratch("accept-swarm-unjudged-")
+      const sim = join(dir.path, "sim")
+      mkdirSync(sim)
+      // A stand-in suite that passes its seed and prints the line sim-tui prints for a boot past its CPU on a loaded host.
+      const file = join(sim, "loaded.sim.test.ts")
+      const said = `sim-unjudged ${file} boot: 4262 ms of CPU time, past the 4000 ms a boot has, on a loaded host (load 41.2, 12 cores): reported, not judged`
+      writeFileSync(file, ['import { test } from "bun:test"', 'test("boots on a loaded host", () => {', `  console.log(${JSON.stringify(said)})`, `  console.log(${JSON.stringify(`sim-swarm ${file} 1`)})`, "})", ""].join("\n"))
+      const land = await accept(["--land"], scratchEnv(dir.path, { ACCEPT_FILES: join(dir.path, "none", "*.test.ts"), ACCEPT_BUDGET_MS: "6000" }))
+      const owed = `owed: ${file} (waits for a settled host: its CPU past its budget was reported, not judged: boot: 4262 ms of CPU time, past the 4000 ms a boot has`
+      expect({
+        code: land.code,
+        owed: land.lines.filter((line) => line.startsWith("owed: ")).map((line) => line.startsWith(owed)),
+        closing: closingOf(land.lines),
+        counted: land.lines.some((line) => line.startsWith("accept: land ") && line.includes("1 waits for a settled host")),
+      }).toEqual({ code: 0, owed: [true], closing: Option.some({ mode: "land", passed: 0, failed: 0, owed: 1, deep: 0, budget: 0 }), counted: true })
     },
     RUN_MS,
   )

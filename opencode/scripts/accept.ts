@@ -344,7 +344,9 @@ const runFile = Effect.fn("Accept.runFile")(function* (run: Run, file: string, s
  * the box (with SWARM_GRACE_MS) is stopped, the seeds it passed still counted, and none starts after the box. A
  * signal or a land run's mark stops it too. Each suite with a failing seed is a failed outcome naming the replay
  * line, kept in `run.swarmed`; a suite stopped, or not started, with none is owed (timed out at the box, or
- * stopped by the signal or the yield), what failed only as it was stopped named in its detail. True when it ran
+ * stopped by the signal or the yield), what failed only as it was stopped named in its detail; one that passed with a
+ * CPU budget past its limit on a loaded host (`sim-unjudged`, reported, not judged) is owed, `waits for a settled
+ * host`, so the closing line counts it. True when it ran
  * to its end (no signal, no yield).
  */
 const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "daily", suites: ReadonlyArray<string>, boxMs: number, width: number) {
@@ -357,7 +359,7 @@ const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "dai
   yield* say(`accept: swarm (${what}): ${suites.length} simulated suites, ${Math.min(width, suites.length)} at a time, ${seconds(slot)} each in a ${seconds(boxMs)} box, from seed ${first}`)
   const unstarted = (file: string): Swarmed => {
     const why = (Deferred.isDoneUnsafe(run.signalled) && "signal") || (Deferred.isDoneUnsafe(run.wanted) && "yielded") || "budget"
-    return { file, passed: 0, failing: [], stopped: [], code: 0, cut: Option.some(why), detail: "not started" }
+    return { file, passed: 0, failing: [], stopped: [], code: 0, cut: Option.some(why), detail: "not started", unjudged: [] }
   }
   const ran = yield* Effect.forEach(
     suites,
@@ -376,6 +378,7 @@ const swarm = Effect.fn("Accept.swarm")(function* (run: Run, what: "land" | "dai
       run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `a swarm seed failed: ${each.failing.map((seed) => Swarm.replayLine(each.file, seed)).join("; ")}` })
     } else if (Option.isSome(each.cut)) run.swarmed.push(Accept.owe(each.file, each.cut.value, `its swarm ${timedOut(each.cut.value)}: ${each.detail}`))
     else if (each.code !== 0) run.swarmed.push({ file: each.file, status: "failed", ms: 0, reason: `its swarm exited ${each.code} with no failing seed named (log ${logOf(run, each.file)})` })
+    else if (each.unjudged.length > 0) run.swarmed.push(Accept.owe(each.file, "unsettled", `its CPU past its budget was reported, not judged: ${each.unjudged.join("; ")} (log ${logOf(run, each.file)})`))
   }
   return !Deferred.isDoneUnsafe(run.signalled) && !Deferred.isDoneUnsafe(run.wanted)
 })
@@ -400,6 +403,8 @@ interface Swarmed {
   readonly code: number
   readonly cut: Option.Option<Accept.Why>
   readonly detail: string
+  /** The CPU budgets it passed on a loaded host, reported, not judged (`unjudgedRead`). */
+  readonly unjudged: ReadonlyArray<string>
 }
 
 /**
@@ -433,7 +438,16 @@ const swarmSuite = Effect.fn("Accept.swarmSuite")(function* (run: Run, file: str
   const detail = `stopped after ${read.passed} seeds${Arr.filter([`; seeds that failed only as it was stopped, not judged: ${read.stopped.join(", ")}`], () => read.stopped.length > 0).join("")} (log ${logOf(run, file)})`
   if (Option.isSome(ended.why)) yield* say(`accept: swarm: stopped ${file} (${Accept.whyWords(ended.why.value)}) ${detail}`)
   if (read.failing.length > 0 || (Option.isNone(ended.why) && ended.code !== 0)) yield* say(text)
-  const swarmed: Swarmed = { file, passed: read.passed, failing: read.failing, stopped: read.stopped, code: Number(Option.isNone(ended.why)) * ended.code, cut: ended.why, detail }
+  const swarmed: Swarmed = {
+    file,
+    passed: read.passed,
+    failing: read.failing,
+    stopped: read.stopped,
+    code: Number(Option.isNone(ended.why)) * ended.code,
+    cut: ended.why,
+    detail,
+    unjudged: Swarm.unjudgedRead(text, file),
+  }
   return swarmed
 })
 
