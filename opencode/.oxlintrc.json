@@ -4,7 +4,8 @@
     "**/node_modules/**",
     "testbeds/gamut/fixture/**",
     "out/**",
-    "media/**"
+    "media/**",
+    "mods/digest/page/**"
   ],
   "jsPlugins": [
     "./lint/test-env.ts",

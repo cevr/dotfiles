@@ -9,7 +9,7 @@ import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -323,6 +323,12 @@ describe("the pool's fleet", () => {
     })
     expect(mailEntry(`${MODS}/mail`, { host: "Cristians-MacBook-Pro.local", tailscale: undefined })).toBe(`${MODS}/mail`)
     expect(mailEntry(`${MODS}/mail`, { host: "ci-runner", tailscale: "100.64.0.9" })).toBe(`${MODS}/mail`)
+  })
+
+  test("the digest's morning is the owner's zone on his hosts (the workbox is UTC), the host's elsewhere", () => {
+    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual({ package: `${MODS}/digest`, options: { timezone: "America/Montreal" } })
+    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual({ package: `${MODS}/digest`, options: { timezone: "America/Montreal" } })
+    expect(digestEntry(`${MODS}/digest`, { host: "ci-runner" })).toBe(`${MODS}/digest`)
   })
 
   test("another host has no peers, and still paces OpenAI", () => {
