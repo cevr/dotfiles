@@ -142,6 +142,7 @@
     {"file":"mods/digest/http/listener.test.ts","rule":"effect/noEffectRunInTests","reason":"Promise bridge: bun's test runner takes promises; each case runs the listener's scope to one around its fetches"},
     {"file":"mods/digest/http/listener.test.ts","rule":"effect/noGlobals","reason":"real-socket harness: the cases speak HTTP to the bound listener with fetch and read the host's interfaces to prove no other address reaches it"},
     {"file":"mods/digest/http/listener.test.ts","rule":"effect/noNodeBuiltinImport","reason":"listener test: it writes a scratch built page with node:fs and lists the host's interfaces with node:os"},
+    {"file":"mods/digest/http/page.test.ts","rule":"effect/noNodeBuiltinImport","reason":"built page test: it reads the committed dist/ (its stamp, index.html, assets) with node:fs and node:path, the same synchronous reads stamp.ts hashes the source with"},
     {"file":"cmd/digest/server.test.ts","rule":"effect/noAsyncFunction","reason":"Promise bridge: the view case awaits the file log's appends and the page handlers' reads over a scratch folder"},
     {"file":"cmd/digest/server.test.ts","rule":"effect/noGlobals","reason":"seam test: the host's zone (Intl) is the timezone's default it checks, and the view's JSON is read with JSON.parse"},
     {"file":"mods/digest/relay.test.ts","rule":"effect/noAsyncFunction","reason":"Promise bridge: bun's test runner takes promises; each case awaits the relay's run on the test clock"},
