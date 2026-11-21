@@ -17,5 +17,6 @@
     "noImplicitOverride": true,
     "noUnusedLocals": true
   },
-  "include": ["."]
+  "include": ["."],
+  "exclude": ["page"]
 }

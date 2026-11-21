@@ -15,8 +15,11 @@ import { Effect, Layer, Option } from "effect"
 import { DigestLog, encodeLine } from "../event.ts"
 import { DigestLines, DigestUnreadable, DigestUnwritable } from "../service.ts"
 
+/** The name of the month file a line of time `t` goes in. */
+const monthOf = (t: number): string => `events-${new Date(t).toISOString().slice(0, 7)}.jsonl`
+
 /** The month file a line of time `t` goes in. */
-export const fileOf = (dir: string, t: number): string => join(dir, `events-${new Date(t).toISOString().slice(0, 7)}.jsonl`)
+export const fileOf = (dir: string, t: number): string => join(dir, monthOf(t))
 
 const MONTH = /^events-\d{4}-\d{2}\.jsonl$/
 const NEWLINE = 10
@@ -81,10 +84,17 @@ const monthsOf = (dir: string) =>
     (): ReadonlyArray<string> => [],
   )
 
+/**
+ * Append `line` to the file `name` in `dir` as one write (`writeLine`), the folder made 0700 and the file 0600:
+ * the log's month files, and the owner's marks beside them (marks.ts).
+ */
+export const appendTo = (dir: string, name: string, line: string) =>
+  ownDir(dir).pipe(Effect.andThen(Effect.scoped(Effect.flatMap(sinkOf(join(dir, name)), (sink) => writeLine(sink, line)))))
+
 /** The log in `dir`, made on the first write. */
 export const make = (dir: string) =>
   DigestLines.of({
-    append: (line, t) => ownDir(dir).pipe(Effect.andThen(Effect.scoped(Effect.flatMap(sinkOf(fileOf(dir, t)), (sink) => writeLine(sink, line))))),
+    append: (line, t) => appendTo(dir, monthOf(t), line),
     read: Effect.tryPromise({ try: () => monthsOf(dir), catch: (cause) => new DigestUnreadable({ message: String(cause) }) }).pipe(
       Effect.flatMap((names) =>
         Effect.forEach(names, (name) => Effect.tryPromise({ try: () => readFile(join(dir, name), "utf8"), catch: (cause) => new DigestUnreadable({ message: String(cause) }) })),

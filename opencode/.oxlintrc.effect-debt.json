@@ -8,7 +8,8 @@
     "**/node_modules/**",
     "testbeds/gamut/fixture/**",
     "out/**",
-    "media/**"
+    "media/**",
+    "mods/digest/page/**"
   ],
   "jsPlugins": [
     "./lint/node_modules/oxlint-plugin-effect/dist/plugin.js"
@@ -197,7 +198,8 @@
     },
     {
       "files": [
-        "mods/digest/filestore/log-writer.ts"
+        "mods/digest/filestore/log-writer.ts",
+        "mods/digest/filestore/marks-writer.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off"
@@ -205,7 +207,9 @@
     },
     {
       "files": [
-        "mods/digest/filestore/log.test.ts"
+        "mods/digest/filestore/log.test.ts",
+        "mods/digest/filestore/marks.test.ts",
+        "mods/digest/http/listener.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
@@ -239,7 +243,26 @@
         "cmd/digest/server.test.ts"
       ],
       "rules": {
+        "effect/noAsyncFunction": "off",
         "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/digest/filestore/marks.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/digest/http/listener.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
     },
