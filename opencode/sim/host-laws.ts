@@ -223,7 +223,7 @@ const LAW_FAULT_RPC = {
 export const LAWS: ReadonlyArray<Law> = [
   {
     name: LAW.storage,
-    operations: ["storage.get", "storage.set", "storage.remove", "storage.scan"],
+    operations: ["storage.get", "storage.set", "storage.setIf", "storage.remove", "storage.scan"],
     check: (ctx) =>
       Effect.gen(function* () {
         for (const key of ["law:c", "law:a", "law:b", "other:z"]) yield* ctx.storage.set(key, { key })
@@ -237,6 +237,13 @@ export const LAWS: ReadonlyArray<Law> = [
         yield* ensure(Option.isNone(Option.fromNullishOr(second.next)), "the last page has a next")
         yield* ctx.storage.remove("law:a")
         yield* ensure(Option.isNone(Option.fromNullishOr(yield* ctx.storage.get("law:a"))), "a removed key still answered")
+        // setIf: into an absent key only with no rev; over a stored value only at its rev (none counts as 0).
+        yield* ensure(yield* ctx.storage.setIf("law:rev", { rev: 1 }, undefined), "setIf did not insert an absent key")
+        yield* ensure(!(yield* ctx.storage.setIf("law:rev", { rev: 1 }, undefined)), "setIf inserted over a present key")
+        yield* ensure(!(yield* ctx.storage.setIf("law:rev", { rev: 2 }, 0)), "setIf wrote over another rev")
+        yield* ensure(yield* ctx.storage.setIf("law:rev", { rev: 2 }, 1), "setIf refused its own rev")
+        yield* ensure(yield* ctx.storage.setIf("law:c", { rev: 1 }, 0), "setIf refused a value without a rev at rev 0")
+        yield* ensure(Schema.is(Schema.Struct({ rev: Schema.Literal(2) }))(yield* ctx.storage.get("law:rev")), "setIf kept another value")
       }),
   },
   {

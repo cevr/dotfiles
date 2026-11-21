@@ -35,6 +35,7 @@ export const OPERATIONS = [
   "location",
   "storage.get",
   "storage.set",
+  "storage.setIf",
   "storage.remove",
   "storage.scan",
   "event.subscribe",
@@ -172,6 +173,25 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
         namespace.set(key, plain(value))
         host.record("store-set", { plugin, key, value })
         return Effect.void
+      }),
+    // The fork's KV.setIf: written only over the rev read (a stored value without one counts as 0), or with no rev
+    // only into an absent key; a write the test made fail dies, as `set`'s does.
+    setIf: (key, value, rev) =>
+      Effect.suspend(() => {
+        const stored = namespace.get(key)
+        const storedRev = Predicate.isObject(stored) && Predicate.isNumber(Reflect.get(stored, "rev")) ? Number(Reflect.get(stored, "rev")) : 0
+        const matches = rev === undefined ? stored === undefined : stored !== undefined && storedRev === rev
+        if (!matches) {
+          host.record("store-set-if-lost", { plugin, key, rev: rev ?? null })
+          return Effect.succeed(false)
+        }
+        if (host.faults.takeWrite(plugin)) {
+          host.record("store-set-failed", { plugin, key })
+          return Effect.die(new Error(`sim: a write of ${plugin}'s storage failed`))
+        }
+        namespace.set(key, plain(value))
+        host.record("store-set", { plugin, key, value })
+        return Effect.succeed(true)
       }),
     remove: (key) =>
       Effect.sync(() => {
