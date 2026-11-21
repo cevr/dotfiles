@@ -47,7 +47,7 @@ describe("the digest plugin", () => {
     const run = DigestEvent.cases.Run.make({ v: VERSION, t, root: "r", host: "mac", repo: "harbor", dir: Option.none(), name: Option.some("harbor") })
     const item = DigestEvent.cases.Item.make({ answer: Option.none(), choices: Option.none(), v: VERSION, t, root: "r", id: "a", text: "Billing ships.", state: "done", owner: "mine", who: Option.none(), level: Option.none(), unit: Option.none() })
     await Effect.runPromise(Effect.forEach([run, item], (event) => log.append(encodeLine(event), event.t), { discard: true }))
-    const handlers = handlersOf(options, log)
+    const handlers = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") })
     const unread = () => Effect.runPromise(Effect.map(handlers.view, (json) => JSON.parse(json).projects.map((project: { readonly unread: number }) => project.unread)))
     expect(await unread()).toEqual([1])
     await Effect.runPromise(handlers.write(markOf("item:r:a", t + 1, "read")))

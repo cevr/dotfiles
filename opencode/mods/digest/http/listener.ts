@@ -7,14 +7,22 @@
 // - POST `/api/mark` {id, mark: read | unread}, `/api/later` {id}, `/api/name` {project, name}, `/api/since` {}:
 //   one marks line each (marks.ts). A write is a POST of JSON whose Origin is the page's own and which carries
 //   PAGE_HEADER; anything else is refused and writes nothing. No GET changes state.
-// - Every request must name a loopback host (`Host`), so a name rebound to 127.0.0.1 reads nothing.
+// - GET `/paired.json`: `{paired}`, whether this browser's cookie is one the digest signed.
+// - POST `/api/pair` {code}: a one-use code from `bun cmd/digest/pair.ts`, for the pairing cookie (pairing.ts); past
+//   RATE_FAILURES failures in a minute every try is refused (429) until the minute moves on.
+// - POST `/api/answer` {id, option | text}: the owner's answer to an open question or needs-you item (answers.ts):
+//   200 when it went, 409 with the first answer when another closed it, 4xx when refused. Only from a paired browser.
+// - Every request must name a loopback host (`Host`), so a name rebound to 127.0.0.1 reads nothing. What each route
+//   needs beyond that (nothing, or a paired browser) is `pairing.ts`'s ACCESS, by listener and route kind.
 //
 // OpenCode serves a plugin once per directory it serves, and only one instance can bind the port: the others try
 // again every RETRY (`serve`), so one listens while any instance runs, and a restart hands the port over.
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { Duration, Effect, Match, Option, Schedule, Schema, type Scope } from "effect"
+import { Duration, Effect, Match, Option, Ref, Schedule, Schema, type Scope } from "effect"
+import { type AnswerOutcome, PageAnswer } from "../answers.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
+import { cookieOf, failuresIn, type Listener, mayTry, needOf, type Pairing, type RouteKind, setCookie } from "../pairing.ts"
 import { nextMorning } from "../zone.ts"
 
 /** The only address this unit binds. */
@@ -39,6 +47,11 @@ export interface Handlers {
   readonly now: Effect.Effect<number>
   /** `digest.timezone`: Later's morning is in it. */
   readonly zone: string
+  /** Send the owner's answer through the plugin that owns its message. */
+  readonly answer: (input: PageAnswer) => Effect.Effect<AnswerOutcome>
+  readonly pairing: Pairing
+  /** The failed pairings of the last minute, for the rate limit: this listener's own. */
+  readonly failures: Ref.Ref<ReadonlyArray<number>>
 }
 
 /** An answer: status, headers, body. */
@@ -118,12 +131,9 @@ const writeRefusal = (request: Request, host: string): Option.Option<Answer> => 
   return Option.none()
 }
 
-/** A write route's answer: the line kept (204), or why not. */
-const write = (handlers: Handlers, request: Request, path: string, host: string) =>
+/** A marks route's answer: the line kept (204), or why not. */
+const mark = (handlers: Handlers, path: string, body: string) =>
   Effect.gen(function* () {
-    const refused = writeRefusal(request, host)
-    if (Option.isSome(refused)) return refused.value
-    const body = yield* Effect.promise(() => request.text())
     const now = yield* handlers.now
     return yield* Option.match(lineOf(path, body, now, handlers.zone), {
       onNone: () => Effect.succeed(reason(404, `no route ${path}`)),
@@ -139,8 +149,73 @@ const write = (handlers: Handlers, request: Request, path: string, host: string)
     })
   })
 
+const PairInput = Schema.Struct({ code: Schema.String.check(Schema.isMaxLength(64)) })
+const decodePair = Schema.decodeUnknownOption(Schema.fromJsonString(PairInput))
+const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(PageAnswer))
+
+/** `/api/pair`: a code for the cookie (204), unless the minute's failures are spent (429); a failed try counts. */
+const pair = (handlers: Handlers, body: string) =>
+  Effect.gen(function* () {
+    const now = yield* handlers.now
+    const recent = failuresIn(yield* Ref.get(handlers.failures), now)
+    if (!mayTry(recent, now)) return reason(429, "too many pairing tries: wait a minute, then make a new code")
+    const input = decodePair(body)
+    if (Option.isNone(input)) return reason(400, "not a /api/pair request")
+    const failed = (status: number, text: string) => Ref.set(handlers.failures, [...recent, now]).pipe(Effect.as(reason(status, text)))
+    return yield* handlers.pairing.exchange(input.value.code, now).pipe(
+      Effect.map((cookie) => answer(204, "", { "set-cookie": setCookie(cookie), "cache-control": "no-store" })),
+      Effect.catchTags({
+        PairRefused: (refused) =>
+          Match.value(refused.reason).pipe(
+            Match.when("expired", () => failed(410, "that code is out of time: make another with bun cmd/digest/pair.ts")),
+            Match.orElse(() => failed(403, "that code is not one, or was used already")),
+          ),
+        PairingUnavailable: (failure) => Effect.succeed(reason(500, failure.message)),
+      }),
+    )
+  })
+
+/** What `/api/answer` answers, an absent field left out. */
+const AnswerBody = Schema.Struct({
+  answered: Schema.Boolean,
+  replaced: Schema.OptionFromOptionalKey(Schema.String),
+  answer: Schema.OptionFromOptionalKey(Schema.String),
+  via: Schema.OptionFromOptionalKey(Schema.String),
+  at: Schema.OptionFromOptionalKey(Schema.Number),
+  reason: Schema.OptionFromOptionalKey(Schema.String),
+})
+const encodeAnswerBody = Schema.encodeSync(Schema.fromJsonString(AnswerBody))
+
+const none = { replaced: Option.none(), answer: Option.none(), via: Option.none(), at: Option.none(), reason: Option.none() }
+
+const jsonAnswer = (status: number, body: typeof AnswerBody.Type): Answer => answer(status, encodeAnswerBody(body), { "content-type": "application/json", "cache-control": "no-store" })
+
+/** An answer's outcome as the page reads it: 200 sent, 409 closed by another (that answer, where, when), else why not. */
+const outcomeAnswer = (outcome: AnswerOutcome): Answer =>
+  Match.valueTags(outcome, {
+    Answered: ({ replaced }) => jsonAnswer(200, { ...none, answered: true, replaced }),
+    AlreadyClosed: ({ answer: first, via, at }) => jsonAnswer(409, { ...none, answered: false, answer: first, via, at, reason: Option.some("already answered") }),
+    Refused: ({ status, reason: why }) => jsonAnswer(status, { ...none, answered: false, reason: Option.some(why) }),
+  })
+
+/** `/api/answer`: the owner's answer, sent through the plugin that owns its message. */
+const answerRoute = (handlers: Handlers, body: string) =>
+  Option.match(decodeAnswer(body), {
+    onNone: () => Effect.succeed(reason(400, "not a /api/answer request")),
+    onSome: (input) => Effect.map(handlers.answer(input), outcomeAnswer),
+  })
+
+/** Whether the request carries a cookie this digest signed. */
+const isPaired = (handlers: Handlers, request: Request): Effect.Effect<boolean> =>
+  Option.match(Option.flatMap(Option.fromNullishOr(request.headers.get("cookie")), cookieOf), {
+    onNone: () => Effect.succeed(false),
+    onSome: handlers.pairing.verify,
+  })
+
+const encodePaired = Schema.encodeSync(Schema.fromJsonString(Schema.Struct({ paired: Schema.Boolean })))
+
 /** A read route's answer. */
-const read = (handlers: Handlers, dist: string, path: string) =>
+const read = (handlers: Handlers, dist: string, path: string, request: Request) =>
   Match.value(path).pipe(
     Match.when("/", () => builtFile(dist, ".", "index.html", "no-store")),
     Match.when("/view.json", () =>
@@ -149,6 +224,13 @@ const read = (handlers: Handlers, dist: string, path: string) =>
         Effect.catch((failure) => Effect.succeed(reason(500, failure.message))),
       ),
     ),
+    Match.when("/paired.json", () =>
+      Effect.map(isPaired(handlers, request), (paired) => answer(200, encodePaired({ paired }), { "content-type": "application/json", "cache-control": "no-store" })),
+    ),
+    Match.when(
+      (each) => each.startsWith("/api/"),
+      () => Effect.succeed(reason(405, "a write is a POST")),
+    ),
     Match.when(
       (each) => each.startsWith("/assets/"),
       (each) => builtFile(dist, "assets", each.slice("/assets/".length), "public, max-age=31536000, immutable"),
@@ -156,17 +238,48 @@ const read = (handlers: Handlers, dist: string, path: string) =>
     Match.orElse(() => Effect.succeed(reason(404, "no such page"))),
   )
 
-/** The listener's answer to one request. */
-export const answerOf = (handlers: Handlers, dist: string, request: Request): Effect.Effect<Answer> => {
+/** The kind of route a request is (pairing.ts's RouteKind); none for a method no route takes. */
+export const kindOf = (method: string, path: string): Option.Option<RouteKind> =>
+  Match.value({ method, path }).pipe(
+    Match.when({ method: "POST", path: "/api/answer" }, () => Option.some<RouteKind>("answer")),
+    Match.when({ method: "POST", path: "/api/pair" }, () => Option.some<RouteKind>("pair")),
+    Match.when({ method: "POST" }, () => Option.some<RouteKind>("mark")),
+    Match.when({ method: (each) => each === "GET" || each === "HEAD" }, () => Option.some<RouteKind>("read")),
+    Match.orElse(() => Option.none<RouteKind>()),
+  )
+
+/** A write's checks, then what its route needs on this listener (ACCESS): a paired browser, or nothing more. */
+const admitted = (handlers: Handlers, request: Request, host: string, listener: Listener, kind: RouteKind): Effect.Effect<Option.Option<Answer>> =>
+  Effect.gen(function* () {
+    const refused = Option.filter(writeRefusal(request, host), () => kind !== "read")
+    if (Option.isSome(refused)) return refused
+    if (needOf(listener, kind) === "open" || (yield* isPaired(handlers, request))) return Option.none()
+    return Option.some(reason(401, "pair this browser first: run bun cmd/digest/pair.ts and open the link it prints"))
+  })
+
+/** The listener's answer to one request, on `listener` (this unit serves loopback only). */
+export const answerOf = (handlers: Handlers, dist: string, request: Request, listener: Listener = "loopback"): Effect.Effect<Answer> => {
   const host = String(request.headers.get("host"))
   if (!LOOPBACK_HOST.test(host)) return Effect.succeed(reason(421, "this page answers on its loopback name only"))
   const path = new URL(request.url).pathname
-  if (request.method === "POST") return write(handlers, request, path, host)
-  if (request.method === "GET" || request.method === "HEAD") {
-    if (path.startsWith("/api/")) return Effect.succeed(reason(405, "a write is a POST"))
-    return read(handlers, dist, path)
-  }
-  return Effect.succeed(reason(405, "GET or POST only"))
+  const body = Effect.promise(() => request.text())
+  return Option.match(kindOf(request.method, path), {
+    onNone: () => Effect.succeed(reason(405, "GET or POST only")),
+    onSome: (kind) =>
+      Effect.flatMap(admitted(handlers, request, host, listener, kind), (refused) =>
+        Option.match(refused, {
+          onSome: Effect.succeed,
+          onNone: () =>
+            Match.value(kind).pipe(
+              Match.when("read", () => read(handlers, dist, path, request)),
+              Match.when("pair", () => Effect.flatMap(body, (text) => pair(handlers, text))),
+              Match.when("answer", () => Effect.flatMap(body, (text) => answerRoute(handlers, text))),
+              Match.when("mark", () => Effect.flatMap(body, (text) => mark(handlers, path, text))),
+              Match.exhaustive,
+            ),
+        }),
+      ),
+  })
 }
 
 /** The port could not be bound (another instance holds it). */
