@@ -56,7 +56,7 @@ seeded("a question put to a session is answered only by that session or by the o
     const outcomes = yield* Effect.forEach(Array.from({ length: CASES }), () =>
       Effect.gen(function* () {
         const { sheet, ids, by } = yield* caseOf
-        const refused = notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(ids, by))))
+        const refused = notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(ids, by), 0)))
         // The session may answer exactly the open questions put to it; the owner (no `by`) is never refused as not holding.
         const held = (session: string) => sheet.rows.filter((row) => row.to === session && !("answered" in row)).map((row) => row.id)
         const want = Option.match(by, { onNone: () => false, onSome: (session) => ids.some((id) => !held(session).includes(id)) })
@@ -81,8 +81,8 @@ seeded("a sheet stored before `to` existed decodes, every question on it is the 
     const sheet = yield* Schema.decodeUnknownEffect(Sheet)(stored)
     expect(ownersOf(sheet.rows).map((row) => row.id)).toEqual(["q1", "q2"])
     expect(heldOf(sheet.rows)).toEqual([])
-    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.none()))))).toBe(false)
-    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some("ses_parent")))))).toBe(true)
+    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.none()), 0)))).toBe(false)
+    expect(notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some("ses_parent")), 0)))).toBe(true)
   }),
 )
 
@@ -106,13 +106,13 @@ const rig = (failMark: boolean) => {
       const inner = yield* QuestionStore
       return QuestionStore.of({
         ...inner,
-        write: (sessionID, sheet) =>
+        writeIf: (sessionID, sheet, rev) =>
           Effect.suspend(() => {
             if (failing.left > 0 && marksSent(sheet)) {
               failing.left -= 1
               return Effect.die("the store would not take the write")
             }
-            return inner.write(sessionID, sheet)
+            return inner.writeIf(sessionID, sheet, rev)
           }),
       })
     }),

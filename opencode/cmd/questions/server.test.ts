@@ -154,6 +154,7 @@ describe("answering", () => {
         expect(yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }] })).toEqual({
           ok: false,
           message: "Question q1 is not open.",
+          closed: true,
         })
       }),
     ))

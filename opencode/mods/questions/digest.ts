@@ -4,6 +4,7 @@
 // nothing: the digest shows what waits on the owner.
 import { Array as Arr, Match, Option, Predicate } from "effect"
 import { DigestEvent, VERSION } from "@dotfiles/opencode-digest/event"
+import { redact } from "@dotfiles/opencode-digest/redact"
 import { type Event, matches, ownersOf, ownOf, type Row, type Sheet } from "./question.ts"
 
 /** The owner's own rows of a sheet, by id. */
@@ -36,10 +37,12 @@ export const linesOf = (root: string, sessionID: string, before: Sheet, after: S
               DigestEvent.cases.Answered.make({
                 ...base,
                 id: row.id,
-                answer: answered.answer,
+                // The session gets the answer as typed; the log keeps it with any secret shape replaced.
+                answer: redact(answered.answer),
                 matches: matches(answered.answer, row),
                 question: Option.some(row.question),
                 assume: Option.some(row.assume),
+                via: Option.fromUndefinedOr(answered.via),
               }),
           ),
         ),

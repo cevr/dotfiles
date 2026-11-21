@@ -2,7 +2,7 @@
 // question from ask to delivery, without OpenCode.
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Ref } from "effect"
 import * as MemoryCourier from "./courier.ts"
 import * as MemoryStore from "./store.ts"
 import * as Model from "../model.ts"
@@ -413,5 +413,71 @@ describe("QuestionsModel", () => {
     const open = await Effect.runPromise(QuestionsModel.use((model) => model.open(family)).pipe(Effect.provide(layer)))
     expect(open.map((question) => question.id)).toEqual(["q1"])
     expect(reads).toEqual(["ses_a"])
+  })
+})
+
+describe("two copies of the model over one store (two directories, or two servers)", () => {
+  /**
+   * The store under two models, each built by its own `run` (its own lock): every read yields once it has read, so two
+   * answers read the same sheet before either writes. `blind` writes whatever rev was read, as `write` did before
+   * `writeIf`: the race the conditional write closes.
+   */
+  const contended = (blind: boolean) => {
+    const sheets = MemoryStore.empty()
+    const sessions = MemoryCourier.empty("ses_a")
+    const digest = MemoryDigest.empty()
+    const store = Layer.effect(
+      QuestionStore,
+      Effect.gen(function* () {
+        const inner = yield* QuestionStore
+        return QuestionStore.of({
+          ...inner,
+          read: (sessionID) => Effect.tap(inner.read(sessionID), () => Effect.yieldNow),
+          writeIf: (sessionID, sheet, rev) =>
+            blind ? Effect.flatMap(Effect.orDie(inner.read(sessionID)), (now) => inner.writeIf(sessionID, sheet, now.rev)) : inner.writeIf(sessionID, sheet, rev),
+        })
+      }),
+    ).pipe(Layer.provide(MemoryStore.layer(sheets)))
+    const layer = () =>
+      Model.layer.pipe(
+        Layer.provide(MemoryDigest.writer(digest)),
+        Layer.provide(store),
+        Layer.provide(MemoryCourier.layer(sessions)),
+        Layer.provide(Layer.succeed(Changes, { changed: () => Effect.void })),
+      )
+    const run = <A, E>(body: (model: QuestionsModel["Service"]) => Effect.Effect<A, E>) => QuestionsModel.use(body).pipe(Effect.provide(layer()))
+    const answers = () => (sessions.inboxes.get("ses_a") ?? []).filter((message) => message.letter.text.includes("A: "))
+    const answeredLines = () => Effect.runSync(Ref.get(digest.lines)).filter((line) => line.includes('"Answered"'))
+    return { run, answers, answeredLines }
+  }
+
+  const race = async (blind: boolean) => {
+    const rig = contended(blind)
+    await Effect.runPromise(rig.run((model) => model.ask("ses_a", { questions: [port] })))
+    const answer = (answer: string, via: "tray" | "page") => Effect.exit(rig.run((model) => model.answer("ses_a", [{ id: "q1", answer }], [], Option.none(), via)))
+    const [tray, page] = await Effect.runPromise(
+      Effect.all(
+        [answer("8080", "tray"), answer("3000", "page")],
+        { concurrency: "unbounded" },
+      ),
+    )
+    return { ...rig, tray, page }
+  }
+
+  test("without the conditional write both answers close the question: two letters (the race writeIf closes)", async () => {
+    const { answers } = await race(true)
+    expect(answers()).toHaveLength(2)
+  })
+
+  test("both at once: exactly one closes it, one letter and one Answered line naming where; the other is refused as not open", async () => {
+    const { answers, answeredLines, tray, page } = await race(false)
+    expect(answers()).toHaveLength(1)
+    expect(answeredLines()).toHaveLength(1)
+    // The loser is refused as no longer open: who answered, and when, the digest's Answered line says.
+    expect([tray, page].filter(Exit.isSuccess)).toHaveLength(1)
+    const loser = [tray, page].find(Exit.isFailure)
+    expect(loser !== undefined && Exit.isFailure(loser) ? Cause.squash(loser.cause) : undefined).toMatchObject({ _tag: "NotOpen", id: "q1" })
+    const via = Exit.isSuccess(tray) ? "tray" : "page"
+    expect(answeredLines()[0]).toContain(`"via":"${via}"`)
   })
 })

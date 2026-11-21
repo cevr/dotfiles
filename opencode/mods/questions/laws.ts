@@ -45,15 +45,42 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
         }),
       ))
 
-    test("reads what was last written, per session, every field kept", () =>
+    test("reads what was last written, per session, every field kept, at the next rev", () =>
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.write("ses_a", one))
-          expect(yield* run((store) => store.read("ses_a"))).toEqual(one)
-          yield* run((store) => store.write("ses_a", two))
-          expect(yield* run((store) => store.read("ses_a"))).toEqual(two)
+          expect(yield* run((store) => store.writeIf("ses_a", one, undefined))).toBe(true)
+          expect(yield* run((store) => store.read("ses_a"))).toEqual({ ...one, rev: 1 })
+          expect(yield* run((store) => store.writeIf("ses_a", two, 1))).toBe(true)
+          expect(yield* run((store) => store.read("ses_a"))).toEqual({ ...two, rev: 2 })
           expect(yield* run((store) => store.read("ses_b"))).toEqual(EMPTY)
+        }),
+      ))
+
+    test("a write made at a rev no longer stored writes nothing and says so", () =>
+      scenario(
+        Effect.gen(function* () {
+          const run = using(yield* make)
+          yield* run((store) => store.writeIf("ses_a", one, undefined))
+          // Another writer read none stored, or the sheet before its last write: both lost.
+          expect(yield* run((store) => store.writeIf("ses_a", two, undefined))).toBe(false)
+          expect(yield* run((store) => store.writeIf("ses_a", two, 0))).toBe(false)
+          expect(yield* run((store) => store.writeIf("ses_a", two, 2))).toBe(false)
+          expect(yield* run((store) => store.read("ses_a"))).toEqual({ ...one, rev: 1 })
+          // None stored has no rev to match.
+          expect(yield* run((store) => store.writeIf("ses_b", two, 0))).toBe(false)
+          expect(yield* run((store) => store.read("ses_b"))).toEqual(EMPTY)
+        }),
+      ))
+
+    test("of two writers that read one rev, exactly one writes", () =>
+      scenario(
+        Effect.gen(function* () {
+          const run = using(yield* make)
+          yield* run((store) => store.writeIf("ses_a", one, undefined))
+          const both = yield* Effect.all([run((store) => store.writeIf("ses_a", two, 1)), run((store) => store.writeIf("ses_a", one, 1))], { concurrency: "unbounded" })
+          expect(both.filter(Boolean)).toHaveLength(1)
+          expect((yield* run((store) => store.read("ses_a"))).rev).toBe(2)
         }),
       ))
 
@@ -61,8 +88,8 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.write("ses_a", one))
-          yield* run((store) => store.write("ses_b", two))
+          yield* run((store) => store.writeIf("ses_a", one, undefined))
+          yield* run((store) => store.writeIf("ses_b", two, undefined))
           expect((yield* run((store) => store.sessions)).toSorted()).toEqual(["ses_a", "ses_b"])
         }),
       ))
@@ -71,26 +98,26 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          yield* run((store) => store.write("ses_a", one))
+          yield* run((store) => store.writeIf("ses_a", one, undefined))
           yield* run((store) => store.remove("ses_a"))
           expect(yield* run((store) => store.read("ses_a"))).toEqual(EMPTY)
           expect(yield* run((store) => store.sessions)).toEqual([])
           yield* run((store) => store.remove("ses_a"))
+          // Removed, it is absent again: a write at none stored lands.
+          expect(yield* run((store) => store.writeIf("ses_a", two, undefined))).toBe(true)
         }),
       ))
 
-    test("a sheet that cannot be read fails QuestionsUnreadable and says why; a write replaces it", () =>
+    test("a sheet that cannot be read fails QuestionsUnreadable and says why", () =>
       scenario(
         Effect.gen(function* () {
           const probe = yield* make
           const run = using(probe)
-          yield* run((store) => store.write("ses_a", one))
+          yield* run((store) => store.writeIf("ses_a", one, undefined))
           yield* probe.spoil("ses_a")
           const failure = yield* run((store) => store.read("ses_a")).pipe(Effect.flip)
           expect(failure._tag).toBe("QuestionsUnreadable")
           expect(failure.message).not.toBe("")
-          yield* run((store) => store.write("ses_a", two))
-          expect(yield* run((store) => store.read("ses_a"))).toEqual(two)
         }),
       ))
   })
