@@ -249,7 +249,8 @@
     },
     {
       "files": [
-        "cmd/digest/export.test.ts"
+        "cmd/digest/export.test.ts",
+        "cmd/digest/pair.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
