@@ -101,7 +101,16 @@ const play = (seed: number) => {
       yield* tui.until("opened", (frame) => viewing(frame) !== "", 10_000)
       yield* tui.advance(500)
       yield* save("opened")
-      return Object.fromEntries(NAMES.map((name) => [name, shots.get(name) ?? []])) as Record<Name, ReadonlyArray<string>>
+      const shot = (name: Name) => shots.get(name) ?? []
+      return {
+        top: shot("top"),
+        scrolled: shot("scrolled"),
+        back: shot("back"),
+        transcript: shot("transcript"),
+        bottom: shot("bottom"),
+        finished: shot("finished"),
+        opened: shot("opened"),
+      } satisfies Record<Name, ReadonlyArray<string>>
     }),
   )
 }

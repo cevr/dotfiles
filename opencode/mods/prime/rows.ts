@@ -29,9 +29,11 @@ export function windowed<T>(rows: ReadonlyArray<T>, offset: number, cap = CAP): 
 
 /** The offset after one wheel step `direction` from `offset`: a row up or down, stopping at either end; sideways leaves it. */
 export function scrolled(offset: number, direction: string, total: number, cap = CAP): number {
-  const step = direction === "down" ? 1 : direction === "up" ? -1 : 0
-  return clamp(clamp(offset, total, cap) + step, total, cap)
+  return clamp(clamp(offset, total, cap) + (STEPS[direction] ?? 0), total, cap)
 }
+
+/** A wheel step's way to the rows it moves. */
+const STEPS: Readonly<Record<string, number>> = { down: 1, up: -1 }
 
 /**
  * The line under the rows. At the top it counts the rest, as it always did;
@@ -40,10 +42,10 @@ export function scrolled(offset: number, direction: string, total: number, cap =
  */
 export function countLine(window: Window<unknown>, child: boolean): string {
   if (window.above + window.below === 0) return ""
-  const tail = child ? "" : " · ↓ to see all"
+  const tail = [" · ↓ to see all"].filter(() => !child).join("")
   if (window.above === 0) return `+${window.below} more${tail}`
   const range = `${window.offset + 1}–${window.offset + window.rows.length} of ${window.total}`
-  const around = window.below > 0 ? `${window.above} above, ${window.below} below` : `${window.above} above`
+  const around = [`${window.above} above`, ...[`${window.below} below`].filter(() => window.below > 0)].join(", ")
   return `${range} · ${around}${tail}`
 }
 
