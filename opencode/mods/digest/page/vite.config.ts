@@ -1,4 +1,4 @@
-// The digest page's build: Solid's compiler over src/, one HTML, one JS and one CSS into dist/, which is committed
+// The digest page's build: Solid's compiler over ui/, one HTML, one JS and one CSS into dist/, which is committed
 // and served as static files by the digest plugin (mods/digest/http/listener.ts). `bun run build` here.
 import solid from "@solidjs/vite-plugin"
 import { defineConfig } from "vite"

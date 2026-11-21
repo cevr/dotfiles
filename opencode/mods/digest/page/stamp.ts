@@ -1,4 +1,4 @@
-// The built page's stamp: one hash over everything the build reads (src/, index.html, the Vite config, the package
+// The built page's stamp: one hash over everything the build reads (ui/, index.html, the Vite config, the package
 // and its lock), written into dist/source.sha256 after each build. mods/digest/page.test.ts recomputes it, so a
 // change to the page's source that was not rebuilt and committed fails the gate.
 //
@@ -18,7 +18,7 @@ const filesUnder = (dir: string): ReadonlyArray<string> =>
 /** The hash of the page's source as it is on disk now. */
 export const sourceHash = (root: string = HERE): string => {
   const hasher = new Bun.CryptoHasher("sha256")
-  const files = [...INPUTS.map((name) => join(root, name)), ...filesUnder(join(root, "src"))].toSorted()
+  const files = [...INPUTS.map((name) => join(root, name)), ...filesUnder(join(root, "ui"))].toSorted()
   for (const file of files) {
     hasher.update(`${relative(root, file)}\n`)
     hasher.update(readFileSync(file))
