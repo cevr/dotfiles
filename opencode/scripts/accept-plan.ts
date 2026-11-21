@@ -187,7 +187,7 @@ export const timedFilter = TIMED_RUNS.join("|")
  */
 export const timedCounts = (text: string, names: ReadonlyArray<string> = TIMED_RUNS) =>
   names.map((name) => {
-    const at = `\n${text}`.indexOf(`\ndescribe(${JSON.stringify(name)}`)
+    const at = `\n${text}`.indexOf(`\ndescribe("${name}"`)
     if (at < 0) return { name, tests: 0 }
     const rest = text.slice(at)
     const next = rest.indexOf("\ndescribe(")
