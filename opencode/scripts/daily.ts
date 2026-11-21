@@ -194,6 +194,15 @@ export const orchestrateEntry = (orchestrate: string, fleet: { readonly dotfiles
 export const mailEntry = (mail: string, fleet: { readonly host: string; readonly tailscale: string | undefined }): PluginEntry =>
   peersOf(fleet.host).length === 0 || fleet.tailscale === undefined ? mail : { package: mail, options: { listen: { hostname: fleet.tailscale } } }
 
+/** The owner's zone: the morning a digest message set aside for Later returns in, on each of his hosts (the workbox runs on UTC). */
+export const OWNER_TIMEZONE = "America/Montreal"
+
+/** The digest's plugin entry: on one of the owner's hosts (`FLEET`), `digest.timezone` is his; elsewhere the bare plugin (the host's zone). */
+export const digestEntry = (digest: string, fleet: { readonly host: string }): PluginEntry => {
+  if (peersOf(fleet.host).length === 0) return digest
+  return { package: digest, options: { timezone: OWNER_TIMEZONE } }
+}
+
 /** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */
 export const tailscaleAddress = async (): Promise<string | undefined> => {
   for (const cli of ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]) {
@@ -410,6 +419,7 @@ const hostFacts = (home: string, fork: string, where: Where = HERE) =>
 const OPTIONED = new Map<string, (dir: string, facts: HostFacts) => PluginEntry>([
   ["pool", (dir, facts) => poolEntry(dir, Option.getOrUndefined(facts.store), { host: facts.host })],
   ["orchestrate", (dir, facts) => orchestrateEntry(dir, facts.fleet, plannerModel(facts.catalog))],
+  ["digest", (dir, facts) => digestEntry(dir, { host: facts.host })],
   ["mail", (dir, facts) => mailEntry(dir, { host: facts.host, tailscale: Option.getOrUndefined(facts.tailscale) })],
   ["update", (dir, facts) => updateEntry(dir, facts.settings)],
 ])

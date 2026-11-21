@@ -4,9 +4,13 @@
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { ConfigProvider, Effect, Path } from "effect"
+import { ConfigProvider, Effect, Exit, Option, Path, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { dirOf } from "./server.ts"
+import { DigestEvent, encodeLine, VERSION } from "@dotfiles/opencode-digest/event"
+import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
+import { markOf } from "@dotfiles/opencode-digest/marks"
+import { scratch } from "../../tests/scratch.ts"
+import { dirOf, handlersOf, Options, zoneOf } from "./server.ts"
 
 /** sim/, from this file's URL (opencode/cmd/digest). */
 const SIM = Effect.runSync(Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("../../sim", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie))
@@ -26,6 +30,28 @@ describe("the digest plugin", () => {
     expect(underEnv({ HOME: "/nonexistent/home", XDG_STATE_HOME: "/nonexistent/state" }, () => dirOf({}))).toBe("/nonexistent/state/opencode-digest")
     expect(underEnv({ HOME: "/nonexistent/home" }, () => dirOf({}))).toBe("/nonexistent/home/.local/state/opencode-digest")
     expect(dirOf({ dir: "/nonexistent/digest" })).toBe("/nonexistent/digest")
+  })
+
+  test("digest.timezone: a zone it names (an alias too), the host's by default, and a malformed one refused", () => {
+    const decode = Schema.decodeUnknownExit(Options)
+    expect(zoneOf({ timezone: "America/Montreal" })).toBe("America/Montreal")
+    expect(zoneOf({})).toBe(new Intl.DateTimeFormat().resolvedOptions().timeZone)
+    expect([Exit.isSuccess(decode({ timezone: "UTC" })), Exit.isSuccess(decode({ timezone: "Mars/Olympus" })), Exit.isSuccess(decode({ port: 70_000 }))]).toEqual([true, false, false])
+  })
+
+  test("the page's view is folded from the log and the marks beside it; a mark written shows at the next read", async () => {
+    using held = scratch("digest-server-")
+    const options = { dir: join(held.path, "digest"), timezone: "UTC" }
+    const t = Date.parse("2026-11-20T12:00:00Z")
+    const log = FileLog.make(options.dir)
+    const run = DigestEvent.cases.Run.make({ v: VERSION, t, root: "r", host: "mac", repo: "harbor", dir: Option.none(), name: Option.some("harbor") })
+    const item = DigestEvent.cases.Item.make({ v: VERSION, t, root: "r", id: "a", text: "Billing ships.", state: "done", owner: "mine", who: Option.none(), level: Option.none(), unit: Option.none() })
+    await Effect.runPromise(Effect.forEach([run, item], (event) => log.append(encodeLine(event), event.t), { discard: true }))
+    const handlers = handlersOf(options, log)
+    const unread = () => Effect.runPromise(Effect.map(handlers.view, (json) => JSON.parse(json).projects.map((project: { readonly unread: number }) => project.unread)))
+    expect(await unread()).toEqual([1])
+    await Effect.runPromise(handlers.write(markOf("item:r:a", t + 1, "read")))
+    expect(await unread()).toEqual([0])
   })
 
   test("no simulation loads the file log: sim/ reaches the digest only through its memory log", () => {
