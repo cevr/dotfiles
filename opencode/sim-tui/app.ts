@@ -229,7 +229,7 @@ const cpuNow = () => {
 }
 
 /** Something a wait waits on (`within`): what its failure says when it is not done, and whether it is. */
-export interface Awaited {
+export interface Waited {
   readonly what: string
   readonly done: () => boolean
 }
@@ -240,7 +240,7 @@ export interface Awaited {
  * naming the first not done, the wall time it waited and its passes. For a wait on real I/O: a count of passes
  * alone gave up however long each real turn took, and a loaded host's import of a plugin outlasted 10 000 of them.
  */
-export const within = <E, R>(awaited: ReadonlyArray<Awaited>, step: Effect.Effect<void, E, R>, deadlineMs: number) =>
+export const within = <E, R>(awaited: ReadonlyArray<Waited>, step: Effect.Effect<void, E, R>, deadlineMs: number) =>
   Effect.gen(function* () {
     const box = { over: false }
     const passes = { run: 0 }
@@ -675,7 +675,7 @@ const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs
   // so the next boot starts alone; an app left up kept rendering, and the next boot took its navigate for its own.
   yield* Effect.gen(function* () {
     // Ready, then every plugin loaded: the route plugin, loaded last, has lent its navigate.
-    const loads: ReadonlyArray<Awaited> = [
+    const loads: ReadonlyArray<Waited> = [
       { what: "the TUI never said it was ready", done: () => ready.done },
       { what: "the route plugin (sim-tui/route) never loaded", done: () => Option.isSome(router().navigate) },
     ]
