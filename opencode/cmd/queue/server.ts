@@ -38,8 +38,8 @@ import * as FileStore from "@dotfiles/opencode-queue/filestore/store"
 import * as Fresh from "@dotfiles/opencode-queue/fresh"
 import * as Model from "@dotfiles/opencode-queue/model"
 import * as Host from "@dotfiles/opencode-queue/opencode/host"
-import { explain, QUEUE, QueueInput, type Rejection } from "@dotfiles/opencode-queue/queue"
-import type { QueueStore, QueueUnreadable, QueueUnwritable } from "@dotfiles/opencode-queue/service"
+import { AnswerInput, type AnswerReply, explain, QUEUE, QueueInput, type Rejection } from "@dotfiles/opencode-queue/queue"
+import type { NoteRefused, QueueStore, QueueUnreadable, QueueUnwritable } from "@dotfiles/opencode-queue/service"
 
 /**
  * An option that takes `fallback` when absent. A present value must decode.
@@ -62,7 +62,8 @@ export type Options = typeof Options.Type
 export const live = (options: Options): Layer.Layer<QueueStore> => FileStore.layer(options.dir)
 
 /** What the agent reads when a change fails: why it was refused, or what went wrong with the store. */
-const messageOf = (failure: Rejection | QueueUnreadable | QueueUnwritable) => {
+const messageOf = (failure: Rejection | QueueUnreadable | QueueUnwritable | NoteRefused) => {
+  if (failure._tag === "NoteRefused") return `The answer did not reach the session: ${failure.message}`
   if (failure._tag === "QueueUnreadable") return `The queue could not be read: ${failure.message}`
   if (failure._tag === "QueueUnwritable") return `The queue could not be saved: ${failure.message}`
   return explain(failure)
@@ -89,7 +90,21 @@ export const make = (externals: (options: Options) => Layer.Layer<QueueStore>) =
       const queue = Context.get(yield* Layer.build(Model.layer.pipe(Layer.provide(Host.fromContext(ctx)), Layer.provide(store), Layer.provide(digest))), Model.QueueModel)
 
       // A queue that cannot be read fails the call, and the sidebar keeps what it drew.
-      yield* ctx.rpc.register(QUEUE, { get: (input) => queue.get(sessionOf(input)).pipe(Effect.orDie) }).pipe(Effect.orDie)
+      // `answer` is the Queue tab's form submit by another way (the digest page): the same send, and it says when it
+      // replaced an answer the item already had.
+      const answer = (input: unknown) =>
+        Schema.decodeUnknownEffect(AnswerInput)(input).pipe(
+          Effect.matchEffect({
+            onFailure: (error) => Effect.succeed<AnswerReply>({ ok: false, message: `malformed request: ${error.message}` }),
+            onSuccess: ({ sessionID, id, answer: given }) =>
+              Effect.gen(function* () {
+                const before = (yield* queue.get(sessionID)).items.find((item) => item.id === id)?.answered
+                yield* queue.answer(sessionID, id, given)
+                return before === undefined ? { ok: true } : { ok: true, replaced: before }
+              }).pipe(Effect.catch((failure) => Effect.succeed<AnswerReply>({ ok: false, message: messageOf(failure) }))),
+          }),
+        )
+      yield* ctx.rpc.register(QUEUE, { get: (input) => queue.get(sessionOf(input)).pipe(Effect.orDie), answer }).pipe(Effect.orDie)
 
       yield* ctx.tool.transform((editor) => {
         editor.add({
