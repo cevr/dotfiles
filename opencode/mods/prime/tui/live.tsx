@@ -4,15 +4,16 @@
 // subagent the current one is marked. They show whether or not the host shows
 // the session's sidebar, which carries only the queue. A phone-sized terminal
 // (rows.ts, `compact`) draws none, the count line above them still opening
-// every one; resized back, they return.
+// every one; resized back, they return. Past six rows the wheel over them
+// scrolls them in place, the count line under them saying where they are.
 import { columns, format, sameSegments, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { subagents, visible, type Row as SubagentRow } from "@dotfiles/opencode-subagents/subagent-row"
-import type { BoxRenderable, RGBA } from "@opentui/core"
+import type { BoxRenderable, MouseEvent, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, Index, Show, type Accessor } from "solid-js"
 import { wholeSecond } from "../clock.ts"
-import { capped, compact, moreLine } from "../rows.ts"
+import { compact, countLine, scrolled, windowed } from "../rows.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { useSessionLink } from "./link.ts"
@@ -45,44 +46,69 @@ function Rows(props: { host: Host; sessionID: string; child: boolean }) {
   const live = createMemo(() => visible(all(), now()).length > 0)
   createEffect(() => setActive(live()))
   const current = () => (props.child ? { current: props.sessionID } : {})
-  const shown = createMemo(() => capped(visible(all(), now(), current())))
+  const list = createMemo(() => visible(all(), now(), current()))
+  // The strip mounts again when it was hidden (no rows) and comes back, so its scroll starts at the top then.
+  return (
+    <Show when={list().length > 0}>
+      <Strip host={props.host} sessionID={props.sessionID} child={props.child} list={list} now={now} />
+    </Show>
+  )
+}
+
+/**
+ * The rows in view and the count line. The wheel over them scrolls them a row
+ * a step, in place: the strip keeps its height, and the transcript behind it
+ * stays. The offset is a place in the list, so ticks and rows changing state
+ * keep it, and a row leaving while scrolled clamps it (rows.ts, `windowed`).
+ */
+function Strip(props: { host: Host; sessionID: string; child: boolean; list: Accessor<ReadonlyArray<SubagentRow>>; now: Accessor<number> }) {
+  const [offset, setOffset] = createSignal(0)
+  const shown = createMemo(() => windowed(props.list(), offset()))
+  // Kept clamped, so a step after rows left starts from the window drawn.
+  createEffect(() => {
+    const clamped = shown().offset
+    if (clamped !== offset()) setOffset(clamped)
+  })
   const cols = createMemo(() => columns(shown().rows))
   const terminal = useTerminalDimensions()
   const [measured, setMeasured] = createSignal<number>()
   const width = createMemo(() => measured() ?? Math.max(0, terminal().width - 2))
   return (
-    <Show when={shown().rows.length > 0}>
-      <box
-        flexDirection="column"
-        flexShrink={0}
-        onSizeChange={function (this: BoxRenderable) {
-          const value = this.width
-          queueMicrotask(() => setMeasured(value))
-        }}
-      >
-        {/* By place, not by object: a tick gives every live row a new object, and a row kept in place only redraws what changed. */}
-        <Index each={shown().rows}>
-          {(row) => (
-            <Row
-              host={props.host}
-              row={row()}
-              width={width()}
-              columns={cols()}
-              now={now}
-              marked={props.child && row().id === props.sessionID}
-              marking={props.child}
-            />
-          )}
-        </Index>
-        <Show when={moreLine(shown().more, props.child)}>
-          {(line) => (
-            <text wrapMode="none" truncate fg={props.host.theme().text.faint}>
-              {line()}
-            </text>
-          )}
-        </Show>
-      </box>
-    </Show>
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      onSizeChange={function (this: BoxRenderable) {
+        const value = this.width
+        queueMicrotask(() => setMeasured(value))
+      }}
+      onMouseScroll={(event: MouseEvent) => {
+        // The strip takes every wheel step over it, moved or not: none reaches the transcript.
+        event.stopPropagation()
+        setOffset((at) => scrolled(at, event.scroll?.direction ?? "", props.list().length))
+      }}
+    >
+      {/* By place, not by object: a tick gives every live row a new object, and a row kept in place only redraws what changed. */}
+      <Index each={shown().rows}>
+        {(row) => (
+          <Row
+            host={props.host}
+            row={row()}
+            width={width()}
+            columns={cols()}
+            now={props.now}
+            marked={props.child && row().id === props.sessionID}
+            marking={props.child}
+          />
+        )}
+      </Index>
+      <Show when={countLine(shown(), props.child)}>
+        {(line) => (
+          <text wrapMode="none" truncate fg={props.host.theme().text.faint}>
+            {line()}
+          </text>
+        )}
+      </Show>
+    </box>
   )
 }
 

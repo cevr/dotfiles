@@ -408,6 +408,16 @@ dropped from the unit; any other worker reads `worker`:
 ◈ verifier    opus  closure-flake r1 (Opus)    (was: ◈ worker opus  closure-flake verifier r1 (Opus))
 ```
 
+At most six rows show; the line under them counts the rest
+(`+33 more · ↓ to see all`). The mouse wheel or a trackpad over the rows
+scrolls them in place, a row a step, the strip keeping its height, and the
+line then says where you are (`7–12 of 39 · 6 above, 27 below · ↓ to see
+all`). The wheel there never scrolls the transcript, and the wheel over the
+transcript never scrolls the rows. The place holds while rows tick and change
+state, a row that leaves while scrolled keeps the window full, a click opens
+the row it shows, and the rows start at the top again whenever they hide and
+come back (`windowed`, `scrolled` and `countLine` in `mods/prime/rows.ts`).
+
 The wake item shows only while the session has wakes pending or notices
 unread, in the success colour while any is pending (the warning colour with
 only notices); its parts drop from the right as the row narrows. It is read

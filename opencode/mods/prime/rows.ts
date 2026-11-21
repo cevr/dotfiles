@@ -1,19 +1,50 @@
 // The live rows beneath the composer, without rendering: how many of the
-// subagent rows (`@dotfiles/opencode-subagents`) the dock draws, and the line
-// that counts the rest, and on which terminals it draws none.
+// subagent rows (`@dotfiles/opencode-subagents`) the dock draws, which of them
+// the wheel has scrolled into view, the line that says where they are, and on
+// which terminals it draws none.
 
-/** The most rows drawn; the rest are counted. */
+/** The most rows drawn at once; the wheel scrolls the rest through them. */
 export const CAP = 6
 
-/** The first `cap` rows, in order, and how many more there are. */
-export function capped<T>(rows: ReadonlyArray<T>, cap = CAP): { readonly rows: T[]; readonly more: number } {
-  return { rows: rows.slice(0, cap), more: Math.max(0, rows.length - cap) }
+/** The rows in view: `cap` of them from `offset`, in order, and how many lie above and below. */
+export interface Window<T> {
+  readonly rows: T[]
+  /** The offset the window shows, clamped: an offset past the end (rows left while scrolled) keeps the window full. */
+  readonly offset: number
+  readonly above: number
+  readonly below: number
+  readonly total: number
 }
 
-/** The line under the rows that counts the rest: where to see them all, when there is a way. */
-export function moreLine(more: number, child: boolean): string {
-  if (more <= 0) return ""
-  return child ? `+${more} more` : `+${more} more · ↓ to see all`
+/** The offset clamped to the rows: from 0 to the last full window. */
+const clamp = (offset: number, total: number, cap: number) => Math.min(Math.max(0, offset), Math.max(0, total - cap))
+
+/** The `cap` rows from `offset` (clamped), in order. */
+export function windowed<T>(rows: ReadonlyArray<T>, offset: number, cap = CAP): Window<T> {
+  const total = rows.length
+  const at = clamp(offset, total, cap)
+  const shown = rows.slice(at, at + cap)
+  return { rows: shown, offset: at, above: at, below: total - at - shown.length, total }
+}
+
+/** The offset after one wheel step `direction` from `offset`: a row up or down, stopping at either end; sideways leaves it. */
+export function scrolled(offset: number, direction: string, total: number, cap = CAP): number {
+  const step = direction === "down" ? 1 : direction === "up" ? -1 : 0
+  return clamp(clamp(offset, total, cap) + step, total, cap)
+}
+
+/**
+ * The line under the rows. At the top it counts the rest, as it always did;
+ * scrolled, it says which rows show and how many lie above and below. From the
+ * parent it ends with the way to see them all.
+ */
+export function countLine(window: Window<unknown>, child: boolean): string {
+  if (window.above + window.below === 0) return ""
+  const tail = child ? "" : " · ↓ to see all"
+  if (window.above === 0) return `+${window.below} more${tail}`
+  const range = `${window.offset + 1}–${window.offset + window.rows.length} of ${window.total}`
+  const around = window.below > 0 ? `${window.above} above, ${window.below} below` : `${window.above} above`
+  return `${range} · ${around}${tail}`
 }
 
 /**
