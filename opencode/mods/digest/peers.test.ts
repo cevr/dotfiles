@@ -1,13 +1,13 @@
 // The peers' wire and their place on the tailnet: what a peer's answer comes to (up, down, needs update), a newer
 // peer's unknown message skipped alone, and a peer found only in Tailscale's own status.
 import { describe, expect, test } from "bun:test"
-import { Option } from "effect"
+import { Array as Arr, Option } from "effect"
 import { type PeerStatus, StatusRead } from "./bind.ts"
 import { DigestEvent, VERSION } from "./event.ts"
 import { EMPTY, fold } from "./fold.ts"
 import { NO_MARKS } from "./marks.ts"
 import { pageOf } from "./messages.ts"
-import { envelopeOf, keyedOf, locateIn, NOT_ALLOWED, Reading, readingOf, type Sighting, WIRE } from "./peers.ts"
+import { envelopeOf, keyedOf, locateIn, mergeView, NOT_ALLOWED, peerOriginsOf, Reading, readingOf, type Sighting, WIRE } from "./peers.ts"
 import { viewOf } from "./view.ts"
 
 const T = Date.parse("2026-11-20T12:00:00Z")
@@ -103,6 +103,82 @@ describe("a peer on the tailnet", () => {
     ]
     expect(locateIn(named, sightingOf([WORKBOX, device("phone", "nPHONE", ["100.101.102.110"])]), T, 8240)).toEqual(new Map([["workbox", { name: "workbox", base: "http://100.101.102.104:8240" }]]))
     expect(locateIn(named, sightingOf([]), T, 8240)).toEqual(new Map())
+  })
+})
+
+/** A seeded generator of numbers in [0, 1) (mulberry32). */
+const drawer = (seed: number) => {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state)
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+describe("the origins a host lets write here cross-origin (round 2's B1)", () => {
+  const PORT = 8240
+  const NAMES = ["macbook", "workbox", "phone", "laptop", "spare"]
+  const DOMAINS = ["example-tailnet.ts.net", "other-tailnet.ts.net"]
+  /** `yes` when `cond`, else `no`. */
+  const when = <A,>(cond: boolean, yes: A, no: A): A => Option.getOrElse(Option.as(Option.liftPredicate(cond, Boolean), yes), () => no)
+  /** An address as a URL's host spells it: IPv6 in brackets. */
+  const bracketed = (ip: string) => when(ip.includes(":"), `[${ip}]`, ip)
+  const labelOf = (name: string) => Option.getOrElse(Arr.head(name.split(".")), () => name)
+  /** Every form a browser could send for `peer`, its names included, and near misses of each. */
+  const formsOf = (peer: PeerStatus): ReadonlyArray<string> => {
+    const name = Option.getOrElse(peer.dnsName, () => "").replace(/\.$/, "")
+    const places = [...peer.ips.map(bracketed), name, labelOf(name), peer.hostName].filter((each) => each !== "")
+    return places.flatMap((place) => [`http://${place}:${PORT}`, `http://${place}:${PORT + 1}`, `https://${place}:${PORT}`, `http://${place.toUpperCase()}:${PORT}`, `http://${place}`])
+  }
+
+  test("over generated statuses: allowed iff it is exactly http://<address>:<port> of the keyed device's current addresses; never a name", () => {
+    for (let seed = 1; seed <= 400; seed++) {
+      const draw = drawer(seed)
+      const pick = <A,>(all: ReadonlyArray<A>): A => Option.getOrThrow(Arr.get(all, Math.floor(draw() * all.length)))
+      const ip4 = () => `100.${64 + Math.floor(draw() * 64)}.${Math.floor(draw() * 256)}.${1 + Math.floor(draw() * 254)}`
+      const ip6 = () => `fd7a:115c:a1e0::${(1 + Math.floor(draw() * 0xfffe)).toString(16)}`
+      // The keyed device, under any name now (renamed, or a name another device also carries).
+      const keyed: PeerStatus = { ...device(pick(NAMES), "nKEY", [ip4(), ip6()]), dnsName: Option.some(`${pick(NAMES)}.${pick(DOMAINS)}`) }
+      const keyedName = Option.getOrElse(keyed.dnsName, () => "x")
+      const others: ReadonlyArray<PeerStatus> = Array.from({ length: Math.floor(draw() * 5) }, (_, n) => {
+        const kind = pick(["his", "colleague", "shared", "tagged"] as const)
+        // Some carry the keyed device's name, its label or its HostName; some list one of its addresses (contested).
+        const name = pick([...NAMES, labelOf(keyedName)])
+        return {
+          ...device(name, `n${n}`, [when(draw() < 0.15, pick(keyed.ips), ip4())]),
+          dnsName: Option.some(when(draw() < 0.3, keyedName, `${name}.${pick(DOMAINS)}`)),
+          hostName: pick([name, keyed.hostName]),
+          userId: Option.some(when(kind === "colleague", 9, HIS)),
+          shared: kind === "shared",
+          tagged: kind === "tagged",
+        }
+      })
+      const present = draw() < 0.85
+      const keyedByStore = draw() < 0.85
+      const sighting = sightingOf([...others, ...when(present, [keyed], [])], { agents: [{ name: "macbook", ids: when(keyedByStore, ["nKEY"], []) }] })
+      const allowed = peerOriginsOf([{ name: "macbook", host: "macbook" }], sighting, T, PORT)
+      // The oracle: the keyed device's addresses no other device (nor this host) lists, as a browser spells them.
+      const listedElsewhere = new Set(["100.101.102.103", ...others.flatMap((each) => each.ips)])
+      const expected = when(
+        present && keyedByStore,
+        keyed.ips.flatMap((ip) => Option.toArray(Option.liftPredicate(`http://${bracketed(ip)}:${PORT}`, () => !listedElsewhere.has(ip)))),
+        [],
+      )
+      expect(new Set(allowed), `seed ${seed}`).toEqual(new Set(expected))
+      for (const origin of [...formsOf(keyed), ...others.flatMap(formsOf)]) expect(allowed.includes(origin), `seed ${seed}: ${origin}`).toBe(expected.includes(origin))
+      for (const origin of allowed) expect(new URL(origin).hostname, `seed ${seed}`).toMatch(/^(\d{1,3}\.){3}\d{1,3}$|^\[[0-9a-f:]+\]$/)
+    }
+  })
+
+  test("a peer's own view cannot choose where this page writes: the merged origin is where this host found the peer", () => {
+    const hostile = { ...VIEW, projects: VIEW.projects.map((project) => ({ ...project, origin: Option.some("http://evil.example:8240"), host: Option.some("harbor") })) }
+    const merged = mergeView(VIEW, "harbor", [{ name: "workbox", origin: Option.some("http://100.101.102.104:8240"), reading: Reading.Up({ view: hostile }), lastSeen: Option.some(T) }])
+    const theirs = merged.projects.filter((project) => project.id.startsWith("peer:"))
+    expect(theirs.length).toBeGreaterThan(0)
+    expect(theirs.map((project) => [project.origin, project.host])).toEqual(theirs.map(() => [Option.some("http://100.101.102.104:8240"), Option.some("workbox")]))
+    expect(Option.map(merged.peers, (peers) => peers.map((peer) => peer.origin))).toEqual(Option.some([Option.some("http://100.101.102.104:8240")]))
   })
 })
 

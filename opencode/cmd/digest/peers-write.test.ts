@@ -181,14 +181,14 @@ const hostsOf = async (dir: string, names: ReadonlyArray<string>, storeOf: (name
   return made
 }
 
-/** The origins B should allow in `scene`: each peer's page as B keys it, every spelling a browser would send. */
+/**
+ * The origins B should allow in `scene`: each peer's page by its keyed device's Tailscale addresses alone, as a browser
+ * spells them. Never a name: which server answers a name is the resolver's choice, an address is Tailscale's routing.
+ */
 const expectedOrigins = (b: string, hosts: ReadonlyArray<string>, scene: Scene, store: StoreState): ReadonlyArray<string> =>
   hosts
     .filter((other) => other !== b && store === "keyed" && !(other === "macbook" && scene === "gone"))
-    .flatMap((other) => {
-      const name = Option.getOrElse(Option.liftPredicate(other, (each) => each !== "macbook"), () => macbookName(scene))
-      return [`http://${one(V4.get(other))}:${PORT}`, `http://[${one(V6.get(other))}]:${PORT}`, `http://${name}.${SUFFIX}:${PORT}`, `http://${name}:${PORT}`]
-    })
+    .flatMap((other) => [`http://${one(V4.get(other))}:${PORT}`, `http://[${one(V6.get(other))}]:${PORT}`])
 
 /** Every origin worth sending: each host's forms, under the names any scene gives, and near misses of each. */
 const CANDIDATES: ReadonlyArray<string> = [
@@ -337,6 +337,30 @@ describe("the page writes to the host that owns an item, under that host's own p
   test("a host whose device store keys nothing allows no peer origin at all", async () => {
     expect((await property(21, 3, "unkeyed", 120)).accepted).toBe(0)
   }, 120_000)
+
+  test("the round 2 verifier's probes: a page at the keyed peer's bare name or full MagicDNS name writes nothing on B, from the phone", async () => {
+    // In headless Chrome a resolver mapped `macbook` (and its full name) to a server that is not the keyed device; its
+    // page marked, set aside, renamed and answered on B (round-2-receipts/chrome-short-label.txt, chrome-full-name.txt).
+    using held = scratch("digest-peers-write-")
+    const names = NAMES.slice(0, 2)
+    const [a, b] = await hostsOf(held.path, names, () => "keyed")
+    await using _closed = { [Symbol.asyncDispose]: () => closeAll([one(a), one(b)]) }
+    const workbox = `http://${Listener.HOSTNAME}:${one(b).tailnet}`
+    caller.address = PHONE
+    for (const origin of [`http://macbook:${PORT}`, `http://macbook.${SUFFIX}:${PORT}`]) {
+      for (const route of WRITE_ROUTES) {
+        const sent = await send(workbox, route, Option.some(origin), Option.none())
+        expect([origin, route, sent.status, sent.headers.has("access-control-allow-origin")]).toEqual([origin, route, 403, false])
+        const pre = await preflight(workbox, route, origin, "content-type,x-digest-page")
+        expect([origin, route, pre.ok, pre.headers.has("access-control-allow-origin")]).toEqual([origin, route, false, false])
+      }
+    }
+    expect(await one(b).writes()).toBe(0)
+    // The same writes from the keyed device's address origin are his phone's, and land.
+    expect((await send(workbox, "mark", Option.some(`http://${one(V4.get("macbook"))}:${PORT}`), Option.none())).status).toBe(204)
+    expect((await send(workbox, "mark", Option.some(`http://[${one(V6.get("macbook"))}]:${PORT}`), Option.none())).status).toBe(204)
+    expect(await one(b).writes()).toBe(2)
+  }, 60_000)
 
   test("the cases by hand: the phone writes from the peer's page; an agent machine's browser is refused there, its token ignored, and told to pair on B", async () => {
     using held = scratch("digest-peers-write-")
