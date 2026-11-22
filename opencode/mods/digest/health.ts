@@ -18,9 +18,11 @@
 // - On loopback alone the line ends with `writes=<switch>[:<why closed>] members=<n> writers=<n>` (localPart): the
 //   write switch in force (`digest.tailnetWrite`, "paired" with the reason when it closed, members.ts), how many of
 //   his own other devices Tailscale's status names, and how many of those write as him with no token now (not agent
-//   hosts), then `excluded=<n>[:unmatched:<name>|:unkeyed:<name>]`: how many of his devices `digest.excludedDevices`
-//   keeps out, and each exclusion whose stable ID no device of his has (or that has none), since a missed exclusion
-//   fails open. A paired browser on the tailnet reads the line without them.
+//   hosts), then `excluded=<n>[:unmatched:<name>][:store-<copy 1>/<copy 2>|:store-copies-differ]`: how many of his
+//   devices `digest.excludedDevices` keeps out, each exclusion whose stable IDs no device of his has (a device gone),
+//   and the device store's condition when its two copies are not both read and equal (devices.ts). An exclusion the
+//   store does not key shows in the switch instead, `writes=paired:unkeyed:<name>:store-...`. A paired browser on
+//   the tailnet reads the line without them.
 import { Array as Arr, DateTime, Option } from "effect"
 
 /** What the tailnet listener is doing, as health reports it. */

@@ -9,7 +9,6 @@ import { hostname, networkInterfaces } from "node:os"
 import { file, readableStreamToText, spawn } from "bun"
 import { Duration, Effect, Option, Schema } from "effect"
 import { type InterfaceAddress, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
-import { type Exclusion, exclusionsFrom } from "../members.ts"
 
 /**
  * Where the Tailscale CLI is, in order: the Mac app's, Homebrew's (Apple silicon, then Intel), then the Linux
@@ -31,6 +30,8 @@ const Node = Schema.Struct({
   DNSName: Schema.optionalKey(Schema.String),
   ID: Schema.optionalKey(Schema.String),
   HostName: Schema.optionalKey(Schema.String),
+  OS: Schema.optionalKey(Schema.String),
+  LastSeen: Schema.optionalKey(Schema.String),
   TailscaleIPs: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
   UserID: Schema.optionalKey(Schema.Number),
   Tags: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
@@ -69,6 +70,8 @@ export const statusOf = (text: string): Option.Option<TailscaleStatus> =>
         dnsName: dnsNameOf(Option.some(peer)),
         stableId: Option.filter(Option.fromUndefinedOr(peer.ID), (id) => id !== ""),
         hostName: Option.getOrElse(Option.fromUndefinedOr(peer.HostName), () => ""),
+        os: Option.getOrElse(Option.fromUndefinedOr(peer.OS), () => ""),
+        lastSeen: Option.filter(Option.fromUndefinedOr(peer.LastSeen), (seen) => seen !== "" && !seen.startsWith("0001-")),
         ips: listOf(Option.fromNullishOr(peer.TailscaleIPs)),
         userId: Option.fromUndefinedOr(peer.UserID),
         tagged: listOf(Option.fromNullishOr(peer.Tags)).length > 0,
@@ -119,14 +122,6 @@ export const statusFrom = (clis: ReadonlyArray<string> = CLIS, timeout: Duration
         ),
     }),
   )
-
-/**
- * `digest.excludedDevices` for the installer: each of `names` with every stable ID it had in `previous`, plus that of
- * the device of his carrying the name in Tailscale's status now (members.ts `exclusionsFrom`). A promise of plain data, so a script on another Effect
- * runtime can call it.
- */
-export const readExclusions = (previous: ReadonlyArray<Exclusion>, names: ReadonlyArray<string>, clis: ReadonlyArray<string> = CLIS): Promise<ReadonlyArray<Exclusion>> =>
-  Effect.runPromise(Effect.map(statusFrom(clis), (read) => exclusionsFrom(previous, names, read)))
 
 /** The host's interface addresses. */
 const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.values(networkInterfaces()).flatMap((each) => Option.getOrElse(Option.fromUndefinedOr(each), () => [])))

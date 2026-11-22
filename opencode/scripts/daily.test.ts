@@ -10,7 +10,7 @@ import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
 import { settingsFor } from "../mods/update/process/install.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, exclusionsOf, fleetOthersOf, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, fleetOthersOf, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -303,60 +303,6 @@ describe("the pool's entry", () => {
   })
 })
 
-describe("the digest's excluded devices, carried from configure to configure (round 2's B1)", () => {
-  // A fake `tailscale status --json`: harbor (user 7), his phone, and per step his lenovo-rescue under a name and an ID
-  // (or gone), and a colleague's device (user 9) that may call itself lenovo-rescue; `null` for a CLI that fails.
-  const statusJson = (lenovo: Option.Option<{ readonly name: string; readonly id: string }>, colleague: Option.Option<string>) =>
-    jsonOf({
-      BackendState: "Running",
-      Self: { DNSName: "harbor.example-tailnet.ts.net.", ID: "nHarbor", TailscaleIPs: ["100.101.102.103"], UserID: 7 },
-      Peer: Object.fromEntries([
-        ["k1", { DNSName: "phone.example-tailnet.ts.net.", ID: "nPhone", TailscaleIPs: ["100.101.102.110"], UserID: 7 }],
-        ...Option.toArray(Option.map(lenovo, (each) => ["k2", { DNSName: `${each.name}.example-tailnet.ts.net.`, ID: each.id, TailscaleIPs: ["100.101.102.130"], UserID: 7 }] as const)),
-        ...Option.toArray(Option.map(colleague, (name) => ["k3", { DNSName: `${name}.example-tailnet.ts.net.`, ID: "nTheirs", TailscaleIPs: ["100.101.102.120"], UserID: 9 }] as const)),
-      ]),
-    })
-  const configureWith = (dir: string, file: string) => (status: Option.Option<string>) => {
-    const cli = join(dir, "tailscale")
-    writeFileSync(join(dir, "status.json"), Option.getOrElse(status, () => ""))
-    writeFileSync(cli, Option.match(status, { onNone: () => "#!/bin/sh\nexit 1\n", onSome: () => `#!/bin/sh\ncat '${join(dir, "status.json")}'\n` }), { mode: 0o755 })
-    return exclusionsOf("bite-cristian", file, [cli])
-  }
-  const lenovo = (name: string, id: string) => Option.some({ name, id })
-
-  test("an ID once shipped is never dropped: across renames, unreadable statuses and a colleague's device taking the name, and a re-key adds its ID", () => {
-    using held = scratchDir("daily-exclusions-")
-    const file = join(held.path, "state/digest-exclusions.json")
-    const configure = configureWith(held.path, file)
-    return Effect.runPromise(
-      Effect.gen(function* () {
-        const shipped = [
-          // First configure with no status at all, nothing remembered: unkeyed (the plugin closes the tailnet until keyed).
-          yield* configure(Option.none()),
-          yield* configure(Option.some(statusJson(lenovo("lenovo-rescue", "nLenovo1"), Option.none()))),
-          // Renamed on the device: the next configures keep the ID.
-          yield* configure(Option.some(statusJson(lenovo("lenovo-x", "nLenovo1"), Option.none()))),
-          yield* configure(Option.none()),
-          // A colleague's device now calls itself lenovo-rescue: never taken.
-          yield* configure(Option.some(statusJson(lenovo("lenovo-x", "nLenovo1"), Option.some("lenovo-rescue")))),
-          // Re-registered under the old name (a new node, a new ID): added, the old one kept.
-          yield* configure(Option.some(statusJson(lenovo("lenovo-rescue", "nLenovo2"), Option.none()))),
-          // Removed from his tailnet: harmless, nothing dropped.
-          yield* configure(Option.some(statusJson(Option.none(), Option.none()))),
-        ]
-        const keyed = (ids: ReadonlyArray<string>) => [{ name: "lenovo-rescue", ids }]
-        expect(shipped).toEqual([keyed([]), keyed(["nLenovo1"]), keyed(["nLenovo1"]), keyed(["nLenovo1"]), keyed(["nLenovo1"]), keyed(["nLenovo1", "nLenovo2"]), keyed(["nLenovo1", "nLenovo2"])])
-        // The state file is what the next configure reads; one that cannot be read keys anew (or ships unkeyed: closed).
-        expect(parseJson(readFileSync(file, "utf8"))).toEqual(keyed(["nLenovo1", "nLenovo2"]))
-        writeFileSync(file, "{not json")
-        expect(yield* configure(Option.none())).toEqual(keyed([]))
-        // Off his fleet nothing is excluded.
-        expect(yield* exclusionsOf("ci-runner", join(held.path, "other.json"), [join(held.path, "tailscale")])).toEqual([])
-      }),
-    )
-  })
-})
-
 describe("the pool's fleet", () => {
   test("on the MacBook and the workbox, paces OpenAI on the ChatGPT account and reads the other host over SSH", () => {
     expect(poolEntry(`${MODS}/pool`, undefined, { host: "Cristians-MacBook-Pro.local" })).toEqual({
@@ -381,12 +327,12 @@ describe("the pool's fleet", () => {
   })
 
   test("on his hosts the digest's morning is his zone (the workbox is UTC), his own devices read, mark and answer unpaired but for the agent machines, each host naming the other; elsewhere the host's zone and the plugin's paired defaults", () => {
-    const excluded = [{ name: "lenovo-rescue", ids: ["nInvented1CNTRL"] }]
-    const his = (agents: ReadonlyArray<string>) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: [...agents, "cristians-macbook-pro-rex"], excludedDevices: excluded } })
-    // By name, never by address: the plugin resolves each among his own devices' MagicDNS names at every status read.
-    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian", excluded })).toEqual(his(["cristians-macbook-pro"]))
-    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local", excluded })).toEqual(his(["bite-cristian"]))
-    expect(digestEntry(`${MODS}/digest`, { host: "ci-runner", excluded })).toBe(`${MODS}/digest`)
+    const his = (agents: ReadonlyArray<string>) => ({ package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: [...agents, "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"] } })
+    // Names only, never an address or an ID: each host's device store keys them (cmd/digest/devices.ts), and the
+    // installer looks nothing up, so a configure with Tailscale up, down or lying ships the same entry.
+    expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual(his(["cristians-macbook-pro"]))
+    expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual(his(["bite-cristian"]))
+    expect(digestEntry(`${MODS}/digest`, { host: "ci-runner" })).toBe(`${MODS}/digest`)
   })
 
   test("each host's agent hosts are the other fleet host, by its MagicDNS first label (resolved by the plugin: mods/digest/agenthost.test.ts)", () => {
@@ -396,11 +342,11 @@ describe("the pool's fleet", () => {
   })
 
   test("a tree's overlay replaces an earlier build's digest entry whole: its plugin list comes whole from the host's facts", () => {
-    const facts = { host: "bite-cristian", tailscale: Option.some("100.64.0.2"), digestExcluded: [{ name: "lenovo-rescue", ids: ["nInvented1CNTRL"] }], fleet: CHECKOUTS, catalog: CATALOG, store: Option.none(), settings: settingsFor({ host: "bite-cristian", home: "/h", state: "/s", checkout: "/repo", fork: "/fork", bun: "/bun", resident: "/r", launcher: "/l" }) }
+    const facts = { host: "bite-cristian", tailscale: Option.some("100.64.0.2"), fleet: CHECKOUTS, catalog: CATALOG, store: Option.none(), settings: settingsFor({ host: "bite-cristian", home: "/h", state: "/s", checkout: "/repo", fork: "/fork", bun: "/bun", resident: "/r", launcher: "/l" }) }
     // The overlay's plugins are serverEntries' list, written whole (writeTree's writeJson); an earlier build's entry does not survive.
     const earlier = { package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "paired" } }
     const plugins = serverEntries(facts, (name) => `/t/${name}`)
-    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["cristians-macbook-pro", "cristians-macbook-pro-rex"], excludedDevices: [{ name: "lenovo-rescue", ids: ["nInvented1CNTRL"] }] } })
+    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member", tailnetWrite: "member-except-hosts", agentHosts: ["cristians-macbook-pro", "cristians-macbook-pro-rex"], excludedDevices: ["lenovo-rescue"] } })
     expect(plugins).not.toContainEqual(earlier)
   })
 

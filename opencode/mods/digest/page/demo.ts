@@ -160,8 +160,8 @@ const TAILNET = StatusRead.Read({
     userId: Option.some(7),
     tagged: false,
     peers: [
-      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), hostName: "localhost", ips: ["100.101.102.110"], userId: Option.some(7), tagged: false, shared: false },
-      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "localhost", ips: ["100.101.102.110"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
     ],
   },
 })

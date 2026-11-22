@@ -21,13 +21,12 @@
  * - `tailnetWrite` (digest.tailnetWrite): who marks and answers on the tailnet without pairing: `"paired"` (default),
  *   `"member"` (his own devices) or `"member-except-hosts"` (his own devices except this host and the agent hosts,
  *   which still need pairing, as loopback does for an answer).
- * - `agentHosts` (digest.agentHosts): the agent machines beside this one, each one of HIS devices by its MagicDNS
- *   name (or first label) or one of its addresses, never a HostName; it only narrows writes, never admits a device,
- *   and an entry none of his devices answers to closes `"member-except-hosts"` to `"paired"`.
+ * - `agentHosts` (digest.agentHosts): the agent machines beside this one, by MagicDNS name, each keyed in the device
+ *   store by `bun cmd/digest/devices.ts agent <name>` (its stable node IDs; devices.ts). It only narrows writes,
+ *   never admits a device; a name the store does not key, or that no device of his answers to, closes the writes.
  * - `excludedDevices` (digest.excludedDevices): his devices that count as nobody's, reading and writing nothing
- *   unpaired, each `{name, ids}`: its MagicDNS name and every stable node ID it has had (`ID` in the status); a
- *   device either matches is excluded, so a rename keeps it out. One with no ID (`ids: []`) closes every tailnet
- *   source to "paired" until it has one; one whose IDs no device of his has (a device gone) shows in health.
+ *   unpaired, by MagicDNS name, each keyed by `bun cmd/digest/devices.ts exclude <name>`. A name the store does not
+ *   key closes every tailnet source to "paired", reads and writes, until it is keyed.
  *   (members.ts: who his devices are, read again with the tailnet every RECHECK.)
  *
  * `GET /health` answers the health line (`@dotfiles/opencode-digest/health`), which the installer logs.
@@ -44,7 +43,9 @@ import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
 import { buildOf, healthLine, sickLine, type TailnetState } from "@dotfiles/opencode-digest/health"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
-import { closed, type Members, membersOf, type WriteConfig } from "@dotfiles/opencode-digest/members"
+import { type Copy, keysOf, membersWith, type Named } from "@dotfiles/opencode-digest/devices"
+import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
+import { closed, type Members } from "@dotfiles/opencode-digest/members"
 import { TAILNET_WRITES, type TailnetRead, type TailnetWrite } from "@dotfiles/opencode-digest/policy"
 import * as Tailnet from "@dotfiles/opencode-digest/process/tailnet"
 import { DigestLines, DigestUnwritable } from "@dotfiles/opencode-digest/service"
@@ -61,16 +62,24 @@ export const Options = Schema.Struct({
   tailnetRead: Schema.optionalKey(Schema.Literals(["paired", "member"])),
   tailnetWrite: Schema.optionalKey(Schema.Literals(TAILNET_WRITES)),
   agentHosts: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
-  excludedDevices: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, ids: Schema.Array(Schema.NonEmptyString) }))),
+  excludedDevices: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
 })
 export type Options = typeof Options.Type
 
-/** `digest.tailnetWrite`, `digest.agentHosts` and `digest.excludedDevices`, each at its default when absent. */
+/** `digest.tailnetWrite`, and the names `digest.agentHosts` and `digest.excludedDevices` give the device store to key, each at its default when absent. */
 export const writeConfigOf = (options: Options): WriteConfig => ({
   tailnetWrite: Option.getOrElse(Option.fromUndefinedOr(options.tailnetWrite), (): TailnetWrite => "paired"),
   agentHosts: Option.getOrElse(Option.fromUndefinedOr(options.agentHosts), (): ReadonlyArray<string> => []),
-  excluded: Option.getOrElse(Option.fromUndefinedOr(options.excludedDevices), (): WriteConfig["excluded"] => []),
+  excluded: Option.getOrElse(Option.fromUndefinedOr(options.excludedDevices), (): ReadonlyArray<string> => []),
 })
+
+/** What the plugin applies: the write switch, and the names the device store keys. */
+export interface WriteConfig extends Named {
+  readonly tailnetWrite: TailnetWrite
+}
+
+/** The device store's two copies for `options` (filestore/devices.ts): beside the log, and under the config tree. */
+export const storePathsOf = (options: Options): readonly [string, string] => FileDevices.pathsOf(dirOf(options), TuiDirs.dirs().config)
 
 /** His devices before the first tailnet read: none, so every tailnet source needs pairing. */
 export const STARTING: Members = closed("starting")
@@ -150,13 +159,15 @@ export const answerersOf = (ctx: Plugin.Context): Answerers => ({
 })
 
 /**
- * The tailnet as `probe` reads it, keeping his devices from the same status read in `members` each time: a read that
- * fails closes them at once (membersOf).
+ * The tailnet as `probe` reads it, keeping his devices from the same status read in `members` each time, with the
+ * device store's keys as `copies` reads them then (devices.ts keysOf): a read that fails, or a name the store does
+ * not key, closes them at once.
  */
-export const probeKeeping = (config: WriteConfig, probe: Effect.Effect<Tailnet.Probed>, members: Ref.Ref<Members>): Effect.Effect<Tailnet.Probed["tailnet"]> =>
+export const probeKeeping = (config: WriteConfig, probe: Effect.Effect<Tailnet.Probed>, members: Ref.Ref<Members>, copies: Effect.Effect<readonly [Copy, Copy]>): Effect.Effect<Tailnet.Probed["tailnet"]> =>
   Effect.gen(function* () {
     const read = yield* probe
-    yield* Ref.set(members, membersOf(config, read.status, yield* Clock.currentTimeMillis))
+    const [primary, secondary] = yield* copies
+    yield* Ref.set(members, membersWith(config.tailnetWrite, keysOf(config, primary, secondary), read.status, yield* Clock.currentTimeMillis))
     return read.tailnet
   })
 
@@ -169,7 +180,7 @@ export const livePage = (options: Options, handlers: Listener.Handlers, tailnet:
   Effect.gen(function* () {
     const dist = yield* DIST
     const port = Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT)
-    yield* Effect.forkScoped(Listener.serveTailnet(port, handlers, dist, probeKeeping(writeConfigOf(options), Tailnet.probeWithStatus, members), tailnet))
+    yield* Effect.forkScoped(Listener.serveTailnet(port, handlers, dist, probeKeeping(writeConfigOf(options), Tailnet.probeWithStatus, members, FileDevices.readCopies(storePathsOf(options))), tailnet))
     yield* Listener.serve(port, handlers, dist)
   })
 

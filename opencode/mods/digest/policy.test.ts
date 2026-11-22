@@ -142,11 +142,11 @@ const STATUS: TailscaleStatus = {
   userId: Option.some(7),
   tagged: false,
   peers: [
-    { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
-    { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
-    { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), hostName: "Colleague's MacBook", ips: ["100.101.102.120", "fd7a:115c:a1e0::120"], userId: Option.some(9), tagged: false, shared: false },
-    { dnsName: Option.some("server.example-tailnet.ts.net"), stableId: Option.none(), hostName: "server", ips: ["100.101.102.121"], userId: Option.some(7), tagged: true, shared: false },
-    { dnsName: Option.some("guest.example-tailnet.ts.net"), stableId: Option.none(), hostName: "guest", ips: ["100.101.102.122"], userId: Option.some(7), tagged: false, shared: true },
+    { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
+    { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
+    { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "Colleague's MacBook", ips: ["100.101.102.120", "fd7a:115c:a1e0::120"], userId: Option.some(9), tagged: false, shared: false },
+    { dnsName: Option.some("server.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "server", ips: ["100.101.102.121"], userId: Option.some(7), tagged: true, shared: false },
+    { dnsName: Option.some("guest.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "guest", ips: ["100.101.102.122"], userId: Option.some(7), tagged: false, shared: true },
   ],
 }
 

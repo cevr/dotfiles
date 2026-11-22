@@ -8,7 +8,7 @@
 // - Every answer, an error too, carries the CSP.
 // - A port another server holds is waited for, never shared.
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { Duration, Effect, Match, Option, Ref, Schedule, Scope } from "effect"
@@ -19,9 +19,11 @@ import * as FilePairing from "../filestore/pairing.ts"
 import type { TailnetState } from "../health.ts"
 import type { MarkLine } from "../marks.ts"
 import { CODE_TTL_MS, OLD_COOKIE, type Pairing, SOURCE_FAILURES, TOKEN_HEADER } from "../pairing.ts"
-import { closed, type Exclusion, exclusionsFrom, type Members, membersOf, sourceOf, type WriteConfig } from "../members.ts"
+import { keysOf, membersWith } from "../devices.ts"
+import * as FileDevices from "../filestore/devices.ts"
+import { closed, type Exclusion, type Members, membersOf, sourceOf, type WriteConfig } from "../members.ts"
 import { ACCESS, type Listener, type TailnetWrite } from "../policy.ts"
-import { readExclusions, statusFrom } from "../process/tailnet.ts"
+import { statusFrom } from "../process/tailnet.ts"
 import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER, type PeerOf, type Place, serveTailnet, socketPeer } from "./listener.ts"
 
 const NOW = 1_795_204_800_000
@@ -612,9 +614,9 @@ const HIS_TAILNET = StatusRead.Read({
     userId: Option.some(7),
     tagged: false,
     peers: [
-      { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
-      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
-      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+      { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "skiff", ips: ["100.101.102.104", "fd7a:115c:a1e0::44"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "localhost", ips: ["100.101.102.110", "fd7a:115c:a1e0::110"], userId: Option.some(7), tagged: false, shared: false },
+      { dnsName: Option.some("laptop.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "laptop", ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
     ],
   },
 })
@@ -786,8 +788,8 @@ const colleagueTailnet = (colleagueHostName: string, withOwnSkiff = true) =>
       userId: Option.some(7),
       tagged: false,
       peers: [
-        ...[{ dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false }].filter(() => withOwnSkiff),
-        { dnsName: Option.some("skiff-1.example-tailnet.ts.net"), stableId: Option.none(), hostName: colleagueHostName, ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
+        ...[{ dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false }].filter(() => withOwnSkiff),
+        { dnsName: Option.some("skiff-1.example-tailnet.ts.net"), stableId: Option.none(), os: "", lastSeen: Option.none(), hostName: colleagueHostName, ips: ["100.101.102.120"], userId: Option.some(9), tagged: false, shared: false },
       ],
     },
   })
@@ -801,7 +803,7 @@ interface Served {
 }
 
 /** The real listener on a scratch loopback port, the source injected at its `peerOf` seam. */
-const serveAs = async (setup: { readonly config: WriteConfig; readonly status: StatusRead; readonly peer: string; readonly listener: "tailnet" | "loopback" }, body: (served: Served) => Promise<void>) => {
+const serveAs = async (setup: { readonly config: WriteConfig; readonly status: StatusRead; readonly peer: string; readonly listener: "tailnet" | "loopback"; readonly members?: Members }, body: (served: Served) => Promise<void>) => {
   using held = scratch("digest-agenthost-")
   return await Effect.runPromise(
     Effect.scoped(
@@ -818,7 +820,7 @@ const serveAs = async (setup: { readonly config: WriteConfig; readonly status: S
           pairing,
           health: Effect.succeed("digest ok dev host=harbor events=3 last=none peers=none tailnet=yes"),
           tailnetRead: "member",
-          members: Effect.succeed(membersOf(setup.config, setup.status, NOW)),
+          members: Effect.succeed(Option.getOrElse(Option.fromUndefinedOr(setup.members), () => membersOf(setup.config, setup.status, NOW))),
         }
         const peer: PeerOf = () => setup.peer
         const bound = yield* listen({ address: HOSTNAME, port: 0, listener: setup.listener, names: ["harbor"] }, handlers, join(held.path, "dist"), peer)
@@ -884,9 +886,9 @@ const withDinghy = (dinghy: { readonly dnsName: string; readonly id: string }) =
       userId: Option.some(7),
       tagged: false,
       peers: [
-        { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.some("nPhone1CNTRL"), hostName: "localhost", ips: [OWN_PHONE], userId: Option.some(7), tagged: false, shared: false },
-        { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.some("nSkiff1CNTRL"), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false },
-        { dnsName: Option.some(`${dinghy.dnsName}.example-tailnet.ts.net`), stableId: Option.some(dinghy.id), hostName: dinghy.dnsName, ips: [DINGHY], userId: Option.some(7), tagged: false, shared: false },
+        { dnsName: Option.some("phone.example-tailnet.ts.net"), stableId: Option.some("nPhone1CNTRL"), os: "", lastSeen: Option.none(), hostName: "localhost", ips: [OWN_PHONE], userId: Option.some(7), tagged: false, shared: false },
+        { dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.some("nSkiff1CNTRL"), os: "", lastSeen: Option.none(), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false },
+        { dnsName: Option.some(`${dinghy.dnsName}.example-tailnet.ts.net`), stableId: Option.some(dinghy.id), os: "", lastSeen: Option.none(), hostName: dinghy.dnsName, ips: [DINGHY], userId: Option.some(7), tagged: false, shared: false },
       ],
     },
   })
@@ -946,45 +948,79 @@ describe("an excluded device of his gets nothing unpaired, as another user's dev
       expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=paired:unkeyed:dinghy members=0 writers=0 excluded=0")
     })
   })
+})
 
-  test("the installer's exclusions: every ID the name ever had, plus the ID of the device of his carrying it now, never another user's", () => {
-    // Only a colleague's device answers to "dinghy" (its HostName; Tailscale named it dinghy-1), and also one named dinghy outright.
-    const theirs = (dnsName: string) => ({ dnsName: Option.some(`${dnsName}.example-tailnet.ts.net`), stableId: Option.some("nTheirs1CNTRL"), hostName: "dinghy", ips: [COLLEAGUE], userId: Option.some(9), tagged: false, shared: false })
-    const colleague = StatusRead.Read({
-      status: { backendState: "Running", dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103"], userId: Option.some(7), tagged: false, peers: [theirs("dinghy-1"), theirs("dinghy")] },
-    })
-    const keyed = [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }]
-    expect(exclusionsFrom([], ["dinghy"], withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" }))).toEqual(keyed)
-    // A first configure with no device of his by the name, or no status: unkeyed (which closes until a configure finds it).
-    expect([exclusionsFrom([], ["dinghy"], colleague), exclusionsFrom([], ["dinghy"], StatusRead.Unread({ why: "no-cli" }))]).toEqual([[{ name: "dinghy", ids: [] }], [{ name: "dinghy", ids: [] }]])
-    // Once keyed, nothing drops the ID: renamed, no status, a colleague's device taking the name.
-    expect(exclusionsFrom(keyed, ["dinghy"], withDinghy({ dnsName: "lifeboat", id: "nDinghy1CNTRL" }))).toEqual(keyed)
-    expect(exclusionsFrom(keyed, ["dinghy"], StatusRead.Unread({ why: "cli-timeout" }))).toEqual(keyed)
-    expect(exclusionsFrom(keyed, ["dinghy"], colleague)).toEqual(keyed)
-    // Re-keyed under the same name: the new ID is added, the old one kept.
-    expect(exclusionsFrom(keyed, ["dinghy"], withDinghy({ dnsName: "dinghy", id: "nDinghy2CNTRL" }))).toEqual([{ name: "dinghy", ids: ["nDinghy1CNTRL", "nDinghy2CNTRL"] }])
-  })
+// ── The device store lost (round 3's B1), through the real listener ──
 
-  // The verifier's round-2 probe (verify-exclusion-rename-r2.test.ts), adopted: the device renamed, then the installer
-  // configures again through its own reader and a fake CLI; the shipped exclusion keeps the ID, and the device stays out.
-  test("renamed excluded device, after the next configure: the installer keeps its ID and the device reads and marks nothing unpaired", async () => {
-    using held = scratch("digest-rename-")
-    const cli = join(held.path, "tailscale")
-    writeFileSync(
-      cli,
-      [
-        "#!/bin/sh",
-        "# harbor (user 7), his phone, his dinghy RENAMED to lifeboat (same stable ID).",
-        `echo '{"BackendState":"Running","Self":{"DNSName":"harbor.example-tailnet.ts.net.","ID":"nHarbor","TailscaleIPs":["100.101.102.103"],"UserID":7},"Peer":{"k1":{"DNSName":"phone.example-tailnet.ts.net.","ID":"nPhone","TailscaleIPs":["${OWN_PHONE}"],"UserID":7},"k2":{"DNSName":"lifeboat.example-tailnet.ts.net.","ID":"nDinghy1CNTRL","HostName":"lifeboat","TailscaleIPs":["${DINGHY}"],"UserID":7}}}'`,
-        "",
-      ].join("\n"),
-      { mode: 0o755 },
-    )
-    const shipped = await readExclusions(EXCLUDED, ["dinghy"], [cli])
-    expect(shipped).toEqual(EXCLUDED)
-    const status = await Effect.runPromise(statusFrom([cli]))
-    await serveAs({ config: { tailnetWrite: "member-except-hosts", agentHosts: [], excluded: shipped }, status, peer: DINGHY, listener: "tailnet" }, async (served) => {
-      expect([(await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status, await served.written()]).toEqual([401, 401, 0])
+// The verifier's round-3 probe 2e (verify-r3.test.ts), adopted: dinghy keyed in the store by the command, then the
+// store lost, dinghy renamed lifeboat (same stable ID) and ANOTHER device of his now named dinghy. Nothing looks the
+// name up again, so the other device's ID never stands in: the store keys nothing, every tailnet source is paired,
+// and health says why. One copy lost: the other still keys dinghy.
+describe("a lost device store closes, it never re-keys by name", () => {
+  const NAMES = { tailnetWrite: "member-except-hosts", agentHosts: [], excluded: ["dinghy"] } as const
+  /** The store's damage, each as an outsider (a reset, a crash, a hand edit) leaves it. */
+  const DAMAGE: ReadonlyArray<readonly [string, (path: string) => void, string]> = [
+    ["deleted", (path) => rmSync(path, { force: true }), "absent"],
+    ["emptied", (path) => writeFileSync(path, ""), "unparsable"],
+    ["truncated", (path) => writeFileSync(path, '{"v":1,"agents":[],"exclu'), "unparsable"],
+    ["garbage", (path) => writeFileSync(path, "\u0000\u00ff not json"), "unparsable"],
+    ["of an old shape", (path) => writeFileSync(path, JSON.stringify([{ name: "dinghy", id: "nDinghy1CNTRL" }])), "wrong-version"],
+    ["of another version", (path) => writeFileSync(path, JSON.stringify({ v: 2, agents: [], excluded: [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }] })), "wrong-version"],
+    ["of a wrong shape", (path) => writeFileSync(path, JSON.stringify({ v: 1, excluded: "dinghy" })), "wrong-shape"],
+    ["mode 000", (path) => chmodSync(path, 0o000), "unreadable-EACCES"],
+    ["a directory in its place", (path) => (rmSync(path, { force: true }), mkdirSync(path)), "unreadable-EISDIR"],
+  ]
+  // The status after the store was lost: dinghy renamed lifeboat, and his new laptop took the name dinghy.
+  const cliIn = (dir: string) => {
+    const cli = join(dir, "tailscale")
+    const peer = (key: string, name: string, id: string, ip: string) => `"${key}":{"DNSName":"${name}.example-tailnet.ts.net.","ID":"${id}","HostName":"${name}","TailscaleIPs":["${ip}"],"UserID":7}`
+    const peers = [peer("k1", "phone", "nPhone1CNTRL", OWN_PHONE), peer("k2", "lifeboat", "nDinghy1CNTRL", DINGHY), peer("k3", "dinghy", "nLaptop1CNTRL", "100.101.102.140")].join(",")
+    writeFileSync(cli, `#!/bin/sh\necho '{"BackendState":"Running","Self":{"DNSName":"harbor.example-tailnet.ts.net.","ID":"nHarbor","TailscaleIPs":["100.101.102.103"],"UserID":7},"Peer":{${peers}}}'\n`, { mode: 0o755 })
+    return cli
+  }
+  const keyed = (dir: string) => {
+    const paths = [join(dir, "state/devices.json"), join(dir, "config/opencode-digest/devices.json")] as const
+    return Effect.runPromise(Effect.as(FileDevices.change(paths, (store) => ({ ...store, excluded: [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }] })), paths))
+  }
+  const membersAt = async (paths: readonly [string, string], cli: string) => {
+    const [primary, secondary] = await Effect.runPromise(FileDevices.readCopies(paths))
+    return membersWith(NAMES.tailnetWrite, keysOf(NAMES, primary, secondary), await Effect.runPromise(statusFrom([cli])), NOW)
+  }
+  const config = { tailnetWrite: NAMES.tailnetWrite, agentHosts: [], excluded: [] } as const
+
+  for (const [label, damage, word] of DAMAGE)
+    test(`both copies ${label}, dinghy renamed and another device of his named dinghy: dinghy reads, marks and answers nothing unpaired, health says unkeyed`, async () => {
+      using held = scratch("digest-storeloss-")
+      const cli = cliIn(held.path)
+      const paths = await keyed(held.path)
+      for (const path of paths) damage(path)
+      const members = await membersAt(paths, cli)
+      const status = await Effect.runPromise(statusFrom([cli]))
+      for (const peer of [DINGHY, OWN_PHONE, "100.101.102.140"])
+        await serveAs({ config, status, members, peer, listener: "tailnet" }, async (served) => {
+          expect([peer, (await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status, (await send(served, "/api/answer", AN_ANSWER)).status, await served.written()]).toEqual([peer, 401, 401, 401, 0])
+        })
+      await serveAs({ config, status, members, peer: "127.0.0.1", listener: "loopback" }, async (served) => {
+        expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(` writes=paired:unkeyed:dinghy:store-${word}/${word} members=0 writers=0 excluded=0:store-${word}/${word}`)
+      })
     })
-  })
+
+  for (const lost of [0, 1] as const)
+    test(`copy ${lost + 1} deleted, dinghy renamed and another device of his named dinghy: the other copy keys dinghy (out by its ID), the laptop is out by the name, his phone still marks unpaired, health names the copy`, async () => {
+      using held = scratch("digest-storeloss-")
+      const cli = cliIn(held.path)
+      const paths = await keyed(held.path)
+      rmSync(paths[lost], { force: true })
+      const members = await membersAt(paths, cli)
+      const status = await Effect.runPromise(statusFrom([cli]))
+      for (const [peer, view, mark] of [[DINGHY, 401, 401], ["100.101.102.140", 401, 401], [OWN_PHONE, 200, 204]] as const)
+        await serveAs({ config, status, members, peer, listener: "tailnet" }, async (served) => {
+          expect([peer, (await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status]).toEqual([peer, view, mark])
+        })
+      const condition = ["store-absent/ok", "store-ok/absent"][lost]
+      await serveAs({ config, status, members, peer: "127.0.0.1", listener: "loopback" }, async (served) => {
+        // Two of his devices out (lifeboat by its ID, the laptop by the name), his phone in.
+        expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(` writes=member-except-hosts members=1 writers=1 excluded=2:${condition}`)
+      })
+    })
 })

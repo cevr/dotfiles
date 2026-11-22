@@ -105,6 +105,9 @@ export interface PeerStatus {
   readonly stableId: Option.Option<string>
   /** `HostName`: the name the device gives itself, any name it likes; never an identity (members.ts never reads it). */
   readonly hostName: string
+  /** `OS`, and `LastSeen` (none while online or unknown): for the device command to show a human which device it is. */
+  readonly os: string
+  readonly lastSeen: Option.Option<string>
   /** `TailscaleIPs`. */
   readonly ips: ReadonlyArray<string>
   /** `UserID`: the Tailscale user it belongs to. */
