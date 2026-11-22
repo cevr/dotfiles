@@ -5,9 +5,9 @@
 //
 // THE PROPERTY, for every origin O and request R to host B: a cross-origin write succeeds (and its answer is readable
 // by the page, Access-Control-Allow-Origin: O) only if O is exactly a page origin of a peer B names, as B's own status
-// and device store key that peer now (each of its addresses, its MagicDNS name, that name's first label, on the
-// page's port), AND B's own policy accepts the same request from B's own page, tokenless, from that source. A token
-// that arrives cross-origin is never read. No read is ever readable cross-origin. On B's loopback listener a peer's
+// and device store key that peer now (each of its Tailscale addresses, never a name, on the page's port), AND B's
+// own policy accepts the same request from B's own page, tokenless, from that source. A token that arrives
+// cross-origin is never read. A read with any Origin but the page's own is refused. On B's loopback listener a peer's
 // origin gains nothing. CORS is the browser's guard; the source rule, by the socket's address, is the network's: a
 // client no browser binds may send any Origin, and is still judged by where it is.
 import { describe, expect, test } from "bun:test"
@@ -155,7 +155,8 @@ const host = async (dir: string, name: string, hosts: ReadonlyArray<string>, sto
   await run(probe)
   const scope = await run(Scope.make())
   const listenAs = (listener: ListenerKind) =>
-    run(Scope.provide(scope)(Listener.listen({ address: Listener.HOSTNAME, port: 0, listener, names: [] }, handlers, "/nonexistent/loop-probe-x/dist", () => caller.address)))
+    // The tailnet listener's names, as bind.ts gives them: they only send `GET /` on to the address (digest-address-only).
+    run(Scope.provide(scope)(Listener.listen({ address: Listener.HOSTNAME, port: 0, listener, names: Option.getOrElse(Option.liftPredicate([`${name}.${SUFFIX}`, name], () => listener === "tailnet"), () => []) }, handlers, "/nonexistent/loop-probe-x/dist", () => caller.address)))
   const tailnet = await listenAs("tailnet")
   const loopback = await listenAs("loopback")
   // B's own token, paired on its own page (its own origin) from his phone: the token an agent machine's browser would hold there.
@@ -282,10 +283,9 @@ const property = async (seed: number, count: number, store: StoreState, draws: n
     const at = await b.writes()
     const cross = await send(own, route, Option.some(origin), token)
     const crossWrote = (await b.writes()) - at
-    // A read is served as to any client, by its source or B's token: a browser can neither read it cross-origin (no
-    // Allow-Origin) nor send the token header there (the preflight refuses it). A write only as the property says.
-    const readServed = route === "view" && (ownAnswer.ok || Option.contains(token, b.token))
-    const expectServed = Option.getOrElse(Option.liftPredicate(isAllowed && ownAnswer.ok, () => isWrite), () => readServed)
+    // A read that sends any Origin but the page's own is refused on the tailnet, token or not (digest-address-only,
+    // policy.ts decide): no read is served cross-origin. A write only as the property says.
+    const expectServed = isWrite && isAllowed && ownAnswer.ok
     expect({ ok: cross.ok, wrote: crossWrote > 0, allowOrigin: cross.headers.get("access-control-allow-origin"), varies: varies(cross) }, trace).toEqual({
       ok: expectServed,
       wrote: isWrite && expectServed && ownWrote > 0,
@@ -337,6 +337,68 @@ describe("the page writes to the host that owns an item, under that host's own p
   test("a host whose device store keys nothing allows no peer origin at all", async () => {
     expect((await property(21, 3, "unkeyed", 120)).accepted).toBe(0)
   }, 120_000)
+
+  test("where digest-address-only's rules and the peers' meet: each case served or refused as both together say", async () => {
+    using held = scratch("digest-peers-write-")
+    const [a, b] = await hostsOf(held.path, NAMES.slice(0, 2), () => "keyed")
+    await using _closed = { [Symbol.asyncDispose]: () => closeAll([one(a), one(b)]) }
+    const port = one(b).tailnet
+    const workbox = `http://${Listener.HOSTNAME}:${port}`
+    const loop = `http://${Listener.HOSTNAME}:${one(b).loopback}`
+    const v4 = `http://${one(V4.get("macbook"))}:${PORT}`
+    const v6 = `http://[${one(V6.get("macbook"))}]:${PORT}`
+    caller.address = PHONE
+    /** One case: where it goes (B's tailnet listener unless `base`), the route, its Origin and Host, and what both rule sets say. */
+    interface Case {
+      readonly what: string
+      readonly route: Route
+      readonly origin: string
+      readonly host?: string
+      readonly base?: string
+      /** The request's status, and whether its answer carries Allow-Origin. */
+      readonly expect: readonly [number, boolean]
+      /** The preflight's status (204 granted), and whether it carries Allow-Origin. */
+      readonly pre: readonly [number, boolean]
+    }
+    const CASES: ReadonlyArray<Case> = [
+      { what: "the keyed peer's IPv4 address origin", route: "mark", origin: v4, expect: [204, true], pre: [204, true] },
+      { what: "the keyed peer's IPv6 address origin", route: "answer", origin: v6, expect: [200, true], pre: [204, true] },
+      { what: "the peer's short name as origin", route: "mark", origin: `http://macbook:${PORT}`, expect: [403, false], pre: [405, false] },
+      { what: "the peer's MagicDNS name as origin", route: "mark", origin: `http://macbook.${SUFFIX}:${PORT}`, expect: [403, false], pre: [405, false] },
+      { what: "the peer's address origin with a path /", route: "mark", origin: `${v4}/`, expect: [403, false], pre: [405, false] },
+      { what: "the peer's address origin with a path /x", route: "mark", origin: `${v4}/x`, expect: [403, false], pre: [405, false] },
+      { what: "the peer's address origin doubled", route: "mark", origin: `${v4}, ${v4}`, expect: [403, false], pre: [405, false] },
+      { what: "null", route: "mark", origin: "null", expect: [403, false], pre: [405, false] },
+      { what: "a blank Origin", route: "mark", origin: " ", expect: [403, false], pre: [405, false] },
+      { what: "an empty Origin", route: "mark", origin: "", expect: [403, false], pre: [405, false] },
+      { what: "the peer's address origin in upper-case scheme", route: "mark", origin: v4.replace("http", "HTTP"), expect: [403, false], pre: [405, false] },
+      { what: "a non-peer address: his phone's", route: "mark", origin: `http://${PHONE}:${PORT}`, expect: [403, false], pre: [405, false] },
+      { what: "a non-peer address: a colleague's", route: "mark", origin: `http://${COLLEAGUE}:${PORT}`, expect: [403, false], pre: [405, false] },
+      { what: "a peer write to B's short name as Host", route: "mark", origin: v4, host: `workbox:${port}`, expect: [421, false], pre: [421, false] },
+      { what: "a peer write to B's MagicDNS name as Host", route: "answer", origin: v4, host: `workbox.${SUFFIX}:${port}`, expect: [421, false], pre: [421, false] },
+      { what: "a peer write to a foreign Host", route: "mark", origin: v4, host: `evil.example:${port}`, expect: [421, false], pre: [421, false] },
+      { what: "a read of the view from the peer's origin", route: "view", origin: v4, expect: [403, false], pre: [405, false] },
+      { what: "a pairing from the peer's origin", route: "pair", origin: v4, expect: [403, false], pre: [405, false] },
+      { what: "the peer's origin on B's loopback listener", route: "mark", origin: v4, base: loop, expect: [403, false], pre: [405, false] },
+    ]
+    const before = await one(b).writes()
+    const rows = []
+    for (const each of CASES) {
+      const base = each.base ?? workbox
+      const host = Option.getOrElse(Option.fromNullishOr(each.host), () => new URL(base).host)
+      const method = Option.getOrElse(Option.liftPredicate("GET", () => each.route === "view"), () => "POST")
+      const sent = await fetch(`${base}${PATHS[each.route]}`, {
+        method,
+        body: Option.getOrUndefined(Option.liftPredicate(BODIES[each.route], () => each.route !== "view")),
+        headers: { host, origin: each.origin, "content-type": "application/json", [Listener.PAGE_HEADER]: "1" },
+      })
+      const pre = await fetch(`${base}${PATHS[each.route]}`, { method: "OPTIONS", headers: { host, origin: each.origin, "access-control-request-method": method, "access-control-request-headers": "content-type,x-digest-page" } })
+      rows.push({ what: each.what, request: [sent.status, sent.headers.has("access-control-allow-origin")], preflight: [pre.status, pre.headers.has("access-control-allow-origin")], varies: varies(sent) })
+    }
+    expect(rows).toEqual(CASES.map((each) => ({ what: each.what, request: [...each.expect], preflight: [...each.pre], varies: true })))
+    // The two address-origin writes alone were stored.
+    expect((await one(b).writes()) - before).toBe(2)
+  }, 60_000)
 
   test("the round 2 verifier's probes: a page at the keyed peer's bare name or full MagicDNS name writes nothing on B, from the phone", async () => {
     // In headless Chrome a resolver mapped `macbook` (and its full name) to a server that is not the keyed device; its

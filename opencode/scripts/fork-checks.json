@@ -1,0 +1,190 @@
+{
+  "about": "The fork's feature checks (scripts/fork-checks.ts): for each fork feature the owner keeps, the package, its test files (relative to the package) and the request that last proved it. bun run daily's upstream merge runs them on the merged tree before it pushes, and a fork lane's round gate runs them with `bun scripts/fork-checks.ts --fork <checkout>`. An expectation names one test that is red on a host whose condition it declares (the version of the first bash on PATH, read at run time) for a reason outside the fork; the test still runs, and passing there makes the check red, so a stale expectation cannot stay. No entry skips a file.",
+  "packages": {
+    "packages/core": ["bun", "run", "script/test.ts"],
+    "packages/cli": ["bun", "test", "--timeout=120000"],
+    "packages/tui": ["bun", "test", "--timeout=30000"]
+  },
+  "features": [
+    {
+      "id": "shell-auto-background",
+      "feature": "Shell auto-background: a foreground command with no timeout moves to the background at 2 minutes",
+      "package": "packages/core",
+      "files": ["test/tool-shell.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): tool-shell.test.ts \"moves a foreground command with no timeout to the background at 2 minutes\""
+    },
+    {
+      "id": "shell-actions",
+      "feature": "Shell list/check/wait/kill actions with handles",
+      "package": "packages/core",
+      "files": ["test/tool-shell.test.ts", "test/tool-schema.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): tool-shell.test.ts's action block and tool-schema.test.ts"
+    },
+    {
+      "id": "shell-actions-display",
+      "feature": "Shell actions and handles in the TUI's tool display",
+      "package": "packages/tui",
+      "files": ["test/util/tool-display.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): the TUI suite in full, 1897 pass"
+    },
+    {
+      "id": "shell-suite",
+      "feature": "The fork's shell (rotated output, host-kind checks for background, kill and reading a file): core's shell suite in full",
+      "package": "packages/core",
+      "files": [
+        "test/tool-shell.test.ts",
+        "test/tool-shell-target-environment.test.ts",
+        "test/shell.test.ts",
+        "test/shell-cleanup.test.ts",
+        "test/shell-daemon.test.ts",
+        "test/shell-parse.test.ts",
+        "test/shell-parse-compatibility.test.ts",
+        "test/shell-parse-parity.test.ts",
+        "test/shell-parse-syntax.test.ts",
+        "test/shell-restart.test.ts",
+        "test/shell-result.test.ts",
+        "test/shell-retention.test.ts",
+        "test/shell-scan/adversarial.test.ts",
+        "test/shell-scan/arithmetic.test.ts",
+        "test/shell-scan/bash-safety.test.ts",
+        "test/shell-scan/bash-syntax.test.ts",
+        "test/shell-scan/closure.test.ts",
+        "test/shell-scan/compound-parity.test.ts",
+        "test/shell-scan/generated.test.ts",
+        "test/shell-scan/mutation.test.ts",
+        "test/shell-scan/oracle.test.ts",
+        "test/shell-scan/parity-regressions.test.ts",
+        "test/shell-scan/powershell-runtime.test.ts",
+        "test/shell-scan/powershell-safety.test.ts",
+        "test/shell-scan/powershell-syntax.test.ts",
+        "test/shell-scan/redirect.test.ts",
+        "test/shell-scan/scan.test.ts"
+      ],
+      "proved": "shell-restart-notice r1 (fork 9273b5c682): core test/tool-shell* and test/shell* in full, 3575 pass, 1 fail (the macOS bash 3.2 expectation below)"
+    },
+    {
+      "id": "kernel-runtime",
+      "feature": "The tool option `runtime` (the kernel as the agent's runtime) and a runtime's direct tools",
+      "package": "packages/core",
+      "files": ["test/tool-registry.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): tool-registry.test.ts 57/57, \"offers the tools it names direct beside it, called directly and still reached through it\""
+    },
+    {
+      "id": "codemode-block",
+      "feature": "Code Mode: with no timeout, a foreground script blocks for 2 minutes before moving to the background",
+      "package": "packages/core",
+      "files": ["test/codemode-execute-options.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f, the test added there)"
+    },
+    {
+      "id": "prime-tui-hooks",
+      "feature": "Prime TUI: the hook points the look uses (session slots and rowGap/gutter, queued box, transcript overlay, compaction row, composer tab and panel, autocomplete, program status, the subagent picker, take-back). Prime itself is held by the dotfiles acceptance files tests/prime-*.test.ts, which the daily's acceptance check runs.",
+      "package": "packages/tui",
+      "files": [
+        "test/plugin-session-hooks.test.tsx",
+        "test/plugin-composer-tab.test.tsx",
+        "test/plugin-composer-panel.test.tsx",
+        "test/plugin-autocomplete.test.tsx",
+        "test/plugin-program-status.test.ts",
+        "test/session-subagent-picker-dismiss.test.tsx",
+        "test/prompt/take-back.test.ts"
+      ],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): the TUI suite in full, 1897 pass, 0 fail"
+    },
+    {
+      "id": "adjacent-config",
+      "feature": "A compiled build binds the plugin configuration installed beside its executable",
+      "package": "packages/cli",
+      "files": ["test/adjacent-config.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): the CLI suite, 463 pass"
+    },
+    {
+      "id": "no-plugin-source-watches",
+      "feature": "No plugin-source watches in a compiled build",
+      "package": "packages/core",
+      "files": ["test/plugin/module.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): plugin/module.test.ts \"a build opens no watch for a local plugin's module files\""
+    },
+    {
+      "id": "no-plugin-source-watches-tui",
+      "feature": "No plugin-source watches in a compiled build (the TUI's plugins)",
+      "package": "packages/tui",
+      "files": ["test/plugin-source.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): plugin-source.test.ts"
+    },
+    {
+      "id": "signal-stop-skips-watch-close",
+      "feature": "A stop a signal began skips the slow close of node watches",
+      "package": "packages/core",
+      "files": ["test/filesystem/watcher.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): watcher.test.ts \"a shutdown a signal began skips the slow close of node watches\""
+    },
+    {
+      "id": "signal-stop-deadline",
+      "feature": "A stop a signal began ends within its deadline (the CLI's half)",
+      "package": "packages/cli",
+      "files": ["test/shutdown-deadline.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): the cli shutdown-deadline test"
+    },
+    {
+      "id": "earlier-messages",
+      "feature": "The earlier-messages fix",
+      "package": "packages/tui",
+      "files": ["test/session-earlier-messages.test.tsx"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): 5 tests"
+    },
+    {
+      "id": "kv-setif",
+      "feature": "KV.setIf: a write that lands only on the value its writer read",
+      "package": "packages/core",
+      "files": ["test/kv-setif.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): 4 tests, two processes x 1,000 rounds"
+    },
+    {
+      "id": "serial-settings-theme-preview",
+      "feature": "Serial settings saves, and the theme preview held in memory",
+      "package": "packages/tui",
+      "files": ["test/config-order.test.tsx", "test/component/dialog-theme-list.test.tsx"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): config-order.test.tsx (4d0df5251d), dialog-theme-list.test.tsx (2094d72598)"
+    },
+    {
+      "id": "plugin-host-services",
+      "feature": "Plugin host services (c1e978ca): the host's file system, path and process spawner for a server plugin",
+      "package": "packages/core",
+      "files": ["test/plugin.test.ts", "test/plugin/module.test.ts"],
+      "proved": "upstream-merge-1122 r1 (fork c39fa9c96f): plugin.test.ts's three platform tests and plugin/module.test.ts \"loads a local plugin that requires the host's platform\""
+    },
+    {
+      "id": "service-in-full",
+      "feature": "packages/cli test/service in full, among them a background shell surviving `opencode service restart` (service-shell-restart.test.ts)",
+      "package": "packages/cli",
+      "files": ["test/service.test.ts", "test/service-lifecycle.test.ts", "test/service-shell-restart.test.ts"],
+      "proved": "shell-restart-notice r1 (fork 9273b5c682): test/service* 44 pass; service-shell-restart.test.ts 5 pass"
+    },
+    {
+      "id": "shell-restart-wake",
+      "feature": "A session whose background shell a restart killed is woken with the notice (the owner's q162, diverging from upstream 664c8f0990)",
+      "package": "packages/cli",
+      "files": ["test/service-shell-restart.test.ts"],
+      "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1, 22a14bd2ea and 5d44dfd789: a signal-begun restart wakes the cancelled shell's session once",
+      "since": "5d44dfd789942b8c5e430ec70810765803a7ef1a"
+    },
+    {
+      "id": "shell-restart-wake-core",
+      "feature": "The restart wake in core: a shell's idle owner is woken when a restart recovers its end notice, the notice and mark kept in the wake's fork file",
+      "package": "packages/core",
+      "files": ["test/shell-restart-wake.test.ts"],
+      "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1 and 5d44dfd789 (test/shell-restart-wake.test.ts)",
+      "since": "5d44dfd789942b8c5e430ec70810765803a7ef1a"
+    }
+  ],
+  "expectations": [
+    {
+      "package": "packages/core",
+      "file": "test/shell-scan/compound-parity.test.ts",
+      "test": "real-shell compound syntax > bash: printf '%s' \"$(probe() case value in value) scan_probe;; *) scan_other;; esac; probe)\"",
+      "host": { "bash": "3.2.57" },
+      "reason": "bash 3.2.57 (macOS's /bin/bash, the first bash on the test's PATH) rejects a function whose body is a case statement inside a command substitution; upstream's own test, red there before and after each merge (upstream-merge-1122 r1, known gap 2; shell-restart-notice r1). Measured on the Mac with GNU bash 3.2.57(1)-release."
+    }
+  ]
+}

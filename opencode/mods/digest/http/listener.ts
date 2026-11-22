@@ -26,11 +26,14 @@
 // - POST `/api/answer` {id, option | text}: the owner's answer to an open question or needs-you item (answers.ts):
 //   200 when it went, 409 with the first answer when another closed it, 4xx when refused. Only from a paired browser.
 // - Every request must name one of its listener's own hosts (`Host`), so a name rebound to its address reads nothing.
-// - CORS, the tailnet listener only, for a named peer's page alone (policy.ts isPeerWrite, preflightOf): a mark or an
-//   answer whose Origin is exactly one of `peerOrigins` gets Access-Control-Allow-Origin with that origin (its
-//   refusal too, so the page can say why), and its preflight is answered for POST with PEER_HEADERS, never the
-//   token's. Every answer carries `Vary: Origin`. The shell's CSP lets the page connect to its peers' pages
-//   (`peerPages`). CORS is the browser's guard; the source rule, by the socket's address, is the network's.
+//   On the tailnet that is its bound address alone: under its MagicDNS or short name, `GET /` is sent on to the
+//   address (308) and every other route is refused (421), token or not (policy.ts says why).
+// - CORS, the tailnet listener at its address only, for a named peer's page alone (policy.ts isPeerWrite,
+//   preflightOf): a mark or an answer whose Origin is exactly one of `peerOrigins` (the keyed peer's Tailscale
+//   address origins) gets Access-Control-Allow-Origin with that origin (its refusal too, so the page can say why),
+//   and its preflight is answered for POST with PEER_HEADERS, never the token's. Every answer carries
+//   `Vary: Origin`. The shell's CSP lets the page connect to its peers' pages (`peerPages`). CORS is the browser's
+//   guard; the source rule, by the socket's address, is the network's.
 //
 // OpenCode serves a plugin once per directory it serves, and only one instance can bind a port on an address (the
 // socket is never made with SO_REUSEPORT, so Linux refuses a second one as macOS does): the others try again every
@@ -39,12 +42,12 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Duration, Effect, Exit, Match, Option, Ref, Schedule, Schema, Scope } from "effect"
 import { type AnswerOutcome, PageAnswer } from "../answers.ts"
-import { bindable, BindRefused, hostOf, hostsOf, noTailnet, type Tailnet } from "../bind.ts"
+import { bindable, BindRefused, hostOf, hostsOf, hostWithPort, noTailnet, type Tailnet } from "../bind.ts"
 import { BRIEF, isWell, localPart, type TailnetState } from "../health.ts"
 import { type MarkLine, markOf, nameOf, sinceOf } from "../marks.ts"
 import { type Pairing, TOKEN_HEADER } from "../pairing.ts"
 import { current, type Members, sourceOf, writesWord } from "../members.ts"
-import { decide, isPeerWrite, type Listener, mayAnswer, PEER_HEADERS, type Policy, preflightOf, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
+import { authorityOf, Decision, decide, isPeerWrite, type Listener, mayAnswer, PEER_HEADERS, type Policy, preflightOf, type RouteKind, type Source, type TailnetRead } from "../policy.ts"
 import { nextMorning } from "../zone.ts"
 
 /** The loopback listener's address. */
@@ -88,14 +91,19 @@ export interface Handlers {
   readonly peerPages: Effect.Effect<ReadonlyArray<string>>
 }
 
-/** A listener as a request reaches it: which one, and the hosts it answers to. */
+/**
+ * A listener as a request reaches it: which one, the hosts it serves under, the names that only send `GET /` on to
+ * its address, and that address's page (`home`, the redirect's Location, from the bound address alone).
+ */
 export interface Site {
   readonly listener: Listener
   readonly hosts: ReadonlyArray<string>
+  readonly names: ReadonlyArray<string>
+  readonly home: string
 }
 
 /** The loopback site on `port`. */
-export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES) })
+export const loopbackSite = (port: number): Site => ({ listener: "loopback", hosts: hostsOf(port, LOOPBACK_NAMES), names: [], home: `http://${HOSTNAME}:${port}/` })
 
 /** An answer: status, headers, body. */
 interface Answer {
@@ -337,86 +345,130 @@ export const answerOf = (handlers: Handlers, dist: string, request: Request, sit
     Effect.catchCause((cause) => Effect.as(Effect.logWarning("digest page: a request failed", { cause }), reason(500, "the digest failed this request"))),
   )
 
+/** One request as the order reads it: its method, URL and headers, its token's verdict and its source. */
+export interface Asking {
+  readonly method: string
+  /** The URL as Bun built it (from the `Host`); it may not parse. */
+  readonly url: string
+  /** The `Host` it named, as sent; none when the header is absent (never a truthiness test: "" is one sent). */
+  readonly host: Option.Option<string>
+  /** Its `Origin`, as sent; none when the header is absent. "", " ", `null` and two joined by Bun are each sent. */
+  readonly origin: Option.Option<string>
+  readonly pageHeader: boolean
+  readonly json: boolean
+  readonly paired: boolean
+  readonly source: Source
+}
+
+/** What the order comes to: the decision, and for a request it got that far, its route; the path. */
+export interface Screened {
+  readonly decision: Decision
+  readonly kind: Option.Option<RouteKind>
+  readonly path: string
+}
+
+/** Main's answer to a URL Bun could not build, kept on loopback as it was: the defect's 500. */
+const UNPARSED = "the digest failed this request"
+
+/**
+ * The order every request takes before any route runs, in one place:
+ * 1. On the tailnet, its authority, whatever its method, path or target (policy.ts `authorityOf`): a Host that is
+ *    not the listener's address is refused (421), a GET or HEAD of `/` under one of its names sent on (308).
+ * 2. A URL that does not parse (Bun builds it from the Host): on loopback the 500 main gave, on the tailnet 421.
+ * 3. A method no route takes: 405 (a peer's preflight is looked at only after this, in `routed`).
+ * 4. The policy's decision (`decide`): loopback's Host, the source, the origin and headers, what the route needs;
+ *    `peerOrigins` (none by default) lets a named peer's page send a mark or an answer at the address.
+ * Loopback's steps 2 to 4 are main's (4afe1fda), unchanged.
+ */
+export const screen = (site: Site, policy: Policy, asking: Asking, peerOrigins: ReadonlyArray<string> = []): Screened => {
+  const url = Option.fromNullishOr(URL.parse(asking.url))
+  const path = Option.match(url, { onNone: () => "", onSome: (each) => each.pathname })
+  const stopped = (decision: Decision): Screened => ({ decision, kind: Option.none(), path })
+  const rootRead = (asking.method === "GET" || asking.method === "HEAD") && path === "/"
+  const first = authorityOf({ listener: site.listener, host: asking.host, hosts: site.hosts, names: site.names, rootRead })
+  if (Option.isSome(first)) return stopped(first.value)
+  if (Option.isNone(url)) return stopped(Decision.Refuse(Match.value(site.listener).pipe(Match.when("loopback", () => ({ status: 500, reason: UNPARSED })), Match.orElse(() => ({ status: 421, reason: "this page reads no such target" })))))
+  return Option.match(kindOf(asking.method, path), {
+    onNone: () => stopped(Decision.Refuse({ status: 405, reason: "GET or POST only" })),
+    onSome: (kind) => ({
+      decision: decide({ listener: site.listener, kind, source: asking.source, host: asking.host, hosts: site.hosts, names: site.names, root: path === "/", origin: asking.origin, pageHeader: asking.pageHeader, json: asking.json, paired: asking.paired }, policy, peerOrigins),
+      kind: Option.some(kind),
+      path,
+    }),
+  })
+}
+
 /** A request header, "" when absent. */
 const headerOf = (request: Request, name: string): string => Option.getOrElse(Option.fromNullishOr(request.headers.get(name)), () => "")
 
-/** His devices now, and who `address` is among them on `site` (`local` on loopback). */
-const sourceIn = (handlers: Handlers, site: Site, address: string) =>
+/**
+ * A CORS preflight that the order (`screen`) got as far as its method (405): allowed (204, the origin echoed from
+ * the allowed list it equals, POST and the page's headers alone) only for a named peer's page announcing a mark or
+ * an answer at this listener's address (policy.ts preflightOf); else the order's own 405, no Access-Control header
+ * at all, so the browser sends nothing. Every earlier refusal (a name's 421) stands as the order gave it.
+ */
+const preflight = (request: Request, site: Site, source: Source, path: string, peerOrigins: ReadonlyArray<string>): Option.Option<Answer> => {
+  const method = headerOf(request, "access-control-request-method")
+  const origin = Option.fromNullishOr(request.headers.get("origin"))
+  const headers = headerOf(request, "access-control-request-headers")
+    .split(",")
+    .map((each) => each.trim().toLowerCase())
+    .filter((each) => each !== "")
+  const kind = Option.getOrElse(Option.filter(kindOf(method, path), () => method === "POST"), (): RouteKind | "none" => "none")
+  const asked = { listener: site.listener, kind, source, host: Option.fromNullishOr(request.headers.get("host")), hosts: site.hosts, origin, method, headers }
+  return Option.map(
+    Option.filter(origin, () => preflightOf(asked, peerOrigins)),
+    (peer) => answer(204, "", { "access-control-allow-origin": peer, "access-control-allow-methods": "POST", "access-control-allow-headers": PEER_HEADERS.join(", "), "access-control-max-age": "600" }),
+  )
+}
+
+const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> =>
   Effect.gen(function* () {
+    const body = Effect.promise(() => request.text())
+    const paired = yield* isPaired(handlers, request)
     const members = current(yield* handlers.members, yield* handlers.now)
     const source = Match.value(site.listener).pipe(
       Match.when("loopback", (): Source => "local"),
       Match.orElse(() => sourceOf(address, members)),
     )
-    return { members, source }
-  })
-
-/**
- * A CORS preflight: allowed (204, the origin echoed from the allowed list it equals, POST and the page's headers
- * alone) only for a named peer's page announcing a mark or an answer here (policy.ts preflightOf); else 405 as
- * before, no Access-Control header at all, so the browser sends nothing.
- */
-const preflight = (handlers: Handlers, request: Request, site: Site, address: string, path: string) =>
-  Effect.gen(function* () {
-    const { source } = yield* sourceIn(handlers, site, address)
-    const method = headerOf(request, "access-control-request-method")
-    const origin = headerOf(request, "origin")
-    const headers = headerOf(request, "access-control-request-headers")
-      .split(",")
-      .map((each) => each.trim().toLowerCase())
-      .filter((each) => each !== "")
-    const kind = Option.getOrElse(Option.filter(kindOf(method, path), () => method === "POST"), (): RouteKind | "none" => "none")
-    const asked = { listener: site.listener, kind, source, host: String(request.headers.get("host")), hosts: site.hosts, origin, method, headers }
-    const allowed = preflightOf(asked, yield* handlers.peerOrigins)
-    return Option.match(Option.liftPredicate(origin, () => allowed), {
-      onNone: () => reason(405, "GET or POST only"),
-      onSome: (peer) =>
-        answer(204, "", { "access-control-allow-origin": peer, "access-control-allow-methods": "POST", "access-control-allow-headers": PEER_HEADERS.join(", "), "access-control-max-age": "600" }),
+    const policy: Policy = { tailnetRead: handlers.tailnetRead, tailnetWrite: members.write }
+    const peerOrigins = yield* handlers.peerOrigins
+    const asking: Asking = {
+      method: request.method,
+      url: request.url,
+      // Presence by the header's absence alone (`get` answers null only then), never by its value.
+      host: Option.fromNullishOr(request.headers.get("host")),
+      origin: Option.fromNullishOr(request.headers.get("origin")),
+      pageHeader: request.headers.get(PAGE_HEADER) === "1",
+      json: String(request.headers.get("content-type")).startsWith("application/json"),
+      paired,
+      source,
+    }
+    const screened = screen(site, policy, asking, peerOrigins)
+    const path = screened.path
+    const asked: Asked = { path, listener: site.listener, source, policy, members, paired }
+    // A peer's preflight, once the order reached the method (its 405): allowed or that 405, nothing else changed.
+    const reachedMethod = Option.isNone(screened.kind) && Match.valueTags(screened.decision, { Refuse: ({ status }) => status === 405, Brief: () => false, Redirect: () => false, Serve: () => false })
+    if (request.method === "OPTIONS" && reachedMethod) return yield* Effect.succeed(Option.getOrElse(preflight(request, site, source, path, peerOrigins), () => reason(405, "GET or POST only")))
+    // A peer's page may read the answer to its write, a refusal too (so it can say why): nothing else, nowhere else.
+    const peerWrite = Option.exists(screened.kind, (kind) => isPeerWrite({ listener: site.listener, kind, host: asking.host, hosts: site.hosts, origin: asking.origin }, peerOrigins))
+    const corsFor = (each: Answer): Answer =>
+      Option.match(Option.filter(asking.origin, () => peerWrite), { onNone: () => each, onSome: (peer) => ({ ...each, headers: { ...each.headers, "access-control-allow-origin": peer } }) })
+    const decided = yield* Match.valueTags(screened.decision, {
+      Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
+      Brief: () => read(handlers, dist, asked, true),
+      // To the page at the listener's own address; nothing of the request goes into the Location.
+      Redirect: () => Effect.succeed(answer(308, "", { location: site.home, ...NO_STORE })),
+      Serve: () =>
+        Match.value(Option.getOrElse(screened.kind, (): RouteKind => "read")).pipe(
+          Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), address))),
+          Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
+          Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
+          Match.orElse(() => read(handlers, dist, asked, false)),
+        ),
     })
+    return corsFor(decided)
   })
-
-const routed = (handlers: Handlers, dist: string, request: Request, site: Site, address: string): Effect.Effect<Answer> => {
-  const path = new URL(request.url).pathname
-  const body = Effect.promise(() => request.text())
-  if (request.method === "OPTIONS") return preflight(handlers, request, site, address, path)
-  return Option.match(kindOf(request.method, path), {
-    onNone: () => Effect.succeed(reason(405, "GET or POST only")),
-    onSome: (kind) =>
-      Effect.gen(function* () {
-        const paired = yield* isPaired(handlers, request)
-        const { members, source } = yield* sourceIn(handlers, site, address)
-        const peerOrigins = yield* handlers.peerOrigins
-        const policy: Policy = { tailnetRead: handlers.tailnetRead, tailnetWrite: members.write }
-        const facts = {
-          listener: site.listener,
-          kind,
-          source,
-          host: String(request.headers.get("host")),
-          hosts: site.hosts,
-          origin: String(request.headers.get("origin") ?? ""),
-          pageHeader: request.headers.get(PAGE_HEADER) === "1",
-          json: String(request.headers.get("content-type")).startsWith("application/json"),
-          paired,
-        }
-        const asked: Asked = { path, listener: site.listener, source, policy, members, paired }
-        // A peer's page may read the answer to its write, a refusal too (so it can say why): nothing else, nowhere else.
-        const corsFor = (each: Answer): Answer =>
-          Option.match(Option.liftPredicate(facts.origin, () => isPeerWrite(facts, peerOrigins)), { onNone: () => each, onSome: (peer) => ({ ...each, headers: { ...each.headers, "access-control-allow-origin": peer } }) })
-        const decided = yield* Match.valueTags(decide(facts, policy, peerOrigins), {
-          Refuse: ({ status, reason: why }) => Effect.succeed(reason(status, why)),
-          Brief: () => read(handlers, dist, asked, true),
-          Serve: () =>
-            Match.value(kind).pipe(
-              Match.when("pair", () => Effect.flatMap(body, (given) => pair(handlers, given, String(request.headers.get("user-agent")), address))),
-              Match.when("answer", () => Effect.flatMap(body, (given) => answerRoute(handlers, given))),
-              Match.when("mark", () => Effect.flatMap(body, (given) => mark(handlers, path, given))),
-              Match.orElse(() => read(handlers, dist, asked, false)),
-            ),
-        })
-        return corsFor(decided)
-      }),
-  })
-}
 
 /** The port could not be bound (another instance holds it, or the address is gone). */
 export class NotBound extends Schema.TaggedError<NotBound>()("NotBound", { message: Schema.String }) {}
@@ -426,15 +478,21 @@ export interface Place {
   readonly address: string
   readonly port: number
   readonly listener: Listener
-  /** Its names beside its address (the tailnet's MagicDNS name and short name); loopback's are LOOPBACK_NAMES. */
+  /** The tailnet's MagicDNS name and short name, which only send `GET /` on to the address; loopback's are LOOPBACK_NAMES. */
   readonly names: ReadonlyArray<string>
 }
 
-/** The site a place serves once bound on `port`: its address and names, with the port. */
+/**
+ * The site a place serves once bound on `port`. The tailnet listener serves under its bound address alone, as a
+ * browser writes it; its names only send `GET /` on to that address (policy.ts).
+ */
 export const siteOf = (place: Place, port: number): Site =>
   Match.value(place.listener).pipe(
     Match.when("loopback", () => loopbackSite(port)),
-    Match.orElse(() => ({ listener: place.listener, hosts: hostsOf(port, [place.address, ...place.names]) })),
+    Match.orElse((): Site => {
+      const address = hostWithPort(place.address, port)
+      return { listener: place.listener, hosts: [address], names: place.names.map((name) => hostWithPort(name, port)), home: `http://${address}/` }
+    }),
   )
 
 /** Where a request came from: its socket's peer address, as the server saw it; never a header. */

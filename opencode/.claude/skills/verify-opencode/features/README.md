@@ -47,6 +47,7 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 ## Features
 
 - [Orchestrate's machine and the land](orchestrate.md): role starts, the batch machine's refusals, the land of a batch.
+- [Nothing is hard, in the role prompts](nothing-is-hard-rule.md): the owner's standing rule in each role's and the worker's prompt, the unchanged refusal rule.
 - [Account pool](pool.md): the login each request goes out on, failover on a refused login, resets.
 - [Session mail](mail.md): `sessions` and `message`, a woken idle receiver, a steer into a running one, paired hosts.
 - [Wake latch](wake-latch.md): a subagent start held as a latch, `wake_list`, the reopen.
@@ -59,4 +60,5 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Kernel](kernel.md): the persistent TypeScript kernel, its tool calls, calls in parallel.
 - [Prompt cache](cache.md): a turn's priced miss row and its cause, the compaction's row, the sidebar sum, the keepalive.
 - [Rex panes](rex.md): `rex-show` in a showcase pane beside the caller's, the pane a subagent's shell names.
+- [Service restart and background shells](service-restart.md): a background shell across `service restart`, a signal stop and a systemd scope stop, with the Linux leg on the installed build.
 - [Model at the next compaction](model-next.md): `/model-next`, the picker's `at next compaction`, the tray line, the apply at a compaction or an expired cache's wake.

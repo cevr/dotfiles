@@ -41,7 +41,7 @@ const copySkill = (dir: string) =>
     const path = yield* Path.Path
     const source = path.join(dir, "skills/orchestrate")
     yield* fs.makeDirectory(path.join(source, "scripts"), { recursive: true })
-    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts"], (file) => fs.copyFile(path.join(DEFAULT_SOURCE, file), path.join(source, file)))
+    yield* Effect.forEach(["SKILL.md", "protocol.md", "scripts/agents.ts", "scripts/ending.ts"], (file) => fs.copyFile(path.join(DEFAULT_SOURCE, file), path.join(source, file)))
     yield* fs.makeDirectory(path.join(dir, "skills/loop"), { recursive: true })
     yield* fs.copyFile(path.join(DEFAULT_SOURCE, "../loop/safety.md"), path.join(dir, "skills/loop/safety.md"))
     yield* fs.copy(path.join(DEFAULT_SOURCE, "../../agents"), path.join(dir, "agents"))

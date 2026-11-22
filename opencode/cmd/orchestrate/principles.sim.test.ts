@@ -102,6 +102,23 @@ seeded("search finds a principle by a phrase from its body, and shows the line",
   }),
 )
 
+seeded("search finds nothing-is-hard first or second by each of its trigger words, and list shows its Apply-when line", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { skills } = yield* disk
+    const run = yield* boot(seed, skills)
+    const root = yield* run.world.session(WORK)
+    const NAME = "principle-nothing-is-hard"
+    for (const query of ["hard", "effort", "defer", "later", "first cut", "out of scope", "recommend", "workaround", "blocked"]) {
+      const found = yield* run.call(root, { action: "search", query })
+      expect(found.error).toBe(false)
+      const ranked = found.text.split("\n").filter((line) => line.startsWith("principle-")).map((line) => line.slice(0, line.indexOf(":")))
+      expect({ query, top: ranked.slice(0, 2) }).toEqual({ query, top: expect.arrayContaining([NAME]) })
+    }
+    const listed = yield* run.call(root, { action: "list" })
+    expect(listed.text.split("\n").find((line) => line.startsWith(`${NAME}:`))).toStartWith(`${NAME}: Apply when effort is about to decide`)
+  }),
+)
+
 seeded("get answers the skill file's full text, by either name", ({ seed, expect }) =>
   Effect.gen(function* () {
     const { skills, subtract } = yield* disk

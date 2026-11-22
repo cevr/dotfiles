@@ -9,7 +9,8 @@ import type { ForkWork } from "./fork-work.ts"
 import { Effect, Option } from "effect"
 import { it } from "effect-bun-test"
 import type { DeepReport } from "./accept-ledger.ts"
-import { landReport, type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
+import { landFork, landReport, type Load, loadOf, postLand, reportOf, type Steps } from "./post-land.ts"
+import { NO_FORK } from "./fork.ts"
 import { FORK_OWNER, type Outcome, withUpstreamLock } from "./upstream.ts"
 
 const NONE: ForkWork = { candidates: [], closed: [], unread: 0, droppable: [] }
@@ -125,6 +126,14 @@ const expectedOf = (each: Case) => {
     lines: [...{ green: GREEN, red: RED }[each.colour], ...tail],
   }
 }
+
+describe("the fork post-land works on", () => {
+  test("is OPENCODE_DEV only: unset or empty, post-land stops naming the variable, and no guessed default checkout is used", () => {
+    expect(() => landFork({})).toThrow(NO_FORK)
+    expect(() => landFork({ OPENCODE_DEV: "" })).toThrow(NO_FORK)
+    expect(() => landFork({ OPENCODE_DEV: "/nonexistent/loop-probe-x" })).toThrow("does not exist on this machine")
+  })
+})
 
 describe("the post-land step", () => {
   /** The step's report at `load` (default settled), answered into an Effect. */
