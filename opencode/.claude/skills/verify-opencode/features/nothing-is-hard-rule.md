@@ -1,12 +1,12 @@
 # Nothing is hard, in the role prompts
 
-The owner's standing rule, "nothing is hard", reaches every orchestrate role agent (planner, implementor, verifier) and the lean worker in its prompt. A role's step is `ready` only when every item of its spec is done; difficulty is never a reason; anything not done names the dependency it waits on or is a finding outside the unit; a compaction or a long context does not end the step. A question's options state outcomes with effort on its own `measured` or `guess` line, and its assumption cites its principle by name and is never the lesser option for effort. A verifier's weak-test or narrowed-acceptance finding goes back to the same lane's next round instead of a follow-up. The refusal rule is word for word what it was, plus "A refusal is authority, not difficulty."
+The owner's standing rule, "nothing is hard", reaches every orchestrate role agent (planner, implementor, verifier) and the lean worker in its prompt. A planner's or implementor's step is `ready` only when every item of its spec is done; difficulty is never a reason; each thing not done is named one of three ways (`waits on <dependency>`, `continues next round` when the timebox's clock or the failure cap's count ended the round, or `finding outside the unit`); a compaction or a long context does not end the step. A question's options state outcomes with effort on its own `measured` or `guess` line, and its assumption cites its principle by name and is never the lesser option for effort. A weak test, narrowed acceptance or written-rule break goes by where it came from: one the unit's change introduced to the same lane's next round, one the base head shows too to a follow-up unit; none fails a round. The refusal paragraph is word for word what it was, plus "A refusal is authority, not difficulty."; the principle defers to it for what stops.
 
 ## Sub-features
 
 - `NIH1` each role's prompt carries the rule, the hand-back rule and the question form (`skills/orchestrate/protocol.md`, generated into `mods/orchestrate/agents.json`).
 - `NIH2` the refusal rule is unchanged but for its one added sentence.
-- `NIH3` the verifier sends Test strength findings to the same lane's next round.
+- `NIH3` findings route by provenance: the unit's own to its lane's next round, the base's to a follow-up unit.
 - `NIH4` the worker's prompt carries the rule and goes on past a compaction or a long context.
 - `NIH5` the generated prompts match their source: deleting one role's emitted line makes `--check` red.
 
