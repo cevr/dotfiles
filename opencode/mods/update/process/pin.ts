@@ -1,7 +1,7 @@
 import { file } from "bun"
 import { Effect, Option, Schema } from "effect"
 import { UpdateFailed } from "../service.ts"
-import { run, spawned, type Place } from "./run.ts"
+import { run, said, spawned, type Place } from "./run.ts"
 
 /**
  * Where a stage builds the verified target's fork commit: `tree`, a detached worktree of the fork
@@ -16,6 +16,8 @@ export interface Pin {
   readonly tree: string
   /** The fork commit the verified target names. */
   readonly commit: string
+  /** The commit `commit` must have in its history (`PLATFORM_FLOOR`; a test's own in a scratch fork). */
+  readonly floor: string
   /** The dotfiles commit the verified target names: the build's version names it beside the fork's (`versionOf`). */
   readonly dotfiles: string
   /** The bun that installs, by its full path. */
@@ -66,19 +68,55 @@ export const suffixOf = (reported: string): Option.Option<string> => Option.from
 /** A commit as git names it: 8 to 40 hex. */
 const COMMIT = /^[0-9a-f]{8,40}$/
 
+/**
+ * The fork's platform floor: the fork commit that gives a server plugin the host's `FileSystem`, `Path`
+ * and `ChildProcessSpawner` (cevr/opencode `c1e978ca`, "plugin-platform-host"). This tree's plugins may
+ * depend on those services, so it builds only a fork that has this commit in its history: an older fork
+ * would start them with `Service not found: effect/FileSystem`. The check is the target tree's own (the
+ * stage runs the target tree's daily, `builder.ts` `treeStageCommand`), so an older tree, which lacks it,
+ * still builds its own older fork, and a rollback (a record write, `model.ts` `rollBackTree`) builds
+ * nothing. It moves only forward, to a fork commit the plugins come to need, never back.
+ */
+export const PLATFORM_FLOOR = "c1e978ca12cf7c0b6fad4f8d526e0a6f3ebfa90f"
+
+/** The step a fork below the floor fails, whatever the reason the check could not pass. */
+export const FLOOR_STEP = "check the fork's platform floor"
+
+/**
+ * The target's fork commit `target` in full, once it is known to have `floor` in its history; read in
+ * the fork checkout `at`, which it never writes. Fails closed, at `FLOOR_STEP`, naming both commits,
+ * when the target does not resolve, when it does not descend from the floor, when the checkout lacks
+ * the floor, and when git cannot tell.
+ */
+export const requireFloor = (at: Place, floor: string, target: string): Effect.Effect<string, UpdateFailed> =>
+  Effect.gen(function* () {
+    const refuse = (actual: string, why: string) =>
+      new UpdateFailed({ step: FLOOR_STEP, message: `the fork must have ${floor} (the plugin platform) in its history; the target's fork ${actual} ${why}: nothing built or staged` })
+    const found = yield* spawned(FLOOR_STEP, ["git", "rev-parse", "--verify", "--quiet", `${target}^{commit}`], at).pipe(Effect.mapError((failed) => refuse(target, `could not be read (${failed.message})`)))
+    if (found.code !== 0) return yield* refuse(target, `is no commit in ${at.cwd} (${said(found)})`)
+    const commit = found.stdout.trim()
+    const floorFound = yield* spawned(FLOOR_STEP, ["git", "rev-parse", "--verify", "--quiet", `${floor}^{commit}`], at).pipe(Effect.mapError((failed) => refuse(commit, `could not be checked (${failed.message})`)))
+    if (floorFound.code !== 0 || floorFound.stdout.trim() !== floor) return yield* refuse(commit, `could not be checked: ${at.cwd} lacks the floor commit (${said(floorFound)})`)
+    const ancestry = yield* spawned(FLOOR_STEP, ["git", "merge-base", "--is-ancestor", floor, commit], at).pipe(Effect.mapError((failed) => refuse(commit, `could not be checked (${failed.message})`)))
+    if (ancestry.code === 1) return yield* refuse(commit, "does not have it")
+    if (ancestry.code !== 0) return yield* refuse(commit, `could not be checked (${said(ancestry)})`)
+    return commit
+  })
+
 const CliPackage = Schema.Struct({ version: Schema.String })
 const decodeCli = Schema.decodeUnknownEffect(Schema.fromJsonString(CliPackage))
 
 /**
  * Puts `pin.tree` at exactly `pin.commit`, its tracked files as the commit has them, and installs its
  * dependencies as the lockfile pins them. Answers the commit in full. Fails when the fork checkout
- * lacks the commit or the tree ends anywhere else.
+ * lacks the commit or the tree ends anywhere else, and first, before the tree moves or anything
+ * installs, when the commit is below the platform floor (`requireFloor`).
  */
 export const pinTree = (pin: Pin): Effect.Effect<string, UpdateFailed> =>
   Effect.gen(function* () {
     const at: Place = { cwd: pin.fork, env: pin.env }
     const git = (step: string, ...args: ReadonlyArray<string>) => run(step, ["git", ...args], at).pipe(Effect.map((out) => out.trim()))
-    const commit = yield* git(`find the target's fork commit ${pin.commit.slice(0, 10)} in ${pin.fork}`, "rev-parse", "--verify", "--quiet", `${pin.commit}^{commit}`)
+    const commit = yield* requireFloor(at, pin.floor, pin.commit)
     yield* git("prune the fork's stale worktrees", "worktree", "prune")
     const known = yield* spawned("read the build tree", ["git", "-C", pin.tree, "rev-parse", "--is-inside-work-tree"], at)
     if (known.code === 0) yield* git("move the build tree to the target", "-C", pin.tree, "checkout", "--quiet", "--detach", "--force", commit)
@@ -127,31 +165,36 @@ export interface DailyBuild {
   readonly commit: ReadonlyArray<string>
   /** The dotfiles commit the record gives the build, which its version names too. */
   readonly dotfiles: string
+  /** The commit the built fork must have in its history: `PLATFORM_FLOOR` for daily (`runDailyBuild`). */
+  readonly floor: string
   readonly bun: string
   readonly build: ForkBuild
   readonly log: (line: string) => void
 }
 
-/** daily's fork build (`DailyBuild`); a failure names its step. */
+/** daily's fork build (`DailyBuild`); a failure names its step. Either way the fork commit passes the floor (`requireFloor`) before anything builds. */
 export const dailyBuild = (options: DailyBuild): Effect.Effect<Pinned, UpdateFailed> => {
   const named = (failed: UpdateFailed) => new UpdateFailed({ step: failed.step, message: `${failed.step}: ${failed.message}` })
   const env = {}
   const built = Option.match(Option.fromIterable(options.commit), {
     onNone: () =>
       Effect.sync(() => options.log(`building ${options.fork} as it stands`)).pipe(
-        Effect.andThen(run("read the fork's commit", ["git", "rev-parse", "HEAD"], { cwd: options.fork, env })),
-        Effect.flatMap((head) => buildAt(options.fork, head.trim(), options.dotfiles, options.build)),
+        Effect.andThen(requireFloor({ cwd: options.fork, env }, options.floor, "HEAD")),
+        Effect.flatMap((head) => buildAt(options.fork, head, options.dotfiles, options.build)),
       ),
     onSome: (commit) =>
       Effect.sync(() => options.log(`building the target's fork ${commit.slice(0, 10)} in ${options.tree}, pinned there`)).pipe(
-        Effect.andThen(stageFork({ fork: options.fork, tree: options.tree, commit, dotfiles: options.dotfiles, bun: options.bun, env }, options.build)),
+        Effect.andThen(stageFork({ fork: options.fork, tree: options.tree, commit, floor: options.floor, dotfiles: options.dotfiles, bun: options.bun, env }, options.build)),
       ),
   })
   return built.pipe(Effect.mapError(named))
 }
 
-/** `dailyBuild` for daily, a script with no Effect runtime of this package's: it rejects with the named failure. */
-export const runDailyBuild = (options: DailyBuild): Promise<Pinned> => Effect.runPromise(dailyBuild(options))
+/**
+ * `dailyBuild` for daily, a script with no Effect runtime of this package's, at this tree's floor
+ * (`PLATFORM_FLOOR`): it rejects with the named failure.
+ */
+export const runDailyBuild = (options: Omit<DailyBuild, "floor">): Promise<Pinned> => Effect.runPromise(dailyBuild({ ...options, floor: PLATFORM_FLOOR }))
 
 /** The fork's release build in a tree (`packages/cli/script/build.ts`), for the platform `target` (`cli-<os>-<arch>`). */
 export const releaseBuild = (bun: string, target: string, env: Readonly<globalThis.Record<string, string>>, skip = false): ForkBuild => ({
