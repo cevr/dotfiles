@@ -471,6 +471,98 @@ export const lineRefusal = (what: string, value: string, max = TEXT_MAX): Option
 /** The text a record keeps of `text`: every secret shape the digest redacts replaced, ends trimmed. */
 export const kept = (text: string): string => redact(text).trim()
 
+/** The longest note an event keeps: longer (an imported history's) is cut there. */
+export const NOTE_MAX = 1000
+
+type Held<A> = Result.Result<A, RecordRefused>
+
+/** One free-text field as the record holds it: one line of at most `max` that says something, redacted (`kept`); else refused. */
+const freeText = (what: string, value: string, max = TEXT_MAX): Held<string> =>
+  Option.match(lineRefusal(what, value, max), { onSome: (reason) => Result.fail(new RecordRefused({ reason })), onNone: () => Result.succeed(kept(value)) })
+
+const freeTextOf = (what: string, value: Option.Option<string>, max = TEXT_MAX): Held<Option.Option<string>> =>
+  Option.match(value, { onNone: () => Result.succeed(Option.none()), onSome: (text) => Result.map(freeText(what, text, max), Option.some) })
+
+/** A one-token field (a lane, a session, a commit): kept as given, else refused. */
+const tokenOf = (what: string, value: Option.Option<string>): Held<Option.Option<string>> =>
+  Option.match(Option.flatMap(value, (text) => tokenRefusal(what, text)), { onSome: (reason) => Result.fail(new RecordRefused({ reason })), onNone: () => Result.succeed(value) })
+
+/** An imported row's free text and tokens, each column as `row <id>, column <name>` names it. */
+const boundedRow = (id: string, row: ImportedRow): Held<ImportedRow> => {
+  const column = (name: string) => `row ${id}, column ${name}: ${name}`
+  return Result.map(
+    Result.all({
+      title: freeText(column("title"), row.title),
+      sourceRef: freeText(column("source_ref"), row.sourceRef),
+      quote: freeTextOf(column("quote"), row.quote),
+      plan: freeTextOf(column("plan"), row.plan),
+      part: freeTextOf(column("part"), row.part),
+      decidedWhy: freeTextOf(column("decided_why"), row.decidedWhy, WHY_MAX),
+      requestPath: freeTextOf(column("request_path"), row.requestPath),
+      ownerLane: tokenOf(column("owner_lane"), row.ownerLane),
+      ownerSession: tokenOf(column("owner_session"), row.ownerSession),
+      head: tokenOf(column("head"), row.head),
+      landedCommit: tokenOf(column("landed_commit"), row.landedCommit),
+    }),
+    (fields) => ImportedRow.make({ ...row, ...fields }),
+  )
+}
+
+/**
+ * What happened as the record keeps it: every free-text field (the columns `FREE_TEXT_COLUMNS` names, and the event
+ * data and note they come from) one line, bounded and redacted, else the whole command refused. The one boundary
+ * every command's events pass (standing.ts `decideCommand`), so no column holds a secret or an unbounded text.
+ */
+const boundedHappening = (subject: string, happening: Happening): Held<Happening> =>
+  Match.value(happening).pipe(
+    Match.tag("promised", (happened) =>
+      Result.map(
+        Result.all({
+          title: freeText(`the title of ${subject}`, happened.title),
+          sourceRef: freeText("the source_ref", happened.sourceRef),
+          quote: freeTextOf("the quote", happened.quote),
+          plan: freeTextOf("the plan", happened.plan),
+          part: freeTextOf(`the part of ${subject}`, happened.part),
+          suggestOwner: freeTextOf("the suggested owner", happened.suggestOwner),
+        }),
+        (fields): Happening => Happening.cases.promised.make({ ...happened, ...fields }),
+      ),
+    ),
+    Match.tag("decided", (happened) => Result.map(freeText("the reason (why)", happened.why, WHY_MAX), (why): Happening => Happening.cases.decided.make({ ...happened, why }))),
+    Match.tag("handed_back", (happened) =>
+      Result.map(
+        Result.all({ role: freeText("the role", happened.role), file: freeTextOf("the file", happened.file) }),
+        (fields): Happening => Happening.cases.handed_back.make({ ...happened, ...fields }),
+      ),
+    ),
+    Match.tag("laned", (happened) => Result.map(tokenOf("the start head", Option.some(happened.startHead)), () => happening)),
+    Match.tag("imported", (happened) => Result.map(boundedRow(subject, happened.row), (row): Happening => Happening.cases.imported.make({ row }))),
+    Match.orElse(() => Result.succeed(happening)),
+  )
+
+/** Every event of a command through `boundedHappening`, its note redacted and cut at `NOTE_MAX`: the record's one text boundary. */
+export const bounded = (events: ReadonlyArray<RecordEvent>): Held<ReadonlyArray<RecordEvent>> =>
+  Result.all(events.map((each) => Result.map(boundedHappening(each.subjectId, each.happening), (happening): RecordEvent => ({ ...each, happening, note: kept(each.note).slice(0, NOTE_MAX) }))))
+
+/**
+ * Every free-text column of the record's tables, as `<table>.<column>`: what `bounded` redacts and bounds. A test
+ * lists the tables' TEXT columns and requires each be here or a known token, time or literal column, so no new
+ * column skips the boundary.
+ */
+export const FREE_TEXT_COLUMNS: ReadonlyArray<string> = [
+  "commitment.title",
+  "commitment.source_ref",
+  "commitment.quote",
+  "commitment.plan",
+  "commitment.part",
+  "commitment.request_path",
+  "commitment.decided_why",
+  "hand_back.role",
+  "hand_back.file",
+  "event.note",
+  "event.data",
+]
+
 const isOwnerSourced = (row: Commitment): boolean => OWNER_KINDS.includes(row.sourceKind)
 
 const openRow = (snapshot: Snapshot, id: string): Option.Option<Commitment> =>
@@ -526,13 +618,10 @@ const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" 
   return firstOf([
     when(command.parts.length === 0, "an add names at least one part"),
     tokenRefusal("the run", command.run),
-    lineRefusal("the source_ref", command.sourceRef),
     when(worker && !WORKER_KINDS.includes(command.sourceKind), `a worker files only ${WORKER_KINDS.join(" or ")}; ${command.sourceKind} is the root's`),
     when(worker && command.parts.some((part) => Option.isSome(part.ownerLane)), "a worker files a follow-up unowned; suggest an owner instead"),
     when(Option.isSome(command.quote) && !OWNER_KINDS.includes(command.sourceKind), "a quote is the owner's words: only an owner-answer or owner-ask carries one"),
-    Option.flatMap(command.quote, (quote) => lineRefusal("the quote", quote)),
     firstOf(ids.map(idRefusal)),
-    firstOf(command.parts.map((part) => lineRefusal(`the title of ${part.id}`, part.title))),
     when(Arr.dedupe(ids).length !== ids.length, "two parts share an id"),
     Option.map(Arr.findFirst(ids, (id) => snapshot.commitments.has(id)), (id) => `the id ${id} is taken`),
     firstOf(command.parts.map((part) => Option.flatMap(part.ownerLane, (lane) => tokenRefusal("the owner", lane)))),
@@ -542,10 +631,10 @@ const addRefusal = (snapshot: Snapshot, command: Extract<Command, { _tag: "add" 
 
 const promisedOf = (command: Extract<Command, { _tag: "add" }>, part: PartInput) =>
   Happening.cases.promised.make({
-    title: kept(part.title),
+    title: part.title,
     sourceKind: command.sourceKind,
-    sourceRef: command.sourceRef.trim(),
-    quote: Option.map(command.quote, kept),
+    sourceRef: command.sourceRef,
+    quote: command.quote,
     plan: command.plan,
     part: part.part,
     rank: part.rank,
@@ -619,12 +708,11 @@ const decideDecide = (snapshot: Snapshot, command: Extract<Command, { _tag: "dec
   if (Option.isNone(row)) return refuse(`${command.id} is not an open commitment`)
   const ownerSourced = isOwnerSourced(row.value)
   const refused = firstOf([
-    lineRefusal("the reason (why)", command.why, WHY_MAX),
     when(ownerSourced && context.actor.role === "worker", "only the root closes what the owner approved"),
     when(context.actor.role === "import" || context.actor.role === "owner", `a ${context.actor.role} does not decide`),
   ])
   if (Option.isSome(refused)) return refuse(refused.value)
-  const why = kept(command.why)
+  const why = command.why
   const outsideRun = Option.some(outsideRunOf(snapshot, row.value, context))
   return decided([onCommitment(context, row.value, Happening.cases.decided.make({ why, notice: ownerSourced, outsideRun }), Option.some("decided"), why)])
 }
@@ -721,7 +809,6 @@ const decideLane = (snapshot: Snapshot, command: Extract<Command, { _tag: "lane"
 const importRefusal = (row: ImportRow): Option.Option<string> =>
   firstOf([
     Option.map(idRefusal(row.id), (why) => `row ${row.id}, column id: ${why}`),
-    Option.map(lineRefusal("title", row.row.title), (why) => `row ${row.id}, column title: ${why}`),
     when(row.row.state === "landed" && Option.isNone(row.row.landedCommit), `row ${row.id}, column landed_commit: a landed row needs the commit on the default branch`),
     when(row.row.state === "decided" && Option.isNone(row.row.decidedWhy), `row ${row.id}, column state: a decided row needs a closing event's note`),
     when(Option.isSome(row.row.ownerLane) && Option.isNone(row.row.reviewBy) && row.row.state === "open", `row ${row.id}, column review_by: an owned open row needs one`),

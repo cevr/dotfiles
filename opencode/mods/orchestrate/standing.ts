@@ -4,7 +4,7 @@
 // once for each commitment newly due. The facts it reads from outside (the clock, which commits are on the default
 // branch, which owners are gone, the run's root) are gathered by the caller through the contracts.
 import { Array as Arr, Match, Option, Order, Result } from "effect"
-import { type Command, type Commitment, type Context, decide, fold, Happening, isoOf, msOf, type Prerequisite, type RecordEvent, type RecordRefused, ROOT, type Snapshot } from "./record.ts"
+import { bounded, type Command, type Commitment, type Context, decide, fold, Happening, isoOf, msOf, type Prerequisite, type RecordEvent, type RecordRefused, ROOT, type Snapshot } from "./record.ts"
 
 export const STANDINGS = ["unowned", "orphaned", "overdue", "due", "held"] as const
 export type Standing = (typeof STANDINGS)[number]
@@ -101,9 +101,12 @@ export const checkpointOf = (snapshot: Snapshot, facts: Facts): Checkpoint => {
 
 /** Any command's events: `pass` here, with the facts it carries; every other in record.ts. */
 export const decideCommand = (snapshot: Snapshot, command: Command, context: Context): Result.Result<ReadonlyArray<RecordEvent>, RecordRefused> =>
-  Match.value(command).pipe(
-    Match.tag("pass", (pass) => decidePass(snapshot, { now: context.now, onMain: new Set(pass.onMain), gone: new Set(pass.gone) }, pass.root, context)),
-    Match.orElse((other) => decide(snapshot, other, context)),
+  Result.flatMap(
+    Match.value(command).pipe(
+      Match.tag("pass", (pass) => decidePass(snapshot, { now: context.now, onMain: new Set(pass.onMain), gone: new Set(pass.gone) }, pass.root, context)),
+      Match.orElse((other) => decide(snapshot, other, context)),
+    ),
+    bounded,
   )
 
 /** What one pass did: the commitments it landed, and the root it woke with the commitments newly due. */
