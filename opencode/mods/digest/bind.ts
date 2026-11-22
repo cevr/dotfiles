@@ -89,6 +89,28 @@ export interface TailscaleStatus {
   readonly dnsName: Option.Option<string>
   /** `Self.TailscaleIPs`: the only addresses that are this host's on the tailnet. */
   readonly ips: ReadonlyArray<string>
+  /** `Self.UserID`: the Tailscale user this host belongs to; none when the status has none. */
+  readonly userId: Option.Option<number>
+  /** Whether this host is a tagged device (`Self.Tags`): its UserID then names no person. */
+  readonly tagged: boolean
+  /** The other devices the status lists (`Peer`). */
+  readonly peers: ReadonlyArray<PeerStatus>
+}
+
+/** Another device on the tailnet, as Tailscale's status lists it. */
+export interface PeerStatus {
+  /** Its MagicDNS name, without the trailing dot; none when MagicDNS is off. */
+  readonly dnsName: Option.Option<string>
+  /** `HostName`: the name the device gives itself. */
+  readonly hostName: string
+  /** `TailscaleIPs`. */
+  readonly ips: ReadonlyArray<string>
+  /** `UserID`: the Tailscale user it belongs to. */
+  readonly userId: Option.Option<number>
+  /** Whether it is a tagged device (`Tags`): its UserID then names no person. */
+  readonly tagged: boolean
+  /** Whether it is shared in from another tailnet (`ShareeNode`). */
+  readonly shared: boolean
 }
 
 /** The CLI's status, or why there is none: `no-cli`, `cli-failed`, `cli-timeout`, `unparseable`. */
@@ -115,6 +137,26 @@ const ADDRESS_ORDER: Order.Order<string> = Order.combine(Order.mapInput(Order.Nu
 /** Whether two addresses are one, however each is written (an IPv6 one compressed or not, upper or lower case). */
 const sameAddress = (a: string, b: string): boolean =>
   a === b || Option.getOrElse(Option.zipWith(groupsOf(a), groupsOf(b), (x, y) => x.every((each, index) => each === y[index])), () => false)
+
+/**
+ * An address in one spelling, so two spellings of one address compare equal: IPv4 as dotted octets, an IPv4-mapped
+ * IPv6 one (`::ffff:100.64.0.1`, `::ffff:6440:1`) as its IPv4 address, any other IPv6 one as eight lower-case groups
+ * in full. None for anything that is not an address plainly (a name, a zoned address, brackets).
+ */
+export const canonicalOf = (address: string): Option.Option<string> =>
+  Option.match(octetsOf(address), {
+    onSome: (octets) => Option.some(octets.join(".")),
+    onNone: () =>
+      Option.map(groupsOf(address), (groups) =>
+        Option.match(
+          Option.liftPredicate(groups, (each) => each.slice(0, 5).every((group) => group === 0) && each[5] === 0xffff),
+          {
+            onSome: (mapped) => [(mapped[6] ?? 0) >> 8, (mapped[6] ?? 0) & 0xff, (mapped[7] ?? 0) >> 8, (mapped[7] ?? 0) & 0xff].join("."),
+            onNone: () => groups.map((group) => group.toString(16)).join(":"),
+          },
+        ),
+      ),
+  })
 
 /** A backend state as a reason's word: letters, digits and dashes only. */
 const word = (text: string) => text.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)

@@ -2,7 +2,7 @@
 // the build read from an installed tree's path (`dev` from a checkout). Paths and hosts are invented.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { buildOf, healthLine, isWell, sickLine } from "./health.ts"
+import { buildOf, healthLine, isWell, localPart, sickLine } from "./health.ts"
 
 describe("the health line", () => {
   test("its fields; an empty log; peers when there are some", () => {
@@ -12,6 +12,8 @@ describe("the health line", () => {
       "digest ok 2.3.0-prime.aaaa.bbbb.tree host=harbor events=12 last=2026-11-20T12:00:00.000Z peers=workbox:40s tailnet=yes",
     )
     expect(isWell(healthLine(facts))).toBe(true)
+    // What loopback's line adds: the write switch in force (with why it closed) and his devices' count.
+    expect([localPart("member-except-hosts", 3), localPart("paired:unresolved:skiff", 0)]).toEqual(["writes=member-except-hosts members=3", "writes=paired:unresolved:skiff members=0"])
   })
 
   test("a sick line is one line, and not well", () => {

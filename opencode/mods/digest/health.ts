@@ -15,6 +15,9 @@
 // - A log that cannot be read is `digest sick <build> host=<h> <why>`. The installer warns on it and never rolls a
 //   build back for it.
 // - On the tailnet an unpaired request reads `ok` alone (BRIEF): no counts, no names.
+// - On loopback alone the line ends with `writes=<switch>[:<why closed>] members=<n>` (localPart): the write switch in
+//   force (`digest.tailnetWrite`, "paired" with the reason when it closed, members.ts) and how many of his own other
+//   devices Tailscale's status names. A paired browser on the tailnet reads the line without them.
 import { Array as Arr, DateTime, Option } from "effect"
 
 /** What the tailnet listener is doing, as health reports it. */
@@ -40,6 +43,9 @@ export const healthLine = (facts: HealthFacts): string => {
   const peers = Arr.match(facts.peers, { onEmpty: () => "none", onNonEmpty: (all) => all.map((peer) => `${peer.name}:${peer.age}s`).join(",") })
   return `digest ok ${facts.build} host=${facts.host} events=${facts.events} last=${last} peers=${peers} tailnet=${facts.tailnet}`
 }
+
+/** What the line adds on loopback: the write switch in force, and how many of his own other devices there are. */
+export const localPart = (writes: string, devices: number): string => `writes=${writes} members=${devices}`
 
 /** The line for a digest whose log does not read. */
 export const sickLine = (build: string, host: string, why: string): string => `digest sick ${build} host=${host} ${why.replace(/\s+/g, " ").slice(0, 300)}`
