@@ -166,7 +166,7 @@
       "feature": "A session whose background shell a restart killed is woken with the notice (the owner's q162, diverging from upstream 664c8f0990)",
       "package": "packages/cli",
       "files": ["test/service-shell-restart.test.ts"],
-      "proved": "arrives with unit shell-restart-wake's fork commit"
+      "proved": "unit shell-restart-wake, on origin prime-look as 6de99923b1, 22a14bd2ea and 5d44dfd789: a signal-begun restart wakes the cancelled shell's session once"
     }
   ],
   "expectations": [
