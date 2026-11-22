@@ -1234,5 +1234,29 @@
     "source": "/^[^\\n\\r]+$/",
     "why": "validates a reason's pointer, a receipt envelope's fields and a git object id the evidence reader reads: validating a field, never run state",
     "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/inventory.ts",
+    "source": "/^---\\n[\\s\\S]*?\\n---\\n/",
+    "why": "reads the agent definitions' own files (front matter, a TOML prompt block) to inventory the prompts: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/inventory.ts",
+    "source": "/developer_instructions = '''\\n([\\s\\S]*?)\\n'''/",
+    "why": "reads the agent definitions' own files (front matter, a TOML prompt block) to inventory the prompts: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/inventory.ts",
+    "source": "/\\n\\s*\\n/",
+    "why": "reads the agent definitions' own files (front matter, a TOML prompt block) to inventory the prompts: reading a document as a document",
+    "until": "stays"
+  },
+  {
+    "file": "skills/orchestrate/scripts/ending.ts",
+    "source": "/<!-- end-of-step: [^\\n]*-->[\\s\\S]*?<!-- \\/end-of-step -->/",
+    "why": "finds its own generated end-of-step block in the prompt files it writes: a generated document's marker, not run state",
+    "until": "stays"
   }
 ]
