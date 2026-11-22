@@ -275,7 +275,8 @@
         "mods/digest/filestore/log.test.ts",
         "mods/digest/filestore/marks.test.ts",
         "mods/digest/http/listener.test.ts",
-        "cmd/digest/peers.test.ts"
+        "cmd/digest/peers.test.ts",
+        "cmd/digest/peers-write.test.ts"
       ],
       "rules": {
         "effect/noAsyncFunction": "off",
