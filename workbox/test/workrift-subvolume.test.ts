@@ -157,6 +157,15 @@ const CP = [
   'if [ "$1" = -a ] && [ "$2" = --reflink=always ]; then',
   '  [ -z "${FAKE_CP_LOG:-}" ] || printf "%s %s\\n" "$4" "$(perl -MTime::HiRes=time -e \'printf "%.3f", time\')" >>"$FAKE_CP_LOG"',
   '  [ -z "${FAKE_CP_DELAY:-}" ] || sleep "$FAKE_CP_DELAY"',
+  // The first copy only: FAKE_CP_AFTER runs once the tree is copied (a Git process that lands in the base meanwhile),
+  // then FAKE_CP_REFS_LAST=1 copies the base's refs again (a walk that reached the refs after that process).
+  '  if [ -n \"${FAKE_CP_ONCE:-}\" ] && [ ! -e \"$FAKE_CP_ONCE\" ]; then',
+  '    : >\"$FAKE_CP_ONCE\"',
+  '    /bin/cp -pPR \"$3\" \"$4\" || exit 1',
+  '    [ -z \"${FAKE_CP_AFTER:-}\" ] || sh -c \"$FAKE_CP_AFTER\" sh \"$3\" \"$4\" || exit 1',
+  '    if [ -n \"${FAKE_CP_REFS_LAST:-}\" ]; then /bin/cp -pPR \"$3/.git/refs/.\" \"$4/.git/refs/\"; [ ! -f \"$3/.git/packed-refs\" ] || /bin/cp -p \"$3/.git/packed-refs\" \"$4/.git/packed-refs\"; fi',
+  '    exit 0',
+  '  fi',
   '  case "${FAKE_CP:-}" in',
   '    enospc) /bin/cp -pPR "$3" "$4"; echo "cp: error writing \'$4/README.md\': No space left on device" >&2; exit 1 ;;',
   '    die) /bin/cp -pPR "$3" "$4"; kill -KILL "$PPID"; exit 1 ;;',
@@ -166,6 +175,10 @@ const CP = [
   'exec /bin/cp "$@"',
   "",
 ].join("\n")
+
+/** git, logging each call (FAKE_GIT_LOG) when asked. */
+const GIT_REAL = Bun.which("git") ?? "/usr/bin/git"
+const GIT = ["#!/bin/sh", '[ -z "${FAKE_GIT_LOG:-}" ] || printf "%s\\n" "$*" >>"$FAKE_GIT_LOG"', `exec '${GIT_REAL}' "$@"`, ""].join("\n")
 
 /** python3, with FAKE_BEFORE_EXCHANGE / FAKE_AFTER_EXCHANGE run around the first exchange, FAKE_EXCHANGE_FAIL failing it. */
 const PY = [
@@ -211,7 +224,7 @@ const bench = (label: string) => {
   mkdirSync(join(sys, UUID, "allocation/metadata"), { recursive: true })
   writeFileSync(join(sys, UUID, "allocation/metadata/total_bytes"), `${57 * 2 ** 30}\n`)
   writeFileSync(join(sys, UUID, "allocation/metadata/bytes_used"), `${43 * 2 ** 30}\n`)
-  for (const [name, body] of [["flock", FLOCK], ["stat", STAT], ["btrfs", BTRFS], ["work", WORK], ["cp", CP], ["python3", PY], ["findmnt", FINDMNT], ["df", DF]] as const)
+  for (const [name, body] of [["flock", FLOCK], ["stat", STAT], ["btrfs", BTRFS], ["work", WORK], ["cp", CP], ["python3", PY], ["git", GIT], ["findmnt", FINDMNT], ["df", DF]] as const)
     exe(join(bin, name), body)
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !/^(WORKRIFT_|RIFT_|WORK_|WORK$|XDG_|GIT_|FAKE_)/.test(entry[0])),
@@ -684,6 +697,96 @@ describe("workrift subvolume --apply", () => {
     expect(c.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
     whole(c)
     expect(c.phase()).toBe("")
+  }, 60_000)
+})
+
+describe("a live .git under the copy (Git processes outside the line: create-fetch G1-G5)", () => {
+  const g = (path: string, ...args: ReadonlyArray<string>) => `git -C '${path}' ${args.join(" ")}`
+  /** A whole repository: every object of every ref reachable (fsck of connectivity). */
+  const connected = (b: Bench) => {
+    const ran = Bun.spawnSync(["git", "-C", b.base, "fsck", "--connectivity-only", "--no-dangling"], { env: b.env, stdout: "pipe", stderr: "pipe" })
+    expect(ran.exitCode, ran.stderr.toString()).toBe(0)
+  }
+
+  test("G1/G2: a fetch that lands while the copy walks the base, its ref copied after its objects (a torn copy), is seen and the .git copied again; the new base holds the ref and its objects", () => {
+    const b = bench("torn")
+    const ran = b.wr(["subvolume", "--apply"], {
+      FAKE_CP_ONCE: join(b.dir, "cp-once"),
+      FAKE_CP_AFTER: `t=$(${g(b.base, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "torn")}) && ${g(b.base, "update-ref", "refs/heads/torn", '"$t"')}`,
+      FAKE_CP_REFS_LAST: "1",
+    })
+    expect(ran.code, said(ran)).toBe(0)
+    expect(b.steps()).toContain("copy-git")
+    expect(b.refs(b.base)).toContain("refs/heads/torn")
+    connected(b)
+    converted(b)
+  }, 30_000)
+
+  test("G2: a copy with a ref tip its store lacks is never switched to: after three copies of the .git it rolls back, the base untouched", () => {
+    const b = bench("tip-missing")
+    writeFileSync(join(b.base, ".git/refs/heads/broken"), `${"0123456789abcdef".repeat(2)}01234567\n`)
+    const ran = b.wr(["subvolume", "--apply"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(ran.err).toContain("after 3 copies of its .git")
+    expect(ran.err).toContain("rolled back")
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+    expect(b.steps().filter((s) => s === "copy-git")).toHaveLength(2)
+  }, 30_000)
+
+  test("G1: a repack that lands while the copy walks the base (no ref moves) is seen by the store's listing and the .git copied again", () => {
+    const b = bench("repack")
+    const ran = b.wr(["subvolume", "--apply"], { FAKE_CP_ONCE: join(b.dir, "cp-once"), FAKE_CP_AFTER: `${g(b.base, "repack", "-a", "-d", "-q")}` })
+    expect(ran.code, said(ran)).toBe(0)
+    expect(b.steps()).toContain("copy-git")
+    connected(b)
+    converted(b)
+  }, 30_000)
+
+  test("G3: a Git lock or temporary pack the copy carried (gone from the base since) sends the .git to be copied again; none is left in the new base", () => {
+    for (const carried of [".git/refs/heads/main.lock", ".git/packed-refs.lock", ".git/objects/pack/tmp_pack_q1"]) {
+      const b = bench("carried")
+      const ran = b.wr(["subvolume", "--apply"], { FAKE_CP_ONCE: join(b.dir, "cp-once"), FAKE_CP_AFTER: `: >"$2/${carried}"` })
+      expect(ran.code, `${carried}: ${said(ran)}`).toBe(0)
+      expect(b.steps(), carried).toContain("copy-git")
+      expect(existsSync(join(b.base, carried)), carried).toBe(false)
+      converted(b)
+    }
+  }, 60_000)
+
+  test("G4: a ref moved in the old tree after the exchange to a commit only the old tree has arrives with its objects; every write of the command's git calls runs with auto-maintenance off", () => {
+    const b = bench("only-old")
+    const gitLog = join(b.dir, "git-calls")
+    const ran = b.wr(["subvolume", "--apply"], {
+      FAKE_GIT_LOG: gitLog,
+      // The writer is not the command: its calls stay out of the log.
+      FAKE_AFTER_EXCHANGE: `export FAKE_GIT_LOG=; t=$(${g(b.paths.new, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "only-old")}) && ${g(b.paths.new, "update-ref", "refs/heads/only-old", '"$t"')}`,
+    })
+    expect(ran.code, said(ran)).toBe(0)
+    expect(b.refs(b.base)).toContain("refs/heads/only-old")
+    connected(b)
+    const writes = textLines(readFileSync(gitLog, "utf8")).filter((line) => / (fetch|update-ref|update-index|repack|gc|commit)( |$)/.test(line))
+    expect(writes.length).toBeGreaterThan(0)
+    expect(writes.filter((line) => !(line.includes("gc.auto=0") && line.includes("maintenance.auto=false"))).filter((line) => !line.includes(" checkout "))).toEqual([])
+  }, 30_000)
+
+  test("G5: a create whose copy carried a Git lock or gc file from the base deletes it in the new workspace only, naming it; an index.lock fails the create with the retry as the fix", () => {
+    const b = bench("create-locks")
+    const carried = [".git/refs/remotes/origin/zz.lock", ".git/gc.pid", ".git/objects/maintenance.lock", ".git/objects/pack/tmp_pack_z"]
+    for (const each of carried) writeFileSync(join(b.base, each), "")
+    const made = b.wr(["create", "with-locks"])
+    expect(made.code, said(made)).toBe(0)
+    const workspace = b.records().find((r) => r.name === "with-locks")!.path
+    for (const each of carried) {
+      expect(made.err).toContain(`removed ${join(workspace, each)} from the new workspace`)
+      expect(existsSync(join(workspace, each)), each).toBe(false)
+      expect(existsSync(join(b.base, each)), each).toBe(true)
+    }
+    for (const each of carried) rmSync(join(b.base, each))
+    writeFileSync(join(b.base, ".git/index.lock"), "")
+    const failed = b.wr(["create", "with-index-lock"])
+    expect(failed.code, said(failed)).toBe(1)
+    expect(failed.err).toContain("a Git process held it in the base the instant the workspace was copied; run the create again")
+    expect(existsSync(join(b.base, ".git/index.lock"))).toBe(true)
   }, 60_000)
 })
 

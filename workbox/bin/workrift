@@ -1764,6 +1764,38 @@ work_init() {
 # died on the way (a kill, a crash) leaves its Creating record and maybe a
 # folder; that one is handed to `work gc -id`, work's own command for it, which
 # deletes a clone it never marked and activates one it did (said here).
+# Git's lock and temporary files under the Git directory $1, a path a line:
+# its *.lock files, gc.pid, refs/**.lock, objects/maintenance.lock and
+# objects/pack/tmp_*. workrift.lock and workrift-turnstile.lock are flock
+# files of the line, not Git's. A copy of a live .git carries the ones a Git
+# process held in it at that instant.
+git_carried_locks() {
+  [ -d "$1" ] || return 0
+  find "$1" -maxdepth 1 -type f \( -name '*.lock' -o -name gc.pid \) \
+    ! -name workrift.lock ! -name workrift-turnstile.lock 2>/dev/null
+  [ ! -d "$1/refs" ] || find "$1/refs" -type f -name '*.lock' 2>/dev/null
+  [ ! -f "$1/objects/maintenance.lock" ] || printf '%s\n' "$1/objects/maintenance.lock"
+  [ ! -d "$1/objects/pack" ] || find "$1/objects/pack" -maxdepth 1 -name 'tmp_*' 2>/dev/null
+}
+
+# Deletes from the new workspace $2 (never the base $1) the Git lock and
+# temporary files its copy carried from the base, each named. The workspace is
+# private until create prints its path, so a lock in it is no live one.
+sweep_carried_locks() {
+  local k_git k_file
+  [ "$2" != "$1" ] || return 0
+  k_git="$2/.git"
+  [ -d "$k_git" ] || return 0
+  git_carried_locks "$k_git" | while IFS= read -r k_file; do
+    case "$k_file" in
+      "$2"/.git/?*)
+        printf 'workrift: removed %s from the new workspace: the copy carried it from %s, where a Git process held it\n' "$k_file" "$1" >&2
+        case "$k_file" in "$2"/.git/?*) rm -rf -- "$k_file" ;; esac
+        ;;
+    esac
+  done
+}
+
 work_new_failed() {
   f_left=$(work_in "$1" --json list 2>/dev/null |
     jq -r --arg n "$2" '.[] | select(.name == $n and .state._tag == "Creating") | .id' 2>/dev/null || true)
@@ -1805,10 +1837,11 @@ work_new() {
   # An install or hook work runs must not inherit the source lock.
   if ! w_made=$(work_in "$w_source" --json new -branch "$w_branch" ${w_from:+-from "$w_from"} "$w_free" 3>&- 6>&- 7>&- 8>&- 9>&-); then
     work_new_failed "$w_source" "$w_free"
-    fail "work new failed for $w_branch in $w_source: $w_made"
+    fail "work new failed for $w_branch in $w_source: $w_made (when Git names an index.lock: a Git process held it in the base the instant the workspace was copied; run the create again)"
   fi
   w_path=$(printf '%s' "$w_made" | jq -r '.path')
   [ -n "$w_path" ] && [ -d "$w_path/.git" ] || fail "work new made no workspace for $w_branch: $w_made"
+  sweep_carried_locks "$w_source" "$w_path"
   # Untrusted is said once by create's trust_note.
   printf '%s' "$w_made" | jq -r '[.deps._tag, .hooks._tag] | map(select(test("Fail"))) | .[] | "workrift: work new: \(.)"' >&2
 
@@ -2749,7 +2782,7 @@ sv_old_workrifts() {
 # older workrift's lock file, is the line's).
 sv_git_locks() {
   local g_dir
-  g_dir=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  g_dir=$(base_git "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
   find "$g_dir" -maxdepth 1 \( -name gc.pid -o -name '*.lock' \) ! -name workrift.lock 2>/dev/null
   find "$g_dir/refs" -name '*.lock' 2>/dev/null
 }
@@ -2878,15 +2911,58 @@ sv_preflight_live() {
 
 # The base's refs, `oid ref` a line, sorted.
 sv_refs() {
-  git -C "$1" for-each-ref --format='%(objectname) %(refname)' | LC_ALL=C sort
+  base_git "$1" for-each-ref --format='%(objectname) %(refname)' | LC_ALL=C sort
 }
 
 # What a copy must reproduce: HEAD, refs, status and lock files.
 sv_digest() {
-  git -C "$1" symbolic-ref -q HEAD || git -C "$1" rev-parse HEAD
+  base_git "$1" symbolic-ref -q HEAD || base_git "$1" rev-parse HEAD
   sv_refs "$1"
-  git -C "$1" --no-optional-locks status --porcelain=v2 --branch
+  base_git "$1" --no-optional-locks status --porcelain=v2 --branch
   lock_fingerprint "$1"
+}
+
+# The object store of the tree $1, a line a file: the listings of
+# objects/pack, objects/info (the commit-graph chain too), the loose folders
+# and any quarantine, each file with its size and, but for the packs (large,
+# and never rewritten under one name), its checksum. A fetch or a repack that
+# lands while the copy walks the tree changes it.
+sv_store() {
+  (
+    cd "$1/.git/objects" 2>/dev/null || exit 0
+    find . -type f ! -name '*.pack' -exec cksum {} + 2>/dev/null
+    find . -type f -name '*.pack' -exec wc -c {} + 2>/dev/null | grep -v ' total$'
+  ) | LC_ALL=C sort
+}
+
+# The ref tips of the tree $1, and the tree of each commit or tag among them,
+# that its store lacks (`missing` lines of cat-file); empty when whole. Seconds
+# for thousands of refs; never a full fsck.
+sv_tips_missing() {
+  # By name and value only: a field that reads the object (its type) makes
+  # for-each-ref stop at the first one missing. Branches and remote branches
+  # name commits, whose trees are checked too; any other ref its tip alone.
+  base_git "$1" for-each-ref --format='%(objectname) %(refname)' 2>"$sv_state/tips.err" |
+    awk '{ print $1; if ($2 ~ /^refs\/(heads|remotes)\//) print $1 "^{tree}" }' |
+    base_git "$1" cat-file --batch-check 2>/dev/null | grep ' missing$' || true
+  # Anything for-each-ref says (a broken ref, a missing object) is a fault.
+  cat "$sv_state/tips.err"
+  rm -f "$sv_state/tips.err"
+}
+
+# Whether the copy $1 is the base as it was when the copy began: HEAD, refs,
+# status and lock files equal the base's; the refs and the object store of the
+# base unchanged since then and the copy's store equal to it; every ref tip
+# and tree in the copy; no Git lock or temporary pack in it.
+sv_copy_true() {
+  local t_store
+  t_store=$(cat "$sv_state/store")
+  [ "$(sv_digest "$sv_base")" = "$(sv_digest "$1")" ] &&
+    [ "$(sv_refs "$sv_base")" = "$(cat "$sv_state/refs")" ] &&
+    [ "$(sv_store "$sv_base")" = "$t_store" ] &&
+    [ "$(sv_store "$1")" = "$t_store" ] &&
+    [ -z "$(sv_tips_missing "$1")" ] &&
+    [ -z "$(git_carried_locks "$1/.git")" ]
 }
 
 # Carries into the tree $2 each ref the tree $1 changed since the refs file
@@ -2898,8 +2974,8 @@ sv_carry() {
   c_tmp=$sv_state/carry.$$
   sv_refs "$c_from" >"$c_tmp.from"
   sv_refs "$c_to" >"$c_tmp.to"
-  c_head=$(git -C "$c_to" symbolic-ref -q HEAD || true)
-  c_head_from=$(git -C "$c_from" symbolic-ref -q HEAD || true)
+  c_head=$(base_git "$c_to" symbolic-ref -q HEAD || true)
+  c_head_from=$(base_git "$c_from" symbolic-ref -q HEAD || true)
   awk 'FILENAME == ARGV[1] { s[$2] = $1; all[$2] = 1; next }
     FILENAME == ARGV[2] { f[$2] = $1; all[$2] = 1; next }
     { t[$2] = $1 }
@@ -2910,9 +2986,13 @@ sv_carry() {
   while read -r c_ref c_was c_now c_there; do
     case "$c_ref" in refs/subvolume-move/*) continue ;; esac
     [ "$c_there" != "$c_now" ] || continue
-    if [ "$c_now" != - ] && ! git -C "$c_to" cat-file -e "$c_now^{object}" 2>/dev/null; then
+    # The ref's objects travel with it: a fetch from the other tree brings
+    # every object its new value needs that this one lacks (a ref changed
+    # after the copy may name objects only that tree has). The ref itself is
+    # then moved only from the value this tree still holds (compare and swap).
+    if [ "$c_now" != - ]; then
       base_git "$c_to" fetch -q --no-tags --no-write-fetch-head "$c_from" "$c_ref" </dev/null >&2 || true
-      if ! git -C "$c_to" cat-file -e "$c_now^{object}" 2>/dev/null; then
+      if ! base_git "$c_to" cat-file -e "$c_now^{object}" 2>/dev/null; then
         printf 'workrift: subvolume: %s moved to %s in %s, whose objects did not come over: not carried\n' "$c_ref" "$c_now" "$c_from" >&2
         sv_kept=$((sv_kept + 1))
         continue
@@ -3040,14 +3120,15 @@ sv_copy_in() {
     mkdir "$i_path" || { sv_why="mkdir $i_path failed"; return 1; }
   fi
   sv_refs "$sv_base" >"$sv_state/refs"
+  sv_store "$sv_base" >"$sv_state/store"
   sv_step copy "cp -a --reflink=always $sv_base/. $i_path/"
   cp -a --reflink=always "$sv_base/." "$i_path/" 3>&- 6>&- 7>&- 8>&- 9>&- ||
     { sv_why="the copy into $i_path failed (a full disk or metadata space?)"; return 1; }
   while :; do
     sv_step refresh "git -C $i_path update-index -q --refresh"
     base_git "$i_path" update-index -q --refresh >/dev/null 2>&1 || true
-    sv_step verify "HEAD, refs, status and lock files: $sv_base = at the copy = $i_path"
-    if [ "$(sv_digest "$sv_base")" = "$(sv_digest "$i_path")" ] && [ "$(sv_refs "$sv_base")" = "$(cat "$sv_state/refs")" ]; then
+    sv_step verify "HEAD, refs, status, lock files and the object store: $sv_base = at the copy = $i_path; every ref tip and its tree in $i_path; no Git lock in it"
+    if sv_copy_true "$i_path"; then
       break
     fi
     i_try=$((i_try + 1))
@@ -3060,6 +3141,7 @@ sv_copy_in() {
     sv_is "$i_path" "$(sv_copy_word "$i_t")" || fail "refusing to delete $i_path/.git: not a move path"
     rm -rf -- "$i_path/.git"
     sv_refs "$sv_base" >"$sv_state/refs"
+    sv_store "$sv_base" >"$sv_state/store"
     cp -a --reflink=always "$sv_base/.git" "$i_path/.git" 3>&- 6>&- 7>&- 8>&- 9>&- ||
       { sv_why="the copy of $sv_base/.git failed"; return 1; }
   done
@@ -3097,7 +3179,7 @@ sv_prove() {
   base_snapshots "$sv_base" || { sv_why="work does not clone $sv_base by btrfs (work --json doctor: cloners)"; return 1; }
   sv_smoke_rm || return 1
   sv_step smoke "work new $sv_smoke in $sv_base: a btrfs record, a subvolume"
-  v_answer=$(work_in "$sv_base" --json new -branch "$sv_smoke" -from "$(git -C "$sv_base" rev-parse HEAD)" "$sv_smoke" 3>&- 6>&- 7>&- 8>&- 9>&-) ||
+  v_answer=$(work_in "$sv_base" --json new -branch "$sv_smoke" -from "$(base_git "$sv_base" rev-parse HEAD)" "$sv_smoke" 3>&- 6>&- 7>&- 8>&- 9>&-) ||
     { sv_why="work new $sv_smoke failed: $v_answer"; sv_smoke_rm || true; return 1; }
   v_list=$(work_in "$sv_base" --json list 2>/dev/null || true)
   v_cloner=$(printf '%s' "$v_list" | jq -r --arg n "$sv_smoke" '.[] | select(.name == $n and .state._tag == "Active") | .cloner' 2>/dev/null || true)
