@@ -318,10 +318,10 @@ export interface Asking {
   readonly method: string
   /** The URL as Bun built it (from the `Host`); it may not parse. */
   readonly url: string
-  /** The `Host` it named; "null" for none, as the header reads. */
-  readonly host: string
-  /** Its `Origin`; "" for none. */
-  readonly origin: string
+  /** The `Host` it named, as sent; none when the header is absent (never a truthiness test: "" is one sent). */
+  readonly host: Option.Option<string>
+  /** Its `Origin`, as sent; none when the header is absent. "", " ", `null` and two joined by Bun are each sent. */
+  readonly origin: Option.Option<string>
   readonly pageHeader: boolean
   readonly json: boolean
   readonly paired: boolean
@@ -378,8 +378,9 @@ const routed = (handlers: Handlers, dist: string, request: Request, site: Site, 
     const screened = screen(site, policy, {
       method: request.method,
       url: request.url,
-      host: String(request.headers.get("host")),
-      origin: String(request.headers.get("origin") ?? ""),
+      // Presence by the header's absence alone (`get` answers null only then), never by its value.
+      host: Option.fromNullishOr(request.headers.get("host")),
+      origin: Option.fromNullishOr(request.headers.get("origin")),
       pageHeader: request.headers.get(PAGE_HEADER) === "1",
       json: String(request.headers.get("content-type")).startsWith("application/json"),
       paired,

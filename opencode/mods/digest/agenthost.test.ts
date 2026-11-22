@@ -108,7 +108,7 @@ describe("an agent host or an exclusion only restricts, over generated tailnets"
             const narrower = { both: at({ agentHosts, excluded }), noHosts: at({ agentHosts: [], excluded }), noExclusions: at({ agentHosts, excluded: [] }) }
             return requests.flatMap(({ address, kind, paired }) => {
               const allowed = (members: Members) =>
-                served({ listener: "tailnet", kind, source: sourceOf(address, members), host: "100.101.102.103:8240", hosts: ["100.101.102.103:8240"], names: ["harbor:8240"], root: false, origin: "http://100.101.102.103:8240", pageHeader: true, json: true, paired }, { tailnetRead, tailnetWrite: members.write })
+                served({ listener: "tailnet", kind, source: sourceOf(address, members), host: Option.some("100.101.102.103:8240"), hosts: ["100.101.102.103:8240"], names: ["harbor:8240"], root: false, origin: Option.some("http://100.101.102.103:8240"), pageHeader: true, json: true, paired }, { tailnetRead, tailnetWrite: members.write })
               const broken = [
                 ["agentHosts", narrower.noHosts],
                 ["excluded", narrower.noExclusions],

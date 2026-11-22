@@ -114,16 +114,16 @@ export interface Facts {
   readonly kind: RouteKind
   /** Who sent it, by its socket's peer address; `local` on loopback. */
   readonly source: Source
-  /** The `Host` it named; "" for none. */
-  readonly host: string
+  /** The `Host` it named, as sent (an empty one is one); none when it sent none. */
+  readonly host: Option.Option<string>
   /** The hosts the listener serves under, each with its port: on the tailnet its bound address alone. */
   readonly hosts: ReadonlyArray<string>
   /** The listener's names that only send `GET /` on to its address (the tailnet's MagicDNS and short names). */
   readonly names: ReadonlyArray<string>
   /** Whether the path is `/` itself. */
   readonly root: boolean
-  /** Its `Origin`; "" for none. */
-  readonly origin: string
+  /** Its `Origin`, as sent (an empty one, `null`, two joined by Bun are each one); none when it sent none. */
+  readonly origin: Option.Option<string>
   readonly pageHeader: boolean
   readonly json: boolean
   /** Whether it carries a paired browser's token. */
@@ -153,8 +153,8 @@ const FOREIGN = "this page answers on its own names only"
 /** Who a request's authority names, as the tailnet's first step reads it. */
 export interface Authority {
   readonly listener: Listener
-  /** The `Host` it named; "" for none. */
-  readonly host: string
+  /** The `Host` it named, as sent; none when it sent none. */
+  readonly host: Option.Option<string>
   readonly hosts: ReadonlyArray<string>
   readonly names: ReadonlyArray<string>
   /** Whether it is a GET or HEAD of `/` (any query). */
@@ -168,8 +168,8 @@ export interface Authority {
  * after the method).
  */
 export const authorityOf = (authority: Authority): Option.Option<Decision> => {
-  if (authority.listener !== "tailnet" || authority.hosts.includes(authority.host)) return Option.none()
-  const named = authority.names.includes(authority.host)
+  if (authority.listener !== "tailnet" || Option.exists(authority.host, (host) => authority.hosts.includes(host))) return Option.none()
+  const named = Option.exists(authority.host, (host) => authority.names.includes(host))
   if (named && authority.rootRead) return Option.some(Decision.Redirect())
   if (named) return Option.some(Decision.Refuse({ status: 421, reason: ADDRESS_ONLY }))
   return Option.some(Decision.Refuse({ status: 421, reason: FOREIGN }))
@@ -183,11 +183,13 @@ export const authorityOf = (authority: Authority): Option.Option<Decision> => {
 export const decide = (facts: Facts, policy: Policy = PAIRED): Decision => {
   const first = authorityOf({ listener: facts.listener, host: facts.host, hosts: facts.hosts, names: facts.names, rootRead: facts.kind === "shell" && facts.root })
   if (Option.isSome(first)) return first.value
-  if (!facts.hosts.includes(facts.host)) return Decision.Refuse({ status: 421, reason: FOREIGN })
+  if (!Option.exists(facts.host, (host) => facts.hosts.includes(host))) return Decision.Refuse({ status: 421, reason: FOREIGN })
+  // The page's own origin, from the Host it named; a request is from it only when it sent exactly that Origin.
+  const own = Option.exists(Option.zipWith(facts.host, facts.origin, (host, origin) => origin === `http://${host}`), (same) => same)
   if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Decision.Refuse({ status: 403, reason: "this listener answers the tailnet only" })
-  if (facts.listener === "tailnet" && facts.origin !== "" && facts.origin !== `http://${facts.host}`) return Decision.Refuse({ status: 403, reason: "a request must come from the page's own origin" })
+  if (facts.listener === "tailnet" && Option.isSome(facts.origin) && !own) return Decision.Refuse({ status: 403, reason: "a request must come from the page's own origin" })
   if (WRITES.includes(facts.kind)) {
-    if (facts.origin !== `http://${facts.host}`) return Decision.Refuse({ status: 403, reason: "a write must come from the page's own origin" })
+    if (!own) return Decision.Refuse({ status: 403, reason: "a write must come from the page's own origin" })
     if (!facts.pageHeader) return Decision.Refuse({ status: 403, reason: "a write must carry the page's header" })
     if (!facts.json) return Decision.Refuse({ status: 415, reason: "a write is JSON" })
   }

@@ -1193,8 +1193,12 @@ describe("on the tailnet the page answers at its own address only", () => {
 const verdict = (decision: Decision): string =>
   Match.valueTags(decision, { Refuse: (refused) => `${refused.status} ${refused.reason}`, Serve: () => "Serve", Brief: () => "Brief", Redirect: () => "Redirect" })
 
-/** One request as `screen` reads it; `host` "null" is none, as the header reads. */
-const askingOf = (method: string, url: string, host: string, extra: Partial<Asking> = {}): Asking => ({ method, url, host, origin: "", pageHeader: true, json: true, paired: false, source: "own", ...extra })
+/** A header as a case writes it: ABSENT for one not sent; anything else, "" included, is sent as is. */
+const ABSENT = "<absent>"
+const sent = (value: string): Option.Option<string> => Option.liftPredicate(value, (each) => each !== ABSENT)
+
+/** One request as `screen` reads it, its Host and Origin written as `sent` reads them (Origin absent by default). */
+const askingOf = (method: string, url: string, host: string, extra: Omit<Partial<Asking>, "host" | "origin"> & { readonly origin?: string } = {}): Asking => ({ method, url, pageHeader: true, json: true, paired: false, source: "own", ...extra, host: sent(host), origin: sent(extra.origin ?? ABSENT) })
 
 const MEMBER_POLICY: Policy = { tailnetRead: "member", tailnetWrite: "member-except-hosts" }
 
@@ -1207,7 +1211,7 @@ describe("the order: on the tailnet the authority comes first, whatever the meth
   test("over methods × targets × Host forms on the tailnet listener (8240, 80, 443; IPv4 and IPv6): not its address is 421, but a GET or HEAD of / by name, which is 308", () => {
     const sites = [8240, 80, 443].flatMap((port) => ["100.101.102.103", "fd7a:115c:a1e0::42"].map((address) => ({ port, site: siteOf({ address, port, listener: "tailnet", names: ["harbor.example-tailnet.ts.net", "harbor"] }, port) })))
     const hostsAt = (port: number, own: string, site: Site) =>
-      [...new Set([own, ...site.names, "HARBOR", "harbor.", "phone.example-tailnet.ts.net", "evil.example", "localhost", "127.0.0.1", "100.101.102.110", "[::ffff:100.101.102.103]"].flatMap((each) => [each, `${each}:${port}`, `${each}:1`]).concat(["", "null", "[fd7a:115c:a1e0:0:0:0:0:42]:8240"]))]
+      [...new Set([own, ...site.names, "HARBOR", "harbor.", "phone.example-tailnet.ts.net", "evil.example", "localhost", "127.0.0.1", "100.101.102.110", "[::ffff:100.101.102.103]"].flatMap((each) => [each, `${each}:${port}`, `${each}:1`]).concat(["", "null", ABSENT, "[fd7a:115c:a1e0:0:0:0:0:42]:8240"]))]
     const cases = sites.flatMap(({ port, site }) => hostsAt(port, site.hosts[0] ?? "", site).flatMap((host) => METHODS.flatMap((method) => [...TARGETS, "*", "harbor:443"].map((target) => ({ site, host, method, target })))))
     /** What the authority alone says: the redirect, a 421, or nothing (the Host is the address: what follows decides). */
     const expectedOf = (site: Site, host: string, method: string, target: string) => {
@@ -1293,13 +1297,17 @@ const mainKindOf = (method: string, path: string): Option.Option<string> =>
     Match.when({ path: "/health" }, () => Option.some("health")),
     Match.orElse(() => Option.some("read")),
   )
+// Main read the headers as `String(get("host"))` and `String(get("origin") ?? "")`: an absent Host is "null", an
+// absent Origin "", as an empty one.
+const mainHostOf = (asking: Asking) => Option.getOrElse(asking.host, () => "null")
+const mainOriginOf = (asking: Asking) => Option.getOrElse(asking.origin, () => "")
 const mainWriteRefusal = (asking: Asking): Option.Option<string> => {
-  if (asking.origin !== `http://${asking.host}`) return Option.some("403 a write must come from the page's own origin")
+  if (mainOriginOf(asking) !== `http://${mainHostOf(asking)}`) return Option.some("403 a write must come from the page's own origin")
   if (!asking.pageHeader) return Option.some("403 a write must carry the page's header")
   return Option.liftPredicate("415 a write is JSON", () => !asking.json)
 }
 const mainDecide = (kind: string, asking: Asking, port: number): string => {
-  if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(asking.host)) return "421 this page answers on its own names only"
+  if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(mainHostOf(asking))) return "421 this page answers on its own names only"
   const refused = Option.filter(Option.some(kind), (each) => ["mark", "answer", "pair"].includes(each)).pipe(Option.flatMap(() => mainWriteRefusal(asking)))
   if (Option.isSome(refused)) return refused.value
   return ["Serve", `401 ${MAIN_PAIR_FIRST}`][Number(kind === "answer" && !asking.paired)] ?? ""
@@ -1320,9 +1328,9 @@ describe("loopback is main's, unchanged (round 1, M2)", () => {
       }
     })()
     const ports = [80, 443, 8240, 1, 65_535, ...Array.from({ length: 3 }, () => 1024 + (random() % 60_000))]
-    const hostsAt = (port: number) => ["localhost", "127.0.0.1", "[::1]", "LOCALHOST", "localhost.", "127.0.0.2", "evil.example", "100.101.102.103"].flatMap((each) => [each, `${each}:${port}`, `${each}:80`, `${each}:${port + 1}`]).concat(["", "null"])
+    const hostsAt = (port: number) => ["localhost", "127.0.0.1", "[::1]", "LOCALHOST", "localhost.", "127.0.0.2", "evil.example", "100.101.102.103"].flatMap((each) => [each, `${each}:${port}`, `${each}:80`, `${each}:${port + 1}`]).concat(["", "null", ABSENT])
     const headersOf = (host: string, port: number) =>
-      ["", `http://${host}`, `http://localhost:${port}`, "null"].flatMap((origin) => ([[true, true], [false, true], [true, false]] as const).flatMap(([pageHeader, json]) => [false, true].map((paired) => ({ origin, pageHeader, json, paired, source: "local" as const }))))
+      [ABSENT, "", " ", "null", `http://${host}`, `http://${host}, http://${host}`, `http://${host}/`, `http://localhost:${port}`].flatMap((origin) => ([[true, true], [false, true], [true, false]] as const).flatMap(([pageHeader, json]) => [false, true].map((paired) => ({ origin, pageHeader, json, paired, source: "local" as const }))))
     const cases = ports.flatMap((port) =>
       hostsAt(port).flatMap((host) =>
         ["GET", "HEAD", "POST", "PUT", "OPTIONS", "TRACE", "FOO", "CONNECT"].flatMap((method) =>
@@ -1365,5 +1373,92 @@ describe("the tailnet on a default port: exactly what a browser sends", () => {
         expect(verdict(screen(site, MEMBER_POLICY, askingOf("GET", `http://harbor${["", `:${port}`][Number(port !== 80)]}/`, `harbor${["", `:${port}`][Number(port !== 80)]}`)).decision)).toBe("Redirect")
       }
     }
+  })
+})
+
+
+// ── An Origin sent is an Origin (round 2, B2): presence is the header's existence, never its value ──
+
+/** One raw HTTP/1.1 exchange with the listener on `port` (the headers exactly as written, a duplicate too). */
+const rawExchange = (port: number, text: string) =>
+  Effect.runPromise(
+    Effect.callback<string>((resume) => {
+      let got = ""
+      void Bun.connect({ hostname: HOSTNAME, port, socket: { open: (socket) => void socket.write(text), data: (_socket, data) => void (got += data.toString()), close: () => resume(Effect.succeed(got)), error: () => resume(Effect.succeed(got)) } })
+    }),
+  )
+
+/** A request's Origin lines: none, one, or several (Bun joins two with ", "). */
+const originLines = (origins: ReadonlyArray<string>) => origins.map((origin) => `Origin: ${origin}\r\n`).join("")
+
+/** The page's own requests on the wire: a read of the view, or a write with the page's header and a JSON body. */
+const wire = (route: "view" | "mark" | "answer", host: string, origins: ReadonlyArray<string>) => {
+  const body = JSON.stringify([{}, { id: "m1", mark: "read" }, { id: "question:s:q1", option: "Keep it" }][["view", "mark", "answer"].indexOf(route)])
+  return [
+    `GET /view.json HTTP/1.1\r\nHost: ${host}\r\n${originLines(origins)}Connection: close\r\n\r\n`,
+    `POST /api/${route} HTTP/1.1\r\nHost: ${host}\r\n${originLines(origins)}${PAGE_HEADER}: 1\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`,
+  ][Number(route !== "view")] ?? ""
+}
+
+/**
+ * The Origin forms a request may carry, by what each is on the wire: absent; empty; whitespace only (HTTP trims it
+ * to empty); `null`; the address's origin; it twice (two headers, joined); another origin; it with a slash or a path.
+ */
+const originForms = (own: string): ReadonlyArray<readonly [string, ReadonlyArray<string>]> => [
+  ["absent", []],
+  ["empty", [""]],
+  ["spaces", ["  "]],
+  ["null", ["null"]],
+  ["own", [own]],
+  ["own twice", [own, own]],
+  ["another", ["http://evil.example"]],
+  ["own/", [`${own}/`]],
+  ["own/path", [`${own}/view.json`]],
+]
+
+describe("an Origin that is sent is compared, whatever its value (round 2, B2)", () => {
+  test("tailnet, from his phone with no token: a read is served only with no Origin or exactly the address's; a write only with exactly it; nothing else reads or stores", async () => {
+    using held = scratch("digest-http-")
+    await withListener(
+      builtPage(held.path),
+      async (base, written, _hostname, rig) => {
+        const port = Number(new URL(base).port)
+        const host = `${HOSTNAME}:${port}`
+        const wrong: Array<string> = []
+        for (const [label, origins] of originForms(base))
+          for (const route of ["view", "mark", "answer"] as const) {
+            const response = await rawExchange(port, wire(route, host, origins))
+            const status = Number((response.split("\r\n")[0] ?? "").split(" ")[1])
+            const served = label === "own" || (label === "absent" && route === "view")
+            const expected = [403, [200, 204, 200][["view", "mark", "answer"].indexOf(route)] ?? 0][Number(served)]
+            if (status !== expected || response.includes('"v":1') !== (served && route === "view")) wrong.push(`${route} Origin ${label}: ${status} (expected ${expected})`)
+          }
+        expect(wrong).toEqual([])
+        expect([(await Effect.runPromise(Ref.get(written))).length, (await Effect.runPromise(Ref.get(rig.answered))).length]).toEqual([1, 1])
+      },
+      (rig) => ({ ...handlers(rig), tailnetRead: "member", members: Effect.succeed(his("member-except-hosts")) }),
+      "tailnet",
+      () => OWN_PHONE,
+    )
+  })
+
+  test("loopback, on the wire: as main (a read reads no Origin; a mark only from exactly its own), and main's oracle says the same for each", async () => {
+    using held = scratch("digest-http-")
+    await withListener(builtPage(held.path), async (base, written) => {
+      const port = Number(new URL(base).port)
+      const host = `${HOSTNAME}:${port}`
+      const wrong: Array<string> = []
+      for (const [label, origins] of originForms(base))
+        for (const route of ["view", "mark"] as const) {
+          const status = Number(((await rawExchange(port, wire(route, host, origins))).split("\r\n")[0] ?? "").split(" ")[1])
+          // Main read `String(get("origin") ?? "")`: absent and empty are both "", two are joined.
+          const mainOrigin = [origins.join(", "), ""][Number(origins.length === 0)] ?? ""
+          const main = mainLoopback(askingOf(["GET", "POST"][Number(route !== "view")] ?? "", `http://${host}/${["view.json", "api/mark"][Number(route !== "view")]}`, host, { origin: mainOrigin, source: "local" }), port)
+          const expected = [200, [403, 204][Number(label === "own")]][Number(route !== "view")]
+          if (status !== expected || (main === "Serve") !== (expected < 300)) wrong.push(`${route} Origin ${label}: ${status} (expected ${expected}, main's oracle ${main})`)
+        }
+      expect(wrong).toEqual([])
+      expect((await Effect.runPromise(Ref.get(written))).length).toBe(1)
+    })
   })
 })
