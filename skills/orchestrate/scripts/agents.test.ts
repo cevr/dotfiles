@@ -151,21 +151,49 @@ test('a finding goes by where it came from, in one way in every prompt and the s
   for (const role of Object.keys(ROLES) as Role[])
     for (const sentence of instructions(role, realProtocol, realSafety).split(/(?<=\.)\s+/).filter((s) => /same lane|its lane's next round/.test(s)))
       expect([role, /unit's change introduced/.test(sentence)]).toEqual([role, true]);
+  // The root's two routing clauses, found by where they stand (the lane's verify step, the verifier's bar), not by the
+  // words wanted in them: the old unconditional "Each finding becomes a fix unit." there turns this red.
+  expect(skillRoutes(readHere('../SKILL.md'))).toEqual({ lane: [true, true], verify: [true, true] });
+});
+
+/** The orchestrator skill's lane-verify and What-blocks bullets: does each route a unit's own finding to its lane and a base one to a follow-up unit? */
+function skillRoutes(skill: string) {
+  const bullet = (start: string) => {
+    const line = skill.split('\n').find((l) => l.startsWith(start));
+    if (line === undefined) throw new Error(`no SKILL.md bullet starts ${start}`);
+    return [/unit's change introduced[^.;]*(its lane's next round|the same lane)/.test(line), /base head shows too becomes a follow-up unit/.test(line)];
+  };
+  return { lane: bullet('- When a `land` or `status` answer starts'), verify: bullet('- **Every verify is a fresh verifier') };
+}
+
+test('the routing pin turns red on the old unconditional lane route', () => {
   const skill = readHere('../SKILL.md');
-  for (const line of skill.split('\n').filter((l) => /same lane|lane's next round/.test(l) && /finding|proves/.test(l)))
-    expect([line.slice(0, 60), /unit's change introduced/.test(line) && /base head shows too becomes a follow-up unit/.test(line)]).toEqual([line.slice(0, 60), true]);
+  const old = skill.replace(/(- When a `land` or `status` answer starts[^\n]*?start the subagent call it answers\.)[^\n]*/, '$1 Each finding becomes a fix unit.');
+  expect(old).not.toBe(skill);
+  expect(skillRoutes(old).lane).toEqual([false, false]);
 });
 
 test("the principle gives a refusal no disposition of its own: the worker's Refusals rule decides what stops", () => {
   const principle = readHere('../../principle-nothing-is-hard/SKILL.md');
   const bullet = principle.split('\n').find((line) => line.startsWith('- **A refusal is authority, not difficulty.**'))!;
   expect(bullet).toBeDefined();
-  // Case: a permission refusal with no accepted form, one refused item, another runnable item. The role rule stops the step;
-  // the principle must not tell the worker to go on, and it must point at that rule.
-  expect(bullet).not.toMatch(/go on|continue|rest of the work|carry on|keep working/i);
-  expect(bullet).toContain("the worker protocol's Refusals section");
-  expect(paragraph(instructions('implementor', realProtocol, realSafety), '**Refusals.**')).toContain('stop that step');
+  expect(refusalDisposition(bullet)).toEqual({ roleFirst: true, ownDisposition: false });
+  for (const role of Object.keys(ROLES) as Role[])
+    expect([role, paragraph(instructions(role, realProtocol, realSafety), '**Refusals.**')!.startsWith('**Refusals.** At the first permission or classifier refusal, stop that step and report the exact')]).toEqual([role, true]);
+  // Both inputs, red: the 22r bullet (a named form is followed; only otherwise the role decides) and 22q's (go on).
+  expect(refusalDisposition('- **A refusal is authority, not difficulty.** When it names the accepted form ("commit first", "use a script file"), follow that form. Otherwise your role\'s own rule decides what stops (a worker\'s: the worker protocol\'s Refusals section); this principle changes nothing there.')).toEqual({ roleFirst: false, ownDisposition: true });
+  expect(refusalDisposition('- **A refusal is authority, not difficulty.** Stop that action, report it, and go on with the rest of the work.')).toEqual({ roleFirst: false, ownDisposition: true });
 });
+
+/**
+ * The principle's refusal bullet, for both inputs (a refusal that names an accepted form, and one that names none):
+ * does the role's own rule decide first in both, and does the principle itself act (follow a form now, go on)?
+ */
+function refusalDisposition(bullet: string) {
+  const roleFirst = /Whether or not it names an accepted form[^.]*your role's own rule decides/.test(bullet) && bullet.includes("the worker protocol's Refusals section") && /used only in a later step that authorises it/.test(bullet);
+  const ownDisposition = /go on|continue|rest of the work|carry on|keep working|follow (that|the) form|Otherwise your role/i.test(bullet);
+  return { roleFirst, ownDisposition };
+}
 
 test('the committed agents match protocol.md and safety.md (run bun agents.ts)', () => {
   expect(Object.keys(ROLES) as Role[]).toEqual(['planner', 'implementor', 'verifier']);
