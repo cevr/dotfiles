@@ -1,4 +1,7 @@
-// workbox/bin/workrift, run for real in a scratch HOME with a bare origin, a
+      // refresh too, since its warm runs with the base's lock free and it takes the advance lock (seven creates
+      // queued behind a warm, 2026-11-21): its git calls are not compared, its rift calls, exit, output and stderr are.
+      const createRift = (step: (typeof after)[number]) =>
+        step.argv.startsWith("create ") || step.argv === "refresh"// workbox/bin/workrift, run for real in a scratch HOME with a bare origin, a
 // no-op `flock` (macOS has none) and WORKRIFT_ROOT inside the scratch folder.
 // With no backend file it must make the calls it made before the work backend
 // (the script at e722240e, run beside it under shims that record every `rift`,
@@ -30,9 +33,33 @@ interface Ran {
   readonly err: string
 }
 
+/** Whether the process `pid` still runs. */
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The pids of the base advances a create's stderr says it started in the background. */
+const advancePids = (err: string) => [...err.matchAll(/advance in the background \(pid (\d+)/g)].map((m) => Number(m[1]))
+
+/**
+ * Runs `argv` and, when it is a create that started an advance of the base in the background, waits for that
+ * advance to end, so a test reads the base as the advance left it (a test of the overlap itself spawns its own).
+ */
 const run = (cwd: string, env: Env, argv: ReadonlyArray<string>): Ran => {
   const ran = Bun.spawnSync([...argv], { cwd, env, stdout: "pipe", stderr: "pipe" })
-  return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() }
+  const err = ran.stderr.toString()
+  const until = Date.now() + 60_000
+  for (const pid of advancePids(err))
+    while (alive(pid)) {
+      if (Date.now() > until) throw new Error(`the background advance ${pid} did not end in 60 s`)
+      Bun.sleepSync(20)
+    }
+  return { code: ran.exitCode, out: ran.stdout.toString(), err }
 }
 
 /** Runs `argv` and returns its standard output; a failure throws with what it printed. */
@@ -228,15 +255,10 @@ describe("workrift with no backend file", () => {
       // create now checks what the base lacks under the lock (its marker, its advance stamp, its hooks) and says
       // its phases (a create waited 1059 s, 2026-11-20); the Rift backend is on its way out, so create's steps
       // keep only their rift calls, exit, output and remaining stderr to compare. Every other verb stays exact.
-      // refresh records itself as the lock's holder (whom a waiting create names): one call reads where.
-      const holders = "git [-C] [<S>/root/app] [rev-parse] [--path-format=absolute] [--git-path] [workrift-lock-holders]"
-      const createRift = (step: (typeof after)[number]) => {
-        if (step.argv !== "refresh" || !step.calls.includes(holders)) return createOnly(step)
-        expect(step.calls.filter((call) => call === holders)).toEqual([holders])
-        return { ...step, calls: step.calls.filter((call) => call !== holders) }
-      }
-      const createOnly = (step: (typeof after)[number]) =>
-        step.argv.startsWith("create ")
+      // refresh too, since it takes the advance lock and warms with the base's lock free (seven creates queued behind
+      // a base's warm, 2026-11-21): its git calls are not compared; its rift calls, exit, output and stderr are.
+      const createRift = (step: (typeof after)[number]) =>
+        step.argv.startsWith("create ") || step.argv === "refresh"
           ? {
               ...step,
               calls: step.calls.filter((call) => call.startsWith("rift ")),
@@ -391,7 +413,8 @@ describeWork("workrift with the work backend", () => {
       const path = lines(ran.out).at(-1) ?? ""
       expect(lines(ran.out)).toEqual([path])
       expect(path).toBe(join(w.root, ".work/app/feat-new"))
-      // The warm source was fast-forwarded to origin's main before the copy.
+      // The warm source was fast-forwarded to origin's main by the advance the create started after its copy (run
+      // waits for it), and the workspace starts at origin's main all the same.
       expect(sh(w.app, w.env, "git", "rev-parse", "HEAD").trim()).toBe(later)
       expect(sh(path, w.env, "git", "rev-parse", "HEAD").trim()).toBe(later)
       expect(sh(path, w.env, "git", "branch", "--show-current").trim()).toBe("feat/new")
@@ -420,20 +443,21 @@ describeWork("workrift with the work backend", () => {
       const installs = () => lines(existsSync(counter) ? readFileSync(counter, "utf8") : "")
       expect(installs()).toEqual([w.app])
 
-      // A new lock on main: the source installs as it advances, and the copy carries the install.
+      // A new lock on main: the copy is made of the base as it was (v1), so the workspace installs v2 once, and the
+      // advance the create started after its copy installs v2 in the base once (2026-11-21: no copy waits for it).
       w.push("main", { "bun.lock": "v2\n" })
       const first = w.create(w.app, "feat/first")
-      expect(installs()).toEqual([w.app, w.app])
+      expect([...installs()].sort()).toEqual([w.app, w.app, first].sort())
       expect(readFileSync(join(first, "bun.lock"), "utf8")).toBe("v2\n")
 
       // A branch on origin with its own lock: the workspace installs, once.
       w.push("feat/locked", { "bun.lock": "v3\n" })
       const locked = w.create(w.app, "feat/locked")
-      expect(installs()).toEqual([w.app, w.app, locked])
+      expect(installs().slice(3)).toEqual([locked])
 
-      // The same lock again: nothing installs.
+      // The same lock again (the base advanced: its copy carries v2's install): nothing installs.
       w.create(w.app, "feat/same")
-      expect(installs()).toEqual([w.app, w.app, locked])
+      expect(installs().slice(3)).toEqual([locked])
     },
     30_000,
   )
@@ -1782,17 +1806,91 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     return { w, lock, warms, head }
   }
 
+  /** Waits until every advance a create's stderr says it started in the background has ended. */
+  const settle = async (...errs: ReadonlyArray<string>) => {
+    const pids = errs.flatMap(advancePids)
+    const until = Date.now() + 60_000
+    while (pids.some(alive)) {
+      if (Date.now() > until) throw new Error(`the background advances ${pids.join(" ")} did not end in 60 s`)
+      await Bun.sleep(50)
+    }
+    return pids
+  }
+
   test(
-    "four creates at once on a base whose last warm was cut warm the base once, under the lock, and no workspace builds again",
+    "seven creates at once after main's lock changed: each is 'locked' within seconds; one advance moves, installs and warms the base after the copies, in the background; every workspace ends installed for its own lock",
+    async () => {
+      const { w, head } = loaded("seven")
+      const installs = join(w.dir, "installs")
+      const baseWarms = join(w.dir, "base-warms")
+      sh(w.app, w.env, "git", "config", "workrift.install", `sleep 1; cat bun.lock >"$(git rev-parse --absolute-git-dir)/installed-lock"; pwd -P >>'${installs}'`)
+      sh(w.app, w.env, "git", "config", "workrift.warm", `sleep 3; pwd -P >>'${baseWarms}'`)
+      const read = (file: string) => lines(existsSync(file) ? readFileSync(file, "utf8") : "")
+      w.push("main", { "bun.lock": "main-1\n" })
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      const landed = w.push("main", { "bun.lock": "main-2\n" })
+      // The last advance is older than the window: the next create advances the base.
+      writeFileSync(sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-advanced-at").trim(), `${Math.floor(Date.now() / 1000) - 601}\n`)
+      const branches = Array.from({ length: 7 }, (_, i) => `feat/p${i}`)
+      const ran = await spawnAll(w.app, w.env, branches.map((branch) => [SCRIPT, "create", branch]))
+      const paths = ran.map((each) => lines(each.out).at(-1) ?? "")
+      for (const [i, each] of ran.entries()) {
+        expect(each.code, each.err).toBe(0)
+        expect(lines(each.out)).toEqual([paths[i]])
+        // The wait for the base's lock (from its 'lock' line to its 'locked' line; a fetch that lost the ref race to a
+        // sibling retries before it, a second later) is at most an advance's move (install: sleep 1), never its warm
+        // (sleep 3) nor a queue of copies.
+        const asked = Number(each.err.match(/: lock \/\S+ \((\d+)s\)/)?.[1])
+        const locked = Number(each.err.match(/: locked \((\d+)s\)/)?.[1])
+        expect({ branch: branches[i], waited: locked - asked <= 2 }, each.err).toEqual({ branch: branches[i], waited: true })
+      }
+      const pids = await settle(...ran.map((each) => each.err))
+      expect(pids.length).toBeGreaterThanOrEqual(1)
+      // One advance moved the base: fast-forwarded, installed once and warmed once (beside the refresh's).
+      expect(head(w.app)).toBe(landed)
+      expect(readFileSync(join(w.app, ".git/installed-lock"), "utf8")).toBe("main-2\n")
+      expect(read(installs).filter((line) => line === w.app)).toHaveLength(2)
+      expect(read(baseWarms).filter((line) => line === w.app)).toHaveLength(2)
+      const marker = readFileSync(sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-warmed-tree").trim(), "utf8").trim()
+      expect(marker).toBe(sh(w.app, w.env, "git", "rev-parse", "HEAD^{tree}").trim())
+      expect(existsSync(join(w.app, ".git/workrift-moving"))).toBe(false)
+      // Each workspace starts at today's main and ends installed for its own lock.
+      for (const path of paths) {
+        expect(head(path)).toBe(landed)
+        expect(readFileSync(join(path, "bun.lock"), "utf8")).toBe("main-2\n")
+        expect(readFileSync(join(path, ".git/installed-lock"), "utf8")).toBe("main-2\n")
+      }
+      // A create after the advance's end copies what it made: nothing to install, nothing to advance.
+      const after = w.wr(w.app, "create", "feat/after")
+      expect(after.code, after.err).toBe(0)
+      expect(after.err).not.toContain("advance in the background")
+      const afterPath = lines(after.out).at(-1) ?? ""
+      expect(read(installs)).not.toContain(afterPath)
+    },
+    90_000,
+  )
+
+  test(
+    "four creates at once on a base whose last warm was cut warm the base once, with its lock free, and each copy (made with no warm marker) builds itself",
     async () => {
       const { w, warms } = loaded("cut-warm")
       expect(w.wr(w.app, "refresh").code).toBe(0)
-      expect(warms()).toEqual([`${w.app} held`])
+      expect(warms()).toEqual([`${w.app} free`])
       // A warm cut short (a restart) leaves the marker empty.
       writeFileSync(sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-warmed-tree").trim(), "")
       const ran = await spawnAll(w.app, w.env, ["feat/a", "feat/b", "fix/c", "d"].map((branch) => [SCRIPT, "create", branch]))
       for (const each of ran) expect(each.code, each.err).toBe(0)
-      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`])
+      await settle(...ran.map((each) => each.err))
+      // One advance at a time: the base warms once more, however many creates found it unwarmed. (Whether the base's
+      // lock was free during a build is not read here: a copy beside it holds it shared, and that is allowed; the seven
+      // creates test shows no copy waits for a warm.)
+      const where = (line: string) => line.replace(/ (free|held)$/, "")
+      expect(warms().filter((line) => where(line) === w.app)).toHaveLength(2)
+      const paths = ran.map((each) => lines(each.out).at(-1) ?? "")
+      // A copy made before the base's warm ended carries no marker and builds itself, once; one made after carries the build.
+      const own = warms().map(where).filter((path) => path !== w.app)
+      expect(new Set(own).size).toBe(own.length)
+      for (const path of own) expect(paths).toContain(path)
     },
     60_000,
   )
@@ -1827,12 +1925,22 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const installed = () => lines(existsSync(installs) ? readFileSync(installs, "utf8") : "")
       w.push("main", { "bun.lock": "v1\n" })
       expect(w.wr(w.app, "refresh").code).toBe(0)
+      // refresh warms with the base's lock free (2026-11-21).
+      expect(warms()).toEqual([`${w.app} free`])
+      const sorted = (items: ReadonlyArray<string>) => [...items].sort()
+      // A workspace's build may run while the advance its create started holds the base's lock for its move (allowed:
+      // the build reads the workspace only), so a workspace's line is read for its path alone.
+      const where = (line: string) => (line.startsWith(`${w.app} `) ? line : line.replace(/ (free|held)$/, ""))
+      // main moved: the copy is of the base as it was; the workspace installs and builds itself, and the advance the
+      // create started after its copy moves, installs and warms the base, the warm with the base's lock free.
       const second = w.push("main", { "bun.lock": "v2\n" })
-      w.create(w.app, "feat/a")
+      const a = w.create(w.app, "feat/a")
       expect(head(w.app)).toBe(second)
-      expect(installed()).toEqual([w.app, w.app])
-      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`])
+      expect(head(a)).toBe(second)
+      expect(sorted(installed())).toEqual(sorted([w.app, a, w.app]))
+      expect(sorted(warms().map(where))).toEqual(sorted([`${w.app} free`, a, `${w.app} free`]))
 
+      // Inside the window: no advance; the lane starts at today's main and installs and builds itself.
       const third = w.push("main", { "bun.lock": "v3\n" })
       const ran = w.wr(w.app, "create", "feat/b")
       expect(ran.code, ran.err).toBe(0)
@@ -1841,17 +1949,18 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       expect(head(w.app)).toBe(second)
       expect(head(b)).toBe(third)
       expect(readFileSync(join(b, "bun.lock"), "utf8")).toBe("v3\n")
-      expect(installed()).toEqual([w.app, w.app, b])
-      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`, `${b} free`])
+      expect(installed().slice(3)).toEqual([b])
+      expect(warms().slice(3)).toEqual([`${b} free`])
       expect(ran.err).toContain(`${w.app} is behind origin/main`)
+      expect(ran.err).not.toContain("advance in the background")
 
-      // Once the window is over, the next create advances the base again.
+      // Once the window is over, the next create starts an advance again.
       const stamp = sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-advanced-at").trim()
       writeFileSync(stamp, `${Math.floor(Date.now() / 1000) - 601}\n`)
       const c = w.create(w.app, "feat/c")
       expect(head(w.app)).toBe(third)
-      expect(installed()).toEqual([w.app, w.app, b, w.app])
-      expect(warms()).toEqual([`${w.app} held`, `${w.app} held`, `${b} free`, `${w.app} held`])
+      expect(sorted(installed().slice(4))).toEqual(sorted([c, w.app]))
+      expect(sorted(warms().slice(4).map(where))).toEqual(sorted([c, `${w.app} free`]))
       expect(head(c)).toBe(third)
     },
     60_000,
@@ -1955,6 +2064,40 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
   )
 
   test(
+    "a move a kill cut short (its moving marker left): the next create installs the base again before it copies; one left with changes is refused and nothing is copied",
+    () => {
+      const { w } = loaded("killed-move")
+      const installs = join(w.dir, "installs")
+      sh(w.app, w.env, "git", "config", "workrift.install", `pwd -P >>'${installs}'`)
+      w.push("main", { "bun.lock": "v1\n" })
+      expect(w.wr(w.app, "refresh").code).toBe(0)
+      const moving = join(w.app, ".git/workrift-moving")
+      // An advance killed in its install: the marker stays and the install fingerprint is the old one.
+      writeFileSync(moving, "")
+      writeFileSync(join(w.app, ".git/workrift-installed-locks"), "bun.lock old\n")
+      const ran = w.wr(w.app, "create", "feat/a")
+      expect(ran.code, ran.err).toBe(0)
+      expect(ran.err).toContain("base: repair a move a kill cut short")
+      expect(existsSync(moving)).toBe(false)
+      const a = lines(ran.out).at(-1) ?? ""
+      // The base installed again before the copy, so the copy carries the install and installs nothing itself.
+      expect(lines(readFileSync(installs, "utf8"))).toEqual([w.app, w.app])
+
+      // A fast-forward cut in the middle of writing files: refused for a person, nothing copied, the locks free.
+      writeFileSync(moving, "")
+      writeFileSync(join(w.app, "README.md"), "half written\n")
+      const refused = w.wr(w.app, "create", "feat/b")
+      expect(refused.code).toBe(1)
+      expect(refused.err).toContain("was left in the middle of a move")
+      expect(refused.out).toBe("")
+      expect(w.active(w.app).map((each) => each.path)).toEqual([a])
+      for (const file of ["workrift.lock", "workrift-advance.lock", "workrift-turnstile.lock"])
+        expect(run(w.app, w.env, ["flock", "-n", join(w.app, ".git", file), "true"]).code, file).toBe(0)
+    },
+    60_000,
+  )
+
+  test(
     "a failed base warm holds no window and says so; the same tree is not tried again",
     () => {
       const { w, head } = loaded("failed-warm")
@@ -1965,7 +2108,9 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       w.push("main", { "one.txt": "1\n" })
       const a = w.wr(w.app, "create", "feat/a")
       expect(a.code, a.err).toBe(0)
-      expect(a.err).toContain(`warm step failed in ${w.app}`)
+      // The base warms in the background advance; its failure is in the advance's log, and the next create says it.
+      const log = sh(w.app, w.env, "git", "rev-parse", "--path-format=absolute", "--git-path", "workrift-advance.log").trim()
+      expect(readFileSync(log, "utf8")).toContain(`warm step failed in ${w.app}`)
       expect(inBase()).toEqual([w.app])
       // The failure held no window: main moves, and the next create advances and tries again.
       const two = w.push("main", { "two.txt": "2\n" })
@@ -2012,6 +2157,8 @@ describeWork("workrift over a base whose work.toml commands work does not trust"
     "create of a branch whose lock differs installs with workrift's own command, says so in one line, and never runs the untrusted one",
     () => {
       const u = untrusted("untrusted-create")
+      // The base reaches the commit that changed the command (a create copies the base as it is, then advances it).
+      expect(u.w.wr(u.lib, "refresh").code).toBe(0)
       u.w.push("feat/locked", { "bun.lock": "v2\n" })
       const ran = u.w.wr(u.lib, "create", "feat/locked")
       expect(ran.code, ran.err).toBe(0)
