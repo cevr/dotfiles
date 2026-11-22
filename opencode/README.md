@@ -1265,10 +1265,13 @@ one land per host at a time).
 
 What a run owes is one SQLite record per repository per host
 (`$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db`, the key from the
-checkout's origin; `mods/orchestrate/record.ts`, `sqlite/record.ts`), never
+checkout's origin, else from its repository's common git dir, a workspace
+keyed as its base; `mods/orchestrate/record.ts`, `sqlite/record.ts`), never
 prose: one commitment per promised outcome, its events and its rows written in
-one transaction (`user_version` 1, a daily backup beside it, seven kept). A
-file of a newer version is read and never written.
+one transaction (`user_version` 2, a daily backup beside it, seven kept). A
+file of a newer version is read and never written. Every free-text field
+(titles, quotes, refs, plans, reasons, notes) passes one boundary that holds it
+to one bounded line and redacts secret shapes.
 
 - **`commitments`** (the root's tool; a subagent is refused): `add` makes one
   open, unowned commitment per part in one call, the call that records an
@@ -1286,11 +1289,16 @@ file of a newer version is read and never written.
   not started) or held. Nobody says landed: a commitment lands only when the
   commit its owner's hand-back claimed is on the default branch, by ancestry.
   A worker never closes one the owner approved; a root that does tells the
-  owner, who can have it reopened.
+  owner, who can have it reopened, and a close by a session with no earlier
+  event in that run is flagged and listed first.
 - **Created without the root remembering**: `orchestrate lane` gets or makes
   the unit's commitment (owned by the unit, started) and its answer lists the
-  unit's open ones; a land claims each pushed unit's commitment with the
-  lane's head and passes, so a merged unit lands.
+  unit's open ones, and records the commit the lane started at. Status, a land
+  and the queue check claim a lane's head only when it is the unit's own work
+  past that start (cut from main: any head main lacks; stacked on a parent or
+  an unpushed base commit: a head that descends from the start), then pass, so
+  a merged unit lands and a lane with no commit of its own never does. A lane
+  made before start heads were kept is claimed only by an explicit land.
 - **Where it is said**: `orchestrate status` and every `land` answer end with
   the record's section (counts by standing, at most ten ids a listed standing,
   owner-sourced first, and the `list` call for the rest), and the queue
