@@ -3,9 +3,17 @@
 // uncommitted changes and untracked files: on the Mac, tools rewrite claude/settings.json, codex/config.toml
 // and skills/.system/** in the base. One definition serves every reader:
 //
-//   an entry of the workspace's `git status` is INHERITED when its file reads the same (same bytes, or
-//   missing in both) in the workspace and in the checkout it was copied from, as that checkout stands now;
-//   every other entry is the workspace's OWN.
+//   an entry of the workspace's `git status` is INHERITED only when, read now, the source's own `git status`
+//   lists the same path with the same status code, the path is the same (mode and blob, or absent) at both
+//   HEADs, and the file on disk is the same in both (same type, executable bit and bytes, or missing in both).
+//   Every other entry is the workspace's OWN: a change to a file the source has clean, a change judged
+//   against a HEAD the source does not share, a rename or a conflict, and every entry when the source cannot
+//   be read or is not known. In doubt, a change is the workspace's own: counting it costs a question, missing
+//   it costs work.
+//
+// The source is read at the question, not recorded at the create: a fresh workspace restores its copies at
+// once (`settle`), so a record would only ever describe workspaces made before it existed, which have none;
+// a read now never names as the source's a change the source no longer holds.
 //
 // - `ownEntries`: the land's "uncommitted" refusal, a removal's unsaved work and the lost-lane list read only
 //   the own entries.
@@ -13,8 +21,8 @@
 //   HEAD version, so restoring an inherited file (by hand, or `settle`) leaves a receipt current.
 // - `settle`: a create, before any agent runs in the new workspace, restores every inherited tracked file to
 //   HEAD (the bytes live on in the checkout it was copied from) and records that checkout
-//   (`rift.copiedFrom`), where `unitTree` finds it. It leaves untracked files, and never runs in a base.
-import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync } from "node:fs"
+//   (`rift.copiedFrom`), where the others find it. It leaves untracked files, and never runs in a base.
+import { copyFileSync, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, rmSync, type Stats } from "node:fs"
 import { join } from "node:path"
 import { Effect, Option } from "effect"
 import { RiftFailed } from "../service.ts"
@@ -44,15 +52,37 @@ export const statusEntries = (output: string): ReadonlyArray<StatusEntry> => {
   return entries
 }
 
-/** Whether `file` reads the same under both roots: missing in both, or the same bytes. */
-export const same = (left: string, right: string): boolean => {
-  const [a, b] = [existsSync(left), existsSync(right)]
-  if (!a || !b) return a === b
-  // An unreadable file (a folder, no permission) is never the same.
-  return Option.getOrElse(readBoth(left, right), () => false)
-}
+/** A file's entry in a tree as `git ls-tree -r -z` prints it: `<mode> <type> <oid>\t<path>`; its mode and oid by path. */
+export const treeEntries = (output: string): ReadonlyMap<string, string> =>
+  new Map(
+    output.split("\0").flatMap((field) => {
+      const tab = field.indexOf("\t")
+      const [mode, , oid] = field.slice(0, tab).split(" ")
+      return [[field.slice(tab + 1), `${mode} ${oid}`] satisfies [string, string]].filter(() => tab > 0)
+    }),
+  )
 
-const readBoth = Option.liftThrowable((left: string, right: string) => readFileSync(left).equals(readFileSync(right)))
+const lstat = Option.liftThrowable((file: string): Stats => lstatSync(file))
+const bytesEqual = Option.liftThrowable((left: string, right: string) => readFileSync(left).equals(readFileSync(right)))
+const linksEqual = Option.liftThrowable((left: string, right: string) => readlinkSync(left) === readlinkSync(right))
+
+/** The same kind of file (`S_IFMT`) with the same executable bits: what Git's mode reads of a file. */
+const sameMode = (a: Stats, b: Stats): boolean => (a.mode & 0o170000) === (b.mode & 0o170000) && (a.mode & 0o111) === (b.mode & 0o111)
+
+/**
+ * Whether `file` is the same on disk under both roots: missing in both; or the same kind, executable bits and
+ * bytes (a symbolic link: the same target). A folder, a file that cannot be read, anything else: never the same.
+ */
+export const sameOnDisk = (left: string, right: string): boolean =>
+  Option.match(lstat(left), {
+    onNone: () => Option.isNone(lstat(right)),
+    onSome: (a) =>
+      Option.exists(lstat(right), (b) => {
+        if (!sameMode(a, b)) return false
+        if (a.isSymbolicLink()) return Option.getOrElse(linksEqual(left, right), () => false)
+        return a.isFile() && Option.getOrElse(bytesEqual(left, right), () => false)
+      }),
+  })
 
 /**
  * A change to a file HEAD holds, in the index or on disk (modified, deleted, type changed): one a restore to HEAD
@@ -60,16 +90,8 @@ const readBoth = Option.liftThrowable((left: string, right: string) => readFileS
  */
 const ofHead = (entry: StatusEntry): boolean => /^[ MDT][ MDT]$/.test(entry.line.slice(0, 2))
 
-/** Whether `entry` of the workspace at `path` reads the same in `from`, the checkout it was copied from. */
-export const isInherited = (path: string, from: string, entry: StatusEntry): boolean => same(join(path, entry.file), join(from, entry.file))
-
-/** The entries of `path` that are its own: none reads the same in `from`. With no `from`, every entry. */
-export const ownEntries = (path: string, from: Option.Option<string>, entries: ReadonlyArray<StatusEntry>): ReadonlyArray<StatusEntry> =>
-  Option.match(from, { onNone: () => entries, onSome: (at) => entries.filter((entry) => !isInherited(path, at, entry)) })
-
-/** The tracked entries of `path` inherited from `from`. */
-const inheritedTracked = (path: string, from: string, entries: ReadonlyArray<StatusEntry>): ReadonlyArray<string> =>
-  entries.flatMap((entry) => [entry.file].filter(() => ofHead(entry) && isInherited(path, from, entry)))
+/** An entry that can be the source's: a change to a file of HEAD (`ofHead`) or an untracked file; never a staged addition, rename, copy or conflict. */
+const comparable = (entry: StatusEntry): boolean => ofHead(entry) || entry.line.startsWith("?? ")
 
 /** A directory as the file system names it; none when it does not exist. */
 const real = Option.liftThrowable((directory: string) => realpathSync(directory))
@@ -94,8 +116,24 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
    */
   const top = (path: string) => Effect.map(git(path, "rev-parse", "--show-toplevel"), (out) => out.trim())
 
-  /** The checkout's status entries, from its top level `root`, untracked files one by one, `.rift` left out. */
-  const statusAt = (root: string) => Effect.map(git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", ":(exclude).rift"), statusEntries)
+  /** The checkout's status entries, from its top level `root`, untracked files one by one. */
+  const statusAt = (root: string) => Effect.map(git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all"), statusEntries)
+
+  /** The mode and blob of each of `files` at HEAD in `root`; a file HEAD lacks is absent. */
+  const headOf = (root: string, files: ReadonlyArray<string>) => Effect.map(git(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", ...files), treeEntries)
+
+  /**
+   * The files of `entries` (the workspace `root`'s status) that are inherited from `source`, by the rule in this
+   * file's header. Anything of the source that cannot be read leaves none inherited.
+   */
+  const inheritedOf = (root: string, source: string, entries: ReadonlyArray<StatusEntry>) =>
+    Effect.gen(function* () {
+      const theirs = new Map((yield* statusAt(source)).map((entry) => [entry.file, entry.line] as const))
+      const candidates = entries.flatMap((entry) => [entry.file].filter(() => comparable(entry) && theirs.get(entry.file) === entry.line))
+      if (candidates.length === 0) return new Set<string>()
+      const [mine, base] = [yield* headOf(root, candidates), yield* headOf(source, candidates)]
+      return new Set(candidates.filter((file) => mine.get(file) === base.get(file) && sameOnDisk(join(root, file), join(source, file))))
+    }).pipe(Effect.catch(() => Effect.succeed(new Set<string>())))
 
   /** The checkout `root` (a top level) was copied from (`copiedFrom`). */
   const copiedFromAt = (root: string, base: Option.Option<string>) =>
@@ -109,6 +147,12 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
       ),
     )
 
+  /** The entries of the workspace `root` (a top level) that are inherited from the checkout it was copied from; none when that is unknown. */
+  const inheritedAt = (root: string, base: Option.Option<string>, entries: ReadonlyArray<StatusEntry>) =>
+    Effect.flatMap(copiedFromAt(root, base), (source) =>
+      Option.match(source, { onNone: () => Effect.succeed(new Set<string>()), onSome: (from) => inheritedOf(root, from, entries) }),
+    )
+
   /** The status entries of the checkout `path` is in, its files named from its top level. */
   const status = (path: string) => Effect.flatMap(top(path), statusAt)
 
@@ -119,11 +163,24 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
    */
   const copiedFrom = (path: string, base?: string) => Effect.flatMap(top(path), (root) => copiedFromAt(root, Option.fromUndefinedOr(base)))
 
-  /** The checkout's own status lines (`ownEntries`), against the checkout it was copied from (`copiedFrom`). */
-  const ownLines = (path: string, base?: string) =>
+  /** The own entries (the header's rule) of the checkout `path` is in, its files named from its top level; `base` stands in for an unrecorded source. */
+  const ownEntries = (path: string, base?: string) =>
     Effect.gen(function* () {
       const root = yield* top(path)
-      return ownEntries(root, yield* copiedFromAt(root, Option.fromUndefinedOr(base)), yield* statusAt(root)).map((entry) => entry.line)
+      const entries = yield* statusAt(root)
+      const inherited = yield* inheritedAt(root, Option.fromUndefinedOr(base), entries)
+      return entries.filter((entry) => !inherited.has(entry.file))
+    })
+
+  /** The own entries' status lines (`ownEntries`). */
+  const ownLines = (path: string, base?: string) => Effect.map(ownEntries(path, base), (entries) => entries.map((entry) => entry.line))
+
+  /** The inherited tracked files of the workspace `root`, that a restore to HEAD undoes. */
+  const inheritedTracked = (root: string, base: Option.Option<string>) =>
+    Effect.gen(function* () {
+      const entries = yield* statusAt(root)
+      const inherited = yield* inheritedAt(root, base, entries)
+      return entries.flatMap((entry) => [entry.file].filter(() => ofHead(entry) && inherited.has(entry.file)))
     })
 
   /**
@@ -136,10 +193,7 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
     const index = (yield* git(root, "rev-parse", "--path-format=absolute", "--git-path", "index")).trim()
     const scratch = `${index}.rift-receipt`
     const at = { ...LITERAL, GIT_INDEX_FILE: scratch }
-    const files = yield* Option.match(yield* copiedFromAt(root, Option.none()), {
-      onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
-      onSome: (source) => Effect.map(statusAt(root), (entries) => inheritedTracked(root, source, entries)),
-    })
+    const files = yield* inheritedTracked(root, Option.none())
     return yield* Effect.acquireUseRelease(
       Effect.try({ try: () => copyFileSync(index, scratch), catch: (cause) => new RiftFailed({ operation: "copy index", message: String(cause) }) }),
       () =>
@@ -154,7 +208,7 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
 
   /**
    * A new workspace's first step, before any agent runs in it: records `from`, the checkout it was copied from
-   * (`rift.copiedFrom`), and restores to HEAD each tracked file it inherited from there (same bytes now);
+   * (`rift.copiedFrom`), and restores to HEAD each tracked file it inherited from there (the header's rule);
    * answers those files. Untracked files stay. A workspace that is `from` itself (a base) is left untouched.
    */
   const settle = Effect.fn("Inherited.settle")(function* (path: string, from: string) {
@@ -162,10 +216,10 @@ export const inheritance = (env: Readonly<Record<string, string>> = {}) => {
     const source = otherCheckout(root, from)
     if (Option.isNone(source)) return []
     yield* git(root, "config", "--local", COPIED_FROM, source.value)
-    const files = inheritedTracked(root, source.value, yield* statusAt(root))
+    const files = yield* inheritedTracked(root, source)
     if (files.length > 0) yield* git(root, "restore", "--source=HEAD", "--staged", "--worktree", "--", ...files)
     return files
   })
 
-  return { status, copiedFrom, ownLines, unitTree, settle }
+  return { status, copiedFrom, ownEntries, ownLines, unitTree, settle }
 }

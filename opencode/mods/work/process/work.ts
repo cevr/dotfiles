@@ -13,7 +13,7 @@ import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
-import { inheritance, ownEntries } from "./inherited.ts"
+import { inheritance } from "./inherited.ts"
 import { describeBranch, madeOnField, madeOnOf, markBranch, purposeField, purposeOf } from "./purpose.ts"
 import { unpushed as unpushedOf } from "./unpushed.ts"
 
@@ -229,8 +229,11 @@ export const layer = (options: Options) => {
       Effect.orElseSucceed(() => "(no commits)"),
     )
     // A workspace's own changes only: a copy of the uncommitted work of the checkout it was copied from is that checkout's (inherited.ts).
-    const from = yield* Option.match(place.record, { onNone: () => Effect.succeedNone, onSome: (record) => copies.copiedFrom(path, record.parent) })
-    const uncommitted = ownEntries(path, from, yield* copies.status(path)).map((entry) => entry.line)
+    // A base's are all its own.
+    const uncommitted = yield* Option.match(place.record, {
+      onNone: () => Effect.map(copies.status(path), (entries) => entries.map((entry) => entry.line)),
+      onSome: (record) => copies.ownLines(path, record.parent),
+    })
     // Commits found only here: on no remote, and in no branch of the base it was cloned from.
     const root = Option.fromUndefinedOr(chain.at(-1))
     const sourceTips = yield* Option.match(root, {

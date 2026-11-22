@@ -9,7 +9,7 @@ import { scratch } from "../../../tests/scratch.ts"
 import { check, riftsLaws, savedWorkCase } from "../laws.ts"
 import * as MemoryRifts from "../memory/rifts.ts"
 import { Landing, RiftFailed, Rifts } from "../service.ts"
-import type { Workspace } from "../workspace.ts"
+import { removal, type Workspace } from "../workspace.ts"
 import { commands } from "./command.ts"
 import * as ProcessLanding from "./landing.ts"
 import * as ProcessWork from "./work.ts"
@@ -516,6 +516,47 @@ if (runnable) {
             yield* made.write(`${lane}/src/index.ts`, "export const mine = 1\n")
             yield* made.write(`${made.base}/notes/untracked.md`, "the base's notes, rewritten\n")
             expect([...(yield* rifts.inspect(lane)).uncommitted].sort()).toEqual([" M src/index.ts", "?? notes/untracked.md"])
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
+      "a lane's own change that reads the same as its clean base is still its own: a mode-only change, deleting a file it committed, main's text put back over its commit; inspect lists each and a removal refuses",
+      () =>
+        check(plain, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const probes = [
+              { name: "mode-only", change: (lane: string) => made.sh(lane, "chmod", "+x", "README.md"), expected: [" M README.md"] },
+              {
+                name: "drop-added",
+                change: (lane: string) =>
+                  made.write(`${lane}/added.ts`, "export {}\n").pipe(
+                    Effect.andThen(made.sh(lane, "git", "add", "added.ts")),
+                    Effect.andThen(made.sh(lane, "git", "commit", "-q", "-m", "add")),
+                    Effect.andThen(made.sh(lane, "rm", "added.ts")),
+                  ),
+                expected: [" D added.ts"],
+              },
+              {
+                name: "back-to-main",
+                change: (lane: string) =>
+                  made.write(`${lane}/README.md`, "the lane's edit\n").pipe(
+                    Effect.andThen(made.sh(lane, "git", "commit", "-q", "-am", "edit")),
+                    Effect.andThen(made.write(`${lane}/README.md`, "app\n")),
+                  ),
+                expected: [" M README.md"],
+              },
+            ]
+            for (const probe of probes) {
+              const lane = yield* rifts.create({ source: made.base, from: made.base, name: probe.name, branch: probe.name })
+              yield* probe.change(lane)
+              const workspace = yield* rifts.inspect(lane)
+              expect({ probe: probe.name, uncommitted: workspace.uncommitted }).toEqual({ probe: probe.name, uncommitted: probe.expected })
+              const refused = yield* Effect.flip(removal(workspace, { force: false, sessionDirectory: made.root }))
+              expect(refused._tag).toBe("WorkUnsaved")
+            }
           }),
         ),
       TIMEOUT,
