@@ -81,11 +81,13 @@ usage: workrift <command>
   check                       check the warm source, and warn when its build output is old
   settings                    give the warm source its host settings from workrift's
                               table (warm step, .env link); init does it too
-  subvolume [--back | --drop-old] [--check] [--apply]
+  subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals]
                               make the warm source a btrfs subvolume (each workspace a
                               snapshot); --back makes it the plain folder it was;
                               --drop-old deletes the tree kept from the last switch;
-                              a dry run (preflight and exact steps) unless --apply
+                              a dry run (preflight and exact steps) unless --apply;
+                              a removal of another base refuses it unless
+                              --beside-other-removals (one of this base always does)
 
 The warm source is WORKRIFT_SOURCE, else the work base whose workspace (or
 itself) the current directory is, else the base with the same origin as the
@@ -2647,32 +2649,56 @@ sv_users() {
     done
 }
 
-# Removals running or in line: `pid what` a line. A workrift remove or prune,
-# a work rm or gc, an rm under the base's workspaces, a delete in the clone
-# turn's line.
+# Removals running or in line, `this|other pid what` a line: a workrift remove
+# or prune, a work rm or gc, an rm under the base's workspaces, a delete in the
+# clone turn's line. `this` is a removal of this base (an argument, its
+# working folder or its WORKRIFT_SOURCE names the base or its workspaces);
+# `other` one of another base, or of none it can tell, named with its working
+# folder.
 sv_removals() {
-  local r_home r_c r_pid r_t
+  local r_home r_c r_pid r_t r_what r_cwd
   r_home=$(base_home "$sv_base")
   for r_c in "$proc_root"/[0-9]*/cmdline; do
     [ -r "$r_c" ] || continue
     r_pid=${r_c%/cmdline}
     r_pid=${r_pid##*/}
     [ "$r_pid" != "$$" ] || continue
-    tr '\0' '\n' <"$r_c" 2>/dev/null | awk -v home="$r_home" -v pid="$r_pid" '
+    r_what=$(tr '\0' '\n' <"$r_c" 2>/dev/null | awk -v home="$r_home" -v base="$sv_base" '
+      function here(p) { return p == home || index(p, home "/") == 1 || p == base || index(p, base "/") == 1 }
       { a[NR] = $0 }
       END {
         for (i = 1; i <= NR; i++) {
-          n = a[i]; sub(/.*\//, "", n)
-          if (n ~ /^workrift/) for (j = i + 1; j <= NR; j++) if (a[j] == "remove" || a[j] == "prune") { print pid, "workrift " a[j]; exit }
-          if (n == "work") for (j = i + 1; j <= NR; j++) if (a[j] == "rm" || a[j] == "gc") { print pid, "work " a[j]; exit }
-          if (i == 1 && n == "rm") for (j = 2; j <= NR; j++) if (a[j] == home || index(a[j], home "/") == 1) { print pid, "rm under " home; exit }
+          n = a[i]; sub(/.*\//, "", n); w = ""
+          if (n ~ /^workrift/) for (j = i + 1; j <= NR; j++) if (a[j] == "remove" || a[j] == "prune") { w = "workrift " a[j]; break }
+          if (w == "" && n == "work") for (j = i + 1; j <= NR; j++) if (a[j] == "rm" || a[j] == "gc") { w = "work " a[j]; break }
+          if (w == "" && i == 1 && n == "rm") for (j = 2; j <= NR; j++) if (here(a[j])) { print "this rm under " home; exit }
+          if (w == "") continue
+          for (j = i + 1; j <= NR; j++) if (here(a[j])) { print "this " w; exit }
+          print "other " w; exit
         }
-      }' || true
+      }' || true)
+    [ -n "$r_what" ] || continue
+    r_cwd=$(readlink "$proc_root/$r_pid/cwd" 2>/dev/null || true)
+    case "$r_what" in
+      other\ *)
+        case "$r_cwd" in
+          "$sv_base" | "$sv_base"/* | "$r_home" | "$r_home"/*) r_what="this ${r_what#other }" ;;
+          *)
+            ! tr '\0' '\n' <"$proc_root/$r_pid/environ" 2>/dev/null | grep -qxF "WORKRIFT_SOURCE=$sv_base" ||
+              r_what="this ${r_what#other }"
+            ;;
+        esac
+        ;;
+    esac
+    case "$r_what" in
+      this\ *) printf 'this %s %s\n' "$r_pid" "${r_what#this }" ;;
+      *) printf 'other %s %s (in %s)\n' "$r_pid" "${r_what#other }" "${r_cwd:-?}" ;;
+    esac
   done
   for r_t in "$state_value"/clone/*.[rw]; do
     [ -f "$r_t" ] && ticket_live "$r_t" || continue
     case "$(sed -n 4p "$r_t")" in
-      delete\ *) printf '%s %s\n' "$(sed -n 1p "$r_t")" "$(sed -n 4p "$r_t")" ;;
+      delete\ *) printf 'this %s %s\n' "$(sed -n 1p "$r_t")" "$(sed -n 4p "$r_t")" ;;
     esac
   done
 }
@@ -2810,12 +2836,25 @@ sv_preflight() {
 
 # The checks that can change at any moment: again under the hold.
 sv_preflight_live() {
-  local p_list
+  local p_list p_this p_other p_n
   p_list=$(sv_removals)
-  if [ -z "$p_list" ]; then
-    sv_check ok 'no removal runs or waits (workrift remove or prune, work rm or gc, rm under the workspaces)'
+  p_this=$(printf '%s\n' "$p_list" | sed -n 's/^this //p')
+  p_other=$(printf '%s\n' "$p_list" | sed -n 's/^other //p')
+  if [ -z "$p_this" ]; then
+    sv_check ok "no removal of $sv_base runs or waits (workrift remove or prune, work rm or gc, rm under its workspaces)"
   else
-    sv_check no "a removal runs; wait for it, and pause removals for the switch: $(printf '%s' "$p_list" | tr '\n' ';')"
+    sv_check no "a removal of $sv_base runs; let it end: $(printf '%s' "$p_this" | tr '\n' ';')"
+  fi
+  if [ -z "$p_other" ]; then
+    sv_check ok 'no removal of another base runs'
+  else
+    p_n=$(printf '%s\n' "$p_other" | grep -c .)
+    if [ "$sv_beside" = no ]; then
+      sv_check no "$p_n removal(s) of another base run, which slow the copy (they share the file system's metadata); pause them, or run beside them with --beside-other-removals: $(printf '%s' "$p_other" | tr '\n' ';')"
+    else
+      [ "$p_n" -le "$sv_beside" ] || sv_beside=$p_n
+      sv_check ok "beside $p_n removal(s) of another base (--beside-other-removals): $(printf '%s' "$p_other" | tr '\n' ';')"
+    fi
   fi
   p_list=$(sv_old_workrifts)
   if [ -z "$p_list" ]; then
@@ -3295,6 +3334,7 @@ sv_said() {
     printf '  work refresh failed in %s: run it there (cd %s && work refresh)\n' "$sv_base" "$sv_base"
   fi
   printf '  carried %s refs, kept %s under refs/subvolume-move/\n' "${sv_carried:-0}" "${sv_kept:-0}"
+  [ "${sv_beside:-no}" = no ] || printf "  it ran beside %s removal(s) of another base, the most its checks saw (--beside-other-removals)\n" "$sv_beside"
   if [ "$1" = S ]; then
     printf '  back:  workrift subvolume --back --apply   (a dry run without --apply)\n'
   else
@@ -3365,15 +3405,17 @@ sv_drop() {
   printf 'workrift subvolume: deleted %s in %s s\n' "$sv_old" "$(($(date +%s) - create_started))"
 }
 
-# `workrift subvolume [--back | --drop-old] [--check] [--apply]`.
+# `workrift subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals]`.
 subvolume_command() {
   local a_mode=forward a_apply=false a_source
+  sv_beside=no
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --back) a_mode=back ;;
       --drop-old) a_mode=drop ;;
       --check) ;;
       --apply) a_apply=true ;;
+      --beside-other-removals) sv_beside=0 ;;
       *) usage >&2; exit 2 ;;
     esac
     shift

@@ -485,6 +485,50 @@ describe("workrift subvolume: dry run and refusals", () => {
     const ok = b.wr(["subvolume"])
     expect(ok.code, said(ok)).toBe(0)
   })
+
+  test("a removal of this base always refuses, --beside-other-removals or not; one of another base refuses unless --beside-other-removals, which runs beside it and says how many it saw", () => {
+    const b = bench("removals")
+    mkdirSync(b.state, { recursive: true })
+    const home = join(b.root, ".work", "app")
+    // This base's, told by an argument, by the working folder, and by WORKRIFT_SOURCE.
+    const ours: ReadonlyArray<() => string> = [
+      () => b.processAt(92001, b.dir, ["/bin/sh", "/home/x/.local/bin/workrift", "remove", join(home, "lane")]),
+      () => b.processAt(92002, b.base, ["work", "--json", "rm", "-abandon", "lane"]),
+      () => {
+        const at = b.processAt(92003, b.dir, ["/bin/sh", "/home/x/.local/bin/workrift", "prune"])
+        writeFileSync(join(at, "environ"), `HOME=/home/x\0WORKRIFT_SOURCE=${b.base}\0`)
+        return at
+      },
+    ]
+    for (const make of ours) {
+      const at = make()
+      const pid = at.split("/").at(-1)!
+      for (const flags of [[], ["--beside-other-removals"]]) {
+        const before = filesUnder(b.root)
+        const ran = b.wr(["subvolume", "--apply", ...flags])
+        expect({ pid, flags, code: ran.code, says: ran.out.includes(`a removal of ${b.base} runs; let it end: ${pid} `) }, said(ran)).toEqual({ pid, flags, code: 1, says: true })
+        expect(filesUnder(b.root)).toEqual(before)
+      }
+      rmSync(at, { recursive: true })
+    }
+    expect(b.btrfsCalls()).toEqual([])
+    // Another base's: refused without the flag, naming it and where it runs.
+    const otherBase = join(b.root, "other")
+    mkdirSync(otherBase)
+    b.processAt(92010, otherBase, ["work", "--json", "rm", "-abandon", "x"])
+    const refused = b.wr(["subvolume", "--apply"])
+    expect(refused.code, said(refused)).toBe(1)
+    expect(refused.out).toContain(`1 removal(s) of another base run, which slow the copy`)
+    expect(refused.out).toContain(`92010 work rm (in ${otherBase})`)
+    expect(b.btrfsCalls()).toEqual([])
+    const dry = b.wr(["subvolume", "--beside-other-removals"])
+    expect(dry.code, said(dry)).toBe(0)
+    expect(dry.out).toContain(`  ok    beside 1 removal(s) of another base (--beside-other-removals): 92010 work rm (in ${otherBase})`)
+    const ran = b.wr(["subvolume", "--apply", "--beside-other-removals"])
+    expect(ran.code, said(ran)).toBe(0)
+    expect(ran.out).toContain("it ran beside 1 removal(s) of another base, the most its checks saw (--beside-other-removals)")
+    converted(b)
+  }, 60_000)
 })
 
 describe("workrift subvolume --apply", () => {

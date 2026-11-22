@@ -224,12 +224,19 @@ folder, work copies it file by file. `workrift init` and
 as it is: work removes each record by the cloner that made it. The command
 runs these steps:
 
-1. It refuses to start while a removal runs, while an older workrift (one
-   that takes no place in the base's line) runs, while a process outside the
-   line works in the base, while a Git lock file is present, while quotas are
-   on, or while the mount lacks `user_subvol_rm_allowed`. It also refuses
-   when free space or metadata slack is below the gates
-   (`WORKRIFT_SUBVOLUME_MIN_*`).
+1. It refuses to start in any of these cases:
+   - a removal of the base runs;
+   - an older workrift (one that takes no place in the base's line) runs;
+   - a process outside the line works in the base;
+   - a Git lock file is present;
+   - quotas are on;
+   - the mount lacks `user_subvol_rm_allowed`;
+   - free space or metadata slack is below the gates
+     (`WORKRIFT_SUBVOLUME_MIN_*`).
+
+   A removal of another base also refuses it, because the copy shares the
+   file system's metadata with that removal. `--beside-other-removals` lets
+   the command run beside such removals, and its output says how many it saw.
 2. It takes the base's exclusive lock and its clone turn in line. Creates
    wait behind it and none fails. It waits at most
    `WORKRIFT_SUBVOLUME_TURN_WAIT` seconds (default 1800) and otherwise exits
