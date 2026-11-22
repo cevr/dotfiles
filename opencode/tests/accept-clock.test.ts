@@ -6,16 +6,23 @@
 // run takes the lock back within 2 s of the marking land run's death; a land run takes the lock of a killed deep
 // run at once; a land run's swarm ends inside its box and grace.
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, Stream } from "effect"
+import { Effect, FileSystem, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { timedCounts, timedFilter } from "../scripts/accept-plan.ts"
 
-/** The real runs of scripts/accept.test.ts that carry a clock bound. */
-const TIMED_RUNS = "a land run under its budget|a deep run yields the lock to a land run|a land run's swarm"
+/** The real runs of scripts/accept.test.ts that carry a clock bound (scripts/accept-plan.ts `TIMED_RUNS`). */
+const TIMED_RUNS = timedFilter
 
-/** How many tests TIMED_RUNS names: a filter that matched fewer would judge less. 7 since d0157629 added the box-stop
- * test to "a land run's swarm". */
-const TIMED_COUNT = 7
+/**
+ * How many tests TIMED_RUNS names (`timedCount`), counted from scripts/accept.test.ts's text: a filter that matched fewer would judge
+ * less. Derived, not kept by hand: a hand-kept 7 went stale when sim-load added a test to "a land run's swarm", and
+ * only this deep file saw it. scripts/accept.test.ts checks the count against its own text in the gate.
+ */
+const timedCount = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  return timedCounts(yield* fs.readFileString("scripts/accept.test.ts")).reduce((sum, each) => sum + each.tests, 0)
+})
 
 /** The timed runs' bun test, from opencode/, with its output and its exit code. */
 const timedRuns = Effect.gen(function* () {
@@ -33,9 +40,10 @@ describe("the accept lock by the clock", () => {
     "scripts/accept.test.ts's real runs keep their clock bounds: a land run near its budget, the lock free within 5 s of a mark, back within 2 s of a land run's death, taken at once from a killed deep run",
     () =>
       Effect.gen(function* () {
+        const count = yield* timedCount
         const run = yield* timedRuns
         const lines = run.out.split("\n").map((line) => line.trim())
-        expect({ code: run.code, failed: lines.filter((line) => line.startsWith("(fail)")), passed: lines.includes(`${TIMED_COUNT} pass`) }).toEqual({
+        expect({ code: run.code, failed: lines.filter((line) => line.startsWith("(fail)")), passed: lines.includes(`${count} pass`) }).toEqual({
           code: 0,
           failed: [],
           passed: true,

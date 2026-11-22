@@ -8,11 +8,11 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Option } from "effect"
+import { Array as Arr, Option } from "effect"
 import { owned } from "../tests/owned.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
-import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, timingSigns, unjudgedRead } from "./accept-plan.ts"
+import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, TIMED_RUNS, timedCounts, timedFilter, timingSigns, unjudgedRead } from "./accept-plan.ts"
 import { offUntil, parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
 import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
@@ -791,6 +791,22 @@ describe("the swarm's plan", () => {
       { passed: 2, failing: [902] },
       { passed: 0, failing: [] },
       "SIM_SEED=902 bun test cmd/a.sim.test.ts",
+    ])
+  })
+
+  test("the timed runs tests/accept-clock.test.ts filters for are this file's timed describes, each with tests, and no other test's name matches the filter", () => {
+    const text = read("scripts/accept.test.ts")
+    const counts = timedCounts(text)
+    // A test's name: on its `test(` line, or the line after it.
+    const lines = text.split("\n")
+    const names = lines.flatMap((line, index) => Arr.filter([`${line} ${lines[index + 1] ?? ""}`], () => /^ {2}test\(/.test(line)))
+    const filter = new RegExp(timedFilter)
+    const inTimed = counts.reduce((sum, each) => sum + each.tests, 0)
+    expect({ empty: counts.filter((each) => each.tests === 0).map((each) => each.name), matched: names.filter((name) => filter.test(name)).length }).toEqual({ empty: [], matched: 0 })
+    expect(inTimed).toBeGreaterThanOrEqual(TIMED_RUNS.length)
+    expect(timedCounts('describe("x", () => {\n  test("a", () => {})\n  test(\n    "b",\n  )\n})\ndescribe("y", () => {\n  test("c", () => {})\n})\n', ["x", "z"])).toEqual([
+      { name: "x", tests: 2 },
+      { name: "z", tests: 0 },
     ])
   })
 
