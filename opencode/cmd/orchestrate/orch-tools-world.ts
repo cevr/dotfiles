@@ -4,10 +4,11 @@
 // unit logs. The units' logs are the world's files: the orchestrate plugin writes a unit's moves there, as log.ts does,
 // and the status script prints them as its table, as status.ts does on disk. Each root turn is one `probe:` call; a
 // subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts drives it.
-import { Array as Arr, Effect, Layer, Option, Order, Schema } from "effect"
+import { Array as Arr, Effect, Layer, Match, Option, Order, Schema } from "effect"
 import type { Asked } from "@dotfiles/opencode-orchestrate/memory/fleet"
 import type * as MemoryMainLine from "@dotfiles/opencode-orchestrate/memory/main-line"
 import type * as MemoryRunFiles from "@dotfiles/opencode-orchestrate/memory/run-files"
+import * as WorkGitTest from "@dotfiles/opencode-orchestrate/memory/work-git"
 import * as MemoryDebts from "@dotfiles/opencode-work/memory/debts"
 import * as MemoryLanding from "@dotfiles/opencode-work/memory/landing"
 import * as MemoryNotices from "@dotfiles/opencode-work/memory/notices"
@@ -190,6 +191,11 @@ export interface BootOptions {
   readonly merges?: number
   /** The units whose land fast-forwards main (no merge commit); every other land merges. */
   readonly fastForward?: ReadonlyArray<string>
+  /**
+   * The copies load in the units' location last, so its copy answers each RPC: the simulated host keeps one handler per
+   * id, the last registered, where the fork keeps one per location (core rpc.ts). Off by default: the plain copy last.
+   */
+  readonly unitsAnswer?: boolean
 }
 
 /** The work plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the work plugin alone). */
@@ -201,6 +207,8 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   // The runs' files (requests, findings, batch files), outside every plugin copy: a restart keeps them, as a disk does.
   const files: MemoryRunFiles.Files = new Map()
   const memory = riftWorldOf(files, options.merges ?? 0, options.fastForward ?? [])
+  // The lanes' heads against main, their activity and the processes in them: every head on main until a test places it.
+  const workGit = WorkGitTest.world()
   const calls = { count: 0 }
   /** The tool names the last request offered, as the registry listed them. */
   const offered: Array<string> = []
@@ -260,6 +268,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   const plugin = Plugins.orchestrate({
     fleet,
     files,
+    workGit,
     mainLine: (checkout) => Option.liftPredicate({ branch: "main", line: memory.main.line() }, () => checkout === WORK),
     refs: (checkout, rev) =>
       Option.orElse(Option.liftPredicate(FORK_HEAD, () => checkout === FLEET.fork && rev === "HEAD"), () =>
@@ -270,7 +279,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
       append: (dir, transition) => Effect.sync(() => void logs.set(dir.split("/").at(-1) ?? transition.unit, { state: transition.to, round: transition.round })),
     },
   })
-  for (const directory of [WORK, PLAIN]) {
+  for (const directory of Match.value(options.unitsAnswer === true).pipe(Match.when(true, () => [PLAIN, WORK]), Match.orElse(() => [WORK, PLAIN]))) {
     if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET } })
     yield* world.load(work, { directory, options: { workrift: false } })
   }
@@ -289,7 +298,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
   })
   /** The children of a session, in the order made. */
   const children = (parent: string) => [...world.sessions.values()].filter((session) => Option.contains(session.parentID, parent))
-  return { world, offered, logs, fleet, files, memory, woken, probe, idle, settled, children }
+  return { world, offered, logs, fleet, files, memory, workGit, woken, probe, idle, settled, children }
 })
 
 export type Run = Effect.Success<ReturnType<typeof boot>>

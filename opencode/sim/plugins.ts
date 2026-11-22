@@ -40,6 +40,7 @@ import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import * as MainLineTest from "@dotfiles/opencode-orchestrate/memory/main-line"
 import * as RunFilesTest from "@dotfiles/opencode-orchestrate/memory/run-files"
+import * as WorkGitTest from "@dotfiles/opencode-orchestrate/memory/work-git"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { unitsIn } from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import { callsIn } from "@dotfiles/opencode-orchestrate/ledger"
@@ -180,6 +181,8 @@ export interface OrchestrateDoubles {
   readonly refs?: MainLineTest.Refs
   /** The runs' files (memory/run-files.ts); none by default. */
   readonly files?: RunFilesTest.Files
+  /** The lanes' heads against the default branch, their activity and the processes in them (memory/work-git.ts); all on main by default. */
+  readonly workGit?: WorkGitTest.World
 }
 
 /** A call log line as the file holds it: JSON. */
@@ -221,6 +224,7 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
       FleetTest.layer(doubles.fleet ?? []),
       MainLineTest.layer(doubles.mainLine ?? (() => Option.none()), doubles.refs),
       RunFilesTest.layer(doubles.files ?? new Map()),
+      WorkGitTest.layer(doubles.workGit ?? WorkGitTest.world()),
     ),
   )
 }

@@ -20,6 +20,7 @@ const host = Layer.succeed(
     linked: () => Effect.succeed(Option.none()),
     wakes: () => Effect.succeed(Option.none()),
     questions: () => Effect.succeed(Option.none()),
+    lost: () => Effect.succeed(Option.none()),
     note: () => Effect.void,
   }),
 )
