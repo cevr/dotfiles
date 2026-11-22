@@ -5,8 +5,9 @@
 import { createSignal, For, Show } from "solid-js"
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "@ui-sdk/solid/accordion"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/solid/collapsible"
-import { editing, enter, hot, openId, renameProject, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
-import { inSpan, type Message, type Project, type Unit } from "./types.ts"
+import type { Outcome } from "./api.ts"
+import { answerMessage, editing, enter, hot, openId, outcomes, paired, pairProblem, pairWith, renameProject, sending, setEditing, showAll, shownAll, toggleLater, toggleOpen, toggleRead, view, wide } from "./state.ts"
+import { type Ask, inSpan, type Message, type Project, type Unit } from "./types.ts"
 
 /** How far a row must travel before its swipe acts, in px. */
 const SWIPE_AT = 88
@@ -115,6 +116,89 @@ function UnitBlock(props: { readonly unit: Unit }) {
   )
 }
 
+/** Where an answer was given, as he reads it. */
+const VIA: Readonly<Record<string, string>> = { tray: "OpenCode tray", page: "digest page" }
+
+/** A time in the view's zone, short. */
+const clock = (t: number): string => new Date(t).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: view()?.zone })
+
+/** What became of the answer he sent from here. */
+function OutcomeLine(props: { readonly outcome: Outcome }) {
+  const said = (): string => {
+    const outcome = props.outcome
+    if (outcome.tag === "sent") return "Sent. The run has your answer."
+    if (outcome.tag === "closed") {
+      const where = outcome.via === undefined ? "" : ` in the ${VIA[outcome.via] ?? outcome.via}`
+      const when = outcome.at === undefined ? "" : ` at ${clock(outcome.at)}`
+      return `Already answered${where}${when}${outcome.answer === undefined ? "" : `: ${outcome.answer}`}. Yours was not sent.`
+    }
+    return `Not sent: ${outcome.reason}`
+  }
+  return (
+    <p class={["outcome", { bad: props.outcome.tag !== "sent" }]} role="status">
+      {said()}
+    </p>
+  )
+}
+
+/** How to pair this browser: the command, and a field for the code it prints. */
+function PairPrompt() {
+  let field: HTMLInputElement | undefined
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault()
+    if (field !== undefined && field.value.trim() !== "") void pairWith(field.value)
+  }
+  return (
+    <form class="pair" onSubmit={submit}>
+      <p>
+        Pair this browser to answer: run <code>bun cmd/digest/pair.ts</code> and open the link it prints, or type its code here.
+      </p>
+      <div class="pairrow">
+        <input ref={(input: HTMLInputElement) => (field = input)} aria-label="Pairing code" placeholder="ABCDE-FGHJK" autocomplete="one-time-code" maxlength={16} />
+        <button type="submit">Pair</button>
+      </div>
+      <Show when={pairProblem()}>{(why) => <p class="outcome bad" role="alert">{why()}</p>}</Show>
+    </form>
+  )
+}
+
+/** His answer to an open message: its options as buttons, his own words, and what happens if he does nothing. */
+function AskBlock(props: { readonly message: Message; readonly ask: Ask }) {
+  let field: HTMLTextAreaElement | undefined
+  const busy = () => sending().has(props.message.id)
+  const can = () => paired() === true && props.message.open && !busy()
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault()
+    const text = field?.value.trim() ?? ""
+    if (text !== "" && can()) answerMessage(props.message, { text })
+  }
+  return (
+    <div class="ask">
+      <Show when={props.ask.options.length > 0}>
+        <div class="opts" role="group" aria-label="Answers">
+          <For each={props.ask.options}>
+            {(option) => (
+              <button type="button" class="opt" disabled={!can()} onClick={() => answerMessage(props.message, { option })}>
+                {option}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+      <form class="own" onSubmit={submit}>
+        <textarea ref={(input: HTMLTextAreaElement) => (field = input)} aria-label="Your own answer" placeholder="Or answer in your own words" rows={2} maxlength={4000} disabled={!can()} />
+        <button type="submit" disabled={!can()}>
+          {busy() ? "Sending…" : "Send"}
+        </button>
+      </form>
+      <p class="assume">{props.ask.assume === undefined ? "If you do nothing, the run waits for you: it has no assumption for this one." : `If you do nothing, the run goes on assuming: ${props.ask.assume}`}</p>
+      <Show when={paired() === false}>
+        <PairPrompt />
+      </Show>
+    </div>
+  )
+}
+
 function Detail(props: { readonly message: Message }) {
   return (
     <div class="detail">
@@ -125,23 +209,8 @@ function Detail(props: { readonly message: Message }) {
       <Show when={props.message.body !== ""}>
         <p class="body">{props.message.body}</p>
       </Show>
-      <Show when={props.message.ask}>
-        {(ask) => (
-          <div class="ask">
-            <div class="opts" role="group" aria-label="Answers">
-              <For each={ask().options}>
-                {(option) => (
-                  <button type="button" class="opt" disabled>
-                    {option}
-                  </button>
-                )}
-              </For>
-            </div>
-            <p class="assume">{ask().assume === undefined ? "The run has no assumption for this one: it waits for you." : `Until you answer, the run assumes: ${ask().assume}`}</p>
-            <p class="assume">Answer it in OpenCode for now; answering here comes next.</p>
-          </div>
-        )}
-      </Show>
+      <Show when={props.message.ask}>{(ask) => <AskBlock message={props.message} ask={ask()} />}</Show>
+      <Show when={outcomes().get(props.message.id)}>{(outcome) => <OutcomeLine outcome={outcome()} />}</Show>
       <Show when={props.message.decided}>
         {(decided) => (
           <dl class="decided">
@@ -150,7 +219,8 @@ function Detail(props: { readonly message: Message }) {
                 <>
                   <dt>{each.q}</dt>
                   <dd>
-                    You said: <b>{each.said}</b> · the run had assumed: {each.assumed}
+                    You said: <b>{each.said}</b>
+                    {each.via === undefined ? "" : ` (in the ${VIA[each.via] ?? each.via})`} · the run had assumed: {each.assumed}
                   </dd>
                 </>
               )}

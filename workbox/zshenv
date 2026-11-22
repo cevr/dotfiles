@@ -1,7 +1,8 @@
 export BUN_INSTALL="$HOME/.bun"
-export TURBO_CACHE=local:rw
 export TURBO_CACHE_DIR=/workspaces/.cache/turbo
-export TURBO_CACHE_MAX_SIZE=2GB
+# The lanes' shared store wrote about 0.7 to 1 GB a day and sat at its old 2 GB cap with nothing older than
+# 2 days (2026-11-22). 20 GB keeps about three weeks, past a lane's life; /workspaces had 161 GB free.
+export TURBO_CACHE_MAX_SIZE=20GB
 export TURBO_CONCURRENCY=2
 # orchestrate budget.ts: the Mac shares this Claude account pool.
 export ORCHESTRATE_HOSTS=cvr@cristians-macbook-pro
@@ -25,6 +26,37 @@ export PATH
 
 # Machine-local secrets (GRAFANA_TOKEN, …): never committed; agents inherit them.
 [ -f "$HOME/.config/secrets.env" ] && . "$HOME/.config/secrets.env"
+
+# Remote turbo cache (owner, 2026-11-22): lanes also read and write the Bite repo's remote cache. Its turbo.jsonc
+# names the server and team; the token is the `ENV TURBO_TOKEN` literal in the base checkout's Dockerfile, read
+# here at every shell start with builtins only (no fork) and never committed. A token already in the environment
+# wins. With no token the store stays local only, so turbo never warns per task. WORKBOX_TURBO_DOCKERFILE is the
+# tests' seam. A second repository on another cache server would need its own token per directory (turbo reads
+# one TURBO_TOKEN), so it would not be a second path here.
+() {
+  setopt localoptions extendedglob
+  local file=${WORKBOX_TURBO_DOCKERFILE:-/workspaces/bite/Dockerfile} line value
+  if [[ -z $TURBO_TOKEN && -r $file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line == [[:space:]]#ENV[[:space:]]##TURBO_TOKEN([[:space:]]|=)* ]] || continue
+      value=${${line#*TURBO_TOKEN}%%[[:space:]]#}
+      if [[ $value == '='* ]]; then
+        value=${value#=}
+        [[ $value == [\"\']* ]] || value=${value%%[[:space:]]*}
+      else
+        value=${value##[[:space:]]#}
+      fi
+      [[ $value == \"*\" || $value == \'*\' ]] && value=${value[2,-2]}
+      [[ -n $value ]] && export TURBO_TOKEN=$value
+      break
+    done 2>/dev/null <"$file"
+  fi
+}
+if [[ -n $TURBO_TOKEN ]]; then
+  export TURBO_CACHE=local:rw,remote:rw
+else
+  export TURBO_CACHE=local:rw
+fi
 
 # The workbox's Tailscale sshd runs with OOMScoreAdjust=-900 so it survives memory pressure, and every
 # process started from an SSH login inherits it. Give the login back the default score, so under an OOM

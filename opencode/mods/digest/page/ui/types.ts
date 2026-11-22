@@ -22,6 +22,15 @@ export interface Decision {
   readonly assumed: string
   readonly said: string
   readonly matches: boolean
+  /** Where he answered: "tray" or "page". */
+  readonly via?: string
+}
+
+/** What a message asks him: its options and the run\x27s assumption meanwhile. */
+export interface Ask {
+  readonly ref: string
+  readonly options: ReadonlyArray<string>
+  readonly assume?: string
 }
 
 export type Kind = "shipped" | "stuck" | "needs" | "decided" | "fyi"
@@ -34,7 +43,7 @@ export interface Message {
   readonly body: string
   readonly t: number
   readonly units: ReadonlyArray<Unit>
-  readonly ask?: { readonly ref: string; readonly options: ReadonlyArray<string>; readonly assume?: string }
+  readonly ask?: Ask
   readonly decided?: ReadonlyArray<Decision>
   readonly open: boolean
   readonly unread: boolean

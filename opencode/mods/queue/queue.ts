@@ -122,11 +122,18 @@ export const explain = (rejection: Rejection): string => {
 
 // ── The RPC the sidebar reads ──
 
-/** The queue's RPC: `get` answers a session's queue and its revision, which goes up with every change. */
+/**
+ * The queue's RPC: `get` answers a session's queue and its revision, which goes up with every change; `answer` sends
+ * the owner's answer to an item, as the Queue tab's form does (the digest page's way to answer one).
+ */
 export const QUEUE = {
   id: "dotfiles-opencode.queue",
   methods: {
     get: { input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"] }, output: { type: "object" } },
+    answer: {
+      input: { type: "object", properties: { sessionID: { type: "string" }, id: { type: "string" }, answer: { type: "string" } }, required: ["sessionID", "id", "answer"] },
+      output: { type: "object" },
+    },
   },
   events: {},
 } as const
@@ -142,6 +149,21 @@ export const Snapshot = Schema.Struct({
   touched: Schema.optionalKey(Schema.Record(Schema.String, Schema.Number)),
 })
 export type Snapshot = typeof Snapshot.Type
+
+/** What the RPC's `answer` takes: the queue's session, the item and the owner's answer. */
+export const AnswerInput = Schema.Struct({ sessionID: Schema.String, id: Schema.String, answer: Schema.String })
+export type AnswerInput = typeof AnswerInput.Type
+
+/**
+ * What `answer` answers: sent, and the earlier answer it replaced when the item had one (an item takes a later answer:
+ * the agent reads the last); or why not.
+ */
+export const AnswerReply = Schema.Struct({
+  ok: Schema.Boolean,
+  message: Schema.optionalKey(Schema.String),
+  replaced: Schema.optionalKey(Schema.Struct({ answer: Schema.String, at: Schema.Number })),
+})
+export type AnswerReply = typeof AnswerReply.Type
 
 /**
  * When each item of `next` was last written or restated: now for an item a

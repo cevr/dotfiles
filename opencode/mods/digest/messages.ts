@@ -34,7 +34,8 @@ export const UnitView = Schema.Struct({ name: Schema.String, purpose: maybe(Sche
 export type UnitView = typeof UnitView.Type
 
 export const Ask = Schema.Struct({ ref: Schema.String, options: Schema.Array(Schema.String), assume: maybe(Schema.String) })
-export const Decision = Schema.Struct({ q: Schema.String, assumed: Schema.String, said: Schema.String, matches: Schema.Boolean })
+/** One answer he gave: the question, what the run assumed (none for a queue item), what he said, and where (`tray`, `page`). */
+export const Decision = Schema.Struct({ q: Schema.String, assumed: Schema.String, said: Schema.String, matches: Schema.Boolean, via: maybe(Schema.String) })
 export type Decision = typeof Decision.Type
 
 export const KINDS = ["shipped", "stuck", "needs", "decided", "fyi"] as const
@@ -250,9 +251,13 @@ const itemMessage = (item: Item, units: ReadonlyArray<UnitView>): Draft => ({
   ...splitSubject(item.text),
   t: item.t,
   units,
-  ask: Option.none(),
-  decided: Option.none(),
-  open: item.state === "needs-you",
+  // A needs-you item asks with what its form offers until he answers it; then it shows his answer, waiting on the agent.
+  ask: Option.map(
+    Option.filter(Option.some(item), (each) => each.state === "needs-you" && Option.isNone(each.answer)),
+    (each) => ({ ref: each.id, options: Option.getOrElse(each.choices, () => []), assume: Option.none() }),
+  ),
+  decided: Option.map(item.answer, (said) => [{ q: item.text, assumed: "", said, matches: true, via: Option.none() }]),
+  open: item.state === "needs-you" && Option.isNone(item.answer),
   root: item.root,
 })
 
@@ -277,7 +282,7 @@ const decidedMessage = (answers: ReadonlyArray<Answered>, asked: State["asked"])
       const decided = answers.map((answer) => {
         const question = Option.orElse(answer.question, () => Option.map(Option.fromUndefinedOr(asked.get(keyOf(answer.session, answer.id))), (each) => each.question))
         const assume = Option.orElse(answer.assume, () => Option.map(Option.fromUndefinedOr(asked.get(keyOf(answer.session, answer.id))), (each) => each.assume))
-        return { q: Option.getOrElse(question, () => answer.id), assumed: Option.getOrElse(assume, () => ""), said: answer.answer, matches: answer.matches }
+        return { q: Option.getOrElse(question, () => answer.id), assumed: Option.getOrElse(assume, () => ""), said: answer.answer, matches: answer.matches, via: answer.via }
       })
       const differ = decided.filter((each) => !each.matches).length
       const draft: Draft = {

@@ -1,7 +1,7 @@
 // The contracts the questions need from outside: somewhere to keep each
 // session's sheet, and a way to hand an answer to a session. What every
 // implementation owes is in laws.ts.
-import { Context, type Effect, Schema } from "effect"
+import { Context, type Effect, type Option, Schema } from "effect"
 import type { Sheet } from "./question.ts"
 import type { Letter } from "./reply.ts"
 
@@ -17,15 +17,19 @@ export class DeliveryRefused extends Schema.TaggedError<DeliveryRefused>()("Deli
 
 /**
  * Each session's sheet, keyed by its session id. A session with none reads as
- * `EMPTY`; a write replaces it whole; `remove` forgets it, and removing none is
- * no failure; `sessions` lists the sessions that have one, so the answers a
- * restart left unsent can be found.
+ * `EMPTY` (no `rev`); a stored one reads with its `rev` (0 for one stored before
+ * revs). `writeIf` replaces it whole, but only if it is still at the `rev` it was
+ * read at (none: still none stored), in one atomic step of the store, and
+ * stores it at the next rev; whether it wrote. So of two writers that read one
+ * sheet, one wins and the other reads again. `remove` forgets it, and removing
+ * none is no failure; `sessions` lists the sessions that have one, so the answers
+ * a restart left unsent can be found.
  */
 export class QuestionStore extends Context.Service<
   QuestionStore,
   {
     readonly read: (sessionID: string) => Effect.Effect<Sheet, QuestionsUnreadable>
-    readonly write: (sessionID: string, sheet: Sheet) => Effect.Effect<void>
+    readonly writeIf: (sessionID: string, sheet: Sheet, rev: Option.Option<number>) => Effect.Effect<boolean>
     readonly remove: (sessionID: string) => Effect.Effect<void>
     readonly sessions: Effect.Effect<ReadonlyArray<string>>
   }

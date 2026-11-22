@@ -30,7 +30,7 @@
  * - A deleted or archived session's questions go.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Ref, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Match, Option, Ref, Schema, Stream } from "effect"
 import { DIGEST } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { AskedQuestion, AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencode-questions/ask"
@@ -39,14 +39,17 @@ import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
 import * as OpenCodeFamily from "@dotfiles/opencode-questions/opencode/family"
 import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
 import { replyOf } from "@dotfiles/opencode-questions/form"
-import { AskFor, Choice, Given, type Open, type PluginAsked, type Put, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
+import { AskFor, Choice, Given, Via, type Open, type PluginAsked, type Put, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
 import { Changes, type Courier, type DeliveryRefused, type Family, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
 
 /** The live externals: the plugin's storage, the session inbox, and who each session is. */
-export const live = (ctx: Plugin.Context): Layer.Layer<QuestionStore | Courier | Family> =>
+export const live = (ctx: Plugin.Context): Layer.Layer<QuestionStore | Courier | Family, OpenCodeStore.NoConditionalWrite> =>
   Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx), OpenCodeFamily.fromContext(ctx))
 
 /** What the agent or the user reads when a call fails. */
+/** The questions one session's part of a form submit names: those answered, then those dismissed. */
+const idsOf = (reply: { readonly answers: ReadonlyArray<{ readonly id: string }>; readonly dismissed: ReadonlyArray<string> }) => [...reply.answers.map((given) => given.id), ...reply.dismissed]
+
 const messageOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused) => {
   if (failure._tag === "QuestionsUnreadable") return `The questions could not be read: ${failure.message}`
   if (failure._tag === "DeliveryRefused")
@@ -55,7 +58,7 @@ const messageOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused) =
 }
 
 const OpenInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
-const AnswerInput = Schema.Struct({ sessionID: Schema.String, answers: Schema.Array(Given) })
+const AnswerInput = Schema.Struct({ sessionID: Schema.String, answers: Schema.Array(Given), via: Schema.optional(Via) })
 const DismissInput = Schema.Struct({ sessionID: Schema.String, id: Schema.String })
 const AskForInput = Schema.Struct({
   sessionID: Schema.String,
@@ -79,10 +82,17 @@ const WithdrawForInput = Schema.Struct({ plugin: Schema.String, key: Schema.Stri
 
 const done: Reply = { ok: true }
 const refused = (failure: Rejection | QuestionsUnreadable | DeliveryRefused): Reply => ({ ok: false, message: messageOf(failure) })
+/** A refusal because none of it was open any more: another answer closed it first. */
+const closedOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused): Pick<Reply, "closed"> =>
+  Match.value(failure).pipe(
+    Match.tag("NotOpen", (): Pick<Reply, "closed"> => ({ closed: true })),
+    Match.orElse(() => ({})),
+  )
+
 const malformed = (error: Schema.SchemaError): Reply => ({ ok: false, message: `malformed request: ${error.message}` })
 
 /** The plugin on `externals`: the plugin's storage and inbox in OpenCode, the memory doubles in the seam test. */
-export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionStore | Courier | Family>) =>
+export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionStore | Courier | Family, OpenCodeStore.NoConditionalWrite>) =>
   Plugin.define({
     id: QUESTIONS.id,
     effect: Effect.fn("Questions.plugin")(function* (ctx) {
@@ -91,7 +101,8 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
       const changes = Layer.succeed(Changes, { changed: (sessionID) => Effect.flatMap(Ref.get(announce), (emit) => emit(sessionID)) })
       // The owner's questions go to the digest through its RPC, held while the digest plugin is not up.
       const digest = Relay.layer((line) => ctx.rpc(DIGEST).append({ line }))
-      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(Layer.mergeAll(externals(ctx), changes, digest))))
+      // A fork without storage.setIf cannot close a question once: the plugin does not start, and its error says why.
+      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(Layer.mergeAll(externals(ctx), changes, digest)))).pipe(Effect.orDie)
       const questions = Context.get(services, Model.QuestionsModel)
 
       yield* ctx.tool.transform((editor) => {
@@ -118,7 +129,10 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
             Effect.forEach(
               replyOf(event.data.answer, event.data.sessionID) ?? [],
               (reply) =>
-                questions.answer(reply.sessionID, reply.answers, reply.dismissed).pipe(
+                questions.answer(reply.sessionID, reply.answers, reply.dismissed, Option.none(), "tray").pipe(
+                  // Every question of this submit closed elsewhere first (the digest page, another form): a refusal
+                  // per question, quiet, as the page is told "not open"; nothing is wrong with the server.
+                  Effect.catchTag("NotOpen", () => Effect.forEach(idsOf(reply), (id) => Effect.logDebug(`questions: ${reply.sessionID}:${id} was not open when the form was submitted; nothing sent`), { discard: true })),
                   Effect.catchCause((cause) => Effect.logWarning("questions: the form's answers were not recorded", { sessionID: reply.sessionID, cause })),
                 ),
               { discard: true },
@@ -169,10 +183,11 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
             Schema.decodeUnknownEffect(AnswerInput)(input).pipe(
               Effect.matchEffect({
                 onFailure: (error) => Effect.succeed(malformed(error)),
-                onSuccess: ({ sessionID, answers }) =>
-                  questions.answer(sessionID, answers).pipe(
+                onSuccess: ({ sessionID, answers, via }) =>
+                  questions.answer(sessionID, answers, [], Option.none(), via).pipe(
                     Effect.map(({ skipped }): Reply => (skipped.length === 0 ? done : { ok: true, message: `No longer open, so not sent: ${skipped.join(", ")}.` })),
-                    Effect.catch((failure) => Effect.succeed(refused(failure))),
+                    // Another answer (the tray's, or the page's) closed it first: say so, so the caller can tell whose.
+                    Effect.catch((failure) => Effect.succeed<Reply>({ ...refused(failure), ...closedOf(failure) })),
                   ),
               }),
             ),
