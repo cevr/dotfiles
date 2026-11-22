@@ -186,3 +186,18 @@ export const readRegister = (path: string) =>
     (db) => Effect.sync(() => db.close()),
   )
 
+/**
+ * The `import` call's read (commitments-tool.ts `Reads.register`): the register at `from` read and mapped into `run`'s
+ * import command, with its counts line; or why not, in words. The plugin and the CLI read the same way.
+ */
+export const registerReads = (from: string, run: string, now: number) =>
+  readRegister(from).pipe(
+    Effect.mapError((failed) => failed.message),
+    Effect.flatMap((register) =>
+      Result.match(mapRegister(register, now), {
+        onFailure: (why) => Effect.fail(`${ERGO_REGISTER}: ${why}`),
+        onSuccess: (mapped) => Effect.succeed({ command: importCommandOf(run, mapped.rows), counts: countsLine(mapped.counts) }),
+      }),
+    ),
+  )
+

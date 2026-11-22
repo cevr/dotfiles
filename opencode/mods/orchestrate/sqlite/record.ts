@@ -433,3 +433,22 @@ export const connectSync = (path: string, options: OpenOptions) => {
 
 /** The replay law's read: the rows the events fold to from an empty record. */
 export const replayed = (events: ReadonlyArray<RecordEvent>): Snapshot => fold(EMPTY, events)
+
+const encodeHappening = Schema.encodeSync(Happening)
+
+/** One event as the CLI's `export` writes it: a JSON line with the event table's columns, `data` its fields. */
+export const exportLine = (event: StoredEvent): string =>
+  JSON.stringify({
+    seq: event.seq,
+    at: event.at,
+    run: event.run,
+    subject_kind: event.subjectKind,
+    subject_id: event.subjectId,
+    type: event.happening._tag,
+    actor: event.actor.id,
+    actor_role: event.actor.role,
+    from_state: nullable(event.fromState),
+    to_state: nullable(event.toState),
+    note: event.note,
+    data: encodeHappening(event.happening),
+  })

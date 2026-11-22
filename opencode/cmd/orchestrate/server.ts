@@ -130,7 +130,7 @@
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Result, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
@@ -1304,16 +1304,7 @@ export const make = (
       /** The record's reads: the standing's facts for the session, and an import's register from a copy of its file. */
       const readsOf = (sessionID: string): Commitments.Reads => ({
         facts: (snapshot) => factsNow(sessionID, snapshot),
-        register: (from, run, now) =>
-          ErgoRegister.readRegister(from).pipe(
-            Effect.mapError((failed) => failed.message),
-            Effect.flatMap((register) =>
-              Result.match(ErgoRegister.mapRegister(register, now), {
-                onFailure: (why) => Effect.fail(`${ErgoRegister.ERGO_REGISTER}: ${why}`),
-                onSuccess: (mapped) => Effect.succeed({ command: ErgoRegister.importCommandOf(run, mapped.rows), counts: ErgoRegister.countsLine(mapped.counts) }),
-              }),
-            ),
-          ),
+        register: ErgoRegister.registerReads,
       })
       /** The lane hook: the unit's commitment got or made, owned by the unit and started; its open ones named after the lane's answer. */
       const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, answer: string) =>

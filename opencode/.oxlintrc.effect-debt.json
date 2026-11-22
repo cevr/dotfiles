@@ -1028,6 +1028,14 @@
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "cmd/orchestrate/record-cli.test.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }

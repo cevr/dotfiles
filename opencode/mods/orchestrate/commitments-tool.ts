@@ -424,9 +424,12 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
     const id = input.id ?? ""
     if (action === "history") return historyAnswer(id, yield* record.history("commitment", id))
     if (action === "import") {
+      if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root imports a register`)
       const run = input.run ?? DEFAULT_RUN
-      const mapped = yield* reads.register(input.from ?? "", run, now)
-      const done = yield* record.run(mapped.command, { actor, now })
+      const map = input.map ?? "ergo-register"
+      const mapped = yield* Effect.mapError(reads.register(input.from ?? "", run, now), (why) => `${COMMITMENTS}: ${why}`)
+      // The import's rows are the register's, so its events are the import's (actor `ergo-register`), on the root's call.
+      const done = yield* record.run(mapped.command, { actor: { id: map, role: "import" }, now })
       return `${COMMITMENTS}: imported ${imported(done.events)} rows into ${run}; the rest were held already. Counts out from in: ${mapped.counts}.`
     }
     const command = yield* Result.match(commandOf(input, action), { onFailure: (why) => Effect.fail(why), onSuccess: (each) => Effect.succeed(each) })
