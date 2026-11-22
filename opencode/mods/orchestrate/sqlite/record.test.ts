@@ -7,6 +7,7 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } fr
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Array as Arr, Effect, Layer, Option } from "effect"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { commitmentRecordLaws } from "../laws.ts"
 import { type Actor, Command, EMPTY, FREE_TEXT_COLUMNS, fold } from "../record.ts"
 import { BACKUPS_KEPT, connectSync, keyOfCheckout, layer, MIGRATIONS, pathOf, stateDir, VERSION } from "./record.ts"
@@ -169,7 +170,8 @@ test("a repository with no origin: its workspace, a subfolder and the base share
       const init = (path: string) => {
         mkdirSync(join(path, "sub"), { recursive: true })
         writeFileSync(join(path, "sub", "f"), path)
-        for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "root"]]) Bun.spawnSync(["git", "-C", path, ...args], { env, stdout: "ignore", stderr: "ignore" })
+        gitInit(path, ["-q", "-b", "main"], env)
+        for (const args of [["add", "-A"], ["commit", "-q", "-m", "root"]]) Bun.spawnSync(["git", "-C", path, ...args], { env, stdout: "ignore", stderr: "ignore" })
       }
       const base = join(dir, "repo")
       init(base)

@@ -7,7 +7,7 @@
 import { env as processEnv, spawnSync } from "bun"
 import { expect } from "bun:test"
 import { Array as Arr, Effect, Option, Result } from "effect"
-import { gitInit } from "../../../tests/git-repo.ts"
+import { gitClone, gitInit } from "../../../tests/git-repo.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import * as Seed from "../../../sim/seed.ts"
 import { claimsOf, factsOf, type LaneHead, laneFactsOf } from "../commitments-tool.ts"
@@ -46,7 +46,7 @@ const repository = (dir: string) => {
   main(root)
   const lane = (unit: string, source: string = path) => {
     const at = `${dir}/lanes/${unit}`
-    spawnSync(["git", "clone", "-q", "--shared", "--no-checkout", source, at], { env: ENV, stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+    gitClone(source, at, ["-q", "--shared", "--no-checkout"], ENV)
     const head = () => git(at, ["rev-parse", "HEAD"])
     const move = (sha: string) => void git(at, ["update-ref", "HEAD", sha])
     const work = (message: string) => {
