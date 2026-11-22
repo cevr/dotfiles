@@ -1005,6 +1005,21 @@ describe("a lost device store closes, it never re-keys by name", () => {
       })
     })
 
+  test("an agent host the store does not key (never keyed, or lost from it) closes the writes: skiff and his phone mark nothing unpaired, both still read", async () => {
+    using held = scratch("digest-storeloss-")
+    const paths = await keyed(held.path)
+    const [primary, secondary] = await Effect.runPromise(FileDevices.readCopies(paths))
+    const status = withDinghy({ dnsName: "dinghy", id: "nDinghy1CNTRL" })
+    const members = membersWith("member-except-hosts", keysOf({ agentHosts: ["skiff"], excluded: ["dinghy"] }, primary, secondary), status, NOW)
+    for (const peer of ["100.101.102.104", OWN_PHONE])
+      await serveAs({ config, status, members, peer, listener: "tailnet" }, async (served) => {
+        expect([peer, (await fetch(`${served.base}/view.json`)).status, (await send(served, "/api/mark", { id: "m1", mark: "read" })).status, await served.written()]).toEqual([peer, 200, 401, 0])
+      })
+    await serveAs({ config, status, members, peer: "127.0.0.1", listener: "loopback" }, async (served) => {
+      expect(await (await fetch(`${served.base}/health`)).text()).toEndWith(" writes=paired:agent-unkeyed:skiff:store-ok/ok members=2 writers=0 excluded=1")
+    })
+  })
+
   for (const lost of [0, 1] as const)
     test(`copy ${lost + 1} deleted, dinghy renamed and another device of his named dinghy: the other copy keys dinghy (out by its ID), the laptop is out by the name, his phone still marks unpaired, health names the copy`, async () => {
       using held = scratch("digest-storeloss-")
