@@ -142,10 +142,6 @@ const bench = (label: string) => {
   return { dir, home, bin, root, env, origin, push, clone }
 }
 
-type Bench = ReturnType<typeof bench>
-
-const workrift = (b: Bench, cwd: string, ...argv: ReadonlyArray<string>) => run(cwd, b.env, [SCRIPT, ...argv])
-
 /** Every file and folder under `dir`, relative to it, sorted. */
 const filesUnder = (dir: string): ReadonlyArray<string> =>
   readdirSync(dir, { recursive: true, encoding: "utf8" })
