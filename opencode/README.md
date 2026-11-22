@@ -1261,6 +1261,53 @@ the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
 whatever `mods/work` and `mods/guard` refuse (a red merge check never pushes;
 one land per host at a time).
 
+### Commitments
+
+What a run owes is one SQLite record per repository per host
+(`$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db`, the key from the
+checkout's origin; `mods/orchestrate/record.ts`, `sqlite/record.ts`), never
+prose: one commitment per promised outcome, its events and its rows written in
+one transaction (`user_version` 1, a daily backup beside it, seven kept). A
+file of a newer version is read and never written.
+
+- **`commitments`** (the root's tool; a subagent is refused): `add` makes one
+  open, unowned commitment per part in one call, the call that records an
+  owner's approval (`source_kind: "owner-answer"`, `source_ref`, `quote`);
+  `assign` owns or re-owns one, with its waits (`after`: a commit on main,
+  another commitment closed, a date, a manual word) and a review-by time (7
+  days by default: every owned one has one); `order` starts an owner's and
+  answers all its open ones; `release`, `decide` (with why), `reopen`, `word`,
+  `route` (a hand-back), `list`, `history`, `import` (an Ergo register, table
+  to table).
+- **`follow_up`** (a worker's): one unowned commitment per finding, sourced to
+  the call, with the owner it suggests; it replaces a Follow-ups line.
+- **Standings**, computed at each read and never stored: unowned, orphaned
+  (its owner's lane is gone), overdue (past review-by), due (every wait met,
+  not started) or held. Nobody says landed: a commitment lands only when the
+  commit its owner's hand-back claimed is on the default branch, by ancestry.
+  A worker never closes one the owner approved; a root that does tells the
+  owner, who can have it reopened.
+- **Created without the root remembering**: `orchestrate lane` gets or makes
+  the unit's commitment (owned by the unit, started) and its answer lists the
+  unit's open ones; a land claims each pushed unit's commitment with the
+  lane's head and passes, so a merged unit lands.
+- **Where it is said**: `orchestrate status` and every `land` answer end with
+  the record's section (counts by standing, at most ten ids a listed standing,
+  owner-sourced first, and the `list` call for the rest), and the queue
+  check's ask carries it for a root that runs units or wrote to the record. A
+  record of held commitments says nothing.
+- **A host with no plugin** calls the same handlers through the CLI:
+  `bun cmd/orchestrate/record.ts <action> --json '<fields>' [--file <db>]`
+  (`list`, `history` and `export` open the file read-only; `import --json
+  '{"from":"<copy of register.db>","map":"ergo-register"}'` is idempotent).
+
+`cmd/orchestrate/record-model.sim.test.ts` holds the SQLite store to a
+reference model over generated runs with restarts (five broken stores go red),
+`commitments.sim.test.ts` the tools through the plugin, and
+`scripts/no-prose-state.test.ts` keeps every regular expression in
+orchestrate, status and the skill's scripts on an allow list each unit of the
+program shrinks.
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each
