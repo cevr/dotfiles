@@ -9,6 +9,7 @@ import { hostname, networkInterfaces } from "node:os"
 import { file, readableStreamToText, spawn } from "bun"
 import { Duration, Effect, Option, Schema } from "effect"
 import { type InterfaceAddress, StatusRead, type Tailnet, type TailscaleStatus, tailnetOf } from "../bind.ts"
+import { agentHostsFrom } from "../members.ts"
 
 /**
  * Where the Tailscale CLI is, in order: the Mac app's, Homebrew's (Apple silicon, then Intel), then the Linux
@@ -122,6 +123,13 @@ const interfaces = Effect.sync((): ReadonlyArray<InterfaceAddress> => Object.val
 
 /** This host's name, as the health line gives it: its first label. */
 export const hostName: Effect.Effect<string> = Effect.sync(() => hostname().split(".")[0] ?? hostname())
+
+/**
+ * `digest.agentHosts` for the installer: each of `names` as Tailscale's status resolves it now (members.ts
+ * `agentHostsFrom`). A promise of plain strings, so a script on another Effect runtime can call it.
+ */
+export const readAgentHosts = (names: ReadonlyArray<string>, clis: ReadonlyArray<string> = CLIS): Promise<ReadonlyArray<string>> =>
+  Effect.runPromise(Effect.map(statusFrom(clis), (read) => agentHostsFrom(names, read)))
 
 /** This host on the tailnet, and the status it was read from (members.ts reads his devices from it). */
 export interface Probed {

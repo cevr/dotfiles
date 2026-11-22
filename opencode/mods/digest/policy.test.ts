@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test"
 import { Duration, Match, Option } from "effect"
 import { StatusRead, type TailscaleStatus } from "./bind.ts"
-import { closed, current, MEMBERS_TTL, membersOf, sourceOf, writesWord } from "./members.ts"
+import { agentHostsFrom, closed, current, MEMBERS_TTL, membersOf, sourceOf, writesWord } from "./members.ts"
 import { ACCESS, type Decision, decide, type Facts, type Listener, mayAnswer, type Policy, ROUTE_KINDS, type RouteKind, type Source, SOURCES, TAILNET_WRITES, WRITES } from "./policy.ts"
 
 const LOOPBACK_HOSTS = ["127.0.0.1:8240", "localhost:8240"]
@@ -182,6 +182,13 @@ describe("who a source address is, from Tailscale's status", () => {
     }
     // Under "member" an unresolved agent host closes nothing: agents are his devices there.
     expect(membersAt("member", ["dinghy"]).write).toBe("member")
+  })
+
+  test("the installer's agent hosts: each name's addresses from the status, or the name when it does not resolve (not running, no status, no such device)", () => {
+    expect(agentHostsFrom(["skiff"], StatusRead.Read({ status: STATUS }))).toEqual(["100.101.102.104", "fd7a:115c:a1e0:0:0:0:0:44"])
+    expect(agentHostsFrom(["skiff", "dinghy"], StatusRead.Read({ status: STATUS }))).toEqual(["100.101.102.104", "fd7a:115c:a1e0:0:0:0:0:44", "dinghy"])
+    expect(agentHostsFrom(["skiff"], StatusRead.Read({ status: { ...STATUS, backendState: "Stopped" } }))).toEqual(["skiff"])
+    expect(agentHostsFrom(["skiff"], StatusRead.Unread({ why: "no-cli" }))).toEqual(["skiff"])
   })
 
   test("no status, Tailscale not running, a tagged host, or members past their lifetime: no device is his", () => {

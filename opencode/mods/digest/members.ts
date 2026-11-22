@@ -64,6 +64,17 @@ export const resolveHost = (entry: string, status: TailscaleStatus): ReadonlyArr
     onNone: () => spelled([{ dnsName: status.dnsName, hostName: "", ips: status.ips }, ...status.peers].filter((node) => answersTo(entry, node)).flatMap((node) => node.ips)),
   })
 
+/**
+ * Agent hosts as the installer writes them into `digest.agentHosts`: each of `names` as the Tailscale addresses
+ * `read` gives it, or the name itself when the status does not resolve it (no status, not running, no such device),
+ * for the plugin to resolve at each tailnet read or to close the writes on.
+ */
+export const agentHostsFrom = (names: ReadonlyArray<string>, read: StatusRead): ReadonlyArray<string> =>
+  names.flatMap((name) => {
+    const ips = Match.valueTags(read, { Read: ({ status }) => resolveHost(name, status).filter(() => status.backendState === "Running"), Unread: (): ReadonlyArray<string> => [] })
+    return [...ips, ...[name].filter(() => ips.length === 0)]
+  })
+
 /** Whether a peer is a device of this host's own user: same UserID, not tagged, not shared in. */
 const isOwn = (status: TailscaleStatus, peer: PeerStatus): boolean =>
   !status.tagged && !peer.tagged && !peer.shared && Option.getOrElse(Option.zipWith(status.userId, peer.userId, (mine, theirs) => mine === theirs), () => false)
