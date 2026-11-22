@@ -485,11 +485,43 @@ describe("the tailnet listener", () => {
     using held = scratch("digest-http-")
     await withListener(
       builtPage(held.path),
-      async (base) => {
-        expect((await fetch(`${base}/view.json`)).status).toBe(200)
+      async (base, written, _hostname, rig) => {
+        const port = new URL(base).port
+        // Every read, with no token: the shell, whether paired, the view (by IP and by each name), and health's `ok`.
+        const reads = [
+          await fetch(`${base}/`),
+          await fetch(`${base}/assets/index-abc.js`),
+          await fetch(`${base}/paired.json`),
+          await fetch(`${base}/view.json`),
+          await fetch(`${base}/view.json`, { headers: { host: `harbor:${port}` } }),
+          await fetch(`${base}/view.json`, { headers: { host: `harbor.example-tailnet.ts.net:${port}` } }),
+        ]
+        expect(reads.map((each) => each.status)).toEqual([200, 200, 200, 200, 200, 200])
+        expect(await (await fetch(`${base}/view.json`)).text()).toBe('{"v":1}')
+        expect(await (await fetch(`${base}/paired.json`)).text()).toBe('{"paired":false}')
         expect(await (await fetch(`${base}/health`)).text()).toBe("ok")
-        expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base))).status).toBe(401)
-        expect((await post(`${base}/api/answer`, { id: "question:s:q1", option: "Keep it" }, own(base))).status).toBe(401)
+        // Every write, with no token, from the page's own origin with its header: refused, and nothing written or sent.
+        const writes = [
+          await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base)),
+          await post(`${base}/api/later`, { id: "m2" }, own(base)),
+          await post(`${base}/api/name`, { project: "harbor", name: "Harbor Lights" }, own(base)),
+          await post(`${base}/api/since`, {}, own(base)),
+          await post(`${base}/api/answer`, { id: "question:s:q1", option: "Keep it" }, own(base)),
+        ]
+        expect(writes.map((each) => each.status)).toEqual([401, 401, 401, 401, 401])
+        // Pairing: a code it did not issue earns no token; only `bun cmd/digest/pair.ts` on the host issues one.
+        const guessed = await post(`${base}/api/pair`, { code: "ABCDEFGHJK" }, own(base))
+        expect([guessed.status === 200, (await guessed.text()).includes("token")]).toEqual([false, false])
+        expect([await Effect.runPromise(Ref.get(written)), await Effect.runPromise(Ref.get(rig.answered))]).toEqual([[], []])
+        // Host and Origin hold as with "paired": another name reads nothing, a write from another origin is refused.
+        expect([(await fetch(`${base}/view.json`, { headers: { host: `evil.example:${port}` } })).status, (await fetch(`${base}/view.json`, { headers: { host: `localhost:${port}` } })).status]).toEqual([421, 421])
+        const token = await paired(base, rig)
+        expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, { ...own(base, token), origin: "http://evil.example" })).status).toBe(403)
+        // Paired, the writes go and the health line is whole.
+        expect((await post(`${base}/api/mark`, { id: "m1", mark: "read" }, own(base, token))).status).toBe(204)
+        expect((await post(`${base}/api/answer`, { id: "question:s:q1", option: "Keep it" }, own(base, token))).status).toBe(200)
+        expect(await (await fetch(`${base}/health`, { headers: { [TOKEN_HEADER]: token } })).text()).toStartWith("digest ok dev host=harbor")
+        expect([(await Effect.runPromise(Ref.get(written))).length, (await Effect.runPromise(Ref.get(rig.answered))).length]).toEqual([1, 1])
       },
       (rig) => ({ ...handlers(rig), tailnetRead: "member" }),
       "tailnet",
