@@ -1287,18 +1287,23 @@ to one bounded line and redacts secret shapes.
 - **Standings**, computed at each read and never stored: unowned, orphaned
   (its owner's lane is gone), overdue (past review-by), due (every wait met,
   not started) or held. Nobody says landed: a commitment lands only when the
-  commit its owner's hand-back claimed is on the default branch, by ancestry.
+  commit a land event claimed for it is on the default branch, by ancestry.
   A worker never closes one the owner approved; a root that does tells the
-  owner, who can have it reopened, and a close by a session with no earlier
-  event in that run is flagged and listed first.
+  owner, who can have it reopened. A close is flagged, and listed first, when
+  the deciding session had no earlier event in this run; any earlier write of
+  that session in the run (a word, an add, an assign) avoids the flag, so it
+  says only that, not who the run's root is. A reopen keeps the flagged close
+  in the history.
 - **Created without the root remembering**: `orchestrate lane` gets or makes
   the unit's commitment (owned by the unit, started) and its answer lists the
-  unit's open ones, and records the commit the lane started at. Status, a land
-  and the queue check claim a lane's head only when it is the unit's own work
-  past that start (cut from main: any head main lacks; stacked on a parent or
-  an unpushed base commit: a head that descends from the start), then pass, so
-  a merged unit lands and a lane with no commit of its own never does. A lane
-  made before start heads were kept is claimed only by an explicit land.
+  unit's open ones, and records the lane's workspace and start commit. Only a
+  land event claims: `orchestrate land`, the work tool's pushed land (its
+  answer's `pushed` and `landed` metadata, read by an `execute.after` hook), or
+  the root's `commitments({ action: "landed", id, head })` for a land by hand;
+  each claims the head it merged for the commitment whose lane that workspace
+  is. Status, the queue check and `list` only read; a status pass lands a
+  claimed head once git has it on the default branch. A lane removed with no
+  land is listed orphaned, its line naming the calls that resolve it.
 - **Where it is said**: `orchestrate status` and every `land` answer end with
   the record's section (counts by standing, at most ten ids a listed standing,
   owner-sourced first, and the `list` call for the rest), and the queue
