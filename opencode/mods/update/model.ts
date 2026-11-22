@@ -1,6 +1,6 @@
 import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
 import { describeGate, Gate, gate } from "./gate.ts"
-import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
+import { describeHealth, digestSaid, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, type Record, rolledBack } from "./record.ts"
 import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Source, stageInTree, Trees, UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
@@ -262,6 +262,7 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
     const restarted = yield* service.restart.pipe(Effect.as(Option.none<Health>()), Effect.catch((failed) => Effect.succeed(Option.some(failedStep("service restart")(failed)))))
     const health = yield* Option.match(restarted, { onNone: () => healthNow(before), onSome: Effect.succeed })
     yield* log.line(`handoff (${stage}): ${describeHealth(health)}`)
+    yield* log.line(`handoff (${stage}): ${digestSaid(yield* service.digest)}`)
     return health
   })
 

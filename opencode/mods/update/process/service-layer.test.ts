@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { serve, spawnSync, write } from "bun"
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"
 import { Base64 } from "effect/encoding"
+import { FetchHttpClient, HttpClient } from "effect/http"
 import { readText } from "../filestore/files.ts"
 import { describeHealth, Health, healthOf } from "../health.ts"
 import { Placement } from "../placement.ts"
@@ -264,3 +265,22 @@ describe("the watchdog's ask for the resident location (the plugin's Resident la
       ),
     ))
 })
+
+describe("the digest's health line, read after the restart", () => {
+  test("its line, trimmed, when the digest answers (a scratch server on a loopback port)", () => {
+    const digest = Effect.acquireRelease(
+      Effect.sync(() => serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("digest ok dev host=mac events=3 last=none peers=none tailnet=no\n") })),
+      (server) => Effect.sync(() => void server.stop(true)),
+    )
+    return Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* digest
+          const line = yield* ServiceLayer.digestHealth(yield* HttpClient.HttpClient, `http://127.0.0.1:${server.port}/health`)
+          expect(line).toEqual(Option.some("digest ok dev host=mac events=3 last=none peers=none tailnet=no"))
+        }),
+      ).pipe(Effect.provide(FetchHttpClient.layer)),
+    )
+  })
+})
+

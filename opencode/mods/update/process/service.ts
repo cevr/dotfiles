@@ -1,4 +1,4 @@
-import { Duration, Effect, Layer, Match, Option, Predicate, Redacted, Schema } from "effect"
+import { Duration, Effect, Layer, Match, Option, Predicate, Redacted, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { readText } from "../filestore/files.ts"
 import type { Listed } from "../health.ts"
@@ -197,13 +197,30 @@ export const configuredBy = (texts: ReadonlyArray<string>) => ({
   providers: providersOf(texts),
 })
 
+/** The digest page's health line on this host's loopback (the digest plugin's `GET /health`, unauthenticated there). */
+export const DIGEST_HEALTH = "http://127.0.0.1:8240/health"
+
+/**
+ * The digest's health line, once its listener answers: tried for about ten seconds after the restart (the plugin
+ * binds as it starts), each try five seconds at most; none when it never answers 200.
+ */
+export const digestHealth = (client: HttpClient.HttpClient, url: string = DIGEST_HEALTH): Effect.Effect<Option.Option<string>> =>
+  client.get(url).pipe(
+    Effect.flatMap((answer) => Effect.flatMap(answer.text, (text) => Option.match(Option.liftPredicate(text.trim(), () => answer.status === 200), { onNone: () => Effect.fail(answer.status), onSome: Effect.succeed }))),
+    Effect.timeout(Duration.seconds(5)),
+    Effect.retry({ schedule: Schedule.spaced(Duration.seconds(2)), times: 5 }),
+    Effect.map(Option.some),
+    Effect.orElseSucceed(() => Option.none<string>()),
+  )
+
 export const layer = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string) => {
   const place = { cwd: settings.checkout, env }
   const server = settings.config.find((path) => path.endsWith("/opencode.json")) ?? ""
   return Layer.effect(
     Service,
     Effect.gen(function* () {
-      const { ask, answered } = asker(yield* HttpClient.HttpClient, registration, settings.resident)
+      const client = yield* HttpClient.HttpClient
+      const { ask, answered } = asker(client, registration, settings.resident)
       /** An ask that may fail: its body when it succeeds, none otherwise. */
       const optional = (asked: Ask) =>
         ask(asked).pipe(Effect.map((answer) => Option.liftPredicate(answer.text, () => answer.status >= 200 && answer.status < 300)), Effect.orElseSucceed(() => Option.none<string>()))
@@ -242,6 +259,7 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
           }
         }),
         logins: ready.pipe(Effect.andThen(pool), Effect.flatMap(loginsWith)),
+        digest: digestHealth(client),
       })
     }),
   ).pipe(Layer.provide(FetchHttpClient.layer))

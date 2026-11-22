@@ -58,6 +58,8 @@ interface World {
   before: Option.Option<ReadonlyArray<string>>
   /** How many reads of the verified target still die (a defect, not a failed step). */
   verifiedDeaths: number
+  /** What the digest page's health answers after a restart: its line, or none (silent). */
+  digest: Option.Option<string>
   /** When each check was stamped (epoch ms). */
   readonly beats: Array<number>
 }
@@ -78,6 +80,7 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   restartFailures: 0,
   pruneFails: false,
   before: Option.some([]),
+  digest: Option.some("digest ok dev host=mac events=3 last=none peers=none tailnet=yes"),
   ...at,
 })
 
@@ -202,6 +205,7 @@ const fakes = (host: World) =>
         }),
         read: Effect.suspend(() => Option.match(Option.fromNullishOr(host.readings.shift()), { onNone: () => failure("read"), onSome: Effect.succeed })),
         logins: Effect.suspend(() => Option.match(host.before, { onNone: () => failure("list the integrations"), onSome: Effect.succeed })),
+        digest: Effect.sync(() => host.digest),
       }),
     ),
   )
@@ -402,6 +406,34 @@ describe("the updater on its seams", () => {
         yield* check("interval")
         yield* check("asked")
         expect(host.calls).toEqual([`handoff ${SHORT}`])
+      }),
+    )
+  })
+})
+
+describe("the digest's health, logged after each restart", () => {
+  test("a well digest's line is logged as it answers", () => {
+    const host = world({ record: stagedTarget(), readings: [healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.lines).toContain("handoff (first): digest ok dev host=mac events=3 last=none peers=none tailnet=yes")
+      }),
+    )
+  })
+
+  test.each([
+    ["sick", Option.some("digest sick dev host=mac EACCES: permission denied")],
+    ["silent", Option.none<string>()],
+  ])("a %s digest warns and the build is still proven: it never rolls a build back", (_, digest) => {
+    const host = world({ record: stagedTarget(), readings: [healthy], digest })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.lines.filter((line) => line.startsWith("handoff (first): warning: "))).toHaveLength(1)
+        expect(host.lines.some((line) => line.includes("rolled back"))).toBe(false)
       }),
     )
   })
@@ -1044,6 +1076,7 @@ describe("plugin trees", () => {
           }),
           read: Effect.suspend(() => Option.match(Option.fromNullishOr(host.readings.shift()), { onNone: () => failure("read"), onSome: Effect.succeed })),
           logins: Effect.succeed(["anthropic"]),
+          digest: Effect.succeed(Option.none()),
         }),
       ),
     )

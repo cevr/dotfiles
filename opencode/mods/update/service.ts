@@ -240,6 +240,11 @@ export class Service extends Context.Service<
      * restart, so the health after it can tell a lost login from one the host never had.
      */
     readonly logins: Effect.Effect<ReadonlyArray<string>, UpdateFailed>
+    /**
+     * The digest page's health line (`digest ok …` or `digest sick …`), none when it does not answer. The handoff
+     * logs it and warns on a sick or silent digest; it never counts toward the build's health.
+     */
+    readonly digest: Effect.Effect<Option.Option<string>>
   }
 >()("dotfiles-opencode/update/Service") {}
 

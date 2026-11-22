@@ -280,6 +280,7 @@ describe("daily by hand on a from-scratch host", () => {
                   restart: Effect.sync(() => void effects.push("restart")),
                   read: Effect.succeed({ configured: [], listed: [], accounts: Option.some(1), providers: [], logins: [], placement: Option.none() }),
                   logins: Effect.succeed([]),
+                  digest: Effect.succeed(Option.none()),
                 }),
               ),
               Layer.succeed(

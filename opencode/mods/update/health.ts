@@ -122,6 +122,16 @@ export const recover = (stage: Stage, health: Health, canRollBack: boolean): Rec
 const unsigned = (providers: ReadonlyArray<string>): string => `${providers.map((provider) => `no ${provider} login`).join(", ")}: sign in with opencode auth login`
 
 /** The health in a log line. */
+/**
+ * The handoff's line for the digest's health (`Service.digest`): its own line when well, a warning when sick or
+ * silent. A warning only: the digest never rolls a build back.
+ */
+export const digestSaid = (line: Option.Option<string>): string =>
+  Option.match(line, {
+    onNone: () => "warning: the digest page does not answer its health (http://127.0.0.1:8240/health); the build is judged without it",
+    onSome: (said) => Option.match(Option.liftPredicate(said, (each) => each.startsWith("digest ok ")), { onSome: (well) => well, onNone: () => `warning: ${said}; the build is judged without it` }),
+  })
+
 export const describeHealth = (health: Health): string =>
   Health.$match(health, {
     Healthy: () => "healthy: every plugin loaded, the pool answers with accounts, every configured model's provider has a login",
