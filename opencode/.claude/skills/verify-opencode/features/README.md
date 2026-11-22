@@ -14,6 +14,7 @@ The maintained source for verifying what our mods do for a user and an agent. Re
 - A real journey records `pilotty snapshot -s verify-$PORT --format text > $EVIDENCE/<feature>/<step>.txt` after each step, and `server.log` at the end.
 - A write is proved by a second view: the plugin's RPC, a reload (`world.restart`), or a reopened session.
 - An unreachable entry point is reported with the command tried and the unmet precondition. It never counts as verified through another path.
+- A sub-feature marked `(real only)` has no world journey and no source launch that proves it: its proof is the compiled build its line names, run by the verifier that owns the scratch build. A drive reports it unverified with that check named, never as verified by a suite.
 
 ## Entry contract
 
