@@ -1,5 +1,5 @@
 // Sessions as OpenCode reports them: a session's project id, which every clone,
-// worktree and Rift of one repository shares, whether it has a parent, and the
+// worktree and workspace of one repository shares, whether it has a parent, and the
 // digest the session holds in its metadata (`HELD`). A session the host cannot
 // read or update fails SessionUnreadable.
 import { Effect, Layer, Option, Schema } from "effect"

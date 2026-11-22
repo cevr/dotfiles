@@ -46,7 +46,7 @@ export interface Steps {
   readonly report: string
   /** The deep run (`bun run accept:owed`): its outcome, none when it wrote none, and its log. Never under the land's accept lock. */
   readonly deep: (ask: DeepAsk) => Promise<DeepRun>
-  /** The commit of the checkout the step runs in (the post-land Rift at main). */
+  /** The commit of the checkout the step runs in (the post-land workspace at main). */
   readonly checkout: () => string
 }
 

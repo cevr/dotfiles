@@ -1,7 +1,7 @@
 // Checkouts over child processes, the same on macOS and Linux: `git` names a
 // directory's checkout and its origin; `df -P` names the mount the checkout
 // sits on and `mount` that mount's file system type; `workrift sources` (on
-// the workbox, where it is on PATH) lists Rift's warm sources. A directory no
+// the workbox, where it is on PATH) lists the workspaces' bases. A directory no
 // checkout holds, or one that does not exist, is none; any other failure to
 // read is CheckoutUnknown, so the guard refuses rather than guess.
 import { env as processEnv, readableStreamToText, spawn, which } from "bun"

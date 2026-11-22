@@ -1,6 +1,6 @@
 // A memory note: one durable fact a session saved for later sessions, kept for
 // every project (`global`) or for one (`project`, by OpenCode's project id, which
-// every clone, worktree and Rift of a repository shares). The rules here are
+// every clone, worktree and workspace of a repository shares). The rules here are
 // pure: what a note's text may be, when a new note repeats one already kept,
 // and the full-text query a search sends.
 import { Schema } from "effect"
