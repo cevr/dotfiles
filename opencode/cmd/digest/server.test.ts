@@ -4,14 +4,16 @@
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { ConfigProvider, Effect, Exit, Option, Path, Schema } from "effect"
+import { ConfigProvider, Effect, Exit, Option, Path, Ref, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
+import { noTailnet, StatusRead, type TailscaleStatus } from "@dotfiles/opencode-digest/bind"
+import { Copy, EMPTY_STORE } from "@dotfiles/opencode-digest/devices"
 import { DigestEvent, encodeLine, VERSION } from "@dotfiles/opencode-digest/event"
 import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import { markOf } from "@dotfiles/opencode-digest/marks"
 import { scratch } from "../../tests/scratch.ts"
 import { DigestUnreadable } from "@dotfiles/opencode-digest/service"
-import { dirOf, handlersOf, healthOf, Options, zoneOf } from "./server.ts"
+import { dirOf, handlersOf, healthOf, Options, probeKeeping, STARTING, writeConfigOf, zoneOf } from "./server.ts"
 
 /** sim/, from this file's URL (opencode/cmd/digest). */
 const SIM = Effect.runSync(Effect.flatMap(Path.Path, (path) => path.fromFileUrl(new URL("../../sim", import.meta.url))).pipe(Effect.provide(Path.layer), Effect.orDie))
@@ -64,6 +66,46 @@ describe("the digest plugin", () => {
     const answerers = { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }
     expect([handlersOf({}, unreadable, answerers).tailnetRead, handlersOf({ tailnetRead: "member" }, unreadable, answerers).tailnetRead]).toEqual(["paired", "member"])
     expect(Exit.isSuccess(Schema.decodeUnknownExit(Options)({ tailnetRead: "everyone" }))).toBe(false)
+  })
+
+  test("digest.tailnetWrite, digest.agentHosts and digest.excludedDevices: paired and none by default, names only, and his devices kept from each tailnet read with the store's keys", async () => {
+    const decode = Schema.decodeUnknownExit(Options)
+    expect(writeConfigOf({})).toEqual({ tailnetWrite: "paired", agentHosts: [], excluded: [] })
+    expect(writeConfigOf({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff", "100.101.102.104"], excludedDevices: ["dinghy", "raft"] })).toEqual({ tailnetWrite: "member-except-hosts", agentHosts: ["skiff", "100.101.102.104"], excluded: ["dinghy", "raft"] })
+    expect(
+      // An ID in the config (an earlier build's shape) is refused: IDs live in the device store only.
+      [{ name: "dinghy", ids: ["nDinghy1CNTRL"] }, { name: "dinghy", id: "nDinghy1CNTRL" }, "", "dinghy"].map((each) => Exit.isSuccess(decode({ excludedDevices: [each] }))),
+    ).toEqual([false, false, false, true])
+    expect(["paired", "member", "member-except-hosts", "everyone", ""].map((tailnetWrite) => Exit.isSuccess(decode({ tailnetWrite })))).toEqual([true, true, true, false, false])
+    expect([Exit.isSuccess(decode({ agentHosts: [""] })), Exit.isSuccess(decode({ agentHosts: "skiff" }))]).toEqual([false, false])
+    // Each probe sets his devices from the same status read; a read that fails closes them.
+    const status: TailscaleStatus = {
+      backendState: "Running",
+      dnsName: Option.some("harbor.example-tailnet.ts.net"),
+      ips: ["100.101.102.103"],
+      userId: Option.some(7),
+      tagged: false,
+      peers: [{ dnsName: Option.some("skiff.example-tailnet.ts.net"), stableId: Option.some("nSkiff1CNTRL"), os: "", lastSeen: Option.none(), hostName: "skiff", ips: ["100.101.102.104"], userId: Option.some(7), tagged: false, shared: false }],
+    }
+    const config = { tailnetWrite: "member-except-hosts", agentHosts: ["skiff"], excluded: [] } as const
+    const store = Copy.Read({ store: { ...EMPTY_STORE, agents: [{ name: "skiff", ids: ["nSkiff1CNTRL"] }] } })
+    const copies = Effect.succeed([store, Copy.Absent()] as const)
+    const kept = await Effect.runPromise(
+      Effect.gen(function* () {
+        const members = yield* Ref.make(STARTING)
+        const reads = yield* Ref.make([StatusRead.Read({ status }), StatusRead.Unread({ why: "cli-timeout" })])
+        const probe = Effect.map(Ref.modify(reads, ([first, ...rest]) => [first ?? StatusRead.Unread({ why: "none" }), rest]), (read) => ({ tailnet: noTailnet("test"), status: read }))
+        yield* probeKeeping(config, probe, members, copies)
+        const first = yield* Ref.get(members)
+        yield* probeKeeping(config, probe, members, copies)
+        return [first, yield* Ref.get(members)]
+      }),
+    )
+    expect(kept.map((each) => [each.write, each.why, each.agents])).toEqual([
+      ["member-except-hosts", "", ["100.101.102.103", "100.101.102.104"]],
+      ["paired", "status:cli-timeout", []],
+    ])
+    expect(STARTING.write).toBe("paired")
   })
 
   test("no simulation loads the file log: sim/ reaches the digest only through its memory log", () => {

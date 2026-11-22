@@ -2,12 +2,12 @@
 // peer's unknown message skipped alone, and a peer found only in Tailscale's own status.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { peerHostsOf, StatusRead } from "./bind.ts"
+import { type PeerStatus, StatusRead } from "./bind.ts"
 import { DigestEvent, VERSION } from "./event.ts"
 import { EMPTY, fold } from "./fold.ts"
 import { NO_MARKS } from "./marks.ts"
 import { pageOf } from "./messages.ts"
-import { envelopeOf, NOT_ALLOWED, Reading, readingOf, targetOf, WIRE } from "./peers.ts"
+import { envelopeOf, keyedOf, locateIn, NOT_ALLOWED, Reading, readingOf, type Sighting, WIRE } from "./peers.ts"
 import { viewOf } from "./view.ts"
 
 const T = Date.parse("2026-11-20T12:00:00Z")
@@ -41,31 +41,68 @@ describe("a peer's answer", () => {
   })
 })
 
-describe("a peer on the tailnet", () => {
-  const status = (backendState: string) =>
-    StatusRead.Read({
-      status: {
-        backendState,
-        dnsName: Option.some("harbor.example-tailnet.ts.net"),
-        ips: ["100.101.102.103"],
-        peers: [
-          { dnsName: "Workbox.example-tailnet.ts.net.", ips: ["fd7a:115c:a1e0::9", "100.101.102.104"] },
-          { dnsName: "phone.example-tailnet.ts.net", ips: ["192.168.1.4"] },
-          { dnsName: "", ips: ["100.101.102.105"] },
-        ],
-      },
-    })
+const HIS = 7
+const device = (name: string, id: string, ips: ReadonlyArray<string>, more: Partial<PeerStatus> = {}): PeerStatus => ({
+  dnsName: Option.some(`${name}.example-tailnet.ts.net.`),
+  stableId: Option.some(id),
+  hostName: name,
+  os: "linux",
+  lastSeen: Option.none(),
+  ips,
+  userId: Option.some(HIS),
+  tagged: false,
+  shared: false,
+  ...more,
+})
+const sightingOf = (peers: ReadonlyArray<PeerStatus>, more: Partial<Sighting> = {}, backendState = "Running"): Sighting => ({
+  read: StatusRead.Read({ status: { backendState, dnsName: Option.some("harbor.example-tailnet.ts.net"), ips: ["100.101.102.103"], userId: Option.some(HIS), tagged: false, peers } }),
+  agents: [{ name: "workbox", ids: ["nWORK"] }],
+  excluded: [],
+  at: T,
+  ...more,
+})
+const WORKBOX = device("Workbox", "nWORK", ["fd7a:115c:a1e0::9", "100.101.102.104", "192.168.1.4"])
 
-  test("is found in Tailscale's status by its short name, at its tailnet addresses only, IPv4 first; none when it is not running", () => {
-    expect(peerHostsOf(status("Running"))).toEqual([{ host: "workbox", dnsName: "workbox.example-tailnet.ts.net", ips: ["100.101.102.104", "fd7a:115c:a1e0::9"] }])
-    expect(peerHostsOf(status("Stopped"))).toEqual([])
-    expect(peerHostsOf(StatusRead.Unread({ why: "no-cli" }))).toEqual([])
+describe("a peer on the tailnet", () => {
+  test("is the one device of his the store keys for its name: by stable ID, at its tailnet addresses only (IPv4 first), whatever it is called now", () => {
+    expect(keyedOf("workbox", sightingOf([WORKBOX]), T)).toEqual(Option.some({ ips: ["100.101.102.104", "fd7a:115c:a1e0::9"], dnsName: Option.some("workbox.example-tailnet.ts.net") }))
+    // Renamed: still that device, under its new name.
+    expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, dnsName: Option.some("spare.example-tailnet.ts.net") }]), T)).toEqual(
+      Option.some({ ips: ["100.101.102.104", "fd7a:115c:a1e0::9"], dnsName: Option.some("spare.example-tailnet.ts.net") }),
+    )
   })
 
-  test("a named peer is read at its first address on the page's port; one Tailscale does not list is nowhere", () => {
-    const hosts = peerHostsOf(status("Running"))
-    expect(targetOf({ name: "workbox", host: "workbox" }, hosts, 8240)).toEqual(Option.some({ name: "workbox", base: "http://100.101.102.104:8240" }))
-    expect(targetOf({ name: "phone", host: "phone" }, hosts, 8240)).toEqual(Option.none())
-    expect(targetOf({ name: "evil", host: "evil.example.com" }, hosts, 8240)).toEqual(Option.none())
+  test("is nowhere when a name alone would find it: unkeyed, another device of his or a colleague's taking the name, an excluded or ambiguous ID", () => {
+    const colleague = device("workbox", "nCOLL", ["100.101.102.120"], { userId: Option.some(9) })
+    const another = device("workbox", "nPHONE", ["100.101.102.110"])
+    expect(keyedOf("workbox", sightingOf([WORKBOX], { agents: [{ name: "workbox", ids: [] }] }), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([WORKBOX], { agents: [] }), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([colleague, another]), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, userId: Option.some(9) }]), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, tagged: true }]), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([{ ...WORKBOX, shared: true }]), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([WORKBOX], { excluded: [{ name: "lenovo-rescue", ids: ["nWORK"] }] }), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([WORKBOX, device("workbox2", "nWORK2", ["100.101.102.105"])], { agents: [{ name: "workbox", ids: ["nWORK", "nWORK2"] }] }), T)).toEqual(Option.none())
+    // With the keyed device there, the others change nothing.
+    expect(Option.map(keyedOf("workbox", sightingOf([colleague, another, WORKBOX]), T), (each) => each.ips)).toEqual(Option.some(["100.101.102.104", "fd7a:115c:a1e0::9"]))
+  })
+
+  test("is nowhere while the status is unread, Tailscale stopped or the read stale; an address another device lists is not its", () => {
+    expect(keyedOf("workbox", sightingOf([WORKBOX], {}, "Stopped"), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([WORKBOX], { read: StatusRead.Unread({ why: "no-cli" }) }), T)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([WORKBOX]), T + 76_000)).toEqual(Option.none())
+    expect(keyedOf("workbox", sightingOf([WORKBOX], { at: 0 }), T)).toEqual(Option.none())
+    const contested = [WORKBOX, device("laptop", "nLAP", ["100.101.102.104"], { userId: Option.some(9) })]
+    expect(Option.map(keyedOf("workbox", sightingOf(contested), T), (each) => each.ips)).toEqual(Option.some(["fd7a:115c:a1e0::9"]))
+  })
+
+  test("a named peer is read at its keyed device's first address on the page's port; one not keyed or not there is nowhere", () => {
+    const named = [
+      { name: "workbox", host: "workbox" },
+      { name: "phone", host: "phone" },
+    ]
+    expect(locateIn(named, sightingOf([WORKBOX, device("phone", "nPHONE", ["100.101.102.110"])]), T, 8240)).toEqual(new Map([["workbox", { name: "workbox", base: "http://100.101.102.104:8240" }]]))
+    expect(locateIn(named, sightingOf([]), T, 8240)).toEqual(new Map())
   })
 })
+

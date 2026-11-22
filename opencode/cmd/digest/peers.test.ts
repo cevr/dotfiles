@@ -16,10 +16,12 @@ import * as FileLog from "@dotfiles/opencode-digest/filestore/log"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
 import { pull, unreadAll } from "@dotfiles/opencode-digest/http/peers"
 import { markOf, nameOf } from "@dotfiles/opencode-digest/marks"
-import { type NamedPeer, NOT_ALLOWED, type Peer, peerId, type Target } from "@dotfiles/opencode-digest/peers"
+import { noTailnet, type PeerStatus, StatusRead } from "@dotfiles/opencode-digest/bind"
+import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
+import { type NamedPeer, NOT_ALLOWED, type Peer, peerId, locateIn, type Sighting, type Target, UNSEEN } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { scratch } from "../../tests/scratch.ts"
-import { handlersOf } from "./server.ts"
+import { handlersOf, probeKeeping, STARTING, writeConfigOf } from "./server.ts"
 
 /** A seeded generator of numbers in [0, 1) (mulberry32). */
 const drawer = (seed: number) => {
@@ -58,6 +60,9 @@ interface Live {
   readonly peers: Ref.Ref<ReadonlyArray<Peer>>
   readonly named: ReadonlyArray<NamedPeer>
   readonly old: Ref.Ref<boolean>
+  readonly sighting: Ref.Ref<Sighting>
+  /** Read Tailscale (the world's invented status) and the store again, as the plugin does at each recheck. */
+  readonly probe: Effect.Effect<unknown>
   scope: Scope.Closeable
   port: number
 }
@@ -66,7 +71,7 @@ interface Live {
 const open = (handlers: Listener.Handlers, port: number) =>
   Effect.gen(function* () {
     const scope = yield* Scope.make()
-    const bound = yield* Scope.provide(scope)(Listener.listen({ address: Listener.HOSTNAME, port, listener: "tailnet", names: [] }, handlers, "/nonexistent/loop-probe-x/dist"))
+    const bound = yield* Scope.provide(scope)(Listener.listen({ address: Listener.HOSTNAME, port, listener: "tailnet", names: [] }, handlers, "/nonexistent/loop-probe-x/dist", () => caller.address))
     return { scope, port: bound.port }
   })
 
@@ -126,37 +131,116 @@ const expected = (model: Map<string, ModelHost>, viewer: string) => {
   }
 }
 
-/** A world of `count` hosts, each naming the others as peers. */
-const world = async (dir: string, count: number, reads: (name: string) => "paired" | "member" = () => "member"): Promise<ReadonlyArray<Live>> => {
+/** His user, the hosts' invented tailnet addresses and stable IDs, his phone's, and the device he excluded. */
+const HIS = 7
+const ADDRESS: ReadonlyMap<string, string> = new Map([
+  ["macbook", "100.101.102.11"],
+  ["workbox", "100.101.102.12"],
+  ["spare", "100.101.102.13"],
+])
+const PHONE = "100.101.102.110"
+const EXCLUDED = "lenovo-rescue"
+const deviceOf = (name: string, address: string): PeerStatus => ({
+  dnsName: Option.some(`${name}.example-tailnet.ts.net`),
+  stableId: Option.some(`n-${name}`),
+  hostName: name,
+  os: "linux",
+  lastSeen: Option.none(),
+  ips: [address],
+  userId: Option.some(HIS),
+  tagged: false,
+  shared: false,
+})
+
+/** Tailscale's status as host `name` reads it: itself, the other hosts of the world, his phone and the excluded device. */
+const statusOf = (name: string, hosts: ReadonlyArray<string>): StatusRead =>
+  StatusRead.Read({
+    status: {
+      backendState: "Running",
+      dnsName: Option.some(`${name}.example-tailnet.ts.net`),
+      ips: [one(ADDRESS.get(name))],
+      userId: Option.some(HIS),
+      tagged: false,
+      peers: [...hosts.flatMap((other) => Option.toArray(Option.liftPredicate(other, (each) => each !== name)).map((each) => deviceOf(each, one(ADDRESS.get(each))))), deviceOf("phone", PHONE), deviceOf(EXCLUDED, "100.101.102.120")],
+    },
+  })
+
+/**
+ * How a host's device store stands: `keyed`, its agent hosts (the other hosts) and its exclusion keyed by stable ID,
+ * in both copies, as `bun cmd/digest/devices.ts` writes them; `unkeyed`, no store yet (the exclusion unkeyed closes
+ * the whole tailnet to pairing).
+ */
+type StoreState = "keyed" | "unkeyed"
+
+/** Write host `name`'s store copies under `dir` (scratch only, never the real store). */
+const keep = async (paths: readonly [string, string], state: StoreState, others: ReadonlyArray<string>) => {
+  if (state === "unkeyed") return
+  const store = { v: 1, agents: others.map((other) => ({ name: other, ids: [`n-${other}`] })), excluded: [{ name: EXCLUDED, ids: [`n-${EXCLUDED}`] }] }
+  for (const path of paths) await Bun.write(path, JSON.stringify(store))
+}
+
+/** Who calls the listeners now: every listener of the world takes it as the socket's peer address (a tailnet one). */
+const caller = { address: PHONE }
+
+/**
+ * A world of `count` hosts, each naming the others as peers and as agent hosts, as scripts/daily.ts ships them: his
+ * own devices read unpaired (`reads`, default "member") and write unless they are agent machines. Each host's device
+ * store stands as `stores` says, and its members and peers come from it through the plugin's own probeKeeping.
+ */
+const world = async (dir: string, count: number, reads: (name: string) => "paired" | "member" = () => "member", stores: (name: string) => StoreState = () => "keyed"): Promise<ReadonlyArray<Live>> => {
   const lives: Array<Live> = []
-  for (const name of NAMES.slice(0, count)) {
-    const named = NAMES.slice(0, count).flatMap((other) => Option.toArray(Option.liftPredicate({ name: other, host: other }, () => other !== name)))
-    const options = { dir: join(dir, name), timezone: "UTC", tailnetRead: reads(name), name, peers: named }
+  const hosts = NAMES.slice(0, count)
+  for (const name of hosts) {
+    const others = hosts.filter((other) => other !== name)
+    const named = others.map((other) => ({ name: other, host: other }))
+    const options = { dir: join(dir, name), timezone: "UTC", tailnetRead: reads(name), tailnetWrite: "member-except-hosts" as const, agentHosts: others, excludedDevices: [EXCLUDED], name, peers: named }
+    const paths = FileDevices.pathsOf(options.dir, join(dir, `${name}-config`))
+    await keep(paths, stores(name), others)
     const log = FileLog.make(options.dir)
     const peers = Ref.makeUnsafe(unreadAll(named))
+    const members = Ref.makeUnsafe(STARTING)
+    const sighting = Ref.makeUnsafe(UNSEEN)
+    const probe = probeKeeping(writeConfigOf(options), Effect.succeed({ tailnet: noTailnet("test"), status: statusOf(name, hosts) }), members, FileDevices.readCopies(paths), (seen) => Ref.set(sighting, seen))
     const old = Ref.makeUnsafe(false)
-    const base = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }, Effect.succeed("yes"), Ref.get(peers))
+    const base = handlersOf(options, log, { question: () => Effect.die("no answer here"), item: () => Effect.die("no answer here") }, Effect.succeed("yes"), Ref.get(members), { known: Ref.get(peers), pull: Effect.void })
     // A host on another wire: its peer view says wire 2, with a view this build must not parse loosely.
     const newer = Effect.succeed(`{"wire":2,"host":"${name}","view":{"projects":"elsewhere"}}`)
     const handlers: Listener.Handlers = { ...base, peerView: Effect.flatMap(Ref.get(old), (isOld) => Option.match(Option.liftPredicate(isOld, Boolean), { onSome: () => newer, onNone: () => base.peerView })) }
+    await run(probe)
     const bound = await run(open(handlers, 0))
-    lives.push({ name, handlers, log, peers, named, old, scope: bound.scope, port: bound.port })
+    lives.push({ name, handlers, log, peers, named, old, sighting, probe, scope: bound.scope, port: bound.port })
   }
   return lives
 }
 
-/** Every host reads its peers once, at time `at`, each at its loopback port. */
+/**
+ * Every host reads its peers once, at time `at`, each at its loopback port, as from its own tailnet address (the
+ * listeners' peer-address seam): first each host reads Tailscale and its store again, as the plugin does.
+ */
 const pullAll = (lives: ReadonlyArray<Live>, at: number) =>
   Effect.forEach(
     lives,
     (live) => {
       const located = new Map(live.named.map((peer): readonly [string, Target] => [peer.name, { name: peer.name, base: `http://${Listener.HOSTNAME}:${one(lives.find((each) => each.name === peer.name)).port}` }]))
-      return pull(live.named, Effect.succeed(located), LivePeers.get, live.peers, Effect.succeed(at))
+      return Effect.andThen(
+        Effect.andThen(
+          live.probe,
+          Effect.sync(() => {
+            caller.address = one(ADDRESS.get(live.name))
+          }),
+        ),
+        Effect.ensuring(
+          pull(live.named, Effect.succeed(located), LivePeers.get, live.peers, Effect.succeed(at)),
+          Effect.sync(() => {
+            caller.address = PHONE
+          }),
+        ),
+      )
     },
     { discard: true },
   )
 
-/** A page's view: over its listener when it is up, from its handlers when it is down. */
+/** A page's view, as his phone reads it: over its listener when it is up, from its handlers when it is down. */
 const pageView = async (live: Live, up: boolean): Promise<ViewJson> => {
   if (up) return (await fetch(`http://${Listener.HOSTNAME}:${live.port}/view.json`)).json()
   return JSON.parse(await run(live.handlers.view))
@@ -275,6 +359,31 @@ describe("one page over every host", () => {
     // page is read from its handlers: workbox's own page needs pairing on its listener.
     expect(await peersOf(one(lives[0]))).toEqual([{ name: "workbox", state: "down", reason: NOT_ALLOWED }])
     expect(await peersOf(one(lives[1]))).toEqual([{ name: "macbook", state: "up", reason: "" }])
+  })
+
+  test("a peer host reads as an agent machine: allowed once its store keys the hosts, refused while it is unkeyed, and the page says why", async () => {
+    using held = scratch("digest-peers-")
+    // workbox has no device store yet: its exclusion is unkeyed, so its tailnet is pairing-only for every source.
+    const lives = await world(held.path, 3, () => "member", (name) => Option.getOrElse(Option.as(Option.liftPredicate(name, (each) => each === "workbox"), "unkeyed" as const), () => "keyed" as const))
+    await using _closed = { [Symbol.asyncDispose]: () => run(Effect.forEach(lives, (live) => Scope.close(live.scope, Exit.void), { discard: true })) }
+    await run(pullAll(lives, 1))
+    const peersOf = async (live: Live) => (await pageView(live, false)).peers.map((peer) => ({ name: peer.name, state: peer.state, reason: peer.reason }))
+    expect(await peersOf(one(lives[0]))).toEqual([
+      { name: "workbox", state: "down", reason: NOT_ALLOWED },
+      { name: "spare", state: "up", reason: "" },
+    ])
+    expect(await peersOf(one(lives[2]))).toEqual([
+      { name: "macbook", state: "up", reason: "" },
+      { name: "workbox", state: "down", reason: NOT_ALLOWED },
+    ])
+    // workbox itself reads the others: their stores key it as an agent machine, which may read.
+    expect(await peersOf(one(lives[1]))).toEqual([
+      { name: "macbook", state: "up", reason: "" },
+      { name: "spare", state: "up", reason: "" },
+    ])
+    // Each host finds its peers by the stable IDs its own store keys, never by name: workbox, keying none, finds none.
+    expect([...locateIn(one(lives[0]).named, await run(Ref.get(one(lives[0]).sighting)), Date.now(), 8240).keys()]).toEqual(["workbox", "spare"])
+    expect([...locateIn(one(lives[1]).named, await run(Ref.get(one(lives[1]).sighting)), Date.now(), 8240).keys()]).toEqual([])
   })
 
   test("two hosts: each page shows its own projects and the other's, as the model says, through every step", async () => {

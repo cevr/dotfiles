@@ -16,6 +16,14 @@
 // - A log that cannot be read is `digest sick <build> host=<h> <why>`. The installer warns on it and never rolls a
 //   build back for it.
 // - On the tailnet an unpaired request reads `ok` alone (BRIEF): no counts, no names.
+// - On loopback alone the line ends with `writes=<switch>[:<why closed>] members=<n> writers=<n>` (localPart): the
+//   write switch in force (`digest.tailnetWrite`, "paired" with the reason when it closed, members.ts), how many of
+//   his own other devices Tailscale's status names, and how many of those write as him with no token now (not agent
+//   hosts), then `excluded=<n>[:unmatched:<name>][:store-<copy 1>/<copy 2>|:store-copies-differ]`: how many of his
+//   devices `digest.excludedDevices` keeps out, each exclusion whose stable IDs no device of his has (a device gone),
+//   and the device store's condition when its two copies are not both read and equal (devices.ts). An exclusion the
+//   store does not key shows in the switch instead, `writes=paired:unkeyed:<name>:store-...`. A paired browser on
+//   the tailnet reads the line without them.
 import { DateTime, Option } from "effect"
 
 /** What the tailnet listener is doing, as health reports it. */
@@ -41,6 +49,12 @@ export const healthLine = (facts: HealthFacts): string => {
   const peers = Option.getOrElse(Option.map(Option.liftPredicate(facts.peers, (each) => each.named > 0), (each) => `${each.up}/${each.named}`), () => "none")
   return `digest ok ${facts.build} host=${facts.host} events=${facts.events} last=${last} peers=${peers} tailnet=${facts.tailnet}`
 }
+
+/**
+ * What the line adds on loopback: the write switch in force, how many of his own other devices there are, and how
+ * many of those may mark and answer as him with no token (no agent host), so he can see a device he did not name.
+ */
+export const localPart = (writes: string, devices: number, writers: number, excluded: string): string => `writes=${writes} members=${devices} writers=${writers} excluded=${excluded}`
 
 /** The line for a digest whose log does not read. */
 export const sickLine = (build: string, host: string, why: string): string => `digest sick ${build} host=${host} ${why.replace(/\s+/g, " ").slice(0, 300)}`

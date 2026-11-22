@@ -16,10 +16,22 @@
  * - `timezone` (digest.timezone): the zone Later's morning (6:00 AM) and the page's times are in, default the host's.
  * - `port`: the page's port, on 127.0.0.1 and the tailnet, default 8240.
  * - `tailnetRead` (digest.tailnetRead): who reads the page on the tailnet, `"paired"` (default: a browser paired with
- *   bun cmd/digest/pair.ts) or `"member"` (any device on his tailnet). Marks and answers there always need pairing.
+ *   bun cmd/digest/pair.ts) or `"member"` (his own devices: those of this host's Tailscale user, never another
+ *   user's device on a shared tailnet).
+ * - `tailnetWrite` (digest.tailnetWrite): who marks and answers on the tailnet without pairing: `"paired"` (default),
+ *   `"member"` (his own devices) or `"member-except-hosts"` (his own devices except this host and the agent hosts,
+ *   which still need pairing, as loopback does for an answer).
+ * - `agentHosts` (digest.agentHosts): the agent machines beside this one, by MagicDNS name, each keyed in the device
+ *   store by `bun cmd/digest/devices.ts agent <name>` (its stable node IDs; devices.ts). It only narrows writes,
+ *   never admits a device; a name the store does not key, or that no device of his answers to, closes the writes.
+ * - `excludedDevices` (digest.excludedDevices): his devices that count as nobody's, reading and writing nothing
+ *   unpaired, by MagicDNS name, each keyed by `bun cmd/digest/devices.ts exclude <name>`. A name the store does not
+ *   key closes every tailnet source to "paired", reads and writes, until it is keyed.
+ *   (members.ts: who his devices are, read again with the tailnet every RECHECK.)
  * - `name` (digest.name): this host as the page labels its projects, default `this host`.
  * - `peers` (digest.peers): the other hosts whose projects the page shows beside its own, `[{ name, host }]`: `host`
- *   is the Tailscale host name, looked up in Tailscale's status (peers.ts). Default none.
+ *   is an agent host's name, found only as the device the device store keys for it (peers.ts). Default none. Their
+ *   pages may write here cross-origin, tokenless, under this host's own policy (policy.ts, the tailnet listener only).
  *
  * `GET /health` answers the health line (`@dotfiles/opencode-digest/health`), which the installer logs.
  */
@@ -34,11 +46,14 @@ import * as FilePairing from "@dotfiles/opencode-digest/filestore/pairing"
 import { EMPTY, fold } from "@dotfiles/opencode-digest/fold"
 import { buildOf, healthLine, sickLine, type TailnetState } from "@dotfiles/opencode-digest/health"
 import * as Listener from "@dotfiles/opencode-digest/http/listener"
-import { pull, servePeers, unreadAll } from "@dotfiles/opencode-digest/http/peers"
-import { envelopeOf, mergeView, NamedPeer, type Peer, upCount } from "@dotfiles/opencode-digest/peers"
+import { noPeers, type PeerSide, peerSide, servePeers } from "@dotfiles/opencode-digest/http/peers"
+import { envelopeOf, locateIn, mergeView, NamedPeer, type Peer, type Sighting, UNSEEN, upCount } from "@dotfiles/opencode-digest/peers"
 import * as LivePeers from "@dotfiles/opencode-digest/process/peers"
 import { pageOf } from "@dotfiles/opencode-digest/messages"
-import type { TailnetRead } from "@dotfiles/opencode-digest/policy"
+import { type Copy, keysOf, membersWith, type Named } from "@dotfiles/opencode-digest/devices"
+import * as FileDevices from "@dotfiles/opencode-digest/filestore/devices"
+import { closed, type Members } from "@dotfiles/opencode-digest/members"
+import { TAILNET_WRITES, type TailnetRead, type TailnetWrite } from "@dotfiles/opencode-digest/policy"
 import * as Tailnet from "@dotfiles/opencode-digest/process/tailnet"
 import { DigestLines, DigestUnwritable } from "@dotfiles/opencode-digest/service"
 import { encodeView, viewOf } from "@dotfiles/opencode-digest/view"
@@ -54,8 +69,29 @@ export const Options = Schema.Struct({
   tailnetRead: Schema.optionalKey(Schema.Literals(["paired", "member"])),
   name: Schema.optionalKey(Schema.NonEmptyString),
   peers: Schema.optionalKey(Schema.Array(NamedPeer)),
+  tailnetWrite: Schema.optionalKey(Schema.Literals(TAILNET_WRITES)),
+  agentHosts: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  excludedDevices: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
 })
 export type Options = typeof Options.Type
+
+/** `digest.tailnetWrite`, and the names `digest.agentHosts` and `digest.excludedDevices` give the device store to key, each at its default when absent. */
+export const writeConfigOf = (options: Options): WriteConfig => ({
+  tailnetWrite: Option.getOrElse(Option.fromUndefinedOr(options.tailnetWrite), (): TailnetWrite => "paired"),
+  agentHosts: Option.getOrElse(Option.fromUndefinedOr(options.agentHosts), (): ReadonlyArray<string> => []),
+  excluded: Option.getOrElse(Option.fromUndefinedOr(options.excludedDevices), (): ReadonlyArray<string> => []),
+})
+
+/** What the plugin applies: the write switch, and the names the device store keys. */
+export interface WriteConfig extends Named {
+  readonly tailnetWrite: TailnetWrite
+}
+
+/** The device store's two copies for `options` (filestore/devices.ts): beside the log, and under the config tree. */
+export const storePathsOf = (options: Options): readonly [string, string] => FileDevices.pathsOf(dirOf(options), TuiDirs.dirs().config)
+
+/** His devices before the first tailnet read: none, so every tailnet source needs pairing. */
+export const STARTING: Members = closed("starting")
 
 /** The log's directory: the option, else the host's state directory's `opencode-digest`. */
 export const dirOf = (options: Options): string => Option.getOrElse(Option.fromUndefinedOr(options.dir), () => `${TuiDirs.dirs().state}/opencode-digest`)
@@ -97,14 +133,15 @@ export const namedOf = (options: Options): ReadonlyArray<NamedPeer> => Option.ge
 
 /**
  * The page's handlers over the log `lines`, the marks and the pairing beside it, and the plugins that take answers;
- * `peers`, the named peers as last read (the page's view shows theirs beside this host's).
+ * `members`, his devices as last read; `peers`, the named peers as last read and located (http/peers.ts PeerSide).
  */
 export const handlersOf = (
   options: Options,
   lines: DigestLines["Service"],
   answerers: Answerers,
   tailnet: Effect.Effect<TailnetState> = Effect.succeed("no:starting"),
-  peers: Effect.Effect<ReadonlyArray<Peer>> = Effect.succeed(unreadAll(namedOf(options))),
+  members: Effect.Effect<Members> = Effect.succeed(STARTING),
+  peers: PeerSide = noPeers(namedOf(options)),
 ): Listener.Handlers => {
   const marks = FileMarks.make(dirOf(options))
   const zone = zoneOf(options)
@@ -114,9 +151,10 @@ export const handlersOf = (
     return viewOf(page, yield* marks.read, yield* Clock.currentTimeMillis, zone)
   })
   return {
-    health: healthOf(lines, tailnet, peers),
+    health: healthOf(lines, tailnet, peers.known),
     tailnetRead: Option.getOrElse(Option.fromUndefinedOr(options.tailnetRead), (): TailnetRead => "paired"),
-    view: Effect.map(Effect.all([local, peers]), ([view, known]) => encodeView(mergeView(view, nameOf(options), known))),
+    members,
+    view: Effect.map(Effect.all([local, peers.known]), ([view, known]) => encodeView(mergeView(view, nameOf(options), known))),
     peerView: Effect.map(local, (view) => envelopeOf(nameOf(options), view)),
     write: marks.append,
     now: Clock.currentTimeMillis,
@@ -142,17 +180,58 @@ export const answerersOf = (ctx: Plugin.Context): Answerers => ({
 })
 
 /**
- * The live page: the listener on 127.0.0.1 and those on the host's tailnet addresses, with `handlers`, each retrying
- * while another instance holds it; `tailnet` is what the tailnet's listeners do, for the health line; `peers`, the
- * named peers, read every PULL_EVERY over their tailnet listeners (peers.ts).
+ * The tailnet as `probe` reads it, keeping his devices from the same status read in `members` each time, with the
+ * device store's keys as `copies` reads them then (devices.ts keysOf): a read that fails, or a name the store does
+ * not key, closes them at once. The same read and keys go to `sighted`, which finds the named peers (peers.ts).
  */
-export const livePage = (options: Options, handlers: Listener.Handlers, tailnet: Ref.Ref<TailnetState>, peers: Ref.Ref<ReadonlyArray<Peer>>): Effect.Effect<void, never, Scope.Scope> =>
+export const probeKeeping = (
+  config: WriteConfig,
+  probe: Effect.Effect<Tailnet.Probed>,
+  members: Ref.Ref<Members>,
+  copies: Effect.Effect<readonly [Copy, Copy]>,
+  sighted: (sighting: Sighting) => Effect.Effect<void> = () => Effect.void,
+): Effect.Effect<Tailnet.Probed["tailnet"]> =>
+  Effect.gen(function* () {
+    const read = yield* probe
+    const [primary, secondary] = yield* copies
+    const keys = keysOf(config, primary, secondary)
+    const at = yield* Clock.currentTimeMillis
+    yield* Ref.set(members, membersWith(config.tailnetWrite, keys, read.status, at))
+    yield* sighted({ read: read.status, agents: keys.agents, excluded: keys.excluded, at })
+    return read.tailnet
+  })
+
+/** The page's port: the option, else PORT. */
+export const portOf = (options: Options): number => Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT)
+
+/** The named peers, each found as `sighting` last keyed it (peers.ts locateIn) and read over the tailnet. */
+export const livePeers = (options: Options, sighting: Ref.Ref<Sighting>): Effect.Effect<PeerSide> =>
+  peerSide(
+    namedOf(options),
+    Effect.map(Effect.all([Ref.get(sighting), Clock.currentTimeMillis]), ([seen, now]) => locateIn(namedOf(options), seen, now, portOf(options))),
+    LivePeers.get,
+    Clock.currentTimeMillis,
+  )
+
+/**
+ * The live page: the listener on 127.0.0.1 and those on the host's tailnet addresses, with `handlers`, each retrying
+ * while another instance holds it; `tailnet` is what the tailnet's listeners do, for the health line, and `members`
+ * his devices from the same reads, and `sighting` what finds the peers; `peers` are read every PULL_EVERY
+ * (http/peers.ts).
+ */
+export const livePage = (
+  options: Options,
+  handlers: Listener.Handlers,
+  tailnet: Ref.Ref<TailnetState>,
+  members: Ref.Ref<Members>,
+  peers: PeerSide = noPeers([]),
+  sighting: Ref.Ref<Sighting> = Ref.makeUnsafe(UNSEEN),
+): Effect.Effect<void, never, Scope.Scope> =>
   Effect.gen(function* () {
     const dist = yield* DIST
-    const port = Option.getOrElse(Option.fromUndefinedOr(options.port), () => Listener.PORT)
-    yield* Effect.forkScoped(Listener.serveTailnet(port, handlers, dist, Tailnet.probe, tailnet))
-    const named = namedOf(options)
-    if (named.length > 0) yield* Effect.forkScoped(servePeers(pull(named, LivePeers.locate(named, port), LivePeers.get, peers, Clock.currentTimeMillis)))
+    const port = portOf(options)
+    yield* Effect.forkScoped(Listener.serveTailnet(port, handlers, dist, probeKeeping(writeConfigOf(options), Tailnet.probeWithStatus, members, FileDevices.readCopies(storePathsOf(options)), (seen) => Ref.set(sighting, seen)), tailnet))
+    if (namedOf(options).length > 0) yield* Effect.forkScoped(servePeers(peers.pull))
     yield* Listener.serve(port, handlers, dist)
   })
 
@@ -207,8 +286,10 @@ export const make = (externals: (options: Options) => Layer.Layer<DigestLines>, 
         })
         .pipe(Effect.orDie)
       const tailnet = yield* Ref.make<TailnetState>("no:starting")
-      const peers = yield* Ref.make(unreadAll(namedOf(options)))
-      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx), Ref.get(tailnet), Ref.get(peers)), tailnet, peers))
+      const members = yield* Ref.make(STARTING)
+      const sighting = yield* Ref.make(UNSEEN)
+      const peers = yield* livePeers(options, sighting)
+      yield* Effect.forkScoped(page(options, handlersOf(options, lines, answerersOf(ctx), Ref.get(tailnet), Ref.get(members), peers), tailnet, members, peers, sighting))
     }),
   })
 

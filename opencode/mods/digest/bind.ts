@@ -89,24 +89,33 @@ export interface TailscaleStatus {
   readonly dnsName: Option.Option<string>
   /** `Self.TailscaleIPs`: the only addresses that are this host's on the tailnet. */
   readonly ips: ReadonlyArray<string>
-  /** The other devices on the tailnet (`Peer`): each one's MagicDNS name and Tailscale addresses. */
-  readonly peers: ReadonlyArray<StatusPeer>
+  /** `Self.UserID`: the Tailscale user this host belongs to; none when the status has none. */
+  readonly userId: Option.Option<number>
+  /** Whether this host is a tagged device (`Self.Tags`): its UserID then names no person. */
+  readonly tagged: boolean
+  /** The other devices the status lists (`Peer`). */
+  readonly peers: ReadonlyArray<PeerStatus>
 }
 
 /** Another device on the tailnet, as Tailscale's status lists it. */
-export interface StatusPeer {
-  /** `host.tailnet.ts.net`, without the trailing dot. */
-  readonly dnsName: string
+export interface PeerStatus {
+  /** Its MagicDNS name, without the trailing dot; none when MagicDNS is off. */
+  readonly dnsName: Option.Option<string>
+  /** `ID`: its stable node ID, which the coordination server assigns and the device cannot change. */
+  readonly stableId: Option.Option<string>
+  /** `HostName`: the name the device gives itself, any name it likes; never an identity (members.ts never reads it). */
+  readonly hostName: string
+  /** `OS`, and `LastSeen` (none while online or unknown): for the device command to show a human which device it is. */
+  readonly os: string
+  readonly lastSeen: Option.Option<string>
+  /** `TailscaleIPs`. */
   readonly ips: ReadonlyArray<string>
-}
-
-/** A device on the tailnet the digest may name as a peer: its short name, its MagicDNS name, its addresses there. */
-export interface PeerHost {
-  /** The MagicDNS name's first label, lower case: what the config names it by. */
-  readonly host: string
-  readonly dnsName: string
-  /** Its Tailscale addresses in the tailnet's ranges, IPv4 first. */
-  readonly ips: ReadonlyArray<string>
+  /** `UserID`: the Tailscale user it belongs to. */
+  readonly userId: Option.Option<number>
+  /** Whether it is a tagged device (`Tags`): its UserID then names no person. */
+  readonly tagged: boolean
+  /** Whether it is shared in from another tailnet (`ShareeNode`). */
+  readonly shared: boolean
 }
 
 /** The CLI's status, or why there is none: `no-cli`, `cli-failed`, `cli-timeout`, `unparseable`. */
@@ -134,6 +143,26 @@ const ADDRESS_ORDER: Order.Order<string> = Order.combine(Order.mapInput(Order.Nu
 const sameAddress = (a: string, b: string): boolean =>
   a === b || Option.getOrElse(Option.zipWith(groupsOf(a), groupsOf(b), (x, y) => x.every((each, index) => each === y[index])), () => false)
 
+/**
+ * An address in one spelling, so two spellings of one address compare equal: IPv4 as dotted octets, an IPv4-mapped
+ * IPv6 one (`::ffff:100.64.0.1`, `::ffff:6440:1`) as its IPv4 address, any other IPv6 one as eight lower-case groups
+ * in full. None for anything that is not an address plainly (a name, a zoned address, brackets).
+ */
+export const canonicalOf = (address: string): Option.Option<string> =>
+  Option.match(octetsOf(address), {
+    onSome: (octets) => Option.some(octets.join(".")),
+    onNone: () =>
+      Option.map(groupsOf(address), (groups) =>
+        Option.match(
+          Option.liftPredicate(groups, (each) => each.slice(0, 5).every((group) => group === 0) && each[5] === 0xffff),
+          {
+            onSome: (mapped) => [(mapped[6] ?? 0) >> 8, (mapped[6] ?? 0) & 0xff, (mapped[7] ?? 0) >> 8, (mapped[7] ?? 0) & 0xff].join("."),
+            onNone: () => groups.map((group) => group.toString(16)).join(":"),
+          },
+        ),
+      ),
+  })
+
 /** A backend state as a reason's word: letters, digits and dashes only. */
 const word = (text: string) => text.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)
 
@@ -155,24 +184,6 @@ export const tailnetOf = (interfaces: ReadonlyArray<InterfaceAddress>, read: Sta
       const names = Option.match(status.dnsName, { onNone: () => [], onSome: (name) => [...new Set([name, name.split(".")[0] ?? name])] })
       return { addresses, names, why: "" }
     },
-  })
-
-/**
- * The other devices Tailscale's status lists, by short name: only when it is Running, only their addresses in the
- * tailnet's ranges, and only those with one. A peer the digest names is looked up here, never through DNS.
- */
-export const peerHostsOf = (read: StatusRead): ReadonlyArray<PeerHost> =>
-  Match.valueTags(read, {
-    Unread: () => [],
-    Read: ({ status }) =>
-      status.peers.filter(() => status.backendState === "Running").flatMap((peer) => {
-            const dnsName = peer.dnsName.replace(/\.$/, "").toLowerCase()
-            const ips = Arr.sort(
-              peer.ips.filter((ip) => isTailnet(ip)),
-              ADDRESS_ORDER,
-            )
-            return Option.toArray(Option.liftPredicate({ host: dnsName.split(".")[0] ?? dnsName, dnsName, ips }, (each) => each.host !== "" && each.ips.length > 0))
-          }),
   })
 
 /** An address as a URL's or a Host header's host: an IPv6 one in brackets. */

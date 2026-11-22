@@ -1,8 +1,9 @@
 // One page over every host: each host's digest reads its named peers' views and shows their projects beside its own.
 //
-// - A peer is named in the config (`digest.peers`, scripts/daily.ts): its display name and its Tailscale host name.
-//   It is looked up in Tailscale's own status (bind.ts `peerHostsOf`), never through DNS, and nothing the config
-//   does not name is ever read or trusted. No discovery.
+// - A peer is named in the config (`digest.peers`, scripts/daily.ts): its display name and its host name, which is
+//   also one of `digest.agentHosts`. It is found as the device the device store keys for that name (`keyedOf`: by
+//   stable ID, in Tailscale's own status, never by a name lookup nor DNS), and nothing the config does not name and
+//   the store does not key is ever read or trusted. No discovery.
 // - Read: GET `<peer>/peer/view.json` over the peer's tailnet listener (unit 4's: Tailscale's addresses, the Host
 //   check), with what a tailnet member may read there. It answers the WIRE envelope, `{"wire":1,"host":…,"view":…}`:
 //   the peer's own view only (never its peers'), so three hosts read each other directly and nothing is relayed.
@@ -17,10 +18,75 @@
 // - Write: an item's unread, Later, pin, name and answer live on the host that owns it, and only there. A peer's
 //   project in this view is read only: the page links to the owning host's page (its origin is in the view), whose
 //   own policy decides the write. No host writes on another's behalf, and nothing here accepts a write for a peer.
-import { Data, Duration, Match, Option, Schema } from "effect"
-import { hostOf, type PeerHost } from "./bind.ts"
+import { Array as Arr, Data, Duration, Match, Option, Order, Schema } from "effect"
+import { canonicalOf, hostOf, isTailnet, type PeerStatus as TailnetPeer, StatusRead } from "./bind.ts"
+import { nameKey } from "./devices.ts"
+import { type AgentKey, carriesName, type Exclusion, hisDevices, MEMBERS_TTL } from "./members.ts"
 import { historyFrom, type PeerStatus, spansOf, View, ViewMessage, ViewProject } from "./view.ts"
 import { when } from "./zone.ts"
+
+/**
+ * What a named peer is found by: one Tailscale status read, the device store's agent keys and exclusions as read
+ * with it (devices.ts keysOf), and when. The plugin keeps the latest beside his devices (cmd/digest/server.ts
+ * `probeKeeping`).
+ */
+export interface Sighting {
+  readonly read: StatusRead
+  readonly agents: ReadonlyArray<AgentKey>
+  readonly excluded: ReadonlyArray<Exclusion>
+  readonly at: number
+}
+
+/** Nothing read yet: no peer is anywhere. */
+export const UNSEEN: Sighting = { read: StatusRead.Unread({ why: "starting" }), agents: [], excluded: [], at: 0 }
+
+/** A named peer's device now: its addresses in the tailnet's ranges (IPv4 first) and its MagicDNS name, if a plain one. */
+export interface Keyed {
+  readonly ips: ReadonlyArray<string>
+  readonly dnsName: Option.Option<string>
+}
+
+const IPV4_FIRST: Order.Order<string> = Order.combine(Order.mapInput(Order.Number, (address: string) => Number(address.includes(":"))), Order.String)
+
+/** A MagicDNS name as an origin may carry it: lower case labels of letters, digits and inner dashes, no trailing dot. */
+const PLAIN_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+
+/**
+ * The device the store keys for the peer named `host`, as `sighting` saw it, if it is current at `now`. Never a name
+ * lookup (owner via the orchestrator, 2026-11-22: a name resolved to a device for a security decision failed three
+ * rounds running): the device is the one, and only, device of his (same UserID, untagged, not shared in) that carries
+ * a stable ID the store holds for that name as an agent host, and no excluded one. None (closed) when the store keys
+ * no ID for it, no device or two carry one, the status did not read, Tailscale is not running, or the read is older
+ * than MEMBERS_TTL. Its addresses are those it alone lists: one another device lists too is nobody's.
+ */
+export const keyedOf = (host: string, sighting: Sighting, now: number): Option.Option<Keyed> => {
+  const ids = sighting.agents.filter((agent) => nameKey(agent.name) === nameKey(host)).flatMap((agent) => agent.ids)
+  const excludedIds = sighting.excluded.flatMap((exclusion) => exclusion.ids)
+  const fresh = sighting.at > 0 && now - sighting.at <= Duration.toMillis(MEMBERS_TTL)
+  return Match.valueTags(sighting.read, {
+    Unread: () => Option.none(),
+    Read: ({ status }) => {
+      if (!fresh || status.backendState !== "Running" || ids.length === 0) return Option.none()
+      const carries = (peer: TailnetPeer) => Option.exists(peer.stableId, (id) => ids.includes(id) && !excludedIds.includes(id))
+      const excludedByName = (peer: TailnetPeer) => sighting.excluded.some((exclusion) => carriesName(exclusion.name, peer))
+      const found = hisDevices(status).filter((peer) => carries(peer) && !excludedByName(peer))
+      return Option.flatMap(
+        Option.filter(Arr.head(found), () => found.length === 1),
+        (device) => {
+          const elsewhere = new Set([...status.ips, ...status.peers.filter((peer) => peer !== device).flatMap((peer) => peer.ips)].flatMap((ip) => Option.toArray(canonicalOf(ip))))
+          // As Tailscale spells them (RFC 5952, as a browser spells an origin), compared in one spelling.
+          const ips = Arr.sort([...new Set(device.ips.map((ip) => ip.toLowerCase()).filter((ip) => Option.exists(canonicalOf(ip), (one) => isTailnet(one) && !elsewhere.has(one))))], IPV4_FIRST)
+          const dnsName = Option.filter(Option.map(device.dnsName, (name) => name.toLowerCase().replace(/\.$/, "")), (name) => PLAIN_NAME.test(name))
+          return Option.liftPredicate({ ips, dnsName }, (each) => each.ips.length > 0)
+        },
+      )
+    },
+  })
+}
+
+/** Where each of `named` is read now, by name: its keyed device's first address on `port` (keyedOf). */
+export const locateIn = (named: ReadonlyArray<NamedPeer>, sighting: Sighting, now: number, port: number): ReadonlyMap<string, Target> =>
+  new Map(named.flatMap((each) => Option.toArray(keyedOf(each.host, sighting, now)).flatMap((keyed) => Option.toArray(targetOf(each, keyed, port)).map((target): readonly [string, Target] => [each.name, target]))))
 
 /** The wire format's version this build reads and writes. */
 export const WIRE = 1
@@ -67,11 +133,9 @@ export interface Target {
   readonly base: string
 }
 
-/** Where `named` is, from the tailnet's devices: none when Tailscale lists no such device with an address. */
-export const targetOf = (named: NamedPeer, hosts: ReadonlyArray<PeerHost>, port: number): Option.Option<Target> =>
-  Option.flatMap(Option.fromUndefinedOr(hosts.find((each) => each.host === named.host.toLowerCase())), (peer) =>
-    Option.map(Option.fromUndefinedOr(peer.ips[0]), (first) => ({ name: named.name, base: `http://${hostOf(first)}:${port}`})),
-  )
+/** Where `named` is read, its keyed device being `keyed`: its first address on `port`. */
+export const targetOf = (named: NamedPeer, keyed: Keyed, port: number): Option.Option<Target> =>
+  Option.map(Arr.head(keyed.ips), (first) => ({ name: named.name, base: `http://${hostOf(first)}:${port}` }))
 
 /** What one read of a peer came to. */
 export type Reading = Data.TaggedEnum<{

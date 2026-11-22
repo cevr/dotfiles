@@ -133,6 +133,7 @@
     },
     {
       "files": [
+        "mods/digest/filestore/devices.test.ts",
         "mods/digest/filestore/pairing.test.ts"
       ],
       "rules": {
@@ -270,6 +271,7 @@
     },
     {
       "files": [
+        "cmd/digest/devices.test.ts",
         "mods/digest/filestore/log.test.ts",
         "mods/digest/filestore/marks.test.ts",
         "mods/digest/http/listener.test.ts",
@@ -326,6 +328,7 @@
     },
     {
       "files": [
+        "mods/digest/filestore/devices.ts",
         "mods/digest/filestore/marks.ts",
         "mods/digest/filestore/pairing.ts"
       ],
