@@ -12,11 +12,12 @@
 //   and on a loaded one (the gate runs every file at once, at a load past the
 //   cores) the wall time is the host's, not the file's. The wall time is
 //   reported beside it, never judged.
-// - CPU time is judged only on a settled host, its 1-minute load under the
-//   cores (`cpuVerdict`): past them the process's threads wait their turn on
-//   slower cores and the same work takes more CPU (a sim-tui boot measured
-//   2.7-3.0 s of CPU at load 8 on 12 cores, 3.4-3.8 s at load 12-55, and
-//   4.0-4.3 s in a deep run at load 40-51). Past its budget on a loaded host a
+// - CPU time is judged only on a settled host, its 1-minute load under three
+//   quarters of the cores (`cpuVerdict`, `SETTLED_SHARE`): near and past them
+//   the process's threads wait their turn on slower cores and the same work
+//   takes more CPU (a sim-tui boot measured 2.7-3.0 s of CPU at load 8 on 12
+//   cores, 3.4-3.8 s at load 12-55, and 4.0-4.3 s in a deep run at load
+//   40-51; orch-tools' seeds up to 11% more at load 11.5 than at 5.5). Past its budget on a loaded host a
 //   file passes, printing `sim-unjudged <file> <what>` (`UNJUDGED`): the
 //   acceptance run reads that line and owes the file, `waits for a settled
 //   host`, so its closing line counts it and a real slowdown cannot hide
@@ -85,12 +86,20 @@ export const hostLoad: Effect.Effect<HostLoad> = Effect.sync(() => ({ load: load
 export type CpuVerdict = "within" | "over" | "unjudged"
 
 /**
+ * The share of the cores under which the 1-minute load leaves CPU time uninflated. Measured on 12 cores
+ * (orch-tools.sim.test.ts, 5 runs a load band): 4731-5204 ms at load 5.3-6.0, 4849-5045 ms at 9.0-10.5, 4868-5512 ms
+ * at 11.2-11.7; a sim-tui boot 2.7-3.0 s at load 8, 3.4-3.8 s at 12-55. Inflation starts short of the cores.
+ */
+export const SETTLED_SHARE = 0.75
+
+/**
  * A CPU budget's verdict: `cpuMs` against `limitMs`, judged only when the 1-minute `load` (the highest read over what
- * was measured) is under the host's `cores`; past the limit on a host at or past its cores it is reported, not judged.
+ * was measured) is under `SETTLED_SHARE` of the host's `cores`; past the limit on a host at or past that load it is
+ * reported, not judged.
  */
 export const cpuVerdict = (cpuMs: number, limitMs: number, load: number, cores: number): CpuVerdict => {
   if (cpuMs <= limitMs) return "within"
-  if (load < cores) return "over"
+  if (load < cores * SETTLED_SHARE) return "over"
   return "unjudged"
 }
 

@@ -105,9 +105,11 @@ that leaves a fifth of its budget free: 16 for prime-escape and prime-sidebar,
 3 a case for escape-states' five cases.
 
 CPU time is judged only on a settled host, its 1-minute load (the higher of
-the reads at the start and the end) under the cores (`Seed.cpuVerdict`): past
-them the same boot takes more CPU (own-tabs: 2.7–3.0 s at load 8 on 12 cores,
-3.4–3.8 s at load 12–55, 4.0–4.3 s in a deep run at load 40–51). Past its
+the reads at the start and the end) under three quarters of the cores
+(`Seed.cpuVerdict`, `SETTLED_SHARE`): near and past them the same work takes
+more CPU (own-tabs' boot: 2.7–3.0 s at load 8 on 12 cores, 3.4–3.8 s at load
+12–55, 4.0–4.3 s in a deep run at load 40–51; orch-tools' seeds up to 11% more
+at load 11.5 than at 5.5). Past its
 limit on a loaded host a boot or a file's seeds pass, printing
 `sim-unjudged <file> <what>, on a loaded host (…): reported, not judged`; the
 acceptance run's swarm reads that line and owes the suite, `waits for a
