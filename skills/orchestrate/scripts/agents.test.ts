@@ -71,7 +71,10 @@ test('the verifier blocks only on a shown failure', () => {
   expect(passages.some((p) => classes.every((c) => p.includes(c)))).toBe(true);
 
   const strength = passages.filter((p) => p.includes('Test strength'));
-  expect(strength.some((p) => p.includes('become follow-up units'))).toBe(true);
+  expect(strength.some((p) => p.includes('acceptance narrower than the spec'))).toBe(true);
+  expect(strength.some((p) => p.includes('become follow-up units'))).toBe(false);
+  // Rounds sends what does not fail a round to the same lane's next round, never to a follow-up.
+  expect(text).toContain('never fails a round; the same lane closes it next round, before another unit.');
   for (const p of strength) if (/round \d/.test(p)) expect(p).toContain('from round 1');
 
   for (const banned of [/From round 3/, /in rounds 1 and 2/, /A rule violation is a Major/]) expect(text).not.toMatch(banned);
@@ -84,6 +87,28 @@ test('the verifier blocks only on a shown failure', () => {
   const skill = read('../SKILL.md');
   expect(skill).not.toContain('Tests converge after round 2');
   expect(skill).toContain('blocks only on a shown failure');
+});
+
+test('every role carries nothing-is-hard, and the refusal rule word for word with one sentence added', () => {
+  const read = (path: string) => readFileSync(join(import.meta.dir, path), 'utf8');
+  const [protocolText, safetyText] = [read('../protocol.md'), read('../../loop/safety.md')];
+  // The refusal rule as it stood before nothing-is-hard (unit E changes it, with its mechanism).
+  const refusal =
+    '**Refusals.** At the first permission or classifier refusal, stop that step and report the exact `!` command, or the allow rule, that would let it through. Never work around it or ask for permission in chat. A refusal is authority, not difficulty.\n';
+  for (const role of Object.keys(ROLES) as Role[]) {
+    const text = instructions(role, protocolText, safetyText);
+    for (const part of [
+      'Difficulty is never a reason (principle-nothing-is-hard)',
+      '`ready` when every item of its spec is done',
+      'Anything not done names the dependency it waits on or is a finding outside the unit.',
+      'nor does a long context',
+      'the assumption cites its principle by name and is never the lesser option for effort',
+      `\n${refusal}`,
+    ])
+      expect([role, text.includes(part)]).toEqual([role, true]);
+    // A prompt rule, not an install-time check: no role is told to enforce anything on install.
+    expect([role, /install/i.test(text)]).toEqual([role, false]);
+  }
 });
 
 test('the committed agents match protocol.md and safety.md (run bun agents.ts)', () => {
