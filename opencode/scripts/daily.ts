@@ -201,15 +201,15 @@ export const OWNER_TIMEZONE = "America/Montreal"
 /**
  * The digest's plugin entry. On one of the owner's hosts (`FLEET`):
  * - `digest.timezone` is his;
- * - `digest.tailnetRead` is `"member"`: any device on his tailnet reads the page unpaired, and marks, answers and
- *   pairing still need a paired browser (owner, 2026-11-22: "Tailnet can read"). Set it to `"paired"` here to make
- *   reading need pairing again.
+ * - `digest.tailnetRead` is `"paired"`, named outright so the tree's overlay, written whole each update, replaces
+ *   an earlier build's `"member"`: reading on the tailnet needs a paired browser. A stopgap (2026-11-22): his
+ *   tailnet holds other Tailscale users' devices, and `"member"` returns once it means his own Tailscale user.
  *
  * Elsewhere the bare plugin: the host's zone, and the plugin's default `"paired"`.
  */
 export const digestEntry = (digest: string, fleet: { readonly host: string }): PluginEntry => {
   if (peersOf(fleet.host).length === 0) return digest
-  return { package: digest, options: { timezone: OWNER_TIMEZONE, tailnetRead: "member" satisfies TailnetRead } }
+  return { package: digest, options: { timezone: OWNER_TIMEZONE, tailnetRead: "paired" satisfies TailnetRead } }
 }
 
 /** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */
