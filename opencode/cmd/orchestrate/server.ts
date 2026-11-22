@@ -956,6 +956,10 @@ export const make = (
       // What a started call's answer tells, by its call (noteKey): a fallback's or lowered worker's note, put first in
       // the subagent tool's answer, and the model it runs on; both also as fields of its output.
       const tellings = new Map<string, Telling>()
+      // A step's start, by its call, from the guard's answer until the host has run the call (execute.after); a call
+      // refused after the guard never gets there. Its time is the start's, not the call's end.
+      const starting = new Map<string, { readonly child: Option.Option<string>; readonly agent: string; readonly description: string; readonly t: number }>()
+      const callKey = (sessionID: string, callID: string) => `${sessionID}\n${callID}`
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -1238,11 +1242,20 @@ export const make = (
             event.input = input
             return outcome
           }),
-          // A step's start is a digest line, off the call's path.
+          // A step's start is a digest line once the host runs the call (`execute.after`): held here with its time, as
+          // a later hook or the host may still refuse it.
           Effect.tap((outcome) =>
             Effect.forEach(
               Option.toArray(Option.filter(outcome, (begun) => begun._tag === "SubagentStarted")),
-              (begun) => digest.started(event.sessionID, Option.fromUndefinedOr(begun.child), begun.agent, Option.getOrElse(Option.fromUndefinedOr(begun.description), () => "")).pipe(Effect.forkIn(scope)),
+              (begun) =>
+                Effect.map(Clock.currentTimeMillis, (t) => {
+                  starting.set(callKey(event.sessionID, event.id), {
+                    child: Option.fromUndefinedOr(begun.child),
+                    agent: begun.agent,
+                    description: Option.getOrElse(Option.fromUndefinedOr(begun.description), () => ""),
+                    t,
+                  })
+                }),
               { discard: true },
             ),
           ),
@@ -1287,17 +1300,30 @@ export const make = (
         if (event.tool !== SUBAGENT) return Effect.void
         const metadata = event.status === "completed" ? event.result.metadata : undefined
         const child = isObject(metadata) && typeof metadata.sessionID === "string" ? metadata.sessionID : undefined
+        // The call ran: a step it started is a digest line now, naming its child; one that failed started nothing.
+        const key = callKey(event.sessionID, event.id)
+        const begun = Option.fromUndefinedOr(starting.get(key))
+        starting.delete(key)
+        const noted = Option.filter(begun, () => event.status === "completed").pipe(
+          Option.map((step) =>
+            digest.started(event.sessionID, Option.orElse(Option.fromUndefinedOr(child), () => step.child), step.agent, step.description, step.t).pipe(Effect.forkIn(scope), Effect.asVoid),
+          ),
+          Option.getOrElse(() => Effect.void),
+        )
         const status: Status =
           event.status === "error"
             ? "error"
             : isObject(metadata) && (metadata.status === "running" || metadata.status === "latched")
               ? metadata.status
               : "completed"
-        return orchestrate.finishSubagent({
-          call: { sessionID: event.sessionID, callID: event.id },
-          ...(child === undefined ? {} : { child }),
-          status,
-        })
+        return Effect.andThen(
+          noted,
+          orchestrate.finishSubagent({
+            call: { sessionID: event.sessionID, callID: event.id },
+            ...(child === undefined ? {} : { child }),
+            status,
+          }),
+        )
       })
     }),
   })
