@@ -2886,7 +2886,9 @@ listeners (a strict CSP, `no-store` on data). Its token never goes in a URL.
 **Pairing.** On loopback, the page and its marks are open, and only an
 answer needs a paired browser. On the tailnet, two plugin options decide who
 needs one. Both default to `"paired"`: everything needs a paired browser
-except the shell page itself, and an unpaired phone sees only how to pair.
+except the shell page itself, whether this browser is paired, the pairing
+itself and `/health` (which then answers `ok` alone), so an unpaired phone
+sees only how to pair.
 
 **His devices.** His tailnet is shared: it holds other Tailscale users'
 devices too (colleagues' laptops, servers). So `"member"` never means "any
@@ -3007,25 +3009,39 @@ peers' side by side, each labeled with its host.
   name, by stable ID, never by a name lookup. A peer the store does not key,
   that is not on the tailnet, or that runs a build this one cannot read shows
   as a line ("workbox is unavailable, last seen …") and adds no project.
-- Each host reads `/peer/view.json` from each peer every 15 s, sending no
-  credential. The peer judges that read like any other: the reader is an
-  agent machine, so it reads where `tailnetRead` is `"member"` and its own
-  store is keyed.
+- Each host reads `/peer/view.json` from each peer every 15 s, at the
+  peer's address and sending no credential and no Origin. The peer judges
+  that read like any other: the reader is an agent machine, so it reads
+  where `tailnetRead` is `"member"` and its own store is keyed.
 - An item's state lives only on the host that owns it. The page sends a
   peer's item's mark, Later, name or answer straight to that host, with no
   token. No host writes for another.
 - That host lets only its peers' pages write to it cross-origin, by CORS:
-  the exact origins of the device its store keys, by its Tailscale
-  addresses alone (`http://<IPv4>:<port>`, `http://[<IPv6>]:<port>`, as a
-  browser spells them), never a name and never a pattern, on the tailnet
-  listener only. Which server answers a name is the browser's resolver's
-  choice; an address reaches the keyed device by Tailscale's routing. It
-  then applies its own policy to the request's source. So his phone writes
-  from either page opened by address. A page opened under a name shows
-  "open this digest by address to act on workbox's items", with the address
-  links, instead of writing. A browser on an agent machine is refused, and
-  the page links to that host's own page to pair and act there. A token
-  never leaves its own host's page.
+  a mark or an answer sent to its tailnet address (never under a name)
+  whose Origin is exactly one of the origins of the device its store keys,
+  by its Tailscale addresses alone (`http://<IPv4>:<port>`,
+  `http://[<IPv6>]:<port>`, as a browser spells them), never a name and
+  never a pattern. Its preflight is answered only for such a write, by
+  POST, with the page's header and JSON's type (never the token's header).
+  Which server answers a name is the browser's resolver's choice; an
+  address reaches the keyed device by Tailscale's routing. It then applies
+  its own policy to the request's source. So his phone writes from either
+  page. A browser on an agent machine is refused (401), and the page links
+  to that host's own page to pair and act there. A token never leaves its
+  own host's page.
+- Nothing else crosses origins: on the tailnet a read or a pairing that
+  sends a peer's Origin is refused (403), and so is any write on loopback.
+  No answer but a peer write's carries `Access-Control-Allow-Origin`, so a
+  peer's page reads nothing of another host's.
+- On the tailnet no page is open under a name (see "The address only"):
+  a name's `GET /` sends the browser on to the address, and any other
+  request under a name gets 421, token or not. A tab left open under a
+  name from before keeps its last view, locks its controls and links to
+  this page by address, where a browser paired under the name pairs again.
+  On loopback, `localhost` is a name too: that page acts on its own host's
+  items as before, and for a peer's items it shows "Open this digest by
+  address to act on workbox's items", with the address links, instead of
+  writing, since a peer allows address origins alone.
 
 **Health.** Health on the tailnet answers an unpaired request `ok` alone. On
 loopback the line ends with
@@ -3076,11 +3092,15 @@ open to programs on this host by design.
 
 **Refusals.** A request whose `Host` is not one the listener serves under
 (on loopback `127.0.0.1` and `localhost`, on the tailnet its address as a
-browser writes it) or one of its names is refused on every route. So a
-hostile name pointed at the address (DNS rebinding) reads nothing. A write
-must come from the origin of the `Host` it names, with the page's header, as
-JSON; on the tailnet any other request that sends an Origin must send that
-one too. Pairing tries are limited by source address:
+browser writes it) is refused (421) on every route, except a `GET /` or
+`HEAD /` under one of the tailnet listener's names, which is sent on to the
+address. So a hostile name pointed at the address (DNS rebinding) reads
+nothing. A write must come from the origin of the `Host` it names, with the
+page's header, as JSON; on the tailnet any other request that sends an
+Origin must send that one too (an empty, blank, `null`, doubled or
+path-bearing one is refused). The one exception is a named peer's page
+writing a mark or an answer (above). Pairing tries are limited by source
+address:
 
 - each address may fail 5 times a minute;
 - past 30 failures a minute from all addresses together, an address that has
