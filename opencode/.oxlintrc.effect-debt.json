@@ -118,6 +118,17 @@
     },
     {
       "files": [
+        "mods/questions/opencode/race.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noEffectRunInTests": "off",
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "scripts/effect-debt.ts"
       ],
       "rules": {
