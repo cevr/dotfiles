@@ -3,10 +3,11 @@
 // plugin (sim/plugins.ts `status`, in the units' location), one copy of the others per location, over one memory world of warm sources, Rifts and
 // unit logs. The units' logs are the world's files: the orchestrate plugin writes a unit's moves there, as log.ts does,
 // and the status script prints them as its table, as status.ts does on disk. Each root turn is one `probe:` call; a
-// subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts drives it.
+// subagent's task that ends `handback: <line>` answers that line. orch-tools.sim.test.ts and orch-tools-model.sim.test.ts drive it.
 import { Array as Arr, Effect, Layer, Match, Option, Order, Schema } from "effect"
 import type { Asked } from "@dotfiles/opencode-orchestrate/memory/fleet"
 import type * as MemoryMainLine from "@dotfiles/opencode-orchestrate/memory/main-line"
+import { lanePathOf } from "@dotfiles/opencode-orchestrate/tools"
 import type * as MemoryRunFiles from "@dotfiles/opencode-orchestrate/memory/run-files"
 import * as WorkGitTest from "@dotfiles/opencode-orchestrate/memory/work-git"
 import * as MemoryDebts from "@dotfiles/opencode-work/memory/debts"
@@ -302,3 +303,42 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
 })
 
 export type Run = Effect.Success<ReturnType<typeof boot>>
+
+// ── What the suites that drive it share ──
+
+export const ORCHESTRATE = "orchestrate"
+const READY = "/nonexistent/loop-probe-x/request.md"
+export const FINDINGS = "/nonexistent/loop-probe-x/batch-findings.md"
+
+/** The workspace a lane's answer ends with: its `(lane: <path>)` (tools.ts `lanePathOf`, which takes the old `(rift: <path>)` too). */
+export const suffixOf = (answer: string): string => Option.getOrElse(lanePathOf(answer), () => "")
+
+/** The warning a land of a unit the logs show in another state than `ready` starts with. */
+export const warningOf = (unit: string, state: string) => `orchestrate: warning: ${unit} is ${state}, not ready; landed as asked.`
+
+/** The branches the land steps since `from` merged, in order. */
+export const mergedSince = (run: Run, from: number) =>
+  run.memory.landing.steps.slice(from).flatMap((step) => Option.toArray(Option.map(Option.liftPredicate(step, (found) => found.startsWith("merge ")), (found) => found.slice("merge ".length))))
+export const startsOf = (run: Run) => run.memory.landing.steps.filter((step) => step.startsWith("start ")).length
+
+/** The state a unit's log is in after its implementor hands back `verdict` (`none`: still implementing). */
+export const stateOf = (verdict: "ready" | "blocked" | "none"): string => Match.value(verdict).pipe(Match.when("none", () => "implement"), Match.orElse((said) => said))
+
+/** A prompt: `none` asks plainly, any other verdict ends with that hand-back line. */
+export const promptOf = (verdict: string, plain: string, line: string): string => Match.value(verdict).pipe(Match.when("none", () => plain), Match.orElse(() => `${HAND_BACK} ${line}`))
+
+
+/** An implementor's start in `root`, with its hand-back line (none for `none`), waited out until its hand-back is in the logs. */
+export const implement = Effect.fn("OrchTools.implement")(function* (run: Run, root: string, unit: string, round: number, description: string, verdict: "ready" | "blocked" | "none") {
+  // A ready implementor has written its round's request, naming its Rift's head, before it hands back.
+  if (verdict === "ready") run.files.set(`${RUN_DIR}/${unit}/round-${round}-request.md`, { text: `Head: ${requestHeadFor(unit, round)}\n`, at: run.world.now() })
+  const prompt = promptOf(verdict, "Work on it.", `implementor ${unit} r${round}: ${verdict} ${READY}`)
+  const answer = yield* run.probe(root, "subagent", { agent: "implementor", description, prompt, background: true })
+  yield* run.world.until(run.settled, 60_000)
+  const expected = stateOf(verdict)
+  if (!answer.error) yield* run.world.until(() => Option.exists(Option.fromUndefinedOr(run.logs.get(unit)), (log) => log.state === expected && log.round === round), 30_000)
+  return answer
+})
+
+/** When the next findings are written: after every file before them, on the world's clock. */
+export const stampOf = (run: Run): number => Math.max(run.world.now(), ...[...run.files.values()].map((file) => file.at + 1))

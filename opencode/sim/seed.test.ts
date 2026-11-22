@@ -37,15 +37,19 @@ const run = (body: Effect.Effect<unknown>, budgetMs: number, host: Seed.HostLoad
   })
 
 describe("a CPU budget's verdict", () => {
-  test("is judged under the cores, reported at or past them, and within the limit at any load", () => {
+  test("is judged under three quarters of the cores, reported at or past them, and within the limit at any load", () => {
     expect([
       Seed.cpuVerdict(4_001, 4_000, 3, 12),
-      Seed.cpuVerdict(4_001, 4_000, 11.9, 12),
-      Seed.cpuVerdict(4_001, 4_000, 12, 12),
+      Seed.cpuVerdict(4_001, 4_000, 8.9, 12),
+      Seed.cpuVerdict(4_001, 4_000, 9, 12),
+      // orch-tools at load 11.2-11.7 took 4868-5512 ms against 4731-5204 ms at load 5.3-6.0: inflated, not judged.
+      Seed.cpuVerdict(5_489, 5_000, 11.5, 12),
       Seed.cpuVerdict(4_262, 4_000, 48, 12),
       Seed.cpuVerdict(4_000, 4_000, 48, 12),
       Seed.cpuVerdict(2_700, 4_000, 3, 12),
-    ]).toEqual(["over", "over", "unjudged", "unjudged", "within", "within"])
+      Seed.cpuVerdict(4_001, 4_000, 2.9, 4),
+      Seed.cpuVerdict(4_001, 4_000, 3, 4),
+    ]).toEqual(["over", "over", "unjudged", "unjudged", "unjudged", "within", "within", "over", "unjudged"])
   })
 
   test("a reported budget's line names its file, what passed its limit and the host's load", () => {

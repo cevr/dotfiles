@@ -29,13 +29,27 @@ export PATH
 
 # Remote turbo cache (owner, 2026-11-22): lanes also read and write the Bite repo's remote cache. Its turbo.jsonc
 # names the server and team; the token is the `ENV TURBO_TOKEN` literal in the base checkout's Dockerfile, read
-# here at every shell start with builtins only (no fork) and never committed. A token already in the environment
-# wins. With no token the store stays local only, so turbo never warns per task. WORKBOX_TURBO_DOCKERFILE is the
-# tests' seam. A second repository on another cache server would need its own token per directory (turbo reads
-# one TURBO_TOKEN), so it would not be a second path here.
+# here at every shell start with builtins only (no fork) and never committed.
+# The token is for Bite's server alone, so only a shell that starts in the Bite tree gets it: the base checkout
+# that holds the Dockerfile, or one of its workspaces in work's storage beside it (`<parent>/.work/<name>/…`,
+# and Rift's older `<parent>/.rifts/<name>/…`, both derived from the one path below; symlinks resolved).
+# There a token already in the environment wins. Anywhere else TURBO_TOKEN is unset, an inherited one too: a
+# Bite shell's child that starts in another repository must not hand that repository's cache server the token.
+# With no token the store stays local only, so turbo never warns per task. WORKBOX_TURBO_DOCKERFILE is the
+# tests' seam. A second repository on another cache server would be a second (Dockerfile, tree) pair here, each
+# tree exporting its own token (turbo reads one TURBO_TOKEN).
 () {
   setopt localoptions extendedglob
   local file=${WORKBOX_TURBO_DOCKERFILE:-/workspaces/bite/Dockerfile} line value
+  local base=${file:h:A} cwd=${PWD:A} root
+  local inside=0
+  for root in $base ${base:h}/.work/${base:t} ${base:h}/.rifts/${base:t}; do
+    [[ $cwd == "$root" || $cwd == "$root"/* ]] && inside=1 && break
+  done
+  if (( ! inside )); then
+    unset TURBO_TOKEN
+    return
+  fi
   if [[ -z $TURBO_TOKEN && -r $file ]]; then
     while IFS= read -r line || [[ -n $line ]]; do
       [[ $line == [[:space:]]#ENV[[:space:]]##TURBO_TOKEN([[:space:]]|=)* ]] || continue
