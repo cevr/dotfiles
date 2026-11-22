@@ -21,7 +21,12 @@ and, when origin's `prime-look` lacks some of its commits, merges it
 `prime-look` with commits origin lacks is not merged (the merge would publish
 them). A clean merge must then install as its lockfile says, pass the fork's
 `bun run check` (lint and typecheck, what its pre-push hook runs, so the push
-skips the hook), and pass the acceptance tests most exposed to host changes
+skips the hook), pass the fork's feature checks (`bun scripts/fork-checks.ts
+--fork <merge>`: the fork package tests of each feature the owner keeps,
+listed once in `scripts/fork-checks.json`; a red test, a listed file the merge
+lost, or a run that could not finish under its load wait, lock, 6 GiB disk
+floor or time bound holds the merge, the report naming the test and the
+upstream commits), and pass the acceptance tests most exposed to host changes
 (`tests/prime-*`, `tui-cpu`, `mail`, `orchestrate`) with `OPENCODE_DEV` at the
 merge, niced and without `ANTHROPIC_BASE_URL`. Green, the merge goes to origin
 first, and only once origin holds it does `prime-look` fast-forward to it (its
