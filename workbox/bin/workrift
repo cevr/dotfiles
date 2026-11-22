@@ -735,14 +735,136 @@ process_parent() {
   fi
 }
 
+# When the process $1 started, in seconds since the epoch (empty when it is
+# gone or the platform cannot tell): on Linux the boot's time (btime of
+# /proc/stat) plus its start in ticks (field 22 of /proc/<pid>/stat) over
+# CLK_TCK, exact to the second; elsewhere now less its age, `ps -o etime`
+# ([[dd-]hh:]mm:ss, digits in any locale), to the second.
+process_started_at() {
+  case "$1" in '' | *[!0-9]*) return 0 ;; esac
+  if [ -r "$identity_proc/self/stat" ]; then
+    s_stat=$(cat "$identity_proc/$1/stat" 2>/dev/null) || return 0
+    s_tick=$(printf '%s\n' "${s_stat##*) }" | awk '{ print $20 }')
+    s_boot=$(awk '$1 == "btime" { print $2 }' "$identity_proc/stat" 2>/dev/null)
+    s_hz=$(getconf CLK_TCK 2>/dev/null || true)
+    case "$s_tick:$s_boot:$s_hz" in *::* | :* | *: | *[!0-9:]*) return 0 ;; esac
+    [ "$s_hz" -gt 0 ] || return 0
+    printf '%s\n' $((s_boot + s_tick / s_hz))
+  else
+    s_age=$(LC_ALL=C ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')
+    case "$s_age" in '' | *[!0-9:-]*) return 0 ;; esac
+    printf '%s\n' "$s_age" | awk -v now="$(date +%s)" '{
+      d = 0; t = $0; i = index(t, "-")
+      if (i) { d = substr(t, 1, i - 1); t = substr(t, i + 1) }
+      n = split(t, p, ":"); s = 0
+      for (k = 1; k <= n; k++) s = s * 60 + p[k]
+      print now - (d * 86400 + s)
+    }'
+  fi
+}
+
+# Whether the process $1 runs a workrift's refresh, init or create: a word of
+# its command line that is a workrift script (named workrift*, or a file whose
+# third line is this script's own, as every workrift's has been), followed by
+# one of those words. /proc/<pid>/cmdline on Linux (one argument a line), `ps
+# -o args` elsewhere.
+process_runs_old_holder() {
+  if [ -r "$identity_proc/$1/cmdline" ]; then
+    r_args=$(tr '\0' '\n' <"$identity_proc/$1/cmdline" 2>/dev/null) || return 1
+  else
+    r_args=$(LC_ALL=C ps -o args= -p "$1" 2>/dev/null | tr ' ' '\n') || return 1
+  fi
+  r_ifs=$IFS
+  IFS='
+'
+  set -f
+  r_prev=
+  r_found=1
+  for r_word in $r_args; do
+    case "$r_word" in
+      refresh | init | create)
+        if [ -n "$r_prev" ]; then
+          case "${r_prev##*/}" in
+            workrift*) r_found=0 ;;
+            *) [ "$(sed -n 3p "$r_prev" 2>/dev/null)" != '# Branch workspaces on top of Rift.' ] || r_found=0 ;;
+          esac
+        fi
+        ;;
+    esac
+    r_prev=$r_word
+  done
+  set +f
+  IFS=$r_ifs
+  return "$r_found"
+}
+
+# Whether the process $1 has the file $2 open (by inode, any descriptor):
+# /proc/<pid>/fd on Linux, lsof elsewhere. Unknown counts as no.
+process_has_open() {
+  if [ -d "$identity_proc/$1/fd" ]; then
+    for o_fd in "$identity_proc/$1/fd"/*; do
+      [ ! "$o_fd" -ef "$2" ] || return 0
+    done
+    return 1
+  fi
+  command -v lsof >/dev/null 2>&1 || return 1
+  o_paths=$(lsof -a -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p')
+  o_ifs=$IFS
+  IFS='
+'
+  set -f
+  o_found=1
+  for o_path in $o_paths; do
+    [ ! "$o_path" -ef "$2" ] || o_found=0
+  done
+  set +f
+  IFS=$o_ifs
+  return "$o_found"
+}
+
+# Whether the ancestor $1 is the older workrift that holds the lock of the
+# base whose Git directory is $2, by what that process is now, never by a pid
+# in a file alone (B3, 2026-11-22: the old script removes its holder file only
+# in its exit trap, so a kill -9 leaves one, five in bite's .git that day, and
+# a pid reused by deps' own shell then passed for the holder). All of:
+#   - a holder file names it (written right after the old lock is taken);
+#   - it started no later than that file's time: a process alive when the
+#     file was written with its pid is the one that wrote it, so this rules
+#     out a pid reused since (exact to the second; one second of slack);
+#   - it runs the old workrift's refresh, init or create;
+#   - it has this base's lock file open (the base it works on, from what it
+#     holds rather than its cwd or arguments, which name a workspace or rely
+#     on WORKRIFT_SOURCE);
+#   - the lock is held.
+# Together these make it the holder now: the old script removes its holder
+# file before it lets the lock go, so the writer of a file still present,
+# still running, still holds it. No platform names the holding process
+# itself: /proc/locks shows the pid of the flock(1) that took the lock, which
+# has exited (the lock lives on on the shell's descriptor), and a waiter has
+# the file open as a holder does.
+old_holder_is() {
+  o_file=$2/workrift-lock-holders/$1
+  [ -f "$o_file" ] && [ -f "$2/workrift.lock" ] || return 1
+  o_since=$(awk 'NR == 1 { print $1 }' "$o_file" 2>/dev/null)
+  case "$o_since" in '' | *[!0-9]*) return 1 ;; esac
+  o_start=$(process_started_at "$1")
+  [ -n "$o_start" ] && [ "$o_start" -le $((o_since + 1)) ] || return 1
+  process_runs_old_holder "$1" || return 1
+  process_has_open "$1" "$2/workrift.lock" || return 1
+  ! flock -n -s "$2/workrift.lock" true 3>&- 6>&- 7>&- 8>&- 9>&-
+}
+
 # What a process this one descends from holds of the base $1, as `<kind>
-# <pid> <purpose>`: kind old (the older workrift's lock: a holder file of its
-# names the ancestor, and that lock is held), w or r (a live ticket of this
-# script, in, whose owner is the ancestor); nothing when no ancestor holds it.
-# A Git hook (`workrift deps` from lefthook-local.yml) is a child of the Git
-# command a holder runs in the base: it must never wait in line behind the
-# holder it runs inside, which waits for it (B2, 2026-11-22: an older refresh's
-# `git switch` fired the new deps, which waited for that refresh's lock).
+# <pid> <purpose>`: kind old (the older workrift holds the lock, and it is
+# that ancestor: old_holder_is), w or r (a ticket of this script, in and
+# locked, whose record names the ancestor's pid and identity as
+# process_identity reads it now); nothing when no ancestor holds it. A Git
+# hook (`workrift deps` from lefthook-local.yml) is a child of the Git command
+# a holder runs in the base: it must never wait in line behind the holder it
+# runs inside, which waits for it (B2, 2026-11-22: an older refresh's `git
+# switch` fired the new deps, which waited for that refresh's lock). Whatever
+# is not shown to be such a holder is not one: deps then waits in line, which
+# is visible and named, where a wrong skip would leave the base uninstalled.
 ancestor_hold() {
   a_git=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
   state_dir "$1"
@@ -750,16 +872,18 @@ ancestor_hold() {
   a_n=0
   while a_pid=$(process_parent "$a_pid") && [ -n "$a_pid" ] && [ "$a_pid" -gt 1 ] && [ "$a_n" -lt 64 ]; do
     a_n=$((a_n + 1))
-    if [ -f "$a_git/workrift-lock-holders/$a_pid" ] && [ -f "$a_git/workrift.lock" ] &&
-      ! flock -n -s "$a_git/workrift.lock" true 3>&- 6>&- 7>&- 8>&- 9>&-; then
+    if old_holder_is "$a_pid" "$a_git"; then
       # The file reads `<since> <purpose>`.
       a_what=$(cat "$a_git/workrift-lock-holders/$a_pid" 2>/dev/null || true)
       printf 'old %s %s\n' "$a_pid" "${a_what#* }"
       return 0
     fi
+    a_identity=
     for a_ticket in "$state_value"/base/*.[rw]; do
       [ -e "$a_ticket.in" ] && [ "$(sed -n 1p "$a_ticket" 2>/dev/null)" = "$a_pid" ] || continue
-      ticket_live "$a_ticket" || continue
+      [ -n "$a_identity" ] || a_identity=$(process_identity "$a_pid")
+      [ -n "$a_identity" ] && [ "$(sed -n 2p "$a_ticket" 2>/dev/null)" = "$a_identity" ] || continue
+      ! flock -n -x "$a_ticket" true 3>&- 6>&- 7>&- 8>&- 9>&- || continue
       printf '%s %s %s\n' "${a_ticket##*.}" "$a_pid" "$(sed -n 4p "$a_ticket")"
       return 0
     done

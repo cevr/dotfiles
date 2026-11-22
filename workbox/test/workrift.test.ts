@@ -3153,3 +3153,140 @@ describeWork("workrift deps fired inside a command that holds the base, and the 
     expect(waiter.err()).not.toContain("sleep 60")
   }, 60_000)
 })
+
+// ---------------------------------------------------------------------------
+// Round 4 of create-fair (2026-11-22): a holder is deps' ancestor by what that process is now, never by a pid in a
+// file (B3: the older workrift leaves its holder file behind when killed, and a pid reused by deps' own shell passed
+// for the holder, so deps skipped an install nobody did).
+
+describeWork("workrift deps knows its holder by identity, not by a stale holder file (create-fair round 4)", () => {
+  const work = WORK_BIN ?? "work"
+  /** The older script under a name without "workrift" (the verifier's harness ran it as old-a5821de8). */
+  const OLD = (() => {
+    const path = join(scratchRoot, "old-a5821de8")
+    writeFileSync(path, readFileSync(OLD_WORKRIFT()))
+    chmodSync(path, 0o755)
+    return path
+  })()
+  /**
+   * A probe bench whose base runs `workrift deps` from its Git hooks, the installed workrift being this script; its
+   * install in the base records the lock file it installed for in node_modules/lock, so `matches` says whether the
+   * base ends installed for its lock file.
+   */
+  const recording = (label: string) => {
+    const { w, log } = probeBench(label, work)
+    writeFileSync(join(w.app, ".git/info/exclude"), "node_modules/\n", { flag: "a" })
+    sh(w.app, w.env, "git", "config", "workrift.install", `if [ "$(pwd -P)" = '${w.app}' ]; then probe '${log}' install-$$ w 0.3; fi; mkdir -p node_modules; cat bun.lock >node_modules/lock`)
+    symlinkSync(SCRIPT, join(w.bin, "workrift"))
+    for (const hook of ["post-checkout", "post-merge"]) exe(join(w.app, ".git/hooks", hook), "#!/bin/sh\nworkrift deps\n")
+    exe(join(w.app, ".git/hooks/post-rewrite"), '#!/bin/sh\nworkrift deps "$1"\n')
+    /** The install made stale: the next deps in the base installs, and until it does the base does not match. */
+    const stale = () => {
+      writeFileSync(join(w.app, ".git/workrift-installed-locks"), "bun.lock stale\n")
+      mkdirSync(join(w.app, "node_modules"), { recursive: true })
+      writeFileSync(join(w.app, "node_modules/lock"), "stale\n")
+    }
+    const matches = () => {
+      const lock = readFileSync(join(w.app, "bun.lock"), "utf8").trim()
+      const inst = existsSync(join(w.app, "node_modules/lock")) ? readFileSync(join(w.app, "node_modules/lock"), "utf8").trim() : "none"
+      return { lock, inst, matches: lock === inst }
+    }
+    return { w, log, stale, matches }
+  }
+  const holders = (app: string) => join(app, ".git/workrift-lock-holders")
+  const now = () => Math.floor(Date.now() / 1000)
+
+  test("red on round 3 (the verifier's C): a stale holder file whose pid is now deps' parent, the old lock held by an unrelated process: deps waits, then installs", async () => {
+    const { w, stale, matches } = recording("stale-holder")
+    stale()
+    // The unrelated old-style holder: an flock on the old lock for 4 s (an old create mid-copy).
+    const locker = Bun.spawn([join(w.bin, "flock"), "-x", join(w.app, ".git/workrift.lock"), "sleep", "4"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+    await until("the old lock held", () => Bun.spawnSync([join(w.bin, "flock"), "-n", join(w.app, ".git/workrift.lock"), "true"]).exitCode === 1)
+    // deps' parent names itself in a holder file, as a killed old create left one with this pid.
+    const script = `mkdir -p .git/workrift-lock-holders; echo "1 create old/dead" >.git/workrift-lock-holders/$$; workrift deps`
+    const deps = startGroup(w.app, w.env, ["sh", "-c", script], join(w.dir, "deps.err"))
+    const ran = await within(deps, 60_000)
+    await locker.exited
+    expect(ran?.code, deps.err()).toBe(0)
+    expect(deps.err()).not.toContain("this hook runs under")
+    expect(deps.err()).toContain("waiting for")
+    expect(matches()).toMatchObject({ matches: true })
+  }, 90_000)
+
+  type Holder = "none" | "unrelated old" | "unrelated new" | "ancestor old" | "ancestor new"
+  type Stale = "ancestor, long ago" | "ancestor, forged now" | "unrelated live pid" | "dead pid"
+  const HOLDERS: ReadonlyArray<Holder> = ["none", "unrelated old", "unrelated new", "ancestor old", "ancestor new"]
+  const STALES: ReadonlyArray<Stale> = ["ancestor, long ago", "ancestor, forged now", "unrelated live pid", "dead pid"]
+
+  test("property: for generated stale holder files, holders and process trees, deps skips only under a true ancestor holder, never hangs, and the base ends installed for its lock file", async () => {
+    // Cases drawn by a fixed stream; every holder at least twice, with a set of stale files and a tree each.
+    let seed = 11
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+    const cases: Array<{ holder: Holder; stales: ReadonlyArray<Stale>; nested: boolean }> = []
+    for (const holder of [...HOLDERS, ...HOLDERS])
+      cases.push({ holder, stales: STALES.filter(() => next() < 0.6), nested: next() < 0.5 })
+    const results: Array<Record<string, unknown>> = []
+    for (const [i, c] of cases.entries()) {
+      const { w, stale, matches } = recording(`prop-${i}`)
+      const keeper = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" })
+      const dead = Bun.spawnSync(["true"]).pid
+      // The stale files the wrapper writes: `$$` is the wrapper, an ancestor of deps in every tree below.
+      const plant = c.stales
+        .map((s) =>
+          s === "ancestor, long ago"
+            ? `echo "${now() - 3600} create old/killed" >'${holders(w.app)}'/$$`
+            : s === "ancestor, forged now"
+              ? `echo "$(date +%s) create old/forged" >'${holders(w.app)}'/$$`
+              : s === "unrelated live pid"
+                ? `echo "${now() - 60} create old/other" >'${holders(w.app)}/${keeper.pid}'`
+                : `echo "${now() - 600} refresh" >'${holders(w.app)}/${dead}'`,
+        )
+        .join("; ")
+      const deps = c.nested ? `sh -c 'sh -c "workrift deps"'` : "workrift deps"
+      let run: string
+      let locker: { exited: Promise<number> } | undefined
+      if (c.holder === "ancestor old" || c.holder === "ancestor new") {
+        w.push("main", { "bun.lock": `main-2 ${i}\n` })
+        sh(w.app, w.env, "git", "fetch", "-q", "origin")
+        stale()
+        // deps runs from the hooks of the holder's own git: the wrapper starts the holder.
+        run = c.holder === "ancestor old" ? `'${OLD}' refresh` : `'${SCRIPT}' hold -- git merge -q --ff-only origin/main`
+      } else {
+        stale()
+        if (c.holder === "unrelated old") {
+          // An old create mid-copy: its flock on the old lock, its own true holder file.
+          const l = Bun.spawn([join(w.bin, "flock"), "-x", join(w.app, ".git/workrift.lock"), "sleep", "3"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+          mkdirSync(holders(w.app), { recursive: true })
+          writeFileSync(join(holders(w.app), String(l.pid)), `${now()} create old/copying\n`)
+          locker = l
+          await until("the old lock held", () => Bun.spawnSync([join(w.bin, "flock"), "-n", join(w.app, ".git/workrift.lock"), "true"]).exitCode === 1)
+        }
+        if (c.holder === "unrelated new") {
+          const h = Bun.spawn([SCRIPT, "hold", "--", "sleep", "3"], { cwd: w.app, env: w.env, stdout: "ignore", stderr: "ignore" })
+          locker = h
+          await until("the hold in", () => readdirSync(join(stateOf(w.app), "base")).some((name) => name.endsWith(".in")))
+        }
+        run = deps
+      }
+      const wrapper = startGroup(w.app, w.env, ["sh", "-c", `mkdir -p '${holders(w.app)}'; ${plant}${plant ? "; " : ""}${run}`], join(w.dir, `case-${i}.err`))
+      const ran = await within(wrapper, 60_000)
+      await locker?.exited
+      keeper.kill("SIGKILL")
+      const err = wrapper.err()
+      results.push({
+        case: c,
+        code: ran === undefined ? "hung" : ran.code,
+        skipped: err.includes("this hook runs under"),
+        ...matches(),
+      })
+    }
+    const wrong = results.filter((r) => {
+      const c = r.case as (typeof cases)[number]
+      return r.code !== 0 || r.skipped !== (c.holder === "ancestor old") || r.matches !== true
+    })
+    expect(wrong).toEqual([])
+    // The stream covers a true ancestor with a stale file naming that same ancestor, and unrelated holders with one.
+    expect(cases.some((c) => c.holder === "ancestor old" && c.stales.length > 0)).toBe(true)
+    expect(cases.some((c) => c.holder.startsWith("unrelated") && c.stales.some((s) => s.startsWith("ancestor")))).toBe(true)
+  }, 600_000)
+})
