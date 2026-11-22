@@ -496,6 +496,32 @@ if (runnable) {
     )
 
     test(
+      "create restores the copies of the base's uncommitted tracked work and keeps its untracked files; inspect counts only the workspace's own changes; the base keeps its own",
+      () =>
+        check(plain, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            yield* made.write(`${made.base}/README.md`, "rewritten by a tool in the base\n")
+            yield* made.sh(made.base, "git", "rm", "-q", "--cached", "src/index.ts")
+            yield* made.write(`${made.base}/notes/untracked.md`, "the base's notes\n")
+            const before = yield* out(made, made.base, "git", "status", "--porcelain")
+            const lane = yield* rifts.create({ source: made.base, from: made.base, name: "clean-start", branch: "clean-start" })
+            // Its tracked files are HEAD's; the untracked copy stays, and is the base's, not the lane's.
+            expect(yield* out(made, lane, "git", "status", "--porcelain")).toBe("?? notes/")
+            expect(yield* out(made, lane, "git", "config", "--local", "--get", "rift.copiedFrom")).toBe(made.base)
+            expect(yield* rifts.inspect(lane)).toMatchObject({ uncommitted: [], unpushed: [] })
+            expect(yield* out(made, made.base, "git", "status", "--porcelain")).toBe(before)
+            expect([...(yield* rifts.inspect(made.base)).uncommitted].sort()).toEqual([" M README.md", "?? notes/untracked.md", "?? src/index.ts", "D  src/index.ts"])
+            // The lane's own change is counted; a copy that no longer reads as the base's is the lane's.
+            yield* made.write(`${lane}/src/index.ts`, "export const mine = 1\n")
+            yield* made.write(`${made.base}/notes/untracked.md`, "the base's notes, rewritten\n")
+            expect([...(yield* rifts.inspect(lane)).uncommitted].sort()).toEqual([" M src/index.ts", "?? notes/untracked.md"])
+          }),
+        ),
+      TIMEOUT,
+    )
+
+    test(
       "remove trashes the workspace into .work-trash and a retry answers; withChildren takes the children; a branch only origin holds is no bar; one removed elsewhere since its inspect answers as gone; a commit made after the inspect is in the trash",
       () =>
         check(plain, (made) =>

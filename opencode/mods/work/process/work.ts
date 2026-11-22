@@ -4,6 +4,8 @@
 // writes a registry names its base with WORK_BASE: inside an adopted copy `work` would otherwise
 // take the copy for a base and read an empty registry. With `workrift: true` (the workbox) a
 // workspace is made and removed by `workrift`; the rest asks `work`.
+// A fresh workspace (made by `work new` or `workrift create`, never one a create adopts) restores the
+// copies of its source's uncommitted work first, and its uncommitted work is only its own (inherited.ts).
 // Unsaved work is read with Git (unpushed.ts). A removal is
 // `work rm -abandon -expect <id>`: the tool's removal rule (workspace.ts) has judged it already,
 // and the id is the one the caller's inspect saw, so a workspace replaced since is refused.
@@ -11,6 +13,7 @@ import { Effect, Layer, Option, Schedule, Schema } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import { holds, ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines, type Ran } from "./command.ts"
+import { inheritance, ownEntries } from "./inherited.ts"
 import { describeBranch, madeOnField, madeOnOf, markBranch, purposeField, purposeOf } from "./purpose.ts"
 import { unpushed as unpushedOf } from "./unpushed.ts"
 
@@ -121,6 +124,7 @@ const above = (records: ReadonlyArray<Rec>, base: string, record: Rec): Readonly
 
 export const layer = (options: Options) => {
   const { spawn, run } = commands(options.env)
+  const copies = inheritance(options.env)
   const bin = options.work ?? "work"
   /** The id each workspace path had when last read: what `rm -expect` names. */
   const seen = new Map<string, Known>()
@@ -224,7 +228,9 @@ export const layer = (options: Options) => {
       Effect.map((out) => out.trim()),
       Effect.orElseSucceed(() => "(no commits)"),
     )
-    const uncommitted = lines(yield* git(path, "status", "--porcelain", "--", ".", ":(exclude).rift"))
+    // A workspace's own changes only: a copy of the uncommitted work of the checkout it was copied from is that checkout's (inherited.ts).
+    const from = yield* Option.match(place.record, { onNone: () => Effect.succeedNone, onSome: (record) => copies.copiedFrom(path, record.parent) })
+    const uncommitted = ownEntries(path, from, yield* copies.status(path)).map((entry) => entry.line)
     // Commits found only here: on no remote, and in no branch of the base it was cloned from.
     const root = Option.fromUndefinedOr(chain.at(-1))
     const sourceTips = yield* Option.match(root, {
@@ -365,6 +371,13 @@ export const layer = (options: Options) => {
     })
   })
 
+  /**
+   * A fresh workspace's first step (inherited.ts `settle`): the copies of `from`'s uncommitted work go back to HEAD.
+   * One that fails leaves them, which a land and a removal still tell from the workspace's own work: it is logged, never fatal.
+   */
+  const settled = (path: string, from: string) =>
+    copies.settle(path, from).pipe(Effect.catch((failure: RiftFailed) => Effect.logWarning("work: the copies a new workspace inherited were not restored", failure)))
+
   const create = Effect.fn("WorkRifts.create")(function* (request: CreateRequest) {
     if (options.workrift) {
       // From the caller's checkout, so workrift imports its gh stack metadata; the source is named outright.
@@ -374,6 +387,7 @@ export const layer = (options: Options) => {
         onSome: Effect.succeed,
       })
       yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.void, onSome: (at) => detach(path, at, Option.none()) })
+      yield* settled(path, request.source)
       return path
     }
     const parent = yield* placeOf(request.source)
@@ -388,6 +402,8 @@ export const layer = (options: Options) => {
     seen.set(made.path, known)
     const tracked = Effect.when(git(made.path, "branch", "--quiet", `--set-upstream-to=origin/${request.branch}`, request.branch), Effect.succeed(start.track))
     yield* Option.match(Option.fromUndefinedOr(request.at), { onNone: () => Effect.asVoid(tracked), onSome: (at) => detach(made.path, at, Option.some(known)) })
+    // Fresh, before any agent runs in it: the copies of the uncommitted work it was copied with go back to HEAD.
+    yield* settled(made.path, request.source)
     return made.path
   })
 
