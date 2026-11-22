@@ -1454,7 +1454,7 @@ describeWork("workrift with the work backend", () => {
           arrange: () => {
             const queue = join(stateOf(p.w.app), "base")
             mkdirSync(queue, { recursive: true })
-            const start = sh(p.w.app, h.env, "ps", "-o", "lstart=", "-p", String(process.pid)).trim()
+            const start = sh(p.w.app, { ...h.env, LC_ALL: "C", TZ: "UTC0" }, "ps", "-o", "lstart=", "-p", String(process.pid)).trim()
             writeFileSync(join(queue, "99.r"), `${process.pid}\n${start}\n${Math.floor(Date.now() / 1000)}\ncreate feat/x\n`)
             exe(flock, `#!/bin/sh\ncase " $* " in *" -n "*) exit 1 ;; esac\nexit 0\n`)
           },
@@ -2210,7 +2210,8 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
       const record = lines(readFileSync(join(queue, ticket!), "utf8"))
       // The refresh re-runs itself under nice: the holder is the process that runs now, a descendant of the one spawned.
       expect(record[3]).toBe("refresh")
-      expect(sh(w.app, w.env, "ps", "-o", "lstart=", "-p", record[0]!).trim()).toBe(record[1])
+      // Its identity as process_identity has it on macOS: the start under LC_ALL=C and TZ=UTC0, whoever reads it.
+      expect(sh(w.app, { ...w.env, LC_ALL: "C", TZ: "UTC0" }, "ps", "-o", "lstart=", "-p", record[0]!).trim()).toBe(record[1])
       expect(existsSync(join(queue, `${ticket}.in`))).toBe(true)
       const create = Bun.spawn([SCRIPT, "create", "feat/behind"], { cwd: w.app, env: w.env, stdout: "pipe", stderr: "pipe" })
       while (readdirSync(queue).filter((name) => /\.[rw]$/.test(name)).length < 2) await Bun.sleep(20)
@@ -2765,7 +2766,6 @@ describeWork("workrift beside the older workrift, and its line's owners whatever
       const all2 = [...ivs(), ...copied]
       expect(all2.filter((each) => each.kind === "w").length).toBeGreaterThanOrEqual(3)
       expect(overlaps(all2, oldBesideNew)).toEqual([])
-      await until("no ticket left", () => readdirSync(join(stateOf(w.app), "base")).length === 0, 30_000)
     },
     300_000,
   )

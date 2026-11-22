@@ -2418,7 +2418,9 @@ case "$command" in
     top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
     # Run by hand in a base itself, it installs and builds the base: a change
     # of the base, so under its exclusive lock, in line, never beside a copy.
-    d_source=$(resolve_source 2>/dev/null || true)
+    # (The Rift backend, on its way out, keeps its calls as they were.)
+    d_source=
+    [ "$backend" != work ] || d_source=$(resolve_source 2>/dev/null || true)
     if [ -n "$d_source" ] && [ "$(cd "$d_source" && pwd -P)" = "$(cd "$top" && pwd -P)" ]; then
       lock_purpose=deps
       lock_source "$top"
