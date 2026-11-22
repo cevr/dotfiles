@@ -33,9 +33,9 @@ Every reason in the commitment record is data the plugin checks, never prose. A 
 
 ## Driving it with real OpenCode
 
-- **Real:** `cmd/orchestrate/record-cli.test.ts`, `mods/orchestrate/reasons.test.ts`
+- **Real:** `cmd/orchestrate/record-cli.test.ts`, `mods/orchestrate/node/evidence.test.ts`
 
-The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git checkout and record file: no reason refused, an invariant declared from a committed document, a decide by guarantee, a measured close refused, a deferral and a follow-up by a receipt read from the evidence root, a missing receipt refused. `reasons.test.ts` runs the evidence reader on real files: a receipt or its output outside the evidence root, linked out of it, missing, of another shape (a `validated` key, prose), blank or too large is each refused; a document is found only in git at HEAD.
+The CLI test runs `bun cmd/orchestrate/record.ts`'s `main` on a scratch git checkout and record file: no reason refused, an invariant declared from a committed document, a decide by guarantee, a measured close refused, a deferral and a follow-up by a receipt read from the evidence root, a missing receipt refused. `node/evidence.test.ts` runs the evidence reader on real files: a receipt or its output outside the evidence root, linked out of it, missing, of another shape (a `validated` key, prose), blank or too large is each refused; a document is found only in git at HEAD.
 
 1. **Scratch root.** `bun run verify:seed $ROOT`, `bun run verify:launch --root $ROOT --port $PORT`, then `pilotty spawn --name verify-$PORT bun run verify:tui --root $ROOT`.
 2. **Declare.** Type `verify: call commitments {"action":"invariant","id":"notes","doc_path":"notes.txt","anchor":"notes"}`, Enter. The answer reads `invariant notes declared: notes.txt#notes at <blob>`.
