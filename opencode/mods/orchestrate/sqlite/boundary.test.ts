@@ -6,13 +6,14 @@
 // driver, or this test stays red.
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
-import { Effect, Option, Result, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Result, Schema } from "effect"
 import * as Seed from "../../../sim/seed.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { DEFAULT_RUN, followUpOf } from "../commitments-tool.ts"
 import { type Actor, Command, decodeCommand, PartInput } from "../record.ts"
 import { CommitmentRecord } from "../service.ts"
-import { connectSync, textColumnsOf } from "./record.ts"
+import { platform } from "../node/platform.ts"
+import { connected, textColumnsOf } from "./record.ts"
 
 const T0 = Date.parse("2027-01-15T08:00:00.000Z")
 const ROOT: Actor = { id: "ses_root", role: "root" }
@@ -29,19 +30,19 @@ interface Sent {
 }
 /** How a column is reached: the commands before (no secret), the one that carries it, and what the record answers. */
 type Driver =
-  | { readonly _tag: "refused"; readonly setup: ReadonlyArray<Sent>; readonly sent: Sent; readonly names: string }
-  | { readonly _tag: "redacted"; readonly setup: ReadonlyArray<Sent>; readonly sent: Sent }
+  | { readonly kind: "refused"; readonly setup: ReadonlyArray<Sent>; readonly sent: Sent; readonly names: string }
+  | { readonly kind: "redacted"; readonly setup: ReadonlyArray<Sent>; readonly sent: Sent }
   /** A literal column: no command decodes with any other value in it (its field is a literal in the command's schema). */
-  | { readonly _tag: "literal"; readonly encoded: unknown }
+  | { readonly kind: "literal"; readonly encoded: string }
   /** A column no code writes: it stays empty. */
-  | { readonly _tag: "unwritten" }
+  | { readonly kind: "unwritten" }
 
 const by = (command: Command, actor: Actor = ROOT): Sent => ({ command, actor })
 const part = (id: string, fields: Partial<{ title: string; part: string }> = {}) => PartInput.make({ id, title: fields.title ?? `the ${id} part`, part: Option.fromUndefinedOr(fields.part) })
 const add = (ids: ReadonlyArray<string>, fields: Partial<{ run: string; sourceRef: string; quote: string; plan: string; title: string; part: string; suggestOwner: string }> = {}) =>
   Command.cases.add.make({
     run: fields.run ?? DEFAULT_RUN,
-    sourceKind: Option.isSome(Option.fromUndefinedOr(fields.quote)) ? "owner-answer" : "plan-part",
+    sourceKind: Option.match(Option.fromUndefinedOr(fields.quote), { onNone: () => "plan-part" as const, onSome: () => "owner-answer" as const }),
     sourceRef: fields.sourceRef ?? "plan.md:1",
     quote: Option.fromUndefinedOr(fields.quote),
     plan: Option.fromUndefinedOr(fields.plan),
@@ -104,76 +105,79 @@ const imported = (
   })
 
 /** A role as a caller that bypassed the types would give it: any string, read back from JSON. */
-const roleOf = (value: string): Actor["role"] => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))(JSON.stringify(value))
+const roleOf = (value: string): Actor["role"] => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))(`"${value}"`)
 
-const refused = (names: string, sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ _tag: "refused", setup, sent, names })
-const redacted = (sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ _tag: "redacted", setup, sent })
-const literal = (encoded: unknown): Driver => ({ _tag: "literal", encoded })
+const refused = (names: string, sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ kind: "refused", setup, sent, names })
+const redacted = (sent: Sent, setup: ReadonlyArray<Sent> = []): Driver => ({ kind: "redacted", setup, sent })
+/** A command as JSON a caller sends, decoded only by the command's schema. */
+const literal = (encoded: string): Driver => ({ kind: "literal", encoded })
+const UNWRITTEN: Driver = { kind: "unwritten" }
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))
 const OWNED = [by(add(["c1"]))]
 /** An import's history event carries `at` (every derived time column is a fold of an event's time) and its states. */
 const historyAt = refused("event.at", by(imported("i1", {}, { at: S }), IMPORT))
 
 /** Each TEXT column's driver, by `<table>.<column>`. */
-const DRIVERS: Readonly<Record<string, Driver>> = {
-  "commitment.id": refused("event.subject_id", by(add([S]))),
-  "commitment.run": refused("event.run", by(add(["c1"], { run: S }))),
-  "commitment.title": redacted(by(add(["c1"], { title: `the title ${S}` }))),
-  "commitment.source_kind": literal({ _tag: "add", run: "r", sourceKind: S, sourceRef: "x", parts: [] }),
-  "commitment.source_ref": redacted(by(add(["c1"], { sourceRef: `plan.md ${S}` }))),
-  "commitment.quote": redacted(by(add(["c1"], { quote: `the owner said ${S}` }))),
-  "commitment.plan": redacted(by(add(["c1"], { plan: `the plan ${S}` }))),
-  "commitment.part": redacted(by(add(["c1"], { part: `the part ${S}` }))),
-  "commitment.rank": literal({ _tag: "add", run: "r", sourceKind: "plan-part", sourceRef: "x", parts: [{ id: "c1", title: "t", rank: S }] }),
-  "commitment.owner_lane": refused("commitment.owner_lane", by(assign("c1", { ownerLane: S })), OWNED),
-  "commitment.owner_session": refused("commitment.owner_session", by(assign("c1", { ownerSession: S })), OWNED),
-  "commitment.state": literal({ _tag: "import", run: "r", rows: [{ id: "i1", row: { state: S }, history: [] }] }),
-  "commitment.started_at": refused("commitment.started_at", by(imported("i1", { startedAt: S }), IMPORT)),
-  "commitment.review_by": refused("commitment.review_by", by(imported("i1", { reviewBy: S }), IMPORT)),
-  "commitment.woke_at": historyAt,
-  "commitment.head": refused("commitment.head", by(imported("i1", { head: S }), IMPORT)),
-  "commitment.request_path": redacted(by(imported("i1", { requestPath: `requests/${S}.md` }), IMPORT)),
-  "commitment.landed_commit": refused("commitment.landed_commit", by(imported("i1", { state: "landed", landedCommit: S }), IMPORT)),
-  "commitment.decided_why": redacted(by(Command.cases.decide.make({ id: "c1", why: `because ${S}` })), OWNED),
-  "commitment.notice_until": historyAt,
-  "commitment.created_at": refused("commitment.created_at", by(imported("i1", { createdAt: S }), IMPORT)),
-  "commitment.updated_at": refused("commitment.updated_at", by(imported("i1", { updatedAt: S }), IMPORT)),
-  "commitment.start_head": refused("commitment.start_head", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", startHead: Option.some(S) }))),
-  "commitment.notice_by": refused("event.actor", by(add(["c1"]), { id: S, role: "root" })),
-  "commitment.lane_path": refused("commitment.lane_path", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", path: Option.some(`/work/${S}`) }))),
-  "prerequisite.commitment_id": refused("event.subject_id", by(add([S]))),
-  "prerequisite.kind": literal({ _tag: "assign", id: "c1", ownerLane: "u1", after: [{ kind: S, ref: "x" }] }),
-  "prerequisite.ref": refused("prerequisite.ref", by(assign("c1", { manual: S })), OWNED),
-  "prerequisite.met_at": historyAt,
-  "event.at": historyAt,
-  "event.run": refused("event.run", by(Command.cases.word.make({ run: S, word: "go" }))),
-  "event.subject_kind": literal({ _tag: "nothing", subjectKind: S }),
-  "event.subject_id": refused("event.subject_id", by(Command.cases.word.make({ run: DEFAULT_RUN, word: S }))),
-  "event.type": literal({ _tag: S }),
-  "event.actor": refused("event.actor", by(imported("i1", {}, { actor: S }), IMPORT)),
+const DRIVERS = new Map<string, Driver>([
+  ["commitment.id", refused("event.subject_id", by(add([S])))],
+  ["commitment.run", refused("event.run", by(add(["c1"], { run: S })))],
+  ["commitment.title", redacted(by(add(["c1"], { title: `the title ${S}` })))],
+  ["commitment.source_kind", literal(`{ "_tag": "add", "run": "r", "sourceKind": "${S}", "sourceRef": "x", "parts": [] }`)],
+  ["commitment.source_ref", redacted(by(add(["c1"], { sourceRef: `plan.md ${S}` })))],
+  ["commitment.quote", redacted(by(add(["c1"], { quote: `the owner said ${S}` })))],
+  ["commitment.plan", redacted(by(add(["c1"], { plan: `the plan ${S}` })))],
+  ["commitment.part", redacted(by(add(["c1"], { part: `the part ${S}` })))],
+  ["commitment.rank", literal(`{ "_tag": "add", "run": "r", "sourceKind": "plan-part", "sourceRef": "x", "parts": [{ "id": "c1", "title": "t", "rank": "${S}" }] }`)],
+  ["commitment.owner_lane", refused("commitment.owner_lane", by(assign("c1", { ownerLane: S })), OWNED)],
+  ["commitment.owner_session", refused("commitment.owner_session", by(assign("c1", { ownerSession: S })), OWNED)],
+  ["commitment.state", literal(`{ "_tag": "import", "run": "r", "rows": [{ "id": "i1", "row": { "state": "${S}" }, "history": [] }] }`)],
+  ["commitment.started_at", refused("commitment.started_at", by(imported("i1", { startedAt: S }), IMPORT))],
+  ["commitment.review_by", refused("commitment.review_by", by(imported("i1", { reviewBy: S }), IMPORT))],
+  ["commitment.woke_at", historyAt],
+  ["commitment.head", refused("commitment.head", by(imported("i1", { head: S }), IMPORT))],
+  ["commitment.request_path", redacted(by(imported("i1", { requestPath: `requests/${S}.md` }), IMPORT))],
+  ["commitment.landed_commit", refused("commitment.landed_commit", by(imported("i1", { state: "landed", landedCommit: S }), IMPORT))],
+  ["commitment.decided_why", redacted(by(Command.cases.decide.make({ id: "c1", why: `because ${S}` })), OWNED)],
+  ["commitment.notice_until", historyAt],
+  ["commitment.created_at", refused("commitment.created_at", by(imported("i1", { createdAt: S }), IMPORT))],
+  ["commitment.updated_at", refused("commitment.updated_at", by(imported("i1", { updatedAt: S }), IMPORT))],
+  ["commitment.start_head", refused("commitment.start_head", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", startHead: Option.some(S) })))],
+  ["commitment.notice_by", refused("event.actor", by(add(["c1"]), { id: S, role: "root" }))],
+  ["commitment.lane_path", refused("commitment.lane_path", by(Command.cases.lane.make({ run: DEFAULT_RUN, unit: "u1", path: Option.some(`/work/${S}`) })))],
+  ["prerequisite.commitment_id", refused("event.subject_id", by(add([S])))],
+  ["prerequisite.kind", literal(`{ "_tag": "assign", "id": "c1", "ownerLane": "u1", "after": [{ "kind": "${S}", "ref": "x" }] }`)],
+  ["prerequisite.ref", refused("prerequisite.ref", by(assign("c1", { manual: S })), OWNED)],
+  ["prerequisite.met_at", historyAt],
+  ["event.at", historyAt],
+  ["event.run", refused("event.run", by(Command.cases.word.make({ run: S, word: "go" })))],
+  ["event.subject_kind", literal(`{ "_tag": "nothing", "subjectKind": "${S}" }`)],
+  ["event.subject_id", refused("event.subject_id", by(Command.cases.word.make({ run: DEFAULT_RUN, word: S })))],
+  ["event.type", literal(`{ "_tag": "${S}" }`)],
+  ["event.actor", refused("event.actor", by(imported("i1", {}, { actor: S }), IMPORT))],
   // A role is the caller's own (the tool's root, a worker, the import), never a field of a command: one that is no role is refused.
-  "event.actor_role": refused("event.actor_role", by(add(["c1"]), { id: "ses_root", role: roleOf(S) })),
-  "event.from_state": refused("event.from_state", by(imported("i1", {}, { from: S }), IMPORT)),
-  "event.to_state": refused("event.to_state", by(imported("i1", {}, { to: S }), IMPORT)),
-  "event.note": redacted(by(imported("i1", {}, { note: `filed ${S}` }), IMPORT)),
-  "event.data": refused("suggest_owner", by(add(["c1"], { suggestOwner: S }))),
-  "hand_back.run": refused("event.run", by(handBack({ run: S }))),
-  "hand_back.owner_lane": refused("hand_back.owner_lane", by(handBack({ ownerLane: S }))),
-  "hand_back.role": refused("hand_back.role", by(handBack({ role: S }))),
-  "hand_back.session": refused("hand_back.session", by(handBack({ session: S }))),
-  "hand_back.verdict": literal({ _tag: "hand_back", run: "r", ownerLane: "u1", role: "x", session: "s", verdict: S, claims: [] }),
-  "hand_back.head": refused("hand_back.head", by(handBack({ head: S }))),
-  "hand_back.file": redacted(by(handBack({ file: `requests/${S}.md` }))),
-  "hand_back.at": historyAt,
-  "hand_back.routing": literal({ _tag: "route", handBack: 1, as: S }),
-  "hand_back.routed_at": historyAt,
-  "hand_back.routed_by": refused("event.actor", by(Command.cases.route.make({ handBack: 1, as: "routed" }), { id: S, role: "root" }), [by(handBack())]),
-  "lane_session.lane": { _tag: "unwritten" },
-  "lane_session.session": { _tag: "unwritten" },
-  "word.run": refused("event.run", by(Command.cases.word.make({ run: S, word: "go" }))),
-  "word.word": refused("event.subject_id", by(Command.cases.word.make({ run: DEFAULT_RUN, word: S }))),
-  "word.given_at": historyAt,
-  "word.given_by": refused("event.actor", by(Command.cases.word.make({ run: DEFAULT_RUN, word: "go" }), { id: S, role: "root" })),
-}
+  ["event.actor_role", refused("event.actor_role", by(add(["c1"]), { id: "ses_root", role: roleOf(S) }))],
+  ["event.from_state", refused("event.from_state", by(imported("i1", {}, { from: S }), IMPORT))],
+  ["event.to_state", refused("event.to_state", by(imported("i1", {}, { to: S }), IMPORT))],
+  ["event.note", redacted(by(imported("i1", {}, { note: `filed ${S}` }), IMPORT))],
+  ["event.data", refused("suggest_owner", by(add(["c1"], { suggestOwner: S })))],
+  ["hand_back.run", refused("event.run", by(handBack({ run: S })))],
+  ["hand_back.owner_lane", refused("hand_back.owner_lane", by(handBack({ ownerLane: S })))],
+  ["hand_back.role", refused("hand_back.role", by(handBack({ role: S })))],
+  ["hand_back.session", refused("hand_back.session", by(handBack({ session: S })))],
+  ["hand_back.verdict", literal(`{ "_tag": "hand_back", "run": "r", "ownerLane": "u1", "role": "x", "session": "s", "verdict": "${S}", "claims": [] }`)],
+  ["hand_back.head", refused("hand_back.head", by(handBack({ head: S })))],
+  ["hand_back.file", redacted(by(handBack({ file: `requests/${S}.md` })))],
+  ["hand_back.at", historyAt],
+  ["hand_back.routing", literal(`{ "_tag": "route", "handBack": 1, "as": "${S}" }`)],
+  ["hand_back.routed_at", historyAt],
+  ["hand_back.routed_by", refused("event.actor", by(Command.cases.route.make({ handBack: 1, as: "routed" }), { id: S, role: "root" }), [by(handBack())])],
+  ["lane_session.lane", UNWRITTEN],
+  ["lane_session.session", UNWRITTEN],
+  ["word.run", refused("event.run", by(Command.cases.word.make({ run: S, word: "go" })))],
+  ["word.word", refused("event.subject_id", by(Command.cases.word.make({ run: DEFAULT_RUN, word: S })))],
+  ["word.given_at", historyAt],
+  ["word.given_by", refused("event.actor", by(Command.cases.word.make({ run: DEFAULT_RUN, word: "go" }), { id: S, role: "root" }))],
+])
 
 /** Every TEXT value of every table in the file, with its column. */
 const storedIn = (path: string): ReadonlyArray<readonly [string, string]> => {
@@ -186,15 +190,51 @@ const storedIn = (path: string): ReadonlyArray<readonly [string, string]> => {
   return stored
 }
 
+/** A driver that runs commands: the ones before, and the one with the secret. */
+type Driving = Extract<Driver, { readonly kind: "refused" | "redacted" }>
+
 /** What the record did with the driver's secret command on a fresh file: refused (its reason), or kept. */
-const drive = (path: string, driver: Extract<Driver, { readonly setup: unknown }>) =>
+const drive = (path: string, driver: Driving) =>
   Effect.gen(function* () {
-    const opened = connectSync(path, { readonly: false, now: T0 })
+    const opened = yield* connected(path, { readonly: false, now: T0 })
     for (const each of driver.setup) yield* opened.store.run(each.command, { actor: each.actor, now: T0 })
     const done = yield* Effect.result(opened.store.run(driver.sent.command, { actor: driver.sent.actor, now: T0 }))
     opened.close()
-    return Result.match(done, { onSuccess: () => Option.none<string>(), onFailure: (failed) => Option.some(failed._tag === "RecordRefused" ? failed.reason : failed.message) })
+    return Result.match(done, {
+      onSuccess: () => Option.none<string>(),
+      onFailure: (failed) => Option.some(Match.value(failed).pipe(Match.tag("RecordRefused", (each) => each.reason), Match.orElse((each) => each.message))),
+    })
   })
+
+/** The column a driven refusal must name: its driver's, else the column itself. */
+const namedBy = (driver: Driving, column: string): string => Match.value(driver).pipe(Match.when({ kind: "refused" }, (each) => each.names), Match.orElse(() => column))
+
+/** What a driven command did with the secret, in a word. */
+const answerOf = (path: string, driver: Driving, column: string, why: Option.Option<string>): string =>
+  Option.match(why, {
+    onNone: () => Arr.filter(["redacted"], () => driver.kind === "redacted" && storedIn(path).some(([, value]) => value.includes("[redacted]")))[0] ?? "kept",
+    onSome: (reason) =>
+      Match.value(reason).pipe(
+        Match.when((text) => text.includes(SECRET), () => "refused, repeating it"),
+        Match.when((text) => text.includes(`column ${namedBy(driver, column)} `), () => "refused"),
+        Match.orElse((text) => `refused: ${text}`),
+      ),
+  })
+
+/** What the record does with one column's driver: its outcome in a word, the secret's leaks first. */
+const outcomeOf = (dir: string, column: string, at: number, driver: Driver) =>
+  Match.value(driver).pipe(
+    Match.when({ kind: "literal" }, (each) => Effect.succeed(Result.match(Result.try(() => decodeCommand(decodeJson(each.encoded))), { onFailure: () => "literal", onSuccess: (decoded) => Result.match(decoded, { onFailure: () => "literal", onSuccess: () => "decoded" }) }))),
+    Match.when({ kind: "unwritten" }, () => Effect.succeed("unwritten")),
+    Match.orElse((each) =>
+      Effect.gen(function* () {
+        const path = `${dir}/c${at}.db`
+        const why = yield* drive(path, each)
+        const leaked = storedIn(path).filter(([, value]) => value.includes(SECRET)).map(([held]) => held)
+        return Arr.match(leaked, { onEmpty: () => answerOf(path, each, column, why), onNonEmpty: (into) => `leaked into ${into.join(", ")}` })
+      }),
+    ),
+  )
 
 Seed.effect(
   "a secret driven into each TEXT column is refused naming the column, or kept redacted; no column of any table holds it",
@@ -203,35 +243,22 @@ Seed.effect(
     (dir) =>
       Effect.gen(function* () {
         const schema = `${dir.path}/schema.db`
-        connectSync(schema, { readonly: false, now: T0 }).close()
+        const made = yield* connected(schema, { readonly: false, now: T0 })
+        made.close()
         const db = new Database(schema, { readonly: true })
         const columns = textColumnsOf(db)
         db.close()
-        expect(columns.filter((column) => DRIVERS[column] === undefined)).toEqual([])
+        expect(columns.filter((column) => !DRIVERS.has(column))).toEqual([])
         const outcomes = yield* Effect.forEach(columns, (column, at) =>
-          Effect.gen(function* () {
-            const driver = DRIVERS[column] ?? { _tag: "unwritten" as const }
-            const path = `${dir.path}/c${at}.db`
-            if (driver._tag === "literal") return [column, Result.isFailure(decodeCommand(driver.encoded)) ? "literal" : "decoded"] as const
-            if (driver._tag === "unwritten") return [column, "unwritten"] as const
-            const why = yield* drive(path, driver)
-            const leaked = storedIn(path).filter(([, value]) => value.includes(SECRET)).map(([held]) => held)
-            const answer = Option.match(why, {
-              onNone: () => (driver._tag === "redacted" && storedIn(path).some(([, value]) => value.includes("[redacted]")) ? "redacted" : "kept"),
-              onSome: (reason) => (reason.includes(SECRET) ? "refused, repeating it" : reason.includes(`column ${driver._tag === "refused" ? driver.names : column} `) ? "refused" : `refused: ${reason}`),
-            })
-            return [column, leaked.length > 0 ? `leaked into ${leaked.join(", ")}` : answer] as const
-          }),
+          Effect.map(outcomeOf(dir.path, column, at, Option.getOrElse(Option.fromUndefinedOr(DRIVERS.get(column)), () => UNWRITTEN)), (outcome) => [column, outcome] as const),
         )
-        const expected = columns.map((column) => {
-          const driver = DRIVERS[column]
-          return [column, driver?._tag === "refused" ? "refused" : (driver?._tag ?? "no driver")] as const
-        })
+        const expected = columns.map((column) => [column, Option.match(Option.fromUndefinedOr(DRIVERS.get(column)), { onNone: () => "no driver", onSome: (driver) => driver.kind })] as const)
         expect(outcomes).toEqual(expected)
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
-  ),
+  ).pipe(Effect.provide(platform)),
 )
+
 
 Seed.effect(
   "a worker's follow_up with a secret as its id or run is refused whole, naming the column, and writes nothing",
@@ -240,7 +267,7 @@ Seed.effect(
     (dir) =>
       Effect.gen(function* () {
         const path = `${dir.path}/repo.db`
-        const opened = connectSync(path, { readonly: false, now: T0 })
+        const opened = yield* connected(path, { readonly: false, now: T0 })
         const worker: Actor = { id: "ses_worker", role: "worker" }
         const record = Effect.provideService(CommitmentRecord, opened.store)
         const byId = yield* Effect.flip(record(followUpOf({ id: S, title: "a missing test" }, worker, "call_1", T0)))
@@ -250,5 +277,5 @@ Seed.effect(
         expect(storedIn(path).filter(([column]) => column.startsWith("commitment.") || column.startsWith("event."))).toEqual([])
       }),
     (dir) => Effect.sync(() => dir[Symbol.dispose]()),
-  ),
+  ).pipe(Effect.provide(platform)),
 )

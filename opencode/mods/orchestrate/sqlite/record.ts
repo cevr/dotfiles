@@ -5,11 +5,10 @@
 // migrations applied in one transaction at open; a file of a newer version opens to read and refuses every write.
 // At the first open of a UTC day the file is copied with `VACUUM INTO <dir>/backup/<key>-<date>.db`, the newest 7 kept.
 import { Database, type SQLQueryBindings } from "bun:sqlite"
-import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync, unlinkSync } from "node:fs"
-import { basename, dirname, join, sep } from "node:path"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { Array as Arr, Clock, Effect, Layer, Option, Order, Predicate, Result, Schema } from "effect"
+import { Array as Arr, Clock, Effect, FileSystem, Layer, Option, Order, Path, Predicate, Result, Schedule, Schema, Stream } from "effect"
+import { Digest } from "effect/crypto"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import {
   ACTOR_ROLES,
   type Commitment,
@@ -146,41 +145,62 @@ export const VERSION = MIGRATIONS.length
 
 // ── Where the file is ──
 
+/** What finding and opening the file needs of the host: its files, paths, git and a digest. */
+export type Platform = FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner | Digest.Digest
+
 /** The record files' directory: `<stateHome>/opencode-orchestrate` (`$XDG_STATE_HOME`), `~/.local/state` when unset or empty. */
-export const stateDir = (stateHome: Option.Option<string>): string =>
-  join(Option.getOrElse(Option.filter(stateHome, (dir) => dir !== ""), () => join(TuiDirs.dirs().home, ".local/state")), "opencode-orchestrate")
+export const stateDir = (stateHome: Option.Option<string>) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    return path.join(Option.getOrElse(Option.filter(stateHome, (dir) => dir !== ""), () => path.join(TuiDirs.dirs().home, ".local/state")), "opencode-orchestrate")
+  })
 
 /** The record file of the repository `key`. */
-export const pathOf = (stateHome: Option.Option<string>, key: string): string => join(stateDir(stateHome), `${key}.db`)
+export const pathOf = (stateHome: Option.Option<string>, key: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    return path.join(yield* stateDir(stateHome), `${key}.db`)
+  })
 
-const gitOut = (checkout: string, args: ReadonlyArray<string>): Option.Option<string> => {
-  const ran = Bun.spawnSync(["git", "-C", checkout, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })
-  return Option.filter(Option.some(ran.stdout.toString().trim()), (text) => ran.exitCode === 0 && text !== "")
-}
+/** What git prints for `args` in `checkout`, trimmed, when it exits 0 and prints something; else none. */
+const gitOut = (checkout: string, args: ReadonlyArray<string>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const handle = yield* spawner.spawn(ChildProcess.make("git", ["-C", checkout, ...args], { stdin: "ignore", stderr: "ignore", forceKillAfter: "3 seconds" }))
+      const [code, out] = yield* Effect.all([handle.exitCode, handle.stdout.pipe(Stream.decodeText(), Stream.mkString)], { concurrency: 2 })
+      return Option.filter(Option.some(out.trim()), (text) => Number(code) === 0 && text !== "")
+    }),
+  ).pipe(Effect.orElseSucceed(() => Option.none<string>()))
 
 /**
  * The checkout a workspace was made from, when `top` is laid out as `work` lays one (`<parent>/.work/<repo>/<name>`,
  * or Rift's older `<parent>/.rifts/<repo>/<name>`) and `<parent>/<repo>` is a git checkout; else `top` itself.
  */
-const baseOf = (top: string): string => {
-  const parts = top.split(sep)
-  const base = Option.filter(
-    Option.map(Option.liftPredicate(parts, (each) => each.length > 3 && [".work", ".rifts"].includes(each.at(-3) ?? "")), (each) => [...each.slice(0, -3), each.at(-2) ?? ""].join(sep)),
-    (path) => Option.isSome(gitOut(path, ["rev-parse", "--git-common-dir"])),
-  )
-  return Option.getOrElse(base, () => top)
-}
+const baseOf = (top: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    const parts = top.split(path.sep)
+    const laid = Option.map(Option.liftPredicate(parts, (each) => each.length > 3 && [".work", ".rifts"].includes(each.at(-3) ?? "")), (each) => [...each.slice(0, -3), each.at(-2) ?? ""].join(path.sep))
+    if (Option.isNone(laid)) return top
+    const checked = yield* gitOut(laid.value, ["rev-parse", "--git-common-dir"])
+    return Option.getOrElse(Option.as(checked, laid.value), () => top)
+  })
 
 /**
  * The repository key of the checkout at `checkout`: its origin's (repo-key.ts); else `local-` and the real path of
  * its repository's common git directory hashed, read from the checkout's base (`baseOf`) when it is a workspace, so
  * a workspace, a worktree and their base share one record, and two repositories never do.
  */
-export const keyOfCheckout = (checkout: string): string =>
-  Option.getOrElse(Option.flatMap(gitOut(checkout, ["config", "--get", "remote.origin.url"]), keyOfOrigin), () => {
-    const top = Option.getOrElse(gitOut(checkout, ["rev-parse", "--show-toplevel"]), () => checkout)
-    const common = Option.getOrElse(gitOut(baseOf(realpathSync(top)), ["rev-parse", "--path-format=absolute", "--git-common-dir"]), () => top)
-    return localKey(createHash("sha256").update(realpathSync(common)).digest("hex"))
+export const keyOfCheckout = (checkout: string) =>
+  Effect.gen(function* () {
+    const origin = Option.flatMap(yield* gitOut(checkout, ["config", "--get", "remote.origin.url"]), keyOfOrigin)
+    if (Option.isSome(origin)) return origin.value
+    const fs = yield* FileSystem.FileSystem
+    const top = Option.getOrElse(yield* gitOut(checkout, ["rev-parse", "--show-toplevel"]), () => checkout)
+    const common = Option.getOrElse(yield* gitOut(yield* baseOf(yield* fs.realPath(top)), ["rev-parse", "--path-format=absolute", "--git-common-dir"]), () => top)
+    const digest = yield* Digest.Digest
+    return localKey(yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(yield* fs.realPath(common))))
   })
 
 // ── Rows ──
@@ -390,23 +410,29 @@ const migrate = (db: Database): void =>
     })
     .immediate()
 
+/** A name no other process picks: SQLite's own random bytes, as hex. */
+const ownSuffix = (db: Database): string => String(db.query<Raw, []>("SELECT lower(hex(randomblob(8))) AS own").get()?.["own"] ?? "")
+
 /** The day's backup beside the file, once a UTC day, the newest `BACKUPS_KEPT` kept. */
-export const backup = (db: Database, path: string, now: number): void => {
-  const dir = join(dirname(path), "backup")
-  const key = basename(path, ".db")
-  const file = join(dir, `${key}-${isoOf(now).slice(0, 10)}.db`)
-  if (existsSync(file)) return
-  mkdirSync(dir, { recursive: true })
-  // Into a file of this process's own, then renamed: two processes opening at once each write whole copies, never one file.
-  const own = `${file}.${process.pid}.tmp`
-  db.query<Raw, [string]>("VACUUM INTO ?").run(own)
-  renameSync(own, file)
-  const days = Arr.sort(
-    readdirSync(dir).filter((name) => name.startsWith(`${key}-`) && name.endsWith(".db") && name.length === key.length + 14),
-    Order.String,
-  )
-  for (const name of days.slice(0, Math.max(0, days.length - BACKUPS_KEPT))) unlinkSync(join(dir, name))
-}
+export const backup = (db: Database, file: string, now: number) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const dir = path.join(path.dirname(file), "backup")
+    const key = path.basename(file, ".db")
+    const day = path.join(dir, `${key}-${isoOf(now).slice(0, 10)}.db`)
+    if (yield* fs.exists(day)) return
+    yield* fs.makeDirectory(dir, { recursive: true })
+    // Into a file of this process's own, then renamed: two processes opening at once each write whole copies, never one file.
+    const own = `${day}.${ownSuffix(db)}.tmp`
+    yield* Effect.try({ try: () => db.query<Raw, [string]>("VACUUM INTO ?").run(own), catch: (cause) => new RecordFailed({ message: `record: backup ${day}: ${messageOf(cause)}` }) })
+    yield* fs.rename(own, day)
+    const days = Arr.sort(
+      (yield* fs.readDirectory(dir)).filter((name) => name.startsWith(`${key}-`) && name.endsWith(".db") && name.length === key.length + 14),
+      Order.String,
+    )
+    yield* Effect.forEach(days.slice(0, Math.max(0, days.length - BACKUPS_KEPT)), (name) => fs.remove(path.join(dir, name)))
+  })
 
 export interface OpenOptions {
   /** Open to read only (`mode=ro`): the CLI's reads. */
@@ -417,18 +443,15 @@ export interface OpenOptions {
 
 /** How long a writer waits on another's lock, ms: SQLite's busy timeout, and the open's own retries. */
 const BUSY_MS = 5000
+/** The pause between the open's retries while another writer holds the file. */
+const BUSY_PAUSE_MS = 20
 const PRAGMAS = [`PRAGMA busy_timeout = ${BUSY_MS}`, "PRAGMA foreign_keys = ON"]
 
 const isBusy = (cause: unknown): boolean => cause instanceof Error && "code" in cause && cause.code === "SQLITE_BUSY"
 
-/** `work`, retried every 20 ms while SQLite answers SQLITE_BUSY until `deadline`; its last try's outcome, thrown as it throws. */
-const settled = <A>(work: () => A, deadline: number): A => {
-  const done = Result.try({ try: work, catch: (cause) => cause })
-  if (Result.isSuccess(done)) return done.success
-  if (!isBusy(done.failure) || Date.now() >= deadline) return work()
-  Bun.sleepSync(20)
-  return settled(work, deadline)
-}
+/** `work`, retried every 20 ms while SQLite answers SQLITE_BUSY, for as long as the busy timeout; its last try's failure else. */
+const settled = <A>(work: () => A) =>
+  Effect.try({ try: work, catch: (cause) => cause }).pipe(Effect.retry({ while: isBusy, schedule: Schedule.spaced(`${BUSY_PAUSE_MS} millis`), times: BUSY_MS / BUSY_PAUSE_MS }))
 
 /** An open database, and why its writes are refused when they are. */
 interface Connected {
@@ -436,48 +459,55 @@ interface Connected {
   readonly refusal: Option.Option<string>
 }
 
-/** The database at `path` opened, created and migrated (or read-only), and why its writes are refused when they are. */
-const connect = (path: string, options: OpenOptions): Connected => {
-  if (options.readonly) {
-    const db = new Database(path, { readonly: true, strict: true })
-    db.run("PRAGMA busy_timeout = 5000")
-    return { db, refusal: Option.some(`record: ${path} is open to read only`) }
-  }
-  mkdirSync(dirname(path), { recursive: true })
-  const db = new Database(path, { create: true, strict: true })
-  for (const pragma of PRAGMAS) db.run(pragma)
-  // Two writers opening a new file at once (two server locations, the CLI) race for the switch to WAL, which SQLite
-  // answers SQLITE_BUSY at once, past the busy timeout: retried for as long as the timeout.
-  const deadline = Date.now() + BUSY_MS
-  settled(() => db.run("PRAGMA journal_mode = WAL"), deadline)
-  db.run("PRAGMA synchronous = NORMAL")
-  const version = settled(() => versionOf(db), deadline)
-  if (version > VERSION) return { db, refusal: Option.some(`record: ${path} is version ${version}; this code writes version ${VERSION}: update it to write`) }
-  settled(() => migrate(db), deadline)
-  backup(db, path, options.now)
-  return { db, refusal: Option.none() }
+/** The database at `path`, existing, attached with the record's pragmas: no migration, no backup (`connect` does both). */
+const attached = (path: string, readonly: boolean): Database => {
+  const db = new Database(path, { readonly, create: !readonly, strict: true })
+  for (const pragma of PRAGMAS.slice(0, 2 - Number(readonly))) db.run(pragma)
+  return db
 }
 
+/** The database at `path` opened, created and migrated (or read-only), and why its writes are refused when they are. */
+const connect = (path: string, options: OpenOptions) =>
+  Effect.gen(function* () {
+    if (options.readonly) return { db: attached(path, true), refusal: Option.some(`record: ${path} is open to read only`) }
+    const fs = yield* FileSystem.FileSystem
+    const paths = yield* Path.Path
+    yield* fs.makeDirectory(paths.dirname(path), { recursive: true })
+    const db = attached(path, false)
+    // Two writers opening a new file at once (two server locations, the CLI) race for the switch to WAL, which SQLite
+    // answers SQLITE_BUSY at once, past the busy timeout: retried for as long as the timeout.
+    yield* settled(() => db.run("PRAGMA journal_mode = WAL"))
+    db.run("PRAGMA synchronous = NORMAL")
+    const version = yield* settled(() => versionOf(db))
+    if (version > VERSION) return { db, refusal: Option.some(`record: ${path} is version ${version}; this code writes version ${VERSION}: update it to write`) }
+    yield* settled(() => migrate(db))
+    yield* backup(db, path, options.now)
+    return { db, refusal: Option.none() }
+  }).pipe(Effect.mapError((cause) => new RecordFailed({ message: `record: open ${path}: ${messageOf(cause)}` })))
+
 /** The record at `path`, open for the scope's life. */
-export const open = (path: string, options: OpenOptions) =>
-  Effect.acquireRelease(
-    Effect.try({ try: () => connect(path, options), catch: (cause) => new RecordFailed({ message: `record: open ${path}: ${messageOf(cause)}` }) }),
-    (opened) => Effect.sync(() => opened.db.close()),
-  )
+export const open = (path: string, options: OpenOptions) => Effect.acquireRelease(connect(path, options), (opened: Connected) => Effect.sync(() => opened.db.close()))
+
+/** The store on the file at `path` outside a scope, for a script that runs commands one after another (a writer process, a test); `close` ends it. */
+export const connected = (path: string, options: OpenOptions) => Effect.map(connect(path, options), (each) => ({ store: make(each.db, each.refusal), close: () => each.db.close() }))
 
 /** The record at `path` as the layer's store. A file that cannot be opened is a defect at setup, naming why. */
-export const layer = (path: string, options: OpenOptions) => Layer.effect(CommitmentRecord, Effect.map(open(path, options), (opened) => make(opened.db, opened.refusal)))
+export const layer = (path: string, options: OpenOptions) => Layer.effect(CommitmentRecord, Effect.map(open(path, options), (each) => make(each.db, each.refusal)))
 
 /** A store that refuses every call with `failed`: the record whose file did not open, so its callers say why and go on. */
 export const failedStore = (failed: RecordFailed): CommitmentRecord["Service"] =>
   CommitmentRecord.of({ run: () => Effect.fail(failed), read: Effect.fail(failed), history: () => Effect.fail(failed), events: Effect.fail(failed) })
 
 /** The record at `path`, opened at the layer's build with now's backup; a file that does not open gives `failedStore`, never a dead plugin. */
-export const layerOrFailed = (path: string) =>
+export const layerOrFailed = (path: Effect.Effect<string, unknown, Platform>) =>
   Layer.effect(
     CommitmentRecord,
-    Effect.flatMap(Clock.currentTimeMillis, (now) => open(path, { readonly: false, now })).pipe(
-      Effect.map((opened) => make(opened.db, opened.refusal)),
+    Effect.gen(function* () {
+      const file = yield* Effect.mapError(path, (cause) => new RecordFailed({ message: `record: no file: ${messageOf(cause)}` }))
+      const now = yield* Clock.currentTimeMillis
+      return yield* open(file, { readonly: false, now })
+    }).pipe(
+      Effect.map((each) => make(each.db, each.refusal)),
       Effect.catch((failed) => Effect.succeed(failedStore(failed))),
     ),
   )
@@ -487,22 +517,50 @@ export const textColumnsOf = (db: Database): ReadonlyArray<string> =>
   db
     .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
     .all()
-    .flatMap((table) => db.query<{ name: string; type: string }, []>(`PRAGMA table_info(${table.name})`).all().flatMap((column) => (column.type === "TEXT" ? [`${table.name}.${column.name}`] : [])))
+    .flatMap((table) => db.query<{ name: string; type: string }, []>(`PRAGMA table_info(${table.name})`).all().flatMap((column) => Arr.filter([`${table.name}.${column.name}`], () => column.type === "TEXT")))
 
-/** The store on the file at `path` outside a scope, for a script that runs commands one after another (the CLI, a writer test); `close` ends it. */
-export const connectSync = (path: string, options: OpenOptions) => {
-  const opened = connect(path, options)
-  return { store: make(opened.db, opened.refusal), close: () => opened.db.close() }
+/**
+ * The record at `path` in an existing folder, opened and migrated with SQLite alone: no backup, no folder made, no
+ * wait on another writer. A test's or the simulated host's scratch file (`options.record`), opened where nothing may
+ * wait on the platform; the plugin OpenCode loads opens through `layerOrFailed`.
+ */
+export const layerScratch = (path: string) =>
+  Layer.effect(
+    CommitmentRecord,
+    Effect.try({
+      try: () => {
+        const db = attached(path, false)
+        db.run("PRAGMA journal_mode = WAL")
+        db.run("PRAGMA synchronous = NORMAL")
+        const version = versionOf(db)
+        if (version > VERSION) return make(db, Option.some(`record: ${path} is version ${version}; this code writes version ${VERSION}: update it to write`))
+        migrate(db)
+        return make(db, Option.none())
+      },
+      catch: (cause) => new RecordFailed({ message: `record: open ${path}: ${messageOf(cause)}` }),
+    }).pipe(Effect.catch((failed) => Effect.succeed(failedStore(failed)))),
+  )
+
+/**
+ * The store on a file `open` made and migrated, attached again outside a scope (a restart in the model run: a new
+ * connection and store on the same file); `close` ends it.
+ */
+export const reattached = (path: string) => {
+  const db = attached(path, false)
+  return { store: make(db, Option.none()), close: () => db.close() }
 }
+
 
 /** The replay law's read: the rows the events fold to from an empty record. */
 export const replayed = (events: ReadonlyArray<RecordEvent>): Snapshot => fold(EMPTY, events)
 
 const encodeHappening = Schema.encodeSync(Happening)
 
+const jsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+
 /** One event as the CLI's `export` writes it: a JSON line with the event table's columns, `data` its fields. */
 export const exportLine = (event: StoredEvent): string =>
-  JSON.stringify({
+  jsonLine({
     seq: event.seq,
     at: event.at,
     run: event.run,

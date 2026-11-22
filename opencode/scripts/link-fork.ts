@@ -88,6 +88,8 @@ const ours = (link: string | undefined): link is string =>
 /** The fork's Effect platform packages, built on the same `effect` the TUI's modules link: sim/ reads files through them. */
 const PLATFORM = "packages/util/node_modules/@effect"
 const platformModules = path.normalize(PLATFORM) + path.sep
+/** The fork's Node platform packages a plugin may provide: files, paths and processes on the plugin's own `effect`. */
+const PLATFORM_PACKAGES = ["platform-node", "platform-node-shared"]
 
 /** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
 const prune = (dir: string) => {
@@ -137,6 +139,9 @@ for (const dir of packages) {
     merge(platform, path.join(modules, "@effect"))
   }
   if (path.basename(dir) === "sim-tui") for (const [name, under] of SIM_TUI) linkThrough(path.join(modules, name), under)
+  // Every other package may provide the fork's Node platform (built on the `effect` linked above) at its composition
+  // root (mods/orchestrate/node/platform.ts): linked through the anchor, so a synced link resolves on each machine.
+  else if (path.basename(dir) !== "sim" && existsSync(platform)) for (const name of PLATFORM_PACKAGES) linkThrough(path.join(modules, "@effect", name), `../../util/node_modules/@effect/${name}`)
 }
 
 /**

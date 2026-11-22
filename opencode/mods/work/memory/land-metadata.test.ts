@@ -20,7 +20,7 @@ const INTEGRATE = "/code/.work/app/integrate"
 /** The land of feat-x and feat-y (feat-y at its own head) by the tool, in a world whose land pushes or does not; its metadata. */
 const landed = (push: boolean) => {
   const rifts = MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), { ...MemoryRifts.clean(OTHER, "feat/y"), head: "def5678" }])
-  const landing = MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", undefined, { push }) })
+  const landing = MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", void 0, { push }) })
   const layer = Model.layer.pipe(
     Layer.provide(
       Layer.mergeAll(

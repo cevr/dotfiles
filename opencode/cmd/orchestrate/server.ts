@@ -174,6 +174,7 @@ import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
 import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
+import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
@@ -284,15 +285,18 @@ export type RecordLayer = (ctx: Plugin.Context, options: Options) => Layer.Layer
  */
 export const liveRecord: RecordLayer = (ctx, options) =>
   SqliteRecord.layerOrFailed(
-    options.record ?? SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), SqliteRecord.keyOfCheckout(ctx.location.directory)),
-  )
+    Option.match(Option.fromUndefinedOr(options.record), {
+      onSome: Effect.succeed,
+      onNone: () => Effect.flatMap(SqliteRecord.keyOfCheckout(ctx.location.directory), (key) => SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), key)),
+    }),
+  ).pipe(Layer.provide(platform))
 
 /** A record in memory, one per plugin start: what a host with no record file (a test's) keeps. */
 export const memoryRecord: RecordLayer = () => MemoryRecord.layer
 
 /** The file `options.record` names when it names one (a test's scratch file, kept across a restart), else memory. */
 export const namedRecord: RecordLayer = (ctx, options) =>
-  Option.match(Option.fromUndefinedOr(options.record), { onNone: () => memoryRecord(ctx, options), onSome: () => liveRecord(ctx, options) })
+  Option.match(Option.fromUndefinedOr(options.record), { onNone: () => memoryRecord(ctx, options), onSome: (record) => SqliteRecord.layerScratch(record) })
 
 /** The outside systems the model runs on. */
 export type Externals =

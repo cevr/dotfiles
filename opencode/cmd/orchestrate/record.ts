@@ -21,6 +21,7 @@ import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import type { Actor } from "@dotfiles/opencode-orchestrate/record"
 import { CommitmentRecord, MainLine } from "@dotfiles/opencode-orchestrate/service"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
+import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 
 const USAGE = "usage: bun cmd/orchestrate/record.ts <action> [--json '<fields>'] [--file <db>] [--checkout <dir>] [--actor <id>]"
@@ -104,18 +105,25 @@ const answer = (call: Call) =>
   )
 
 /** The record file `call` names, or this checkout's. */
-const fileOf = (call: Call): string =>
-  Option.getOrElse(call.file, () => SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), SqliteRecord.keyOfCheckout(call.checkout)))
+const fileOf = (call: Call) =>
+  Option.match(call.file, {
+    onSome: Effect.succeed,
+    onNone: () => Effect.flatMap(SqliteRecord.keyOfCheckout(call.checkout), (key) => SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), key)),
+  })
 
 /** The record `call` runs on: read-only for a read. */
 const recordOf = (call: Call) =>
   Layer.effect(
     CommitmentRecord,
-    Effect.flatMap(Clock.currentTimeMillis, (now) => SqliteRecord.open(fileOf(call), { readonly: READS.includes(call.action), now })).pipe(
+    Effect.gen(function* () {
+      const file = yield* fileOf(call)
+      const now = yield* Clock.currentTimeMillis
+      return yield* SqliteRecord.open(file, { readonly: READS.includes(call.action), now })
+    }).pipe(
       Effect.map((opened) => SqliteRecord.make(opened.db, opened.refusal)),
       Effect.mapError((failed) => new Refused({ message: failed.message })),
     ),
-  )
+  ).pipe(Layer.provide(platform))
 
 /** The output of one run, and its exit code. */
 export interface Ran {

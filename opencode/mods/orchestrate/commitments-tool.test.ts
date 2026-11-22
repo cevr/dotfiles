@@ -216,7 +216,7 @@ describe("a land event", () => {
   test("a pushed work land's metadata is the event; a land that did not push, another action or an older plugin's metadata is none", () => {
     expect(workLandedOf(PUSHED)).toEqual(Option.some([{ path: "/code/.work/app/u1", head: "def5678" }]))
     const { pushed: _pushed, landed: _landed, ...checked } = PUSHED
-    expect([workLandedOf(checked), workLandedOf({ ...PUSHED, action: "list" }), workLandedOf({ ...PUSHED, landed: "u1" }), workLandedOf(undefined), workLandedOf("Landed 1 workspace(s)")]).toEqual(
+    expect([workLandedOf(checked), workLandedOf({ ...PUSHED, action: "list" }), workLandedOf({ ...PUSHED, landed: "u1" }), workLandedOf({}), workLandedOf("Landed 1 workspace(s)")]).toEqual(
       Array.from({ length: 5 }, () => Option.none()),
     )
   })

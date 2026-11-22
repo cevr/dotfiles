@@ -571,20 +571,20 @@ const DATA_ONLY = { "suggest_owner": "slug", "woke.root": "slug" } as const sati
 type DataOnly = keyof typeof DATA_ONLY
 
 /** Each column's and data-only field's kind, by name. */
-const KINDS: Readonly<Record<string, ColumnKind>> = { ...COLUMNS, ...DATA_ONLY }
+const KINDS = { ...COLUMNS, ...DATA_ONLY } satisfies Record<Column | DataOnly, ColumnKind>
 
 /** The values a literal column takes. */
-const LITERALS: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "commitment.source_kind": SOURCE_KINDS,
-  "commitment.rank": RANKS,
-  "commitment.state": STATES,
-  "prerequisite.kind": PREREQUISITE_KINDS,
-  "event.subject_kind": SUBJECT_KINDS,
-  "event.type": Object.keys(Happening.cases),
-  "event.actor_role": ACTOR_ROLES,
-  "hand_back.verdict": VERDICTS,
-  "hand_back.routing": ROUTINGS,
-}
+const LITERALS = new Map<string, ReadonlyArray<string>>([
+  ["commitment.source_kind", SOURCE_KINDS],
+  ["commitment.rank", RANKS],
+  ["commitment.state", STATES],
+  ["prerequisite.kind", PREREQUISITE_KINDS],
+  ["event.subject_kind", SUBJECT_KINDS],
+  ["event.type", Object.keys(Happening.cases)],
+  ["event.actor_role", ACTOR_ROLES],
+  ["hand_back.verdict", VERDICTS],
+  ["hand_back.routing", ROUTINGS],
+])
 
 const SLUG_RULE = 'is not a slug (letters, digits, ".", "_", "-", at most 80, starting with a letter or digit)'
 const HEAD = /^[0-9a-f]{7,40}$/
@@ -602,7 +602,7 @@ const wordRefusal = (kind: ColumnKind, column: string, value: string): Option.Op
     Match.when("time", () => when(!ISO.test(value) || Number.isNaN(msOf(value)), "is not an ISO time")),
     Match.when("path", () => firstOf([when(!PATH.test(value) || value.length > PATH_MAX, `is not one line of at most ${PATH_MAX} characters`), when(holdsSecret(value), "holds a secret's shape")])),
     Match.when("literal", () => {
-      const values = LITERALS[column] ?? []
+      const values = Option.getOrElse(Option.fromUndefinedOr(LITERALS.get(column)), (): ReadonlyArray<string> => [])
       return when(!values.includes(value), `is not one of ${values.join(", ")}`)
     }),
     Match.orElse(() => Option.none()),
@@ -616,7 +616,7 @@ type Where = string
  * redacted and cut, a one-word value as given when it fits its grammar and holds no secret; else the whole command
  * refused, naming the column and never the value.
  */
-const held = (where: Where, column: Column | DataOnly, value: string, kind: ColumnKind = KINDS[column] ?? "slug"): Held<string> =>
+const held = (where: Where, column: Column | DataOnly, value: string, kind: ColumnKind = KINDS[column]): Held<string> =>
   Match.value(kind).pipe(
     Match.when("free", () => freeText(`${where}column ${column}`, value)),
     Match.when("why", () => freeText(`${where}column ${column}`, value, WHY_MAX)),
@@ -753,7 +753,7 @@ const heldEnvelope = (where: Where, event: RecordEvent): Held<RecordEvent> =>
 
 /** Where an event's refusal is: an import's row by its id, else the command. */
 const isImport = Predicate.or(Predicate.isTagged("imported"), Predicate.isTagged("imported_history"))
-const whereOf = (event: RecordEvent): Where => (isImport(event.happening) ? `row ${redact(event.subjectId)}, ` : "")
+const whereOf = (event: RecordEvent): Where => Arr.filter([`row ${redact(event.subjectId)}, `], () => isImport(event.happening)).join("")
 
 /**
  * The record's one boundary, which every command's events pass (standing.ts `decideCommand`) before any store writes

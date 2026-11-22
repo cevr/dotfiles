@@ -5,9 +5,10 @@
 // under 40 lines.
 import { Database } from "bun:sqlite"
 import { expect } from "bun:test"
-import { chmodSync } from "node:fs"
+import { spawnSync } from "bun"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { listedOf, sectionOf } from "@dotfiles/opencode-orchestrate/commitments-tool"
+import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import * as Seed from "../../sim/seed.ts"
 import { scratch } from "../../tests/scratch.ts"
@@ -154,7 +155,8 @@ Seed.effect(
         const add = fieldsJson({ source_kind: "plan-part", source_ref: "plan.md:1", parts: [{ id: "a1", title: "one" }] })
         expect((yield* cli(held.path, "add", "--json", add)).code).toBe(0)
         expect(yield* cli(held.path, "decide", "--json", fieldsJson({ id: "a1" }))).toEqual({ out: "", err: "commitments: decide needs why.", code: 1 })
-        chmodSync(`${held.path}/record.db`, 0o444)
+        // The file made read-only as a host that may not write it sees it (no Effect platform layer types against the mods' effect).
+        expect(spawnSync(["chmod", "444", `${held.path}/record.db`]).exitCode).toBe(0)
         expect((yield* cli(held.path, "list", "--checkout", "/nonexistent/loop-probe-x")).out).toBe("commitments: 1\na1 [unowned] -: one (plan-part plan.md:1; default)")
         const refused = yield* cli(held.path, "release", "--json", fieldsJson({ id: "a1" }))
         expect(refused.code).toBe(1)
@@ -206,9 +208,9 @@ Seed.effect(
           ERGO_LIKE.flatMap((row) => Arr.filter([{ id: row.id, from: "open", to: "closed", note: "done another way" }], () => row.state === "closed")),
         )
         expect((yield* imported(held.path)).code).toBe(0)
-        const connected = SqliteRecord.connectSync(`${held.path}/record.db`, { readonly: true, now: Date.parse(AT) })
-        const snapshot = yield* Effect.orDie(connected.store.read)
-        connected.close()
+        const reading = yield* SqliteRecord.connected(`${held.path}/record.db`, { readonly: true, now: Date.parse(AT) })
+        const snapshot = yield* Effect.orDie(reading.store.read)
+        reading.close()
         const lines = sectionOf(listedOf(snapshot, { now: Date.parse(AT), onMain: new Set(), gone: new Set() }))
         expect(lines.length).toBeLessThan(40)
         // Measured: the counts line, then unowned and due (ten ids each and the list call); held is quiet.
@@ -216,5 +218,5 @@ Seed.effect(
         expect(Option.fromUndefinedOr(lines[0])).toEqual(Option.some(expect.stringContaining("Commitments: 116 open")))
       }),
     (held) => Effect.sync(() => held[Symbol.dispose]()),
-  ),
+  ).pipe(Effect.provide(platform)),
 )

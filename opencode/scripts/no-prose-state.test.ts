@@ -8,17 +8,15 @@
  * It finds its sources by walking, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
  * @reads mods/orchestrate/** mods/status/** mods/queue/stale.ts ../skills/orchestrate/scripts/** scripts/no-prose-state.allow.json
  */
-import { describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync, statSync } from "node:fs"
-import { join } from "node:path"
-import { Array as Arr, Option, Predicate, Schema } from "effect"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Array as Arr, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
+import { describe, expect, it } from "effect-bun-test"
 import { parseSync, Visitor } from "oxc-parser"
 
-/** The repository's root: the allow list's paths are relative to it. The suite runs from opencode/, as the gate runs it. */
-const OPENCODE = process.cwd()
-const REPO = join(OPENCODE, "..")
+const live = it.live.layer(BunServices.layer)
+
+/** The folders and files the ratchet watches, relative to the repository (the parent of opencode/, where the gate runs the suite). */
 const ROOTS = ["opencode/mods/orchestrate", "opencode/mods/status", "opencode/mods/queue/stale.ts", "skills/orchestrate/scripts"]
-const ALLOW = join(OPENCODE, "scripts", "no-prose-state.allow.json")
 
 const Entry = Schema.Struct({
   file: Schema.String,
@@ -27,23 +25,36 @@ const Entry = Schema.Struct({
   until: Schema.Literals(["triggers-wake", "hand-back-tools", "verdict-tools", "parsers-out", "stays"]),
 })
 type Entry = typeof Entry.Type
-const decodeAllow = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Entry)))
+const decodeAllow = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Entry)))
 
 /** A source the ratchet reads: TypeScript, not a test, not a dependency. */
 const isSource = (name: string) => /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)
 
-/** Every source under `path` (a file or a directory), relative to the repository. */
-const sourcesUnder = (path: string): ReadonlyArray<string> => {
-  const full = join(REPO, path)
-  if (!statSync(full).isDirectory()) return [path]
-  return readdirSync(full)
-    .filter((name) => name !== "node_modules")
-    .flatMap((name) => {
-      const child = join(path, name)
-      if (statSync(join(REPO, child)).isDirectory()) return sourcesUnder(child)
-      return Arr.filter([child], () => isSource(name))
-    })
-}
+/** The repository's root and the allow list: the list's paths are relative to the root. */
+const places = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const opencode = path.resolve(".")
+  return { repo: path.join(opencode, ".."), allow: path.join(opencode, "scripts", "no-prose-state.allow.json") }
+})
+
+/** Every source under `at` (a file or a directory), relative to the repository. */
+const sourcesUnder = (repo: string, at: string): Effect.Effect<ReadonlyArray<string>, unknown, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const full = path.join(repo, at)
+    if ((yield* fs.stat(full)).type !== "Directory") return [at]
+    const names = (yield* fs.readDirectory(full)).filter((name) => name !== "node_modules")
+    const each = yield* Effect.forEach(names, (name) =>
+      Effect.gen(function* () {
+        const child = path.join(at, name)
+        if ((yield* fs.stat(path.join(repo, child))).type === "Directory") return yield* sourcesUnder(repo, child)
+        return Arr.filter([child], () => isSource(name))
+      }),
+    )
+    return each.flat()
+  })
+
 
 /** The string methods that take their string argument as a regular expression. */
 const MATCHING = ["match", "matchAll", "search"]
@@ -97,40 +108,55 @@ const ratchet = (sources: ReadonlyMap<string, string>, allow: ReadonlyArray<Entr
   }
 }
 
-const sources = (): ReadonlyMap<string, string> => new Map(ROOTS.flatMap(sourcesUnder).map((file) => [file, readFileSync(join(REPO, file), "utf8")] as const))
-const allow = (): ReadonlyArray<Entry> => decodeAllow(readFileSync(ALLOW, "utf8"))
+/** The watched sources (file → text) and the allow list. */
+const read = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const { repo, allow } = yield* places
+  const files = (yield* Effect.forEach(ROOTS, (root) => sourcesUnder(repo, root))).flat()
+  const texts = yield* Effect.forEach(files, (file) => Effect.map(fs.readFileString(path.join(repo, file)), (text) => [file, text] as const))
+  const sources: ReadonlyMap<string, string> = new Map(texts)
+  return { sources, allow: yield* decodeAllow(yield* fs.readFileString(allow)) }
+})
 
 describe("no run state parsed from prose", () => {
-  test("every expression in the watched sources has an entry, and every entry an expression", () => {
-    expect(ratchet(sources(), allow())).toEqual({ unlisted: [], stale: [] })
-  })
+  live("every expression in the watched sources has an entry, and every entry an expression", () =>
+    Effect.gen(function* () {
+      const { sources, allow } = yield* read
+      expect(ratchet(sources, allow)).toEqual({ unlisted: [], stale: [] })
+    }),
+  )
 
-  test("each entry says why, and nothing is listed twice", () => {
-    const entries = allow()
-    expect(entries.filter((entry) => entry.why.trim().length < 20)).toEqual([])
-    expect(entries.length).toBe(new Set(entries.map((entry) => keyOf(entry.file, entry.source))).size)
-  })
+  live("each entry says why, and nothing is listed twice", () =>
+    Effect.gen(function* () {
+      const { allow: entries } = yield* read
+      expect(entries.filter((entry) => entry.why.trim().length < 20)).toEqual([])
+      expect(entries.length).toBe(new Set(entries.map((entry) => keyOf(entry.file, entry.source))).size)
+    }),
+  )
 
-  test("a new expression in record.ts, in a scratch copy, fails until listed; a listed one gone fails too", () => {
-    const record = "opencode/mods/orchestrate/record.ts"
-    const all = sources()
-    const text = Option.getOrElse(Option.fromUndefinedOr(all.get(record)), () => "")
-    const added = new Map([...all, [record, `${text}\nexport const verdictOf = (line: string) => /verdict: (\\w+)/.exec(line)\n`]])
-    expect(ratchet(added, allow())).toEqual({ unlisted: [{ file: record, source: "/verdict: (\\w+)/" }], stale: [] })
-    // The other parsers a parser takes, each caught: a string match, a split on a marker line, RegExp called without new.
-    const parsers = [
-      'text.match("Verdict: ([A-Z]+)")',
-      'text.matchAll(`round-${n}-request`)',
-      'text.search("^Head: ")',
-      'text.split("\\n## Verdict\\n")',
-      'RegExp("^Verdict: (\\\\w+)", "m")',
-    ]
-    const parsed = new Map([...all, [record, `${text}\n${parsers.map((parser, at) => `export const parser${at} = (text: string, n: number) => ${parser}`).join("\n")}\n`]])
-    expect(ratchet(parsed, allow()).unlisted.map((each) => each.source)).toEqual(parsers)
-    // A bare line split, a plain replace and a string's own methods are no parsers of state.
-    const plain = new Map([...all, [record, `${text}\nexport const lines = (text: string) => [text.split("\\n"), text.replace("a", "b"), text.startsWith("x")]\n`]])
-    expect(ratchet(plain, allow()).unlisted).toEqual([])
-    const gone = new Map([...all, [record, ""]])
-    expect(ratchet(gone, allow()).stale.map((each) => each.file)).toEqual(expect.arrayContaining([record]))
-  })
+  live("a new expression in record.ts, in a scratch copy, fails until listed; a listed one gone fails too", () =>
+    Effect.gen(function* () {
+      const { sources: all, allow } = yield* read
+      const record = "opencode/mods/orchestrate/record.ts"
+      const text = Option.getOrElse(Option.fromUndefinedOr(all.get(record)), () => "")
+      const added = new Map([...all, [record, `${text}\nexport const verdictOf = (line: string) => /verdict: (\\w+)/.exec(line)\n`]])
+      expect(ratchet(added, allow)).toEqual({ unlisted: [{ file: record, source: "/verdict: (\\w+)/" }], stale: [] })
+      // The other parsers a parser takes, each caught: a string match, a split on a marker line, RegExp called without new.
+      const parsers = [
+        'text.match("Verdict: ([A-Z]+)")',
+        'text.matchAll(`round-${n}-request`)',
+        'text.search("^Head: ")',
+        'text.split("\\n## Verdict\\n")',
+        'RegExp("^Verdict: (\\\\w+)", "m")',
+      ]
+      const parsed = new Map([...all, [record, `${text}\n${parsers.map((parser, at) => `export const parser${at} = (text: string, n: number) => ${parser}`).join("\n")}\n`]])
+      expect(ratchet(parsed, allow).unlisted.map((each) => each.source)).toEqual(parsers)
+      // A bare line split, a plain replace and a string's own methods are no parsers of state.
+      const plain = new Map([...all, [record, `${text}\nexport const lines = (text: string) => [text.split("\\n"), text.replace("a", "b"), text.startsWith("x")]\n`]])
+      expect(ratchet(plain, allow).unlisted).toEqual([])
+      const gone = new Map([...all, [record, ""]])
+      expect(ratchet(gone, allow).stale.map((each) => each.file)).toEqual(expect.arrayContaining([record]))
+    }),
+  )
 })

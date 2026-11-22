@@ -1012,42 +1012,6 @@
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
-    },
-    {
-      "files": [
-        "mods/orchestrate/sqlite/record.ts"
-      ],
-      "rules": {
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "mods/orchestrate/sqlite/record.test.ts"
-      ],
-      "rules": {
-        "effect/noEffectRunInTests": "off",
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "cmd/orchestrate/record-cli.test.ts"
-      ],
-      "rules": {
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
-        "scripts/no-prose-state.test.ts"
-      ],
-      "rules": {
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
     }
   ]
 }

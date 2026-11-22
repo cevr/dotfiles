@@ -22,7 +22,7 @@ import {
   type StoredEvent,
   wordKey,
 } from "@dotfiles/opencode-orchestrate/record"
-import { MainLine } from "@dotfiles/opencode-orchestrate/service"
+import { type CommitmentRecord, MainLine } from "@dotfiles/opencode-orchestrate/service"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { checkOf, checkpointOf, type Facts, passedOf } from "@dotfiles/opencode-orchestrate/standing"
 import { type Answer, type Happened, type HappenedType, makeModel, okOf, refused, sorted, type Subject, type Trigger, type Woke, type World } from "./record-model.ts"
@@ -65,7 +65,7 @@ const happenedOf = (event: StoredEvent): ReadonlyArray<Happened> =>
 const handBackName = (id: number | string): string => `h${id}`
 
 /** The store's subject over `world`, on the store `store`. */
-const storeSubject = (store: ReturnType<typeof SqliteRecord.connectSync>["store"], world: World): Subject => {
+const storeSubject = (store: CommitmentRecord["Service"], world: World): Subject => {
   const cache = { snapshot: Option.none<Snapshot>(), events: Option.none<ReadonlyArray<StoredEvent>>() }
   const read = (): Snapshot =>
     Option.getOrElse(cache.snapshot, () => {
@@ -157,14 +157,17 @@ const storeSubject = (store: ReturnType<typeof SqliteRecord.connectSync>["store"
   }
 }
 
-/** The SQLite record at `path` as the subject; `reopen` closes its connection and opens a new store on the file. */
+/**
+ * The SQLite record at `path` (a file `SqliteRecord.open` made and migrated, as the plugin's start does) as the subject;
+ * `reopen` closes its connection and attaches a new connection and store to the file.
+ */
 export const built = (path: string, world: World): Opened => {
-  const held = { connected: SqliteRecord.connectSync(path, { readonly: false, now: world.now }) }
+  const held = { connected: SqliteRecord.reattached(path) }
   return {
     subject: storeSubject(held.connected.store, world),
     reopen: () => {
       held.connected.close()
-      held.connected = SqliteRecord.connectSync(path, { readonly: false, now: world.now })
+      held.connected = SqliteRecord.reattached(path)
       return storeSubject(held.connected.store, world)
     },
     close: () => held.connected.close(),

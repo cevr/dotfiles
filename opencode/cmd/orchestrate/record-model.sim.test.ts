@@ -19,6 +19,8 @@
 import { Array as Arr, Config, Effect, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
+import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
+import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { scratch } from "../../tests/scratch.ts"
 import { type Answer, type Happened, makeModel, okOf, type State, type Subject, type Trigger, type World } from "./record-model.ts"
 import { type Opened, SUBJECTS } from "./record-subject.ts"
@@ -320,9 +322,10 @@ seeded("no commitment disappears: every open one is held or listed, through rest
       Effect.mapError(() => new Seed.SeedFailed({ message: `SUBJECT=${name}: not a subject; record-subject.ts names them` })),
     )
     yield* Effect.acquireUseRelease(
-      Effect.sync(() => scratch("record-model-")),
+      // The file made and migrated as the plugin's start makes it; the built subject attaches to it, a restart attaches again.
+      Effect.tap(Effect.sync(() => scratch("record-model-")), (dir) => Effect.scoped(SqliteRecord.open(`${dir.path}/record.db`, { readonly: false, now: 1_000_000 })).pipe(Effect.orDie)),
       (dir) => Effect.sync(() => runSeed(seed, expect, (world) => make(`${dir.path}/record.db`, world))),
       (dir) => Effect.sync(() => dir[Symbol.dispose]()),
     )
-  }),
+  }).pipe(Effect.provide(platform)),
 )

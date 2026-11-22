@@ -3,7 +3,7 @@
 // `orchestrate status`, every land and the queue check say of the record). The plugin (cmd/orchestrate/server.ts) runs
 // the commands on the CommitmentRecord and reads the facts a standing needs (`factsOf`) at each call; nothing of a run
 // is kept between calls. Nothing here reads prose: every field is the call's own.
-import { Array as Arr, Effect, Match, Option, Order, Predicate, Result, Schema } from "effect"
+import { Array as Arr, Effect, flow, Match, Option, Order, Predicate, Result, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { redact } from "@dotfiles/opencode-digest/redact"
 import {
@@ -275,7 +275,7 @@ const decodeWorkLanded = Schema.decodeUnknownOption(WorkLanded)
  * The land event a work tool call's metadata carries: a pushed land's workspaces, each with the head it merged. A land
  * that did not push (no `pushed`, no `landed`), another action, or metadata an older work plugin wrote is none.
  */
-export const workLandedOf = (metadata: unknown): Option.Option<ReadonlyArray<LandedLane>> => Option.map(decodeWorkLanded(metadata), (pushed) => pushed.landed)
+export const workLandedOf = flow(decodeWorkLanded, Option.map((pushed) => pushed.landed))
 
 /** One claim: the commitment, its run and owner, and the commit that holds its work. */
 export interface Claim {
@@ -295,9 +295,9 @@ export interface Claim {
 export const landClaimsOf = (snapshot: Snapshot, landed: ReadonlyArray<LandedLane>): ReadonlyArray<Claim> =>
   Arr.dedupeWith(
     landed.flatMap((lane) =>
-      [...snapshot.commitments.values()]
-        .filter((row) => row.state === "open" && Option.contains(row.lanePath, lane.path) && Option.contains(row.ownerLane, row.id) && !Option.contains(row.head, lane.head))
-        .map((row): Claim => ({ id: row.id, run: row.run, owner: row.id, head: lane.head })),
+      [...snapshot.commitments.values()].flatMap((row): ReadonlyArray<Claim> =>
+        Arr.filter([{ id: row.id, run: row.run, owner: row.id, head: lane.head }], () => row.state === "open" && Option.contains(row.lanePath, lane.path) && Option.contains(row.ownerLane, row.id) && !Option.contains(row.head, lane.head)),
+      ),
     ),
     (a, b) => a.id === b.id,
   )

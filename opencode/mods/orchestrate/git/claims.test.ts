@@ -49,6 +49,7 @@ const repository = (dir: string) => {
   const main = (sha: string) => void git(path, ["update-ref", "refs/heads/main", sha])
   const root = commitIn(path, [], "root")
   main(root)
+  const followed = { n: 0 }
   const lane = (unit: string, source: string = path) => {
     const at = `${dir}/lanes/${unit}`
     gitClone(source, at, ["-q", "--shared", "--no-checkout"], ENV)
@@ -60,7 +61,7 @@ const repository = (dir: string) => {
     }
     /** The lane moved to `other`'s head (a fast-forward onto it, a reset to it): no commit of its own. */
     const follow = (other: { readonly path: string; readonly head: () => string }) => {
-      git(at, ["fetch", "-q", other.path, `HEAD:refs/followed/${Math.random().toString(36).slice(2)}`])
+      git(at, ["fetch", "-q", other.path, `HEAD:refs/followed/${++followed.n}`])
       move(other.head())
       return head()
     }
