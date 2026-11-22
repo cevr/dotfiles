@@ -12,11 +12,13 @@ import {
   followUpCommandOf,
   historyAnswer,
   inputRefusal,
+  landClaimsOf,
   laneLine,
   listAnswer,
   listedOf,
   sectionKeys,
   sectionOf,
+  workLandedOf,
 } from "./commitments-tool.ts"
 import { type Actor, Command, EMPTY, fold, type RecordEvent, type Snapshot, type StoredEvent } from "./record.ts"
 import { decideCommand, type Facts } from "./standing.ts"
@@ -138,6 +140,22 @@ describe("the section", () => {
     // C has acted in the run since (its close of own-2): its reopen is not flagged.
     const reopened = Result.getOrThrow(decideCommand(after.snapshot, commandIn({ action: "reopen", id: "own-1" }), { actor: otherC, now: T0 + 9000 }))
     expect(reopened.flatMap((event) => Match.value(event.happening).pipe(Match.tag("reopened", (happened) => [happened.outsideRun]), Match.orElse(() => [])))).toEqual([Option.some(false)])
+    // History is append-only: C reopens own-2 and decides it again, unflagged now (it has acted in the run); the first,
+    // flagged close stays in the history as written.
+    const again = [commandIn({ action: "reopen", id: "own-2" }), commandIn({ action: "decide", id: "own-2", why: "done another way, again" })].reduce(
+      (held: Played, command, at) => {
+        const events = Result.getOrThrow(decideCommand(held.snapshot, command, { actor: otherC, now: T0 + 10_000 + at * 1000 }))
+        return { snapshot: fold(held.snapshot, events), events: [...held.events, ...events] }
+      },
+      after,
+    )
+    const own2 = again.events.filter((event) => event.subjectId === "own-2").flatMap((event) => Match.value(event.happening).pipe(Match.tag("decided", (happened) => [[event.happening._tag, happened.outsideRun]]), Match.tag("reopened", (happened) => [[event.happening._tag, happened.outsideRun]]), Match.orElse(() => [])))
+    expect(own2).toEqual([
+      ["decided", Option.some(true)],
+      ["reopened", Option.some(false)],
+      ["decided", Option.some(false)],
+    ])
+    expect(historyAnswer("own-2", stored(again.events.filter((event) => event.subjectId === "own-2"))).split("\n").filter((line) => line.includes(" decided open → decided by "))).toHaveLength(2)
   })
 
   test("the notices line lists at most ten, then how many more and the call that lists them", () => {
@@ -155,7 +173,7 @@ describe("the section", () => {
   test("at 5,000 commitments, unrouted hand-backs and unseen notices among them, the section stays a few short lines", () => {
     const total = 5000
     const ids = Arr.makeBy(total, (at) => `c${at}`)
-    const plugin: Actor = { id: "orchestrate status", role: "plugin" }
+    const plugin: Actor = { id: "orchestrate-status", role: "plugin" }
     const steps: ReadonlyArray<readonly [Command, Actor]> = [
       ...Arr.chunksOf(ids, 50).map((chunk, at): readonly [Command, Actor] => [add(chunk, Match.value(at % 2).pipe(Match.when(0, () => "owner-answer" as const), Match.orElse(() => "plan-part" as const))), ROOT]),
       ...ids.filter((_, at) => at % 3 === 0).map((id, at): readonly [Command, Actor] => [assign(id, `L${at % 7}`), ROOT]),
@@ -184,10 +202,40 @@ describe("the lane's answer", () => {
     const answer = ["Lane u1 made at /w/u1.", "Start its implementor:", "agent({ … })"].join("\n")
     expect(beforeStart(answer, laneLine("u1", ["u1", "f1"])).split("\n")).toEqual([
       "Lane u1 made at /w/u1.",
-      'Commitments of u1: u1, f1. Its hand-back claims what it lands; commitments({ action: "list", owner: "u1" }) lists them.',
+      'Commitments of u1: u1, f1. A land of its lane (orchestrate land, the work tool\'s) claims the head it merges; commitments({ action: "list", owner: "u1" }) lists them.',
       "Start its implementor:",
       "agent({ … })",
     ])
     expect(beforeStart("one\ntwo", "x")).toBe("one\nx\ntwo")
+  })
+})
+
+describe("a land event", () => {
+  const PUSHED = { action: "land", source: "/code/app", path: "/code/.work/app/integrate", rifts: ["/code/.work/app/u1"], pushed: "abc1234", landed: [{ path: "/code/.work/app/u1", head: "def5678" }] }
+
+  test("a pushed work land's metadata is the event; a land that did not push, another action or an older plugin's metadata is none", () => {
+    expect(workLandedOf(PUSHED)).toEqual(Option.some([{ path: "/code/.work/app/u1", head: "def5678" }]))
+    const { pushed: _pushed, landed: _landed, ...checked } = PUSHED
+    expect([workLandedOf(checked), workLandedOf({ ...PUSHED, action: "list" }), workLandedOf({ ...PUSHED, landed: "u1" }), workLandedOf(undefined), workLandedOf("Landed 1 workspace(s)")]).toEqual(
+      Array.from({ length: 5 }, () => Option.none()),
+    )
+  })
+
+  test("claims for the open commitment whose lane the workspace is, owned by its unit, once a head", () => {
+    const laned = played([
+      Command.cases.lane.make({ run: "default", unit: "u1", path: Option.some("/w/u1") }),
+      Command.cases.lane.make({ run: "default", unit: "u2", path: Option.some("/w/u2") }),
+      add(["loose"]),
+    ])
+    expect(landClaimsOf(laned.snapshot, [{ path: "/w/u1", head: "aaaaaaa" }, { path: "/w/u1", head: "aaaaaaa" }, { path: "/w/none", head: "bbbbbbb" }])).toEqual([{ id: "u1", run: "default", owner: "u1", head: "aaaaaaa" }])
+    const reowned = played([Command.cases.lane.make({ run: "default", unit: "u1", path: Option.some("/w/u1") }), assign("u1", "u9")])
+    expect(landClaimsOf(reowned.snapshot, [{ path: "/w/u1", head: "aaaaaaa" }])).toEqual([])
+  })
+
+  test("an orphaned commitment's line names the calls that resolve it", () => {
+    const laned = played([Command.cases.lane.make({ run: "default", unit: "u1", path: Option.some("/w/u1") })])
+    expect(sectionOf(listedOf(laned.snapshot, { ...facts, gone: new Set(["u1"]) })).at(1)).toBe(
+      '- orphaned: u1. Each lane is gone and no land named its commit: commitments({ action: "landed", id: "<id>", head: "<commit>" }) when its work is on the default branch, else decide it with why, or assign it to re-own (commitments({ action: "list", standing: "orphaned" }) shows each one\'s lane, start and claim).',
+    )
   })
 })

@@ -125,8 +125,9 @@ const V1 = [
 ]
 
 /**
- * Version 2, additive: the commit a lane started at (`start_head`: a read claims only work past it), and who closed an
- * owner-sourced commitment and whether from outside every run it had acted in (`notice_by`, `notice_outside_run`).
+ * Version 2, additive: the commit a lane started at (`start_head`, shown to the root, deciding nothing), and who
+ * closed an owner-sourced commitment and whether that session had acted in its run before (`notice_by`,
+ * `notice_outside_run`).
  */
 const V2 = [
   "ALTER TABLE commitment ADD COLUMN start_head TEXT",
@@ -134,8 +135,11 @@ const V2 = [
   "ALTER TABLE commitment ADD COLUMN notice_outside_run INTEGER NOT NULL DEFAULT 0 CHECK (notice_outside_run IN (0, 1))",
 ]
 
+/** Version 3, additive: the lane's workspace (`lane_path`), by which a land event of that workspace claims for it. */
+const V3 = ["ALTER TABLE commitment ADD COLUMN lane_path TEXT"]
+
 /** Each version's statements, in order: forward-only and additive (a non-additive change is the owner's). */
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1, V2]
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [V1, V2, V3]
 
 /** The schema version this code writes: one per migration, so the two cannot disagree. */
 export const VERSION = MIGRATIONS.length
@@ -222,6 +226,7 @@ const commitmentOf = (row: Raw, after: ReadonlyArray<Prerequisite>): Commitment 
   decidedWhy: textOf(row, "decided_why"),
   noticeUntil: textOf(row, "notice_until"),
   startHead: textOf(row, "start_head"),
+  lanePath: textOf(row, "lane_path"),
   noticeBy: textOf(row, "notice_by"),
   noticeOutsideRun: Option.contains(intOf(row, "notice_outside_run"), 1),
   createdAt: textIn(row, "created_at"),
@@ -270,7 +275,7 @@ const nullable = <A>(value: Option.Option<A>) => Option.getOrNull(value)
 const COMMITMENT_COLUMNS = [
   "id", "run", "title", "source_kind", "source_ref", "quote", "plan", "part", "rank", "owner_lane", "owner_session", "state", "started_at",
   "review_by", "woke_at", "head", "request_path", "landed_commit", "decided_why", "notice_until", "created_at", "updated_at",
-  "start_head", "notice_by", "notice_outside_run",
+  "start_head", "notice_by", "notice_outside_run", "lane_path",
 ]
 
 const UPSERT_COMMITMENT = `INSERT INTO commitment (${COMMITMENT_COLUMNS.join(", ")}) VALUES (${COMMITMENT_COLUMNS.map(() => "?").join(", ")})
@@ -280,7 +285,7 @@ const commitmentValues = (row: Commitment): ReadonlyArray<SQLQueryBindings> => [
   row.id, row.run, row.title, row.sourceKind, row.sourceRef, nullable(row.quote), nullable(row.plan), nullable(row.part), nullable(row.rank),
   nullable(row.ownerLane), nullable(row.ownerSession), row.state, nullable(row.startedAt), nullable(row.reviewBy), nullable(row.wokeAt),
   nullable(row.head), nullable(row.requestPath), nullable(row.landedCommit), nullable(row.decidedWhy), nullable(row.noticeUntil), row.createdAt, row.updatedAt,
-  nullable(row.startHead), nullable(row.noticeBy), Number(row.noticeOutsideRun),
+  nullable(row.startHead), nullable(row.noticeBy), Number(row.noticeOutsideRun), nullable(row.lanePath),
 ]
 
 const writeCommitment = (db: Database, row: Commitment): void => {

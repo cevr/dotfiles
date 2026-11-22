@@ -35,7 +35,7 @@ export const DEFAULT_RUN = "default"
 /** The ids the section names of each standing, at most. */
 export const SECTION_IDS = 10
 
-export const ACTIONS = ["add", "assign", "order", "release", "decide", "reopen", "word", "route", "list", "history", "import"] as const
+export const ACTIONS = ["add", "assign", "order", "release", "decide", "reopen", "word", "route", "landed", "list", "history", "import"] as const
 export type Action = (typeof ACTIONS)[number]
 
 const Part = Schema.Struct({
@@ -52,7 +52,7 @@ export const CommitmentsInput = toolInput(
   Schema.Struct({
     action: Schema.Literals(ACTIONS).annotate({
       description:
-        "add: N commitments from an approval or a plan, one per part (the call that records an owner's approval). assign: own or re-own one, with its waits and review-by time. order: start an owner's commitments; answers all its open ones. release: give one up. decide: close one by decision, with why. reopen: undo a decision. word: give a manual wait's word. route: answer a hand-back. list, history: read. import: an Ergo register, table to table.",
+        "add: N commitments from an approval or a plan, one per part (the call that records an owner's approval). assign: own or re-own one, with its waits and review-by time. order: start an owner's commitments; answers all its open ones. release: give one up. decide: close one by decision, with why. reopen: undo a decision. word: give a manual wait's word. route: answer a hand-back. landed: the commit on the default branch that holds one's work, when no land recorded it (a land by hand, another tool's). list, history: read. import: an Ergo register, table to table.",
     }),
     run: Schema.optional(Schema.String).annotate({ description: `add, word, list: the run (default "${DEFAULT_RUN}").` }),
     source_kind: Schema.optional(Schema.Literals(SOURCE_KINDS)).annotate({ description: "add: where the commitments come from. owner-answer and owner-ask are the owner's: closing one by decision tells the owner." }),
@@ -62,7 +62,8 @@ export const CommitmentsInput = toolInput(
     parts: Schema.optional(Schema.Array(Part)).annotate({
       description: "add: the parts, one commitment each: { id (a slug), title (one line), part?, rank? (A-D), owner_lane?, after? [{ kind, ref }], review_by? (ISO time) }.",
     }),
-    id: Schema.optional(Schema.String).annotate({ description: "assign, release, decide, reopen, history: the commitment." }),
+    id: Schema.optional(Schema.String).annotate({ description: "assign, release, decide, reopen, landed, history: the commitment." }),
+    head: Schema.optional(Schema.String).annotate({ description: "landed: the commit (7 to 40 hex digits) that holds its work; it lands once git has it on the default branch." }),
     owner_lane: Schema.optional(Schema.String).annotate({ description: "assign, order: the owner (a unit, or `root`)." }),
     owner_session: Schema.optional(Schema.String).annotate({ description: "assign: the owner's session, when one holds it." }),
     after: Schema.optional(Schema.Array(AfterItem)).annotate({
@@ -95,6 +96,7 @@ export const FIELDS = {
   reopen: ["id"],
   word: ["run", "word"],
   route: ["hand_back", "as"],
+  landed: ["id", "head"],
   list: ["owner", "standing", "run", "age", "all"],
   history: ["id"],
   import: ["run", "from", "map"],
@@ -108,6 +110,7 @@ export const REQUIRED = {
   reopen: ["id"],
   word: ["word"],
   route: ["hand_back", "as"],
+  landed: ["id", "head"],
   list: [],
   history: ["id"],
   import: ["from", "map"],
@@ -126,7 +129,7 @@ export const COMMITMENTS_DESCRIPTION = [
   "The record of what this repository's runs owe: one commitment per promised outcome, kept in a SQLite file on this host, never in prose.",
   `Record an owner's approval in the same turn: ${callOf("add", [["source_kind", '"owner-answer"'], ["source_ref", '"<session>:<q id>"'], ["quote", '"<their words>"'], ["parts", '[{ id: "auth-1", title: "…" }, …]']])}: one commitment per part, so no later part is lost.`,
   "Each open commitment has one standing, computed at each read: unowned, orphaned (its owner's lane is gone), overdue (past its review-by time), due (every wait met, not started) or held. orchestrate status, every land and the queue check list all but held.",
-  "assign owns it (re-owning keeps it open; every owned one has a review-by time, 7 days by default). order starts an owner's and answers all its open ones. decide closes one with a reason; one the owner approved tells the owner, who can have it reopened. Nobody says landed: a commitment lands when the commit its owner's hand-back claimed is on the default branch.",
+  "assign owns it (re-owning keeps it open; every owned one has a review-by time, 7 days by default). order starts an owner's and answers all its open ones. decide closes one with a reason; one the owner approved tells the owner, who can have it reopened. A unit's commitment lands when a land (orchestrate land, the work tool's) or the root's landed names the commit that holds its work, and git has that commit on the default branch; no read claims a commit. A lane removed with no land is orphaned until the root says landed, decide or assign.",
   "The root's tool: a subagent files what it finds with follow_up instead.",
 ].join("\n")
 
@@ -200,7 +203,7 @@ const assignOf = (input: CommitmentsInput): Result.Result<Command, string> =>
   )
 
 /** A writing action's command for the record, or why the input does not make one; the record refuses what it does not take. */
-export const commandOf = (input: CommitmentsInput, action: Exclude<Action, "list" | "history" | "import">): Result.Result<Command, string> => {
+export const commandOf = (input: CommitmentsInput, action: Exclude<Action, "list" | "history" | "import" | "landed">): Result.Result<Command, string> => {
   const id = input.id ?? ""
   return Match.value(action).pipe(
     Match.when("add", () => addOf(input)),
@@ -258,72 +261,100 @@ export const onMainAmong = (mainLine: MainLine["Service"], checkout: string, com
     return new Set(onMain)
   })
 
-/** A unit's lane as a claim takes it: the unit, the head its lane is at now, and its checkout (where git reads its own commits). */
-export interface LaneHead {
-  readonly unit: string
-  readonly head: string
+/** A workspace a land landed and the head it merged of it, as the land names it (the work tool's `landed`). */
+export interface LandedLane {
   readonly path: string
+  readonly head: string
 }
 
-/** What git says of the lanes a claim weighs: the commits on the default branch, and the units whose head descends from their start in their lane. */
-export interface LaneFacts {
-  readonly onMain: ReadonlySet<string>
-  readonly descends: ReadonlySet<string>
+const WorkLanded = Schema.Struct({ action: Schema.Literal("land"), pushed: Schema.String, landed: Schema.Array(Schema.Struct({ path: Schema.String, head: Schema.String })) })
+const decodeWorkLanded = Schema.decodeUnknownOption(WorkLanded)
+
+/**
+ * The land event a work tool call's metadata carries: a pushed land's workspaces, each with the head it merged. A land
+ * that did not push (no `pushed`, no `landed`), another action, or metadata an older work plugin wrote is none.
+ */
+export const workLandedOf = (metadata: unknown): Option.Option<ReadonlyArray<LandedLane>> => Option.map(decodeWorkLanded(metadata), (pushed) => pushed.landed)
+
+/** One claim: the commitment, its run and owner, and the commit that holds its work. */
+export interface Claim {
+  readonly id: string
+  readonly run: string
+  readonly owner: string
+  readonly head: string
 }
 
-/** Whether `ancestor` is an ancestor of `head` (or is it) in the checkout `path`: both known there, and nothing of `ancestor` missing from `head`. */
-const isAncestorIn = (mainLine: MainLine["Service"], path: string, ancestor: string, head: string) =>
-  Effect.gen(function* () {
-    const known = yield* Effect.all([mainLine.commitOf(path, ancestor), mainLine.commitOf(path, head)])
-    if (!known.every(Option.isSome)) return false
-    return (yield* mainLine.between(path, head, ancestor)).length === 0
-  })
-
 /**
- * The git facts `claimsOf` needs for `lanes`: which of their heads and start heads are on the default branch of
- * `checkout`, and, for each lane whose start is not on it, whether its head descends from its start in its own checkout.
+ * The claims a land event makes: for each workspace it landed, the open commitment whose lane that workspace is (as
+ * the lane hook recorded it, `lanePath`) and that its own unit owns, with the head the land merged of it. A workspace
+ * no commitment recorded claims nothing (nothing is created), and a head the commitment claims already claims nothing
+ * again (the same event twice). Nothing else claims: no read does, and git decides only whether a claimed head is on
+ * the default branch.
  */
-export const laneFactsOf = (mainLine: MainLine["Service"], checkout: string, snapshot: Snapshot, lanes: ReadonlyArray<LaneHead>) =>
-  Effect.gen(function* () {
-    const startOf = (lane: LaneHead) => Option.flatMap(Option.fromUndefinedOr(snapshot.commitments.get(lane.unit)), (row) => row.startHead)
-    const onMain = yield* onMainAmong(mainLine, checkout, Arr.dedupe(lanes.flatMap((lane) => [lane.head, ...Option.toArray(startOf(lane))])))
-    const off = lanes.flatMap((lane) => Option.toArray(Option.filter(startOf(lane), (start) => !onMain.has(start) && start !== lane.head)).map((start) => ({ lane, start })))
-    const descending = yield* Effect.filter(off, (each) => isAncestorIn(mainLine, each.lane.path, each.start, each.lane.head), { concurrency: 4 })
-    return { onMain, descends: new Set(descending.map((each) => each.lane.unit)) } satisfies LaneFacts
-  })
-
-/**
- * Whether the lane holds work of the unit's own past the commit it started at, `start`:
- * - at its start, nothing (a fresh lane, one reset to its start);
- * - started at a commit on the default branch (cut from main), any head main lacks is its own: no other unit's work
- *   was in it, and a rebase onto a newer main keeps only its own commits off main;
- * - started off the default branch (stacked on a parent's lane, or a base holding an unpushed commit), only a head
- *   that descends from its start in its own checkout: the commits past the start are its own. A lane rebased away
- *   from such a start (a restacked child) is not claimed by a read: whose its commits are, git cannot say.
- */
-const ownWork = (lane: LaneHead, start: string, facts: LaneFacts): boolean => lane.head !== start && (facts.onMain.has(start) || facts.descends.has(lane.unit))
-
-/**
- * The heads a read or a land claims for the units' own commitments: each open commitment owned by its own unit whose
- * lane (in `lanes`) is at a commit main does not have yet, that its last claim did not already name, and that is the
- * unit's own work past the commit its lane started at (`ownWork`). A commitment with no start head (its lane made
- * before the record kept one) is claimed only by an explicit land (`land`), never by a read. A head claimed while its
- * lane stood lands once it is on main, by a merge or a fast-forward, whether or not the lane is still there.
- */
-export const claimsOf = (snapshot: Snapshot, lanes: ReadonlyArray<LaneHead>, facts: LaneFacts, by: "land" | "read"): ReadonlyArray<LaneHead & { readonly run: string }> =>
-  lanes.flatMap((lane) =>
-    Option.toArray(
-      Option.filter(
-        Option.fromUndefinedOr(snapshot.commitments.get(lane.unit)),
-        (row) =>
-          row.state === "open" &&
-          Option.contains(row.ownerLane, lane.unit) &&
-          !facts.onMain.has(lane.head) &&
-          !Option.contains(row.head, lane.head) &&
-          Option.match(row.startHead, { onNone: () => by === "land", onSome: (start) => ownWork(lane, start, facts) }),
-      ),
-    ).map((row) => ({ ...lane, run: row.run })),
+export const landClaimsOf = (snapshot: Snapshot, landed: ReadonlyArray<LandedLane>): ReadonlyArray<Claim> =>
+  Arr.dedupeWith(
+    landed.flatMap((lane) =>
+      [...snapshot.commitments.values()]
+        .filter((row) => row.state === "open" && Option.contains(row.lanePath, lane.path) && Option.contains(row.ownerLane, row.id) && !Option.contains(row.head, lane.head))
+        .map((row): Claim => ({ id: row.id, run: row.run, owner: row.id, head: lane.head })),
+    ),
+    (a, b) => a.id === b.id,
   )
+
+/** Whether a pass has anything to weigh: an open commitment with a claimed head. */
+const claimsStanding = (snapshot: Snapshot): boolean => [...snapshot.commitments.values()].some((row) => row.state === "open" && Option.isSome(row.head))
+
+/**
+ * One pass over the claims standing: each open commitment whose claimed head git has on the default branch lands (its
+ * facts read now). It claims nothing, so a read may run it; with no claim standing it writes nothing. Answers the rows after.
+ */
+export const passed = (actor: Actor, now: number, facts: (snapshot: Snapshot) => Effect.Effect<Facts>) =>
+  Effect.gen(function* () {
+    const record = yield* CommitmentRecord
+    const snapshot = yield* record.read
+    if (!claimsStanding(snapshot)) return snapshot
+    const read = yield* facts(snapshot)
+    const done = yield* record.run(Command.cases.pass.make({ onMain: [...read.onMain], gone: [...read.gone], root: Option.none() }), { actor, now })
+    return done.snapshot
+  })
+
+/**
+ * `claims` recorded, each a hand-back by `by` (`orchestrate-land`, `work-land`, the root's `landed`) from `session`
+ * that claims its commitment's head, routed at once; then one pass (`passed`). Answers the rows after.
+ */
+export const claimsRecorded = (claims: ReadonlyArray<Claim>, by: string, session: string, actor: Actor, now: number, facts: (snapshot: Snapshot) => Effect.Effect<Facts>) =>
+  Effect.gen(function* () {
+    const record = yield* CommitmentRecord
+    for (const claim of claims) {
+      const handed = yield* record.run(
+        Command.cases.hand_back.make({ run: claim.run, ownerLane: claim.owner, role: by, session, verdict: "done", head: Option.some(claim.head), claims: [claim.id] }),
+        { actor, now },
+      )
+      const ids = handed.events.flatMap((event) => Arr.filter([Number(event.subjectId)], () => event.subjectKind === "hand_back"))
+      yield* Effect.forEach(ids, (handBack) => record.run(Command.cases.route.make({ handBack, as: "routed" }), { actor, now }), { discard: true })
+    }
+    return yield* passed(actor, now, facts)
+  })
+
+/** The root's `landed`: where a commitment's work landed when no land event said so (a land by hand, another tool's). */
+const landedOf = (input: CommitmentsInput, actor: Actor, now: number, reads: Reads) =>
+  Effect.gen(function* () {
+    const record = yield* CommitmentRecord
+    const id = input.id ?? ""
+    const head = input.head ?? ""
+    if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root says where a commitment's work landed`)
+    const row = Option.filter(Option.fromUndefinedOr((yield* record.read).commitments.get(id)), (each) => each.state === "open")
+    if (Option.isNone(row)) return yield* Effect.fail(`${COMMITMENTS}: ${id} is not an open commitment`)
+    if (Option.isNone(row.value.ownerLane)) return yield* Effect.fail(`${COMMITMENTS}: ${id} is unowned; own it first: ${callOf("assign")}`)
+    const claims = Arr.filter([{ id, run: row.value.run, owner: row.value.ownerLane.value, head }], () => !Option.contains(row.value.head, head))
+    const after = yield* claimsRecorded(claims, "landed", actor.id, actor, now, reads.facts)
+    const landed = Option.exists(Option.fromUndefinedOr(after.commitments.get(id)), (each) => each.state === "landed")
+    return Match.value(landed).pipe(
+      Match.when(true, () => `${COMMITMENTS}: ${id} landed: ${head} is on the default branch.`),
+      Match.orElse(() => `${COMMITMENTS}: ${id} claims ${head}; it lands once git has ${head} on the default branch (it does not now).`),
+    )
+  })
+
 
 /**
  * Which of `owners` are gone: a unit with no lane in the base's list. `root` never is, and with no list (the work
@@ -351,7 +382,12 @@ export const sectionOrder: Order.Order<Commitment> = Order.combineAll([
 const idsLine = (standing: Standing, rows: ReadonlyArray<Commitment>): string => {
   const named = Arr.sort(rows, sectionOrder).slice(0, SECTION_IDS).map((row) => row.id)
   const more = Arr.filter([`, and ${rows.length - named.length} more: ${listCallOf(standing)}`], () => rows.length > named.length)
-  return `- ${standing}: ${named.join(", ")}${more.join("")}`
+  return `- ${standing}: ${named.join(", ")}${more.join("")}${Option.getOrElse(Option.fromUndefinedOr(RESOLVES[standing]), () => "")}`
+}
+
+/** What a listed standing's line says resolves it, where the standing calls for a tool call the others do not. */
+const RESOLVES: Partial<Record<Standing, string>> = {
+  orphaned: `. Each lane is gone and no land named its commit: ${callOf("landed", [["id", '"<id>"'], ["head", '"<commit>"']])} when its work is on the default branch, else decide it with why, or assign it to re-own (${callOf("list", [["standing", '"orphaned"']])} shows each one's lane, start and claim).`,
 }
 
 /** What the section lists: each listed standing's commitments, the unrouted hand-backs and the unseen notices. */
@@ -416,7 +452,14 @@ const rowLine = (snapshot: Snapshot, facts: Facts) => (row: Commitment): string 
   )
   const owner = Option.getOrElse(row.ownerLane, () => "-")
   const review = Option.match(row.reviewBy, { onNone: () => "", onSome: (at) => ` review by ${at}` })
-  return `${row.id} [${where}] ${owner}: ${row.title} (${row.sourceKind} ${row.sourceRef}; ${row.run})${review}`
+  // Its last known lane facts: where its lane was, the commit it started at, the commit a land or the root claimed.
+  const lastKnown = [
+    ...Option.toArray(Option.map(row.lanePath, (path) => `lane ${path}`)),
+    ...Option.toArray(Option.map(row.startHead, (head) => `started at ${head}`)),
+    ...Option.toArray(Option.map(row.head, (head) => `claims ${head}`)),
+  ]
+  const known = Arr.match(lastKnown, { onEmpty: () => "", onNonEmpty: (each) => `; ${each.join(", ")}` })
+  return `${row.id} [${where}] ${owner}: ${row.title} (${row.sourceKind} ${row.sourceRef}; ${row.run})${review}${known}`
 }
 
 /** A row the list's filters keep. */
@@ -512,6 +555,7 @@ export const answerOf = (input: CommitmentsInput, actor: Actor, now: number, rea
     }
     const id = input.id ?? ""
     if (action === "history") return historyAnswer(id, yield* record.history("commitment", id))
+    if (action === "landed") return yield* landedOf(input, actor, now, reads)
     if (action === "import") {
       if (actor.role !== ROOT) return yield* Effect.fail(`${COMMITMENTS}: only the root imports a register`)
       const run = input.run ?? DEFAULT_RUN
@@ -543,4 +587,4 @@ export const beforeStart = (answer: string, line: string): string => {
 
 /** The lane hook's line: the unit's commitment and every open commitment of the unit as its owner. */
 export const laneLine = (unit: string, open: ReadonlyArray<string>): string =>
-  `Commitments of ${unit}: ${namesOf(open)}. Its hand-back claims what it lands; ${callOf("list", [["owner", `"${unit}"`]])} lists them.`
+  `Commitments of ${unit}: ${namesOf(open)}. A land of its lane (orchestrate land, the work tool's) claims the head it merges; ${callOf("list", [["owner", `"${unit}"`]])} lists them.`

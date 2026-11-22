@@ -98,20 +98,21 @@ test("a file of a newer version than this code reads, and refuses every write wi
     }),
   ))
 
-test("a version 1 file migrates to this version on open: its rows kept, a lane made before start heads has none, a lane made after keeps its start", () =>
+for (const from of [1, 2])
+  test(`a version ${from} file migrates to this version on open: its rows kept, a lane made before has no lane path or start, a lane made after keeps both`, () =>
   inScratch((dir) =>
     Effect.gen(function* () {
       const path = join(dir, "repo.db")
-      // A file as version 1 code left it: its statements alone, one lane's commitment, user_version 1.
+      // A file as version `from` code left it: its statements alone, one lane's commitment, its user_version.
       const raw = new Database(path, { create: true, strict: true })
-      for (const statement of MIGRATIONS[0] ?? []) raw.run(statement)
-      raw.run("PRAGMA user_version = 1")
+      for (const statement of MIGRATIONS.slice(0, from).flat()) raw.run(statement)
+      raw.run(`PRAGMA user_version = ${from}`)
       raw.run(
         "INSERT INTO commitment (id, run, title, source_kind, source_ref, owner_lane, state, started_at, review_by, created_at, updated_at) VALUES ('old-unit', 'r1', 'land unit old-unit', 'assignment', 'orchestrate lane old-unit', 'old-unit', 'open', '2027-01-15T08:00:00.000Z', '2027-01-22T08:00:00.000Z', '2027-01-15T08:00:00.000Z', '2027-01-15T08:00:00.000Z')",
       )
       raw.close()
       const opened = connectSync(path, { readonly: false, now: T0 })
-      yield* opened.store.run(Command.cases.lane.make({ run: "r1", unit: "new-unit", startHead: Option.some("a".repeat(40)) }), { actor: ROOT, now: T0 })
+      yield* opened.store.run(Command.cases.lane.make({ run: "r1", unit: "new-unit", startHead: Option.some("a".repeat(40)), path: Option.some("/w/new-unit") }), { actor: ROOT, now: T0 })
       opened.close()
       const check = new Database(path, { readonly: true })
       const version = check.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version
@@ -119,7 +120,13 @@ test("a version 1 file migrates to this version on open: its rows kept, a lane m
       expect([VERSION, version]).toEqual([MIGRATIONS.length, MIGRATIONS.length])
       const again = connectSync(path, { readonly: false, now: T0 })
       const rows = (yield* again.store.read).commitments
-      expect([rows.get("old-unit")?.state, rows.get("old-unit")?.startHead, rows.get("new-unit")?.startHead]).toEqual(["open", Option.none(), Option.some("a".repeat(40))])
+      expect([rows.get("old-unit")?.state, rows.get("old-unit")?.startHead, rows.get("old-unit")?.lanePath, rows.get("new-unit")?.startHead, rows.get("new-unit")?.lanePath]).toEqual([
+        "open",
+        Option.none(),
+        Option.none(),
+        Option.some("a".repeat(40)),
+        Option.some("/w/new-unit"),
+      ])
       again.close()
     }),
   ))
@@ -196,7 +203,7 @@ test("a repository with no origin: its workspace, a subfolder and the base share
 const NOT_FREE = [
   "commitment.id", "commitment.run", "commitment.source_kind", "commitment.rank", "commitment.owner_lane", "commitment.owner_session", "commitment.state",
   "commitment.started_at", "commitment.review_by", "commitment.woke_at", "commitment.head", "commitment.landed_commit", "commitment.notice_until",
-  "commitment.created_at", "commitment.updated_at", "commitment.start_head", "commitment.notice_by",
+  "commitment.created_at", "commitment.updated_at", "commitment.start_head", "commitment.notice_by", "commitment.lane_path",
   "prerequisite.commitment_id", "prerequisite.kind", "prerequisite.ref", "prerequisite.met_at",
   "event.at", "event.run", "event.subject_kind", "event.subject_id", "event.type", "event.actor", "event.actor_role", "event.from_state", "event.to_state",
   "hand_back.run", "hand_back.owner_lane", "hand_back.session", "hand_back.verdict", "hand_back.head", "hand_back.at", "hand_back.routing", "hand_back.routed_at", "hand_back.routed_by",

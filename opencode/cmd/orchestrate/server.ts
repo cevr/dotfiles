@@ -172,7 +172,7 @@ import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
-import { type Actor, Command as RecordCommand, EMPTY as EMPTY_RECORD, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
+import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
 import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
@@ -568,6 +568,13 @@ const HEAVY_READ = "2 seconds"
 /** A subagent call's prompt, when its input has one. */
 const decodePrompted = Schema.decodeUnknownOption(Schema.Struct({ prompt: Schema.String }))
 
+/** The record's actors of a land event (`orchestrate land`'s, the work tool's) and of the status's pass. */
+const ORCHESTRATE_LAND = "orchestrate-land"
+const WORK_LAND = "work-land"
+const ORCHESTRATE_PASS = "orchestrate-pass"
+/** The work plugin's tool and its alias: a land through either is a land event. */
+const WORK_TOOLS: ReadonlyArray<string> = ["work", "rift"]
+
 /**
  * The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. `heavy` is the host the
  * heavy-check footer reads; the plugin OpenCode loads always has it (`liveHeavy`), and only the seam tests written
@@ -734,10 +741,14 @@ export const make = (
           const now = yield* Clock.currentTimeMillis
           return yield* Commitments.factsOf(mainLine, checkout, (owners) => Effect.succeed(Commitments.goneOf(owners, lanes)), snapshot, now)
         })
-      /** The record's section and its keys, read for `sessionID`; a record that does not read says so. */
-      const recordSection = (sessionID: string) =>
+      /**
+       * The record's section and its keys, read for `sessionID`; a record that does not read says so. With `pass` (the
+       * status), the claims standing are weighed first (`Commitments.passed`): a claimed head git now has on the default
+       * branch lands. No read claims a commit.
+       */
+      const recordSection = (sessionID: string, pass: boolean) =>
         Effect.gen(function* () {
-          yield* readClaimed(sessionID)
+          if (pass) yield* passNow(sessionID)
           const snapshot = yield* commitments.read
           const listed = Commitments.listedOf(snapshot, yield* factsNow(sessionID, snapshot))
           return { lines: Commitments.sectionOf(listed), keys: Commitments.sectionKeys(listed) }
@@ -827,7 +838,7 @@ export const make = (
           // The record's section, to a root that runs units or has written to the record.
           const writes = yield* Effect.map(Effect.orElseSucceed(commitments.events, () => []), (events) => events.some((event) => event.actor.id === ask.sessionID))
           const answer = yield* Match.value(orchestrates || writes).pipe(
-            Match.when(true, () => Effect.map(recordSection(ask.sessionID), (section) => withRecordSection(lost, section))),
+            Match.when(true, () => Effect.map(recordSection(ask.sessionID, false), (section) => withRecordSection(lost, section))),
             Match.orElse(() => Effect.succeed(lost)),
           )
           const ms = (yield* Clock.currentTimeMillis) - started
@@ -848,7 +859,7 @@ export const make = (
             Match.when(true, () => Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)),
             Match.orElse(() => Tools.statusAnswer([], [], false, since, now)),
           )
-          const section = yield* recordSection(sessionID)
+          const section = yield* recordSection(sessionID, true)
           return [...lost, answer, ...section.lines].join("\n")
         })
 
@@ -1186,14 +1197,14 @@ export const make = (
               onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
             })
             yield* noteLane(sessionID, unit, lane)
-            return { answer: Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)]), start: Option.none<string>() }
+            return { answer: Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)]), start: Option.none<string>(), path: lane.path }
           }
           // `mark`: the lane is marked as made here, on its branch, so a later switch to another branch is refused.
           const ask = { sessionID, branch, name: decided.make, mark: true, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
           yield* noteLane(sessionID, unit, created.rift)
-          // The head a lane made now is at is the commit it started at: the record keeps it, so a read claims only work past it.
-          return { answer: Tools.laneAnswer(unit, created.rift, true, warnings), start: Option.some(created.rift.head) }
+          // The record keeps the lane's workspace (a land of it claims for the unit) and the commit it started at (shown only).
+          return { answer: Tools.laneAnswer(unit, created.rift, true, warnings), start: Option.some(created.rift.head), path: created.rift.path }
         })
 
       /** A verify's clean checkout: the workspace `verify-<batch>` detached at `at`, answered when it exists, else made. */
@@ -1287,12 +1298,10 @@ export const make = (
               { discard: true },
             ).pipe(Effect.andThen(digest.landed(sessionID, rifts.map((rift) => rift.unit), pushed))),
           { discard: true })
-          yield* claimRecorded(
-            sessionID,
-            "land",
-            rifts.flatMap((rift) => Option.toArray(Option.map(Arr.findFirst(listed.rifts, (lane) => lane.path === rift.path), (lane) => ({ unit: rift.unit, head: lane.head, path: lane.path })))),
-          )
-          const section = yield* recordSection(sessionID)
+          // The land event: each workspace the work land pushed, with the head it merged (its structured answer, the one
+          // source of what landed); a land that did not push names none.
+          yield* landRecorded(sessionID, ORCHESTRATE_LAND, landed.landed ?? [])
+          const section = yield* recordSection(sessionID, false)
           return [Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text), ...section.lines].join("\n")
         })
 
@@ -1310,54 +1319,48 @@ export const make = (
         register: ErgoRegister.registerReads,
       })
       /** The lane hook: the unit's commitment got or made, owned by the unit and started; its open ones named after the lane's answer. */
-      const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, answer: string, startHead: Option.Option<string>) =>
+      const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, made: { readonly answer: string; readonly start: Option.Option<string>; readonly path: string }) =>
         Effect.gen(function* () {
           const unit = input.unit ?? ""
+          const answer = made.answer
           const now = yield* Clock.currentTimeMillis
-          const done = yield* commitments.run(RecordCommand.cases.lane.make({ run: input.run ?? Commitments.DEFAULT_RUN, unit, startHead }), { actor: { id: sessionID, role: "root" }, now })
+          const done = yield* commitments.run(RecordCommand.cases.lane.make({ run: input.run ?? Commitments.DEFAULT_RUN, unit, startHead: made.start, path: Option.some(made.path) }), {
+            actor: { id: sessionID, role: "root" },
+            now,
+          })
           return Commitments.beforeStart(answer, Commitments.laneLine(unit, openOf(done.snapshot, unit)))
-        }).pipe(Effect.catch((failed) => Effect.succeed(Commitments.beforeStart(answer, `${Commitments.whyOf(failed)}: the unit's commitment was not recorded.`))))
+        }).pipe(Effect.catch((failed) => Effect.succeed(Commitments.beforeStart(made.answer, `${Commitments.whyOf(failed)}: the unit's commitment was not recorded.`))))
 
       /**
-       * The claims a land or a read records (taken from unit 2's "pass after a land"): for each unit whose own
-       * commitment is open and whose lane holds work main does not have (`Commitments.claimsOf`), a claim of the lane's
-       * head as `by`'s hand-back, routed at once; then one pass, where git's ancestry alone decides landed. A land
-       * claims the heads its lanes had before it; a read (status, a land's answer, the queue check) the heads they have
-       * now, so a lane landed by the work tool alone lands its unit once a read saw its work. A unit with no commitment
-       * (a lane made before the record) records nothing; a record that refuses is logged and fails no land or read.
+       * A land event recorded (taken from unit 2's "pass after a land"): each workspace a land pushed, with the head it
+       * merged, claims for the open commitment whose lane it is (`Commitments.landClaimsOf`), as `by`'s hand-back routed
+       * at once; then one pass, where git's ancestry alone decides landed. A workspace no commitment recorded claims
+       * nothing, and the same event again claims nothing new. A record that refuses is logged and fails no land.
        */
-      const claimRecorded = (sessionID: string, by: "land" | "read", lanes: ReadonlyArray<Commitments.LaneHead>) =>
+      const landRecorded = (sessionID: string, by: string, landed: ReadonlyArray<Commitments.LandedLane>) =>
         Effect.gen(function* () {
-          const actor: Actor = { id: `orchestrate ${by}`, role: "plugin" }
+          const actor: Actor = { id: by, role: "plugin" }
           const now = yield* Clock.currentTimeMillis
-          const before = yield* commitments.read
-          const claims = Commitments.claimsOf(before, lanes, yield* Commitments.laneFactsOf(mainLine, checkout, before, lanes), by)
-          for (const claim of claims) {
-            const handed = yield* commitments.run(
-              RecordCommand.cases.hand_back.make({ run: claim.run, ownerLane: claim.unit, role: by, session: sessionID, verdict: "done", head: Option.some(claim.head), claims: [claim.unit] }),
-              { actor, now },
-            )
-            const ids = handed.events.flatMap((event) => Arr.filter([Number(event.subjectId)], () => event.subjectKind === "hand_back"))
-            yield* Effect.forEach(ids, (handBack) => commitments.run(RecordCommand.cases.route.make({ handBack, as: "routed" }), { actor, now }), { discard: true })
-          }
-          const claimed = yield* commitments.read
-          const facts = yield* factsNow(sessionID, claimed)
-          yield* commitments.run(RecordCommand.cases.pass.make({ onMain: [...facts.onMain], gone: [...facts.gone], root: Option.none() }), { actor, now })
-        }).pipe(
-          Effect.catch((failed) => Effect.logWarning(`orchestrate: the ${by}'s claims were not recorded`).pipe(Effect.annotateLogs({ sessionID, message: Commitments.whyOf(failed) }))),
-        )
-      /** A read's claims: each open unit commitment's lane, as the base's list holds it now. */
-      const readClaimed = (sessionID: string) =>
+          const claims = Commitments.landClaimsOf(yield* commitments.read, landed)
+          yield* Commitments.claimsRecorded(claims, by, sessionID, actor, now, (snapshot) => factsNow(sessionID, snapshot)).pipe(Effect.provideService(CommitmentRecord, commitments))
+        }).pipe(Effect.catch((failed) => Effect.logWarning(`orchestrate: the land's claims were not recorded`).pipe(Effect.annotateLogs({ sessionID, by, message: Commitments.whyOf(failed) }))))
+      /** The status's pass: the claims standing weighed against git now; it claims nothing (`Commitments.passed`). */
+      const passNow = (sessionID: string) =>
         Effect.gen(function* () {
-          const listed = yield* lanesNow(sessionID)
-          const snapshot = yield* Effect.orElseSucceed(commitments.read, () => EMPTY_RECORD)
-          const lanes = [...snapshot.commitments.values()].flatMap((row) =>
-            Option.toArray(Option.filter(Arr.head(Tools.lanesOf(row.id, listed.rifts, listed.workrift)), () => row.state === "open" && Option.contains(row.ownerLane, row.id))).map((lane) => ({ unit: row.id, head: lane.head, path: lane.path })),
-          )
-          // The pass runs with no new claim too: a head claimed at an earlier read may be on main now, its lane gone.
-          const claimed = [...snapshot.commitments.values()].some((row) => row.state === "open" && Option.isSome(row.head))
-          if (lanes.length > 0 || claimed) yield* claimRecorded(sessionID, "read", lanes)
-        })
+          const now = yield* Clock.currentTimeMillis
+          yield* Commitments.passed({ id: ORCHESTRATE_PASS, role: "plugin" }, now, (snapshot) => factsNow(sessionID, snapshot)).pipe(Effect.provideService(CommitmentRecord, commitments))
+        }).pipe(Effect.catch((failed) => Effect.logWarning("orchestrate: the status's pass was not recorded").pipe(Effect.annotateLogs({ sessionID, message: Commitments.whyOf(failed) }))))
+
+      // A land through the work plugin's tool (`work`, or its alias `rift`) is a land event too: its pushed answer's
+      // structured result (`pushed`, `landed`) names each workspace and the head it merged. Absent or malformed (a land
+      // that did not push, an older work plugin) is no event, and nothing here fails the tool's call.
+      yield* ctx.tool.hook("execute.after", (event) => {
+        if (!WORK_TOOLS.includes(event.tool) || event.status !== "completed") return Effect.void
+        return Option.match(Commitments.workLandedOf(event.result.metadata), {
+          onNone: () => Effect.void,
+          onSome: (landed) => landRecorded(event.sessionID, WORK_LAND, landed),
+        }).pipe(Effect.catchCause((cause) => Effect.logWarning("orchestrate: a work land's event was not read", cause)))
+      })
 
       // The `commitments` tool (mods/orchestrate/commitments-tool.ts): the root's reads and writes of the record. A
       // subagent's call is refused, as its lane, land or verify is.
@@ -1406,7 +1409,7 @@ export const make = (
               if (Option.isSome(refused)) return yield* failWith(refused.value)
               const text = yield* Match.value(input.action).pipe(
                 Match.when("status", () => status(context.sessionID)),
-                Match.when("lane", () => lane(input, context.sessionID).pipe(Effect.flatMap((made) => laneRecorded(input, context.sessionID, made.answer, made.start)))),
+                Match.when("lane", () => lane(input, context.sessionID).pipe(Effect.flatMap((made) => laneRecorded(input, context.sessionID, made)))),
                 Match.when("verify", () => verify(input, context.sessionID)),
                 Match.when("land", () => land(input, context.sessionID)),
                 Match.exhaustive,

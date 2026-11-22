@@ -71,8 +71,10 @@ export interface Commitment {
   readonly startedAt: Option.Option<string>
   readonly reviewBy: Option.Option<string>
   readonly wokeAt: Option.Option<string>
-  /** The commit its lane started at, as `orchestrate lane` made the lane: a read claims only work past it. */
+  /** The commit its lane started at, as `orchestrate lane` made the lane: shown to a root resolving an orphan, deciding nothing. */
   readonly startHead: Option.Option<string>
+  /** Its lane's workspace, as `orchestrate lane` made or found it: a land event of that workspace claims for it. */
+  readonly lanePath: Option.Option<string>
   readonly head: Option.Option<string>
   readonly requestPath: Option.Option<string>
   readonly landedCommit: Option.Option<string>
@@ -173,7 +175,7 @@ export const Happening = Schema.TaggedUnion({
   assigned: { ownerLane: Schema.String, ownerSession: Opt(Schema.String), after: Schema.Array(AfterItem), reviewBy: Schema.String },
   ordered: {},
   released: {},
-  laned: { startHead: Schema.String },
+  laned: { startHead: Opt(Schema.String), path: Opt(Schema.String) },
   claimed: { head: Schema.String, handBack: Schema.Int },
   landed: { commit: Schema.String },
   decided: { why: Schema.String, notice: Schema.Boolean, outsideRun: Opt(Schema.Boolean) },
@@ -260,6 +262,7 @@ const promisedRow = (event: RecordEvent, happened: Extract<Happening, { _tag: "p
   state: "open",
   head: Option.none(),
   startHead: Option.none(),
+  lanePath: Option.none(),
   requestPath: Option.none(),
   landedCommit: Option.none(),
   decidedWhy: Option.none(),
@@ -275,6 +278,7 @@ const importedRow = (event: RecordEvent, row: ImportedRow): Commitment => ({
   id: event.subjectId,
   run: event.run,
   startHead: Option.none(),
+  lanePath: Option.none(),
   wokeAt: Option.none(),
   noticeUntil: Option.none(),
   noticeBy: Option.none(),
@@ -300,7 +304,7 @@ const commitmentChange = (event: RecordEvent, draft: Draft) => (row: Commitment)
         }),
       ordered: () => touched(row, event.at, { startedAt: Option.some(event.at) }),
       released: () => touched(row, event.at, UNOWNED),
-      laned: (happened) => touched(row, event.at, { startHead: Option.some(happened.startHead) }),
+      laned: (happened) => touched(row, event.at, { startHead: Option.orElse(happened.startHead, () => row.startHead), lanePath: Option.orElse(happened.path, () => row.lanePath) }),
       claimed: (happened) => touched(row, event.at, { head: Option.some(happened.head) }),
       landed: (happened) => touched(row, event.at, { state: "landed", landedCommit: Option.some(happened.commit) }),
       decided: (happened) =>
@@ -429,7 +433,7 @@ export const Command = Schema.TaggedUnion({
     claims: Schema.Array(Schema.String),
   },
   route: { handBack: Schema.Int, as: Schema.Literals(["routed", "rejected"]) },
-  lane: { run: Schema.String, unit: Schema.String, session: Opt(Schema.String), startHead: Opt(Schema.String) },
+  lane: { run: Schema.String, unit: Schema.String, session: Opt(Schema.String), startHead: Opt(Schema.String), path: Opt(Schema.String) },
   pass: { onMain: Schema.Array(Schema.String), gone: Schema.Array(Schema.String), root: Opt(Schema.String) },
   import: { run: Schema.String, rows: Schema.Array(ImportRow) },
 })
@@ -535,7 +539,7 @@ const boundedHappening = (subject: string, happening: Happening): Held<Happening
         (fields): Happening => Happening.cases.handed_back.make({ ...happened, ...fields }),
       ),
     ),
-    Match.tag("laned", (happened) => Result.map(tokenOf("the start head", Option.some(happened.startHead)), () => happening)),
+    Match.tag("laned", (happened) => Result.map(tokenOf("the start head", happened.startHead), () => happening)),
     Match.tag("imported", (happened) => Result.map(boundedRow(subject, happened.row), (row): Happening => Happening.cases.imported.make({ row }))),
     Match.orElse(() => Result.succeed(happening)),
   )
@@ -799,8 +803,11 @@ const decideLane = (snapshot: Snapshot, command: Extract<Command, { _tag: "lane"
   const assigned = Arr.filter([assignedEvent(context, row, { ownerLane: command.unit, ownerSession: command.session, after: [], reviewBy: isoOf(context.now + REVIEW_MS) })], () => !owned)
   const ownedRow = fold(snapshot, [...promised, ...assigned]).commitments.get(command.unit)
   const ordered = Arr.filter(Option.toArray(Option.fromUndefinedOr(ownedRow)), (each) => Option.isNone(each.startedAt)).map((each) => onCommitment(context, each, Happening.cases.ordered.make({})))
-  // A lane made now records the commit it started at; a lane found, or made again at the same commit, records nothing.
-  const laned = Option.toArray(Option.filter(command.startHead, (head) => !Option.contains(row.startHead, head))).map((startHead) => onCommitment(context, row, Happening.cases.laned.make({ startHead })))
+  // The lane's workspace (a land event of it claims for this commitment) and, made now, the commit it started at; the
+  // same lane again records nothing.
+  const startHead = Option.filter(command.startHead, (head) => !Option.contains(row.startHead, head))
+  const path = Option.filter(command.path, (each) => !Option.contains(row.lanePath, each))
+  const laned = Arr.filter([onCommitment(context, row, Happening.cases.laned.make({ startHead, path }))], () => Option.isSome(startHead) || Option.isSome(path))
   return decided([...promised, ...assigned, ...ordered, ...laned])
 }
 

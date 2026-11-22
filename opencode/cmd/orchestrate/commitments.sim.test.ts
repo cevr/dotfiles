@@ -49,9 +49,40 @@ seeded("orchestrate lane makes the unit's commitment, and its answer lists the o
       yield* run.probe(root, COMMITMENTS, three)
       yield* run.probe(root, COMMITMENTS, { action: "assign", id: "p1", owner_lane: "a" })
       const laned = yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "a" })
-      expect(laned.text.split("\n")).toContain('Commitments of a: a, p1. Its hand-back claims what it lands; commitments({ action: "list", owner: "a" }) lists them.')
+      expect(laned.text.split("\n")).toContain('Commitments of a: a, p1. A land of its lane (orchestrate land, the work tool\'s) claims the head it merges; commitments({ action: "list", owner: "a" }) lists them.')
       const listed = yield* run.probe(root, COMMITMENTS, { action: "list", owner: "a" })
       expect(listed.text.split("\n").map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual(["commitments: 2", "a [held]", "p1 [due]"])
+    }),
+  ),
+)
+
+/** The lane's workspace an `orchestrate lane` answer names. */
+const laneIn = (text: string): string => /^orchestrate: lane [^:]+: (\S+) ·/m.exec(text)?.[1] ?? ""
+
+seeded("a land through the work tool and one through orchestrate land each claim the head they merged, and the commitment lands; a status claims nothing", ({ seed, expect }) =>
+  onRecord(seed, (run) =>
+    Effect.gen(function* () {
+      const root = yield* run.world.session(WORK)
+      const byWork = laneIn((yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "land-by-work", purpose: "lands by the work tool" })).text)
+      yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "land-by-orchestrate", purpose: "lands by orchestrate land" })
+      yield* run.probe(root, ORCHESTRATE, { action: "status" })
+      const read = yield* run.probe(root, COMMITMENTS, { action: "list", all: true })
+      expect(read.text.split("\n").map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual(["commitments: 2", "land-by-orchestrate [held]", "land-by-work [held]"])
+      const worked = yield* run.probe(root, "rift", { action: "land", rifts: [byWork] })
+      expect(worked.text).toStartWith("Landed 1 workspace(s) as one push")
+      const orchestrated = yield* run.probe(root, ORCHESTRATE, { action: "land", units: ["land-by-orchestrate"] })
+      expect(orchestrated.error).toBe(false)
+      const listed = yield* run.probe(root, COMMITMENTS, { action: "list", all: true })
+      expect(listed.text.split("\n").map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual(["commitments: 2", "land-by-orchestrate [landed]", "land-by-work [landed]"])
+      const histories = yield* Effect.forEach(["land-by-work", "land-by-orchestrate"], (id) => run.probe(root, COMMITMENTS, { action: "history", id }))
+      expect(histories.map((history) => history.text.split("\n").flatMap((line) => /^\d+ \S+ (claimed|landed) .*by plugin (\S+)/.exec(line)?.slice(1, 3).join(" by ") ?? []))).toEqual([
+        ["claimed by work-land", "landed by work-land"],
+        ["claimed by orchestrate-land", "landed by orchestrate-land"],
+      ])
+      // A status after the lands changes nothing: it claims nothing, and what landed stays landed.
+      yield* run.probe(root, ORCHESTRATE, { action: "status" })
+      const again = yield* run.probe(root, COMMITMENTS, { action: "list", all: true })
+      expect(again.text).toBe(listed.text)
     }),
   ),
 )

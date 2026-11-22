@@ -145,37 +145,15 @@ const mainLineOf = (landing: MemoryLanding.World, files: MemoryRunFiles.Files, e
  * The Rifts as the work plugin reads them, each lane at its head as git would hold it (`laneHeadOf`, by the lane's
  * name, its unit), unless a test placed it elsewhere: the map the memory world keeps, its reads re-headed.
  */
-const headed = (lanes: Map<string, Workspace>, files: MemoryRunFiles.Files, tip: () => string): Map<string, Workspace> => {
-  // A lane made now is at the default branch's tip, as git makes it from the base, until its head is first read (the
-  // work plugin's inspect as it makes it, which `orchestrate lane` records as the lane's start); its implementor's
-  // first commit (`laneHeadOf`) is there by any later read.
-  const fresh = new Map<string, string>()
+const headed = (lanes: Map<string, Workspace>, files: MemoryRunFiles.Files): Map<string, Workspace> => {
+  // A lane's head is its implementor's work (`laneHeadOf`): what a land merges of it and names as the head it landed.
   const read = (path: string, workspace: Workspace): Workspace =>
     Match.value(workspace.head === CLEAN_HEAD && !workspace.source).pipe(
-      Match.when(true, () =>
-        Option.match(Option.fromUndefinedOr(fresh.get(path)), {
-          onNone: () => ({ ...workspace, head: laneHeadOf(files, path.split("/").at(-1) ?? path) }),
-          onSome: (start) =>
-            Object.defineProperty({ ...workspace }, "head", {
-              enumerable: true,
-              get: () => {
-                fresh.delete(path)
-                return start
-              },
-            }),
-        }),
-      ),
+      Match.when(true, () => ({ ...workspace, head: laneHeadOf(files, path.split("/").at(-1) ?? path) })),
       Match.orElse(() => workspace),
     )
   const own = lanes.get.bind(lanes)
-  const set = lanes.set.bind(lanes)
-  return Object.assign(lanes, {
-    get: (path: string) => Option.getOrUndefined(Option.map(Option.fromUndefinedOr(own(path)), (workspace) => read(path, workspace))),
-    set: (path: string, workspace: Workspace) => {
-      if (!lanes.has(path) && workspace.head === CLEAN_HEAD && !workspace.source) fresh.set(path, tip())
-      return set(path, workspace)
-    },
-  })
+  return Object.assign(lanes, { get: (path: string) => Option.getOrUndefined(Option.map(Option.fromUndefinedOr(own(path)), (workspace) => read(path, workspace))) })
 }
 
 /** The memory world under every work plugin copy: the two warm sources, their Rifts, the landing, the debts. */
@@ -194,7 +172,7 @@ const riftWorldOf = (files: MemoryRunFiles.Files, earlier: number, fastForward: 
   // `origin/HEAD` reads as the default branch's head, as `git rev-parse` reads it after a land; any other commit is itself.
   const rifts: MemoryRifts.World = {
     ...base,
-    rifts: headed(base.rifts, files, () => Option.getOrElse(Option.map(Arr.last(main.line()), (entry) => entry.sha), () => "")),
+    rifts: headed(base.rifts, files),
     commitOf: (at) =>
       Option.some(
         Option.getOrElse(
