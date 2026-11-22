@@ -290,6 +290,10 @@ export const liveRecord: RecordLayer = (ctx, options) =>
 /** A record in memory, one per plugin start: what a host with no record file (a test's) keeps. */
 export const memoryRecord: RecordLayer = () => MemoryRecord.layer
 
+/** The file `options.record` names when it names one (a test's scratch file, kept across a restart), else memory. */
+export const namedRecord: RecordLayer = (ctx, options) =>
+  Option.match(Option.fromUndefinedOr(options.record), { onNone: () => memoryRecord(ctx, options), onSome: () => liveRecord(ctx, options) })
+
 /** The outside systems the model runs on. */
 export type Externals =
   | CallLog
@@ -572,7 +576,7 @@ const decodePrompted = Schema.decodeUnknownOption(Schema.Struct({ prompt: Schema
 export const make = (
   externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
   heavy?: (ctx: Plugin.Context, options: Options, background: Background) => Layer.Layer<HeavyHost>,
-  record: RecordLayer = memoryRecord,
+  record: RecordLayer = namedRecord,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",

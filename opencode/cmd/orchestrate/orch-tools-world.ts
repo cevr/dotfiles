@@ -206,6 +206,8 @@ export interface BootOptions {
    * id, the last registered, where the fork keeps one per location (core rpc.ts). Off by default: the plain copy last.
    */
   readonly unitsAnswer?: boolean
+  /** The commitment record's file (`options.record`): a scratch file a restart keeps; memory, one per start, by default. */
+  readonly record?: string
 }
 
 /** The work plugin's copies and the orchestrate plugin's, loaded in each of the world's locations (`orchestrate` off: the work plugin alone). */
@@ -290,7 +292,7 @@ export const boot = Effect.fn("OrchTools.boot")(function* (seed: number, orchest
     },
   })
   for (const directory of Match.value(options.unitsAnswer === true).pipe(Match.when(true, () => [PLAIN, WORK]), Match.orElse(() => [WORK, PLAIN]))) {
-    if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET } })
+    if (orchestrate) yield* world.load(plugin, { directory, options: { now: options.now ?? PIN, fleet: FLEET, ...Option.match(Option.fromUndefinedOr(options.record), { onNone: () => ({}), onSome: (record) => ({ record }) }) } })
     yield* world.load(work, { directory, options: { workrift: false } })
   }
   // The status plugin in the units' location only: the simulated host keeps one RPC per id, the last copy registered,
