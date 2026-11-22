@@ -55,6 +55,7 @@ import {
   Questions,
   type ReplyRejection,
   type Sheet,
+  type Via,
 } from "./question.ts"
 import { DigestLog } from "@dotfiles/opencode-digest/event"
 import { askerOf } from "./asker.ts"
@@ -99,6 +100,8 @@ export class QuestionsModel extends Context.Service<
       dismissed?: ReadonlyArray<string>,
       /** The session answering in the owner's place: only questions put to it; none, the owner. */
       by?: Option.Option<string>,
+      /** Where the owner answered: the tray (the /answer form) or the digest page. */
+      via?: Via,
     ) => Effect.Effect<
       { readonly answered: ReadonlyArray<string>; readonly dismissed: ReadonlyArray<string>; readonly skipped: ReadonlyArray<string> },
       ReplyRejection | QuestionsUnreadable | DeliveryRefused
@@ -118,6 +121,9 @@ export class QuestionsModel extends Context.Service<
     readonly withdrawFor: (from: From) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/questions/QuestionsModel") {}
+
+/** How many writes in a row may land on a sheet another writer changed before a change gives up: far past two servers' race. */
+export const MAX_CONFLICTS = 50
 
 export const layer = Layer.effect(
   QuestionsModel,
@@ -141,21 +147,30 @@ export const layer = Layer.effect(
         yield* Effect.forEach(linesOf(root, sessionID, before, after, events, now), digest.append, { discard: true })
       }).pipe(Effect.ignoreCause)
 
-    /** Decide on the session's sheet and store what it records; the events. */
-    const apply = <J,>(sessionID: string, decide: (sheet: Sheet, now: number) => Effect.Effect<ReadonlyArray<Event>, J>) =>
-      lock.withPermits(1)(
+    /**
+     * Decide on the session's sheet and store what it records, only over the sheet decided on; the events. Another
+     * writer (this plugin's copy for another directory, or another server on the host) that stored first makes the
+     * write land on nothing: decide again on what it stored, so of two answers to one question the second finds it
+     * answered. The lock only spares this copy's own writers the retry.
+     */
+    const apply = <J,>(sessionID: string, decide: (sheet: Sheet, now: number) => Effect.Effect<ReadonlyArray<Event>, J>) => {
+      const attempt = (tries: number): Effect.Effect<ReadonlyArray<Event>, J | QuestionsUnreadable> =>
         Effect.gen(function* () {
           const sheet = yield* store.read(sessionID)
           const now = yield* Clock.currentTimeMillis
           const events = yield* decide(sheet, now)
           if (events.length === 0) return events
           const after = fold(Questions, events, sheet)
-          yield* store.write(sessionID, after)
+          if (!(yield* store.writeIf(sessionID, after, Option.fromUndefinedOr(sheet.rev)))) {
+            if (tries >= MAX_CONFLICTS) return yield* Effect.die(new Error(`questions: ${sessionID}'s sheet changed under ${MAX_CONFLICTS} writes in a row`))
+            return yield* attempt(tries + 1)
+          }
           yield* changes.changed(sessionID)
           yield* tellDigest(sessionID, sheet, after, events, now)
           return events
-        }),
-      )
+        })
+      return lock.withPermits(1)(attempt(1))
+    }
 
     /** The root of the session's tree, walking parents up; undefined for a root. A parent the host lost ends the walk there. */
     const rootOf = Effect.fn("QuestionsModel.rootOf")(function* (sessionID: string) {
@@ -291,10 +306,17 @@ export const layer = Layer.effect(
       answers: ReadonlyArray<Given>,
       dismissed: ReadonlyArray<string> = [],
       by: Option.Option<string> = Option.none(),
+      via?: Via,
     ) {
       const delivery = yield* courier.newDelivery
-      const command = AnswerQuestions.make({ answers, dismissed, delivery, ...Option.getOrElse(Option.map(by, (session) => ({ by: session })), () => ({})) })
-      const events = yield* apply(sessionID, (sheet) => decideAnswers(sheet, command))
+      const command = AnswerQuestions.make({
+        answers,
+        dismissed,
+        delivery,
+        ...Option.getOrElse(Option.map(by, (session) => ({ by: session })), () => ({})),
+        ...Option.getOrElse(Option.map(Option.fromUndefinedOr(via), (where) => ({ via: where })), () => ({})),
+      })
+      const events = yield* apply(sessionID, (sheet, now) => decideAnswers(sheet, command, now))
       const answered = events.flatMap((event) => (event._tag === "QuestionAnswered" && event.dismissed !== true ? [event.id] : []))
       const gone = events.flatMap((event) =>
         (event._tag === "QuestionAnswered" && event.dismissed === true) || (event._tag === "QuestionClosed" && event.reason === "dismissed") ? [event.id] : [],
@@ -302,7 +324,8 @@ export const layer = Layer.effect(
       // A submit that only dismissed sends nothing: the assumptions already stand.
       if (answered.length > 0) yield* flush(sessionID, by)
       const asked = [...answers.map((given) => given.id.trim()), ...dismissed.map((id) => id.trim())]
-      return { answered, dismissed: gone, skipped: [...new Set(asked)].filter((id) => !answered.includes(id) && !gone.includes(id)) }
+      const skipped = [...new Set(asked)].filter((id) => !answered.includes(id) && !gone.includes(id))
+      return { answered, dismissed: gone, skipped }
     })
 
     return {

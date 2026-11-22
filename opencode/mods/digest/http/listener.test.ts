@@ -1,14 +1,23 @@
-// The page's listener over a real socket: it binds loopback only, serves the page's built files with their content
-// types and nothing outside them, answers the view as JSON, and takes a mark, a Later or a rename only as a POST from
-// its own origin with the page's header. A port another server holds is waited for, never shared.
+// The page's listener over a real socket:
+// - It binds loopback only, serves the page's built files with their content types and nothing outside them, and
+//   answers the view as JSON.
+// - It takes a mark, a Later or a rename only as a POST from its own origin with the page's header.
+// - An answer needs a paired browser's token in TOKEN_HEADER, which the page keeps in its origin's localStorage.
+//   Nothing ambient pairs: no cookie is set, and none is read. Another server on 127.0.0.1 that the browser visits
+//   receives nothing it could answer with.
+// - Every answer, an error too, carries the CSP.
+// - A port another server holds is waited for, never shared.
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { Effect, Option, Ref, Scope } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
+import { AnswerOutcome, type PageAnswer } from "../answers.ts"
+import * as FilePairing from "../filestore/pairing.ts"
 import type { MarkLine } from "../marks.ts"
-import { type Handlers, HOSTNAME, listen, PAGE_HEADER } from "./listener.ts"
+import { ACCESS, CODE_TTL_MS, OLD_COOKIE, type Pairing, RATE_FAILURES, TOKEN_HEADER } from "../pairing.ts"
+import { type Handlers, HOSTNAME, kindOf, listen, PAGE_HEADER } from "./listener.ts"
 
 const NOW = 1_795_204_800_000
 
@@ -23,22 +32,45 @@ const builtPage = (root: string): string => {
   return dist
 }
 
-/** Handlers that keep each line written, and answer a fixed view. */
-const handlers = (written: Ref.Ref<ReadonlyArray<MarkLine>>): Handlers => ({
+/** What a test reads of its listener's handlers: the lines written, the answers sent, its clock, its pairing. */
+interface Rig {
+  readonly written: Ref.Ref<ReadonlyArray<MarkLine>>
+  readonly answered: Ref.Ref<ReadonlyArray<PageAnswer>>
+  readonly clock: Ref.Ref<number>
+  readonly pairing: Pairing
+  /** What the next answer comes to. */
+  readonly outcome: Ref.Ref<AnswerOutcome>
+}
+
+/** Handlers that keep each line written and each answer sent, and answer a fixed view, on the rig's clock. */
+const handlers = (rig: Rig): Handlers => ({
   view: Effect.succeed('{"v":1}'),
-  write: (line) => Ref.update(written, (lines) => [...lines, line]),
-  now: Effect.succeed(NOW),
+  write: (line) => Ref.update(rig.written, (lines) => [...lines, line]),
+  now: Ref.get(rig.clock),
   zone: "America/Montreal",
+  answer: (input) => Ref.update(rig.answered, (all) => [...all, input]).pipe(Effect.andThen(Ref.get(rig.outcome))),
+  pairing: rig.pairing,
 })
 
-/** The listener on a free port for `body`, closed after it. */
-const withListener = <A>(dist: string, body: (base: string, written: Ref.Ref<ReadonlyArray<MarkLine>>, hostname: string) => Promise<A>) =>
+const rigOf = (dir: string) =>
+  Effect.gen(function* () {
+    return {
+      written: yield* Ref.make<ReadonlyArray<MarkLine>>([]),
+      answered: yield* Ref.make<ReadonlyArray<PageAnswer>>([]),
+      clock: yield* Ref.make(NOW),
+      pairing: FilePairing.make(dir),
+      outcome: yield* Ref.make<AnswerOutcome>(AnswerOutcome.Answered({ replaced: Option.none() })),
+    }
+  })
+
+/** The listener on a free port for `body`, closed after it; its pairing file beside the built page (`pairing/`). */
+const withListener = <A>(dist: string, body: (base: string, written: Ref.Ref<ReadonlyArray<MarkLine>>, hostname: string, rig: Rig) => Promise<A>, make: (rig: Rig) => Handlers = handlers) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const written = yield* Ref.make<ReadonlyArray<MarkLine>>([])
-        const bound = yield* listen(0, handlers(written), dist)
-        return yield* Effect.promise(() => body(`http://${HOSTNAME}:${bound.port}`, written, bound.hostname))
+        const rig = yield* rigOf(join(dist, "..", "pairing"))
+        const bound = yield* listen(0, make(rig), dist)
+        return yield* Effect.promise(() => body(`http://${HOSTNAME}:${bound.port}`, rig.written, bound.hostname, rig))
       }),
     ),
   )
@@ -134,9 +166,235 @@ describe("the page's listener", () => {
     await withListener(dist, async (base) => {
       const port = Number(new URL(base).port)
       const second = await Effect.runPromiseExit(
-        Effect.scoped(Effect.flatMap(Ref.make<ReadonlyArray<MarkLine>>([]), (written) => listen(port, handlers(written), dist))).pipe(Effect.provideService(Scope.Scope, Scope.makeUnsafe())),
+        Effect.scoped(Effect.flatMap(rigOf(join(dist, "..", "pairing")), (rig) => listen(port, handlers(rig), dist))).pipe(Effect.provideService(Scope.Scope, Scope.makeUnsafe())),
       )
       expect(second._tag).toBe("Failure")
+    })
+  })
+
+  test("every answer carries the CSP (script-src 'self', no inline script, no eval, no other origin), an error and a failure too, and none sets a cookie", async () => {
+    using held = scratch("digest-http-")
+    // The view's handler dies, as a bug would: the listener still answers 500 with its headers.
+    const dying = (rig: Rig): Handlers => ({ ...handlers(rig), view: Effect.die("an invented bug") })
+    await withListener(
+      builtPage(held.path),
+      async (base, _written, _hostname, rig) => {
+        const code = await Effect.runPromise(rig.pairing.issue(NOW))
+        const own = { origin: base, [PAGE_HEADER]: "1" }
+        const answers = [
+          await fetch(`${base}/`),
+          await fetch(`${base}/assets/index-abc.js`),
+          await fetch(`${base}/view.json`),
+          await fetch(`${base}/paired.json`),
+          await fetch(`${base}/missing`),
+          await fetch(`${base}/view.json`, { headers: { host: "evil.example" } }),
+          await fetch(`${base}/api/answer`, { method: "PUT" }),
+          await post(`${base}/api/answer`, { id: "question:s:q1", option: "Keep it" }, own),
+          await post(`${base}/api/mark`, { id: "m1", mark: "read" }, { origin: "http://evil.example", [PAGE_HEADER]: "1" }),
+          await post(`${base}/api/pair`, { code }, own),
+          await post(`${base}/api/pair`, { code }, own),
+        ]
+        expect(answers.map((answer) => answer.status)).toEqual([200, 200, 500, 200, 404, 421, 405, 401, 403, 200, 403])
+        for (const answer of answers) {
+          const csp = String(answer.headers.get("content-security-policy"))
+          expect([answer.status, csp.includes("script-src 'self'"), csp.includes("unsafe-inline"), csp.includes("unsafe-eval"), csp.includes("connect-src 'self'"), /https?:/.test(csp)]).toEqual([answer.status, true, false, false, true, false])
+          expect(answer.headers.has("set-cookie")).toBe(false)
+        }
+      },
+      dying,
+    )
+  })
+})
+
+/** The page's own headers on a write, with its token when it has one. */
+const own = (base: string, token = "") => ({ origin: base, [PAGE_HEADER]: "1", ...Object.fromEntries(Option.toArray(Option.map(Option.liftPredicate(token, (each) => each !== ""), (each) => [TOKEN_HEADER, each] as const))) })
+
+/** Pair through `/api/pair` with a fresh code: the token the body answered, as the page keeps it. */
+const paired = async (base: string, rig: Rig): Promise<string> => {
+  const code = await Effect.runPromise(rig.pairing.issue(await Effect.runPromise(Ref.get(rig.clock))))
+  const answer = await post(`${base}/api/pair`, { code }, own(base))
+  expect([answer.status, answer.headers.has("set-cookie"), answer.headers.get("cache-control")]).toEqual([200, false, "no-store"])
+  const body: { readonly id: string; readonly token: string } = await answer.json()
+  expect(body.token).toStartWith(`v2.${body.id}.`)
+  return body.token
+}
+
+describe("who may do what", () => {
+  test("one table, by listener and route: on loopback only an answer needs a paired browser; elsewhere all but pairing does", () => {
+    const routes: ReadonlyArray<readonly [string, string]> = [
+      ["GET", "/"],
+      ["GET", "/view.json"],
+      ["GET", "/paired.json"],
+      ["GET", "/assets/index-abc.js"],
+      ["POST", "/api/mark"],
+      ["POST", "/api/later"],
+      ["POST", "/api/name"],
+      ["POST", "/api/since"],
+      ["POST", "/api/answer"],
+      ["POST", "/api/pair"],
+      ["PUT", "/api/answer"],
+    ]
+    const table = routes.map(([method, path]) => [method, path, ...Option.match(kindOf(method, path), { onNone: () => ["refused", "refused"], onSome: (kind) => [ACCESS.loopback[kind], ACCESS.remote[kind]] })])
+    expect(table).toEqual([
+      ["GET", "/", "open", "paired"],
+      ["GET", "/view.json", "open", "paired"],
+      ["GET", "/paired.json", "open", "paired"],
+      ["GET", "/assets/index-abc.js", "open", "paired"],
+      ["POST", "/api/mark", "open", "paired"],
+      ["POST", "/api/later", "open", "paired"],
+      ["POST", "/api/name", "open", "paired"],
+      ["POST", "/api/since", "open", "paired"],
+      ["POST", "/api/answer", "paired", "paired"],
+      ["POST", "/api/pair", "open", "open"],
+      ["PUT", "/api/answer", "refused", "refused"],
+    ])
+  })
+})
+
+/**
+ * A browser, as far as credentials go: cookies by host alone (RFC 6265 §8.5: a cookie is not port-scoped), and
+ * localStorage by origin (scheme, host and port). It visits a URL with whatever it would attach by itself.
+ */
+const browser = () => {
+  const cookies = new Map<string, Array<string>>()
+  const storage = new Map<string, Map<string, string>>()
+  const storeOf = (origin: string) =>
+    Option.getOrElse(Option.fromUndefinedOr(storage.get(origin)), () => {
+      const made = new Map<string, string>()
+      storage.set(origin, made)
+      return made
+    })
+  return {
+    /** What a server's answer leaves in the browser: each Set-Cookie, under the host alone. */
+    keep: (url: string, answer: Response) => {
+      const host = new URL(url).hostname
+      cookies.set(host, [...Option.getOrElse(Option.fromUndefinedOr(cookies.get(host)), () => []), ...answer.headers.getSetCookie()])
+    },
+    /** The page of `origin` keeps `value` in its localStorage. */
+    store: (origin: string, key: string, value: string) => void storeOf(origin).set(key, value),
+    /** A top-level visit: the cookies of the host go along; localStorage stays with its own origin's page. */
+    visit: (url: string) => fetch(url, { headers: { cookie: Option.getOrElse(Option.fromUndefinedOr(cookies.get(new URL(url).hostname)), () => []).join("; ") } }),
+    /** What a script of `origin`'s page can read of localStorage. */
+    read: (origin: string, key: string) => Option.fromUndefinedOr(storeOf(origin).get(key)),
+  }
+}
+
+describe("pairing and answering", () => {
+  const ANSWER = { id: "question:ses_a:q1", option: "Keep it" }
+
+  test("a paired browser answers with its token; the answer reaches the handler and the page is told it went", async () => {
+    using held = scratch("digest-http-")
+    await withListener(builtPage(held.path), async (base, _written, _hostname, rig) => {
+      expect(await (await fetch(`${base}/paired.json`)).json()).toEqual({ paired: false })
+      const token = await paired(base, rig)
+      expect(await (await fetch(`${base}/paired.json`, { headers: { [TOKEN_HEADER]: token } })).json()).toEqual({ paired: true })
+      const answer = await post(`${base}/api/answer`, ANSWER, own(base, token))
+      expect([answer.status, await answer.json()]).toEqual([200, { answered: true }])
+      expect(await Effect.runPromise(Ref.get(rig.answered))).toEqual([ANSWER])
+    })
+  })
+
+  test("another server on 127.0.0.1 that the paired browser visits receives nothing it can answer with (round 1's M1)", async () => {
+    using held = scratch("digest-http-")
+    await withListener(builtPage(held.path), async (base, _written, _hostname, rig) => {
+      const visitor = browser()
+      // The browser opens the page and pairs it, keeping whatever each answer leaves.
+      visitor.keep(base, await visitor.visit(`${base}/`))
+      const code = await Effect.runPromise(rig.pairing.issue(NOW))
+      const pairing = await post(`${base}/api/pair`, { code }, own(base))
+      visitor.keep(base, pairing.clone())
+      const { token }: { readonly token: string } = await pairing.json()
+      visitor.store(base, "digest.token", token)
+      // Another server on another port of 127.0.0.1 (a dev server, a container), logging what reaches it.
+      const received = new Array<Readonly<Record<string, string>>>()
+      using other = Bun.serve({
+        hostname: HOSTNAME,
+        port: 0,
+        fetch: (request) => {
+          received.push(Object.fromEntries(request.headers.entries()))
+          return new Response("hello")
+        },
+      })
+      const elsewhere = `http://${HOSTNAME}:${other.port}`
+      await visitor.visit(`${elsewhere}/`)
+      expect(received).toHaveLength(1)
+      const got = received[0] ?? {}
+      expect([got["cookie"] ?? "", got[TOKEN_HEADER] ?? ""]).toEqual(["", ""])
+      expect(Object.values(got).some((value) => value.includes(token.split(".")[2] ?? token))).toBe(false)
+      // Its own page's script reads its own origin's storage: nothing there.
+      expect(visitor.read(elsewhere, "digest.token")).toEqual(Option.none())
+      // It replays all it got, forging the page's origin and header (a server sets any header): refused, nothing sent.
+      const replayed = await post(`${base}/api/answer`, ANSWER, { ...got, host: new URL(base).host, origin: base, [PAGE_HEADER]: "1" })
+      expect(replayed.status).toBe(401)
+      // A request with round 1's cookie, whatever its value, is not paired either.
+      expect((await post(`${base}/api/answer`, ANSWER, { ...own(base), cookie: `${OLD_COOKIE}=v1.AAAAAAAAAAAA.${"B".repeat(43)}` })).status).toBe(401)
+      expect((await post(`${base}/api/answer`, ANSWER, { ...own(base), cookie: `${OLD_COOKIE}=${token}` })).status).toBe(401)
+      expect(await Effect.runPromise(Ref.get(rig.answered))).toEqual([])
+    })
+  })
+
+  test("an answer with no token, a forged one, or with a good token from another origin or naming another host is refused and sends nothing", async () => {
+    using held = scratch("digest-http-")
+    await withListener(builtPage(held.path), async (base, _written, _hostname, rig) => {
+      const token = await paired(base, rig)
+      const refusals = [
+        await post(`${base}/api/answer`, ANSWER, own(base)),
+        await post(`${base}/api/answer`, ANSWER, own(base, `v2.AAAAAAAA.${"B".repeat(43)}`)),
+        await post(`${base}/api/answer`, ANSWER, own(base, `${token}x`)),
+        await post(`${base}/api/answer`, ANSWER, { ...own(base, token), origin: "http://evil.example" }),
+        await post(`${base}/api/answer`, ANSWER, { ...own(base, token), origin: `http://127.0.0.1:${Number(new URL(base).port) + 1}` }),
+        await post(`${base}/api/answer`, ANSWER, { origin: base, [TOKEN_HEADER]: token }),
+        await post(`${base}/api/answer`, ANSWER, { ...own(base, token), host: "evil.example" }),
+      ]
+      expect(refusals.map((each) => each.status)).toEqual([401, 401, 401, 403, 403, 403, 421])
+      expect(await Effect.runPromise(Ref.get(rig.answered))).toEqual([])
+    })
+  })
+
+  test("a token outlives a restart of the server; a revoked one is refused at once", async () => {
+    using held = scratch("digest-http-")
+    const dist = builtPage(held.path)
+    const token = await withListener(dist, async (base, _written, _hostname, rig) => paired(base, rig))
+    await withListener(dist, async (base, _written, _hostname, rig) => {
+      expect((await post(`${base}/api/answer`, ANSWER, own(base, token))).status).toBe(200)
+      expect(await Effect.runPromise(rig.pairing.revoke("all"))).toBe(1)
+      expect((await post(`${base}/api/answer`, ANSWER, own(base, token))).status).toBe(401)
+    })
+  })
+
+  test("a replayed code, a wrong one and an expired one buy no token; past the minute's failures every try is refused, a burst too", async () => {
+    using held = scratch("digest-http-")
+    await withListener(builtPage(held.path), async (base, _written, _hostname, rig) => {
+      const code = await Effect.runPromise(rig.pairing.issue(NOW))
+      expect((await post(`${base}/api/pair`, { code }, own(base))).status).toBe(200)
+      const replayed = await post(`${base}/api/pair`, { code }, own(base))
+      expect([replayed.status, replayed.headers.has("set-cookie"), (await replayed.text()).includes("token")]).toEqual([403, false, false])
+      const late = await Effect.runPromise(rig.pairing.issue(NOW))
+      await Effect.runPromise(Ref.set(rig.clock, NOW + CODE_TTL_MS))
+      expect((await post(`${base}/api/pair`, { code: late }, own(base))).status).toBe(410)
+      // One failure so far this window (the late code; the replay was five minutes ago); a burst of 50 at once gets the rest, then 429s.
+      const burst = await Effect.runPromise(Effect.all(Array.from({ length: 50 }, () => Effect.map(Effect.promise(() => post(`${base}/api/pair`, { code: "ABCDEFGHJK" }, own(base))), (answer) => answer.status)), { concurrency: 50 }))
+      expect(burst.filter((status) => status === 403)).toHaveLength(RATE_FAILURES - 1)
+      expect(burst.filter((status) => status === 429)).toHaveLength(50 - (RATE_FAILURES - 1))
+      const good = await Effect.runPromise(rig.pairing.issue(NOW + CODE_TTL_MS))
+      expect((await post(`${base}/api/pair`, { code: good }, own(base))).status).toBe(429)
+      // A minute on, it may try again.
+      await Effect.runPromise(Ref.set(rig.clock, NOW + CODE_TTL_MS + 60_000))
+      expect((await post(`${base}/api/pair`, { code: good }, own(base))).status).toBe(200)
+    })
+  })
+
+  test("an answer to a question already closed is told who closed it and when; a refused one says why, with its status", async () => {
+    using held = scratch("digest-http-")
+    await withListener(builtPage(held.path), async (base, _written, _hostname, rig) => {
+      const token = await paired(base, rig)
+      await Effect.runPromise(Ref.set(rig.outcome, AnswerOutcome.AlreadyClosed({ answer: Option.some("Cut it"), via: Option.some("tray"), at: Option.some(NOW - 5) })))
+      const closed = await post(`${base}/api/answer`, ANSWER, own(base, token))
+      expect([closed.status, await closed.json()]).toEqual([409, { answered: false, answer: "Cut it", via: "tray", at: NOW - 5, reason: "already answered" }])
+      await Effect.runPromise(Ref.set(rig.outcome, AnswerOutcome.Refused({ status: 413, reason: "an answer is at most 2000 characters" })))
+      const long = await post(`${base}/api/answer`, { id: "question:ses_a:q1", text: "x".repeat(2_001) }, own(base, token))
+      expect([long.status, await long.json()]).toEqual([413, { answered: false, reason: "an answer is at most 2000 characters" }])
+      expect((await post(`${base}/api/answer`, { id: "" }, own(base, token))).status).toBe(400)
     })
   })
 })

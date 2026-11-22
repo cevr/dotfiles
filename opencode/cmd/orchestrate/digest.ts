@@ -28,9 +28,12 @@ export const make = (log: DigestLog["Service"], checkout: string) => {
   return {
     /** A unit's lane, answered or made, and the run's record; `runDir` when the unit's folder is known. */
     lane: (root: string, unit: string, lane: Lane, runDir: Option.Option<string>) => at((t) => Facts.laneFacts(root, unit, lane, { host, repo, runDir }, t)),
-    /** A step started by `root`; `child` its session when known. */
-    started: (root: string, child: Option.Option<string>, agent: string, description: string) =>
-      at((t) => Option.toArray(Facts.startFact(root, Option.getOrElse(child, () => ""), agent, description, t))),
+    /**
+     * A step `root` started at `t`, written once the host ran its call (the hook's `execute.after`), so a call the host
+     * refused writes none; `child` its session when known.
+     */
+    started: (root: string, child: Option.Option<string>, agent: string, description: string, t: number) =>
+      append(Option.toArray(Facts.startFact(root, Option.getOrElse(child, () => ""), agent, description, t))).pipe(Effect.ignoreCause),
     /**
      * A step's last words, read as its hand-back; a verifier's findings file is read for its rows. A session idle
      * again with the same words wrote its line already, so it writes none.

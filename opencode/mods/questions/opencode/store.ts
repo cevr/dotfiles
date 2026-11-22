@@ -6,16 +6,21 @@
 // is the global database's key-value table under a namespace made from the
 // plugin id (packages/core/src/plugin/host.ts:688 `storage`), so the sheets
 // outlive a restart and every directory's server reads the same ones. Its
-// get, set, remove and scan never fail; `scan` pages by `next`.
+// get, setIf, remove and scan never fail; `scan` pages by `next`. A sheet is
+// written only through `setIf` (the fork's KV.setIf: one statement, atomic
+// across connections and server processes), keyed on the `rev` kept in the
+// sheet, so the tray's copy and the page's, or two servers on one host, never
+// both close a question. A fork without `setIf` cannot run this plugin: its
+// start fails and says so, rather than write racily.
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Option, Predicate, Schema } from "effect"
 import { EMPTY, type Row, Sheet } from "../question.ts"
 import { QuestionStore, QuestionsUnreadable } from "../service.ts"
 
 /** The plugin's storage, as the plugin context provides it. */
 export interface Storage {
   readonly get: (key: string) => Effect.Effect<unknown>
-  readonly set: (key: string, value: Schema.Json) => Effect.Effect<void>
+  readonly setIf: (key: string, value: Schema.Json, rev?: number) => Effect.Effect<boolean>
   readonly remove: (key: string) => Effect.Effect<void>
   readonly scan: (options: {
     readonly prefix: string
@@ -52,7 +57,7 @@ const rowJson = (row: Row): Schema.Json => {
   return json
 }
 
-const jsonOf = (sheet: Sheet): Schema.Json => ({ next: sheet.next, rows: sheet.rows.map(rowJson) })
+const jsonOf = (sheet: Sheet, rev: number): Schema.Json => ({ next: sheet.next, rows: sheet.rows.map(rowJson), rev })
 
 export const layer = (storage: Storage) =>
   Layer.succeed(QuestionStore, {
@@ -61,10 +66,16 @@ export const layer = (storage: Storage) =>
         Effect.flatMap((value) =>
           value === undefined
             ? Effect.succeed(EMPTY)
-            : decode(value).pipe(Effect.mapError((error) => new QuestionsUnreadable({ message: `the questions of ${sessionID} do not read: ${error.message}` }))),
+            : decode(value).pipe(
+                Effect.map((sheet) => ({ ...sheet, rev: Option.getOrElse(Option.fromUndefinedOr(sheet.rev), () => 0) })),
+                Effect.mapError((error) => new QuestionsUnreadable({ message: `the questions of ${sessionID} do not read: ${error.message}` }))),
         ),
       ),
-    write: (sessionID, sheet) => storage.set(keyOf(sessionID), jsonOf(sheet)),
+    writeIf: (sessionID, sheet, rev) =>
+      Option.match(rev, {
+        onNone: () => storage.setIf(keyOf(sessionID), jsonOf(sheet, 1)),
+        onSome: (read) => storage.setIf(keyOf(sessionID), jsonOf(sheet, read + 1), read),
+      }),
     remove: (sessionID) => storage.remove(keyOf(sessionID)),
     sessions: Effect.gen(function* () {
       const found: Array<string> = []
@@ -78,5 +89,17 @@ export const layer = (storage: Storage) =>
     }),
   })
 
-/** The sheets in the plugin context's storage. */
-export const fromContext = (ctx: Plugin.Context) => layer(ctx.storage)
+/** A fork whose storage has no `setIf` (older than this plugin): the plugin does not start, and says why. */
+export class NoConditionalWrite extends Schema.TaggedError<NoConditionalWrite>()("NoConditionalWrite", { message: Schema.String }) {}
+
+/** The sheets in the plugin context's storage; a fork without `storage.setIf` fails the plugin's start. */
+export const fromContext = (ctx: Plugin.Context): Layer.Layer<QuestionStore, NoConditionalWrite> =>
+  // The types say it is there; an older fork's storage, loaded under them, has none.
+  Option.match(Option.liftPredicate(ctx.storage, (storage) => Predicate.isFunction(storage.setIf)), {
+    onSome: layer,
+    onNone: () =>
+      Layer.effect(
+        QuestionStore,
+        Effect.fail(new NoConditionalWrite({ message: "questions: this OpenCode build has no storage.setIf, so an answer cannot close its question once; install the fork built with the dotfiles that need it" })),
+      ),
+  })

@@ -32,10 +32,10 @@ const eventOf = (next: () => number): DigestEvent => {
     () => DigestEvent.cases.Verdict.make({ ...base, session: "s3", batch: "batch-a", round: 1, verdict: one(["accepted", "changes"]), file: Option.none(), digest: Option.none(), units: [{ unit, round, verdict: one(["accepted", "changes"]) }] }),
     () => DigestEvent.cases.Land.make({ ...base, units: [unit], pushed: Option.none() }),
     () => DigestEvent.cases.Check.make({ ...base, ok: next() < 0.5, text: one(["the accept check passed.", "the accept check FAILED."]) }),
-    () => DigestEvent.cases.Item.make({ ...base, id: one(["i1", "i2"]), text: one(["Ship it.", "Wait."]), state: one(["running", "done", "needs-you"]), owner: "mine", who: Option.none(), level: Option.some(one(["red", "green"] as const)), unit: Option.some(unit) }),
+    () => DigestEvent.cases.Item.make({ answer: Option.none(), choices: Option.none(), ...base, id: one(["i1", "i2"]), text: one(["Ship it.", "Wait."]), state: one(["running", "done", "needs-you"]), owner: "mine", who: Option.none(), level: Option.some(one(["red", "green"] as const)), unit: Option.some(unit) }),
     () => DigestEvent.cases.ItemGone.make({ ...base, id: one(["i1", "i2"]) }),
     () => DigestEvent.cases.Asked.make({ ...base, session: "s1", id: one(["q1", "q2"]), question: "Which?", header: Option.none(), options: ["a", "b"], assume: "a" }),
-    () => DigestEvent.cases.Answered.make({ ...base, session: "s1", id: one(["q1", "q2"]), answer: one(["a", "b"]), matches: next() < 0.5, question: Option.none(), assume: Option.none() }),
+    () => DigestEvent.cases.Answered.make({ via: Option.none(), ...base, session: "s1", id: one(["q1", "q2"]), answer: one(["a", "b"]), matches: next() < 0.5, question: Option.none(), assume: Option.none() }),
     () => DigestEvent.cases.Closed.make({ ...base, session: "s1", id: "q2", reason: "withdrawn" }),
     () => DigestEvent.cases.Install.make({ v: VERSION, t: base.t, host: "mac", outcome: one(["proven", "rolled-back"]), build: Option.none(), said: Option.none(), repo: Option.some("demo") }),
   ])()
@@ -81,7 +81,7 @@ describe("fold", () => {
 
   test("the newest fact under a key wins; an item remembers when it was first written", () => {
     const item = (t: number, text: string) =>
-      DigestEvent.cases.Item.make({ v: VERSION, t, root: "r", id: "i", text, state: "running", owner: "mine", who: Option.none(), level: Option.none(), unit: Option.none() })
+      DigestEvent.cases.Item.make({ answer: Option.none(), choices: Option.none(), v: VERSION, t, root: "r", id: "i", text, state: "running", owner: "mine", who: Option.none(), level: Option.none(), unit: Option.none() })
     const state = fold(EMPTY, [item(5, "later"), item(2, "first"), item(3, "middle")])
     const kept = [...state.items.values()][0]
     expect(kept?._tag === "Item" && kept.text).toBe("later")
