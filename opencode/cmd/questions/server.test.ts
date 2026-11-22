@@ -7,7 +7,7 @@
 // tests/questions.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
 import type { Tool } from "@opencode/plugin/effect"
-import { Cause, Effect, Exit, Layer, Option, Queue, Schedule, Schema, type Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Logger, Option, Queue, References, Schedule, Schema, type Scope, Stream } from "effect"
 import type { AskInput } from "@dotfiles/opencode-questions/ask"
 import * as MemoryCourier from "@dotfiles/opencode-questions/memory/courier"
 import * as MemoryStore from "@dotfiles/opencode-questions/memory/store"
@@ -185,6 +185,31 @@ describe("answering", () => {
         expect((yield* plugin.open("ses_root")).map((question) => question.id)).toEqual(["q4"])
       }),
     ))
+
+  test("a submit whose questions all closed elsewhere first (the digest page) is a quiet refusal per question, no warning, and sends nothing", () => {
+    const logged: Array<readonly [string, string]> = []
+    const logger = Logger.make(({ logLevel, message }) => void logged.push([logLevel, String(message)]))
+    return scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ questions: [port, { question: "Keep the --legacy flag?", assume: "yes" }] })
+        yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }, { id: "q2", answer: "no" }], via: "page" })
+        yield* plugin.received("ses_root", 1)
+        // The tray's form, open from before, is submitted after the page answered both.
+        yield* plugin.submit("ses_root", { "ask_user_async:q1": "8080", "ask_user_async:q2": "yes" })
+        // A later question's submit goes after it, so once that one lands the stale one was handled.
+        yield* plugin.call({ questions: [{ question: "Which test runner?", assume: "bun test" }] })
+        yield* plugin.submit("ses_root", { "ask_user_async:q3": "vitest" })
+        yield* plugin.received("ses_root", 2)
+        expect(plugin.inbox("ses_root")).toHaveLength(2)
+        expect(logged.filter(([level]) => level === "Warn" || level === "Error")).toEqual([])
+        expect(logged.filter(([, message]) => message.includes("was not open when the form was submitted"))).toEqual([
+          ["Debug", "questions: ses_root:q1 was not open when the form was submitted; nothing sent"],
+          ["Debug", "questions: ses_root:q2 was not open when the form was submitted; nothing sent"],
+        ])
+      }).pipe(Effect.provide(Logger.layer([logger])), Effect.provideService(References.MinimumLogLevel, "Debug")),
+    )
+  })
 
   test("two sessions' forms are two messages, each in the session that asked; a subagent's question shows with its parent's", () =>
     scenario(

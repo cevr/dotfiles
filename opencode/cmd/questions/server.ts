@@ -47,6 +47,9 @@ export const live = (ctx: Plugin.Context): Layer.Layer<QuestionStore | Courier |
   Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx), OpenCodeFamily.fromContext(ctx))
 
 /** What the agent or the user reads when a call fails. */
+/** The questions one session's part of a form submit names: those answered, then those dismissed. */
+const idsOf = (reply: { readonly answers: ReadonlyArray<{ readonly id: string }>; readonly dismissed: ReadonlyArray<string> }) => [...reply.answers.map((given) => given.id), ...reply.dismissed]
+
 const messageOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused) => {
   if (failure._tag === "QuestionsUnreadable") return `The questions could not be read: ${failure.message}`
   if (failure._tag === "DeliveryRefused")
@@ -127,6 +130,9 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
               replyOf(event.data.answer, event.data.sessionID) ?? [],
               (reply) =>
                 questions.answer(reply.sessionID, reply.answers, reply.dismissed, Option.none(), "tray").pipe(
+                  // Every question of this submit closed elsewhere first (the digest page, another form): a refusal
+                  // per question, quiet, as the page is told "not open"; nothing is wrong with the server.
+                  Effect.catchTag("NotOpen", () => Effect.forEach(idsOf(reply), (id) => Effect.logDebug(`questions: ${reply.sessionID}:${id} was not open when the form was submitted; nothing sent`), { discard: true })),
                   Effect.catchCause((cause) => Effect.logWarning("questions: the form's answers were not recorded", { sessionID: reply.sessionID, cause })),
                 ),
               { discard: true },
