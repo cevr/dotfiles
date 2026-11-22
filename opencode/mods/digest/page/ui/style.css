@@ -22,7 +22,7 @@
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 var(--sans); }
-button, input { font: inherit; color: inherit; }
+button, input, textarea { font: inherit; color: inherit; }
 button { background: none; border: 0; padding: 0; text-align: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 h1, h2, h3, p, ul, ol, dl, dd { margin: 0; padding: 0; }
@@ -102,7 +102,17 @@ h1 { font-size: 26px; font-weight: 680; letter-spacing: -0.015em; line-height: 1
 .ask { margin-top: 14px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
 .ask .opts { display: flex; flex-wrap: wrap; gap: 8px; }
 .opt { border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; min-height: 44px; background: var(--bg); }
-.opt:disabled { cursor: default; color: var(--text); }
+.opt:not(:disabled):hover { border-color: var(--accent); background: var(--accent-soft); }
+.opt:disabled { cursor: default; color: var(--muted); }
+.own { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+.own textarea { flex: 1; min-width: 0; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: var(--bg); }
+.own button, .pair button { border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; padding: 9px 14px; min-height: 44px; font-weight: 600; }
+.own :disabled { cursor: default; opacity: 0.55; }
+.pair { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 14.5px; }
+.pairrow { display: flex; gap: 8px; margin-top: 8px; }
+.pairrow input { flex: 1; min-width: 0; max-width: 16ch; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: var(--bg); font-family: var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
+.outcome { margin-top: 10px; font-size: 14.5px; color: var(--good); }
+.outcome.bad { color: var(--red); }
 .ask .assume { margin-top: 10px; font-size: 14.5px; color: var(--muted); }
 .decided { margin-top: 12px; display: grid; gap: 12px; }
 .decided dt { font-weight: 600; }

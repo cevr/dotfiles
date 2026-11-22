@@ -87,8 +87,59 @@ export const toggleLater = (message: Message) => {
 
 export const renameProject = (id: string, name: string) => void act(Api.rename(id, name))
 
+// ── Answers ──
+
+/** Whether this browser is paired (may answer); unknown until /paired.json answers. */
+export const [paired, setPaired] = createSignal<boolean | undefined>(undefined)
+/** The last pairing try's refusal, shown under the code field. */
+export const [pairProblem, setPairProblem] = createSignal<string | undefined>(undefined)
+/** What became of each answer sent from this page, by message id. */
+export const [outcomes, setOutcomes] = createSignal<ReadonlyMap<string, Api.Outcome>>(new Map())
+/** The messages whose answer is on its way. */
+export const [sending, setSending] = createSignal<ReadonlySet<string>>(new Set())
+
+/** A code (typed, or from the link's `#pair=`) exchanged for this browser's cookie. */
+export const pairWith = (code: string) =>
+  Api.pair(code.trim())
+    .then(() => {
+      setPairProblem(undefined)
+      setPaired(true)
+    })
+    .catch((failure: Error) => {
+      setPairProblem(failure.message)
+      return Api.fetchPaired().then(setPaired).catch(() => void setPaired(false))
+    })
+
+/** His answer to `message`: sent once (a second press while it goes does nothing), then the view again. */
+export const answerMessage = (message: Message, given: { readonly option: string } | { readonly text: string }) => {
+  if (sending().has(message.id)) return
+  setSending((all) => new Set([...all, message.id]))
+  void Api.answer(message.id, given)
+    .then((outcome) => {
+      setOutcomes((all) => new Map([...all, [message.id, outcome]]))
+      // A cookie the server no longer knows (the pairing file deleted): pair again.
+      if (outcome.tag === "refused" && outcome.status === 401) setPaired(false)
+    })
+    .catch((failure: Error) => void setOutcomes((all) => new Map([...all, [message.id, { tag: "refused", status: 0, reason: failure.message }]])))
+    .finally(() => {
+      setSending((all) => new Set([...all].filter((id) => id !== message.id)))
+      void refresh()
+    })
+}
+
+/** The link's `#pair=<code>`, taken once and cleared from the address bar so a reload never replays it. */
+const pairFromLink = () => {
+  const code = new URLSearchParams(location.hash.slice(1)).get("pair")
+  if (code === null) return Api.fetchPaired().then(setPaired).catch(() => void setPaired(false))
+  history.replaceState(null, "", `${location.pathname}${location.search}`)
+  return pairWith(code)
+}
+
 /** Keep the view fresh while the page is visible. */
 export const start = () => {
+  void pairFromLink()
+  // A pairing link opened in a tab that already shows the page changes only its hash.
+  addEventListener("hashchange", () => void pairFromLink())
   void refresh()
   setInterval(() => {
     if (document.visibilityState === "visible") void refresh()

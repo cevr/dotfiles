@@ -12,6 +12,8 @@ import { handlersOf } from "../../../cmd/digest/server.ts"
 import { DigestEvent as E, encodeLine, VERSION } from "../event.ts"
 import * as FileLog from "../filestore/log.ts"
 import * as FileMarks from "../filestore/marks.ts"
+import * as FilePairing from "../filestore/pairing.ts"
+import type { Answerers } from "../answers.ts"
 import { listen } from "../http/listener.ts"
 import { markOf, sinceOf } from "../marks.ts"
 import { nextMorning } from "../zone.ts"
@@ -97,11 +99,33 @@ if (seed === "full") {
 }
 const port = Number(values.port ?? "8291")
 const dist = new URL("./dist", import.meta.url).pathname
+// Answers go nowhere real: a question's is written to the demo's own log as the questions plugin's line would be
+// (from the page), so the page shows it decided; a queue item's is refused.
+const asked = new Map(events.flatMap((event) => (event._tag === "Asked" ? [[`${event.session}\n${event.id}`, event] as const] : [])))
+const answerers: Answerers = {
+  question: (session, id, answer) =>
+    Option.match(Option.fromUndefinedOr(asked.get(`${session}\n${id}`)), {
+      onNone: () => Effect.succeed({ ok: false, message: "no such question in the demo" }),
+      onSome: (question) =>
+        Effect.as(
+          Effect.orDie(
+            log.append(
+              encodeLine(E.cases.Answered.make({ v, t: Date.now(), root: question.root, session, id, answer, matches: answer === question.assume, question: Option.some(question.question), assume: Option.some(question.assume), via: Option.some("page") })),
+              Date.now(),
+            ),
+          ),
+          { ok: true },
+        ),
+    }),
+  item: () => Effect.succeed({ ok: false, message: "the demo answers questions only" }),
+}
+// One pairing code for the check: printed, never kept but as its hash.
+const code = await Effect.runPromise(FilePairing.make(dir).issue(Date.now()))
 await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const bound = yield* listen(port, handlersOf({ dir, timezone: zone }, log), dist)
-      console.log(`digest demo (${seed}): http://${bound.hostname}:${bound.port}`)
+      const bound = yield* listen(port, handlersOf({ dir, timezone: zone }, log, answerers), dist)
+      console.log(`digest demo (${seed}): http://${bound.hostname}:${bound.port}/#pair=${code}`)
       yield* Effect.never
     }),
   ),
