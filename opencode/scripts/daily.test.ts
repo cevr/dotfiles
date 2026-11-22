@@ -9,7 +9,8 @@ import { gitClone, gitInit } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/work/process/landing.ts"
 import { SERVER_PLUGINS } from "../mods/update/trees.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, treeSettings, writeSettings } from "./daily.ts"
+import { settingsFor } from "../mods/update/process/install.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_AUTOMATION_OFF, CLAUDE_CACHE_TTL, digestEntry, DOTFILES, forkSteps, hostCli, hostServer, installDotfiles, installedFile, lacksCliDefault, mailEntry, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleLines, roleModels, serverEntries, treeSettings, writeSettings } from "./daily.ts"
 import type { PluginEntry } from "./daily.ts"
 import { ATTEMPTS, type CheckResult, exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
@@ -325,11 +326,20 @@ describe("the pool's fleet", () => {
     expect(mailEntry(`${MODS}/mail`, { host: "ci-runner", tailscale: "100.64.0.9" })).toBe(`${MODS}/mail`)
   })
 
-  test("on his hosts the digest's morning is his zone (the workbox is UTC), his tailnet reads it unpaired, and each names itself and the other as its peer; elsewhere the host's zone and the plugin's paired default", () => {
-    const his = { package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "member" } }
+  test("on his hosts the digest's morning is his zone (the workbox is UTC), reading on the tailnet needs pairing, named outright, and each names itself and the other as its peer; elsewhere the host's zone and the plugin's paired default", () => {
+    const his = { package: `${MODS}/digest`, options: { timezone: "America/Montreal", tailnetRead: "paired" } }
     expect(digestEntry(`${MODS}/digest`, { host: "bite-cristian" })).toEqual({ ...his, options: { ...his.options, name: "workbox", peers: [{ name: "macbook", host: "cristians-macbook-pro" }] } })
     expect(digestEntry(`${MODS}/digest`, { host: "Cristians-MacBook-Pro.local" })).toEqual({ ...his, options: { ...his.options, name: "macbook", peers: [{ name: "workbox", host: "bite-cristian" }] } })
     expect(digestEntry(`${MODS}/digest`, { host: "ci-runner" })).toBe(`${MODS}/digest`)
+  })
+
+  test("a tree's overlay replaces an earlier build's tailnetRead \"member\" with \"paired\": its plugin list comes whole from the host's facts", () => {
+    const facts = { host: "bite-cristian", tailscale: Option.some("100.64.0.2"), fleet: CHECKOUTS, catalog: CATALOG, store: Option.none(), settings: settingsFor({ host: "bite-cristian", home: "/h", state: "/s", checkout: "/repo", fork: "/fork", bun: "/bun", resident: "/r", launcher: "/l" }) }
+    // The overlay's plugins are serverEntries' list, written whole (writeTree's writeJson); an earlier build's entry does not survive.
+    const earlier = { package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "member" } }
+    const plugins = serverEntries(facts, (name) => `/t/${name}`)
+    expect(plugins).toContainEqual({ package: "/t/digest", options: { timezone: "America/Montreal", tailnetRead: "paired", name: "workbox", peers: [{ name: "macbook", host: "cristians-macbook-pro" }] } })
+    expect(plugins).not.toContainEqual(earlier)
   })
 
   test("another host has no peers, and still paces OpenAI", () => {

@@ -213,12 +213,13 @@ export const OWNER_TIMEZONE = "America/Montreal"
 /**
  * The digest's plugin entry. On one of the owner's hosts (`FLEET`):
  * - `digest.timezone` is his;
- * - `digest.tailnetRead` is `"member"`: any device on his tailnet reads the page unpaired, and marks, answers and
- *   pairing still need a paired browser (owner, 2026-11-22: "Tailnet can read"). Set it to `"paired"` here to make
- *   reading need pairing again.
+ * - `digest.tailnetRead` is `"paired"`, named outright so the tree's overlay, written whole each update, replaces
+ *   an earlier build's `"member"`: reading on the tailnet needs a paired browser. A stopgap (2026-11-22): his
+ *   tailnet holds other Tailscale users' devices, and `"member"` returns once it means his own Tailscale user.
  * - `digest.name` is the host's `DIGEST_NAMES` name, and `digest.peers` the other `FLEET` hosts, each by its name
  *   and its Tailscale host name (its `FLEET` key): the page shows their projects beside its own (owner, 2026-11-22:
- *   "the digest is available over all environments").
+ *   "the digest is available over all environments"). A peer reads another as a tailnet member does, so while
+ *   `tailnetRead` is `"paired"` each shows the other as unavailable ("it needs pairing to be read").
  *
  * Elsewhere the bare plugin: the host's zone, and the plugin's default `"paired"`.
  */
@@ -229,7 +230,7 @@ export const digestEntry = (digest: string, fleet: { readonly host: string }): P
     package: digest,
     options: {
       timezone: OWNER_TIMEZONE,
-      tailnetRead: "member" satisfies TailnetRead,
+      tailnetRead: "paired" satisfies TailnetRead,
       name: digestName(self),
       peers: Object.keys(FLEET)
         .filter((host) => host !== self)
