@@ -20,7 +20,7 @@ const assign = (id: string, ownerLane: string, after: ReadonlyArray<{ readonly k
 const standing = (snapshot: Snapshot, id: string, given: Facts) => Option.map(Option.fromUndefinedOr(snapshot.commitments.get(id)), (row) => standingOf(snapshot, row, given))
 
 describe("standingOf", () => {
-  const snapshot = after([add(["u", "o", "d", "h", "w"]), assign("o", "gone-lane"), assign("d", "lane"), assign("h", "lane", [{ kind: "commit-on-main", ref: "c9" }]), assign("w", "lane", [{ kind: "manual", ref: "go" }])])
+  const snapshot = after([add(["u", "o", "d", "h", "w"]), assign("o", "gone-lane"), assign("d", "lane"), assign("h", "lane", [{ kind: "commit-on-main", ref: "c9c9c9c" }]), assign("w", "lane", [{ kind: "manual", ref: "go" }])])
 
   test("each open commitment is in the first standing that applies", () => {
     const now = facts({ gone: new Set(["gone-lane"]) })
@@ -35,7 +35,7 @@ describe("standingOf", () => {
   })
 
   test("a commit wait is met when git says the commit is on the default branch", () => {
-    expect(standing(snapshot, "h", facts({ onMain: new Set(["c9"]) }))).toEqual(Option.some("due"))
+    expect(standing(snapshot, "h", facts({ onMain: new Set(["c9c9c9c"]) }))).toEqual(Option.some("due"))
   })
 
   test("the check lists every open commitment in exactly one standing", () => {
@@ -51,15 +51,15 @@ describe("the pass", () => {
     add(["a", "b"]),
     assign("a", "lane"),
     assign("b", "lane"),
-    Commands.cases.hand_back.make({ run: "r1", ownerLane: "lane", role: "implementor", session: "ses_w", verdict: "ready", head: Option.some("c1"), claims: ["a"] }),
+    Commands.cases.hand_back.make({ run: "r1", ownerLane: "lane", role: "implementor", session: "ses_w", verdict: "ready", head: Option.some("c1c1c1c"), claims: ["a"] }),
   ])
 
   test("lands only a claimed commit that is on the default branch, and nobody else can say landed", () => {
     const off = Result.getOrThrow(decidePass(claimed, facts(), Option.none(), { actor: PLUGIN, now: T0 }))
     expect(passedOf(off).landed).toEqual([])
-    const on = Result.getOrThrow(decidePass(claimed, facts({ onMain: new Set(["c1"]) }), Option.none(), { actor: PLUGIN, now: T0 }))
+    const on = Result.getOrThrow(decidePass(claimed, facts({ onMain: new Set(["c1c1c1c"]) }), Option.none(), { actor: PLUGIN, now: T0 }))
     expect(passedOf(on).landed).toEqual(["a"])
-    expect(Option.map(Option.fromUndefinedOr(fold(claimed, on).commitments.get("a")), (row) => [row.state, row.landedCommit])).toEqual(Option.some(["landed", Option.some("c1")]))
+    expect(Option.map(Option.fromUndefinedOr(fold(claimed, on).commitments.get("a")), (row) => [row.state, row.landedCommit])).toEqual(Option.some(["landed", Option.some("c1c1c1c")]))
   })
 
   test("wakes the root once for each commitment newly due, and not again until it is assigned again", () => {
