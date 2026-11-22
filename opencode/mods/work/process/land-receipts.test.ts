@@ -153,6 +153,31 @@ describe("a land by receipts, on real Git", () => {
     )
   })
 
+  test("a Rift that holds copies of its base's uncommitted work lands on its receipt, the copies restored by hand after it or not; a change of its own still refuses", () => {
+    const made = bench()
+    return made.run(
+      Effect.gen(function* () {
+        // Copied with the base's uncommitted work, as a lane made before its create restored anything was.
+        const source = join(made.scratch, "app")
+        for (const root of [source, made.x]) writeFileSync(join(root, "README.md"), "app, rewritten by a tool in the base\n")
+        writeFileSync(join(made.y, "README.md"), "app, rewritten by a tool in the base\n")
+        yield* made.receipt(made.x)
+        yield* made.receipt(made.y)
+        // One owner restores the copy by hand after the receipt: the receipt still covers it.
+        sh(made.x, "git", "checkout", "-q", "--", "README.md")
+        // The base rewrites its file again: the other's copy no longer reads as the base's, so it is that Rift's own
+        // change, which refuses the land as it always did; once it reads as the base's again, it is not.
+        writeFileSync(join(source, "README.md"), "app, rewritten again\n")
+        expect(yield* made.land(["feat-x", "feat-y"])).toBe(`refused: Did not land anything: ${made.y} holds uncommitted changes; commit them first:\n   M README.md`)
+        writeFileSync(join(made.y, "README.md"), "app, rewritten again\n")
+        const answer = yield* made.land(["feat-x", "feat-y"])
+        expect(answer.split("\n")[0]).toMatch(/^Landed 2 workspace\(s\) as one push: .*by their receipts, no full gate\)\.$/)
+        // Neither receipt was redone: the land ran its merge check alone.
+        expect(made.marked()).toEqual([`merge-check ${made.integrate}`])
+      }),
+    )
+  })
+
   test("a Rift whose head moved after its receipt runs its focused gate in its own Rift, on the files it changed, and only that; the other's receipt is taken", () => {
     const made = bench()
     return made.run(

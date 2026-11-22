@@ -811,6 +811,24 @@
     },
     {
       "files": [
+        "mods/work/process/inherited.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/work/process/inherited.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "scripts/receipt.ts"
       ],
       "rules": {
