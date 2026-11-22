@@ -1,15 +1,25 @@
 // Who may do what on the digest page: one pure decision over (listener, route, source, paired, origin, host),
 // `decide`. The listener asks it for every request and acts on its answer alone.
 //
-// - Host: a request must name one of the listener's own hosts (`hosts`: its addresses and names, with the port).
-//   Any other `Host` is refused on every route (DNS rebinding: a name rebound to the address reads nothing).
+// - Host: a request must name one of the hosts its listener serves under (`hosts`, with the port). Any other `Host`
+//   is refused on every route (DNS rebinding: a name rebound to the address reads nothing).
+//   - Loopback serves under 127.0.0.1 and localhost. Neither is resolved by DNS (the browser and the hosts file keep
+//     localhost on this machine), so no other server can stand behind them for his browser.
+//   - The tailnet listener serves under its own bound address alone, as a browser writes it (`http://100.x.y.z:port`,
+//     `http://[fd7a:…]:port`). Its MagicDNS name and short name (`names`) get one thing: `GET /` (or HEAD) is sent on
+//     to the address (`Redirect`), and every other route under a name is refused (421), with a token or without.
+//     Which server a name reaches is the browser's resolver's choice, not Tailscale's: a hostile Wi-Fi's search
+//     domain, or a name rebound after the attacker's page loaded under it, puts another server's page in that
+//     name's origin. Since his devices read and write with no token (their network position is the credential),
+//     the page's own origin must be one no resolver decides: the address. A token kept under a name's origin is no
+//     credential either: a page loaded in that origin by another server reads its localStorage.
 // - Source: on the tailnet listener, who sent it, from the socket's peer address alone, never a header (members.ts
 //   `sourceOf`). A source outside Tailscale's ranges is refused on every route there (the bind makes it impossible;
 //   the decision refuses it anyway).
 // - A write (a POST) must come from the page's own origin, `http://<the Host it named>`, carry PAGE_HEADER and be
-//   JSON. Each of the listener's names is its own origin, and the browser keeps a token per origin, so a page opened
-//   by its IP and later by its MagicDNS name pairs once for each. With writes open to his devices (no token), these
-//   are what stop a page of another site, opened in his browser, from writing through it.
+//   JSON. On the tailnet an Origin sent with any other request must be that one too (a browser sends none on the
+//   page's own GETs). With writes open to his devices (no token), these are what stop a page of another site,
+//   opened in his browser, from writing through it.
 // - What a route needs then (ACCESS):
 //   - On loopback, a read or a mark needs nothing more, an answer a paired browser.
 //   - Off loopback (the tailnet) every route needs a paired browser except the page's shell (its static bundle,
@@ -22,7 +32,7 @@
 //     (an agent there must not act as him). The default is "paired".
 //   - Another user's device, a shared-in or tagged one, or an address the status does not name (`other`) always
 //     needs the token.
-import { Data, Match } from "effect"
+import { Data, Match, Option } from "effect"
 
 /** The listener a request came in on. */
 export type Listener = "loopback" | "tailnet"
@@ -104,22 +114,30 @@ export interface Facts {
   readonly kind: RouteKind
   /** Who sent it, by its socket's peer address; `local` on loopback. */
   readonly source: Source
-  /** The `Host` it named; "" for none. */
-  readonly host: string
-  /** The listener's own hosts, each with its port. */
+  /** The `Host` it named, as sent (an empty one is one); none when it sent none. */
+  readonly host: Option.Option<string>
+  /** The hosts the listener serves under, each with its port: on the tailnet its bound address alone. */
   readonly hosts: ReadonlyArray<string>
-  /** Its `Origin`; "" for none. */
-  readonly origin: string
+  /** The listener's names that only send `GET /` on to its address (the tailnet's MagicDNS and short names). */
+  readonly names: ReadonlyArray<string>
+  /** Whether the path is `/` itself. */
+  readonly root: boolean
+  /** Its `Origin`, as sent (an empty one, `null`, two joined by Bun are each one); none when it sent none. */
+  readonly origin: Option.Option<string>
   readonly pageHeader: boolean
   readonly json: boolean
   /** Whether it carries a paired browser's token. */
   readonly paired: boolean
 }
 
-/** What the listener does with a request: serve it, serve the health line's `ok` alone, or refuse it, and why. */
+/**
+ * What the listener does with a request: serve it, serve the health line's `ok` alone, send it on to the page at the
+ * listener's own address (308, built from the bound address, never from the request), or refuse it, and why.
+ */
 export type Decision = Data.TaggedEnum<{
   Serve: {}
   Brief: {}
+  Redirect: {}
   Refuse: { readonly status: number; readonly reason: string }
 }>
 export const Decision = Data.taggedEnum<Decision>()
@@ -127,12 +145,51 @@ export const Decision = Data.taggedEnum<Decision>()
 /** The pairing instruction an unpaired browser is given. */
 export const PAIR_FIRST = "pair this browser first: run bun cmd/digest/pair.ts on the host and type the code it prints here"
 
-/** The one decision: by host, then the source, then a write's origin and headers, then what the route needs. */
+/** What a request under one of the tailnet listener's names is told: its page is at its address. */
+export const ADDRESS_ONLY = "on the tailnet this page answers at its address only (http://100.x.y.z:8240, as bun cmd/digest/pair.ts prints it): open it there"
+
+const FOREIGN = "this page answers on its own names only"
+
+/** Who a request's authority names, as the tailnet's first step reads it. */
+export interface Authority {
+  readonly listener: Listener
+  /** The `Host` it named, as sent; none when it sent none. */
+  readonly host: Option.Option<string>
+  readonly hosts: ReadonlyArray<string>
+  readonly names: ReadonlyArray<string>
+  /** Whether it is a GET or HEAD of `/` (any query). */
+  readonly rootRead: boolean
+}
+
+/**
+ * The tailnet's first step, before its method, path or anything else is read: a Host that is not the listener's
+ * own address is refused (421), except a GET or HEAD of `/` under one of its names, which is sent on to the address.
+ * None when the Host is the address, and always none on loopback, whose Host is checked as before (in `decide`,
+ * after the method).
+ */
+export const authorityOf = (authority: Authority): Option.Option<Decision> => {
+  if (authority.listener !== "tailnet" || Option.exists(authority.host, (host) => authority.hosts.includes(host))) return Option.none()
+  const named = Option.exists(authority.host, (host) => authority.names.includes(host))
+  if (named && authority.rootRead) return Option.some(Decision.Redirect())
+  if (named) return Option.some(Decision.Refuse({ status: 421, reason: ADDRESS_ONLY }))
+  return Option.some(Decision.Refuse({ status: 421, reason: FOREIGN }))
+}
+
+/**
+ * The one decision: on the tailnet by its authority first (`authorityOf`), on loopback by its host; then the source,
+ * then the origin (a write's always, any other tailnet request's when it sends one) and a write's headers, then what
+ * the route needs.
+ */
 export const decide = (facts: Facts, policy: Policy = PAIRED): Decision => {
-  if (!facts.hosts.includes(facts.host)) return Decision.Refuse({ status: 421, reason: "this page answers on its own names only" })
+  const first = authorityOf({ listener: facts.listener, host: facts.host, hosts: facts.hosts, names: facts.names, rootRead: facts.kind === "shell" && facts.root })
+  if (Option.isSome(first)) return first.value
+  if (!Option.exists(facts.host, (host) => facts.hosts.includes(host))) return Decision.Refuse({ status: 421, reason: FOREIGN })
+  // The page's own origin, from the Host it named; a request is from it only when it sent exactly that Origin.
+  const own = Option.exists(Option.zipWith(facts.host, facts.origin, (host, origin) => origin === `http://${host}`), (same) => same)
   if (facts.listener === "tailnet" && (facts.source === "outside" || facts.source === "local")) return Decision.Refuse({ status: 403, reason: "this listener answers the tailnet only" })
+  if (facts.listener === "tailnet" && Option.isSome(facts.origin) && !own) return Decision.Refuse({ status: 403, reason: "a request must come from the page's own origin" })
   if (WRITES.includes(facts.kind)) {
-    if (facts.origin !== `http://${facts.host}`) return Decision.Refuse({ status: 403, reason: "a write must come from the page's own origin" })
+    if (!own) return Decision.Refuse({ status: 403, reason: "a write must come from the page's own origin" })
     if (!facts.pageHeader) return Decision.Refuse({ status: 403, reason: "a write must carry the page's header" })
     if (!facts.json) return Decision.Refuse({ status: 415, reason: "a write is JSON" })
   }

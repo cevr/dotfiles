@@ -9,8 +9,9 @@
 //   enough. No status (no CLI, a failed or timed-out one, output that does not parse) or Tailscale not Running: no
 //   tailnet, loopback only, with the reason (health's `tailnet=no:<why>`). Read at the plugin's start and again every
 //   recheck, so a Tailscale that goes down, comes up or moves is followed.
-// - The listener's own names: each address, and the MagicDNS name and short host name from the same status. A
-//   request naming any other host is refused (DNS rebinding), on every route.
+// - The listener's names: the MagicDNS name and short host name from the same status. The tailnet listener serves
+//   under its address alone; a name only sends `GET /` on to it (policy.ts). A request naming any other host is
+//   refused (DNS rebinding), on every route.
 import { Array as Arr, Data, Match, Option, Order } from "effect"
 
 /** Why an address may not be bound. */
@@ -189,5 +190,14 @@ export const tailnetOf = (interfaces: ReadonlyArray<InterfaceAddress>, read: Sta
 /** An address as a URL's or a Host header's host: an IPv6 one in brackets. */
 export const hostOf = (address: string): string => Option.match(Option.liftPredicate(address, (each) => each.includes(":")), { onNone: () => address, onSome: (v6) => `[${v6}]` })
 
-/** The `Host` values a listener on `port` answers to: each of its addresses and names, with the port. */
+/**
+ * An address or a name with `port` as a browser writes it in `Host` and `Origin`: the WHATWG URL serialization (an
+ * IPv6 address in brackets, lower case, its longest run of zero groups compressed; a name lower case; the scheme's
+ * default port left out). So a listener compares the header with one exact string, and two spellings of one
+ * address are never two hosts.
+ */
+export const hostWithPort = (addressOrName: string, port: number): string =>
+  Option.getOrElse(Option.map(Option.fromNullishOr(URL.parse(`http://${hostOf(addressOrName)}:${port}`)), (url) => url.host), () => `${hostOf(addressOrName)}:${port}`)
+
+/** The `Host` values loopback answers to: each name with `:port`, always (main's construction, kept as it was; the tailnet uses `hostWithPort`). */
 export const hostsOf = (port: number, addressesAndNames: ReadonlyArray<string>): ReadonlyArray<string> => addressesAndNames.map((each) => `${hostOf(each)}:${port}`)
